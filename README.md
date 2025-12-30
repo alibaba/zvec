@@ -39,27 +39,7 @@ pip install zvec
 - Python 3.9
 - **Supported platforms**: Linux (x86_64) or macOS (ARM64/x86_64)
 
-### Building from Source
-
-If you prefer to build Zvec from source, you can clone the repository and install it locally.  
-**Note**: *The repository includes Git submodules, so cloning may take a few minutes depending on your network*.
-
-```bash
-# Clone the repository
-git clone --recurse-submodules https://github.com/GraphScope/zvec.git
-cd zvec
-
-# Install from source
-pip install .
-```
-
-**Build Requirements**:
-
-- Python 3.9 or higher
-- **Supported platforms**: Linux (x86_64) or macOS (ARM64/x86_64)
-- C++17 compatible compiler
-
-For detailed build instructions, check the [Building from Source](https://zvec.org/en/docs/build/) guide.
+If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/build/) guide.
 
 ## ⚡ One-Minute Example
 
