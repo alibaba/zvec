@@ -36,8 +36,10 @@ pip install zvec
 
 **Requirements**:
 
-- Python 3.9
-- **Supported platforms**: Linux (x86_64) or macOS (ARM64/x86_64)
+- Python 3.10 - 3.12
+- **Supported platforms**:
+  - Linux (x86_64)
+  - macOS (ARM64/x86_64)
 
 If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/build/) guide.
 
