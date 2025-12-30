@@ -6,10 +6,9 @@
 </h1>
 
 <p align="center">
-  <a href="https://codecov.io/github/GraphScope/zvec" style="text-decoration: none;"><img src="https://codecov.io/github/GraphScope/zvec/graph/badge.svg?token=PN16Q9PSZX" alt="Code Coverage"/></a>
-  <a href="https://github.com/GraphScope/zvec/actions" style="text-decoration:none;"><img src="https://github.com/GraphScope/zvec/actions/workflows/linux_x64_docker_ci.yml/badge.svg" alt="Linux x64 CI"/></a>
-  <a href="https://github.com/GraphScope/zvec/releases" style="text-decoration: none;"><img src="https://img.shields.io/github/v/release/GraphScope/zvec" alt="Latest Release"/></a>
-  <a href="https://github.com/GraphScope/zvec/blob/main/LICENSE" style="text-decoration: none;"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
+  <a href="https://github.com/alibaba/zvec/actions" style="text-decoration:none;"><img src="https://github.com/alibaba/zvec/actions/workflows/linux_x64_docker_ci.yml/badge.svg?branch=main" alt="Linux x64 CI"/></a>
+  <a href="https://github.com/alibaba/zvec/releases" style="text-decoration: none;"><img src="https://img.shields.io/github/v/release/alibaba/zvec" alt="Latest Release"/></a>
+  <a href="https://github.com/alibaba/zvec/blob/main/LICENSE" style="text-decoration: none;"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
 </p>
 
 # Zvec
@@ -46,7 +45,7 @@ If you prefer to build Zvec from source, you can clone the repository and instal
 
 ```bash
 # Clone the repository
-git clone --recurse-submodules https://github.com/GraphScope/zvec.git
+git clone --recurse-submodules https://github.com/alibaba/zvec.git
 cd zvec
 
 # Install from source

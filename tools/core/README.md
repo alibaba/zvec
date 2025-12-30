@@ -34,7 +34,7 @@ test.parquet
 ### Preparing Environment 
 Clone code and init:
 ```bash
-$ git clone git@github.com:GraphScope/zvec.git
+$ git clone git@github.com:alibaba/zvec.git
 $ cd zvec
 $ git submodule update --init
 ```

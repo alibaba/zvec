@@ -96,7 +96,7 @@ CMAKE_BUILD_TYPE=Debug CMAKE_GENERATOR="Unix Makefiles" pip install -v .
 
 ## Need Help
 
-- Browse [existing issues](https://github.com/graphscope/zvec/issues)
+- Browse [existing issues](https://github.com/alibaba/zvec/issues)
 - For sensitive/security issues: email `zvec@alibaba-inc.com`
 
 ---

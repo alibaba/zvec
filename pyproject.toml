@@ -39,9 +39,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/graphscope/zvec"
-Repository = "https://github.com/graphscope/zvec"
-"Bug Tracker" = "https://github.com/graphscope/zvec/issues"
+Homepage = "https://github.com/alibaba/zvec"
+Repository = "https://github.com/alibaba/zvec"
+"Bug Tracker" = "https://github.com/alibaba/zvec/issues"
 "Documentation" = "https://zvec.org"
 
 [project.optional-dependencies]
