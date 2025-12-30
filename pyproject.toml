@@ -163,6 +163,7 @@ archs = ["x86_64"]
 test-command = "cd {project} && pytest python/tests -v --tb=short"
 manylinux-x86_64-image = "manylinux_2_28"
 skip = "*musllinux*"
+environment = { ENABLE_SKYLAKE_AVX512 = "ON", ENABLE_SAPPHIRERAPIDS = "ON" }
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
