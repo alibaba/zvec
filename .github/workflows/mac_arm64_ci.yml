@@ -69,6 +69,12 @@ jobs:
         run: |
           cd "$CLEAN_WORKSPACE"
           pip install --upgrade pip pytest pytest-cov ruff
+          
+          NPROC=$(nproc 2>/dev/null || echo $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2))
+          echo "ParallelGroup: Using $NPROC parallel jobs for build"
+          
+          CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           pip install -v .
         shell: bash
 
