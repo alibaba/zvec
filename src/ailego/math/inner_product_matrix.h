@@ -181,10 +181,12 @@ struct InnerProductMatrix<int8_t, M, N,
  protected:
   //! Calculate Fused-Multiply-Add
   static inline float FusedMultiplyAdd(uint32_t lhs, uint32_t rhs) {
-    return static_cast<float>((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
-                              (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
-                              (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
-                              (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+    volatile int32_t sum = ((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
+                            (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
+                            (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
+                            (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+
+    return static_cast<float>(sum);
   }
 };
 
@@ -226,10 +228,12 @@ struct InnerProductMatrix<int8_t, M, 1, typename std::enable_if<M >= 2>::type> {
  protected:
   //! Calculate Fused-Multiply-Add
   static inline float FusedMultiplyAdd(uint32_t lhs, uint32_t rhs) {
-    return static_cast<float>((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
-                              (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
-                              (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
-                              (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+    volatile int32_t sum = ((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
+                            (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
+                            (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
+                            (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+
+    return static_cast<float>(sum);
   }
 };
 
@@ -524,10 +528,12 @@ struct MinusInnerProductMatrix<
  protected:
   //! Calculate Fused-Multiply-Add
   static inline float FusedMultiplyAdd(uint32_t lhs, uint32_t rhs) {
-    return static_cast<float>((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
-                              (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
-                              (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
-                              (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+    volatile int32_t sum = ((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
+                            (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
+                            (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
+                            (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+
+    return static_cast<float>(sum);
   }
 };
 
@@ -570,10 +576,12 @@ struct MinusInnerProductMatrix<int8_t, M, 1,
  protected:
   //! Calculate Fused-Multiply-Add
   static inline float FusedMultiplyAdd(uint32_t lhs, uint32_t rhs) {
-    return static_cast<float>((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
-                              (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
-                              (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
-                              (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+    volatile int32_t sum = ((int8_t)(lhs >> 0) * (int8_t)(rhs >> 0) +
+                            (int8_t)(lhs >> 8) * (int8_t)(rhs >> 8) +
+                            (int8_t)(lhs >> 16) * (int8_t)(rhs >> 16) +
+                            (int8_t)(lhs >> 24) * (int8_t)(rhs >> 24));
+
+    return static_cast<float>(sum);
   }
 };
 

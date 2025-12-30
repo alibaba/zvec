@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <ailego/internal/cpu_features.h>
 #include "distance_matrix_accum_fp16.i"
 #include "euclidean_distance_matrix.h"
 
@@ -131,6 +132,7 @@ static inline float SquaredEuclideanDistanceAVX512FP16(const Float16 *lhs,
 }
 #endif
 
+
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
 void SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                             const ValueType *q,
@@ -138,13 +140,21 @@ void SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                             float *out) {
 #if defined(__ARM_NEON)
   ACCUM_FP16_1X1_NEON(m, q, dim, out, 0ull, )
-#elif defined(__AVX512FP16__)
-  *out = SquaredEuclideanDistanceAVX512FP16(m, q, dim);
-#elif defined(__AVX512F__)
-  ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, )
 #else
+#if defined(__AVX512FP16__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    *out = SquaredEuclideanDistanceAVX512FP16(m, q, dim);
+    return;
+  }
+#endif
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, )
+    return;
+  }
+#endif
   ACCUM_FP16_1X1_AVX(m, q, dim, out, 0ull, )
-#endif  // __AVX512F__
+#endif  //__ARM_NEON
 }
 
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
@@ -153,13 +163,21 @@ void EuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                      size_t dim, float *out) {
 #if defined(__ARM_NEON)
   ACCUM_FP16_1X1_NEON(m, q, dim, out, 0ull, std::sqrt)
-#elif defined(__AVX512FP16__)
-  *out = std::sqrt(SquaredEuclideanDistanceAVX512FP16(m, q, dim));
-#elif defined(__AVX512F__)
-  ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, std::sqrt)
 #else
+#if defined(__AVX512FP16__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    *out = std::sqrt(SquaredEuclideanDistanceAVX512FP16(m, q, dim));
+    return;
+  }
+#endif
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, std::sqrt)
+    return;
+  }
+#endif
   ACCUM_FP16_1X1_AVX(m, q, dim, out, 0ull, std::sqrt)
-#endif  // __AVX512F__
+#endif  //__ARM_NEON
 }
 
 #if !defined(__ARM_NEON)
@@ -241,10 +259,13 @@ void SquaredEuclideanDistanceMatrix<Float16, 16, 1>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X1_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_16X1_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X1_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+
+  ACCUM_FP16_16X1_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=2)
@@ -253,10 +274,13 @@ void SquaredEuclideanDistanceMatrix<Float16, 16, 2>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X2_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_16X2_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X2_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+
+  ACCUM_FP16_16X2_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=4)
@@ -265,10 +289,12 @@ void SquaredEuclideanDistanceMatrix<Float16, 16, 4>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X4_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_16X4_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X4_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X4_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=8)
@@ -277,20 +303,24 @@ void SquaredEuclideanDistanceMatrix<Float16, 16, 8>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X8_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_16X8_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X8_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X8_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=16)
 void SquaredEuclideanDistanceMatrix<Float16, 16, 16>::Compute(
     const ValueType *m, const ValueType *q, size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X16_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_16X16_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X16_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X16_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=1)
@@ -299,10 +329,12 @@ void SquaredEuclideanDistanceMatrix<Float16, 32, 1>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X1_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_32X1_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X1_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X1_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=2)
@@ -311,10 +343,12 @@ void SquaredEuclideanDistanceMatrix<Float16, 32, 2>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X2_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_32X2_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X2_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X2_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=4)
@@ -323,10 +357,12 @@ void SquaredEuclideanDistanceMatrix<Float16, 32, 4>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X4_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_32X4_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X4_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X4_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=8)
@@ -335,30 +371,36 @@ void SquaredEuclideanDistanceMatrix<Float16, 32, 8>::Compute(const ValueType *m,
                                                              size_t dim,
                                                              float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X8_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_32X8_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X8_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X8_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=16)
 void SquaredEuclideanDistanceMatrix<Float16, 32, 16>::Compute(
     const ValueType *m, const ValueType *q, size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X16_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_32X16_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X16_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X16_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=32)
 void SquaredEuclideanDistanceMatrix<Float16, 32, 32>::Compute(
     const ValueType *m, const ValueType *q, size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X32_AVX512(m, q, dim, out, )
-#else
-  ACCUM_FP16_32X32_AVX(m, q, dim, out, )
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X32_AVX512(m, q, dim, out, )
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X32_AVX(m, q, dim, out, )
 }
 
 //! Compute the distance between matrix and query (FP16, M=2, N=1)
@@ -429,10 +471,12 @@ void EuclideanDistanceMatrix<Float16, 16, 1>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X1_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_16X1_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X1_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X1_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=2)
@@ -440,10 +484,12 @@ void EuclideanDistanceMatrix<Float16, 16, 2>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X2_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_16X2_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X2_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X2_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=4)
@@ -451,10 +497,12 @@ void EuclideanDistanceMatrix<Float16, 16, 4>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X4_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_16X4_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X4_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X4_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=8)
@@ -462,10 +510,12 @@ void EuclideanDistanceMatrix<Float16, 16, 8>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X8_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_16X8_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X8_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X8_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=16, N=16)
@@ -473,10 +523,12 @@ void EuclideanDistanceMatrix<Float16, 16, 16>::Compute(const ValueType *m,
                                                        const ValueType *q,
                                                        size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_16X16_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_16X16_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_16X16_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_16X16_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=1)
@@ -484,10 +536,12 @@ void EuclideanDistanceMatrix<Float16, 32, 1>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X1_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_32X1_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X1_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X1_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=2)
@@ -495,10 +549,12 @@ void EuclideanDistanceMatrix<Float16, 32, 2>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X2_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_32X2_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X2_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X2_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=4)
@@ -506,10 +562,12 @@ void EuclideanDistanceMatrix<Float16, 32, 4>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X4_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_32X4_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X4_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X4_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=8)
@@ -517,10 +575,12 @@ void EuclideanDistanceMatrix<Float16, 32, 8>::Compute(const ValueType *m,
                                                       const ValueType *q,
                                                       size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X8_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_32X8_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X8_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X8_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=16)
@@ -528,10 +588,12 @@ void EuclideanDistanceMatrix<Float16, 32, 16>::Compute(const ValueType *m,
                                                        const ValueType *q,
                                                        size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X16_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_32X16_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X16_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X16_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 
 //! Compute the distance between matrix and query (FP16, M=32, N=32)
@@ -539,10 +601,12 @@ void EuclideanDistanceMatrix<Float16, 32, 32>::Compute(const ValueType *m,
                                                        const ValueType *q,
                                                        size_t dim, float *out) {
 #if defined(__AVX512F__)
-  ACCUM_FP16_32X32_AVX512(m, q, dim, out, _mm512_sqrt_ps)
-#else
-  ACCUM_FP16_32X32_AVX(m, q, dim, out, _mm256_sqrt_ps)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_32X32_AVX512(m, q, dim, out, _mm512_sqrt_ps)
+    return;
+  }
 #endif  // __AVX512F__
+  ACCUM_FP16_32X32_AVX(m, q, dim, out, _mm256_sqrt_ps)
 }
 #endif  // !__ARM_NEON
 #endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)

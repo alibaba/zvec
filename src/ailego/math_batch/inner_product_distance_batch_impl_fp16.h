@@ -76,7 +76,9 @@ compute_one_to_many_avx512fp16_fp16(
   }
 }
 
-#elif defined(__AVX512F__)
+#endif
+
+#if defined(__AVX512F__)
 
 template <typename ValueType, size_t dp_batch>
 static std::enable_if_t<std::is_same_v<ValueType, ailego::Float16>, void>
@@ -164,12 +166,13 @@ compute_one_to_many_avx512f_fp16(
     }
   }
 }
+#endif
 
-#elif defined(__AVX2__)
+#if defined(__AVX2__)
 
 template <typename ValueType, size_t dp_batch>
 static std::enable_if_t<std::is_same_v<ValueType, ailego::Float16>, void>
-compute_one_to_many_av2_fp16(
+compute_one_to_many_avx2_fp16(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, dp_batch> &prefetch_ptrs,
     size_t dimensionality, float *results) {

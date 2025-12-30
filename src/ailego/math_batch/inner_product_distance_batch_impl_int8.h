@@ -21,7 +21,6 @@
 
 namespace zvec::ailego::DistanceBatch {
 
-
 #if defined(__AVX512VNNI__)
 
 static void compute_one_to_many_avx512_vnni_int8_query_preprocess(void *query,
@@ -154,8 +153,9 @@ static void compute_one_to_many_avx512_vnni_int8(
 //     results[i] = static_cast<float>(temp_results[i]);
 //   }
 // }
+#endif
 
-#elif defined(__AVX2__)
+#if defined(__AVX2__)
 
 template <typename ValueType, size_t dp_batch>
 static std::enable_if_t<std::is_same_v<ValueType, int8_t>, void>

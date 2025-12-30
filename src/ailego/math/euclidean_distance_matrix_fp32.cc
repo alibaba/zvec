@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <ailego/internal/cpu_features.h>
 #include "distance_matrix_accum_fp32.i"
 #include "euclidean_distance_matrix.h"
 
@@ -291,15 +292,19 @@ void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
   *out = SquaredEuclideanDistanceNEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
-  if (dim > 15) {
-    *out = SquaredEuclideanDistanceAVX512(m, q, dim);
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    if (dim > 15) {
+      *out = SquaredEuclideanDistanceAVX512(m, q, dim);
+      return;
+    }
   }
 #endif  // __AVX512F__
 #if defined(__AVX__)
-  if (dim > 7) {
-    *out = SquaredEuclideanDistanceAVX(m, q, dim);
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    if (dim > 7) {
+      *out = SquaredEuclideanDistanceAVX(m, q, dim);
+      return;
+    }
   }
 #endif  // __AVX__
   *out = SquaredEuclideanDistanceSSE(m, q, dim);
@@ -618,15 +623,20 @@ void EuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
   *out = std::sqrt(SquaredEuclideanDistanceNEON(m, q, dim));
 #else
 #if defined(__AVX512F__)
-  if (dim > 15) {
-    *out = std::sqrt(SquaredEuclideanDistanceAVX512(m, q, dim));
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    if (dim > 15) {
+      *out = std::sqrt(SquaredEuclideanDistanceAVX512(m, q, dim));
+      return;
+    }
   }
 #endif  // __AVX512F__
+
 #if defined(__AVX__)
-  if (dim > 7) {
-    *out = std::sqrt(SquaredEuclideanDistanceAVX(m, q, dim));
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    if (dim > 7) {
+      *out = std::sqrt(SquaredEuclideanDistanceAVX(m, q, dim));
+      return;
+    }
   }
 #endif  // __AVX__
   *out = std::sqrt(SquaredEuclideanDistanceSSE(m, q, dim));

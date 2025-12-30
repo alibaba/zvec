@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <ailego/internal/cpu_features.h>
 #include "distance_matrix_accum_int4.i"
 #include "inner_product_matrix.h"
 

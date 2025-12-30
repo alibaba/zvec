@@ -13,579 +13,14 @@
 // limitations under the License.
 
 #include "float_helper.h"
+#include <ailego/internal/cpu_features.h>
 
-#if defined(__F16C__) && defined(__AVX__)
-#define float16(x) _cvtss_sh((x), _MM_FROUND_NO_EXC)
-#define float32(x) _cvtsh_ss(x)
-#endif  // __F16C__ && __AVX__
+// #if defined(__F16C__) && defined(__AVX__)
+// #define float16(x) _cvtss_sh((x), _MM_FROUND_NO_EXC)
+// #define float32(x) _cvtsh_ss(x)
+// #endif  // __F16C__ && __AVX__
 
-#if defined(__F16C__) && defined(__AVX512F__)
-static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
-                                        float *out) {
-  const uint16_t *last = arr + size;
-  const uint16_t *last_aligned = arr + ((size >> 5) << 5);
-
-  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0x3f) == 0) {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      _mm512_store_ps(out + 0,
-                      _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 0))));
-      _mm512_store_ps(
-          out + 16, _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 16))));
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm512_store_ps(out, _mm512_cvtph_ps(_mm256_load_si256((__m256i *)arr)));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm256_store_ps(out, _mm256_cvtph_ps(_mm_load_si128((__m128i *)arr)));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      _mm512_storeu_ps(
-          out + 0, _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 0))));
-      _mm512_storeu_ps(
-          out + 16, _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 16))));
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm512_storeu_ps(out,
-                       _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)arr)));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm256_storeu_ps(out, _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)arr)));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtsh_ss(arr[6]);
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtsh_ss(arr[5]);
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtsh_ss(arr[4]);
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtsh_ss(arr[3]);
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtsh_ss(arr[2]);
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtsh_ss(arr[1]);
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtsh_ss(arr[0]);
-  }
-}
-
-static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
-                                        float norm, float *out) {
-  const uint16_t *last = arr + size;
-  const uint16_t *last_aligned = arr + ((size >> 5) << 5);
-  __m512 zmm_norm = _mm512_set1_ps(norm);
-
-  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0x3f) == 0) {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      __m512 zmm_0 = _mm512_div_ps(
-          _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 0))), zmm_norm);
-      __m512 zmm_1 = _mm512_div_ps(
-          _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 16))), zmm_norm);
-      _mm512_store_ps(out + 0, zmm_0);
-      _mm512_store_ps(out + 16, zmm_1);
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm512_store_ps(
-          out, _mm512_div_ps(_mm512_cvtph_ps(_mm256_load_si256((__m256i *)arr)),
-                             zmm_norm));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm256_store_ps(
-          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_load_si128((__m128i *)arr)),
-                             _mm256_set1_ps(norm)));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      __m512 zmm_0 = _mm512_div_ps(
-          _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 0))), zmm_norm);
-      __m512 zmm_1 = _mm512_div_ps(
-          _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 16))), zmm_norm);
-      _mm512_storeu_ps(out + 0, zmm_0);
-      _mm512_storeu_ps(out + 16, zmm_1);
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm512_storeu_ps(
-          out,
-          _mm512_div_ps(_mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)arr)),
-                        zmm_norm));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm256_storeu_ps(
-          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_loadu_si128((__m128i *)arr)),
-                             _mm256_set1_ps(norm)));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtsh_ss(arr[6]) / norm;
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtsh_ss(arr[5]) / norm;
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtsh_ss(arr[4]) / norm;
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtsh_ss(arr[3]) / norm;
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtsh_ss(arr[2]) / norm;
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtsh_ss(arr[1]) / norm;
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtsh_ss(arr[0]) / norm;
-  }
-}
-
-static inline void convert_fp32_to_fp16(const float *arr, size_t size,
-                                        uint16_t *out) {
-  const float *last = arr + size;
-  const float *last_aligned = arr + ((size >> 5) << 5);
-
-  if (((uintptr_t)arr & 0x3f) == 0 && ((uintptr_t)out & 0x1f) == 0) {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      _mm256_store_si256(
-          (__m256i *)(out + 0),
-          _mm512_cvtps_ph(_mm512_load_ps(arr + 0), _MM_FROUND_NO_EXC));
-      _mm256_store_si256(
-          (__m256i *)(out + 16),
-          _mm512_cvtps_ph(_mm512_load_ps(arr + 16), _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm256_store_si256(
-          (__m256i *)(out + 0),
-          _mm512_cvtps_ph(_mm512_load_ps(arr + 0), _MM_FROUND_NO_EXC));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm_store_si128(
-          (__m128i *)(out + 0),
-          _mm256_cvtps_ph(_mm256_load_ps(arr + 0), _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      _mm256_storeu_si256(
-          (__m256i *)(out + 0),
-          _mm512_cvtps_ph(_mm512_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
-      _mm256_storeu_si256(
-          (__m256i *)(out + 16),
-          _mm512_cvtps_ph(_mm512_loadu_ps(arr + 16), _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm256_storeu_si256(
-          (__m256i *)(out + 0),
-          _mm512_cvtps_ph(_mm512_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm_storeu_si128(
-          (__m128i *)(out + 0),
-          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtss_sh(arr[6], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtss_sh(arr[5], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtss_sh(arr[4], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtss_sh(arr[3], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtss_sh(arr[2], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtss_sh(arr[1], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtss_sh(arr[0], _MM_FROUND_NO_EXC);
-  }
-}
-
-static inline void convert_fp32_to_fp16(const float *arr, size_t size,
-                                        float norm, uint16_t *out) {
-  const float *last = arr + size;
-  const float *last_aligned = arr + ((size >> 5) << 5);
-  __m512 zmm_norm = _mm512_set1_ps(norm);
-
-  if (((uintptr_t)arr & 0x3f) == 0 && ((uintptr_t)out & 0x1f) == 0) {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      __m512 zmm_0 = _mm512_div_ps(_mm512_load_ps(arr + 0), zmm_norm);
-      __m512 zmm_1 = _mm512_div_ps(_mm512_load_ps(arr + 16), zmm_norm);
-      _mm256_store_si256((__m256i *)(out + 0),
-                         _mm512_cvtps_ph(zmm_0, _MM_FROUND_NO_EXC));
-      _mm256_store_si256((__m256i *)(out + 16),
-                         _mm512_cvtps_ph(zmm_1, _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm256_store_si256(
-          (__m256i *)out,
-          _mm512_cvtps_ph(_mm512_div_ps(_mm512_load_ps(arr), zmm_norm),
-                          _MM_FROUND_NO_EXC));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm_store_si128((__m128i *)out,
-                      _mm256_cvtps_ph(_mm256_div_ps(_mm256_load_ps(arr),
-                                                    _mm256_set1_ps(norm)),
-                                      _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 32, out += 32) {
-      __m512 zmm_0 = _mm512_div_ps(_mm512_loadu_ps(arr + 0), zmm_norm);
-      __m512 zmm_1 = _mm512_div_ps(_mm512_loadu_ps(arr + 16), zmm_norm);
-      _mm256_storeu_si256((__m256i *)(out + 0),
-                          _mm512_cvtps_ph(zmm_0, _MM_FROUND_NO_EXC));
-      _mm256_storeu_si256((__m256i *)(out + 16),
-                          _mm512_cvtps_ph(zmm_1, _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 16) {
-      _mm256_storeu_si256(
-          (__m256i *)out,
-          _mm512_cvtps_ph(_mm512_div_ps(_mm512_loadu_ps(arr), zmm_norm),
-                          _MM_FROUND_NO_EXC));
-      arr += 16;
-      out += 16;
-    }
-    if (last >= arr + 8) {
-      _mm_storeu_si128((__m128i *)out,
-                       _mm256_cvtps_ph(_mm256_div_ps(_mm256_loadu_ps(arr),
-                                                     _mm256_set1_ps(norm)),
-                                       _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtss_sh(arr[6] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtss_sh(arr[5] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtss_sh(arr[4] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtss_sh(arr[3] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtss_sh(arr[2] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtss_sh(arr[1] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtss_sh(arr[0] / norm, _MM_FROUND_NO_EXC);
-  }
-}
-#elif defined(__F16C__) && defined(__AVX__)
-static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
-                                        float *out) {
-  const uint16_t *last = arr + size;
-  const uint16_t *last_aligned = arr + ((size >> 4) << 4);
-
-  if (((uintptr_t)arr & 0xf) == 0 && ((uintptr_t)out & 0x1f) == 0) {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      _mm256_store_ps(out + 0,
-                      _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 0))));
-      _mm256_store_ps(out + 8,
-                      _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 8))));
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm256_store_ps(out + 0,
-                      _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 0))));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      _mm256_storeu_ps(out + 0,
-                       _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 0))));
-      _mm256_storeu_ps(out + 8,
-                       _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 8))));
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm256_storeu_ps(out + 0,
-                       _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 0))));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtsh_ss(arr[6]);
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtsh_ss(arr[5]);
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtsh_ss(arr[4]);
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtsh_ss(arr[3]);
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtsh_ss(arr[2]);
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtsh_ss(arr[1]);
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtsh_ss(arr[0]);
-  }
-}
-
-static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
-                                        float norm, float *out) {
-  const uint16_t *last = arr + size;
-  const uint16_t *last_aligned = arr + ((size >> 4) << 4);
-  __m256 ymm_norm = _mm256_set1_ps(norm);
-
-  if (((uintptr_t)arr & 0xf) == 0 && ((uintptr_t)out & 0x1f) == 0) {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      __m256 ymm_0 = _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 0)));
-      __m256 ymm_1 = _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 8)));
-      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
-      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
-      _mm256_store_ps(out + 0, ymm_0);
-      _mm256_store_ps(out + 8, ymm_1);
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm256_store_ps(
-          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_load_si128((__m128i *)arr)),
-                             ymm_norm));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      __m256 ymm_0 = _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 0)));
-      __m256 ymm_1 = _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 8)));
-      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
-      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
-      _mm256_storeu_ps(out + 0, ymm_0);
-      _mm256_storeu_ps(out + 8, ymm_1);
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm256_storeu_ps(
-          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_loadu_si128((__m128i *)arr)),
-                             ymm_norm));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtsh_ss(arr[6]) / norm;
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtsh_ss(arr[5]) / norm;
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtsh_ss(arr[4]) / norm;
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtsh_ss(arr[3]) / norm;
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtsh_ss(arr[2]) / norm;
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtsh_ss(arr[1]) / norm;
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtsh_ss(arr[0]) / norm;
-  }
-}
-
-static inline void convert_fp32_to_fp16(const float *arr, size_t size,
-                                        uint16_t *out) {
-  const float *last = arr + size;
-  const float *last_aligned = arr + ((size >> 4) << 4);
-
-  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0xf) == 0) {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      _mm_store_si128(
-          (__m128i *)(out + 0),
-          _mm256_cvtps_ph(_mm256_load_ps(arr + 0), _MM_FROUND_NO_EXC));
-      _mm_store_si128(
-          (__m128i *)(out + 8),
-          _mm256_cvtps_ph(_mm256_load_ps(arr + 8), _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm_store_si128(
-          (__m128i *)(out + 0),
-          _mm256_cvtps_ph(_mm256_load_ps(arr + 0), _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      _mm_storeu_si128(
-          (__m128i *)(out + 0),
-          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
-      _mm_storeu_si128(
-          (__m128i *)(out + 8),
-          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 8), _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm_storeu_si128(
-          (__m128i *)(out + 0),
-          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtss_sh(arr[6], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtss_sh(arr[5], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtss_sh(arr[4], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtss_sh(arr[3], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtss_sh(arr[2], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtss_sh(arr[1], _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtss_sh(arr[0], _MM_FROUND_NO_EXC);
-  }
-}
-
-static inline void convert_fp32_to_fp16(const float *arr, size_t size,
-                                        float norm, uint16_t *out) {
-  const float *last = arr + size;
-  const float *last_aligned = arr + ((size >> 4) << 4);
-  __m256 ymm_norm = _mm256_set1_ps(norm);
-
-  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0xf) == 0) {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      __m256 ymm_0 = _mm256_load_ps(arr + 0);
-      __m256 ymm_1 = _mm256_load_ps(arr + 8);
-      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
-      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
-      _mm_store_si128((__m128i *)(out + 0),
-                      _mm256_cvtps_ph(ymm_0, _MM_FROUND_NO_EXC));
-      _mm_store_si128((__m128i *)(out + 8),
-                      _mm256_cvtps_ph(ymm_1, _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm_store_si128(
-          (__m128i *)out,
-          _mm256_cvtps_ph(_mm256_div_ps(_mm256_load_ps(arr), ymm_norm),
-                          _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  } else {
-    for (; arr != last_aligned; arr += 16, out += 16) {
-      __m256 ymm_0 = _mm256_loadu_ps(arr + 0);
-      __m256 ymm_1 = _mm256_loadu_ps(arr + 8);
-      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
-      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
-      _mm_storeu_si128((__m128i *)(out + 0),
-                       _mm256_cvtps_ph(ymm_0, _MM_FROUND_NO_EXC));
-      _mm_storeu_si128((__m128i *)(out + 8),
-                       _mm256_cvtps_ph(ymm_1, _MM_FROUND_NO_EXC));
-    }
-
-    if (last >= last_aligned + 8) {
-      _mm_storeu_si128(
-          (__m128i *)out,
-          _mm256_cvtps_ph(_mm256_div_ps(_mm256_loadu_ps(arr), ymm_norm),
-                          _MM_FROUND_NO_EXC));
-      arr += 8;
-      out += 8;
-    }
-  }
-  switch (last - arr) {
-    case 7:
-      out[6] = _cvtss_sh(arr[6] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 6:
-      out[5] = _cvtss_sh(arr[5] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 5:
-      out[4] = _cvtss_sh(arr[4] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 4:
-      out[3] = _cvtss_sh(arr[3] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 3:
-      out[2] = _cvtss_sh(arr[2] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 2:
-      out[1] = _cvtss_sh(arr[1] / norm, _MM_FROUND_NO_EXC);
-      /* FALLTHRU */
-    case 1:
-      out[0] = _cvtss_sh(arr[0] / norm, _MM_FROUND_NO_EXC);
-  }
-}
-#elif defined(__aarch64__)
+#if defined(__aarch64__)
 static inline float float32(uint16_t val) {
   __fp16 *p = reinterpret_cast<__fp16 *>(&val);
   return *p;
@@ -1095,35 +530,683 @@ static inline uint16_t float16(float val) {
            ((hbits & 0x7C00) != 0x7C00);
   return static_cast<uint16_t>(hbits);
 }
+#if defined(__F16C__) && defined(__AVX512F__)
+static inline void convert_fp16_to_fp32_avx512f(const uint16_t *arr,
+                                                size_t size, float *out) {
+  const uint16_t *last = arr + size;
+  const uint16_t *last_aligned = arr + ((size >> 5) << 5);
 
-static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
-                                        float *out) {
+  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0x3f) == 0) {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      _mm512_store_ps(out + 0,
+                      _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 0))));
+      _mm512_store_ps(
+          out + 16, _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 16))));
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm512_store_ps(out, _mm512_cvtph_ps(_mm256_load_si256((__m256i *)arr)));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm256_store_ps(out, _mm256_cvtph_ps(_mm_load_si128((__m128i *)arr)));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      _mm512_storeu_ps(
+          out + 0, _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 0))));
+      _mm512_storeu_ps(
+          out + 16, _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 16))));
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm512_storeu_ps(out,
+                       _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)arr)));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm256_storeu_ps(out, _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)arr)));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = float32(arr[6]);
+      /* FALLTHRU */
+    case 6:
+      out[5] = float32(arr[5]);
+      /* FALLTHRU */
+    case 5:
+      out[4] = float32(arr[4]);
+      /* FALLTHRU */
+    case 4:
+      out[3] = float32(arr[3]);
+      /* FALLTHRU */
+    case 3:
+      out[2] = float32(arr[2]);
+      /* FALLTHRU */
+    case 2:
+      out[1] = float32(arr[1]);
+      /* FALLTHRU */
+    case 1:
+      out[0] = float32(arr[0]);
+  }
+}
+
+static inline void convert_fp16_to_fp32_avx512f(const uint16_t *arr,
+                                                size_t size, float norm,
+                                                float *out) {
+  const uint16_t *last = arr + size;
+  const uint16_t *last_aligned = arr + ((size >> 5) << 5);
+  __m512 zmm_norm = _mm512_set1_ps(norm);
+
+  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0x3f) == 0) {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      __m512 zmm_0 = _mm512_div_ps(
+          _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 0))), zmm_norm);
+      __m512 zmm_1 = _mm512_div_ps(
+          _mm512_cvtph_ps(_mm256_load_si256((__m256i *)(arr + 16))), zmm_norm);
+      _mm512_store_ps(out + 0, zmm_0);
+      _mm512_store_ps(out + 16, zmm_1);
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm512_store_ps(
+          out, _mm512_div_ps(_mm512_cvtph_ps(_mm256_load_si256((__m256i *)arr)),
+                             zmm_norm));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm256_store_ps(
+          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_load_si128((__m128i *)arr)),
+                             _mm256_set1_ps(norm)));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      __m512 zmm_0 = _mm512_div_ps(
+          _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 0))), zmm_norm);
+      __m512 zmm_1 = _mm512_div_ps(
+          _mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)(arr + 16))), zmm_norm);
+      _mm512_storeu_ps(out + 0, zmm_0);
+      _mm512_storeu_ps(out + 16, zmm_1);
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm512_storeu_ps(
+          out,
+          _mm512_div_ps(_mm512_cvtph_ps(_mm256_loadu_si256((__m256i *)arr)),
+                        zmm_norm));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm256_storeu_ps(
+          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_loadu_si128((__m128i *)arr)),
+                             _mm256_set1_ps(norm)));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = float32(arr[6]) / norm;
+      /* FALLTHRU */
+    case 6:
+      out[5] = float32(arr[5]) / norm;
+      /* FALLTHRU */
+    case 5:
+      out[4] = float32(arr[4]) / norm;
+      /* FALLTHRU */
+    case 4:
+      out[3] = float32(arr[3]) / norm;
+      /* FALLTHRU */
+    case 3:
+      out[2] = float32(arr[2]) / norm;
+      /* FALLTHRU */
+    case 2:
+      out[1] = float32(arr[1]) / norm;
+      /* FALLTHRU */
+    case 1:
+      out[0] = float32(arr[0]) / norm;
+  }
+}
+
+static inline void convert_fp32_to_fp16_avx512f(const float *arr, size_t size,
+                                                uint16_t *out) {
+  const float *last = arr + size;
+  const float *last_aligned = arr + ((size >> 5) << 5);
+
+  if (((uintptr_t)arr & 0x3f) == 0 && ((uintptr_t)out & 0x1f) == 0) {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      _mm256_store_si256(
+          (__m256i *)(out + 0),
+          _mm512_cvtps_ph(_mm512_load_ps(arr + 0), _MM_FROUND_NO_EXC));
+      _mm256_store_si256(
+          (__m256i *)(out + 16),
+          _mm512_cvtps_ph(_mm512_load_ps(arr + 16), _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm256_store_si256(
+          (__m256i *)(out + 0),
+          _mm512_cvtps_ph(_mm512_load_ps(arr + 0), _MM_FROUND_NO_EXC));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm_store_si128(
+          (__m128i *)(out + 0),
+          _mm256_cvtps_ph(_mm256_load_ps(arr + 0), _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      _mm256_storeu_si256(
+          (__m256i *)(out + 0),
+          _mm512_cvtps_ph(_mm512_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
+      _mm256_storeu_si256(
+          (__m256i *)(out + 16),
+          _mm512_cvtps_ph(_mm512_loadu_ps(arr + 16), _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm256_storeu_si256(
+          (__m256i *)(out + 0),
+          _mm512_cvtps_ph(_mm512_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm_storeu_si128(
+          (__m128i *)(out + 0),
+          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = float16(arr[6]);
+      /* FALLTHRU */
+    case 6:
+      out[5] = float16(arr[5]);
+      /* FALLTHRU */
+    case 5:
+      out[4] = float16(arr[4]);
+      /* FALLTHRU */
+    case 4:
+      out[3] = float16(arr[3]);
+      /* FALLTHRU */
+    case 3:
+      out[2] = float16(arr[2]);
+      /* FALLTHRU */
+    case 2:
+      out[1] = float16(arr[1]);
+      /* FALLTHRU */
+    case 1:
+      out[0] = float16(arr[0]);
+  }
+}
+
+static inline void convert_fp32_to_fp16_avx512f(const float *arr, size_t size,
+                                                float norm, uint16_t *out) {
+  const float *last = arr + size;
+  const float *last_aligned = arr + ((size >> 5) << 5);
+  __m512 zmm_norm = _mm512_set1_ps(norm);
+
+  if (((uintptr_t)arr & 0x3f) == 0 && ((uintptr_t)out & 0x1f) == 0) {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      __m512 zmm_0 = _mm512_div_ps(_mm512_load_ps(arr + 0), zmm_norm);
+      __m512 zmm_1 = _mm512_div_ps(_mm512_load_ps(arr + 16), zmm_norm);
+      _mm256_store_si256((__m256i *)(out + 0),
+                         _mm512_cvtps_ph(zmm_0, _MM_FROUND_NO_EXC));
+      _mm256_store_si256((__m256i *)(out + 16),
+                         _mm512_cvtps_ph(zmm_1, _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm256_store_si256(
+          (__m256i *)out,
+          _mm512_cvtps_ph(_mm512_div_ps(_mm512_load_ps(arr), zmm_norm),
+                          _MM_FROUND_NO_EXC));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm_store_si128((__m128i *)out,
+                      _mm256_cvtps_ph(_mm256_div_ps(_mm256_load_ps(arr),
+                                                    _mm256_set1_ps(norm)),
+                                      _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 32, out += 32) {
+      __m512 zmm_0 = _mm512_div_ps(_mm512_loadu_ps(arr + 0), zmm_norm);
+      __m512 zmm_1 = _mm512_div_ps(_mm512_loadu_ps(arr + 16), zmm_norm);
+      _mm256_storeu_si256((__m256i *)(out + 0),
+                          _mm512_cvtps_ph(zmm_0, _MM_FROUND_NO_EXC));
+      _mm256_storeu_si256((__m256i *)(out + 16),
+                          _mm512_cvtps_ph(zmm_1, _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 16) {
+      _mm256_storeu_si256(
+          (__m256i *)out,
+          _mm512_cvtps_ph(_mm512_div_ps(_mm512_loadu_ps(arr), zmm_norm),
+                          _MM_FROUND_NO_EXC));
+      arr += 16;
+      out += 16;
+    }
+    if (last >= arr + 8) {
+      _mm_storeu_si128((__m128i *)out,
+                       _mm256_cvtps_ph(_mm256_div_ps(_mm256_loadu_ps(arr),
+                                                     _mm256_set1_ps(norm)),
+                                       _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = float16(arr[6] / norm);
+      /* FALLTHRU */
+    case 6:
+      out[5] = float16(arr[5] / norm);
+      /* FALLTHRU */
+    case 5:
+      out[4] = float16(arr[4] / norm);
+      /* FALLTHRU */
+    case 4:
+      out[3] = float16(arr[3] / norm);
+      /* FALLTHRU */
+    case 3:
+      out[2] = float16(arr[2] / norm);
+      /* FALLTHRU */
+    case 2:
+      out[1] = float16(arr[1] / norm);
+      /* FALLTHRU */
+    case 1:
+      out[0] = float16(arr[0] / norm);
+  }
+}
+#endif  //__F16C__ && __AVX512F__
+
+#if defined(__F16C__) && defined(__AVX__)
+static inline void convert_fp16_to_fp32_avx(const uint16_t *arr, size_t size,
+                                            float *out) {
+  const uint16_t *last = arr + size;
+  const uint16_t *last_aligned = arr + ((size >> 4) << 4);
+
+  if (((uintptr_t)arr & 0xf) == 0 && ((uintptr_t)out & 0x1f) == 0) {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      _mm256_store_ps(out + 0,
+                      _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 0))));
+      _mm256_store_ps(out + 8,
+                      _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 8))));
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm256_store_ps(out + 0,
+                      _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 0))));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      _mm256_storeu_ps(out + 0,
+                       _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 0))));
+      _mm256_storeu_ps(out + 8,
+                       _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 8))));
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm256_storeu_ps(out + 0,
+                       _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 0))));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = _cvtsh_ss(arr[6]);
+      /* FALLTHRU */
+    case 6:
+      out[5] = _cvtsh_ss(arr[5]);
+      /* FALLTHRU */
+    case 5:
+      out[4] = _cvtsh_ss(arr[4]);
+      /* FALLTHRU */
+    case 4:
+      out[3] = _cvtsh_ss(arr[3]);
+      /* FALLTHRU */
+    case 3:
+      out[2] = _cvtsh_ss(arr[2]);
+      /* FALLTHRU */
+    case 2:
+      out[1] = _cvtsh_ss(arr[1]);
+      /* FALLTHRU */
+    case 1:
+      out[0] = _cvtsh_ss(arr[0]);
+  }
+}
+
+static inline void convert_fp16_to_fp32_avx(const uint16_t *arr, size_t size,
+                                            float norm, float *out) {
+  const uint16_t *last = arr + size;
+  const uint16_t *last_aligned = arr + ((size >> 4) << 4);
+  __m256 ymm_norm = _mm256_set1_ps(norm);
+
+  if (((uintptr_t)arr & 0xf) == 0 && ((uintptr_t)out & 0x1f) == 0) {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      __m256 ymm_0 = _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 0)));
+      __m256 ymm_1 = _mm256_cvtph_ps(_mm_load_si128((__m128i *)(arr + 8)));
+      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
+      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
+      _mm256_store_ps(out + 0, ymm_0);
+      _mm256_store_ps(out + 8, ymm_1);
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm256_store_ps(
+          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_load_si128((__m128i *)arr)),
+                             ymm_norm));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      __m256 ymm_0 = _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 0)));
+      __m256 ymm_1 = _mm256_cvtph_ps(_mm_loadu_si128((__m128i *)(arr + 8)));
+      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
+      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
+      _mm256_storeu_ps(out + 0, ymm_0);
+      _mm256_storeu_ps(out + 8, ymm_1);
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm256_storeu_ps(
+          out, _mm256_div_ps(_mm256_cvtph_ps(_mm_loadu_si128((__m128i *)arr)),
+                             ymm_norm));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = _cvtsh_ss(arr[6]) / norm;
+      /* FALLTHRU */
+    case 6:
+      out[5] = _cvtsh_ss(arr[5]) / norm;
+      /* FALLTHRU */
+    case 5:
+      out[4] = _cvtsh_ss(arr[4]) / norm;
+      /* FALLTHRU */
+    case 4:
+      out[3] = _cvtsh_ss(arr[3]) / norm;
+      /* FALLTHRU */
+    case 3:
+      out[2] = _cvtsh_ss(arr[2]) / norm;
+      /* FALLTHRU */
+    case 2:
+      out[1] = _cvtsh_ss(arr[1]) / norm;
+      /* FALLTHRU */
+    case 1:
+      out[0] = _cvtsh_ss(arr[0]) / norm;
+  }
+}
+
+static inline void convert_fp32_to_fp16_avx(const float *arr, size_t size,
+                                            uint16_t *out) {
+  const float *last = arr + size;
+  const float *last_aligned = arr + ((size >> 4) << 4);
+
+  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0xf) == 0) {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      _mm_store_si128(
+          (__m128i *)(out + 0),
+          _mm256_cvtps_ph(_mm256_load_ps(arr + 0), _MM_FROUND_NO_EXC));
+      _mm_store_si128(
+          (__m128i *)(out + 8),
+          _mm256_cvtps_ph(_mm256_load_ps(arr + 8), _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm_store_si128(
+          (__m128i *)(out + 0),
+          _mm256_cvtps_ph(_mm256_load_ps(arr + 0), _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      _mm_storeu_si128(
+          (__m128i *)(out + 0),
+          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
+      _mm_storeu_si128(
+          (__m128i *)(out + 8),
+          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 8), _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm_storeu_si128(
+          (__m128i *)(out + 0),
+          _mm256_cvtps_ph(_mm256_loadu_ps(arr + 0), _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = _cvtss_sh(arr[6], _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 6:
+      out[5] = _cvtss_sh(arr[5], _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 5:
+      out[4] = _cvtss_sh(arr[4], _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 4:
+      out[3] = _cvtss_sh(arr[3], _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 3:
+      out[2] = _cvtss_sh(arr[2], _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 2:
+      out[1] = _cvtss_sh(arr[1], _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 1:
+      out[0] = _cvtss_sh(arr[0], _MM_FROUND_NO_EXC);
+  }
+}
+
+static inline void convert_fp32_to_fp16_avx(const float *arr, size_t size,
+                                            float norm, uint16_t *out) {
+  const float *last = arr + size;
+  const float *last_aligned = arr + ((size >> 4) << 4);
+  __m256 ymm_norm = _mm256_set1_ps(norm);
+
+  if (((uintptr_t)arr & 0x1f) == 0 && ((uintptr_t)out & 0xf) == 0) {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      __m256 ymm_0 = _mm256_load_ps(arr + 0);
+      __m256 ymm_1 = _mm256_load_ps(arr + 8);
+      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
+      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
+      _mm_store_si128((__m128i *)(out + 0),
+                      _mm256_cvtps_ph(ymm_0, _MM_FROUND_NO_EXC));
+      _mm_store_si128((__m128i *)(out + 8),
+                      _mm256_cvtps_ph(ymm_1, _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm_store_si128(
+          (__m128i *)out,
+          _mm256_cvtps_ph(_mm256_div_ps(_mm256_load_ps(arr), ymm_norm),
+                          _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  } else {
+    for (; arr != last_aligned; arr += 16, out += 16) {
+      __m256 ymm_0 = _mm256_loadu_ps(arr + 0);
+      __m256 ymm_1 = _mm256_loadu_ps(arr + 8);
+      ymm_0 = _mm256_div_ps(ymm_0, ymm_norm);
+      ymm_1 = _mm256_div_ps(ymm_1, ymm_norm);
+      _mm_storeu_si128((__m128i *)(out + 0),
+                       _mm256_cvtps_ph(ymm_0, _MM_FROUND_NO_EXC));
+      _mm_storeu_si128((__m128i *)(out + 8),
+                       _mm256_cvtps_ph(ymm_1, _MM_FROUND_NO_EXC));
+    }
+
+    if (last >= last_aligned + 8) {
+      _mm_storeu_si128(
+          (__m128i *)out,
+          _mm256_cvtps_ph(_mm256_div_ps(_mm256_loadu_ps(arr), ymm_norm),
+                          _MM_FROUND_NO_EXC));
+      arr += 8;
+      out += 8;
+    }
+  }
+  switch (last - arr) {
+    case 7:
+      out[6] = _cvtss_sh(arr[6] / norm, _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 6:
+      out[5] = _cvtss_sh(arr[5] / norm, _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 5:
+      out[4] = _cvtss_sh(arr[4] / norm, _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 4:
+      out[3] = _cvtss_sh(arr[3] / norm, _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 3:
+      out[2] = _cvtss_sh(arr[2] / norm, _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 2:
+      out[1] = _cvtss_sh(arr[1] / norm, _MM_FROUND_NO_EXC);
+      /* FALLTHRU */
+    case 1:
+      out[0] = _cvtss_sh(arr[0] / norm, _MM_FROUND_NO_EXC);
+  }
+}
+#endif  // __F16C__ && __AVX__
+
+static inline void convert_fp16_to_fp32_fallback(const uint16_t *arr,
+                                                 size_t size, float *out) {
   for (size_t i = 0; i != size; ++i) {
     out[i] = float32(arr[i]);
   }
 }
 
-static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
-                                        float norm, float *out) {
+static inline void convert_fp16_to_fp32_fallback(const uint16_t *arr,
+                                                 size_t size, float norm,
+                                                 float *out) {
   for (size_t i = 0; i != size; ++i) {
     out[i] = float32(arr[i]) / norm;
   }
 }
 
-static inline void convert_fp32_to_fp16(const float *arr, size_t size,
-                                        uint16_t *out) {
+static inline void convert_fp32_to_fp16_fallback(const float *arr, size_t size,
+                                                 uint16_t *out) {
   for (size_t i = 0; i != size; ++i) {
     out[i] = float16(arr[i]);
   }
 }
 
-static inline void convert_fp32_to_fp16(const float *arr, size_t size,
-                                        float norm, uint16_t *out) {
+static inline void convert_fp32_to_fp16_fallback(const float *arr, size_t size,
+                                                 float norm, uint16_t *out) {
   for (size_t i = 0; i != size; ++i) {
     out[i] = float16(arr[i] / norm);
   }
 }
-#endif  // __F16C__ && __AVX512F__
+
+static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
+                                        float *out) {
+#if defined(__F16C__) && defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    return convert_fp16_to_fp32_avx512f(arr, size, out);
+  }
+#endif
+
+#if defined(__F16C__) && defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    return convert_fp16_to_fp32_avx(arr, size, out);
+  }
+#endif
+
+  return convert_fp16_to_fp32_fallback(arr, size, out);
+}
+
+static inline void convert_fp16_to_fp32(const uint16_t *arr, size_t size,
+                                        float norm, float *out) {
+#if defined(__F16C__) && defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    return convert_fp16_to_fp32_avx512f(arr, size, norm, out);
+  }
+#endif
+
+#if defined(__F16C__) && defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    return convert_fp16_to_fp32_avx(arr, size, norm, out);
+  }
+#endif
+
+  return convert_fp16_to_fp32_fallback(arr, size, norm, out);
+}
+
+static inline void convert_fp32_to_fp16(const float *arr, size_t size,
+                                        uint16_t *out) {
+#if defined(__F16C__) && defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    return convert_fp32_to_fp16_avx512f(arr, size, out);
+  }
+#endif
+
+#if defined(__F16C__) && defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    return convert_fp32_to_fp16_avx(arr, size, out);
+  }
+#endif
+
+  return convert_fp32_to_fp16_fallback(arr, size, out);
+}
+
+static inline void convert_fp32_to_fp16(const float *arr, size_t size,
+                                        float norm, uint16_t *out) {
+#if defined(__F16C__) && defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    return convert_fp32_to_fp16_avx512f(arr, size, norm, out);
+  }
+#endif
+
+#if defined(__F16C__) && defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.F16C &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    return convert_fp32_to_fp16_avx(arr, size, norm, out);
+  }
+#endif
+
+  return convert_fp32_to_fp16_fallback(arr, size, norm, out);
+}
+
+#endif  //
 
 namespace zvec {
 namespace ailego {

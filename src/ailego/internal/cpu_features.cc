@@ -416,6 +416,7 @@ const char *CpuFeatures::Intrinsics(void) {
       ;
 }
 
+CpuFeatures::StaticFlags CpuFeatures::static_flags_;
 }  // namespace internal
 }  // namespace ailego
 }  // namespace zvec

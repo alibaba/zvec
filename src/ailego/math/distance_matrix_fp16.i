@@ -14,7 +14,7 @@
 
 #include <ailego/internal/platform.h>
 #include "matrix_define.i"
-
+#include <iostream> 
 #if !defined(__AVX__)
 #define _mm_broadcast_si32(a) _mm_castps_si128(_mm_load1_ps((const float *)(a)))
 #else
@@ -95,13 +95,13 @@
     }                                                                        \
     case 1: {                                                                \
       __m256 ymm_lhs = _mm256_cvtph_ps(                                      \
-          _mm_set_epi16((short)(_MASK), (short)(_MASK), (short)(_MASK),      \
+          _mm_set_epi16(*((const short *)(lhs)), (short)(_MASK),             \
                         (short)(_MASK), (short)(_MASK), (short)(_MASK),      \
-                        (short)(_MASK), *((const short *)(lhs))));           \
+                        (short)(_MASK), (short)(_MASK), (short)(_MASK)));    \
       __m256 ymm_rhs = _mm256_cvtph_ps(                                      \
-          _mm_set_epi16((short)(_MASK), (short)(_MASK), (short)(_MASK),      \
+          _mm_set_epi16(*((const short *)(rhs)), (short)(_MASK),             \
                         (short)(_MASK), (short)(_MASK), (short)(_MASK),      \
-                        (short)(_MASK), *((const short *)(rhs))));           \
+                        (short)(_MASK), (short)(_MASK), (short)(_MASK)));    \
       _PROC(ymm_lhs, ymm_rhs, _RES##_0_0)                                    \
       break;                                                                 \
     }                                                                        \

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <vector>
+#include <ailego/internal/cpu_features.h>
 #include <ailego/internal/platform.h>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/type_helper.h>
@@ -75,19 +76,25 @@ struct InnerProductDistanceBatchImpl<int8_t, BatchSize> {
 //     return compute_one_to_many_avx512_int8<ValueType, BatchSize>(
 //         query, ptrs, prefetch_ptrs, dim, sums);
 #if defined(__AVX512VNNI__)
-    return compute_one_to_many_avx512_vnni_int8<BatchSize>(
-        query, ptrs, prefetch_ptrs, dim, sums);
-#elif defined(__AVX2__)
-    return compute_one_to_many_avx2_int8<ValueType, BatchSize>(
-        query, ptrs, prefetch_ptrs, dim, sums);
-#else
-    return compute_one_to_many_fallback(query, ptrs, prefetch_ptrs, dim, sums);
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+      return compute_one_to_many_avx512_vnni_int8<BatchSize>(
+          query, ptrs, prefetch_ptrs, dim, sums);
+    }
 #endif
+#if defined(__AVX2__)
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+      return compute_one_to_many_avx2_int8<ValueType, BatchSize>(
+          query, ptrs, prefetch_ptrs, dim, sums);
+    }
+#endif
+    return compute_one_to_many_fallback(query, ptrs, prefetch_ptrs, dim, sums);
   }
 
   static DistanceBatchQueryPreprocessFunc GetQueryPreprocessFunc() {
 #if defined(__AVX512VNNI__)
-    return compute_one_to_many_avx512_vnni_int8_query_preprocess;
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+      return compute_one_to_many_avx512_vnni_int8_query_preprocess;
+    }
 #endif
     return nullptr;
   }
@@ -107,11 +114,24 @@ struct InnerProductDistanceBatchImpl<ailego::Float16, BatchSize> {
     return compute_one_to_many_avx512f_fp16<ValueType, BatchSize>(
         query, ptrs, prefetch_ptrs, dim, sums);
 #elif defined(__AVX2__)
-    return compute_one_to_many_avx_fp16<ValueType, BatchSize>(
+    return compute_one_to_many_avx2_fp16<ValueType, BatchSize>(
         query, ptrs, prefetch_ptrs, dim, sums);
 #else
     return compute_one_to_many_fallback(query, ptrs, prefetch_ptrs, dim, sums);
 #endif
+#if defined(__AVX512F__)
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+      return compute_one_to_many_avx512f_fp16<ValueType, BatchSize>(
+          query, ptrs, prefetch_ptrs, dim, sums);
+    }
+#endif
+#if defined(__AVX2__)
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+      return compute_one_to_many_avx2_fp16<ValueType, BatchSize>(
+          query, ptrs, prefetch_ptrs, dim, sums);
+    }
+#endif
+    return compute_one_to_many_fallback(query, ptrs, prefetch_ptrs, dim, sums);
   }
 };
 

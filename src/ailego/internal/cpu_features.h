@@ -201,6 +201,169 @@ class CpuFeatures {
 
   //! Static Members
   static CpuFlags flags_;
+
+ public:
+  struct StaticFlags {
+    //! 16-bit FP conversions
+    bool F16C = CpuFeatures::F16C();
+
+    //! Multimedia Extensions
+    bool MMX = CpuFeatures::MMX();
+
+    //! Streaming SIMD Extensions
+    bool SSE = CpuFeatures::SSE();
+
+    //! Streaming SIMD Extensions 2
+    bool SSE2 = CpuFeatures::SSE2();
+
+    //! Streaming SIMD Extensions 3
+    bool SSE3 = CpuFeatures::SSE3();
+
+    //! Supplemental Streaming SIMD Extensions 3
+    bool SSSE3 = CpuFeatures::SSSE3();
+
+    //! Streaming SIMD Extensions 4.1
+    bool SSE4_1 = CpuFeatures::SSE4_1();
+
+    //! Streaming SIMD Extensions 4.2
+    bool SSE4_2 = CpuFeatures::SSE4_2();
+
+    //! Advanced Vector Extensions
+    bool AVX = CpuFeatures::AVX();
+
+    //! Advanced Vector Extensions 2
+    bool AVX2 = CpuFeatures::AVX2();
+
+    //! AVX-512 Foundation
+    bool AVX512F = CpuFeatures::AVX512F();
+
+    //! AVX-512 DQ (Double/Quad granular) Instructions
+    bool AVX512DQ = CpuFeatures::AVX512DQ();
+
+    //! AVX-512 Prefetch
+    bool AVX512PF = CpuFeatures::AVX512PF();
+
+    //! AVX-512 Exponential and Reciprocal
+    bool AVX512ER = CpuFeatures::AVX512ER();
+
+    //! AVX-512 Conflict Detection
+    bool AVX512CD = CpuFeatures::AVX512CD();
+
+    //! AVX-512 BW (Byte/Word granular) Instructions
+    bool AVX512BW = CpuFeatures::AVX512BW();
+
+    //! AVX-512 VL (128/256 Vector Length) Extensions
+    bool AVX512VL = CpuFeatures::AVX512VL();
+
+    //! AVX-512 Integer Fused Multiply-Add instructions
+    bool AVX512_IFMA = CpuFeatures::AVX512_IFMA();
+
+    //! AVX512 Vector Bit Manipulation instructions
+    bool AVX512_VBMI = CpuFeatures::AVX512_VBMI();
+
+    //! Additional AVX512 Vector Bit Manipulation Instructions
+    bool AVX512_VBMI2 = CpuFeatures::AVX512_VBMI2();
+
+    //! Vector Neural Network Instructions
+    bool AVX512_VNNI = CpuFeatures::AVX512_VNNI();
+
+    //! Support for VPOPCNT[B,W] and VPSHUF-BITQMB instructions
+    bool AVX512_BITALG = CpuFeatures::AVX512_BITALG();
+
+    //! POPCNT for vectors of DW/QW
+    bool AVX512_VPOPCNTDQ = CpuFeatures::AVX512_VPOPCNTDQ();
+
+    //! AVX-512 Neural Network Instructions
+    bool AVX512_4VNNIW = CpuFeatures::AVX512_4VNNIW();
+
+    //! AVX-512 Multiply Accumulation Single precision
+    bool AVX512_4FMAPS = CpuFeatures::AVX512_4FMAPS();
+
+    //! AVX-512 FP16 instructions
+    bool AVX512_FP16 = CpuFeatures::AVX512_FP16();
+
+    //! CMPXCHG8 instruction
+    bool CX8 = CpuFeatures::CX8();
+
+    //! CMPXCHG16B instruction
+    bool CX16 = CpuFeatures::CX16();
+
+    //! PCLMULQDQ instruction
+    bool PCLMULQDQ = CpuFeatures::PCLMULQDQ();
+
+    //! Carry-Less Multiplication Double Quadword
+    bool VPCLMULQDQ = CpuFeatures::VPCLMULQDQ();
+
+    //! CMOV instructions (plus FCMOVcc, FCOMI with FPU)
+    bool CMOV = CpuFeatures::CMOV();
+
+    //! MOVBE instruction
+    bool MOVBE = CpuFeatures::MOVBE();
+
+    //! Enhanced REP MOVSB/STOSB instructions
+    bool ERMS = CpuFeatures::ERMS();
+
+    //! POPCNT instruction
+    bool POPCNT = CpuFeatures::POPCNT();
+
+    //! XSAVE/XRSTOR/XSETBV/XGETBV instructions
+    bool XSAVE = CpuFeatures::XSAVE();
+
+    //! Fused multiply-add
+    bool FMA = CpuFeatures::FMA();
+
+    //! ADCX and ADOX instructions
+    bool ADX = CpuFeatures::ADX();
+
+    //! Galois Field New Instructions
+    bool GFNI = CpuFeatures::GFNI();
+
+    //! AES instructions
+    bool AES = CpuFeatures::AES();
+
+    //! Vector AES
+    bool VAES = CpuFeatures::VAES();
+
+    //! RDSEED instruction
+    bool RDSEED = CpuFeatures::RDSEED();
+
+    //! RDRAND instruction
+    bool RDRAND = CpuFeatures::RDRAND();
+
+    //! SHA1/SHA256 Instruction Extensions
+    bool SHA = CpuFeatures::SHA();
+
+    //! 1st group bit manipulation extensions
+    bool BMI1 = CpuFeatures::BMI1();
+
+    //! 2nd group bit manipulation extensions
+    bool BMI2 = CpuFeatures::BMI2();
+
+    //! CLFLUSH instruction
+    bool CLFLUSH = CpuFeatures::CLFLUSH();
+
+    //! CLFLUSHOPT instruction
+    bool CLFLUSHOPT = CpuFeatures::CLFLUSHOPT();
+
+    //! CLWB instruction
+    bool CLWB = CpuFeatures::CLWB();
+
+    //! RDPID instruction
+    bool RDPID = CpuFeatures::RDPID();
+
+    //! Onboard FPU
+    bool FPU = CpuFeatures::FPU();
+
+    //! Hyper-Threading
+    bool HT = CpuFeatures::HT();
+
+    //! Hardware virtualization
+    bool VMX = CpuFeatures::VMX();
+
+    // ！Running on a hypervisor
+    bool HYPERVISOR = CpuFeatures::HYPERVISOR();
+  };
+  static StaticFlags static_flags_;
 };
 
 }  // namespace internal

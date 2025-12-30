@@ -15,6 +15,7 @@
 #pragma once
 
 #include <vector>
+#include <ailego/internal/cpu_features.h>
 #include <ailego/internal/platform.h>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/type_helper.h>

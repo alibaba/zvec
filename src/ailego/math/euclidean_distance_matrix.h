@@ -178,14 +178,15 @@ struct SquaredEuclideanDistanceMatrix<
  protected:
   //! Calculate the squared difference
   static inline float SquaredDifference(uint32_t lhs, uint32_t rhs) {
-    return static_cast<float>(MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 0), (int8_t)(rhs >> 0)) +
-                              MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 8), (int8_t)(rhs >> 8)) +
-                              MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 16), (int8_t)(rhs >> 16)) +
-                              MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 24), (int8_t)(rhs >> 24)));
+    volatile int32_t sum = MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 0), (int8_t)(rhs >> 0)) +
+                           MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 8), (int8_t)(rhs >> 8)) +
+                           MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 16), (int8_t)(rhs >> 16)) +
+                           MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 24), (int8_t)(rhs >> 24));
+    return static_cast<float>(sum);
   }
 };
 
@@ -228,14 +229,15 @@ struct SquaredEuclideanDistanceMatrix<int8_t, M, 1,
  protected:
   //! Calculate the squared difference
   static inline float SquaredDifference(uint32_t lhs, uint32_t rhs) {
-    return static_cast<float>(MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 0), (int8_t)(rhs >> 0)) +
-                              MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 8), (int8_t)(rhs >> 8)) +
-                              MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 16), (int8_t)(rhs >> 16)) +
-                              MathHelper::SquaredDifference<int8_t, int32_t>(
-                                  (int8_t)(lhs >> 24), (int8_t)(rhs >> 24)));
+    volatile int32_t sum = MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 0), (int8_t)(rhs >> 0)) +
+                           MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 8), (int8_t)(rhs >> 8)) +
+                           MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 16), (int8_t)(rhs >> 16)) +
+                           MathHelper::SquaredDifference<int8_t, int32_t>(
+                               (int8_t)(lhs >> 24), (int8_t)(rhs >> 24));
+    return static_cast<float>(sum);
   }
 };
 

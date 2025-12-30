@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <ailego/internal/cpu_features.h>
 #include "distance_matrix_accum_fp16.i"
 #include "inner_product_matrix.h"
 
@@ -144,13 +145,21 @@ void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                 float *out) {
 #if defined(__ARM_NEON)
   ACCUM_FP16_1X1_NEON(m, q, dim, out, 0ull, )
-#elif defined(__AVX512FP16__)
-  *out = InnerProductAVX512FP16(m, q, dim);
-#elif defined(__AVX512F__)
-  ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, )
 #else
+#if defined(__AVX512FP16__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    *out = InnerProductAVX512FP16(m, q, dim);
+    return;
+  }
+#endif  //__AVX512FP16__
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, )
+    return;
+  }
+#endif  //__AVX512F__
   ACCUM_FP16_1X1_AVX(m, q, dim, out, 0ull, )
-#endif
+#endif  //__ARM_NEON
 }
 
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
@@ -159,13 +168,21 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                      size_t dim, float *out) {
 #if defined(__ARM_NEON)
   ACCUM_FP16_1X1_NEON(m, q, dim, out, 0ull, NEGATE_FP32_GENERAL)
-#elif defined(__AVX512FP16__)
-  *out = -InnerProductAVX512FP16(m, q, dim);
-#elif defined(__AVX512F__)
-  ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, NEGATE_FP32_GENERAL)
 #else
+#if defined(__AVX512FP16__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    *out = -InnerProductAVX512FP16(m, q, dim);
+    return;
+  }
+#endif  //__AVX512FP16__
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, NEGATE_FP32_GENERAL)
+    return;
+  }
+#endif  //__AVX512F__
   ACCUM_FP16_1X1_AVX(m, q, dim, out, 0ull, NEGATE_FP32_GENERAL)
-#endif
+#endif  //__ARM_NEON
 }
 
 #if !defined(__ARM_NEON)

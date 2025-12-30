@@ -12,29 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <ailego/internal/cpu_features.h>
 #include "distance_matrix_accum_fp32.i"
 #include "inner_product_matrix.h"
-
-#if DEBUG_PRINT
-#include <iostream>
-
-static void inline print_data16(__m128i *data) {
-  uint16_t buffer[16];
-
-  memcpy(buffer, data, sizeof(buffer));
-
-  // std::cout << "result equals: " << std::endl;
-
-  for (int i = 0; i < 8; i++) {
-    uint64_t value = buffer[i];
-    if (i < 8) {
-      std::cout << value << ", ";
-    } else {
-      std::cout << value << std::endl;
-    }
-  }
-}
-#endif
 
 namespace zvec {
 namespace ailego {
@@ -585,15 +565,19 @@ void InnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
   *out = InnerProductNEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
-  if (dim > 15) {
-    *out = InnerProductAVX512(m, q, dim);
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    if (dim > 15) {
+      *out = InnerProductAVX512(m, q, dim);
+      return;
+    }
   }
 #endif  // __AVX512F__
 #if defined(__AVX__)
-  if (dim > 7) {
-    *out = InnerProductAVX(m, q, dim);
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    if (dim > 7) {
+      *out = InnerProductAVX(m, q, dim);
+      return;
+    }
   }
 #endif  // __AVX__
   *out = InnerProductSSE(m, q, dim);
@@ -890,15 +874,19 @@ void MinusInnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
   *out = -InnerProductNEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
-  if (dim > 15) {
-    *out = -InnerProductAVX512(m, q, dim);
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    if (dim > 15) {
+      *out = -InnerProductAVX512(m, q, dim);
+      return;
+    }
   }
 #endif  // __AVX512F__
 #if defined(__AVX__)
-  if (dim > 7) {
-    *out = -InnerProductAVX(m, q, dim);
-    return;
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    if (dim > 7) {
+      *out = -InnerProductAVX(m, q, dim);
+      return;
+    }
   }
 #endif  // __AVX__
   *out = -InnerProductSSE(m, q, dim);
