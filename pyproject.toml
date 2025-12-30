@@ -116,8 +116,6 @@ sdist.include = [
 [tool.scikit-build.cmake.define]
 BUILD_TOOLS = "OFF"
 BUILD_PYTHON_BINDINGS = "ON"
-ENABLE_SKYLAKE_AVX512 = { env = "ENABLE_SKYLAKE_AVX512", default = "OFF" }
-ENABLE_SAPPHIRERAPIDS = { env = "ENABLE_SAPPHIRERAPIDS", default = "OFF" }
 
 ######################################################################################################
 # TESTING & QUALITY
