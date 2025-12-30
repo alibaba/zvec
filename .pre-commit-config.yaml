@@ -28,3 +28,35 @@ repos:
       - id: gitleaks
         name: Detect hardcoded secrets (gitleaks)
         description: Scans staged files for secrets using gitleaks rules
+
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.0.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [ commit-msg ]
+        args: [
+          --types, feat,fix,docs,style,refactor,test,chore,perf,ci,build,revert,
+          --scope-optional
+        ]
+
+
+  - repo: local
+    hooks:
+      - id: branch-name-check
+        name: Check branch name format
+        entry: >-
+          bash -c '
+            branch=$(git symbolic-ref --short HEAD);
+            pattern="^(feat|fix|docs|refactor|test|chore)/[a-z0-9-]+$";
+            if [[ $branch =~ $pattern ]]; then
+              exit 0;
+            else
+              echo "Invalid branch name: $branch";
+              echo "Must match: <type>/<lower-case-hyphen-separated>";
+              echo "Examples: feat/user-api, fix/header-bug, chore/update-deps";
+              exit 1;
+            fi
+          '
+        language: system
+        stages: [ pre-push ]
