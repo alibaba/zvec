@@ -31,27 +31,25 @@ jobs:
           ls wheelhouse/*.whl | tee $GITHUB_STEP_SUMMARY
           echo "wheels=$(ls wheelhouse/*.whl | tr '\n' ' ')" >> $GITHUB_ENV
 
-      - name: Publish to TestPyPI
+      - name: Publish to PyPI
         if: success() && github.event_name == 'workflow_dispatch'
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
-          TWINE_REPOSITORY_URL: https://test.pypi.org/legacy/
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          TWINE_REPOSITORY: pypi
         run: |
           pip install twine
           twine upload --skip-existing --verbose wheelhouse/*.whl
 
-      - name: (Optional) Install and test from TestPyPI
+      - name: (Optional) Install and test from PyPI
         if: success() && github.event_name == 'workflow_dispatch'
         run: |
           # Create a clean venv
           python -m venv test_env
           source test_env/bin/activate
           pip install --upgrade pip
-          # Install from TestPyPI (must allow pre-releases if version has dev/alpha)
-          pip install --index-url https://test.pypi.org/simple/ \
-                      --extra-index-url https://pypi.org/simple/ \
-                      zvec
+          # Install from PyPI
+          pip install zvec
           # Run a simple smoke test
           python -c "import zvec; print('Import OK:', zvec.__version__)"
         shell: bash
