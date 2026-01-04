@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/alibaba/zvec/actions" style="text-decoration:none;"><img src="https://github.com/alibaba/zvec/actions/workflows/linux_x64_docker_ci.yml/badge.svg?branch=main" alt="Linux x64 CI"/></a>
+  <a href="https://codecov.io/github/alibaba/zvec" ><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66"/></a>
   <a href="https://pypi.org/project/zvec/" style="text-decoration:none;"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE" style="text-decoration: none;"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
 </p>
