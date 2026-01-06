@@ -617,10 +617,11 @@ Result<PlanInfo::Ptr> QueryPlanner::invert_scan(
 }
 
 int QueryPlanner::get_batch_size(const QueryInfo &info, bool has_later_filter) {
+  // ref https://arrow.apache.org/docs/developers/cpp/acero.html#batch-size
   if (!info.query_orderbys().empty() || has_later_filter) {
     return 32 * 1024;
   }
-  return info.query_topn();
+  return std::min(info.query_topn(), 32U * 1024);
 }
 
 }  // namespace zvec::sqlengine
