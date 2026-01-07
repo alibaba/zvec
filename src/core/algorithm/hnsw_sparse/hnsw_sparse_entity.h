@@ -52,7 +52,7 @@ struct SparseGraphHeader {
   uint32_t sparse_meta_size;
   uint32_t sparse_unit_size;
   uint32_t total_sparse_count;
-  uint8_t reserved[4036];  // 4k
+  uint8_t reserved[868];
 };
 
 static_assert(sizeof(SparseGraphHeader) % 32 == 0,
