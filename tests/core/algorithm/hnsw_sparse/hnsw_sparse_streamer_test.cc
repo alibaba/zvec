@@ -1496,7 +1496,7 @@ TEST_F(HnswSparseStreamerTest, TestCheckStats) {
   ASSERT_EQ(0U, stats.added_count());
   ASSERT_EQ(0U, stats.discarded_count());
   // header chunk + meta chunk
-  size_t init_size = ailego::MemoryHelper::PageSize() * 2;
+  size_t init_size = ailego::MemoryHelper::PageSize() * 3;
   ASSERT_EQ(init_size, stats.index_size());
   ASSERT_EQ(0U, stats.dumped_size());
   ASSERT_EQ(0U, stats.check_point());
