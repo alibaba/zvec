@@ -32,8 +32,8 @@ static const std::string PARAM_HNSW_SPARSE_BUILDER_NEIGHBOR_PRUNE_MULTIPLIER(
     "proxima.hnsw.sparse_builder.neighbor_prune_multiplier");
 static const std::string PARAM_HNSW_SPARSE_BUILDER_MIN_NEIGHBOR_COUNT(
     "proxima.hnsw.sparse_builder.min_neighbor_count");
-static const std::string PARAM_HNSW_SPARSE_BUILDER_UPPER_MAX_NEIGHBOR_COUNT(
-    "proxima.hnsw.sparse_builder.upper_max_neighbor_count");
+static const std::string PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT(
+    "proxima.hnsw.sparse_builder.max_neighbor_count");
 static const std::string
     PARAM_HNSW_SPARSE_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
         "proxima.hnsw.sparse_builder.l0_max_neighbor_count_multiplier");
@@ -68,8 +68,8 @@ static const std::string PARAM_HNSW_SPARSE_STREAMER_EF(
     "proxima.hnsw.sparse_streamer.ef");
 static const std::string PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION(
     "proxima.hnsw.sparse_streamer.efconstruction");
-static const std::string PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT(
-    "proxima.hnsw.sparse_streamer.upper_max_neighbor_count");
+static const std::string PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT(
+    "proxima.hnsw.sparse_streamer.max_neighbor_count");
 static const std::string
     PARAM_HNSW_SPARSE_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
         "proxima.hnsw.sparse_streamer.l0_max_neighbor_count_multiplier");

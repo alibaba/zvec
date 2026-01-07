@@ -38,7 +38,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   meta_.set_streamer("HnswSparseStreamer", HnswSparseEntity::kRevision, params);
 
   params.get(PARAM_HNSW_SPARSE_STREAMER_MAX_INDEX_SIZE, &max_index_size_);
-  params.get(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT,
+  params.get(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT,
              &upper_max_neighbor_cnt_);
   float multiplier = HnswSparseEntity::kDefaultL0MaxNeighborCntMultiplier;
   params.get(PARAM_HNSW_SPARSE_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER,
@@ -97,7 +97,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   }
   if (upper_max_neighbor_cnt_ > HnswSparseEntity::kMaxNeighborCnt) {
     LOG_ERROR("[%s] must be in range (0,%d)",
-              PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT.c_str(),
+              PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT.c_str(),
               HnswSparseEntity::kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
@@ -113,7 +113,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
     LOG_ERROR("[%s]-[%u] must be <= [%s]-[%u]",
               PARAM_HNSW_SPARSE_STREAMER_MIN_NEIGHBOR_COUNT.c_str(),
               min_neighbor_cnt_,
-              PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT.c_str(),
+              PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT.c_str(),
               upper_max_neighbor_cnt_);
     return IndexError_InvalidArgument;
   }

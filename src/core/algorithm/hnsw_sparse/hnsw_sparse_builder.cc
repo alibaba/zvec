@@ -43,7 +43,7 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
   params.get(PARAM_HNSW_SPARSE_BUILDER_CHECK_INTERVAL_SECS,
              &check_interval_secs_);
 
-  params.get(PARAM_HNSW_SPARSE_BUILDER_UPPER_MAX_NEIGHBOR_COUNT,
+  params.get(PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT,
              &upper_max_neighbor_cnt_);
   float multiplier = HnswSparseEntity::kDefaultL0MaxNeighborCntMultiplier;
   params.get(PARAM_HNSW_SPARSE_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER,
@@ -62,7 +62,7 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
   }
   if (upper_max_neighbor_cnt_ > kMaxNeighborCnt) {
     LOG_ERROR("[%s] must be in range (0,%d]",
-              PARAM_HNSW_SPARSE_BUILDER_UPPER_MAX_NEIGHBOR_COUNT.c_str(),
+              PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT.c_str(),
               kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
@@ -70,7 +70,7 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
     LOG_ERROR("[%s]-[%d] must be <= [%s]-[%d]",
               PARAM_HNSW_SPARSE_BUILDER_MIN_NEIGHBOR_COUNT.c_str(),
               min_neighbor_cnt_,
-              PARAM_HNSW_SPARSE_BUILDER_UPPER_MAX_NEIGHBOR_COUNT.c_str(),
+              PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT.c_str(),
               upper_max_neighbor_cnt_);
     return IndexError_InvalidArgument;
   }

@@ -31,7 +31,7 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
     proxima_index_params_.set(core::PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION,
                               param_.ef_construction);
     proxima_index_params_.set(
-        core::PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, param_.m);
+        core::PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, param_.m);
 
     // TODO: add_vector_with_id & fetch_by_id don't rely on this param
     proxima_index_params_.set(
@@ -45,8 +45,8 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   } else {
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_EFCONSTRUCTION,
                               param_.ef_construction);
-    proxima_index_params_.set(
-        core::PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, param_.m);
+    proxima_index_params_.set(core::PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT,
+                              param_.m);
 
     // TODO: add_vector_with_id & fetch_by_id don't rely on this param
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE,

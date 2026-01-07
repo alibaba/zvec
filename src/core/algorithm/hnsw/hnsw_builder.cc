@@ -42,8 +42,7 @@ int HnswBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get(PARAM_HNSW_BUILDER_SCALING_FACTOR, &scaling_factor_);
   params.get(PARAM_HNSW_BUILDER_CHECK_INTERVAL_SECS, &check_interval_secs_);
 
-  params.get(PARAM_HNSW_BUILDER_UPPER_MAX_NEIGHBOR_COUNT,
-             &upper_max_neighbor_cnt_);
+  params.get(PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT, &upper_max_neighbor_cnt_);
   float multiplier = HnswEntity::kDefaultL0MaxNeighborCntMultiplier;
   params.get(PARAM_HNSW_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER, &multiplier);
   l0_max_neighbor_cnt_ = multiplier * upper_max_neighbor_cnt_;
@@ -60,14 +59,13 @@ int HnswBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   }
   if (upper_max_neighbor_cnt_ > kMaxNeighborCnt) {
     LOG_ERROR("[%s] must be in range (0,%d]",
-              PARAM_HNSW_BUILDER_UPPER_MAX_NEIGHBOR_COUNT.c_str(),
-              kMaxNeighborCnt);
+              PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT.c_str(), kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
   if (min_neighbor_cnt_ > upper_max_neighbor_cnt_) {
     LOG_ERROR("[%s]-[%d] must be <= [%s]-[%d]",
               PARAM_HNSW_BUILDER_MIN_NEIGHBOR_COUNT.c_str(), min_neighbor_cnt_,
-              PARAM_HNSW_BUILDER_UPPER_MAX_NEIGHBOR_COUNT.c_str(),
+              PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT.c_str(),
               upper_max_neighbor_cnt_);
     return IndexError_InvalidArgument;
   }

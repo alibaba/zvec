@@ -289,7 +289,7 @@ TEST_F(HnswSearcherTest, TestRnnSearchMipsSquaredEuclidean) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 10);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 10);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 10);
   params.set(PARAM_HNSW_STREAMER_EF, 5);
@@ -407,7 +407,7 @@ TEST_F(HnswSearcherTest, TestGeneral) {
     ASSERT_TRUE(holder->emplace(i, vec));
   }
   ailego::Params params;
-  // params.set("proxima.hnsw.builder.upper_max_neighbor_count", 16);
+  // params.set("proxima.hnsw.builder.max_neighbor_count", 16);
   params.set("proxima.hnsw.builder.scaling_factor", 16);
   params.set("proxima.hnsw.builder.ef_construction", 10);
   params.set("proxima.hnsw.builder.thread_count", 2);
@@ -751,7 +751,7 @@ TEST_F(HnswSearcherTest, TestStreamerDump) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 10);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 10);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 10);
   params.set(PARAM_HNSW_STREAMER_EF, 5);
@@ -1191,7 +1191,7 @@ TEST_F(HnswSearcherTest, TestBruteForceSetupInContext) {
   }
 
   ailego::Params params;
-  // params.set("proxima.hnsw.builder.upper_max_neighbor_count", 16);
+  // params.set("proxima.hnsw.builder.max_neighbor_count", 16);
   params.set("proxima.hnsw.builder.scaling_factor", 16);
   params.set("proxima.hnsw.builder.ef_construction", 10);
   params.set("proxima.hnsw.builder.thread_count", 2);
@@ -1312,7 +1312,7 @@ TEST_F(HnswSearcherTest, TestCosine) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100);
   params.set(PARAM_HNSW_STREAMER_EF, 100);
@@ -1465,7 +1465,7 @@ TEST_F(HnswSearcherTest, TestFetchVector) {
   index_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100);
   params.set(PARAM_HNSW_STREAMER_EF, 100);
@@ -1567,7 +1567,7 @@ TEST_F(HnswSearcherTest, TestFetchVectorCosine) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100);
   params.set(PARAM_HNSW_STREAMER_EF, 100);
@@ -1724,7 +1724,7 @@ TEST_F(HnswSearcherTest, TestFetchVectorCosineHalfFloatConverter) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100);
   params.set(PARAM_HNSW_STREAMER_EF, 100);
@@ -1889,7 +1889,7 @@ TEST_F(HnswSearcherTest, TestFetchVectorCosineFp16Converter) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100);
   params.set(PARAM_HNSW_STREAMER_EF, 100);
@@ -2044,7 +2044,7 @@ TEST_F(HnswSearcherTest, TestFetchVectorCosineInt8Converter) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100);
   params.set(PARAM_HNSW_STREAMER_EF, 100);
@@ -2202,7 +2202,7 @@ TEST_F(HnswSearcherTest, TestFetchVectorCosineInt4Converter) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 100);
   params.set(PARAM_HNSW_STREAMER_EF, 100);
@@ -2670,7 +2670,7 @@ TEST_F(HnswSearcherTest, TestBinaryConverter) {
   ASSERT_TRUE(streamer != nullptr);
 
   ailego::Params params;
-  // params.set(PARAM_HNSW_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 50);
+  // params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 50);
   // params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
   // params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 10);
   // params.set(PARAM_HNSW_STREAMER_EF, 5);

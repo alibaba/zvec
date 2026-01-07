@@ -109,7 +109,7 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   index_meta.set_metric("InnerProductSparse", 0, ailego::Params());
 
   ailego::Params params;
-  params.set(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 20);
+  params.set(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION, 10);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EF, 5);
@@ -237,7 +237,7 @@ TEST_F(HnswSparseStreamerTest, TestHnswSearchMMap) {
   index_meta.set_metric("InnerProductSparse", 0, ailego::Params());
 
   ailego::Params params;
-  params.set(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 20);
+  params.set(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION, 10);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EF, 5);
