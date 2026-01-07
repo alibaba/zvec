@@ -41,7 +41,7 @@ int HnswSparseContext::init(ContextType type) {
         return ret;
       }
       candidates_.limit(max_scan_num_);
-      update_heap_.limit(entity_->neighbor_cnt() + 1);
+      update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
       break;
 
     case kSparseSearcherContext:
@@ -68,7 +68,7 @@ int HnswSparseContext::init(ContextType type) {
         return ret;
       }
 
-      update_heap_.limit(entity_->neighbor_cnt() + 1);
+      update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
       candidates_.limit(max_scan_num_);
 
       check_need_adjuct_ctx();
@@ -238,7 +238,7 @@ int HnswSparseContext::update_context(ContextType type,
         return IndexError_Runtime;
       }
 
-      update_heap_.limit(entity->neighbor_cnt() + 1);
+      update_heap_.limit(entity->l0_neighbor_cnt() + 1);
       candidates_.limit(max_scan_num_);
       topk_heap_.limit(std::max(topk_, ef_));
       break;

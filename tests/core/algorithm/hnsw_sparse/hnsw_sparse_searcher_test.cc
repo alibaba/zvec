@@ -107,7 +107,7 @@ TEST_F(HnswSparseSearcherTest, TestGeneral) {
   index_meta.set_metric("InnerProductSparse", 0, ailego::Params());
 
   ailego::Params params;
-  params.set(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, 20);
+  params.set(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EF, 10);
@@ -612,7 +612,7 @@ TEST_F(HnswSparseSearcherTest, TestBatchQuery) {
   }
 
   ailego::Params params;
-  params.set("proxima.hnsw.sparse_builder.max_neighbor_count", 160);
+  params.set("proxima.hnsw.sparse_builder.upper_max_neighbor_count", 160);
   params.set("proxima.hnsw.sparse_builder.scaling_factor", 16);
   params.set("proxima.hnsw.sparse_builder.ef_construction", 10);
   params.set("proxima.hnsw.sparse_builder.thread_count", 1);
@@ -748,7 +748,7 @@ TEST_F(HnswSparseSearcherTest, TestStreamerDump) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, 10);
+  params.set(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 10);
   params.set(PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION, 10);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EF, 5);
@@ -1240,7 +1240,7 @@ TEST_F(HnswSparseSearcherTest, TestBruteForceSetupInContext) {
   }
 
   ailego::Params params;
-  // params.set("proxima.hnsw.sparse_builder.max_neighbor_count", 16);
+  // params.set("proxima.hnsw.sparse_builder.upper_max_neighbor_count", 16);
   params.set("proxima.hnsw.sparse_builder.scaling_factor", 16);
   params.set("proxima.hnsw.sparse_builder.ef_construction", 10);
   params.set("proxima.hnsw.sparse_builder.thread_count", 2);
@@ -1369,7 +1369,7 @@ TEST_F(HnswSparseSearcherTest, TestHalfFloatConverter) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, 20);
+  params.set(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EF, 10);
@@ -1523,7 +1523,7 @@ TEST_F(HnswSparseSearcherTest, TestQueryFilteringRatio) {
   index_meta.set_metric("InnerProductSparse", 0, ailego::Params());
 
   ailego::Params params;
-  params.set(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, 20);
+  params.set(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EF, 10);
@@ -1645,7 +1645,7 @@ TEST_F(HnswSparseSearcherTest, TestHalfFloatRevert) {
   ASSERT_NE(streamer, nullptr);
 
   ailego::Params params;
-  params.set(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, 20);
+  params.set(PARAM_HNSW_SPARSE_STREAMER_UPPER_MAX_NEIGHBOR_COUNT, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR, 16);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION, 20);
   params.set(PARAM_HNSW_SPARSE_STREAMER_EF, 10);

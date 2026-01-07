@@ -359,9 +359,9 @@ int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
   }
 
   LOG_INFO(
-      "Open index, neighborCnt=%zu upperneighborCnt=%zu "
+      "Open index, l0NeighborCnt=%zu upperNeighborCnt=%zu "
       "efConstruction=%zu curDocCnt=%u totalVecs=%u maxLevel=%u",
-      neighbor_cnt(), upper_neighbor_cnt(), ef_construction(), doc_cnt(),
+      l0_neighbor_cnt(), upper_neighbor_cnt(), ef_construction(), doc_cnt(),
       total_vecs, cur_max_level());
   //! try to correct the docCnt if index not fully flushed
   if (doc_cnt() != total_vecs) {
@@ -440,10 +440,10 @@ int HnswStreamerEntity::dump(const IndexDumper::Pointer &dumper) {
 }
 
 int HnswStreamerEntity::check_hnsw_index(const HNSWHeader *hd) const {
-  if (neighbor_cnt() != hd->neighbor_cnt() ||
+  if (l0_neighbor_cnt() != hd->l0_neighbor_cnt() ||
       upper_neighbor_cnt() != hd->upper_neighbor_cnt()) {
-    LOG_ERROR("Param neighbors:%zu:%zu mismatch index previous %zu:%zu",
-              neighbor_cnt(), upper_neighbor_cnt(), hd->neighbor_cnt(),
+    LOG_ERROR("Param neighbor cnt: %zu:%zu mismatch index previous %zu:%zu",
+              l0_neighbor_cnt(), upper_neighbor_cnt(), hd->l0_neighbor_cnt(),
               hd->upper_neighbor_cnt());
     return IndexError_Mismatch;
   }
