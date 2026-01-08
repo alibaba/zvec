@@ -47,6 +47,8 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   multiplier = HnswEntity::kDefaultNeighborPruneMultiplier;
   params.get(PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_MULTIPLIER, &multiplier);
   size_t prune_cnt = multiplier * upper_max_neighbor_cnt_;
+  scaling_factor_ = upper_max_neighbor_cnt_;
+  params.get(PARAM_HNSW_STREAMER_SCALING_FACTOR, &scaling_factor_);
 
   params.get(PARAM_HNSW_STREAMER_DOCS_HARD_LIMIT, &docs_hard_limit_);
   params.get(PARAM_HNSW_STREAMER_EF, &ef_);
@@ -54,7 +56,6 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_ENABLE, &bf_enabled_);
   params.get(PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_NEGATIVE_PROB,
              &bf_negative_prob_);
-  params.get(PARAM_HNSW_STREAMER_SCALING_FACTOR, &scaling_factor_);
   params.get(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, &bruteforce_threshold_);
   params.get(PARAM_HNSW_STREAMER_MAX_SCAN_RATIO, &max_scan_ratio_);
   params.get(PARAM_HNSW_STREAMER_MAX_SCAN_LIMIT, &max_scan_limit_);

@@ -39,13 +39,14 @@ int HnswBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get(PARAM_HNSW_BUILDER_THREAD_COUNT, &thread_cnt_);
   params.get(PARAM_HNSW_BUILDER_MIN_NEIGHBOR_COUNT, &min_neighbor_cnt_);
   params.get(PARAM_HNSW_BUILDER_EFCONSTRUCTION, &ef_construction_);
-  params.get(PARAM_HNSW_BUILDER_SCALING_FACTOR, &scaling_factor_);
   params.get(PARAM_HNSW_BUILDER_CHECK_INTERVAL_SECS, &check_interval_secs_);
 
   params.get(PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT, &upper_max_neighbor_cnt_);
   float multiplier = HnswEntity::kDefaultL0MaxNeighborCntMultiplier;
   params.get(PARAM_HNSW_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER, &multiplier);
   l0_max_neighbor_cnt_ = multiplier * upper_max_neighbor_cnt_;
+  scaling_factor_ = upper_max_neighbor_cnt_;
+  params.get(PARAM_HNSW_BUILDER_SCALING_FACTOR, &scaling_factor_);
 
   multiplier = HnswEntity::kDefaultNeighborPruneMultiplier;
   params.get(PARAM_HNSW_BUILDER_NEIGHBOR_PRUNE_MULTIPLIER, &multiplier);
