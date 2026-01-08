@@ -43,13 +43,9 @@ class HnswAlgorithm {
   //! return 0 on success, or errCode in failure
   int add_node(node_id_t id, level_t level, HnswContext *ctx);
 
-  //! do knn search in graph with lock
+  //! do knn search in graph
   //! return 0 on success, or errCode in failure. results saved in ctx
   int search(HnswContext *ctx) const;
-
-  //! do knn search in graph without lock
-  //! return 0 on success, or errCode in failure. results saved in ctx
-  int fast_search(HnswContext *ctx) const;
 
   //! Initiate HnswAlgorithm
   int init() {

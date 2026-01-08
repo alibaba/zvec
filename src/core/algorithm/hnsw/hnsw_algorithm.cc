@@ -106,28 +106,6 @@ int HnswAlgorithm::search(HnswContext *ctx) const {
   return 0;
 }
 
-int HnswAlgorithm::fast_search(HnswContext *ctx) const {
-  auto max_level = entity_.cur_max_level();
-  auto entry_point = entity_.entry_point();
-
-  dist_t dist = ctx->dist_calculator().dist(entry_point);
-  for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
-    select_entry_point(cur_level, &entry_point, &dist, ctx);
-  }
-
-  auto &topk_heap = ctx->topk_heap();
-  topk_heap.clear();
-
-  search_neighbors(0, &entry_point, &dist, topk_heap, ctx);
-
-  if (ctx->group_by_search()) {
-    expand_neighbors_by_group(topk_heap, ctx);
-  }
-
-  return 0;
-}
-
-
 //! select_entry_point on hnsw level, ef = 1
 void HnswAlgorithm::select_entry_point(level_t level, node_id_t *entry_point,
                                        dist_t *dist, HnswContext *ctx) const {

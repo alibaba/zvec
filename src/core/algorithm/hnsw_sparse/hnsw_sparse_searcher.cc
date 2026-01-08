@@ -261,7 +261,7 @@ int HnswSparseSearcher::search_impl(const uint32_t *sparse_count,
       ctx->reset_query(sparse_query_buffer.data());
     }
 
-    int ret = alg_->fast_search(ctx);
+    int ret = alg_->search(ctx);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;

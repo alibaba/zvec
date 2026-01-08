@@ -218,7 +218,7 @@ int HnswSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->resize_results(count);
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
-    int ret = alg_->fast_search(ctx);
+    int ret = alg_->search(ctx);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
