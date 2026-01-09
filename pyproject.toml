@@ -117,6 +117,7 @@ sdist.include = [
 BUILD_TOOLS = "OFF"
 BUILD_PYTHON_BINDINGS = "ON"
 
+# Setuptools config
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
 ######################################################################################################
