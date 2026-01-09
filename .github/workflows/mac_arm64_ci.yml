@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   build:
+    name: Zvec MacArm64 CI
     runs-on: mac_m1_arm
 
     steps:

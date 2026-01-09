@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   build:
+    name: Zvec Linux x64 CI
     runs-on: linux_x64
 
     strategy:
