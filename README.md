@@ -73,6 +73,14 @@ results = collection.query(
 print(results)
 ```
 
+## 📈 Performance at Scale
+
+Zvec delivers exceptional speed and efficiency, making it ideal for demanding production workloads.
+
+![Zvec Performance Benchmarks](https://zvec.oss-cn-hongkong.aliyuncs.com/qps-10M.svg?Expires=1767931111&OSSAccessKeyId=TMP.3Kr6FCA2fEm7nzoyq5XwQK92NmUq4wuHEb2RPAPg2ZcDBvE5DDoZJrcbqEYQGoWAGUT215sdhWMf7VHvML95UNZEh6aoM3&Signature=9CG%2BJ%2FwS1InVLs9Hf5OZ31jdPEo%3D)
+
+For detailed benchmark methodology, configurations, and complete results, please see our [Benchmarks documentation](https://zvec.org/en/docs/benchmarks/).
+
 ## ❤️ Contributing
 
 We welcome and appreciate contributions from the community! Whether you're fixing a bug, adding a feature, or improving documentation, your help makes Zvec better for everyone.
