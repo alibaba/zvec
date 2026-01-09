@@ -77,7 +77,7 @@ print(results)
 
 Zvec delivers exceptional speed and efficiency, making it ideal for demanding production workloads.
 
-![Zvec Performance Benchmarks]([https://zvec.oss-cn-hongkong.aliyuncs.com/qps-10M.svg)
+![Zvec Performance Benchmarks](https://zvec.oss-cn-hongkong.aliyuncs.com/qps-10M.svg)
 
 For detailed benchmark methodology, configurations, and complete results, please see our [Benchmarks documentation](https://zvec.org/en/docs/benchmarks/).
 
