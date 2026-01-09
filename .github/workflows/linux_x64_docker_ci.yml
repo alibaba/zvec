@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Zvec Linux x64 CI
+    name: Zvec LinuxX64 CI
     runs-on: linux_x64
 
     strategy:

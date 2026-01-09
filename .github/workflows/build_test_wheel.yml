@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build_wheels:
-    name: Build wheels on self-hosted manylinux_2_28
+    name: Build wheels on self-hosted manylinux_2_28 for TestPyPi
     runs-on: linux_x64
 
     steps:
