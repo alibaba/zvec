@@ -28,20 +28,14 @@ static const std::string PARAM_HNSW_BUILDER_SCALING_FACTOR(
     "proxima.hnsw.builder.scaling_factor");
 static const std::string PARAM_HNSW_BUILDER_CHECK_INTERVAL_SECS(
     "proxima.hnsw.builder.check_interval_secs");
-static const std::string PARAM_HNSW_BUILDER_NEIGHBOR_PRUNE_RATIO(
-    "proxima.hnsw.builder.neighbor_prune_ratio");
-static const std::string PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT(
-    "proxima.hnsw.builder.max_neighbor_count");
+static const std::string PARAM_HNSW_BUILDER_NEIGHBOR_PRUNE_MULTIPLIER(
+    "proxima.hnsw.builder.neighbor_prune_multiplier");
 static const std::string PARAM_HNSW_BUILDER_MIN_NEIGHBOR_COUNT(
     "proxima.hnsw.builder.min_neighbor_count");
-static const std::string PARAM_HNSW_BUILDER_UPPER_NEIGHBOR_RATIO(
-    "proxima.hnsw.builder.upper_neighbor_ratio");
-static const std::string PARAM_HNSW_BUILDER_HYBRID_VECTOR_ENABLE(
-    "proxima.hnsw.builder.hybrid_vector_enable");
-static const std::string PARAM_HNSW_BUILDER_HYBRID_VECTOR_SEPARATE_NEIGHBOR(
-    "proxima.hnsw.builder.hybrid_vector_separate_neighbor");
-static const std::string PARAM_HNSW_BUILDER_SPARSE_NEIGHBOR_RATIO(
-    "proxima.hnsw.builder.sparse_neighbor_ratio");
+static const std::string PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT(
+    "proxima.hnsw.builder.max_neighbor_count");
+static const std::string PARAM_HNSW_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
+    "proxima.hnsw.builder.l0_max_neighbor_count_multiplier");
 
 static const std::string PARAM_HNSW_SEARCHER_EF("proxima.hnsw.searcher.ef");
 static const std::string PARAM_HNSW_SEARCHER_BRUTE_FORCE_THRESHOLD(
@@ -70,8 +64,8 @@ static const std::string PARAM_HNSW_STREAMER_EFCONSTRUCTION(
     "proxima.hnsw.streamer.efconstruction");
 static const std::string PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT(
     "proxima.hnsw.streamer.max_neighbor_count");
-static const std::string PARAM_HNSW_STREAMER_UPPER_NEIGHBOR_RATIO(
-    "proxima.hnsw.streamer.upper_neighbor_ratio");
+static const std::string PARAM_HNSW_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
+    "proxima.hnsw.streamer.l0_max_neighbor_count_multiplier");
 static const std::string PARAM_HNSW_STREAMER_SCALING_FACTOR(
     "proxima.hnsw.streamer.scaling_factor");
 static const std::string PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD(
@@ -88,8 +82,8 @@ static const std::string PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_NEGATIVE_PROB(
     "proxima.hnsw.streamer.visit_bloomfilter_negative_prob");
 static const std::string PARAM_HNSW_STREAMER_CHECK_CRC_ENABLE(
     "proxima.hnsw.streamer.check_crc_enable");
-static const std::string PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_RATIO(
-    "proxima.hnsw.streamer.neighbor_prune_ratio");
+static const std::string PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_MULTIPLIER(
+    "proxima.hnsw.streamer.neighbor_prune_multiplier");
 static const std::string PARAM_HNSW_STREAMER_CHUNK_SIZE(
     "proxima.hnsw.streamer.chunk_size");
 static const std::string PARAM_HNSW_STREAMER_FILTER_SAME_KEY(
@@ -100,12 +94,6 @@ static const std::string PARAM_HNSW_STREAMER_MIN_NEIGHBOR_COUNT(
     "proxima.hnsw.streamer.min_neighbor_count");
 static const std::string PARAM_HNSW_STREAMER_FORCE_PADDING_RESULT_ENABLE(
     "proxima.hnsw.streamer.force_padding_result_enable");
-static const std::string PARAM_HNSW_STREAMER_HYBRID_VECTOR_ENABLE(
-    "proxima.hnsw.streamer.hybrid_vector_enable");
-static const std::string PARAM_HNSW_STREAMER_HYBRID_VECTOR_SEPARATE_NEIGHBOR(
-    "proxima.hnsw.streamer.hybrid_vector_separate_neighbor");
-static const std::string PARAM_HNSW_STREAMER_SPARSE_NEIGHBOR_RATIO(
-    "proxima.hnsw.streamer.sparse_neighbor_ratio");
 static const std::string PARAM_HNSW_STREAMER_ESTIMATE_DOC_COUNT(
     "proxima.hnsw.streamer.estimate_doc_count");
 static const std::string PARAM_HNSW_STREAMER_USE_ID_MAP(

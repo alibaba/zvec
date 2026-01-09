@@ -80,9 +80,10 @@ class HnswSparseBuilder : public IndexBuilder {
   HnswSparseBuilderEntity entity_{};
   HnswSparseAlgorithm::UPointer alg_;  // impl graph algorithm
   uint32_t thread_cnt_{0};
-  uint32_t neighbor_cnt_{HnswSparseEntity::kDefaultNeighborCnt};
+  uint32_t l0_max_neighbor_cnt_{HnswSparseEntity::kDefaultL0MaxNeighborCnt};
   uint32_t min_neighbor_cnt_{0};
-  uint32_t upper_neighbor_cnt_{HnswSparseEntity::kDefaultUpperNeighborCnt};
+  uint32_t upper_max_neighbor_cnt_{
+      HnswSparseEntity::kDefaultUpperMaxNeighborCnt};
   uint32_t ef_construction_{HnswSparseEntity::kDefaultEfConstruction};
   uint32_t scaling_factor_{HnswSparseEntity::kDefaultScalingFactor};
   uint32_t check_interval_secs_{kDefaultLogIntervalSecs};

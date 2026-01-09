@@ -119,7 +119,7 @@ class HnswSparseBuilderEntity : public HnswSparseEntity {
 
   //! Get neighbors size
   inline size_t neighbors_size() const {
-    return sizeof(NeighborsHeader) + neighbor_cnt() * sizeof(node_id_t);
+    return sizeof(NeighborsHeader) + l0_neighbor_cnt() * sizeof(node_id_t);
   }
 
   //! Get upper neighbors size

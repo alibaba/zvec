@@ -53,11 +53,12 @@ struct InnerProductDistanceBatchImpl<float, BatchSize> {
       std::array<const ValueType *, BatchSize> &prefetch_ptrs, size_t dim,
       float *sums) {
 #if defined(__AVX2__)
-    return compute_one_to_many_avx2_fp32<ValueType, BatchSize>(
-        query, ptrs, prefetch_ptrs, dim, sums);
-#else
-    return compute_one_to_many_fallback(query, ptrs, prefetch_ptrs, dim, sums);
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+      return compute_one_to_many_avx2_fp32<ValueType, BatchSize>(
+          query, ptrs, prefetch_ptrs, dim, sums);
+    }
 #endif
+    return compute_one_to_many_fallback(query, ptrs, prefetch_ptrs, dim, sums);
   }
 
   static DistanceBatchQueryPreprocessFunc GetQueryPreprocessFunc() {
@@ -108,16 +109,10 @@ struct InnerProductDistanceBatchImpl<ailego::Float16, BatchSize> {
       std::array<const ailego::Float16 *, BatchSize> &prefetch_ptrs, size_t dim,
       float *sums) {
 #if defined(__AVX512FP16__)
-    return compute_one_to_many_avx512fp16_fp16<ValueType, BatchSize>(
-        query, ptrs, prefetch_ptrs, dim, sums);
-#elif defined(__AVX512F__)
-    return compute_one_to_many_avx512f_fp16<ValueType, BatchSize>(
-        query, ptrs, prefetch_ptrs, dim, sums);
-#elif defined(__AVX2__)
-    return compute_one_to_many_avx2_fp16<ValueType, BatchSize>(
-        query, ptrs, prefetch_ptrs, dim, sums);
-#else
-    return compute_one_to_many_fallback(query, ptrs, prefetch_ptrs, dim, sums);
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+      return compute_one_to_many_avx512fp16_fp16<ValueType, BatchSize>(
+          query, ptrs, prefetch_ptrs, dim, sums);
+    }
 #endif
 #if defined(__AVX512F__)
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {

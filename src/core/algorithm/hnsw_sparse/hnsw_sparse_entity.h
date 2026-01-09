@@ -43,7 +43,7 @@ struct SparseGraphHeader {
   uint32_t doc_count;
   uint32_t vector_size;
   uint32_t node_size;
-  uint32_t max_neighbor_count;
+  uint32_t l0_neighbor_count;
   uint32_t prune_type;
   uint32_t prune_neighbor_count;
   uint32_t ef_construction;
@@ -51,10 +51,8 @@ struct SparseGraphHeader {
   uint32_t min_neighbor_count;
   uint32_t sparse_meta_size;
   uint32_t sparse_unit_size;
-  uint16_t sparse_max_neighbor_count;
-  uint16_t sparse_min_neighbor_count;
   uint32_t total_sparse_count;
-  // uint8_t reserved_[4];
+  uint8_t reserved[868];
 };
 
 static_assert(sizeof(SparseGraphHeader) % 32 == 0,
@@ -64,14 +62,13 @@ static_assert(sizeof(SparseGraphHeader) % 32 == 0,
 struct HnswSparseHeader {
   uint32_t size;      // header size
   uint32_t revision;  // current total docs of the graph
-  uint32_t thumb_neighbor_count;
+  uint32_t upper_neighbor_count;
   uint32_t ef_construction;
   uint32_t scaling_factor;
   uint32_t max_level;
   uint32_t entry_point;
   uint32_t options;
-  uint16_t thumb_sparse_neighbor_count;
-  uint8_t reserved_[30];
+  uint8_t reserved[30];
 };
 
 struct SparseData {
@@ -123,11 +120,11 @@ struct HNSWSparseHeader {
   }
 
   size_t neighbor_cnt() const {
-    return graph.max_neighbor_count;
+    return graph.l0_neighbor_count;
   }
 
   size_t upper_neighbor_cnt() const {
-    return hnsw.thumb_neighbor_count;
+    return hnsw.upper_neighbor_count;
   }
 
   size_t vector_size() const {
@@ -156,18 +153,6 @@ struct HNSWSparseHeader {
 
   uint32_t total_sparse_count() const {
     return graph.total_sparse_count;
-  }
-
-  size_t sparse_neighbor_cnt() const {
-    return graph.sparse_max_neighbor_count;
-  }
-
-  size_t sparse_min_neighbor_cnt() const {
-    return graph.sparse_min_neighbor_count;
-  }
-
-  size_t upper_sparse_neighbor_cnt() const {
-    return hnsw.thumb_sparse_neighbor_count;
   }
 
   SparseGraphHeader graph;
@@ -240,13 +225,13 @@ class HnswSparseEntity {
 
   //! Get max neighbor size of graph level
   inline size_t neighbor_cnt(level_t level) const {
-    return level == 0 ? header_.graph.max_neighbor_count
-                      : header_.hnsw.thumb_neighbor_count;
+    return level == 0 ? header_.graph.l0_neighbor_count
+                      : header_.hnsw.upper_neighbor_count;
   }
 
   //! get max neighbor size of graph level 0
-  inline size_t neighbor_cnt() const {
-    return header_.graph.max_neighbor_count;
+  inline size_t l0_neighbor_cnt() const {
+    return header_.graph.l0_neighbor_count;
   }
 
   //! get min neighbor size of graph
@@ -256,61 +241,7 @@ class HnswSparseEntity {
 
   //! get upper neighbor size of graph level other than 0
   inline size_t upper_neighbor_cnt() const {
-    return header_.hnsw.thumb_neighbor_count;
-  }
-
-  size_t sparse_neighbor_cnt() const {
-    return header_.graph.sparse_max_neighbor_count;
-  }
-
-  size_t sparse_min_neighbor_cnt() const {
-    return header_.graph.sparse_min_neighbor_count;
-  }
-
-  size_t upper_sparse_neighbor_cnt() const {
-    return header_.hnsw.thumb_sparse_neighbor_count;
-  }
-
-  size_t dense_neighbor_cnt() const {
-    return header_.graph.max_neighbor_count -
-           header_.graph.sparse_max_neighbor_count;
-  }
-
-  size_t dense_min_neighbor_cnt() const {
-    return header_.graph.min_neighbor_count -
-           header_.graph.sparse_min_neighbor_count;
-  }
-
-  size_t upper_dense_neighbor_cnt() const {
-    return header_.hnsw.thumb_neighbor_count -
-           header_.hnsw.thumb_sparse_neighbor_count;
-  }
-
-  size_t sparse_neighbor_offset() const {
-    return sizeof(NeighborsHeader) + dense_neighbor_cnt() * sizeof(node_id_t);
-  }
-
-  size_t upper_sparse_neighbor_offset() const {
-    return sizeof(NeighborsHeader) +
-           upper_dense_neighbor_cnt() * sizeof(node_id_t);
-  }
-
-  size_t dense_neighbor_size() const {
-    return sizeof(NeighborsHeader) + dense_neighbor_cnt() * sizeof(node_id_t);
-  }
-
-  size_t sparse_neighbor_size() const {
-    return sizeof(NeighborsHeader) + sparse_neighbor_cnt() * sizeof(node_id_t);
-  }
-
-  size_t upper_dense_neighbor_size() const {
-    return sizeof(NeighborsHeader) +
-           upper_dense_neighbor_cnt() * sizeof(node_id_t);
-  }
-
-  size_t upper_sparse_neighbor_size() const {
-    return sizeof(NeighborsHeader) +
-           upper_sparse_neighbor_cnt() * sizeof(node_id_t);
+    return header_.hnsw.upper_neighbor_count;
   }
 
   //! Get current total doc of the hnsw graph
@@ -387,8 +318,8 @@ class HnswSparseEntity {
     header_.hnsw.scaling_factor = val;
   }
 
-  void set_neighbor_cnt(size_t cnt) {
-    header_.graph.max_neighbor_count = cnt;
+  void set_l0_neighbor_cnt(size_t cnt) {
+    header_.graph.l0_neighbor_count = cnt;
   }
 
   void set_min_neighbor_cnt(size_t cnt) {
@@ -396,7 +327,7 @@ class HnswSparseEntity {
   }
 
   void set_upper_neighbor_cnt(size_t cnt) {
-    header_.hnsw.thumb_neighbor_count = cnt;
+    header_.hnsw.upper_neighbor_count = cnt;
   }
 
   void set_ef_construction(size_t ef) {
@@ -409,19 +340,6 @@ class HnswSparseEntity {
 
   void set_sparse_unit_size(size_t size) {
     header_.graph.sparse_unit_size = size;
-  }
-
-  void set_sparse_neighbor_cnt(size_t cnt) {
-    header_.graph.sparse_max_neighbor_count = cnt;
-  }
-
-  void set_sparse_min_neighbor_cnt(size_t cnt) {
-    header_.graph.sparse_min_neighbor_count = cnt;
-  }
-
-
-  void set_upper_sparse_neighbor_cnt(size_t cnt) {
-    header_.hnsw.thumb_sparse_neighbor_count = cnt;
   }
 
  protected:
@@ -670,8 +588,8 @@ class HnswSparseEntity {
   constexpr static size_t kMaxGraphLayers = 15;
   constexpr static uint32_t kDefaultEfConstruction = 500;
   constexpr static uint32_t kDefaultEf = 500;
-  constexpr static uint32_t kDefaultNeighborCnt = 100;
-  constexpr static uint32_t kDefaultUpperNeighborCnt = 50;
+  constexpr static uint32_t kDefaultUpperMaxNeighborCnt = 50;  // M of HNSW
+  constexpr static uint32_t kDefaultL0MaxNeighborCnt = 100;
   constexpr static uint32_t kMaxNeighborCnt = 65535;
   constexpr static float kDefaultScanRatio = 0.1f;
   constexpr static uint32_t kDefaultMinScanLimit = 10000;
@@ -685,12 +603,10 @@ class HnswSparseEntity {
   constexpr static size_t kMaxChunkSize = 0xFFFFFFFF;
   constexpr static size_t kDefaultChunkSize = 2UL * 1024UL * 1024UL;
   constexpr static size_t kDefaultMaxChunkCnt = 50000UL;
-  constexpr static float kDefaultNeighborPruneRatio =
-      0.5f;  // prune count / neighbor count
-  constexpr static float kDefaultUpperNeighborRatio =
-      0.5f;  // upper neighbor count / neighbor count
-
-  constexpr static float kHybridNeighborRatio = 0.5f;
+  constexpr static float kDefaultNeighborPruneMultiplier =
+      1.0f;  // prune_cnt = upper_max_neighbor_cnt * multiplier
+  constexpr static float kDefaultL0MaxNeighborCntMultiplier =
+      2.0f;  // l0_max_neighbor_cnt = upper_max_neighbor_cnt * multiplier
 
   constexpr static uint32_t kSparseMetaSize = 2u * sizeof(uint64_t);
   constexpr static float kDefaultSparseNeighborRatio = 0.5f;

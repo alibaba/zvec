@@ -71,9 +71,9 @@ class HnswBuilder : public IndexBuilder {
   HnswBuilderEntity entity_{};
   HnswAlgorithm::UPointer alg_;  // impl graph algorithm
   uint32_t thread_cnt_{0};
-  uint32_t neighbor_cnt_{HnswEntity::kDefaultNeighborCnt};
   uint32_t min_neighbor_cnt_{0};
-  uint32_t upper_neighbor_cnt_{HnswEntity::kDefaultUpperNeighborCnt};
+  uint32_t upper_max_neighbor_cnt_{HnswEntity::kDefaultUpperMaxNeighborCnt};
+  uint32_t l0_max_neighbor_cnt_{HnswEntity::kDefaultL0MaxNeighborCnt};
   uint32_t ef_construction_{HnswEntity::kDefaultEfConstruction};
   uint32_t scaling_factor_{HnswEntity::kDefaultScalingFactor};
   uint32_t check_interval_secs_{kDefaultLogIntervalSecs};

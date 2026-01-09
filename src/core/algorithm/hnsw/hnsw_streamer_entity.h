@@ -178,26 +178,16 @@ class HnswStreamerEntity : public HnswEntity {
     std::cout << "key map ends" << std::endl;
   }
 
-  //! Get neighbors size
+  //! Get l0 neighbors size
   inline size_t neighbors_size() const {
-    return sizeof(NeighborsHeader) + neighbor_cnt() * sizeof(node_id_t);
+    return sizeof(NeighborsHeader) + l0_neighbor_cnt() * sizeof(node_id_t);
   }
 
-  //! Get neighbors size in hybrid mode
-  inline size_t neighbors_size_hybrid() const {
-    return sizeof(NeighborsHeader) * 2 + neighbor_cnt() * sizeof(node_id_t);
-  }
-
-  //! Get upper neighbors size
+  //! Get neighbors size for level > 0
   inline size_t upper_neighbors_size() const {
     return sizeof(NeighborsHeader) + upper_neighbor_cnt() * sizeof(node_id_t);
   }
 
-  //! Get upper neighbors size in hybrid mode
-  inline size_t upper_neighbors_size_hybrid() const {
-    return 2 *
-           (sizeof(NeighborsHeader) + upper_neighbor_cnt() * sizeof(node_id_t));
-  }
 
  private:
   union UpperNeighborIndexMeta {

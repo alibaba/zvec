@@ -38,10 +38,15 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   meta_.set_streamer("HnswStreamer", HnswEntity::kRevision, params);
 
   params.get(PARAM_HNSW_STREAMER_MAX_INDEX_SIZE, &max_index_size_);
-  params.get(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, &neighbor_cnt_);
-  float ratio = HnswEntity::kDefaultUpperNeighborRatio;
-  params.get(PARAM_HNSW_STREAMER_UPPER_NEIGHBOR_RATIO, &ratio);
-  upper_neighbor_cnt_ = ratio * neighbor_cnt_;
+
+  params.get(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, &upper_max_neighbor_cnt_);
+  float multiplier = HnswEntity::kDefaultL0MaxNeighborCntMultiplier;
+  params.get(PARAM_HNSW_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER, &multiplier);
+  l0_max_neighbor_cnt_ = multiplier * upper_max_neighbor_cnt_;
+
+  multiplier = HnswEntity::kDefaultNeighborPruneMultiplier;
+  params.get(PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_MULTIPLIER, &multiplier);
+  size_t prune_cnt = multiplier * upper_max_neighbor_cnt_;
 
   params.get(PARAM_HNSW_STREAMER_DOCS_HARD_LIMIT, &docs_hard_limit_);
   params.get(PARAM_HNSW_STREAMER_EF, &ef_);
@@ -55,9 +60,6 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_HNSW_STREAMER_MAX_SCAN_LIMIT, &max_scan_limit_);
   params.get(PARAM_HNSW_STREAMER_MIN_SCAN_LIMIT, &min_scan_limit_);
   params.get(PARAM_HNSW_STREAMER_CHECK_CRC_ENABLE, &check_crc_enabled_);
-  ratio = HnswEntity::kDefaultNeighborPruneRatio;
-  params.get(PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_RATIO, &ratio);
-  size_t prune_cnt = ratio * neighbor_cnt_;
   params.get(PARAM_HNSW_STREAMER_CHUNK_SIZE, &chunk_size_);
   params.get(PARAM_HNSW_STREAMER_FILTER_SAME_KEY, &filter_same_key_);
   params.get(PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE, &get_vector_enabled_);
@@ -84,27 +86,28 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   if (ef_construction_ == 0U) {
     ef_construction_ = HnswEntity::kDefaultEfConstruction;
   }
-  if (neighbor_cnt_ == 0U) {
-    neighbor_cnt_ = HnswEntity::kDefaultNeighborCnt;
+  if (upper_max_neighbor_cnt_ == 0U) {
+    upper_max_neighbor_cnt_ = HnswEntity::kDefaultUpperMaxNeighborCnt;
   }
-  if (neighbor_cnt_ > HnswEntity::kMaxNeighborCnt) {
+  if (upper_max_neighbor_cnt_ > HnswEntity::kMaxNeighborCnt) {
     LOG_ERROR("[%s] must be in range (0,%d)",
               PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT.c_str(),
               HnswEntity::kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
-  if (upper_neighbor_cnt_ == 0U) {
-    upper_neighbor_cnt_ = HnswEntity::kDefaultUpperNeighborCnt;
+  if (l0_max_neighbor_cnt_ == 0U) {
+    l0_max_neighbor_cnt_ = HnswEntity::kDefaultL0MaxNeighborCnt;
   }
-  if (upper_neighbor_cnt_ > HnswEntity::kMaxNeighborCnt) {
-    LOG_ERROR("UpperNeighborCnt must be in range (0,%d)",
+  if (l0_max_neighbor_cnt_ > HnswEntity::kMaxNeighborCnt) {
+    LOG_ERROR("MaxL0NeighborCnt must be in range (0,%d)",
               HnswEntity::kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
-  if (min_neighbor_cnt_ > neighbor_cnt_) {
+  if (min_neighbor_cnt_ > upper_max_neighbor_cnt_) {
     LOG_ERROR("[%s]-[%u] must be <= [%s]-[%u]",
               PARAM_HNSW_STREAMER_MIN_NEIGHBOR_COUNT.c_str(), min_neighbor_cnt_,
-              PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT.c_str(), neighbor_cnt_);
+              PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT.c_str(),
+              upper_max_neighbor_cnt_);
     return IndexError_InvalidArgument;
   }
 
@@ -137,7 +140,7 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   }
 
   if (prune_cnt == 0UL) {
-    prune_cnt = upper_neighbor_cnt_;
+    prune_cnt = upper_max_neighbor_cnt_;
   }
   if (chunk_size_ == 0UL) {
     chunk_size_ = HnswEntity::kDefaultChunkSize;
@@ -149,8 +152,8 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   }
 
   entity_.set_ef_construction(ef_construction_);
-  entity_.set_neighbor_cnt(neighbor_cnt_);
-  entity_.set_upper_neighbor_cnt(upper_neighbor_cnt_);
+  entity_.set_upper_neighbor_cnt(upper_max_neighbor_cnt_);
+  entity_.set_l0_neighbor_cnt(l0_max_neighbor_cnt_);
   entity_.set_scaling_factor(scaling_factor_);
   entity_.set_prune_cnt(prune_cnt);
 
@@ -169,18 +172,18 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
 
   LOG_DEBUG(
       "Init params: maxIndexSize=%zu docsHardLimit=%zu docsSoftLimit=%zu "
-      "efConstruction=%u ef=%u neighborCnt=%u upperNeighborCnt=%u "
+      "efConstruction=%u ef=%u upperMaxNeighborCnt=%u l0MaxNeighborCnt=%u "
       "scalingFactor=%u maxScanRatio=%.3f minScanLimit=%zu maxScanLimit=%zu "
       "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbility=%.5f "
       "checkCrcEnabled=%d pruneSize=%zu vectorSize=%u chunkSize=%zu "
       "filterSameKey=%u getVectorEnabled=%u minNeighborCount=%u "
       "forcePadding=%u ",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, ef_construction_,
-      ef_, neighbor_cnt_, upper_neighbor_cnt_, scaling_factor_, max_scan_ratio_,
-      min_scan_limit_, max_scan_limit_, bf_enabled_, bruteforce_threshold_,
-      bf_negative_prob_, check_crc_enabled_, prune_cnt, meta_.element_size(),
-      chunk_size_, filter_same_key_, get_vector_enabled_, min_neighbor_cnt_,
-      force_padding_topk_enabled_);
+      ef_, upper_max_neighbor_cnt_, l0_max_neighbor_cnt_, scaling_factor_,
+      max_scan_ratio_, min_scan_limit_, max_scan_limit_, bf_enabled_,
+      bruteforce_threshold_, bf_negative_prob_, check_crc_enabled_, prune_cnt,
+      meta_.element_size(), chunk_size_, filter_same_key_, get_vector_enabled_,
+      min_neighbor_cnt_, force_padding_topk_enabled_);
 
   alg_ = HnswAlgorithm::UPointer(new HnswAlgorithm(entity_));
 
@@ -213,8 +216,8 @@ int HnswStreamer::cleanup(void) {
   max_index_size_ = 0UL;
   docs_hard_limit_ = HnswEntity::kDefaultDocsHardLimit;
   docs_soft_limit_ = 0UL;
-  neighbor_cnt_ = HnswEntity::kDefaultNeighborCnt;
-  upper_neighbor_cnt_ = HnswEntity::kDefaultUpperNeighborCnt;
+  upper_max_neighbor_cnt_ = HnswEntity::kDefaultUpperMaxNeighborCnt;
+  l0_max_neighbor_cnt_ = HnswEntity::kDefaultL0MaxNeighborCnt;
   ef_ = HnswEntity::kDefaultEf;
   ef_construction_ = HnswEntity::kDefaultEfConstruction;
   bf_enabled_ = false;

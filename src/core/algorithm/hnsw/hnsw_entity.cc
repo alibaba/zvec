@@ -224,7 +224,7 @@ int64_t HnswEntity::dump_graph_neighbors(
   graph_meta.reserve(doc_cnt());
   size_t offset = 0;
   uint32_t crc = 0;
-  node_id_t mapping[neighbor_cnt()];
+  node_id_t mapping[l0_neighbor_cnt()];
 
   uint32_t min_neighbor_count = 10000;
   uint32_t max_neighbor_count = 0;
@@ -234,7 +234,8 @@ int64_t HnswEntity::dump_graph_neighbors(
     const Neighbors neighbors =
         get_neighbors(0, reorder_mapping.empty() ? id : reorder_mapping[id]);
     ailego_assert_with(!!neighbors.data, "invalid neighbors");
-    ailego_assert_with(neighbors.size() <= neighbor_cnt(), "invalid neighbors");
+    ailego_assert_with(neighbors.size() <= l0_neighbor_cnt(),
+                       "invalid neighbors");
 
     uint32_t neighbor_count = neighbors.size();
     if (neighbor_count < min_neighbor_count) {

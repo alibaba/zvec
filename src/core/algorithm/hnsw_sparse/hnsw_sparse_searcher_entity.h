@@ -137,7 +137,7 @@ class HnswSparseSearcherEntity : public HnswSparseEntity {
         sparse_vector_meta_(sparse_vector_meta),
         sparse_vectors_(sparse_vectors),
         neighbors_in_memory_enabled_(neighbors_in_memory_enabled) {
-    segment_datas_.resize(std::max(neighbor_cnt(), upper_neighbor_cnt()),
+    segment_datas_.resize(std::max(l0_neighbor_cnt(), upper_neighbor_cnt()),
                           IndexStorage::SegmentData(0U, 0U));
     fixed_neighbors_ = fixed_neighbors;
   }
@@ -145,7 +145,7 @@ class HnswSparseSearcherEntity : public HnswSparseEntity {
   bool do_crc_check(std::vector<SegmentPointer> &segments) const;
 
   inline size_t neighbors_size() const {
-    return sizeof(NeighborsHeader) + neighbor_cnt() * sizeof(node_id_t);
+    return sizeof(NeighborsHeader) + l0_neighbor_cnt() * sizeof(node_id_t);
   }
 
   inline size_t upper_neighbors_size() const {

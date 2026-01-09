@@ -190,9 +190,10 @@ class HnswSparseStreamer : public IndexStreamer {
   size_t chunk_size_{HnswSparseEntity::kDefaultChunkSize};
   size_t docs_hard_limit_{HnswSparseEntity::kDefaultDocsHardLimit};
   size_t docs_soft_limit_{0UL};
-  uint32_t neighbor_cnt_{HnswSparseEntity::kDefaultNeighborCnt};
   uint32_t min_neighbor_cnt_{0u};
-  uint32_t upper_neighbor_cnt_{HnswSparseEntity::kDefaultUpperNeighborCnt};
+  uint32_t upper_max_neighbor_cnt_{
+      HnswSparseEntity::kDefaultUpperMaxNeighborCnt};
+  uint32_t l0_max_neighbor_cnt_{HnswSparseEntity::kDefaultL0MaxNeighborCnt};
   uint32_t ef_{HnswSparseEntity::kDefaultEf};
   uint32_t ef_construction_{HnswSparseEntity::kDefaultEfConstruction};
   uint32_t scaling_factor_{HnswSparseEntity::kDefaultScalingFactor};

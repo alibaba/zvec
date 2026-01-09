@@ -223,11 +223,11 @@ int HnswSearcherEntity::load(const IndexStorage::Pointer &container,
 
   LOG_INFO(
       "Index info: docCnt=%u entryPoint=%u maxLevel=%d efConstruct=%zu "
-      "neighborCnt=%zu upperNeighborCnt=%zu scalingFactor=%zu "
+      "l0NeighborCnt=%zu upperNeighborCnt=%zu scalingFactor=%zu "
       "vectorSize=%zu nodeSize=%zu vectorSegmentSize=%zu keySegmentSize=%zu "
       "neighborsSegmentSize=%zu neighborsMetaSegmentSize=%zu ",
       doc_cnt(), entry_point(), cur_max_level(), ef_construction(),
-      neighbor_cnt(), upper_neighbor_cnt(), scaling_factor(), vector_size(),
+      l0_neighbor_cnt(), upper_neighbor_cnt(), scaling_factor(), vector_size(),
       node_size(), vectors_->data_size(), keys_->data_size(),
       neighbors_ == nullptr ? 0 : neighbors_->data_size(),
       neighbors_meta_ == nullptr ? 0 : neighbors_meta_->data_size());
@@ -263,7 +263,7 @@ int HnswSearcherEntity::load_segments(bool check_crc) {
   }
   memcpy(&hd.hnsw, data, sizeof(hd.hnsw));
   *mutable_header() = hd;
-  segment_datas_.resize(std::max(neighbor_cnt(), upper_neighbor_cnt()));
+  segment_datas_.resize(std::max(l0_neighbor_cnt(), upper_neighbor_cnt()));
 
   vectors_ = storage_->get(kGraphFeaturesSegmentId);
   if (!vectors_) {
@@ -403,7 +403,7 @@ int HnswSearcherEntity::get_fixed_neighbors(
     return IndexError_InvalidArgument;
   }
 
-  size_t fixed_neighbor_cnt = neighbor_cnt();
+  size_t fixed_neighbor_cnt = l0_neighbor_cnt();
   fixed_neighbors->resize((fixed_neighbor_cnt + 1) * doc_cnt(), kInvalidNodeId);
 
   size_t neighbors_cnt_offset = fixed_neighbor_cnt * doc_cnt();

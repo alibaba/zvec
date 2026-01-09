@@ -38,44 +38,47 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
   size_t memory_quota = 0UL;
   params.get(PARAM_HNSW_SPARSE_BUILDER_MEMORY_QUOTA, &memory_quota);
   params.get(PARAM_HNSW_SPARSE_BUILDER_THREAD_COUNT, &thread_cnt_);
-  params.get(PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT, &neighbor_cnt_);
-  params.get(PARAM_HNSW_SPARSE_BUILDER_MIN_NEIGHBOR_COUNT, &min_neighbor_cnt_);
-  float ratio = HnswSparseEntity::kDefaultNeighborPruneRatio;
-  params.get(PARAM_HNSW_SPARSE_BUILDER_UPPER_NEIGHBOR_RATIO, &ratio);
-  upper_neighbor_cnt_ = ratio * neighbor_cnt_;
   params.get(PARAM_HNSW_SPARSE_BUILDER_EFCONSTRUCTION, &ef_construction_);
   params.get(PARAM_HNSW_SPARSE_BUILDER_SCALING_FACTOR, &scaling_factor_);
   params.get(PARAM_HNSW_SPARSE_BUILDER_CHECK_INTERVAL_SECS,
              &check_interval_secs_);
-  ratio = HnswSparseEntity::kDefaultNeighborPruneRatio;
-  params.get(PARAM_HNSW_SPARSE_BUILDER_NEIGHBOR_PRUNE_RATIO, &ratio);
 
-  size_t prune_cnt = neighbor_cnt_ * ratio;
+  params.get(PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT,
+             &upper_max_neighbor_cnt_);
+  float multiplier = HnswSparseEntity::kDefaultL0MaxNeighborCntMultiplier;
+  params.get(PARAM_HNSW_SPARSE_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER,
+             &multiplier);
+  l0_max_neighbor_cnt_ = multiplier * upper_max_neighbor_cnt_;
+
+  multiplier = HnswSparseEntity::kDefaultNeighborPruneMultiplier;
+  params.get(PARAM_HNSW_SPARSE_BUILDER_NEIGHBOR_PRUNE_MULTIPLIER, &multiplier);
+  size_t prune_cnt = multiplier * upper_max_neighbor_cnt_;
 
   if (ef_construction_ == 0) {
     ef_construction_ = HnswSparseEntity::kDefaultEfConstruction;
   }
-  if (neighbor_cnt_ == 0) {
-    neighbor_cnt_ = HnswSparseEntity::kDefaultNeighborCnt;
+  if (upper_max_neighbor_cnt_ == 0) {
+    upper_max_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperMaxNeighborCnt;
   }
-  if (neighbor_cnt_ > kMaxNeighborCnt) {
+  if (upper_max_neighbor_cnt_ > kMaxNeighborCnt) {
     LOG_ERROR("[%s] must be in range (0,%d]",
               PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT.c_str(),
               kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
-  if (min_neighbor_cnt_ > neighbor_cnt_) {
-    LOG_ERROR(
-        "[%s]-[%d] must be <= [%s]-[%d]",
-        PARAM_HNSW_SPARSE_BUILDER_MIN_NEIGHBOR_COUNT.c_str(), min_neighbor_cnt_,
-        PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT.c_str(), neighbor_cnt_);
+  if (min_neighbor_cnt_ > upper_max_neighbor_cnt_) {
+    LOG_ERROR("[%s]-[%d] must be <= [%s]-[%d]",
+              PARAM_HNSW_SPARSE_BUILDER_MIN_NEIGHBOR_COUNT.c_str(),
+              min_neighbor_cnt_,
+              PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT.c_str(),
+              upper_max_neighbor_cnt_);
     return IndexError_InvalidArgument;
   }
-  if (upper_neighbor_cnt_ == 0) {
-    neighbor_cnt_ = HnswSparseEntity::kDefaultUpperNeighborCnt;
+  if (l0_max_neighbor_cnt_ == 0) {
+    l0_max_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperMaxNeighborCnt;
   }
-  if (upper_neighbor_cnt_ > HnswSparseEntity::kMaxNeighborCnt) {
-    LOG_ERROR("UpperNeighborCnt must be in range (0,%d)",
+  if (l0_max_neighbor_cnt_ > HnswSparseEntity::kMaxNeighborCnt) {
+    LOG_ERROR("L0MaxNeighborCnt must be in range (0,%d)",
               HnswSparseEntity::kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
@@ -96,7 +99,7 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
              std::thread::hardware_concurrency());
   }
   if (prune_cnt == 0UL) {
-    prune_cnt = upper_neighbor_cnt_;
+    prune_cnt = upper_max_neighbor_cnt_;
   }
 
   metric_ = IndexFactory::CreateMetric(meta_.metric_name());
@@ -111,9 +114,9 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
   }
 
   entity_.set_ef_construction(ef_construction_);
-  entity_.set_neighbor_cnt(neighbor_cnt_);
+  entity_.set_l0_neighbor_cnt(l0_max_neighbor_cnt_);
   entity_.set_min_neighbor_cnt(min_neighbor_cnt_);
-  entity_.set_upper_neighbor_cnt(upper_neighbor_cnt_);
+  entity_.set_upper_neighbor_cnt(upper_max_neighbor_cnt_);
   entity_.set_scaling_factor(scaling_factor_);
   entity_.set_memory_quota(memory_quota);
   entity_.set_prune_cnt(prune_cnt);
@@ -136,10 +139,10 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
   state_ = BUILD_STATE_INITED;
   LOG_INFO(
       "End HnswSparseBuilder::init, params: efConstruction=%u "
-      "neighborCnt=%u upperNeighborCnt=%u scalingFactor=%u "
+      "l0NeighborCnt=%u upperNeighborCnt=%u scalingFactor=%u "
       "memoryQuota=%zu neighborPruneCnt=%zu measureName=%s ",
-      ef_construction_, neighbor_cnt_, upper_neighbor_cnt_, scaling_factor_,
-      memory_quota, prune_cnt, meta_.metric_name().c_str());
+      ef_construction_, l0_max_neighbor_cnt_, upper_max_neighbor_cnt_,
+      scaling_factor_, memory_quota, prune_cnt, meta_.metric_name().c_str());
 
   return 0;
 }
@@ -147,9 +150,9 @@ int HnswSparseBuilder::init(const IndexMeta &meta,
 int HnswSparseBuilder::cleanup(void) {
   LOG_INFO("Begin HnswSparseBuilder::cleanup");
 
-  neighbor_cnt_ = HnswSparseEntity::kDefaultNeighborCnt;
+  l0_max_neighbor_cnt_ = HnswSparseEntity::kDefaultL0MaxNeighborCnt;
   min_neighbor_cnt_ = 0;
-  upper_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperNeighborCnt;
+  upper_max_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperMaxNeighborCnt;
   ef_construction_ = HnswSparseEntity::kDefaultEfConstruction;
   scaling_factor_ = HnswSparseEntity::kDefaultScalingFactor;
   check_interval_secs_ = kDefaultLogIntervalSecs;

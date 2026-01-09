@@ -38,10 +38,16 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   meta_.set_streamer("HnswSparseStreamer", HnswSparseEntity::kRevision, params);
 
   params.get(PARAM_HNSW_SPARSE_STREAMER_MAX_INDEX_SIZE, &max_index_size_);
-  params.get(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT, &neighbor_cnt_);
-  float ratio = HnswSparseEntity::kDefaultUpperNeighborRatio;
-  params.get(PARAM_HNSW_SPARSE_STREAMER_UPPER_NEIGHBOR_RATIO, &ratio);
-  upper_neighbor_cnt_ = ratio * neighbor_cnt_;
+  params.get(PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT,
+             &upper_max_neighbor_cnt_);
+  float multiplier = HnswSparseEntity::kDefaultL0MaxNeighborCntMultiplier;
+  params.get(PARAM_HNSW_SPARSE_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER,
+             &multiplier);
+  l0_max_neighbor_cnt_ = multiplier * upper_max_neighbor_cnt_;
+
+  multiplier = HnswSparseEntity::kDefaultNeighborPruneMultiplier;
+  params.get(PARAM_HNSW_SPARSE_STREAMER_NEIGHBOR_PRUNE_MULTIPLIER, &multiplier);
+  size_t prune_cnt = multiplier * upper_max_neighbor_cnt_;
 
   params.get(PARAM_HNSW_SPARSE_STREAMER_DOCS_HARD_LIMIT, &docs_hard_limit_);
   params.get(PARAM_HNSW_SPARSE_STREAMER_EF, &ef_);
@@ -56,9 +62,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   params.get(PARAM_HNSW_SPARSE_STREAMER_MAX_SCAN_LIMIT, &max_scan_limit_);
   params.get(PARAM_HNSW_SPARSE_STREAMER_MIN_SCAN_LIMIT, &min_scan_limit_);
   params.get(PARAM_HNSW_SPARSE_STREAMER_CHECK_CRC_ENABLE, &check_crc_enabled_);
-  ratio = HnswSparseEntity::kDefaultNeighborPruneRatio;
-  params.get(PARAM_HNSW_SPARSE_STREAMER_NEIGHBOR_PRUNE_RATIO, &ratio);
-  size_t prune_cnt = ratio * neighbor_cnt_;
+
   params.get(PARAM_HNSW_SPARSE_STREAMER_CHUNK_SIZE, &chunk_size_);
   params.get(PARAM_HNSW_SPARSE_STREAMER_FILTER_SAME_KEY, &filter_same_key_);
   params.get(PARAM_HNSW_SPARSE_STREAMER_GET_VECTOR_ENABLE,
@@ -88,29 +92,29 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   if (ef_construction_ == 0U) {
     ef_construction_ = HnswSparseEntity::kDefaultEfConstruction;
   }
-  if (neighbor_cnt_ == 0U) {
-    neighbor_cnt_ = HnswSparseEntity::kDefaultNeighborCnt;
+  if (upper_max_neighbor_cnt_ == 0U) {
+    upper_max_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperMaxNeighborCnt;
   }
-  if (neighbor_cnt_ > HnswSparseEntity::kMaxNeighborCnt) {
+  if (upper_max_neighbor_cnt_ > HnswSparseEntity::kMaxNeighborCnt) {
     LOG_ERROR("[%s] must be in range (0,%d)",
               PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT.c_str(),
               HnswSparseEntity::kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
-  if (upper_neighbor_cnt_ == 0U) {
-    upper_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperNeighborCnt;
+  if (l0_max_neighbor_cnt_ == 0U) {
+    l0_max_neighbor_cnt_ = HnswSparseEntity::kDefaultL0MaxNeighborCnt;
   }
-  if (upper_neighbor_cnt_ > HnswSparseEntity::kMaxNeighborCnt) {
+  if (l0_max_neighbor_cnt_ > HnswSparseEntity::kMaxNeighborCnt) {
     LOG_ERROR("UpperNeighborCnt must be in range (0,%d)",
               HnswSparseEntity::kMaxNeighborCnt);
     return IndexError_InvalidArgument;
   }
-  if (min_neighbor_cnt_ > neighbor_cnt_) {
+  if (min_neighbor_cnt_ > upper_max_neighbor_cnt_) {
     LOG_ERROR("[%s]-[%u] must be <= [%s]-[%u]",
               PARAM_HNSW_SPARSE_STREAMER_MIN_NEIGHBOR_COUNT.c_str(),
               min_neighbor_cnt_,
               PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT.c_str(),
-              neighbor_cnt_);
+              upper_max_neighbor_cnt_);
     return IndexError_InvalidArgument;
   }
 
@@ -144,7 +148,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   }
 
   if (prune_cnt == 0UL) {
-    prune_cnt = upper_neighbor_cnt_;
+    prune_cnt = upper_max_neighbor_cnt_;
   }
   if (chunk_size_ == 0UL) {
     chunk_size_ = HnswSparseEntity::kDefaultChunkSize;
@@ -164,8 +168,8 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   }
 
   entity_.set_ef_construction(ef_construction_);
-  entity_.set_neighbor_cnt(neighbor_cnt_);
-  entity_.set_upper_neighbor_cnt(upper_neighbor_cnt_);
+  entity_.set_l0_neighbor_cnt(l0_max_neighbor_cnt_);
+  entity_.set_upper_neighbor_cnt(upper_max_neighbor_cnt_);
   entity_.set_scaling_factor(scaling_factor_);
   entity_.set_prune_cnt(prune_cnt);
 
@@ -184,17 +188,17 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   }
   LOG_DEBUG(
       "Init params: maxIndexSize=%zu docsHardLimit=%zu docsSoftLimit=%zu "
-      "efConstruction=%u ef=%u neighborCnt=%u upperNeighborCnt=%u "
+      "efConstruction=%u ef=%u l0NeighborCnt=%u upperNeighborCnt=%u "
       "scalingFactor=%u maxScanRatio=%.3f minScanLimit=%zu maxScanLimit=%zu "
       "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbility=%.5f "
       "checkCrcEnabled=%d pruneSize=%zu chunkSize=%zu "
       "filterSameKey=%u getVectorEnabled=%u "
       "minNeighborCount=%u forcePadding=%u filteringRatio=%f",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, ef_construction_,
-      ef_, neighbor_cnt_, upper_neighbor_cnt_, scaling_factor_, max_scan_ratio_,
-      min_scan_limit_, max_scan_limit_, bf_enabled_, bruteforce_threshold_,
-      bf_negative_prob_, check_crc_enabled_, prune_cnt, chunk_size_,
-      filter_same_key_, get_vector_enabled_, min_neighbor_cnt_,
+      ef_, l0_max_neighbor_cnt_, upper_max_neighbor_cnt_, scaling_factor_,
+      max_scan_ratio_, min_scan_limit_, max_scan_limit_, bf_enabled_,
+      bruteforce_threshold_, bf_negative_prob_, check_crc_enabled_, prune_cnt,
+      chunk_size_, filter_same_key_, get_vector_enabled_, min_neighbor_cnt_,
       force_padding_topk_enabled_, query_filtering_ratio_);
 
   alg_ = HnswSparseAlgorithm::UPointer(new HnswSparseAlgorithm(entity_));
@@ -228,8 +232,7 @@ int HnswSparseStreamer::cleanup(void) {
   max_index_size_ = 0UL;
   docs_hard_limit_ = HnswSparseEntity::kDefaultDocsHardLimit;
   docs_soft_limit_ = 0UL;
-  neighbor_cnt_ = HnswSparseEntity::kDefaultNeighborCnt;
-  upper_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperNeighborCnt;
+  upper_max_neighbor_cnt_ = HnswSparseEntity::kDefaultUpperMaxNeighborCnt;
   ef_ = HnswSparseEntity::kDefaultEf;
   ef_construction_ = HnswSparseEntity::kDefaultEfConstruction;
   bf_enabled_ = false;

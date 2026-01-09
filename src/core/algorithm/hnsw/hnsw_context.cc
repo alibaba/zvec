@@ -47,7 +47,7 @@ int HnswContext::init(ContextType type) {
         return ret;
       }
       candidates_.limit(max_scan_num_);
-      update_heap_.limit(entity_->neighbor_cnt() + 1);
+      update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
       break;
 
     case kSearcherContext:
@@ -74,7 +74,7 @@ int HnswContext::init(ContextType type) {
         return ret;
       }
 
-      update_heap_.limit(entity_->neighbor_cnt() + 1);
+      update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
       candidates_.limit(max_scan_num_);
 
       check_need_adjuct_ctx();
@@ -240,7 +240,7 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
         return IndexError_Runtime;
       }
 
-      update_heap_.limit(entity->neighbor_cnt() + 1);
+      update_heap_.limit(entity->l0_neighbor_cnt() + 1);
       candidates_.limit(max_scan_num_);
       topk_heap_.limit(std::max(topk_, ef_));
       break;

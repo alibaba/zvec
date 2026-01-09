@@ -117,6 +117,10 @@ sdist.include = [
 BUILD_TOOLS = "OFF"
 BUILD_PYTHON_BINDINGS = "ON"
 
+# Setuptools config for test pypi
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
+version_scheme = "guess-next-dev"
 ######################################################################################################
 # TESTING & QUALITY
 ######################################################################################################
