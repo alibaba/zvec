@@ -165,7 +165,7 @@ class TestCollectionSchema:
         assert vector.data_type == DataType.VECTOR_INT8
         assert vector.dimension == 128
         assert vector.index_param.type == IndexType.HNSW
-        assert vector.index_param.m == 100
+        assert vector.index_param.m == 50
         assert vector.index_param.ef_construction == 500
         assert vector.index_param.metric_type == MetricType.IP
 
