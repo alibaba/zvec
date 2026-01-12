@@ -7,11 +7,16 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Zvec LinuxX64 CI
     runs-on: linux_x64
 
     strategy:

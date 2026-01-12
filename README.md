@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/alibaba/zvec/actions" style="text-decoration:none;"><img src="https://github.com/alibaba/zvec/actions/workflows/linux_x64_docker_ci.yml/badge.svg?branch=main" alt="Linux x64 CI"/></a>
-  <a href="https://codecov.io/github/alibaba/zvec" ><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66"/></a>
+  <a href="https://codecov.io/github/alibaba/zvec" ><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66"  alt="Code Coverage"/></a>
   <a href="https://pypi.org/project/zvec/" style="text-decoration:none;"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE" style="text-decoration: none;"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
 </p>
@@ -16,7 +16,7 @@
 
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Built on **Proxima** (Alibaba's battle-tested vector search engine), it delivers production-grade, low-latency, scalable similarity search with minimal setup.
 
-[📚 Quick Start](https://zvec.org/en/docs/quickstart/) | 🌐 [Website](https://zvec.org/en/) | [📖 Documentation](https://zvec.org/en/docs/) | [📊 Benchmarks](https://zvec.org/en/docs/benchmarks/)
+[📚 Quick Start](https://zvec.org/en/docs/quickstart/) | 🌐 [Website](https://zvec.org/en/) | [📖 Documentation](https://zvec.org/en/docs/) | [📊 Benchmarks](https://zvec.org/en/docs/benchmarks/) | [💜 Discord](https://discord.gg/ZSbbfAKk)
 
 ## 💫 Features
 
@@ -69,13 +69,20 @@ results = collection.query(
     topk=10
 )
 
-# Results: list of {'id': str, 'score': float, ...}, sorted by relevance 
+# Results: list of {'id': str, 'score': float, ...}, sorted by relevance
 print(results)
 ```
 
+## 📈 Performance at Scale
+
+Zvec delivers exceptional speed and efficiency, making it ideal for demanding production workloads.
+
+<img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec Performance Benchmarks" />
+
+For detailed benchmark methodology, configurations, and complete results, please see our [Benchmarks documentation](https://zvec.org/en/docs/benchmarks/).
+
 ## ❤️ Contributing
 
-We welcome and appreciate contributions from the community!  
-Whether you're fixing a bug, adding a feature, or improving documentation, your help makes Zvec better for everyone.
+We welcome and appreciate contributions from the community! Whether you're fixing a bug, adding a feature, or improving documentation, your help makes Zvec better for everyone.
 
 Check out our [Contributing Guide](./CONTRIBUTING.md) to get started!

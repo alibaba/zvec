@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   coverage:
+    name: Nightly Coverage Report
     runs-on: linux_x64
 
     strategy:

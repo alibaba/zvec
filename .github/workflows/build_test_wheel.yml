@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build_wheels:
-    name: Build wheels on self-hosted manylinux_2_28
+    name: Build wheels on self-hosted manylinux_2_28 for TestPyPi
     runs-on: linux_x64
 
     steps:
@@ -49,6 +49,7 @@ jobs:
           source test_env/bin/activate
           pip install --upgrade pip
           # Install from TestPyPI (must allow pre-releases if version has dev/alpha)
+          pip install numpy
           pip install --index-url https://test.pypi.org/simple/ zvec
           # Run a simple smoke test
           python -c "import zvec; print('Import OK:', zvec.__version__)"

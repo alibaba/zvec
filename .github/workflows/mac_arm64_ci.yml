@@ -7,11 +7,16 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Zvec MacArm64 CI
     runs-on: mac_m1_arm
 
     steps:
