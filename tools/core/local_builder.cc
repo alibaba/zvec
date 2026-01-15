@@ -540,6 +540,7 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
     return IndexError_NoExist;
   }
   ailego::Params params;
+  params.set("proxima.mmap_file.storage.segment_meta_capacity", 20 * 1024 * 1024);
   int ret = storage->init(params);
   if (ret != 0) {
     cerr << "Storage Failed init";
