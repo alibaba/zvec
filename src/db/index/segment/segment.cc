@@ -293,13 +293,11 @@ class SegmentImpl : public Segment,
 
   TablePtr fetch_normal(const std::vector<std::string> &columns,
                         const std::shared_ptr<arrow::Schema> &result_schema,
-                        bool need_local_doc_id, int local_doc_id_col_index,
                         const std::vector<int> &indices) const;
 
   // For performance tuning
   TablePtr fetch_perf(const std::vector<std::string> &columns,
                       const std::shared_ptr<arrow::Schema> &result_schema,
-                      bool need_local_doc_id, int local_doc_id_col_index,
                       const std::vector<int> &indices) const;
 
   void fresh_persist_chunked_array();
@@ -2217,19 +2215,54 @@ bool SegmentImpl::validate(const std::vector<std::string> &columns) const {
 
 TablePtr SegmentImpl::fetch_perf(
     const std::vector<std::string> &columns,
-    const std::shared_ptr<arrow::Schema> &result_schema, bool need_local_doc_id,
-    int local_doc_id_col_index, const std::vector<int> &indices) const {
+    const std::shared_ptr<arrow::Schema> &result_schema,
+    const std::vector<int> &indices) const {
   std::vector<std::shared_ptr<arrow::ChunkedArray>> chunk_arrays;
   chunk_arrays.resize(columns.size());
 
+  bool need_local_doc_id = false;
+  size_t local_doc_id_col_index = 0;
+
   for (size_t i = 0; i < columns.size(); ++i) {
     if (columns[i] == LOCAL_ROW_ID) {
+      need_local_doc_id = true;
+      local_doc_id_col_index = i;
+      chunk_arrays[i] = nullptr;
       continue;
     }
     chunk_arrays[i] = persist_chunk_arrays_[col_idx_map_.at(columns[i])];
   }
 
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
+
+  std::vector<std::pair<int64_t, int64_t>> indices_in_table;
+  for (const auto &target_index : indices) {
+    auto it = std::upper_bound(chunk_offsets_.begin(), chunk_offsets_.end(),
+                               target_index);
+    if (it == chunk_offsets_.begin()) {
+      LOG_ERROR("Target index %d is out of bounds", target_index);
+      return nullptr;
+    }
+    int chunk_index =
+        static_cast<int>(std::distance(chunk_offsets_.begin(), it) - 1);
+    int64_t index_in_chunk = target_index - chunk_offsets_[chunk_index];
+    indices_in_table.emplace_back(chunk_index, index_in_chunk);
+  }
+
+  for (size_t i = 0; i < columns.size(); ++i) {
+    if (columns[i] == LOCAL_ROW_ID) {
+      continue;
+    }
+    const auto &source_column = chunk_arrays[i];
+    std::shared_ptr<arrow::Array> array;
+    auto status =
+        BuildArrayFromIndicesWithType(source_column, indices_in_table, &array);
+    if (!status.ok()) {
+      LOG_ERROR("BuildArrayFromIndices failed: %s", status.ToString().c_str());
+      return nullptr;
+    }
+    result_arrays[i] = array;
+  }
 
   if (need_local_doc_id) {
     std::vector<uint64_t> values;
@@ -2253,45 +2286,14 @@ TablePtr SegmentImpl::fetch_perf(
     result_arrays[local_doc_id_col_index] = array;
   }
 
-  std::vector<std::pair<int64_t, int64_t>> indices_in_table;
-  for (const auto &target_index : indices) {
-    auto it = std::upper_bound(chunk_offsets_.begin(), chunk_offsets_.end(),
-                               target_index);
-    if (it == chunk_offsets_.begin()) {
-      LOG_ERROR("Target index %d is out of bounds", target_index);
-      return nullptr;
-    }
-    int chunk_index =
-        static_cast<int>(std::distance(chunk_offsets_.begin(), it) - 1);
-    int64_t index_in_chunk = target_index - chunk_offsets_[chunk_index];
-    indices_in_table.emplace_back(chunk_index, index_in_chunk);
-  }
-
-  size_t result_col_index = 0;
-  for (size_t i = 0; i < columns.size(); ++i) {
-    if (columns[i] == LOCAL_ROW_ID) {
-      continue;
-    }
-    const auto &source_column = chunk_arrays[result_col_index];
-    std::shared_ptr<arrow::Array> array;
-    auto status =
-        BuildArrayFromIndicesWithType(source_column, indices_in_table, &array);
-    if (!status.ok()) {
-      LOG_ERROR("BuildArrayFromIndices failed: %s", status.ToString().c_str());
-      return nullptr;
-    }
-    result_arrays[result_col_index] = array;
-    result_col_index++;
-  }
-
   return arrow::Table::Make(result_schema, result_arrays,
                             static_cast<int64_t>(indices.size()));
 }
 
 TablePtr SegmentImpl::fetch_normal(
     const std::vector<std::string> &columns,
-    const std::shared_ptr<arrow::Schema> &result_schema, bool need_local_doc_id,
-    int local_doc_id_col_index, const std::vector<int> &indices) const {
+    const std::shared_ptr<arrow::Schema> &result_schema,
+    const std::vector<int> &indices) const {
   // Store scalars per column: column_index -> (output_row, scalar)
   std::vector<std::vector<std::pair<int, std::shared_ptr<arrow::Scalar>>>>
       column_results(columns.size());
@@ -2418,9 +2420,16 @@ TablePtr SegmentImpl::fetch_normal(
   // Phase 3: Construct result arrays
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
+  bool need_local_doc_id = false;
+  size_t local_doc_id_col_index = -1;
+
   for (size_t col_index = 0; col_index < columns.size(); ++col_index) {
     const std::string &col = columns[col_index];
-    if (col == LOCAL_ROW_ID) continue;
+    if (col == LOCAL_ROW_ID) {
+      need_local_doc_id = true;
+      local_doc_id_col_index = col_index;
+      continue;
+    }
 
     auto &result_vec = column_results[col_index];
     std::sort(result_vec.begin(), result_vec.end());
@@ -2493,15 +2502,11 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 
   // Build result schema
   std::vector<std::shared_ptr<arrow::Field>> fields;
-  bool need_local_doc_id = false;
-  int local_doc_id_col_index = -1;
 
   for (size_t i = 0; i < columns.size(); ++i) {
     const auto &col = columns[i];
     if (col == LOCAL_ROW_ID) {
       fields.push_back(arrow::field(LOCAL_ROW_ID, arrow::uint64()));
-      need_local_doc_id = true;
-      local_doc_id_col_index = static_cast<int>(i);
     } else if (col == GLOBAL_DOC_ID) {
       fields.push_back(arrow::field(GLOBAL_DOC_ID, arrow::uint64()));
     } else if (col == USER_ID) {
@@ -2536,11 +2541,9 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
   }
 
   if (use_fetch_perf_) {
-    return fetch_perf(columns, result_schema, need_local_doc_id,
-                      local_doc_id_col_index, indices);
+    return fetch_perf(columns, result_schema, indices);
   }
-  return fetch_normal(columns, result_schema, need_local_doc_id,
-                      local_doc_id_col_index, indices);
+  return fetch_normal(columns, result_schema, indices);
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
