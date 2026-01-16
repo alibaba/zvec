@@ -1473,7 +1473,6 @@ TEST_P(SegmentTest, FetchPerf) {
 
   // convert writing segment meta to persisted segment meta
   Version version = version_manager->get_current_version();
-  // auto writing_segment_meta = segment->meta();
   writing_segment_meta->remove_writing_forward_block();
   auto s = version.add_persisted_segment_meta(writing_segment_meta);
   ASSERT_TRUE(s.ok());
