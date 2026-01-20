@@ -25,9 +25,9 @@ namespace zvec::core_interface {
 int FlatIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const FlatIndexParam &>(param);
 
-  proxima_index_params_.set(core::FLAT_BUILDER_COLUMN_MAJOR_ORDER,
+  proxima_index_params_.set(core::PARAM_FLAT_COLUMN_MAJOR_ORDER,
                             param_.major_order == IndexMeta::MO_COLUMN);
-  proxima_index_params_.set(core::FLAT_SEARCHER_USE_ID_MAP, param_.use_id_map);
+  proxima_index_params_.set(core::PARAM_FLAT_USE_ID_MAP, param_.use_id_map);
   if (is_sparse_) {
     streamer_ = core::IndexFactory::CreateStreamer("FlatSparseStreamer");
   } else {

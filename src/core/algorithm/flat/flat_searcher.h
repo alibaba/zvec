@@ -32,8 +32,8 @@ class FlatSearcher : public IndexSearcher {
   //! Initialize Searcher
   int init(const ailego::Params &index_params) override {
     params_ = index_params;
-    read_block_size_ = FLAT_READ_BLOCK_SIZE;
-    index_params.get(FLAT_SEARCHER_READ_BLOCK_SIZE, &read_block_size_);
+    read_block_size_ = FLAT_DEFAULT_READ_BLOCK_SIZE;
+    index_params.get(PARAM_FLAT_READ_BLOCK_SIZE, &read_block_size_);
     return 0;
   }
 
@@ -165,7 +165,7 @@ class FlatSearcher : public IndexSearcher {
   const uint64_t *keys_{nullptr};
   std::map<key_t, node_id_t> key_id_mapping_;
   uint32_t magic_{IndexContext::GenerateMagic()};
-  uint32_t read_block_size_{FLAT_READ_BLOCK_SIZE};
+  uint32_t read_block_size_{FLAT_DEFAULT_READ_BLOCK_SIZE};
   bool column_major_order_{false};
   IndexMeta meta_{};
   IndexStorage::Pointer container_{};
