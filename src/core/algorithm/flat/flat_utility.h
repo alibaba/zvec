@@ -35,7 +35,7 @@ static const std::string FLAT_SEGMENT_MAPPING_SEG_ID("flat.mapping");
 
 // index params
 static const std::string PARAM_FLAT_COLUMN_MAJOR_ORDER(
-    "proxima.flat.searcher.column_major_order");
+    "proxima.flat.column_major_order");
 static const std::string PARAM_FLAT_BATCH_SIZE("proxima.flat.batch_size");
 static const std::string PARAM_FLAT_READ_BLOCK_SIZE(
     "proxima.flat.read_block_size");
