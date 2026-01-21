@@ -15,7 +15,7 @@
 
 #include <memory>
 #include <zvec/core/interface/constants.h>
-#include "type.h"
+#include <zvec/db/type.h>
 
 namespace zvec {
 
