@@ -204,8 +204,11 @@ std::string FieldSchema::to_string_formatted(int indent_level) const {
       << indent(indent_level + 1)
       << "data_type: " << DataTypeCodeBook::AsString(data_type_) << ",\n"
       << indent(indent_level + 1)
-      << "nullable: " << (nullable_ ? "true" : "false") << ",\n"
-      << indent(indent_level + 1) << "dimension: " << dimension_ << ",\n";
+      << "nullable: " << (nullable_ ? "true" : "false") << ",\n";
+
+  if (dimension_ != 0) {
+    oss << indent(indent_level + 1) << "dimension: " << dimension_ << ",\n";
+  }
 
   if (index_params_) {
     oss << indent(indent_level + 1)
