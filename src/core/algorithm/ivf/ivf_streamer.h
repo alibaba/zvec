@@ -14,7 +14,7 @@
 #ifndef __IVF_STREAMER_H__
 #define __IVF_STREAMER_H__
 
-#include "framework/index_streamer.h"
+#include <zvec/core/framework/index_streamer.h>
 #include "ivf_centroid_index.h"
 #include "ivf_entity.h"
 #include "ivf_searcher_context.h"

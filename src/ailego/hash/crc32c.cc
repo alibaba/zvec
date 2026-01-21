@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "crc32c.h"
 #include <ailego/internal/cpu_features.h>
+#include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/internal/platform.h>
 
 #if !defined(__SSE4_2__) && !defined(__ARM_FEATURE_CRC32)
 /**

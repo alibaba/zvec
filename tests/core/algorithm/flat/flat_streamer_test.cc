@@ -16,12 +16,12 @@
 #include <future>
 #include <string>
 #include <vector>
-#include <ailego/buffer/buffer_manager.h>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
-#include <framework/index_framework.h>
-#include <framework/index_streamer.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/core/framework/index_framework.h>
+#include <zvec/core/framework/index_streamer.h>
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push

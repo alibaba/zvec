@@ -15,7 +15,7 @@
 #include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
-#include "framework/index_factory.h"
+#include "zvec/core/framework/index_factory.h"
 
 
 using namespace zvec;

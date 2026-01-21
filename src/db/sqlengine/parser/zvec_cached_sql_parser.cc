@@ -15,7 +15,7 @@
 #include "zvec_cached_sql_parser.h"
 #include <exception>
 #include <typeinfo>
-#include <ailego/logger/logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include "atn/ParserATNSimulator.h"
 #include "db/sqlengine/antlr/gen/SQLLexer.h"

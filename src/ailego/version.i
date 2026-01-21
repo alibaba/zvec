@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ailego/internal/platform.h"
+#include <zvec/ailego/container/vector.h>
 
 #ifndef AILEGO_VERSION_TO_STRING_
 #define AILEGO_VERSION_TO_STRING_(x) #x

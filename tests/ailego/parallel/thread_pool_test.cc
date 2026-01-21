@@ -15,8 +15,8 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
-#include <ailego/parallel/thread_pool.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 
 using namespace zvec::ailego;
 

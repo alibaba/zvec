@@ -13,9 +13,9 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_framework.h"
+#include <core/quantizer/quantizer_params.h>
+#include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
-#include "quantizer/quantizer_params.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
 #include "ivf_utility.h"

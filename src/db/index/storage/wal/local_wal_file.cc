@@ -14,8 +14,8 @@
 
 #include "local_wal_file.h"
 #include <unistd.h>
-#include <ailego/hash/crc32c.h>
-#include <ailego/logger/logger.h>
+#include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/logger/logger.h>
 #include "db/common/error_code.h"
 #include "db/common/file_helper.h"
 #include "db/common/typedef.h"

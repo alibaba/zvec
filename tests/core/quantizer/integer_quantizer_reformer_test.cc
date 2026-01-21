@@ -14,10 +14,10 @@
 
 #include <iostream>
 #include <random>
-#include <ailego/container/vector.h>
 #include <gtest/gtest.h>
-#include "framework/index_factory.h"
-#include "framework/index_holder.h"
+#include <zvec/ailego/container/vector.h>
+#include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_holder.h"
 
 using namespace zvec::core;
 

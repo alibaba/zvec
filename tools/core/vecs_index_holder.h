@@ -15,8 +15,8 @@
 #pragma once
 
 #include <string>
-#include <ailego/container/params.h>
-#include "framework/index_holder.h"
+#include <zvec/ailego/container/params.h>
+#include "zvec/core/framework/index_holder.h"
 #include "vecs_reader.h"
 
 namespace zvec {

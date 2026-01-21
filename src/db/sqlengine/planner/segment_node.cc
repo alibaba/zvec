@@ -15,9 +15,9 @@
 #include "db/sqlengine/planner/segment_node.h"
 #include <memory>
 #include <optional>
-#include <ailego/logger/logger.h>
-#include <ailego/parallel/thread_pool.h>
 #include <arrow/record_batch.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 
 namespace zvec::sqlengine {
 

@@ -15,7 +15,7 @@
 #pragma once
 
 #include <unordered_map>
-#include <framework/index_framework.h>
+#include <zvec/core/framework/index_framework.h>
 #include "flat_sparse_index_format.h"
 
 namespace zvec {

@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "logger.h"
 #include <iostream>
 #include <sstream>
 #include <thread>
-#include <ailego/io/file.h>
-#include <ailego/utility/time_helper.h>
+#include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/utility/time_helper.h>
 
 namespace zvec {
 namespace ailego {

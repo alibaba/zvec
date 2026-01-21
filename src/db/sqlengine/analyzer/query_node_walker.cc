@@ -14,7 +14,7 @@
 
 #include "query_node_walker.h"
 #include <cstddef>
-#include <ailego/logger/logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/ailego/utility/string_helper.h>

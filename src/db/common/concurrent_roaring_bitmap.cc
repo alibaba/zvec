@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "concurrent_roaring_bitmap.h"
-#include <ailego/hash/crc32c.h>
+#include <zvec/ailego/hash/crc32c.h>
 
 
 namespace zvec {

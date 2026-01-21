@@ -14,9 +14,9 @@
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/hamming_distance_matrix.h>
 #include <ailego/math_batch/distance_batch.h>
-#include "framework/index_error.h"
-#include "framework/index_factory.h"
-#include "framework/index_metric.h"
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_metric.h>
 
 namespace zvec {
 namespace core {

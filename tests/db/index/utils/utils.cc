@@ -16,7 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
-#include "ailego/logger/logger.h"
+#include <zvec/ailego/logger/logger.h>
 #include "zvec/db/collection.h"
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"

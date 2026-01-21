@@ -16,7 +16,7 @@
 
 #include <iostream>
 #include <string>
-#include "framework/index_meta.h"
+#include "zvec/core/framework/index_meta.h"
 
 namespace zvec {
 namespace core {

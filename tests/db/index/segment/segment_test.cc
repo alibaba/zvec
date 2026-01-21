@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
-#include <ailego/buffer/buffer_manager.h>
 #include <arrow/array/array_binary.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
@@ -30,6 +29,7 @@
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/buffer_manager.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"

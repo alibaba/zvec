@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "vector_column_indexer.h"
 #include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/core/interface/index_factory.h>
 #include <zvec/db/status.h>
 #include "engine_helper.hpp"
 

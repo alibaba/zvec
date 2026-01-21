@@ -16,13 +16,12 @@
 #include <utility>
 #include <variant>
 #include <ailego/parallel/lock.h>
-#include <core/interface/index_factory.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
+#include <zvec/core/interface/index.h>
+#include <zvec/core/interface/index_param.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
-#include "core/interface/index.h"
-#include "core/interface/index_param.h"
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
 #include "db/index/column/common/index_results.h"

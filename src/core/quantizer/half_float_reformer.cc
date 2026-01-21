@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <zvec/ailego/utility/float_helper.h>
-#include "framework/index_factory.h"
+#include <zvec/core/framework/index_factory.h>
 #include "record_quantizer.h"
 
 namespace zvec {

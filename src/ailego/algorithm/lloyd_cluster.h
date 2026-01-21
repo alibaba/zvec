@@ -17,8 +17,8 @@
 #include <algorithm>
 #include <random>
 #include <ailego/parallel/lock.h>
-#include <ailego/parallel/thread_pool.h>
-#include <ailego/utility/type_helper.h>
+#include <zvec/ailego/parallel/thread_pool.h>
+#include <zvec/ailego/utility/type_helper.h>
 
 namespace zvec {
 namespace ailego {

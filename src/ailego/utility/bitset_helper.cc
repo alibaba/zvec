@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "bitset_helper.h"
+#include <zvec/ailego/internal/platform.h>
 
 #ifndef __SSE4_2__
 #define bitset_popcount32 ailego_popcount32

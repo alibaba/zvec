@@ -14,8 +14,8 @@
 #pragma once
 
 #include <memory>
+#include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/pattern/singleton.h>
-#include "ailego/parallel/thread_pool.h"
 
 namespace zvec {
 

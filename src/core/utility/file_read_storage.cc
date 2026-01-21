@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cerrno>
-#include <ailego/io/file.h>
 #include <ailego/utility/memory_helper.h>
-#include "framework/index_error.h"
-#include "framework/index_factory.h"
-#include "framework/index_unpacker.h"
+#include <zvec/ailego/io/file.h>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_unpacker.h>
 #include "utility_params.h"
 
 namespace zvec {

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
-#include <framework/index_factory.h>
+#include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
 #include "flat_streamer_provider.h"

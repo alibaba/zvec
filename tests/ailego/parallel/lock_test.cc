@@ -14,8 +14,8 @@
 
 #include <mutex>
 #include <ailego/parallel/lock.h>
-#include <ailego/parallel/thread_pool.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 
 using namespace zvec;
 

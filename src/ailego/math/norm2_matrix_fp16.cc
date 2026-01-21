@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <zvec/ailego/internal/platform.h>
 #include "norm2_matrix.h"
 #include "norm_matrix_fp16.i"
 

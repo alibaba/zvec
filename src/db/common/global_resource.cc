@@ -13,7 +13,7 @@
 // limitations under the License.
 #include "db/common/global_resource.h"
 #include <mutex>
-#include <ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/db/config.h>
 
 namespace zvec {

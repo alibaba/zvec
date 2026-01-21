@@ -16,10 +16,10 @@
 #include <memory>
 #include <utility>
 #include <vector>
-#include <ailego/logger/logger.h>
-#include <ailego/parallel/thread_pool.h>
 #include <arrow/acero/api.h>
 #include <arrow/compute/api.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>

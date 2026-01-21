@@ -14,8 +14,8 @@
 
 #include <memory>
 #include <string>
+#include <zvec/core/interface/index.h>
 #include "algorithm/ivf/ivf_params.h"
-#include "interface/index.h"
 
 namespace zvec::core_interface {
 

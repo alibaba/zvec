@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <ailego/math/distance_matrix.h>
+#include "ailego/math/distance_matrix.h"
 #include "cosine_distance_batch.h"
 #include "inner_product_distance_batch.h"
 #include "utils.h"

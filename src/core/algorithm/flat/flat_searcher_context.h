@@ -14,8 +14,8 @@
 
 #pragma once
 
-#include <framework/index_document.h>
-#include <framework/index_error.h>
+#include <zvec/core/framework/index_document.h>
+#include <zvec/core/framework/index_error.h>
 #include "flat_index_format.h"
 #include "flat_searcher.h"
 #include "flat_utility.h"

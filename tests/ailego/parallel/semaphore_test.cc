@@ -14,9 +14,9 @@
 
 #include <mutex>
 #include <ailego/parallel/semaphore.h>
-#include <ailego/parallel/thread_pool.h>
-#include <ailego/utility/time_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/parallel/thread_pool.h>
+#include <zvec/ailego/utility/time_helper.h>
 
 using namespace zvec;
 

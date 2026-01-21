@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include <ailego/internal/cpu_features.h>
-#include <ailego/internal/platform.h>
+#include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/utility/float_helper.h>
 
 // #if defined(__F16C__) && defined(__AVX__)

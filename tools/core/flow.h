@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_flow.h"
+#include "zvec/core/framework/index_flow.h"
 #include "meta_segment_common.h"
 
 using namespace std;

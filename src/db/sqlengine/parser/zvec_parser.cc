@@ -20,8 +20,8 @@
 #include <iostream>
 #include <limits>
 #include <typeinfo>
-#include <ailego/encoding/json.h>
-#include <ailego/logger/logger.h>
+#include <zvec/ailego/encoding/json.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include "db/sqlengine/common/util.h"
 #include "tree/ParseTree.h"

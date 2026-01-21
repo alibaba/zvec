@@ -12,11 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "index.h"
-#include "framework/index_error.h"
-#include "framework/index_storage.h"
+#include <magic_enum/magic_enum.hpp>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_storage.h>
+#include <zvec/core/interface/index.h>
+#include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec::core_interface {
+
+// eliminate the pre-alloc of the context pool
+thread_local static std::array<core::IndexContext::Pointer,
+                               (magic_enum::enum_count<IndexType>() - 1) * 2>
+    _context_list;
+
+
+bool Index::init_context() {
+  context_index_ = (magic_enum::enum_integer(param_.index_type) - 1) * 2 +
+                   static_cast<size_t>(is_sparse_);
+  if (_context_list[context_index_] == nullptr) {
+    if ((_context_list[context_index_] = streamer_->create_context()) ==
+        nullptr) {
+      LOG_ERROR("Failed to create context");
+      return false;
+    }
+  }
+  return true;
+}
+
+core::IndexContext::Pointer &Index::acquire_context() {
+  init_context();
+  return _context_list[context_index_];
+}
 
 int Index::ParseMetricName(const BaseIndexParam &param) {
   std::string metric_name;

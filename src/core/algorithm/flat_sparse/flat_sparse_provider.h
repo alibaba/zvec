@@ -15,9 +15,9 @@
 #pragma once
 
 #include <string>
-#include <framework/index_meta.h>
 #include <utility/sparse_utility.h>
-#include "framework/index_logger.h"
+#include <zvec/core/framework/index_logger.h>
+#include <zvec/core/framework/index_meta.h>
 #include "flat_sparse_streamer_entity.h"
 
 namespace zvec {

@@ -14,13 +14,9 @@
 
 #pragma once
 
-#include <vector>
-#include <ailego/internal/platform.h>
-#include <ailego/utility/math_helper.h>
-#include <ailego/utility/type_helper.h>
-#include "distance_utility.h"
+#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/utility/type_helper.h>
 #include "inner_product_matrix.h"
-#include "norm2_matrix.h"
 
 namespace zvec {
 namespace ailego {

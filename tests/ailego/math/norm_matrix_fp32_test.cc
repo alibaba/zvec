@@ -14,12 +14,12 @@
 
 #include <random>
 #include <ailego/container/bitmap.h>
-#include <ailego/container/vector.h>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/math/norm_matrix.h>
 #include <ailego/utility/math_helper.h>
-#include <ailego/utility/time_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/utility/time_helper.h>
 
 using namespace zvec::ailego;
 

@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "index_mapping.h"
-#include <ailego/io/mmap_file.h>
-#include "index_error.h"
-#include "index_logger.h"
+#include <zvec/ailego/io/mmap_file.h>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_logger.h>
+#include <zvec/core/framework/index_mapping.h>
+#include "ailego/utility/memory_helper.h"
 
 #ifdef __linux__
 #include <sys/statfs.h>

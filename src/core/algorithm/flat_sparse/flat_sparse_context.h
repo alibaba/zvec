@@ -15,9 +15,9 @@
 #pragma once
 
 #include <cstdint>
-#include <framework/index_context.h>
-#include <framework/index_document.h>
 #include <utility/sparse_utility.h>
+#include <zvec/core/framework/index_context.h>
+#include <zvec/core/framework/index_document.h>
 #include "flat_sparse_entity.h"
 #include "flat_sparse_searcher.h"
 #include "flat_sparse_streamer.h"

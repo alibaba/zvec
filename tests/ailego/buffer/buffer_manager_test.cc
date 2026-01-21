@@ -14,9 +14,9 @@
 
 #include <cstdint>
 #include <thread>
-#include <ailego/buffer/buffer_manager.h>
 #include <gtest/gtest.h>
-#include "ailego/logger/logger.h"
+#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/logger/logger.h>
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push

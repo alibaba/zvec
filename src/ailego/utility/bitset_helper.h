@@ -15,7 +15,8 @@
 #pragma once
 
 #include <vector>
-#include <ailego/internal/platform.h>
+#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 

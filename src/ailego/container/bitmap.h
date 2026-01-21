@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <vector>
 #include <ailego/utility/bitset_helper.h>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace ailego {

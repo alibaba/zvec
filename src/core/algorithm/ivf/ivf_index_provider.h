@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_searcher.h"
+#include <zvec/core/framework/index_searcher.h>
 #include "ivf_entity.h"
 
 namespace zvec {
