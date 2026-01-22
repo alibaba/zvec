@@ -320,6 +320,12 @@ struct DataTypeCodeBook {
       case DataType::VECTOR_INT16:
         data_type = "VECTOR_INT16";
         break;
+      case DataType::SPARSE_VECTOR_FP16:
+        data_type = "SPARSE_VECTOR_FP16";
+        break;
+      case DataType::SPARSE_VECTOR_FP32:
+        data_type = "SPARSE_VECTOR_FP32";
+        break;
       case DataType::ARRAY_BINARY:
         data_type = "ARRAY_BINARY";
         break;
