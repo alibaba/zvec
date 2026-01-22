@@ -269,8 +269,7 @@ class IVFIndexParams : public VectorIndexParams {
     auto base_str = vector_index_params_to_string("IVFIndexParams",
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
-    oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_
-        << ",use_soar:" << use_soar_ << " << ";
+    oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_ << "}";
     return oss.str();
   }
 

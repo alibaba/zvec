@@ -120,9 +120,7 @@ Status FieldSchema::validate() const {
             support_dense_vector_index.end()) {
           return Status::InvalidArgument(
               "schema validate failed: dense_vector's index_params only "
-              "support FLAT|HNSW "
-              "index, "
-              "but field[",
+              "support FLAT|HNSW|IVF index, but field[",
               name_, "]'s index_type is ",
               IndexTypeCodeBook::AsString(index_params_->type()));
         }
@@ -199,15 +197,23 @@ std::string FieldSchema::to_string() const {
 
 std::string FieldSchema::to_string_formatted(int indent_level) const {
   std::ostringstream oss;
-  oss << indent(indent_level) << "FieldSchema{\n"
-      << indent(indent_level + 1) << "name: '" << name_ << "',\n"
-      << indent(indent_level + 1)
-      << "data_type: " << DataTypeCodeBook::AsString(data_type_) << ",\n"
-      << indent(indent_level + 1)
-      << "nullable: " << (nullable_ ? "true" : "false") << ",\n";
+  if (is_vector_field()) {
+    oss << indent(indent_level) << "FieldSchema[vector]{\n";
+  } else {
+    oss << indent(indent_level) << "FieldSchema[scalar]{\n";
+  }
 
-  if (dimension_ != 0) {
-    oss << indent(indent_level + 1) << "dimension: " << dimension_ << ",\n";
+  oss << indent(indent_level + 1) << "name: '" << name_ << "',\n"
+      << indent(indent_level + 1)
+      << "data_type: " << DataTypeCodeBook::AsString(data_type_) << ",\n";
+
+  if (is_vector_field()) {
+    if (is_dense_vector()) {
+      oss << indent(indent_level + 1) << "dimension: " << dimension_ << ",\n";
+    }
+  } else {
+    oss << indent(indent_level + 1)
+        << "nullable: " << (nullable_ ? "true" : "false") << ",\n";
   }
 
   if (index_params_) {
