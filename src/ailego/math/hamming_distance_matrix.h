@@ -15,7 +15,6 @@
 #pragma once
 
 #include <cmath>
-#include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/type_helper.h>
 

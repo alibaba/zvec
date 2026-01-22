@@ -18,7 +18,6 @@
 #include <condition_variable>
 #include <mutex>
 #include <type_traits>
-#include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
 
 namespace zvec {

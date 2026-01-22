@@ -17,7 +17,7 @@
 #include <cstring>
 #include <type_traits>
 #include <vector>
-#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/ailego/utility/type_helper.h>
 

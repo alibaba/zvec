@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/internal/platform.h>
 #include "hnsw_entity.h"
 
 namespace zvec {

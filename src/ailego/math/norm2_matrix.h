@@ -16,7 +16,6 @@
 
 #include <cmath>
 #include <ailego/utility/math_helper.h>
-#include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/type_helper.h>
 

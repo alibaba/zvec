@@ -16,7 +16,7 @@
 
 #include <limits>
 #include <vector>
-#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace ailego {

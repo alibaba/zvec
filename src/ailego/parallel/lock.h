@@ -21,7 +21,6 @@
 #include <shared_mutex>
 #endif
 #include <ailego/pattern/defer.h>
-#include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
 
 namespace zvec {

@@ -17,7 +17,7 @@
 #include <memory>
 #include <utility>
 #include <ailego/utility/memory_helper.h>
-#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_logger.h>

@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/type_helper.h>
 #include "inner_product_matrix.h"
 

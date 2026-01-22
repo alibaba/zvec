@@ -19,7 +19,6 @@
 #include <roaring.hh>
 #include <roaring64map.hh>
 #include <roaring/roaring.h>
-#include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>

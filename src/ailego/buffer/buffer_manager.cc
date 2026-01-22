@@ -18,7 +18,6 @@
 #include <arrow/io/api.h>
 #include <parquet/arrow/reader.h>
 #include <zvec/ailego/buffer/buffer_manager.h>
-#include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/logger/logger.h>
 

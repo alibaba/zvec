@@ -15,6 +15,7 @@
 #include "memory_helper.h"
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
 
