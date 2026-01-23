@@ -380,8 +380,8 @@ class FlatStreamerEntity {
 
  private:
   //! Constants
-  static constexpr size_t kMaxSegmentId = std::numeric_limits<uint16_t>::max();
-  static constexpr size_t kMaxBlockId = std::numeric_limits<uint16_t>::max();
+  static constexpr size_t kMaxSegmentId = std::numeric_limits<uint32_t>::max();
+  static constexpr size_t kMaxBlockId = std::numeric_limits<uint32_t>::max();
 
   //! Members
   std::mutex mutex_{};
