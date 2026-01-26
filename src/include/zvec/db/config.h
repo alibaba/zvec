@@ -16,13 +16,18 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
-#include <ailego/logger/logger.h>
-#include <ailego/pattern/singleton.h>
-#include "cgroup_util.h"
-#include "constants.h"
-#include "status.h"
+#include <zvec/ailego/pattern/singleton.h>
+#include <zvec/db/status.h>
 
 namespace zvec {
+
+const uint32_t MIN_LOG_FILE_SIZE = 128;
+const uint32_t DEFAULT_LOG_FILE_SIZE = 2048;
+const uint32_t DEFAULT_LOG_OVERDUE_DAYS = 7;
+const std::string CONSOLE_LOG_TYPE_NAME = "ConsoleLogger";
+const std::string FILE_LOG_TYPE_NAME = "AppendLogger";
+const std::string DEFAULT_LOG_DIR = "./logs";
+const std::string DEFAULT_LOG_BASENAME = "zvec.log";
 
 class GlobalConfig : public ailego::Singleton<GlobalConfig> {
   friend class ailego::Singleton<GlobalConfig>;
@@ -78,20 +83,20 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
   // Configuration data structure
   struct ConfigData {
-    uint64_t memory_limit_bytes =
-        CgroupUtil::getMemoryLimit() * DEFAULT_MEMORY_LIMIT_RATIO;
+    uint64_t memory_limit_bytes;
 
     // log
-    std::shared_ptr<LogConfig> log_config =
-        std::make_shared<ConsoleLogConfig>();
+    std::shared_ptr<LogConfig> log_config;
 
     // query
-    uint32_t query_thread_count = CgroupUtil::getCpuLimit();
-    float invert_to_forward_scan_ratio = 0.9;
-    float brute_force_by_keys_ratio = 0.1;
+    uint32_t query_thread_count;
+    float invert_to_forward_scan_ratio;
+    float brute_force_by_keys_ratio;
 
     // optimize
-    uint32_t optimize_thread_count = CgroupUtil::getCpuLimit();
+    uint32_t optimize_thread_count;
+
+    ConfigData();
   };
 
   // Initialize the configuration (can only be called once)

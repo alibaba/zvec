@@ -11,12 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "doc.h"
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <regex>
 #include <stdexcept>
+#include <zvec/db/doc.h>
+#include "db/common/constants.h"
+#include "db/index/common/type_helper.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define IS_BIG_ENDIAN 1

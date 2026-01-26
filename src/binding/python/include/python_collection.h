@@ -13,7 +13,7 @@
 // limitations under the License.#pragma once
 
 #include <pybind11/pybind11.h>
-#include "db/collection.h"
+#include <zvec/db/collection.h>
 
 namespace py = pybind11;
 

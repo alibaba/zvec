@@ -20,11 +20,11 @@
 #include <arrow/array/builder_binary.h>
 #include <arrow/result.h>
 #include <core/framework/index_meta.h>
-#include "ailego/pattern/expected.hpp"
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/db/index_params.h>
+#include <zvec/db/schema.h>
+#include <zvec/db/type.h>
 #include "db/index/column/vector_column/vector_column_params.h"
-#include "db/index/common/index_params.h"
-#include "db/index/common/schema.h"
-#include "db/index/common/type.h"
 #include "db/sqlengine/common/util.h"
 #include "db/sqlengine/planner/ops/fetch_vector_op.h"
 

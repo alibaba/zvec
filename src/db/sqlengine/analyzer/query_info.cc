@@ -13,8 +13,8 @@
 // limitations under the License.
 
 #include "query_info.h"
-#include <ailego/utility/float_helper.h>
-#include <ailego/utility/string_helper.h>
+#include <zvec/ailego/utility/float_helper.h>
+#include <zvec/ailego/utility/string_helper.h>
 #include "db/common/constants.h"
 
 namespace zvec::sqlengine {

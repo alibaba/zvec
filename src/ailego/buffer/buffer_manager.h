@@ -21,28 +21,20 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <vector>
 #include <ailego/io/file.h>
+#include <zvec/ailego/pattern/singleton.h>
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-parameter"
-#pragma clang diagnostic ignored "-Wshadow"
-#elif defined(__GNUC__) || defined(__GNUG__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#pragma GCC diagnostic ignored "-Wshadow"
-#endif
-
-#include <arrow/api.h>
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#elif defined(__GNUC__) || defined(__GNUG__)
-#pragma GCC diagnostic pop
-#endif
-
-#include "ailego/pattern/singleton.h"
-
+namespace arrow {
+class ChunkedArray;
+class Array;
+class DataType;
+class Scalar;
+template <typename T>
+class Result;
+class Status;
+class Buffer;
+}  // namespace arrow
 
 namespace zvec {
 

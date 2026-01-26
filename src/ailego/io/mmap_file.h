@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "ailego/internal/platform.h"
 #include "file.h"
 
 namespace zvec {

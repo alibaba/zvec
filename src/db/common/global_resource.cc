@@ -14,7 +14,7 @@
 #include "db/common/global_resource.h"
 #include <mutex>
 #include <ailego/buffer/buffer_manager.h>
-#include "db/common/config.h"
+#include <zvec/db/config.h>
 
 namespace zvec {
 

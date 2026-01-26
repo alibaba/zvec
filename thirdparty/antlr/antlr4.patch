@@ -26,7 +26,7 @@ index 2c5e7376f..bcc0134dc 100644
  add_library(antlr4_static STATIC ${libantlrcpp_SRC})
  
 -set(LIB_OUTPUT_DIR "${CMAKE_HOME_DIRECTORY}/dist") # put generated libraries here.
-+set(LIB_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/output/lib")
++set(LIB_OUTPUT_DIR "${EXTERNAL_LIB_DIR}")
  message(STATUS "Output libraries to ${LIB_OUTPUT_DIR}")
  
  # make sure 'make' works fine even if ${LIB_OUTPUT_DIR} is deleted.

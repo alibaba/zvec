@@ -33,7 +33,7 @@
 #include <parquet/arrow/reader.h>
 #include <parquet/column_reader.h>
 #include <parquet/exception.h>
-#include "db/common/status.h"
+#include <zvec/db/status.h>
 #include "base_forward_store.h"
 #include "store_helper.h"
 

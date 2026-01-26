@@ -19,7 +19,7 @@
 #include <arrow/compute/api.h>
 #include <arrow/datum.h>
 #include <arrow/filesystem/localfs.h>
-#include "storage/base_forward_store.h"
+#include "db/index/storage/base_forward_store.h"
 #include "lazy_record_batch_reader.h"
 
 

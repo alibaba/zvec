@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "stratified_cluster_trainer.h"
-#include <ailego/utility/string_helper.h>
 #include <ailego/utility/time_helper.h>
+#include <zvec/ailego/utility/string_helper.h>
 #include "framework/index_error.h"
 #include "framework/index_factory.h"
 #include "framework/index_helper.h"

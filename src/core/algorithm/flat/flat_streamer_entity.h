@@ -17,10 +17,10 @@
 #include <unordered_map>
 #include <ailego/parallel/lock.h>
 #include <ailego/utility/memory_helper.h>
-#include <ailego/utility/string_helper.h>
 #include <framework/index_context.h>
 #include <framework/index_framework.h>
 #include <framework/index_streamer.h>
+#include <zvec/ailego/utility/string_helper.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
 

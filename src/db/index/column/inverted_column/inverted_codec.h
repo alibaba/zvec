@@ -19,9 +19,9 @@
 #include <string>
 #include <ailego/logger/logger.h>
 #include <roaring/roaring.h>
+#include <zvec/db/status.h>
+#include <zvec/db/type.h>
 #include "db/common/constants.h"
-#include "db/common/status.h"
-#include "db/index/common/type.h"
 
 
 namespace zvec {

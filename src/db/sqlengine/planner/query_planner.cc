@@ -20,21 +20,21 @@
 #include <ailego/parallel/thread_pool.h>
 #include <arrow/acero/api.h>
 #include <arrow/compute/api.h>
-#include "analyzer/query_info.h"
-#include "analyzer/query_node.h"
+#include <zvec/db/schema.h>
+#include <zvec/db/status.h>
+#include <zvec/db/type.h>
 #include "db/common/constants.h"
 #include "db/common/global_resource.h"
-#include "db/common/status.h"
-#include "db/index/common/schema.h"
-#include "db/index/common/type.h"
+#include "db/sqlengine/analyzer/query_info.h"
+#include "db/sqlengine/analyzer/query_node.h"
 #include "db/sqlengine/common/util.h"
 #include "db/sqlengine/planner/invert_recall_node.h"
 #include "db/sqlengine/planner/ops/check_not_filtered_op.h"
 #include "db/sqlengine/planner/ops/contain_op.h"
 #include "db/sqlengine/planner/ops/fetch_vector_op.h"
+#include "db/sqlengine/planner/plan_info.h"
 #include "db/sqlengine/planner/segment_node.h"
 #include "db/sqlengine/planner/vector_recall_node.h"
-#include "planner/plan_info.h"
 #include "optimizer.h"
 
 namespace zvec::sqlengine {

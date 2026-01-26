@@ -16,10 +16,10 @@
 #pragma once
 
 
-#include <ailego/pattern/expected.hpp>
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/db/schema.h>
 #include "db/common/concurrent_roaring_bitmap.h"
 #include "db/common/rocksdb_context.h"
-#include "db/index/common/schema.h"
 #include "inverted_codec.h"
 #include "inverted_doc_range.h"
 #include "inverted_search_result.h"

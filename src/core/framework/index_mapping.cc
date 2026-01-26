@@ -496,6 +496,7 @@ bool IndexMapping::Ishugetlbfs(const std::string &path) const {
   }
   return static_cast<unsigned long>(buf.f_type) == HUGETLBFS_MAGIC;
 #else
+  static_cast<void>(path);
   return false;
 #endif
 }

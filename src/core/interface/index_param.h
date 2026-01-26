@@ -29,10 +29,10 @@
 #include <ailego/encoding/json.h>
 #include <ailego/parallel/thread_pool.h>
 #include <magic_enum/magic_enum.hpp>
+#include <zvec/core/interface/constants.h>
 #include "core/framework/index_filter.h"
 #include "core/framework/index_meta.h"
 #include "utils/utils.h"
-#include "constants.h"
 
 namespace zvec::core_interface {
 #define MAX_DIMENSION 65536

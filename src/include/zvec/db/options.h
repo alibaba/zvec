@@ -14,14 +14,14 @@
 #pragma once
 
 #include <cstdint>
-#include "db/common/constants.h"
 
 namespace zvec {
 
+const uint32_t DEFAULT_MAX_BUFFER_SIZE = 64 * 1024 * 1024;  // 128M
 
 struct CollectionOptions {
-  bool read_only_;
-  bool enable_mmap_;  // ignnored when load collection
+  bool read_only_{false};
+  bool enable_mmap_{true};  // ignnored when load collection
   uint32_t max_buffer_size_{
       DEFAULT_MAX_BUFFER_SIZE};  // ignored when read_only=true
 
@@ -34,6 +34,14 @@ struct CollectionOptions {
   bool operator!=(const CollectionOptions &other) const {
     return !(*this == other);
   }
+
+  CollectionOptions() = default;
+
+  CollectionOptions(bool read_only, bool enable_mmap,
+                    uint32_t max_buffer_size = DEFAULT_MAX_BUFFER_SIZE)
+      : read_only_(read_only),
+        enable_mmap_(enable_mmap),
+        max_buffer_size_(max_buffer_size) {}
 };
 
 struct SegmentOptions {

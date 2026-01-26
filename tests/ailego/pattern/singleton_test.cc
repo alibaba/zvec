@@ -13,8 +13,8 @@
 // limitations under the License.
 
 #include <ailego/parallel/thread_pool.h>
-#include <ailego/pattern/singleton.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/pattern/singleton.h>
 
 using namespace zvec::ailego;
 

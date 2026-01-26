@@ -62,6 +62,10 @@ int Index::CreateAndInitMetric(const BaseIndexParam & /*param*/) {
   auto &metric_name = proxima_index_meta_.metric_name();
 
   metric_ = core::IndexFactory::CreateMetric(metric_name);
+  if (!metric_) {
+    LOG_ERROR("Failed to create metric, name %s", metric_name.c_str());
+    return core::IndexError_Runtime;
+  }
   if (const auto ret = metric_->init(proxima_index_meta_,
                                      proxima_index_meta_.metric_params());
       ret != 0) {

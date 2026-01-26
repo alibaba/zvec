@@ -21,8 +21,8 @@
 #include <ailego/io/file.h>
 #include <ailego/parallel/lock.h>
 #include <ailego/parallel/thread_pool.h>
-#include <ailego/utility/string_helper.h>
 #include <ailego/utility/time_helper.h>
+#include <zvec/ailego/utility/string_helper.h>
 #include "framework/index_plugin.h"
 #include "interface/index_factory.h"
 #include "interface/index_param.h"

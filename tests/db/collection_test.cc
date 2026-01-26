@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/collection.h"
+#include "zvec/db/collection.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -26,17 +26,17 @@
 #include <ailego/utility/file_helper.h>
 #include <gtest/gtest.h>
 #include "ailego/logger/logger.h"
-#include "ailego/utility/float_helper.h"
-#include "db/common/config.h"
 #include "db/common/file_helper.h"
-#include "db/common/status.h"
-#include "db/index/common/doc.h"
-#include "db/index/common/index_params.h"
-#include "db/index/common/options.h"
-#include "db/index/common/schema.h"
-#include "db/index/common/type.h"
 #include "db/index/common/type_helper.h"
 #include "index/utils/utils.h"
+#include "zvec/ailego/utility/float_helper.h"
+#include "zvec/db/config.h"
+#include "zvec/db/doc.h"
+#include "zvec/db/index_params.h"
+#include "zvec/db/options.h"
+#include "zvec/db/schema.h"
+#include "zvec/db/status.h"
+#include "zvec/db/type.h"
 
 using namespace zvec;
 using namespace zvec::test;
@@ -4117,7 +4117,7 @@ TEST_F(CollectionTest, CornerCase_CreateAndOpen) {
       // create collection with non-exist path with read-only mode
       auto schema = TestHelper::CreateNormalSchema();
       auto result = Collection::CreateAndOpen("non-exist-path", *schema,
-                                              CollectionOptions{true});
+                                              CollectionOptions{true, false});
       ASSERT_FALSE(result.has_value());
     }
 

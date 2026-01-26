@@ -16,9 +16,9 @@
 #include <cstdint>
 #include <memory>
 #include <gtest/gtest.h>
-#include "index/common/query_params.h"
-#include "index/common/schema.h"
-#include "index/common/type.h"
+#include "zvec/db//schema.h"
+#include "zvec/db/query_params.h"
+#include "zvec/db/type.h"
 #include "mock_segment.h"
 
 namespace zvec::sqlengine {

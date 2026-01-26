@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "collection.h"
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -23,17 +22,20 @@
 #include <vector>
 #include <ailego/io/file.h>
 #include <ailego/io/file_lock.h>
-#include <ailego/pattern/expected.hpp>
 #include <ailego/utility/file_helper.h>
-#include <ailego/utility/string_helper.h>
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/ailego/utility/string_helper.h>
+#include <zvec/db/collection.h>
+#include <zvec/db/doc.h>
+#include <zvec/db/options.h>
+#include <zvec/db/schema.h>
+#include <zvec/db/status.h>
 #include "ailego/logger/logger.h"
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/profiler.h"
-#include "db/common/status.h"
 #include "db/common/typedef.h"
 #include "db/index/common/delete_store.h"
-#include "db/index/common/doc.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/version_manager.h"
@@ -41,8 +43,6 @@
 #include "db/index/segment/segment_helper.h"
 #include "db/index/segment/segment_manager.h"
 #include "db/sqlengine/sqlengine.h"
-#include "index/common/options.h"
-#include "index/common/schema.h"
 
 namespace zvec {
 

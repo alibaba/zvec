@@ -209,8 +209,8 @@ class HnswDistCalculator {
   const void *query_;
   uint32_t dim_;
 
-  uint32_t compare_cnt_;        // record distance compute times
-  uint32_t compare_cnt_batch_;  // record batch distance compute time
+  uint32_t compare_cnt_;  // record distance compute times
+  // uint32_t compare_cnt_batch_;  // record batch distance compute time
   bool error_{false};
 };
 

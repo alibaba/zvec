@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "vector_column_indexer.h"
-#include "ailego/pattern/expected.hpp"
-#include "db/common/status.h"
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/db/status.h>
 #include "engine_helper.hpp"
 
 

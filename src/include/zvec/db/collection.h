@@ -16,12 +16,10 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <ailego/io/file.h>
-#include <ailego/pattern/expected.hpp>
-#include "db/common/status.h"
-#include "index/common/doc.h"
-#include "index/common/options.h"
-#include "index/common/stats.h"
+#include <zvec/db/doc.h>
+#include <zvec/db/options.h>
+#include <zvec/db/stats.h>
+#include <zvec/db/status.h>
 
 namespace zvec {
 

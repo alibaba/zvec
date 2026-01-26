@@ -309,8 +309,8 @@ class HNSWIndex : public Index {
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) override;
-  virtual int _get_coarse_search_topk(
-      const BaseIndexQueryParam::Pointer &search_param);
+  int _get_coarse_search_topk(
+      const BaseIndexQueryParam::Pointer &search_param) override;
 
 
  private:

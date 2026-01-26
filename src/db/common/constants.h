@@ -24,20 +24,6 @@ const float DEFAULT_MEMORY_LIMIT_RATIO = 0.8f;
 
 const uint32_t MIN_MEMORY_LIMIT_BYTES = 100 * 1024 * 1024;
 
-const uint32_t MIN_LOG_FILE_SIZE = 128;
-
-const uint32_t DEFAULT_LOG_FILE_SIZE = 2048;
-
-const uint32_t DEFAULT_LOG_OVERDUE_DAYS = 7;
-
-const std::string CONSOLE_LOG_TYPE_NAME = "ConsoleLogger";
-
-const std::string FILE_LOG_TYPE_NAME = "AppendLogger";
-
-const std::string DEFAULT_LOG_DIR = "./logs";
-
-const std::string DEFAULT_LOG_BASENAME = "zvec.log";
-
 const uint64_t INVALID_DOC_ID = -1UL;
 
 const std::string LOCAL_ROW_ID = "_zvec_row_id_";
@@ -51,10 +37,6 @@ const int kSparseMaxDimSize = 4096;
 const int64_t kMaxRecordBatchNumRows = 4096;
 
 constexpr uint32_t MAX_ARRAY_FIELD_LEN = 32;
-
-const uint64_t MAX_DOC_COUNT_PER_SEGMENT = 10000000;
-
-const uint64_t MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD = 1000;
 
 const float COMPACT_DELETE_RATIO_THRESHOLD = 0.3f;
 
@@ -97,9 +79,6 @@ const std::string INVERT_KEY_NULL{"$ZVEC$NULL"};
 const std::string INVERT_KEY_SEALED{"$ZVEC$SEALED"};
 
 const uint32_t INVERT_ID_LIST_SIZE_THRESHOLD = 3;
-
-// Segment Options
-const uint32_t DEFAULT_MAX_BUFFER_SIZE = 64 * 1024 * 1024;  // 128M
 
 
 }  // namespace zvec

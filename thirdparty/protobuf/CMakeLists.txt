@@ -1,6 +1,11 @@
 set(protobuf_BUILD_TESTS OFF CACHE BOOL "Disable testing in protobuf" FORCE)
 set(protobuf_WITH_ZLIB ON CACHE BOOL "Disable zlib support in protobuf" FORCE)
+
+set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})
 add_subdirectory(protobuf-3.21.12/cmake protobuf-3.21.12)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
+unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(libprotobuf PRIVATE 

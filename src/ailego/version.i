@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "internal/platform.h"
+#include "ailego/internal/platform.h"
 
 #ifndef AILEGO_VERSION_TO_STRING_
 #define AILEGO_VERSION_TO_STRING_(x) #x

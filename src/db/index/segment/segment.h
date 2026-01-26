@@ -18,20 +18,20 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <ailego/pattern/expected.hpp>
 #include <arrow/record_batch.h>
-#include "db/common/status.h"
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/db/doc.h>
+#include <zvec/db/index_params.h>
+#include <zvec/db/options.h>
+#include <zvec/db/schema.h>
+#include <zvec/db/status.h>
 #include "db/index/column/inverted_column/inverted_column_indexer.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/combined_vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/common/delete_store.h"
-#include "db/index/common/doc.h"
 #include "db/index/common/id_map.h"
-#include "db/index/common/index_params.h"
 #include "db/index/common/meta.h"
-#include "db/index/common/options.h"
-#include "db/index/common/schema.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/storage/base_forward_store.h"
 

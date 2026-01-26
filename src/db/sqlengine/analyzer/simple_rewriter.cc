@@ -16,7 +16,7 @@
 #include <array>
 #include <memory>
 #include <vector>
-#include "analyzer/query_node.h"
+#include "db/sqlengine/analyzer/query_node.h"
 
 namespace zvec::sqlengine {
 

@@ -14,8 +14,8 @@
 #pragma once
 
 #include <memory>
-#include "core/interface/constants.h"
-#include "type.h"
+#include <zvec/core/interface/constants.h>
+#include <zvec/db/type.h>
 
 namespace zvec {
 

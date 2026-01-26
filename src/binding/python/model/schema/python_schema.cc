@@ -14,8 +14,8 @@
 
 #include "python_schema.h"
 #include <pybind11/stl.h>
-#include "db/index/common/schema.h"
-#include "db/index/common/stats.h"
+#include <zvec/db/schema.h>
+#include <zvec/db/stats.h>
 
 namespace zvec {
 

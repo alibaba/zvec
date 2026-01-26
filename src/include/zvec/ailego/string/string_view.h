@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstring>
 #include <string>
 
 namespace zvec {

@@ -15,8 +15,8 @@
 #include <cmath>
 #include <random>
 #include <ailego/math/norm_matrix.h>
-#include <ailego/utility/float_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/utility/float_helper.h>
 
 using namespace zvec;
 

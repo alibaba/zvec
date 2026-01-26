@@ -17,10 +17,10 @@
 #include <cassert>
 #include <cstdint>
 #include <gtest/gtest.h>
-#include "ailego/utility/float_helper.h"
 #include "db/index/column/vector_column/vector_column_params.h"
-#include "db/index/common/doc.h"
-#include "db/index/common/index_params.h"
+#include "zvec/ailego/utility/float_helper.h"
+#include "zvec/db/doc.h"
+#include "zvec/db/index_params.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push

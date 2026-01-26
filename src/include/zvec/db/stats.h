@@ -11,3 +11,25 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+
+namespace zvec {
+
+/*
+ * Collection stats
+ */
+struct CollectionStats {
+  uint64_t doc_count{0};
+  // column -> completeness
+  std::unordered_map<std::string, float> index_completeness;
+
+  std::string to_string() const;
+
+  std::string to_string_formatted(int indent_level = 0) const;
+};
+
+}  // namespace zvec

@@ -18,17 +18,17 @@
 #include <memory>
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
+#include <zvec/db/status.h>
+#include <zvec/db/type.h>
 #include "ailego/logger/logger.h"
-#include "column/inverted_column/inverted_indexer.h"
-#include "column/vector_column/vector_column_indexer.h"
-#include "common/meta.h"
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
-#include "db/common/status.h"
 #include "db/common/typedef.h"
+#include "db/index/column/inverted_column/inverted_indexer.h"
+#include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/common/index_filter.h"
-#include "db/index/common/type.h"
+#include "db/index/common/meta.h"
 #include "db/index/storage/forward_writer.h"
 #include "roaring.hh"
 

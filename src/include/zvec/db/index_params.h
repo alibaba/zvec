@@ -16,9 +16,8 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include "core/interface/constants.h"
-#include "db/index/common/type_helper.h"
-#include "type.h"
+#include <zvec/core/interface/constants.h>
+#include <zvec/db/type.h>
 
 namespace zvec {
 
@@ -74,14 +73,7 @@ class InvertIndexParams : public IndexParams {
                                                enable_extended_wildcard_);
   }
 
-  std::string to_string() const override {
-    std::ostringstream oss;
-    oss << "InvertIndexParams{" << "enable_range_optimization:"
-        << (enable_range_optimization_ ? "true" : "false")
-        << ", enable_extended_wildcard:"
-        << (enable_extended_wildcard_ ? "true" : "false") << "}";
-    return oss.str();
-  }
+  std::string to_string() const override;
 
   bool operator==(const IndexParams &other) const override {
     if (type() != other.type()) {
@@ -131,13 +123,7 @@ class VectorIndexParams : public IndexParams {
 
   std::string vector_index_params_to_string(const std::string &class_name,
                                             MetricType metric_type,
-                                            QuantizeType quantize_type) const {
-    std::ostringstream oss;
-    oss << class_name << "{"
-        << "metric:" << MetricTypeCodeBook::AsString(metric_type)
-        << ",quantize:" << QuantizeTypeCodeBook::AsString(quantize_type);
-    return oss.str();
-  }
+                                            QuantizeType quantize_type) const;
 
   MetricType metric_type() const {
     return metric_type_;
@@ -283,8 +269,7 @@ class IVFIndexParams : public VectorIndexParams {
     auto base_str = vector_index_params_to_string("IVFIndexParams",
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
-    oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_
-        << ",use_soar:" << use_soar_ << " << ";
+    oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_ << "}";
     return oss.str();
   }
 

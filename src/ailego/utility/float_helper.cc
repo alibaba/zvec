@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "float_helper.h"
 #include <ailego/internal/cpu_features.h>
+#include <ailego/internal/platform.h>
+#include <zvec/ailego/utility/float_helper.h>
 
 // #if defined(__F16C__) && defined(__AVX__)
 // #define float16(x) _cvtss_sh((x), _MM_FROUND_NO_EXC)

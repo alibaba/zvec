@@ -33,11 +33,11 @@
 #include "db/common/file_helper.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
-#include "db/index/common/options.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/storage/store_helper.h"
 #include "db/index/storage/wal/wal_file.h"
 #include "utils/utils.h"
+#include "zvec/db/options.h"
 
 using namespace zvec;
 

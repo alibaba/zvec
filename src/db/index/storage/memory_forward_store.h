@@ -21,8 +21,8 @@
 #include <arrow/compute/api.h>
 #include <arrow/table_builder.h>
 #include <arrow/util/async_generator.h>
-#include "db/common/status.h"
-#include "db/index/common/doc.h"
+#include <zvec/db/doc.h>
+#include <zvec/db/status.h>
 #include "base_forward_store.h"
 #include "chunked_file_writer.h"
 #include "store_helper.h"

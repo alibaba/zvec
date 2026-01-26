@@ -14,12 +14,10 @@
 
 #pragma once
 
-#include <algorithm>
 #include <string>
 #include <vector>
-#include <ailego/internal/platform.h>
-#include <ailego/string/string_concat_helper.h>
-#include "string_helper_impl.h"
+#include <zvec/ailego/string/string_concat_helper.h>
+#include <zvec/ailego/utility/string_helper_impl.h>
 
 namespace zvec {
 namespace ailego {

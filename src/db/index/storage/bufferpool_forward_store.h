@@ -24,7 +24,7 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/util/async_generator.h>
 #include <parquet/arrow/reader.h>
-#include "db/common/status.h"
+#include <zvec/db/status.h>
 #include "base_forward_store.h"
 
 namespace zvec {

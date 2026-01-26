@@ -22,9 +22,9 @@
 #include "db/common/file_helper.h"
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/sqlengine.h"
-#include "index/common/index_params.h"
-#include "index/common/schema.h"
-#include "index/common/type.h"
+#include "zvec/db/index_params.h"
+#include "zvec/db/schema.h"
+#include "zvec/db/type.h"
 #include "test_helper.h"
 
 namespace zvec::sqlengine {

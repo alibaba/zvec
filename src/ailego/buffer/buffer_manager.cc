@@ -19,6 +19,25 @@
 #include <ailego/pattern/defer.h>
 #include <arrow/io/api.h>
 #include <parquet/arrow/reader.h>
+#include "ailego/internal/platform.h"
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wshadow"
+#elif defined(__GNUC__) || defined(__GNUG__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wshadow"
+#endif
+
+#include <arrow/api.h>
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#elif defined(__GNUC__) || defined(__GNUG__)
+#pragma GCC diagnostic pop
+#endif
 
 
 namespace zvec {

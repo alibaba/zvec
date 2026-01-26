@@ -13,7 +13,7 @@
 ##  1.3. Build a C/C++ static or shared library
 ##    cc_library(
 ##        NAME <name>
-##        [STATIC] [SHARED] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED]
+##        [STATIC] [SHARED] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED] [SRCS_NO_GLOB]
 ##        SRCS <file1> [file2 ...]
 ##        [INCS dir1 ...]
 ##        [PUBINCS public_dir1 ...]
@@ -813,18 +813,35 @@ endfunction()
 ## Build a C/C++ static or shared library
 function(cc_library)
   cmake_parse_arguments(
-      CC_ARGS "STATIC;SHARED;EXCLUDE;PACKED" "NAME;VERSION"
+      CC_ARGS
+      "STATIC;SHARED;EXCLUDE;PACKED;SRCS_NO_GLOB"
+      "NAME;VERSION"
       "SRCS;INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;PACKED_EXCLUDES"
       ${ARGN}
-    )
+  )
 
   if(NOT CC_ARGS_NAME)
-    message(FATAL_ERROR "No target name privated.")
+    message(FATAL_ERROR "No target name provided.")
   endif()
 
-  file(GLOB CC_ARGS_SRCS ${CC_ARGS_SRCS})
-  if(NOT CC_ARGS_SRCS)
-    message(FATAL_ERROR "No source files found of ${CC_ARGS_NAME}.")
+  if(CC_ARGS_SRCS_NO_GLOB)
+    set(SOURCE_FILES ${CC_ARGS_SRCS})
+    if(NOT SOURCE_FILES)
+      message(FATAL_ERROR "No source files provided for ${CC_ARGS_NAME} (SRCS_NO_GLOB mode).")
+    endif()
+  else()
+    set(SOURCE_FILES "")
+    foreach(_src IN LISTS CC_ARGS_SRCS)
+      if(IS_ABSOLUTE "${_src}" OR NOT "${_src}" MATCHES "[*?]")
+        list(APPEND SOURCE_FILES "${_src}")
+      else()
+        file(GLOB _globbed_srcs ${_src})
+        list(APPEND SOURCE_FILES ${_globbed_srcs})
+      endif()
+    endforeach()
+    if(NOT SOURCE_FILES)
+      message(FATAL_ERROR "No source files found for ${CC_ARGS_NAME} after globbing.")
+    endif()
   endif()
 
   if(CC_ARGS_VERSION)
@@ -837,13 +854,13 @@ function(cc_library)
   endif()
 
   if(CC_ARGS_SHARED AND CC_ARGS_STATIC)
-    _add_library(${CC_ARGS_NAME} "${EXCLUDE_OPTION}" "${CC_ARGS_SRCS}")
+    _add_library(${CC_ARGS_NAME} "${EXCLUDE_OPTION}" ${SOURCE_FILES})
   elseif(CC_ARGS_SHARED)
-    add_library(${CC_ARGS_NAME} SHARED ${EXCLUDE_OPTION} ${CC_ARGS_SRCS})
+    add_library(${CC_ARGS_NAME} SHARED ${EXCLUDE_OPTION} ${SOURCE_FILES})
   elseif(CC_ARGS_STATIC)
-    add_library(${CC_ARGS_NAME} STATIC ${EXCLUDE_OPTION} ${CC_ARGS_SRCS})
+    add_library(${CC_ARGS_NAME} STATIC ${EXCLUDE_OPTION} ${SOURCE_FILES})
   else()
-    add_library(${CC_ARGS_NAME} ${EXCLUDE_OPTION} ${CC_ARGS_SRCS})
+    add_library(${CC_ARGS_NAME} ${EXCLUDE_OPTION} ${SOURCE_FILES})
   endif()
 
   if(TARGET ${CC_ARGS_NAME}_objects)
@@ -857,7 +874,7 @@ function(cc_library)
         LDFLAGS "${CC_ARGS_LDFLAGS}"
         DEPS "${CC_ARGS_DEPS}"
         "${CC_ARGS_UNPARSED_ARGUMENTS}"
-      )
+    )
   endif()
 
   if(TARGET ${CC_ARGS_NAME}_static)
@@ -872,7 +889,7 @@ function(cc_library)
         LDFLAGS "${CC_ARGS_LDFLAGS}"
         DEPS "${CC_ARGS_DEPS}"
         "${CC_ARGS_UNPARSED_ARGUMENTS}"
-      )
+    )
     if(CC_ARGS_PACKED)
       install(
         TARGETS ${CC_ARGS_NAME}_static
@@ -893,13 +910,13 @@ function(cc_library)
       DEPS "${CC_ARGS_DEPS}"
       VERSION "${CC_ARGS_VERSION}"
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
-    )
+  )
   if(CC_ARGS_PACKED)
     install(
         TARGETS ${CC_ARGS_NAME}
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-      )
+    )
     if(CC_ARGS_PUBINCS)
       foreach(PACKED_EXCLUDE ${CC_ARGS_PACKED_EXCLUDES})
         list(APPEND PATTERN_EXCLUDES "PATTERN;${PACKED_EXCLUDE};EXCLUDE")
@@ -908,7 +925,7 @@ function(cc_library)
           DIRECTORY ${CC_ARGS_PUBINCS} DESTINATION ${CMAKE_INSTALL_INCDIR}
           FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp" PATTERN "*.hxx"
           ${PATTERN_EXCLUDES}
-        )
+      )
     endif()
   endif()
 endfunction()

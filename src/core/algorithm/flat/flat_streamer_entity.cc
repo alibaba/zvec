@@ -14,8 +14,8 @@
 
 #include "flat_streamer_entity.h"
 #include <cstdint>
+#include "framework/index_error.h"
 #include "flat_utility.h"
-#include "index_error.h"
 
 namespace zvec {
 namespace core {

@@ -16,7 +16,7 @@
 #include <exception>
 #include <typeinfo>
 #include <ailego/logger/logger.h>
-#include <ailego/utility/string_helper.h>
+#include <zvec/ailego/utility/string_helper.h>
 #include "atn/ParserATNSimulator.h"
 #include "db/sqlengine/antlr/gen/SQLLexer.h"
 #include "db/sqlengine/antlr/gen/SQLParser.h"

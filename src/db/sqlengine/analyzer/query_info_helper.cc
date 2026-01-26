@@ -15,7 +15,7 @@
 #include "query_info_helper.h"
 #include <memory>
 #include <ailego/logger/logger.h>
-#include <ailego/utility/string_helper.h>
+#include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec::sqlengine {
 

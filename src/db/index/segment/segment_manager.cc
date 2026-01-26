@@ -18,7 +18,7 @@
 #include <future>
 #include <thread>
 #include <vector>
-#include "db/common/status.h"
+#include <zvec/db/status.h>
 #include "db/common/typedef.h"
 
 namespace zvec {

@@ -124,8 +124,8 @@ class BlockMeta {
 
   std::string to_string() const {
     std::ostringstream oss;
-    oss << "BlockMeta{" << "id:" << id_
-        << ",type:" << BlockTypeCodeBook::AsString(type_)
+    oss << "BlockMeta{"
+        << "id:" << id_ << ",type:" << BlockTypeCodeBook::AsString(type_)
         << ",min_doc_id:" << min_doc_id_ << ",max_doc_id:" << max_doc_id_
         << ",doc_count:" << doc_count_ << ",columns:[";
 
@@ -358,7 +358,8 @@ class SegmentMeta {
 
   std::string to_string() const {
     std::ostringstream oss;
-    oss << "SegmentMeta{" << "id:" << id_ << ",persisted_blocks:[";
+    oss << "SegmentMeta{"
+        << "id:" << id_ << ",persisted_blocks:[";
 
     for (size_t i = 0; i < persisted_blocks_.size(); ++i) {
       if (i > 0) oss << ",";

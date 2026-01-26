@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/index/common/doc.h"
+#include "zvec/db/doc.h"
 #include <cstdint>
 #include <limits>
 #include <random>
-#include <ailego/utility/float_helper.h>
 #include <gtest/gtest.h>
-#include "db/common/status.h"
-#include "db/index/common/type.h"
+#include <zvec/ailego/utility/float_helper.h>
 #include "utils/utils.h"
+#include "zvec/db/status.h"
+#include "zvec/db/type.h"
 
 
 using namespace zvec;

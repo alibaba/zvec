@@ -18,10 +18,10 @@
 #include <ailego/math/distance.h>
 #include <ailego/math/norm_matrix.h>
 #include <ailego/math/normalizer.h>
-#include <ailego/utility/float_helper.h>
 #include <framework/index_factory.h>
 #include <framework/index_flow.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include "core/quantizer/quantizer_params.h"
 #include "framework/index_factory.h"
 

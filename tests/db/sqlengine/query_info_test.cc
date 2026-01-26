@@ -16,8 +16,8 @@
 #include <gmock/gmock-matchers.h>
 #include <gtest/gtest.h>
 #include "db/sqlengine/sqlengine_impl.h"
-#include "index/common/doc.h"
-#include "index/common/schema.h"
+#include "zvec/db/doc.h"
+#include "zvec/db/schema.h"
 #include "profiler.h"
 
 

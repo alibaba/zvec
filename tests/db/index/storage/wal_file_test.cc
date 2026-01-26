@@ -23,9 +23,9 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <ailego/parallel/thread_pool.h>
-#include <ailego/utility/string_helper.h>
 #include <ailego/utility/time_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/utility/string_helper.h>
 #include "db/common/file_helper.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)

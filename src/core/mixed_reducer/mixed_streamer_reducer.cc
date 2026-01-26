@@ -14,13 +14,13 @@
 #include "mixed_streamer_reducer.h"
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/file_helper.h>
-#include <ailego/utility/string_helper.h>
 #include <ailego/utility/time_helper.h>
 #include <framework/index_context.h>
 #include <framework/index_factory.h>
 #include <framework/index_holder.h>
 #include <framework/index_logger.h>
 #include <utility/sparse_utility.h>
+#include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec {
 namespace core {

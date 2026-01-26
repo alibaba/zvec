@@ -14,7 +14,7 @@
 
 #include "python_collection.h"
 #include <pybind11/stl.h>
-#include "db/collection.h"
+#include <zvec/db/collection.h>
 
 namespace zvec {
 

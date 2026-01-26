@@ -16,7 +16,6 @@
 #include <memory>
 #include <gtest/gtest.h>
 #include "db/sqlengine/sqlengine.h"
-#include "index/common/schema.h"
 #include "recall_base.h"
 
 namespace zvec::sqlengine {

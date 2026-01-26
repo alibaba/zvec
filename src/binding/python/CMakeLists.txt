@@ -32,7 +32,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             $<TARGET_FILE:core_utility_static>
             $<TARGET_FILE:core_quantizer_static>
             -Wl,--no-whole-archive
-            zvec
+            zvec_db
     )
     target_link_options(_zvec PRIVATE
             "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
@@ -49,7 +49,7 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_metric_static>
             -Wl,-force_load,$<TARGET_FILE:core_utility_static>
             -Wl,-force_load,$<TARGET_FILE:core_quantizer_static>
-            zvec
+            zvec_db
     )
     target_link_libraries(_zvec PRIVATE
             -Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports.mac

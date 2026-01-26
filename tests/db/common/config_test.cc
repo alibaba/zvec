@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/common/config.h"
+#include "zvec/db/config.h"
 #include <cstdint>
 #include <gtest/gtest.h>
 #include "db/common/constants.h"
-#include "db/common/status.h"
+#include "zvec/db/status.h"
 
 using namespace zvec;
 

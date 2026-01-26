@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/index/common/doc.h"
+#include "zvec/db/doc.h"
 #define private public
 #define protected public
 #include "db/index/storage/memory_forward_store.h"

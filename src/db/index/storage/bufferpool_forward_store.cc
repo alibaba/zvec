@@ -23,7 +23,7 @@
 #include <arrow/result.h>
 #include <arrow/status.h>
 #include <parquet/arrow/reader.h>
-#include "storage/store_helper.h"
+#include "db/index/storage/store_helper.h"
 #include "lazy_record_batch_reader.h"
 
 

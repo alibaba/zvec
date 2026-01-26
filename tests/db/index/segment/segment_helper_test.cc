@@ -31,11 +31,11 @@
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/meta.h"
-#include "db/index/common/options.h"
-#include "db/index/common/schema.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/segment.h"
 #include "utils/utils.h"
+#include "zvec/db/options.h"
+#include "zvec/db/schema.h"
 
 using namespace zvec;
 

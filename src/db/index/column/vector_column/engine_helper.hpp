@@ -14,11 +14,11 @@
 #pragma once
 
 #include <memory>
-#include <ailego/pattern/expected.hpp>
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/db/doc.h>
+#include <zvec/db/query_params.h>
+#include <zvec/db/status.h>
 #include "core/interface/index.h"
-#include "db/common/status.h"
-#include "db/index/common/doc.h"
-#include "db/index/common/query_params.h"
 #include "vector_column_indexer.h"
 #include "vector_column_params.h"
 

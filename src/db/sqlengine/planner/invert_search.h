@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include <ailego/pattern/expected.hpp>
-#include "analyzer/query_node.h"
+#include <zvec/ailego/pattern/expected.hpp>
 #include "db/index/segment/segment.h"
+#include "db/sqlengine/analyzer/query_node.h"
 
 namespace zvec::sqlengine {
 

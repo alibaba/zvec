@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "cpu_features.h"
+#include <cstddef>
 
 #if !defined(_MSC_VER) && !defined(__ARM_ARCH)
 #include <cpuid.h>

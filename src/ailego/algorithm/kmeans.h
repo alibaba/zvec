@@ -24,9 +24,9 @@
 #include <ailego/math/inner_product_matrix.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
-#include <ailego/utility/float_helper.h>
 #include <ailego/utility/matrix_helper.h>
 #include <ailego/utility/type_helper.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include "lloyd_cluster.h"
 
 namespace zvec {

@@ -22,7 +22,7 @@
 #include <typeinfo>
 #include <ailego/encoding/json.h>
 #include <ailego/logger/logger.h>
-#include <ailego/utility/string_helper.h>
+#include <zvec/ailego/utility/string_helper.h>
 #include "db/sqlengine/common/util.h"
 #include "tree/ParseTree.h"
 #include "zvec_cached_sql_parser.h"

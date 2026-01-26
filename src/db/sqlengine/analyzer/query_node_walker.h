@@ -17,9 +17,9 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include "ailego/pattern/expected.hpp"
-#include "analyzer/query_node.h"
-#include "db/index/common/type.h"
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/db/type.h>
+#include "db/sqlengine/analyzer/query_node.h"
 #include "query_info.h"
 
 namespace zvec::sqlengine {

@@ -15,8 +15,8 @@
 #include "python_param.h"
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
-#include "core/interface/constants.h"
-#include "db/index/common/index_params.h"
+#include <zvec/core/interface/constants.h>
+#include <zvec/db/index_params.h>
 #include "python_doc.h"
 
 namespace zvec {

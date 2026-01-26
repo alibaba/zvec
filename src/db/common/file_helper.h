@@ -18,7 +18,7 @@
 #include <string>
 #include <ailego/io/file.h>
 #include <ailego/utility/file_helper.h>
-#include <ailego/utility/string_helper.h>
+#include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec {
 

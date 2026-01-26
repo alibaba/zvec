@@ -20,9 +20,9 @@
 #include <variant>
 #include <arrow/record_batch.h>
 #include <arrow/status.h>
+#include <zvec/db/index_params.h>
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/common/index_filter.h"
-#include "db/index/common/index_params.h"
 #include "db/index/common/meta.h"
 #include "segment.h"
 
