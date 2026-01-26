@@ -883,7 +883,7 @@ TEST(FlatSearcher, ColumnBatch_Binary32) {
   meta1.set_major_order(IndexMeta::MO_ROW);
 
   Params params1;
-  params1.set("proxima.linear.builder.column_major_order", true);
+  params1.set(PARAM_FLAT_COLUMN_MAJOR_ORDER, true);
   BuildIndex(meta1, params1, holder, INDEX_PATH + ".1");
 
   IndexMeta meta2;
@@ -984,7 +984,7 @@ TEST(FlatSearcher, ColumnBatch_FP32) {
                                              // column_major_order in params
 
   Params params1;
-  params1.set("proxima.linear.builder.column_major_order",
+  params1.set(PARAM_FLAT_COLUMN_MAJOR_ORDER,
               true);  // make it MO_COLUMN
   BuildIndex(meta1, params1, holder, INDEX_PATH + ".1");
 
@@ -1090,7 +1090,7 @@ TEST(FlatSearcher, ColumnBatch_FP16) {
                                              // column_major_order in params
 
   Params params1;
-  params1.set("proxima.linear.builder.column_major_order",
+  params1.set(PARAM_FLAT_COLUMN_MAJOR_ORDER,
               true);  // make it MO_COLUMN
   BuildIndex(meta1, params1, holder, INDEX_PATH + ".1");
 
@@ -1196,7 +1196,7 @@ TEST(FlatSearcher, ColumnBatch_INT8) {
                                              // column_major_order in params
 
   Params params1;
-  params1.set("proxima.linear.builder.column_major_order",
+  params1.set(PARAM_FLAT_COLUMN_MAJOR_ORDER,
               true);  // make it MO_COLUMN
   BuildIndex(meta1, params1, holder, INDEX_PATH + ".1");
 

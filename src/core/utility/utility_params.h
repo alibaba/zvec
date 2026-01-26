@@ -21,21 +21,6 @@ namespace core {
 static const std::string INDEX_META_SEGMENT_NAME = "IndexMeta";
 static const std::string INDEX_VERSION_SEGMENT_NAME = "IndexVersion";
 
-//! BruteForceBuilder/BruteForceSearcher
-static const std::string BRUTE_FORCE_SEGMENT_KEYS = "linear.keys";
-static const std::string BRUTE_FORCE_SEGMENT_FEATURES = "linear.features";
-static const std::string BRUTE_FORCE_SEGMENT_MAPPING = "linear.mapping";
-
-//! BruteForceBuilder
-static const std::string BRUTE_FORCE_BUILDER_COLUMN_MAJOR_ORDER =
-    "proxima.linear.builder.column_major_order";
-
-//! BruteForceSearcher
-static const std::string BRUTE_FORCE_SEARCHER_BATCH_SIZE =
-    "proxima.linear.searcher.batch_size";
-static const std::string BRUTE_FORCE_SEARCHER_READ_BLOCK_SIZE =
-    "proxima.linear.searcher.read_block_size";
-
 //! FileLogger
 static const std::string FILE_LOGGER_PATH = "proxima.file.logger.path";
 

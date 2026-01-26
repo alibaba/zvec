@@ -219,7 +219,7 @@ class FlatStreamerEntity {
   const IndexStorage::Segment::Pointer get_segment(size_t index) const {
     for (size_t i = segments_.size(); i <= index; ++i) {
       auto segment_id =
-          ailego::StringHelper::Concat(PARAM_FLAT_SEGMENT_FEATURES, i);
+          ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, i);
       auto segment = storage_->get(segment_id);
       if (!segment) {
         LOG_ERROR("Failed to get segment %s", segment_id.c_str());
