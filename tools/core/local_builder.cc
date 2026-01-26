@@ -934,8 +934,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
   ailego::Params params;
   if (g_disable_id_map) {
-    params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, true);
-    params.set(FLAT_SEARCHER_USE_ID_MAP, true);
+    params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, false);
+    params.set(PARAM_FLAT_USE_ID_MAP, false);
   }
   if (!prepare_params(config_root["BuilderParams"], params)) {
     cerr << "Failed to prepare params" << endl;
