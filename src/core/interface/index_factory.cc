@@ -166,6 +166,8 @@ template std::string IndexFactory::QueryParamSerializeToJson<FlatQueryParam>(
     const FlatQueryParam &param, bool omit_empty_value);
 template std::string IndexFactory::QueryParamSerializeToJson<HNSWQueryParam>(
     const HNSWQueryParam &param, bool omit_empty_value);
+template std::string IndexFactory::QueryParamSerializeToJson<IVFQueryParam>(
+    const IVFQueryParam &param, bool omit_empty_value);
 
 template <typename QueryParamType,
           std::enable_if_t<
@@ -282,5 +284,7 @@ template FlatQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
     FlatQueryParam>(const std::string &json_str);
 template HNSWQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
     HNSWQueryParam>(const std::string &json_str);
+template IVFQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
+    IVFQueryParam>(const std::string &json_str);
 
 }  // namespace zvec::core_interface
