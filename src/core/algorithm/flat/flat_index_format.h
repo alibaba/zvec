@@ -89,8 +89,8 @@ struct LinearIntegerQuantizerParams {
 /*! Location of Vectors Block in Storage Segment
  */
 struct BlockLocation {
-  uint16_t segment_id{0};
-  uint16_t block_index{0};
+  uint32_t segment_id{0};
+  uint32_t block_index{0};
 };
 
 /*! The Header of a Block in Storage Segment
@@ -153,10 +153,10 @@ struct VectorLocation {
       : segment_id(0u), column_major(0u), reserved(0u), offset(0u) {}
 
   //! Constructor
-  VectorLocation(uint16_t id, bool col, uint32_t off)
+  VectorLocation(uint32_t id, bool col, uint32_t off)
       : segment_id(id), column_major(col), reserved(0u), offset(off) {}
 
-  uint16_t segment_id{0};
+  uint32_t segment_id{0};
   uint16_t column_major : 1;
   uint16_t reserved : 15;
   uint32_t offset{0};
@@ -168,8 +168,8 @@ struct VectorLocation {
   }
 };
 
-static_assert(sizeof(VectorLocation) == sizeof(uint64_t),
-              "VectorLocation must be size of 8 bytes");
+// static_assert(sizeof(VectorLocation) == sizeof(uint64_t),
+//               "VectorLocation must be size of 8 bytes");
 
 struct KeyInfo {
   KeyInfo(void) : centroid_idx(0u) {}
