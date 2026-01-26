@@ -18,6 +18,8 @@
 #include <ailego/container/params.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/time_helper.h>
+#include "algorithm/flat/flat_utility.h"
+#include "algorithm/hnsw/hnsw_params.h"
 #include "framework/index_dumper.h"
 #include "framework/index_factory.h"
 #include "framework/index_logger.h"
@@ -931,6 +933,10 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   cout << "Prepare data done!" << endl;
 
   ailego::Params params;
+  if (g_disable_id_map) {
+    params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, true);
+    params.set(FLAT_SEARCHER_USE_ID_MAP, true);
+  }
   if (!prepare_params(config_root["BuilderParams"], params)) {
     cerr << "Failed to prepare params" << endl;
     return -1;
