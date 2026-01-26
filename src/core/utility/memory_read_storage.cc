@@ -96,9 +96,9 @@ class MemoryReadStorage : public IndexStorage {
         }
         len = region_size_ - offset;
       }
-      const void **data_ptr = nullptr;
-      size_t return_value = block_->read(data_offset_ + offset, data_ptr, len);
-      data.reset((void *)*data_ptr);
+      const void *data_ptr = nullptr;
+      size_t return_value = block_->read(data_offset_ + offset, &data_ptr, len);
+      data.reset((void *)data_ptr);
       return return_value;
     }
 
