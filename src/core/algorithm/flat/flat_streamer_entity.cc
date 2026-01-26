@@ -688,7 +688,7 @@ int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
   size_t index_size = hd_segment->capacity();
   for (size_t i = 1; i <= meta_.segment_count; ++i) {
     std::string segment_id =
-        ailego::StringHelper::Concat(PARAM_FLAT_SEGMENT_FEATURES, i);
+        ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, i);
     auto seg = storage->get(segment_id);
     if (!seg || seg->data_size() < meta_.header.block_size) {
       LOG_ERROR("Failed to get segment %s, or invalid segment size",
@@ -756,7 +756,7 @@ int FlatStreamerEntity::alloc_segment(void) {
   }
 
   std::string segment_id =
-      ailego::StringHelper::Concat(PARAM_FLAT_SEGMENT_FEATURES, index);
+      ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, index);
   size_t size =
       ailego_align(meta_.segment_size, ailego::MemoryHelper::PageSize());
   auto segment = storage_->get(segment_id);

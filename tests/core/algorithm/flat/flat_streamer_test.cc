@@ -20,8 +20,10 @@
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/encoding/json/mod_json.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "algorithm/flat/flat_utility.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -353,7 +355,7 @@ TEST_F(FlatStreamerTest, TestOpenClose) {
   IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);
   meta.set_metric("SquaredEuclidean", 0, Params());
   Params params;
-  // params.set("proxima.linear.builder.column_major_order", false);
+  // params.set(PARAM_FLAT_COLUMN_MAJOR_ORDER, false);
   auto storage1 = IndexFactory::CreateStorage("MMapFileStorage");
   auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, storage1);
@@ -1151,7 +1153,7 @@ TEST_F(FlatStreamerTest, TestAddAndSearchWithID2) {
   IndexStreamer::Pointer read_streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
   Params read_params;
-  read_params.set("proxima.linear.searcher.use_id_map", false);
+  read_params.set(PARAM_FLAT_USE_ID_MAP, false);
   Params read_stg_params;
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, read_storage->init(read_stg_params));

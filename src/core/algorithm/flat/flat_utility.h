@@ -25,32 +25,21 @@ namespace zvec {
 namespace core {
 
 //! The default size of reading a block
-static constexpr uint32_t FLAT_READ_BLOCK_SIZE = 4 * 1024 * 1024;
-static const std::string FLAT_LINEAR_META_SEG_ID = "linear.linear_meta";
-static const std::string FLAT_LINEAR_LIST_HEAD_SEG_ID =
-    "linear.linear_list_head";
+static constexpr uint32_t FLAT_DEFAULT_READ_BLOCK_SIZE = 4 * 1024 * 1024;
+static const std::string FLAT_LINEAR_META_SEG_ID = "flat.linear_meta";
+static const std::string FLAT_LINEAR_LIST_HEAD_SEG_ID = "flat.linear_list_head";
 
-// reducer params
-static const std::string PARAM_FLAT_REDUCER_WORKING_PATH(
-    "proxima.linear.reducer.working_path");
-static const std::string PARAM_FLAT_REDUCER_NUM_OF_ADD_THREADS(
-    "proxima.linear.reducer.num_of_add_threads");
-static const std::string PARAM_FLAT_REDUCER_INDEX_NAME(
-    "proxima.linear.reducer.index_name");
+static const std::string FLAT_SEGMENT_KEYS_SEG_ID("flat.keys");
+static const std::string FLAT_SEGMENT_FEATURES_SEG_ID("flat.features");
+static const std::string FLAT_SEGMENT_MAPPING_SEG_ID("flat.mapping");
 
 // index params
-static const std::string PARAM_FLAT_SEGMENT_KEYS("linear.keys");
-static const std::string PARAM_FLAT_SEGMENT_FEATURES("linear.features");
-static const std::string PARAM_FLAT_SEGMENT_MAPPING("linear.mapping");
-
-static const std::string FLAT_BUILDER_COLUMN_MAJOR_ORDER(
-    "proxima.linear.builder.column_major_order");
-static const std::string FLAT_SEARCHER_BATCH_SIZE(
-    "proxima.linear.searcher.batch_size");
-static const std::string FLAT_SEARCHER_READ_BLOCK_SIZE(
-    "proxima.linear.searcher.read_block_size");
-static const std::string FLAT_SEARCHER_USE_ID_MAP(
-    "proxima.linear.searcher.use_id_map");
+static const std::string PARAM_FLAT_COLUMN_MAJOR_ORDER(
+    "proxima.flat.column_major_order");
+static const std::string PARAM_FLAT_BATCH_SIZE("proxima.flat.batch_size");
+static const std::string PARAM_FLAT_READ_BLOCK_SIZE(
+    "proxima.flat.read_block_size");
+static const std::string PARAM_FLAT_USE_ID_MAP("proxima.flat.use_id_map");
 
 //! Determines if a number is equal to two to the power of n.
 template <size_t K>

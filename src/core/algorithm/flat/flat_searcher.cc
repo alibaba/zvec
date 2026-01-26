@@ -27,10 +27,10 @@ IndexProvider::Pointer FlatSearcher<BATCH_SIZE>::create_provider(void) const {
   std::lock_guard<std::mutex> lock(mapping_mutex_);
 
   if (mapping_.empty()) {
-    auto mapping_segment = container_->get(PARAM_FLAT_SEGMENT_MAPPING);
+    auto mapping_segment = container_->get(FLAT_SEGMENT_MAPPING_SEG_ID);
     if (!mapping_segment) {
       LOG_ERROR("Failed to fetch segment %s",
-                PARAM_FLAT_SEGMENT_MAPPING.c_str());
+                FLAT_SEGMENT_MAPPING_SEG_ID.c_str());
       return nullptr;
     }
 
@@ -115,14 +115,14 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
     }
   }
 
-  auto keys_segment = cntr->get(PARAM_FLAT_SEGMENT_KEYS);
+  auto keys_segment = cntr->get(FLAT_SEGMENT_KEYS_SEG_ID);
   if (!keys_segment) {
-    LOG_ERROR("Failed to fetch segment %s", PARAM_FLAT_SEGMENT_KEYS.c_str());
+    LOG_ERROR("Failed to fetch segment %s", FLAT_SEGMENT_KEYS_SEG_ID.c_str());
     return IndexError_NoExist;
   }
-  features_segment_ = cntr->get(PARAM_FLAT_SEGMENT_FEATURES);
+  features_segment_ = cntr->get(FLAT_SEGMENT_FEATURES_SEG_ID);
   if (!features_segment_) {
-    LOG_ERROR("Failed to fetch segment %s", PARAM_FLAT_SEGMENT_KEYS.c_str());
+    LOG_ERROR("Failed to fetch segment %s", FLAT_SEGMENT_KEYS_SEG_ID.c_str());
     return IndexError_NoExist;
   }
 
