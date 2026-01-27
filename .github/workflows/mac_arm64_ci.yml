@@ -97,3 +97,9 @@ jobs:
           cd "$CLEAN_WORKSPACE/build"
           make unittest -j 16
         shell: bash
+
+      - name: Make All
+        run: |
+          cd "$CLEAN_WORKSPACE/build"
+          make all -j$(nproc)
+        shell: bash
