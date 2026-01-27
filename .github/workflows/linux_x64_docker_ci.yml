@@ -130,9 +130,10 @@ jobs:
           cd "$CLEAN_WORKSPACE/build"
           make unittest -j$(nproc)
         shell: bash
-        
+
       - name: Make All
         run: |
+          source /opt/miniforge3/bin/activate ${{ env.CONDA_ENV_NAME }}
           cd "$CLEAN_WORKSPACE/build"
           make all -j$(nproc)
         shell: bash
