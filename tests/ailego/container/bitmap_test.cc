@@ -20,8 +20,8 @@
 #include <vector>
 #include <ailego/container/bitmap.h>
 #include <ailego/utility/bitset_helper.h>
-#include <ailego/utility/time_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/utility/time_helper.h>
 
 #if defined(__AVX2__)
 #define INTRINSICS_SET "AVX2"

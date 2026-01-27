@@ -13,8 +13,6 @@
 // limitations under the License.
 
 #include "bufferpool_forward_store.h"
-#include <ailego/buffer/buffer_manager.h>
-#include <ailego/logger/logger.h>
 #include <arrow/acero/exec_plan.h>
 #include <arrow/compute/api.h>
 #include <arrow/filesystem/api.h>
@@ -23,6 +21,8 @@
 #include <arrow/result.h>
 #include <arrow/status.h>
 #include <parquet/arrow/reader.h>
+#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/logger/logger.h>
 #include "db/index/storage/store_helper.h"
 #include "lazy_record_batch_reader.h"
 

@@ -14,7 +14,7 @@
 #pragma once
 
 #include <ailego/container/bitmap.h>
-#include "framework/index_framework.h"
+#include <zvec/core/framework/index_framework.h>
 
 namespace zvec {
 namespace core {

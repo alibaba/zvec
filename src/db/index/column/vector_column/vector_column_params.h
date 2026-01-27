@@ -17,13 +17,11 @@
 #include <memory>
 #include <variant>
 #include <vector>
-#include <ailego/container/params.h>
-#include <ailego/parallel/thread_pool.h>
-// #include <aitheta2/index_params.h>
-// #include "common/constants.h"
+#include <zvec/ailego/container/params.h>
+#include <zvec/ailego/parallel/thread_pool.h>
+#include <zvec/core/interface/index_param.h>
 #include <zvec/db/query_params.h>
 #include <zvec/db/type.h>
-#include "core/interface/index_param.h"
 #include "db/index/common/index_filter.h"
 
 namespace zvec {

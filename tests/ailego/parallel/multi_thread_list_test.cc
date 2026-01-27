@@ -14,7 +14,7 @@
 
 #include <iostream>
 #include <memory>
-#include "ailego/parallel/thread_pool.h"
+#include <zvec/ailego/parallel/thread_pool.h>
 
 #define private public
 #include <ailego/parallel/multi_thread_list.h>

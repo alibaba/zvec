@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "thread_pool.h"
+#include <zvec/ailego/parallel/thread_pool.h>
 
 #if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 #include <pthread.h>

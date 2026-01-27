@@ -17,8 +17,8 @@
 #include <cmath>
 #include <cstring>
 #include <numeric>
-#include <stdexcept>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace ailego {

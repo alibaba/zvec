@@ -14,9 +14,6 @@
 
 #pragma once
 
-#include <type_traits>
-#include <ailego/math/distance_matrix.h>
-
 namespace zvec::ailego::DistanceBatch {
 
 typedef void (*DistanceBatchQueryPreprocessFunc)(void *query, size_t dim);

@@ -14,12 +14,13 @@
 
 #pragma once
 
-#include <ailego/encoding/json.h>
-#include <ailego/logger/logger.h>
 #include <magic_enum/magic_enum.hpp>
+#include <zvec/ailego/encoding/json.h>
+#include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
 namespace core_interface {
+
 template <typename EnumType>
 constexpr bool extract_enum_from_json(const ailego::JsonObject &json_obj,
                                       const char *key, EnumType &enum_value,

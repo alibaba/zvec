@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_context.h"
+#include <zvec/core/framework/index_context.h>
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
 #include "hnsw_sparse_dist_calculator.h"

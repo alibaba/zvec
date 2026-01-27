@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "invert_search.h"
-#include <ailego/logger/logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/db/type.h>
 #include "db/sqlengine/analyzer/query_node.h"
 #include "db/sqlengine/common/util.h"

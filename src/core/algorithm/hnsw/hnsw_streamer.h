@@ -14,7 +14,7 @@
 #pragma once
 
 #include <ailego/parallel/lock.h>
-#include "framework/index_framework.h"
+#include <zvec/core/framework/index_framework.h>
 #include "hnsw_algorithm.h"
 #include "hnsw_streamer_entity.h"
 

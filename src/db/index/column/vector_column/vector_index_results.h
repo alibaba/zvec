@@ -15,7 +15,7 @@
 
 #include <cstddef>
 #include <memory>
-#include "core/framework/index_document.h"
+#include <zvec/core/framework/index_document.h>
 #include "db/common/typedef.h"
 #include "db/index/column/common/index_results.h"
 

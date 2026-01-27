@@ -16,9 +16,9 @@
 
 #include <vector>
 #include <ailego/internal/cpu_features.h>
-#include <ailego/internal/platform.h>
 #include <ailego/utility/math_helper.h>
-#include <ailego/utility/type_helper.h>
+#include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/utility/type_helper.h>
 #include "inner_product_distance_batch.h"
 
 namespace zvec::ailego::DistanceBatch {

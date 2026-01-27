@@ -15,9 +15,9 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
-#include <ailego/parallel/thread_queue.h>
-#include <ailego/utility/time_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/parallel/thread_queue.h>
+#include <zvec/ailego/utility/time_helper.h>
 
 using namespace zvec;
 using namespace zvec::ailego;

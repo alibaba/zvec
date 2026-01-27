@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "buffer_manager.h"
 #include <atomic>
 #include <mutex>
-#include <ailego/logger/logger.h>
 #include <ailego/pattern/defer.h>
 #include <arrow/io/api.h>
 #include <parquet/arrow/reader.h>
-#include "ailego/internal/platform.h"
+#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/logger/logger.h>
 
 #ifdef __clang__
 #pragma clang diagnostic push

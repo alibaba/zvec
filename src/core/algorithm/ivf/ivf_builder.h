@@ -13,8 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_builder.h"
-#include "framework/index_meta.h"
+#include <zvec/core/framework/index_builder.h>
+#include <zvec/core/framework/index_meta.h>
 #include "ivf_centroid_index.h"
 
 namespace zvec {

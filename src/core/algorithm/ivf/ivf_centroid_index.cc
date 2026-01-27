@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_centroid_index.h"
-#include "framework/index_framework.h"
+#include <core/quantizer/quantizer_params.h>
+#include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
-#include "quantizer/quantizer_params.h"
 
 namespace zvec {
 namespace core {

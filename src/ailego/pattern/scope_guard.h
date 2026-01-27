@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "closure.h"
+#include <zvec/ailego/pattern/closure.h>
 
 namespace zvec {
 namespace ailego {

@@ -14,12 +14,12 @@
 #include "hnsw_sparse_chunk.h"
 #include <chrono>
 #include <random>
-#include <ailego/hash/crc32c.h>
-#include <ailego/utility/time_helper.h>
-#include "framework/index_error.h"
-#include "framework/index_helper.h"
-#include "framework/index_logger.h"
-#include "framework/index_streamer.h"
+#include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/utility/time_helper.h>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_helper.h>
+#include <zvec/core/framework/index_logger.h>
+#include <zvec/core/framework/index_streamer.h>
 
 namespace zvec {
 namespace core {

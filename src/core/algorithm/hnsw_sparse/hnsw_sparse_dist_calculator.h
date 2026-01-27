@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_meta.h"
+#include <zvec/core/framework/index_meta.h>
 #include "hnsw_sparse_entity.h"
 
 namespace zvec {

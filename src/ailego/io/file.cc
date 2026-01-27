@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "file.h"
-#include "ailego/internal/platform.h"
+#include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/io/file.h>
 #if !defined(_WIN64) && !defined(_WIN32)
 #include <sys/mman.h>
 #include <sys/stat.h>

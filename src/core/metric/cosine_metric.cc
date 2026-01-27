@@ -14,8 +14,8 @@
 #include <ailego/math/cosine_distance_matrix.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math_batch/distance_batch.h>
-#include "framework/index_error.h"
-#include "framework/index_factory.h"
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
 
 namespace zvec {
 namespace core {

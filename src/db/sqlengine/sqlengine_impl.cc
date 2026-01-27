@@ -14,7 +14,7 @@
 
 #include "db/sqlengine/sqlengine_impl.h"
 #include <unordered_map>
-#include <ailego/logger/logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/type.h>
 #include "db/common/constants.h"

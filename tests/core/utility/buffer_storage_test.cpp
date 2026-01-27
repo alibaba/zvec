@@ -13,10 +13,10 @@
 // limitations under the License.
 
 #include <iostream>
-#include <ailego/buffer/buffer_manager.h>
-#include <framework/index_factory.h>
-#include <framework/index_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_helper.h>
 
 using namespace zvec;
 using namespace zvec::core;

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cerrno>
-#include <ailego/io/mmap_file.h>
-#include "framework/index_factory.h"
-#include "framework/index_format.h"
-#include "framework/index_unpacker.h"
+#include <zvec/ailego/io/mmap_file.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_format.h>
+#include <zvec/core/framework/index_unpacker.h>
 #include "utility_params.h"
 
 namespace zvec {

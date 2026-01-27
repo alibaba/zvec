@@ -13,7 +13,7 @@
 // limitations under the License.
 #include <iostream>
 #include <gtest/gtest.h>
-#include "framework/index_factory.h"
+#include "zvec/core/framework/index_factory.h"
 
 using namespace zvec;
 using namespace zvec::core;

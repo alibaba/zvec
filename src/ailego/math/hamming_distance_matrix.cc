@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "hamming_distance_matrix.h"
+#include <arrow/util/future.h>
+#include <zvec/ailego/internal/platform.h>
 #include "distance_matrix_popcnt.i"
 
 namespace zvec {

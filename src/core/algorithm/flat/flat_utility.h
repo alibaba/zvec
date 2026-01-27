@@ -15,11 +15,11 @@
 
 #include <mutex>
 #include <ailego/utility/matrix_helper.h>
-#include <ailego/utility/time_helper.h>
-#include "framework/index_error.h"
-#include "framework/index_factory.h"
-#include "framework/index_meta.h"
-#include "framework/index_metric.h"
+#include <zvec/ailego/utility/time_helper.h>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_meta.h>
+#include <zvec/core/framework/index_metric.h>
 
 namespace zvec {
 namespace core {

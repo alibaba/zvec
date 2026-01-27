@@ -20,11 +20,11 @@
 #include <string>
 #include <vector>
 #include <ailego/parallel/lock.h>
-#include <framework/index_dumper.h>
-#include <framework/index_meta.h>
-#include <framework/index_storage.h>
-#include <framework/index_streamer.h>
 #include <zvec/ailego/utility/string_helper.h>
+#include <zvec/core/framework/index_dumper.h>
+#include <zvec/core/framework/index_meta.h>
+#include <zvec/core/framework/index_storage.h>
+#include <zvec/core/framework/index_streamer.h>
 #include "flat_sparse_entity.h"
 #include "flat_sparse_index_format.h"
 #include "flat_sparse_utility.h"

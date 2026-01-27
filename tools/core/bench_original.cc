@@ -15,11 +15,11 @@
 #include <signal.h>
 #include <iostream>
 #include <ailego/container/bitmap.h>
-#include <ailego/utility/time_helper.h>
-#include "framework/index_plugin.h"
-#include "interface/index_factory.h"
-#include "interface/index_param.h"
+#include <zvec/ailego/utility/time_helper.h>
 #include "zvec/ailego/utility/string_helper.h"
+#include "zvec/core/framework/index_plugin.h"
+#include "zvec/core/interface/index_factory.h"
+#include "zvec/core/interface/index_param.h"
 #include "bench_result.h"
 #include "filter_result_cache.h"
 #include "flow.h"

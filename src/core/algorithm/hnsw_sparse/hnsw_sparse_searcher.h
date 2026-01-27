@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_framework.h"
+#include <zvec/core/framework/index_framework.h>
 #include "hnsw_sparse_searcher_entity.h"
 #include "hnsw_sparse_streamer.h"
 

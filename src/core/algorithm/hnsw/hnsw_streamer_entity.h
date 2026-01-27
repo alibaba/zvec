@@ -15,11 +15,11 @@
 #pragma once
 
 #include <iostream>
-#include <ailego/container/heap.h>
 #include <ailego/parallel/lock.h>
 #include <sparsehash/dense_hash_map>
 #include <sparsehash/dense_hash_set>
-#include "framework/index_framework.h"
+#include <zvec/ailego/container/heap.h>
+#include <zvec/core/framework/index_framework.h>
 #include "hnsw_chunk.h"
 #include "hnsw_entity.h"
 #include "hnsw_index_hash.h"

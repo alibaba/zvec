@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <ailego/pattern/factory.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/pattern/factory.h>
 
 using namespace zvec;
 using namespace zvec::ailego;

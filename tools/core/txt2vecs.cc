@@ -14,8 +14,8 @@
 
 #include <iostream>
 #include <set>
-#include "framework/index_meta.h"
 #include "gflags/gflags.h"
+#include "zvec/core/framework/index_meta.h"
 #include "index_meta_helper.h"
 #include "txt_input_reader.h"
 #include "vecs_common.h"

@@ -16,11 +16,11 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <ailego/logger/logger.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/result.h>
-#include <core/framework/index_meta.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/core/framework/index_meta.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/type.h>

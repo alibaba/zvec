@@ -13,11 +13,11 @@
 // limitations under the License.
 
 #include <mutex>
-#include <ailego/buffer/buffer_manager.h>
-#include "framework/index_error.h"
-#include "framework/index_factory.h"
-#include "framework/index_mapping.h"
-#include "framework/index_version.h"
+#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_mapping.h>
+#include <zvec/core/framework/index_version.h>
 #include "utility_params.h"
 
 namespace zvec {

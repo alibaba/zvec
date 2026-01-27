@@ -17,9 +17,9 @@
 #include <future>
 #include <iostream>
 #include <memory>
-#include <ailego/container/vector.h>
 #include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/container/vector.h>
 #include "hnsw_sparse_streamer.h"
 
 using namespace std;

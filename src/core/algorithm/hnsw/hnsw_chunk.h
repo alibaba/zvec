@@ -19,13 +19,13 @@
 #include <atomic>
 #include <cstddef>
 #include <mutex>
-#include <ailego/internal/platform.h>
 #include <ailego/utility/memory_helper.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/string_helper.h>
-#include "framework/index_error.h"
-#include "framework/index_logger.h"
-#include "framework/index_storage.h"
-#include "framework/index_streamer.h"
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_logger.h>
+#include <zvec/core/framework/index_storage.h>
+#include <zvec/core/framework/index_streamer.h>
 
 namespace zvec {
 namespace core {

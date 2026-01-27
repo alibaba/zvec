@@ -22,8 +22,8 @@
 #include <vector>
 #include <ailego/container/bloom_filter.h>
 #include <ailego/utility/bitset_helper.h>
-#include "framework/index_error.h"
-#include "framework/index_logger.h"
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_logger.h>
 
 namespace zvec {
 namespace core {
