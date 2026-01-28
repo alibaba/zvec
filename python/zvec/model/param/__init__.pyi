@@ -213,7 +213,7 @@ class HnswIndexParam(VectorIndexParam):
     def __init__(
         self,
         metric_type: _zvec.typing.MetricType = ...,
-        m: typing.SupportsInt = 100,
+        m: typing.SupportsInt = 50,
         ef_construction: typing.SupportsInt = 500,
         quantize_type: _zvec.typing.QuantizeType = ...,
     ) -> None: ...
