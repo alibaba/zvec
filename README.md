@@ -39,7 +39,7 @@ pip install zvec
 - Python 3.10 - 3.12
 - **Supported platforms**:
   - Linux (x86_64)
-  - macOS (ARM64/x86_64)
+  - macOS (ARM64)
 
 If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/build/) guide.
 

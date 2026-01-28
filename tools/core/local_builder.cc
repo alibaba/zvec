@@ -18,6 +18,8 @@
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
+#include "algorithm/flat/flat_utility.h"
+#include "algorithm/hnsw/hnsw_params.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_logger.h"

@@ -115,7 +115,8 @@ jobs:
           
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-          pip install -v .
+          pip install -v . \
+            --config-settings='cmake.define.BUILD_TOOLS="ON"'
         shell: bash
 
       - name: Run Python Tests with Coverage
