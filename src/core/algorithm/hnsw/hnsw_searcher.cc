@@ -276,7 +276,7 @@ int HnswSearcher::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
           continue;
         }
         if (!ctx->filter().is_valid() || !ctx->filter()(entity_.get_key(id))) {
-          dist_t dist = ctx->dist_calculator().dist(id);
+          dist_t dist = ctx->dist_calculator().batch_dist(id);
 
           std::string group_id = group_by(id);
 
@@ -299,7 +299,7 @@ int HnswSearcher::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
           continue;
         }
         if (!ctx->filter().is_valid() || !ctx->filter()(entity_.get_key(id))) {
-          dist_t dist = ctx->dist_calculator().dist(id);
+          dist_t dist = ctx->dist_calculator().batch_dist(id);
           ctx->topk_heap().emplace(id, dist);
         }
       }
@@ -364,7 +364,7 @@ int HnswSearcher::search_bf_by_p_keys_impl(
         if (!ctx->filter().is_valid() || !ctx->filter()(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().dist(id);
+            dist_t dist = ctx->dist_calculator().batch_dist(id);
             std::string group_id = group_by(id);
 
             auto &topk_heap = ctx->group_topk_heaps()[group_id];
@@ -387,7 +387,7 @@ int HnswSearcher::search_bf_by_p_keys_impl(
         if (!ctx->filter().is_valid() || !ctx->filter()(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().dist(id);
+            dist_t dist = ctx->dist_calculator().batch_dist(id);
             ctx->topk_heap().emplace(id, dist);
           }
         }

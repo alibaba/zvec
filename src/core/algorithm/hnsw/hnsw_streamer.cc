@@ -709,7 +709,7 @@ int HnswStreamer::search_bf_impl(
         }
 
         if (!ctx->filter().is_valid() || !ctx->filter()(entity_.get_key(id))) {
-          dist_t dist = ctx->dist_calculator().dist(id);
+          dist_t dist = ctx->dist_calculator().batch_dist(id);
 
           std::string group_id = group_by(id);
 
@@ -802,7 +802,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         if (!ctx->filter().is_valid() || !ctx->filter()(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().dist(id);
+            dist_t dist = ctx->dist_calculator().batch_dist(id);
             std::string group_id = group_by(id);
 
             auto &topk_heap = ctx->group_topk_heaps()[group_id];
@@ -828,7 +828,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         if (!filter.is_valid() || !filter(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().dist(id);
+            dist_t dist = ctx->dist_calculator().batch_dist(id);
             topk.emplace(id, dist);
           }
         }
