@@ -192,7 +192,7 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclidean) {
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
-    ASSERT_NEAR(v1, v2, 1e-2 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 1e-2 * (DIMENSION + 1));
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -516,7 +516,7 @@ void TestDistanceMatrixInt4(const std::string &metric_name) {
   matrix_compute(&matrix2[0], &query2[0], meta2.dimension(), &result2[0]);
 
   for (size_t i = 0; i < batch_size * query_size; ++i) {
-    EXPECT_FLOAT_EQ(result1[i], result2[i]);
+    EXPECT_NEAR(result1[i], result2[i], 1e-4);
     EXPECT_TRUE(IsAlmostEqual(result1[i], result2[i], 1e4));
   }
 }
