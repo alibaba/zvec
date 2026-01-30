@@ -1,0 +1,49 @@
+name: Benchmarking
+description: Add, update, or fix benchmark cases for zvec
+title: "[Benchmark]: "
+labels: ["benchmark"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for benchmark-related work: new test cases, CI integration, or performance regression tracking.
+  
+  - type: input
+    id: benchmark_type
+    attributes:
+      label: Benchmark Type
+      description: e.g., filtered search, batch insert, recall@k, ARM64 vs x86
+    validations:
+      required: true
+  
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What performance aspect are you measuring or improving?
+    validations:
+      required: true
+  
+  - type: textarea
+    id: methodology
+    attributes:
+      label: Methodology
+      description: Dataset, query size, hardware, metrics (latency, throughput, memory)
+    validations:
+      required: true
+  
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Baseline (if applicable)
+      description: Current performance numbers or competing systems for comparison.
+    validations:
+      required: false
+  
+  - type: textarea
+    id: ci_integration
+    attributes:
+      label: CI Integration Plan
+      description: Should this run in CI? How often?
+    validations:
+      required: false

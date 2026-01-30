@@ -1,0 +1,41 @@
+name: Enhancement
+description: Improve an existing feature or component
+title: "[Enhance]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template is for improving existing functionality (e.g., performance, usability, robustness).
+  
+  - type: input
+    id: component
+    attributes:
+      label: Affected Component
+      description: e.g., HNSW index, buffer manager, Python API
+    validations:
+      required: true
+  
+  - type: textarea
+    id: current
+    attributes:
+      label: Current Behavior
+      description: What is the current state and its limitations?
+    validations:
+      required: true
+  
+  - type: textarea
+    id: desired
+    attributes:
+      label: Desired Improvement
+      description: What should be improved and how?
+    validations:
+      required: true
+  
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: How will this benefit users? (e.g., faster queries, lower memory, easier integration)
+    validations:
+      required: true

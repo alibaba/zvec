@@ -1,7 +1,7 @@
 name: Feature Request
 description: Suggest a new feature or improvement (e.g., better memory control, new query option)
 title: "[Feature]: "
-labels: ["enhancement"]
+labels: ["feature"]
 body:
   - type: markdown
     attributes:
