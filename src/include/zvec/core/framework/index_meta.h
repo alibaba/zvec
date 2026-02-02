@@ -48,15 +48,6 @@ class IndexMeta {
     MO_COLUMN = 2,
   };
 
-  /*! Metric Type
-   */
-  enum MetricType {
-    METRIC_EUCLIDEAN = 1,
-    METRIC_SQUARED_EUCLIDEAN = 2,
-    METRIC_INNER_PRODUCT = 3,
-    METRIC_MIPS_SQUARED_EUCLIDEAN = 4
-  };
-
   //! Constructor
   IndexMeta(void) {
     this->set_meta(DataType::DT_FP32, 128u);
