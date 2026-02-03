@@ -15,8 +15,8 @@
 #include "python_param.h"
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
-#include "core/interface/constants.h"
-#include "db/index/common/index_params.h"
+#include <zvec/core/interface/constants.h>
+#include <zvec/db/index_params.h>
 #include "python_doc.h"
 
 namespace zvec {
@@ -307,7 +307,7 @@ Attributes:
         Default is ``MetricType.IP`` (inner product).
     m (int): Number of bi-directional links created for every new element
         during construction. Higher values improve accuracy but increase
-        memory usage and construction time. Default is 100.
+        memory usage and construction time. Default is 50.
     ef_construction (int): Size of the dynamic candidate list for nearest
         neighbors during index construction. Larger values yield better
         graph quality at the cost of slower build time. Default is 500.

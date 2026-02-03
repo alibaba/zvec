@@ -11,9 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "index_flow.h"
+
 #include <ailego/pattern/defer.h>
-#include "index_helper.h"
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_flow.h>
+#include <zvec/core/framework/index_helper.h>
 
 //! Default storage
 #define INDEX_FLOW_STORAGE_DEFAULT "MMapFileReadStorage"

@@ -14,10 +14,10 @@
 
 #include <cmath>
 #include <random>
-#include <ailego/container/params.h>
 #include <gtest/gtest.h>
-#include "framework/index_framework.h"
-#include "framework/index_meta.h"
+#include <zvec/ailego/container/params.h>
+#include "zvec/core/framework/index_framework.h"
+#include "zvec/core/framework/index_meta.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;

@@ -8,7 +8,7 @@ add_library(antlr4 UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
   antlr4 PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/antlr4/runtime/Cpp/runtime/src/"
-  IMPORTED_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/antlr4/runtime/Cpp/runtime/output/lib/libantlr4-runtime.a"
+  IMPORTED_LOCATION "${EXTERNAL_LIB_DIR}/libantlr4-runtime.a"
   )
 add_dependencies(antlr4 antlr4_static)
 

@@ -16,9 +16,9 @@
 #pragma once
 
 
-#include <ailego/io/file.h>
 #include <rocksdb/db.h>
-#include "status.h"
+#include <zvec/ailego/io/file.h>
+#include <zvec/db/status.h>
 
 
 namespace zvec {

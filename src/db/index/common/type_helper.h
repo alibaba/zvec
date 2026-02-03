@@ -11,10 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 #pragma once
 
-#include <core/framework/index_meta.h>
-#include "db/index/common/type.h"
+#include <zvec/core/framework/index_meta.h>
+#include <zvec/db/type.h>
 #include "proto/zvec.pb.h"
 
 namespace zvec {
@@ -319,6 +320,12 @@ struct DataTypeCodeBook {
         break;
       case DataType::VECTOR_INT16:
         data_type = "VECTOR_INT16";
+        break;
+      case DataType::SPARSE_VECTOR_FP16:
+        data_type = "SPARSE_VECTOR_FP16";
+        break;
+      case DataType::SPARSE_VECTOR_FP32:
+        data_type = "SPARSE_VECTOR_FP32";
         break;
       case DataType::ARRAY_BINARY:
         data_type = "ARRAY_BINARY";

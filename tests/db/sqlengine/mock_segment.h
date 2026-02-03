@@ -17,10 +17,10 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <ailego/logger/logger.h>
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/logger/logger.h>
 #include "db/index/column/common/index_results.h"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/segment/segment.h"

@@ -13,9 +13,9 @@
 // limitations under the License.
 #include <iostream>
 #include <gtest/gtest.h>
-#include "framework/index_factory.h"
-#include "framework/index_helper.h"
-#include "framework/index_segment_storage.h"
+#include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_helper.h"
+#include "zvec/core/framework/index_segment_storage.h"
 
 using namespace zvec;
 using namespace zvec::core;

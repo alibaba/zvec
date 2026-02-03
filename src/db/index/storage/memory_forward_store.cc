@@ -16,7 +16,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <ailego/logger/logger.h>
 #include <ailego/pattern/defer.h>
 #include <arrow/api.h>
 #include <arrow/builder.h>
@@ -26,6 +25,7 @@
 #include <arrow/record_batch.h>
 #include <arrow/table.h>
 #include <arrow/util/async_generator.h>
+#include <zvec/ailego/logger/logger.h>
 #include "db/common/constants.h"
 #include "db/index/storage/base_forward_store.h"
 

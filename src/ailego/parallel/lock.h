@@ -20,8 +20,8 @@
 #if __cplusplus >= 201703L
 #include <shared_mutex>
 #endif
-#include <ailego/internal/platform.h>
 #include <ailego/pattern/defer.h>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace ailego {

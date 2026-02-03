@@ -19,6 +19,7 @@ message(STATUS "PROJECT_ROOT_DIR = ${PROJECT_ROOT_DIR}")
 
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
+include_directories(${PROJECT_ROOT_DIR}/src/include)
 include_directories(${PROJECT_ROOT_DIR}/src)
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
@@ -33,7 +34,7 @@ cc_directories(tests)
 
 if(BUILD_TOOLS)
     cc_directories(tools)
-endif ()
+endif()
 
 git_version(GIT_SRCS_VER ${PROJECT_ROOT_DIR})
 set(CPACK_PACKAGE_VERSION ${GIT_SRCS_VER})

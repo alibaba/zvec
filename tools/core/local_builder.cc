@@ -15,15 +15,17 @@
 #include <libgen.h>
 #include <signal.h>
 #include <iostream>
-#include <ailego/container/params.h>
 #include <ailego/pattern/defer.h>
-#include <ailego/utility/time_helper.h>
-#include "framework/index_dumper.h"
-#include "framework/index_factory.h"
-#include "framework/index_logger.h"
-#include "framework/index_plugin.h"
-#include "framework/index_reformer.h"
-#include "framework/index_streamer.h"
+#include <zvec/ailego/container/params.h>
+#include <zvec/ailego/utility/time_helper.h>
+#include "algorithm/flat/flat_utility.h"
+#include "algorithm/hnsw/hnsw_params.h"
+#include "zvec/core/framework/index_dumper.h"
+#include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_logger.h"
+#include "zvec/core/framework/index_plugin.h"
+#include "zvec/core/framework/index_reformer.h"
+#include "zvec/core/framework/index_streamer.h"
 #include "index_meta_helper.h"
 #include "meta_segment_common.h"
 #include "vecs_index_holder.h"
@@ -540,6 +542,8 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
     return IndexError_NoExist;
   }
   ailego::Params params;
+  params.set("proxima.mmap_file.storage.segment_meta_capacity",
+             20 * 1024 * 1024);
   int ret = storage->init(params);
   if (ret != 0) {
     cerr << "Storage Failed init";
@@ -929,6 +933,10 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   cout << "Prepare data done!" << endl;
 
   ailego::Params params;
+  if (g_disable_id_map) {
+    params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, false);
+    params.set(PARAM_FLAT_USE_ID_MAP, false);
+  }
   if (!prepare_params(config_root["BuilderParams"], params)) {
     cerr << "Failed to prepare params" << endl;
     return -1;

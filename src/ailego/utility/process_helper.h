@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <ailego/internal/platform.h>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace ailego {

@@ -17,7 +17,7 @@
 #include <memory>
 #include <arrow/acero/api.h>
 #include <arrow/chunked_array.h>
-#include "db/common/status.h"
+#include <zvec/db/status.h>
 #include "db/index/column/inverted_column/inverted_search_result.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/segment/segment.h"

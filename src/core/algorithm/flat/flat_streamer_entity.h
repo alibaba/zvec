@@ -17,10 +17,10 @@
 #include <unordered_map>
 #include <ailego/parallel/lock.h>
 #include <ailego/utility/memory_helper.h>
-#include <ailego/utility/string_helper.h>
-#include <framework/index_context.h>
-#include <framework/index_framework.h>
-#include <framework/index_streamer.h>
+#include <zvec/ailego/utility/string_helper.h>
+#include <zvec/core/framework/index_context.h>
+#include <zvec/core/framework/index_framework.h>
+#include <zvec/core/framework/index_streamer.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -219,7 +219,7 @@ class FlatStreamerEntity {
   const IndexStorage::Segment::Pointer get_segment(size_t index) const {
     for (size_t i = segments_.size(); i <= index; ++i) {
       auto segment_id =
-          ailego::StringHelper::Concat(PARAM_FLAT_SEGMENT_FEATURES, i);
+          ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, i);
       auto segment = storage_->get(segment_id);
       if (!segment) {
         LOG_ERROR("Failed to get segment %s", segment_id.c_str());
@@ -380,8 +380,8 @@ class FlatStreamerEntity {
 
  private:
   //! Constants
-  static constexpr size_t kMaxSegmentId = std::numeric_limits<uint16_t>::max();
-  static constexpr size_t kMaxBlockId = std::numeric_limits<uint16_t>::max();
+  static constexpr size_t kMaxSegmentId = std::numeric_limits<uint32_t>::max();
+  static constexpr size_t kMaxBlockId = std::numeric_limits<uint32_t>::max();
 
   //! Members
   std::mutex mutex_{};

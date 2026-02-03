@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include <ailego/container/heap.h>
+#include <zvec/ailego/container/heap.h>
 #include "ivf_entity.h"
 #include "ivf_utility.h"
 

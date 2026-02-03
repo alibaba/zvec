@@ -20,7 +20,7 @@
 #include <arrow/datum.h>
 #include <arrow/table_builder.h>
 #include <arrow/util/async_generator.h>
-#include "db/common/status.h"
+#include <zvec/db/status.h>
 
 namespace cp = arrow::compute;
 

@@ -16,13 +16,13 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
-#include "ailego/logger/logger.h"
-#include "db/collection.h"
-#include "db/common/status.h"
-#include "db/index/common/doc.h"
-#include "db/index/common/index_params.h"
-#include "db/index/common/schema.h"
-#include "db/index/common/type.h"
+#include <zvec/ailego/logger/logger.h>
+#include "zvec/db/collection.h"
+#include "zvec/db/doc.h"
+#include "zvec/db/index_params.h"
+#include "zvec/db/schema.h"
+#include "zvec/db/status.h"
+#include "zvec/db/type.h"
 
 using namespace zvec;
 using namespace zvec::test;

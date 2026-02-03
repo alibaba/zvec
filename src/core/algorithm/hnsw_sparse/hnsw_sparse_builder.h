@@ -13,8 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include <ailego/parallel/thread_pool.h>
-#include "framework/index_builder.h"
+#include <zvec/ailego/parallel/thread_pool.h>
+#include <zvec/core/framework/index_builder.h>
 #include "hnsw_sparse_algorithm.h"
 #include "hnsw_sparse_builder_entity.h"
 

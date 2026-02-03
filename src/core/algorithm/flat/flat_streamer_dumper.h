@@ -140,7 +140,7 @@ class FlatStreamerDumper {
       }
       dump_size_ += padding.size();
     }
-    return dumper->append(PARAM_FLAT_SEGMENT_FEATURES, features_size,
+    return dumper->append(FLAT_SEGMENT_FEATURES_SEG_ID, features_size,
                           features_padding_size, 0);
   }
 
@@ -177,7 +177,7 @@ class FlatStreamerDumper {
       }
       dump_size_ += padding.size();
     }
-    return dumper->append(PARAM_FLAT_SEGMENT_FEATURES, features_size,
+    return dumper->append(FLAT_SEGMENT_FEATURES_SEG_ID, features_size,
                           features_padding_size, 0);
   }
 
@@ -200,8 +200,8 @@ class FlatStreamerDumper {
       }
       dump_size_ += padding.size();
     }
-    return dumper->append(PARAM_FLAT_SEGMENT_KEYS, keys_size, keys_padding_size,
-                          0);
+    return dumper->append(FLAT_SEGMENT_KEYS_SEG_ID, keys_size,
+                          keys_padding_size, 0);
   }
 
   int write_mapping(const std::vector<uint64_t> &keys, IndexDumper *dumper) {
@@ -230,7 +230,7 @@ class FlatStreamerDumper {
       }
       dump_size_ += padding.size();
     }
-    return dumper->append(PARAM_FLAT_SEGMENT_MAPPING, mapping_size,
+    return dumper->append(FLAT_SEGMENT_MAPPING_SEG_ID, mapping_size,
                           mapping_padding_size, 0);
   }
 

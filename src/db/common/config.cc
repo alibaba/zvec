@@ -12,14 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/common/config.h"
 #include <iostream>
 #include <memory>
+#include <zvec/db/config.h>
+#include <zvec/db/status.h>
+#include "db/common/constants.h"
 #include "db/common/global_resource.h"
-#include "constants.h"
+#include "cgroup_util.h"
+#include "global_resource.h"
 #include "glogger.h"
 #include "logger.h"
-#include "status.h"
 #include "typedef.h"
 
 namespace zvec {
@@ -27,6 +29,15 @@ namespace zvec {
 static void ExitLogHandler() {
   LogUtil::Shutdown();
 }
+
+GlobalConfig::ConfigData::ConfigData()
+    : memory_limit_bytes(CgroupUtil::getMemoryLimit() *
+                         DEFAULT_MEMORY_LIMIT_RATIO),
+      log_config(std::make_shared<ConsoleLogConfig>()),
+      query_thread_count(CgroupUtil::getCpuLimit()),
+      invert_to_forward_scan_ratio(0.9),
+      brute_force_by_keys_ratio(0.1),
+      optimize_thread_count(CgroupUtil::getCpuLimit()) {}
 
 Status GlobalConfig::Validate(const ConfigData &config) const {
   if (config.memory_limit_bytes < MIN_MEMORY_LIMIT_BYTES) {

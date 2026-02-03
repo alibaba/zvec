@@ -82,7 +82,7 @@ class TestHnswIndexParam:
     def test_default(self):
         param = HnswIndexParam()
         assert param.metric_type == MetricType.IP
-        assert param.m == 100
+        assert param.m == 50
         assert param.ef_construction == 500
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.type == IndexType.HNSW

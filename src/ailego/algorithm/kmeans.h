@@ -17,16 +17,17 @@
 #include <cmath>
 #include <numeric>
 #include <random>
-#include <ailego/container/heap.h>
 #include <ailego/container/vector_array.h>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/hamming_distance_matrix.h>
 #include <ailego/math/inner_product_matrix.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
-#include <ailego/utility/float_helper.h>
 #include <ailego/utility/matrix_helper.h>
-#include <ailego/utility/type_helper.h>
+#include <zvec/ailego/container/heap.h>
+#include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/utility/float_helper.h>
+#include <zvec/ailego/utility/type_helper.h>
 #include "lloyd_cluster.h"
 
 namespace zvec {

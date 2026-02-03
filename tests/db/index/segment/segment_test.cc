@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
-#include <ailego/buffer/buffer_manager.h>
 #include <arrow/array/array_binary.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
@@ -30,14 +29,15 @@
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/buffer_manager.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
-#include "db/index/common/options.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/storage/store_helper.h"
 #include "db/index/storage/wal/wal_file.h"
 #include "utils/utils.h"
+#include "zvec/db/options.h"
 
 using namespace zvec;
 
@@ -1473,7 +1473,6 @@ TEST_P(SegmentTest, FetchPerf) {
 
   // convert writing segment meta to persisted segment meta
   Version version = version_manager->get_current_version();
-  // auto writing_segment_meta = segment->meta();
   writing_segment_meta->remove_writing_forward_block();
   auto s = version.add_persisted_segment_meta(writing_segment_meta);
   ASSERT_TRUE(s.ok());
@@ -1528,29 +1527,42 @@ TEST_P(SegmentTest, FetchPerf) {
   EXPECT_TRUE(s.ok());
 
   std::vector<int> indices = {0, 3, 6, 1, 0, 501, 999};
-  auto combined_table =
-      segment->fetch({"id", "name", "add_int32", LOCAL_ROW_ID}, indices);
-  ASSERT_TRUE(combined_table != nullptr);
-  EXPECT_EQ(combined_table->num_columns(), 4);
-  EXPECT_EQ(combined_table->num_rows(), indices.size());
+  auto func = [&](const std::vector<std::string> columns,
+                  int local_row_id_idx) -> void {
+    auto combined_table = segment->fetch(columns, indices);
+    ASSERT_TRUE(combined_table != nullptr);
+    EXPECT_EQ(combined_table->num_columns(), columns.size());
+    EXPECT_EQ(combined_table->num_rows(), indices.size());
 
-  auto field = combined_table->schema()->field(3);
-  EXPECT_EQ(field->name(), LOCAL_ROW_ID);
+    auto field = combined_table->schema()->field(local_row_id_idx);
+    EXPECT_EQ(field->name(), LOCAL_ROW_ID);
 
-  // Get data from the LOCAL_ROW_ID column for each row
-  auto id_column = combined_table->column(3);
-  auto id_array =
-      std::dynamic_pointer_cast<arrow::UInt64Array>(id_column->chunk(0));
+    // Get data from the LOCAL_ROW_ID column for each row
+    auto id_column = combined_table->column(local_row_id_idx);
+    auto id_array =
+        std::dynamic_pointer_cast<arrow::UInt64Array>(id_column->chunk(0));
 
-  std::vector<int32_t> &expected_ids = indices;
-  std::vector<int32_t> actual_ids;
+    std::vector<int32_t> &expected_ids = indices;
+    std::vector<int32_t> actual_ids;
 
-  for (int i = 0; i < id_array->length(); ++i) {
-    actual_ids.push_back(id_array->Value(i));
-  }
+    for (int i = 0; i < id_array->length(); ++i) {
+      actual_ids.push_back(id_array->Value(i));
+    }
 
-  EXPECT_EQ(actual_ids, expected_ids)
-      << "ID column values don't match expected order";
+    EXPECT_EQ(actual_ids, expected_ids)
+        << "ID column values don't match expected order";
+  };
+
+  func({LOCAL_ROW_ID, "id", "name", "add_int32"}, 0);
+  func(
+      {
+          "id",
+          LOCAL_ROW_ID,
+          "name",
+          "add_int32",
+      },
+      1);
+  func({"id", "name", "add_int32", LOCAL_ROW_ID}, 3);
 }
 
 TEST_P(SegmentTest, AddColumn) {

@@ -12,13 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "buffer_manager.h"
 #include <atomic>
 #include <mutex>
-#include <ailego/logger/logger.h>
 #include <ailego/pattern/defer.h>
 #include <arrow/io/api.h>
 #include <parquet/arrow/reader.h>
+#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/logger/logger.h>
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wshadow"
+#elif defined(__GNUC__) || defined(__GNUG__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wshadow"
+#endif
+
+#include <arrow/api.h>
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#elif defined(__GNUC__) || defined(__GNUG__)
+#pragma GCC diagnostic pop
+#endif
 
 
 namespace zvec {

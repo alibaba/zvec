@@ -11,8 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "index_plugin.h"
 #include <ailego/utility/dl_helper.h>
+#include <zvec/core/framework/index_plugin.h>
 
 namespace zvec {
 namespace core {

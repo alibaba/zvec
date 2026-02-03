@@ -16,12 +16,12 @@
 #include <iostream>
 #include <random>
 #include <vector>
-#include <ailego/container/vector.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <gtest/gtest.h>
-#include "framework/index_factory.h"
-#include "framework/index_meta.h"
+#include <zvec/ailego/container/vector.h>
+#include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_meta.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;

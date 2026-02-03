@@ -3,12 +3,25 @@ name: Zvec LinuxX64 CI
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  merge_group:
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
+
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Zvec LinuxX64 CI
     runs-on: linux_x64
 
     strategy:
@@ -51,8 +64,9 @@ jobs:
           git config --global --add safe.directory "$CLEAN_WORKSPACE"
           git clone --recursive "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
 
-          if [ -n "${{ github.event.pull_request.head.sha }}" ]; then
-            git checkout "${{ github.event.pull_request.head.sha }}"
+          if [ -n "${{ github.event.number }}" ]; then
+            git fetch origin "pull/${{ github.event.number }}/head"
+            git checkout FETCH_HEAD
           else
             git checkout "${{ github.sha }}"
           fi
@@ -107,7 +121,8 @@ jobs:
           
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-          pip install -v .
+          pip install -v . \
+            --config-settings='cmake.define.BUILD_TOOLS="ON"'
         shell: bash
 
       - name: Run Python Tests with Coverage

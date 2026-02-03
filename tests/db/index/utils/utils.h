@@ -26,15 +26,15 @@
 #include <arrow/table.h>
 #include <gtest/gtest.h>
 #include <parquet/arrow/writer.h>
-#include "db/collection.h"
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
-#include "db/index/common/doc.h"
 #include "db/index/common/meta.h"
-#include "db/index/common/schema.h"
-#include "db/index/common/type.h"
 #include "db/index/segment/segment.h"
 #include "db/index/storage/store_helper.h"
+#include "zvec/db/collection.h"
+#include "zvec/db/doc.h"
+#include "zvec/db/schema.h"
+#include "zvec/db/type.h"
 
 namespace zvec::test {
 

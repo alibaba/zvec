@@ -18,9 +18,9 @@
 #include <iostream>
 #include <numeric>
 #include <vector>
-#include "framework/index_document.h"
-#include "framework/index_logger.h"
-#include "framework/index_meta.h"
+#include <zvec/core/framework/index_document.h>
+#include <zvec/core/framework/index_logger.h>
+#include <zvec/core/framework/index_meta.h>
 
 namespace zvec {
 namespace core {

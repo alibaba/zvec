@@ -14,10 +14,10 @@
 
 #include "sqlengine/analyzer/simple_rewriter.h"
 #include <gtest/gtest.h>
-#include "db/index/common/doc.h"
-#include "db/index/common/schema.h"
 #include "db/sqlengine/analyzer/query_info.h"
 #include "db/sqlengine/sqlengine_impl.h"
+#include "zvec/db/doc.h"
+#include "zvec/db/schema.h"
 
 namespace zvec::sqlengine {
 

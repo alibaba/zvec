@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/index/common/schema.h"
+#include "zvec/db/schema.h"
 #include <gtest/gtest.h>
-#include "db/common/status.h"
-#include "db/index/common/index_params.h"
+#include "zvec/db/index_params.h"
+#include "zvec/db/status.h"
 
 using namespace zvec;
 

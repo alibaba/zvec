@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include <ailego/internal/platform.h>
+#include <zvec/ailego/internal/platform.h>
 #include "hnsw_sparse_entity.h"
 
 namespace zvec {

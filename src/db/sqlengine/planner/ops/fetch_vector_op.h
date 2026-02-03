@@ -15,7 +15,7 @@
 #pragma once
 
 #include <arrow/api.h>
-#include "db/common/status.h"
+#include <zvec/db/status.h>
 #include "db/index/column/vector_column/combined_vector_column_indexer.h"
 #include "db/index/segment/segment.h"
 

@@ -13,8 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_cluster.h"
-#include "framework/index_trainer.h"
+#include <zvec/core/framework/index_cluster.h>
+#include <zvec/core/framework/index_trainer.h>
 
 namespace zvec {
 namespace core {

@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_context.h"
+#include <zvec/core/framework/index_context.h>
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
 #include "hnsw_dist_calculator.h"
@@ -301,8 +301,8 @@ class HnswContext : public IndexContext {
     filter_mode_ = v;
   }
 
-  inline void set_filter_negative_probility(float v) {
-    negative_probility_ = v;
+  inline void set_filter_negative_probability(float v) {
+    negative_probability_ = v;
   }
 
   inline void set_max_scan_ratio(float v) {
@@ -501,7 +501,7 @@ class HnswContext : public IndexContext {
   uint32_t topk_{0};
   uint32_t group_topk_{0};
   uint32_t filter_mode_{VisitFilter::ByteMap};
-  float negative_probility_{HnswEntity::kDefaultBFNegativeProbility};
+  float negative_probability_{HnswEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswEntity::kDefaultEf};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
   uint32_t magic_{0U};

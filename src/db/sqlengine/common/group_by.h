@@ -16,8 +16,8 @@
 
 #include <memory>
 #include <string>
-#include <ailego/utility/string_helper.h>
-#include "db/index/common/doc.h"
+#include <zvec/ailego/utility/string_helper.h>
+#include <zvec/db/doc.h>
 
 namespace zvec::sqlengine {
 

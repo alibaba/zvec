@@ -14,8 +14,7 @@
 
 #pragma once
 
-#include "platform.h"
-
+#include <cstdint>
 namespace zvec {
 namespace ailego {
 namespace internal {

@@ -13,7 +13,7 @@
 // limitations under the License.
 #include "hnsw_builder_entity.h"
 #include <iostream>
-#include <ailego/hash/crc32c.h>
+#include <zvec/ailego/hash/crc32c.h>
 #include "utility/sparse_utility.h"
 
 namespace zvec {

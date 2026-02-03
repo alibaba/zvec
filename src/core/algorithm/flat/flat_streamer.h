@@ -15,7 +15,7 @@
 #pragma once
 
 #include <ailego/parallel/lock.h>
-#include <framework/index_streamer.h>
+#include <zvec/core/framework/index_streamer.h>
 #include "flat_streamer_entity.h"
 #include "flat_utility.h"
 

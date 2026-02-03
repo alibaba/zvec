@@ -14,7 +14,7 @@
 #pragma once
 
 #include <ailego/parallel/lock.h>
-#include "framework/index_framework.h"
+#include <zvec/core/framework/index_framework.h>
 #include "hnsw_algorithm.h"
 #include "hnsw_streamer_entity.h"
 
@@ -208,7 +208,7 @@ class HnswStreamer : public IndexStreamer {
   size_t bruteforce_threshold_{HnswEntity::kDefaultBruteForceThreshold};
   size_t max_scan_limit_{HnswEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{HnswEntity::kDefaultMinScanLimit};
-  float bf_negative_prob_{HnswEntity::kDefaultBFNegativeProbility};
+  float bf_negative_prob_{HnswEntity::kDefaultBFNegativeProbability};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
 
   uint32_t magic_{0U};

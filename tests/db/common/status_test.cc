@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/common/status.h"
+#include "zvec/db/status.h"
 #include <gtest/gtest.h>
 
 using namespace zvec;

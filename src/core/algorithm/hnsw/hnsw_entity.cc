@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_entity.h"
-#include "framework/index_stats.h"
+#include <zvec/core/framework/index_stats.h>
 #include "utility/sparse_utility.h"
 
 namespace zvec {

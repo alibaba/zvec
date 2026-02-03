@@ -18,10 +18,10 @@
 #include <cctype>
 #include <iostream>
 #include <string>
-#include <ailego/encoding/json.h>
-#include <ailego/utility/string_helper.h>
 #include <arrow/type.h>
 #include <arrow/type_fwd.h>
+#include <zvec/ailego/encoding/json.h>
+#include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec::sqlengine {
 

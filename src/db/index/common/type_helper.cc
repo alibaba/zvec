@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "type_helper.h"
-#include "core/framework/index_meta.h"
+#include <zvec/core/framework/index_meta.h>
 
 namespace zvec {
 

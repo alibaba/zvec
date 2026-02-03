@@ -13,17 +13,25 @@ By participating, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md
 
 ### Prerequisites
 - Python ≥ 3.9
-- CMake ≥ 3.15 (`cmake --version`)
+- CMake ≥ 3.25, < 4.0 (`cmake --version`)
 - A C++17-compatible compiler (e.g., `g++-11+`, `clang++`, Apple Clang on macOS)
 
 ### Clone & Initialize
+
 ```bash
 git clone --recursive https://github.com/your-org/zvec.git
 cd zvec
 ```
 
-> 💡 **Submodule tip**: If you forgot `--recursive`, run:  
-> `git submodule update --init --recursive`
+> 💡 **Tip**  
+> - Forgot `--recursive`? Run:  
+>   ```bash
+>   git submodule update --init --recursive
+>   ```
+> - Set up pre-commit hooks:  
+>   ```bash
+>   pip install pre-commit && pre-commit install
+>   ```
 
 ### Build from Source (Editable Install)
 ```bash

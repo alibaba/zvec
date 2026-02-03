@@ -18,10 +18,11 @@
 #include <sstream>
 #include <roaring.hh>
 #include <roaring64map.hh>
-#include <ailego/io/file.h>
-#include <ailego/logger/logger.h>
 #include <roaring/roaring.h>
-#include "status.h"
+#include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/db/status.h>
 
 
 namespace zvec {

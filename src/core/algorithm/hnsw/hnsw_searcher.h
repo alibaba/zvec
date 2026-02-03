@@ -13,7 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_framework.h"
+#include <zvec/core/framework/index_framework.h>
 #include "hnsw_searcher_entity.h"
 #include "hnsw_streamer.h"
 
@@ -129,7 +129,7 @@ class HnswSearcher : public IndexSearcher {
   bool check_crc_enabled_{false};
   bool neighbors_in_memory_enabled_{false};
   bool force_padding_topk_enabled_{false};
-  float bf_negative_probility_{HnswEntity::kDefaultBFNegativeProbility};
+  float bf_negative_probability_{HnswEntity::kDefaultBFNegativeProbability};
   uint32_t magic_{0U};
 
   State state_{STATE_INIT};

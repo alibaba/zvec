@@ -13,9 +13,9 @@
 // limitations under the License.
 
 #include "optimizer.h"
-#include <ailego/logger/logger.h>
-#include "db/common/config.h"
-#include "db/index/common/type.h"
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/db/config.h>
+#include <zvec/db/type.h>
 #include "db/sqlengine/analyzer/query_info_helper.h"
 #include "db/sqlengine/common/util.h"
 #include "db/sqlengine/planner/invert_search.h"

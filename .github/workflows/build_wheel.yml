@@ -3,6 +3,9 @@ name: Build Wheels
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build_wheels:
     name: Build wheels on self-hosted manylinux_2_28

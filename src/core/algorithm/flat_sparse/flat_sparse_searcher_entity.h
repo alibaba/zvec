@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <framework/index_framework.h>
+#include <zvec/core/framework/index_framework.h>
 #include "flat_sparse_entity.h"
 #include "flat_sparse_index_format.h"
 

@@ -13,9 +13,9 @@
 // limitations under the License.
 
 #include "plan_info.h"
-#include <ailego/logger/logger.h>
 #include <arrow/api.h>
-#include "ailego/pattern/expected.hpp"
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/pattern/expected.hpp>
 #include "db/common/error_code.h"
 
 namespace zvec::sqlengine {

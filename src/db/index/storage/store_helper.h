@@ -29,10 +29,11 @@
 #include <arrow/result.h>
 #include <arrow/status.h>
 #include <parquet/arrow/reader.h>
+#include <zvec/db/doc.h>
+#include <zvec/db/schema.h>
+#include "db/common/constants.h"
 #include "db/common/file_helper.h"
-#include "db/index/common/doc.h"
 #include "db/index/common/meta.h"
-#include "db/index/common/schema.h"
 #include "chunked_file_writer.h"
 
 

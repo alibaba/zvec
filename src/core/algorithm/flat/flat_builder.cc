@@ -25,7 +25,7 @@ int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
 
   // Set the major order
   bool column_major_order = false;
-  if (params.get(FLAT_BUILDER_COLUMN_MAJOR_ORDER, &column_major_order)) {
+  if (params.get(PARAM_FLAT_COLUMN_MAJOR_ORDER, &column_major_order)) {
     meta_.set_major_order(column_major_order ? IndexMeta::MO_COLUMN
                                              : IndexMeta::MO_ROW);
   }
@@ -71,7 +71,7 @@ int FlatBuilder<BATCH_SIZE>::init(const IndexMeta &meta,
 
   std::string tag = std::to_string(BATCH_SIZE);
   ailego::Params searcher_params;
-  searcher_params.set(FLAT_SEARCHER_BATCH_SIZE, BATCH_SIZE);
+  searcher_params.set(PARAM_FLAT_BATCH_SIZE, BATCH_SIZE);
   meta_.set_searcher("FlatSearcher" + tag, 0, searcher_params);
   meta_.set_builder("FlatBuilder" + tag, 0, params);
   return 0;
@@ -151,7 +151,7 @@ int FlatBuilder<BATCH_SIZE>::write_keys(const std::vector<uint64_t> &keys,
       return IndexError_WriteData;
     }
   }
-  return dumper->append(PARAM_FLAT_SEGMENT_KEYS, keys_size, keys_padding_size,
+  return dumper->append(FLAT_SEGMENT_KEYS_SEG_ID, keys_size, keys_padding_size,
                         0);
 }
 
@@ -179,7 +179,7 @@ int FlatBuilder<BATCH_SIZE>::write_mapping(const std::vector<uint64_t> &keys,
       return IndexError_WriteData;
     }
   }
-  return dumper->append(PARAM_FLAT_SEGMENT_MAPPING, mapping_size,
+  return dumper->append(FLAT_SEGMENT_MAPPING_SEG_ID, mapping_size,
                         mapping_padding_size, 0);
 }
 
@@ -236,7 +236,7 @@ int FlatBuilder<BATCH_SIZE>::write_column_index(IndexDumper *dumper,
       return IndexError_WriteData;
     }
   }
-  return dumper->append(PARAM_FLAT_SEGMENT_FEATURES, features_size,
+  return dumper->append(FLAT_SEGMENT_FEATURES_SEG_ID, features_size,
                         features_padding_size, 0);
 }
 
@@ -271,7 +271,7 @@ int FlatBuilder<BATCH_SIZE>::write_row_index(IndexDumper *dumper,
       return IndexError_WriteData;
     }
   }
-  return dumper->append(PARAM_FLAT_SEGMENT_FEATURES, features_size,
+  return dumper->append(FLAT_SEGMENT_FEATURES_SEG_ID, features_size,
                         features_padding_size, 0);
 }
 

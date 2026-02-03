@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "file_helper.h"
+#include <zvec/ailego/utility/file_helper.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <Windows.h>

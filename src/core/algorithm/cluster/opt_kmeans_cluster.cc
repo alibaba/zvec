@@ -13,9 +13,9 @@
 // limitations under the License.
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/container/reservoir.h>
-#include "framework/index_cluster.h"
-#include "framework/index_error.h"
-#include "framework/index_factory.h"
+#include <zvec/core/framework/index_cluster.h>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
 #include "cluster_params.h"
 
 namespace zvec {

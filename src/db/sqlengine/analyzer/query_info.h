@@ -18,10 +18,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <ailego/logger/logger.h>
-#include <core/framework/index_meta.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/core/framework/index_meta.h>
+#include <zvec/db/schema.h>
 #include "db/common/constants.h"
-#include "db/index/common/schema.h"
 #include "db/sqlengine/common/group_by.h"
 #include "query_field_info.h"
 #include "query_node.h"

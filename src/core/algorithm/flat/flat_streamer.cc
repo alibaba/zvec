@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
-#include <framework/index_factory.h>
+#include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
 #include "flat_streamer_provider.h"
@@ -57,7 +57,7 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
   }
 
   // 参数设置
-  if (params.get(FLAT_BUILDER_COLUMN_MAJOR_ORDER, &column_major_order_)) {
+  if (params.get(PARAM_FLAT_COLUMN_MAJOR_ORDER, &column_major_order_)) {
     meta_.set_major_order(column_major_order_ ? IndexMeta::MO_COLUMN
                                               : IndexMeta::MO_ROW);
   }
@@ -99,9 +99,9 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
     return IndexError_InvalidArgument;
   }
 
-  read_block_size_ = FLAT_READ_BLOCK_SIZE;
-  params.get(FLAT_SEARCHER_READ_BLOCK_SIZE, &read_block_size_);
-  params.get(FLAT_SEARCHER_USE_ID_MAP, &use_key_info_map_);
+  read_block_size_ = FLAT_DEFAULT_READ_BLOCK_SIZE;
+  params.get(PARAM_FLAT_READ_BLOCK_SIZE, &read_block_size_);
+  params.get(PARAM_FLAT_USE_ID_MAP, &use_key_info_map_);
 
   // entity init
   uint32_t block_vector_count = kDefaultBlockVecCount;

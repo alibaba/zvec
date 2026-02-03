@@ -1,0 +1,36 @@
+name: Ecosystem Integration
+description: Integrate zvec with external frameworks (e.g., LangChain, LlamaIndex)
+title: "[Integration]: "
+labels: ["integration"]
+body:
+  - type: input
+    id: framework
+    attributes:
+      label: Target Framework
+      description: e.g., LangChain, LlamaIndex, Haystack
+    validations:
+      required: true
+  
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why integrate with this framework? Who benefits?
+    validations:
+      required: true
+  
+  - type: textarea
+    id: interface
+    attributes:
+      label: Required Interface
+      description: What adapter or interface must be implemented? (e.g., VectorStore base class)
+    validations:
+      required: true
+  
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference Implementations
+      description: Links to similar integrations in other vector DBs.
+    validations:
+      required: false

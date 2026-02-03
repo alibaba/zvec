@@ -16,7 +16,7 @@
 #include <iostream>
 #include <vector>
 #include <gtest/gtest.h>
-#include "framework/index_framework.h"
+#include "zvec/core/framework/index_framework.h"
 #include "ivf_builder.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)

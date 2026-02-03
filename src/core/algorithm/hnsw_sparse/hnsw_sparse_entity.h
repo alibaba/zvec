@@ -15,12 +15,12 @@
 #pragma once
 
 #include <string.h>
-#include <ailego/container/heap.h>
 #include <ailego/utility/memory_helper.h>
-#include "ailego/logger/logger.h"
-#include "framework/index_dumper.h"
-#include "framework/index_error.h"
-#include "framework/index_storage.h"
+#include <zvec/ailego/container/heap.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/core/framework/index_dumper.h>
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_storage.h>
 
 namespace zvec {
 namespace core {
@@ -595,7 +595,7 @@ class HnswSparseEntity {
   constexpr static uint32_t kDefaultMinScanLimit = 10000;
   constexpr static uint32_t kDefaultMaxScanLimit =
       std::numeric_limits<uint32_t>::max();
-  constexpr static float kDefaultBFNegativeProbility = 0.001f;
+  constexpr static float kDefaultBFNegativeProbability = 0.001f;
   constexpr static uint32_t kDefaultScalingFactor = 50U;
   constexpr static uint32_t kDefaultBruteForceThreshold = 1000U;
   constexpr static uint32_t kDefaultDocsHardLimit = 1 << 30U;  // 1 billion

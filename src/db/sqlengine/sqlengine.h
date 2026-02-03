@@ -14,9 +14,9 @@
 
 #pragma once
 
+#include <zvec/db/doc.h>
+#include <zvec/db/status.h>
 #include "db/common/profiler.h"
-#include "db/common/status.h"
-#include "db/index/common/doc.h"
 #include "db/index/segment/segment.h"
 
 namespace zvec::sqlengine {

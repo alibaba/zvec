@@ -17,7 +17,7 @@
 #include <memory>
 #include <arrow/acero/api.h>
 #include <arrow/api.h>
-#include "db/common/status.h"
+#include <zvec/db/status.h>
 #include "db/index/column/common/index_results.h"
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/analyzer/query_info.h"

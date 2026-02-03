@@ -47,6 +47,8 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   multiplier = HnswEntity::kDefaultNeighborPruneMultiplier;
   params.get(PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_MULTIPLIER, &multiplier);
   size_t prune_cnt = multiplier * upper_max_neighbor_cnt_;
+  scaling_factor_ = upper_max_neighbor_cnt_;
+  params.get(PARAM_HNSW_STREAMER_SCALING_FACTOR, &scaling_factor_);
 
   params.get(PARAM_HNSW_STREAMER_DOCS_HARD_LIMIT, &docs_hard_limit_);
   params.get(PARAM_HNSW_STREAMER_EF, &ef_);
@@ -54,7 +56,6 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_ENABLE, &bf_enabled_);
   params.get(PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_NEGATIVE_PROB,
              &bf_negative_prob_);
-  params.get(PARAM_HNSW_STREAMER_SCALING_FACTOR, &scaling_factor_);
   params.get(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, &bruteforce_threshold_);
   params.get(PARAM_HNSW_STREAMER_MAX_SCAN_RATIO, &max_scan_ratio_);
   params.get(PARAM_HNSW_STREAMER_MAX_SCAN_LIMIT, &max_scan_limit_);
@@ -174,7 +175,7 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "Init params: maxIndexSize=%zu docsHardLimit=%zu docsSoftLimit=%zu "
       "efConstruction=%u ef=%u upperMaxNeighborCnt=%u l0MaxNeighborCnt=%u "
       "scalingFactor=%u maxScanRatio=%.3f minScanLimit=%zu maxScanLimit=%zu "
-      "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbility=%.5f "
+      "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbability=%.5f "
       "checkCrcEnabled=%d pruneSize=%zu vectorSize=%u chunkSize=%zu "
       "filterSameKey=%u getVectorEnabled=%u minNeighborCount=%u "
       "forcePadding=%u ",
@@ -226,7 +227,7 @@ int HnswStreamer::cleanup(void) {
   max_scan_limit_ = HnswEntity::kDefaultMaxScanLimit;
   min_scan_limit_ = HnswEntity::kDefaultMinScanLimit;
   chunk_size_ = HnswEntity::kDefaultChunkSize;
-  bf_negative_prob_ = HnswEntity::kDefaultBFNegativeProbility;
+  bf_negative_prob_ = HnswEntity::kDefaultBFNegativeProbability;
   max_scan_ratio_ = HnswEntity::kDefaultScanRatio;
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
@@ -280,7 +281,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   }
   ret = metric_->init(meta_, meta_.metric_params());
   if (ret != 0) {
-    LOG_ERROR("Failled to init metric, ret=%d", ret);
+    LOG_ERROR("Failed to init metric, ret=%d", ret);
     return ret;
   }
 
@@ -374,7 +375,7 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
   ctx->set_max_scan_ratio(max_scan_ratio_);
   ctx->set_filter_mode(bf_enabled_ ? VisitFilter::BloomFilter
                                    : VisitFilter::ByteMap);
-  ctx->set_filter_negative_probility(bf_negative_prob_);
+  ctx->set_filter_negative_probability(bf_negative_prob_);
   ctx->set_magic(magic_);
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
@@ -487,7 +488,7 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
 
   ret = alg_->add_node(id, level, ctx);
   if (ailego_unlikely(ret != 0)) {
-    LOG_ERROR("Hnsw stramer add node failed");
+    LOG_ERROR("Hnsw steamer add node failed");
     (*stats_.mutable_discarded_count())++;
     return ret;
   }
@@ -568,7 +569,7 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
 
   ret = alg_->add_node(id, level, ctx);
   if (ailego_unlikely(ret != 0)) {
-    LOG_ERROR("Hnsw stramer add node failed");
+    LOG_ERROR("Hnsw steamer add node failed");
     (*stats_.mutable_discarded_count())++;
     return ret;
   }
@@ -708,7 +709,7 @@ int HnswStreamer::search_bf_impl(
         }
 
         if (!ctx->filter().is_valid() || !ctx->filter()(entity_.get_key(id))) {
-          dist_t dist = ctx->dist_calculator().dist(id);
+          dist_t dist = ctx->dist_calculator().batch_dist(id);
 
           std::string group_id = group_by(id);
 
@@ -801,7 +802,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         if (!ctx->filter().is_valid() || !ctx->filter()(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().dist(id);
+            dist_t dist = ctx->dist_calculator().batch_dist(id);
             std::string group_id = group_by(id);
 
             auto &topk_heap = ctx->group_topk_heaps()[group_id];
@@ -827,7 +828,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         if (!filter.is_valid() || !filter(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->dist_calculator().dist(id);
+            dist_t dist = ctx->dist_calculator().batch_dist(id);
             topk.emplace(id, dist);
           }
         }

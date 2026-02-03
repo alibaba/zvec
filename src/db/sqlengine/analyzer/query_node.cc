@@ -15,7 +15,7 @@
 #include "query_node.h"
 #include <assert.h>
 #include <sstream>
-#include <ailego/logger/logger.h>
+#include <zvec/ailego/logger/logger.h>
 #include "query_info.h"
 
 namespace zvec::sqlengine {

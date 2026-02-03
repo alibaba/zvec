@@ -14,9 +14,9 @@
 
 #include <string>
 #include <vector>
-#include <ailego/hash/crc32c.h>
-#include <ailego/utility/time_helper.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/utility/time_helper.h>
 
 using namespace zvec;
 

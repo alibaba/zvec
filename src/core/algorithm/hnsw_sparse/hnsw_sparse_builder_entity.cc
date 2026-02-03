@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_sparse_builder_entity.h"
-#include <ailego/hash/crc32c.h>
+#include <zvec/ailego/hash/crc32c.h>
 #include "utility/sparse_utility.h"
 
 namespace zvec {

@@ -15,7 +15,7 @@
 #include <gtest/gtest.h>
 #include "db/sqlengine/analyzer/query_info_helper.h"
 #include "db/sqlengine/sqlengine_impl.h"
-#include "index/common/index_params.h"
+#include "zvec/db/index_params.h"
 // #define private public
 #include <memory>
 #include "db/sqlengine/planner/optimizer.h"

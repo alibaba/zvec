@@ -15,11 +15,11 @@
 #pragma once
 
 #include <cstdint>
-#include <ailego/parallel/thread_pool.h>
-#include <framework/index_builder.h>
-#include <framework/index_dumper.h>
-#include <framework/index_framework.h>
-#include <framework/index_holder.h>
+#include <zvec/ailego/parallel/thread_pool.h>
+#include <zvec/core/framework/index_builder.h>
+#include <zvec/core/framework/index_dumper.h>
+#include <zvec/core/framework/index_framework.h>
+#include <zvec/core/framework/index_holder.h>
 
 namespace zvec {
 namespace core {

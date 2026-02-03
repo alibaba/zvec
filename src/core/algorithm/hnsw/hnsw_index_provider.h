@@ -13,9 +13,9 @@
 // limitations under the License.
 #pragma once
 
-#include "framework/index_provider.h"
-#include "framework/index_searcher.h"
-#include "framework/index_streamer.h"
+#include <zvec/core/framework/index_provider.h>
+#include <zvec/core/framework/index_searcher.h>
+#include <zvec/core/framework/index_streamer.h>
 #include "hnsw_entity.h"
 
 namespace zvec {
