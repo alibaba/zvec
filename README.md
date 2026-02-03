@@ -20,7 +20,8 @@
   <a href="https://zvec.org/en/">🏠 <strong>Home</strong> </a> |
   <a href="https://zvec.org/en/docs/">📚 <strong>Docs</strong> </a> |
   <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>Benchmarks</strong> </a> |
-  <a href="https://discord.gg/rKddFBBu9z">💜 <strong>Discord</strong> </a>
+  <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a> |
+  <a href="https://x.com/zvec_ai">🐦 <strong>X (Twitter)</strong> </a>
 </p>
 
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Built on **Proxima** (Alibaba's battle-tested vector search engine), it delivers production-grade, low-latency, scalable similarity search with minimal setup.
@@ -87,6 +88,39 @@ Zvec delivers exceptional speed and efficiency, making it ideal for demanding pr
 <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec Performance Benchmarks" />
 
 For detailed benchmark methodology, configurations, and complete results, please see our [Benchmarks documentation](https://zvec.org/en/docs/benchmarks/).
+
+## 🤝 Join Our Community
+
+<div align="center">
+
+Stay updated and get support — scan or click:
+
+<table align="center" style="border-collapse: collapse; margin: 16px auto; width: 100%; max-width: 520px;">
+  <tr>
+    <td align="center" style="padding: 8px; width: 25%;">
+      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">💬 DingTalk</div>
+      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
+    </td>
+    <td align="center" style="padding: 8px; width: 25%;">
+      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">📱 WeChat</div>
+      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
+    </td>
+    <td align="center" style="padding: 8px; width: 25%;">
+      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">🎮 Discord</div>
+      <a href="https://discord.gg/rKddFBBu9z" target="_blank" style="display: inline-block; width: 100px; height: 100px; background: #5865F2; border-radius: 8px; text-decoration: none; color: white; font-size: 12px; display: flex; align-items: center; justify-content: center; line-height: 1;">
+        Join Server
+      </a>
+    </td>
+    <td align="center" style="padding: 8px; width: 25%;">
+      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">🐦 X (Twitter)</div>
+      <a href="https://x.com/zvec_ai" target="_blank" style="display: inline-block; width: 100px; height: 100px; background: #000; border-radius: 8px; text-decoration: none; color: white; font-size: 12px; display: flex; align-items: center; justify-content: center; line-height: 1;">
+        Follow @zvec_ai
+      </a>
+    </td>
+  </tr>
+</table>
+
+</div>
 
 ## ❤️ Contributing
 

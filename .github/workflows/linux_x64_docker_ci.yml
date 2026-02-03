@@ -3,8 +3,13 @@ name: Zvec LinuxX64 CI
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  merge_group:
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 concurrency:

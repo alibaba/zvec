@@ -1,9 +1,9 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/your-org/zvec#readme
-    about: Check the README, build guide, and API docs first.
+    url: https://zvec.org/en/
+    about: Check the quickstart, build guide, and API docs first.
 
   - name: Python API Examples
-    url: https://github.com/your-org/zvec/tree/main/examples
+    url: https://zvec.org/en/docs/quickstart/
     about: See working usage examples.
