@@ -3666,8 +3666,7 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
-    auto s =
-        collection->AddColumn(nullptr, "int32", AddColumnOptions());
+    auto s = collection->AddColumn(nullptr, "int32", AddColumnOptions());
     ASSERT_FALSE(s.ok());
 
     s = collection->AddColumn(nullptr, "", AddColumnOptions());
@@ -3678,7 +3677,8 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
     s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
     ASSERT_FALSE(s.ok());
 
-    s = collection->AddColumn(field_schema, "non_exist_field", AddColumnOptions());
+    s = collection->AddColumn(field_schema, "non_exist_field",
+                              AddColumnOptions());
     ASSERT_FALSE(s.ok());
   }
 
@@ -3746,7 +3746,8 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
     auto field_schema =
         std::make_shared<FieldSchema>("add_int32_dup", DataType::INT32, false);
-    auto s = collection->AddColumn(field_schema, "add_int32", AddColumnOptions());
+    auto s =
+        collection->AddColumn(field_schema, "add_int32", AddColumnOptions());
     if (!s.ok()) {
       std::cout << "status: " << s.message() << std::endl;
       ASSERT_TRUE(false);

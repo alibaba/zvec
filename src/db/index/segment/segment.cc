@@ -3001,8 +3001,8 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
       return Status::InternalError(result.status().message());
     }
     auto dataset = std::move(result).ValueOrDie();
-    auto eval_result = EvaluateExpressionWithDataset(dataset, column_schema->name(), expr,
-                                                     expected_type);
+    auto eval_result = EvaluateExpressionWithDataset(
+        dataset, column_schema->name(), expr, expected_type);
     if (!eval_result.ok()) {
       return Status::InternalError("evaluate expression failed:",
                                    eval_result.status().message());
@@ -3026,9 +3026,9 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
 
   std::vector<BlockMeta> new_blocks;
   status = WriteColumnInBlocks(
-      column_schema->name(), new_column, filter_column_blocks, path_, segment_meta_->id(),
-      [this]() { return allocate_block_id(); }, !options_.enable_mmap_,
-      &new_blocks);
+      column_schema->name(), new_column, filter_column_blocks, path_,
+      segment_meta_->id(), [this]() { return allocate_block_id(); },
+      !options_.enable_mmap_, &new_blocks);
   if (!status.ok()) {
     return Status::InternalError(status.message());
   }

@@ -170,9 +170,7 @@ class Collection:
             option (Optional[AddColumnOption], optional): Options for the operation.
                 Defaults to ``AddColumnOption()``.
         """
-        self._obj.AddColumn(
-            field_schema._get_object(), expression, option
-        )
+        self._obj.AddColumn(field_schema._get_object(), expression, option)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 
     def drop_column(self, field_name: str) -> None:

@@ -1655,8 +1655,7 @@ TEST_P(SegmentTest, AddColumn) {
                   const std::string &expression) {
     auto &column_name = field_schema->name();
     AddColumnOptions add_options;
-    status =
-        segment->add_column(field_schema, expression, add_options);
+    status = segment->add_column(field_schema, expression, add_options);
     EXPECT_TRUE(status.ok());
 
     // after add column
