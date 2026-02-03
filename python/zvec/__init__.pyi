@@ -87,10 +87,9 @@ class _Collection:
     def Open(arg0: str, arg1: param.CollectionOption) -> _Collection: ...
     def AddColumn(
         self,
-        arg0: str,
-        arg1: schema._FieldSchema,
-        arg2: str,
-        arg3: param.AddColumnOption,
+        arg0: schema._FieldSchema,
+        arg1: str,
+        arg2: param.AddColumnOption,
     ) -> None: ...
     def AlterColumn(
         self,

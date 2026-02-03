@@ -382,8 +382,7 @@ class MockSegment : public Segment {
     return 0;
   }
 
-  Status add_column(const std::string &column_name,
-                    FieldSchema::Ptr column_schema,
+  Status add_column(FieldSchema::Ptr column_schema,
                     const std::string &expression,
                     const AddColumnOptions &options) override {
     return Status::InternalError();

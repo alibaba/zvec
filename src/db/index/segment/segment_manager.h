@@ -40,8 +40,7 @@ class SegmentManager {
 
   std::vector<SegmentMeta::Ptr> get_segments_meta() const;
 
-  Status add_column(const std::string &column_name,
-                    const FieldSchema::Ptr &column_schema,
+  Status add_column(const FieldSchema::Ptr &column_schema,
                     const std::string &expression, int concurrency);
 
   Status alter_column(const std::string &column_name,

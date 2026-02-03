@@ -94,7 +94,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
   ASSERT_FALSE(col->GroupByQuery({}).has_value());
   ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
   ASSERT_FALSE(col->DropIndex("").ok());
-  ASSERT_FALSE(col->AddColumn("", nullptr, "").ok());
+  ASSERT_FALSE(col->AddColumn(nullptr, "").ok());
   ASSERT_FALSE(col->AlterColumn("", "", nullptr).ok());
   ASSERT_FALSE(col->DropColumn("").ok());
   ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
@@ -154,7 +154,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
   ASSERT_FALSE(col->DeleteByFilter("").ok());
   ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
   ASSERT_FALSE(col->DropIndex("").ok());
-  ASSERT_FALSE(col->AddColumn("", nullptr, "").ok());
+  ASSERT_FALSE(col->AddColumn(nullptr, "").ok());
   ASSERT_FALSE(col->AlterColumn("", "", nullptr).ok());
   ASSERT_FALSE(col->DropColumn("").ok());
   ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
@@ -3592,8 +3592,7 @@ TEST_F(CollectionTest, Feature_AddColumn_General) {
   ASSERT_EQ(stats.doc_count, doc_count);
   auto field_schema =
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
-  auto s = collection->AddColumn("add_int32", field_schema, "int32",
-                                 AddColumnOptions());
+  auto s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
   if (!s.ok()) {
     std::cout << "status: " << s.message() << std::endl;
     ASSERT_TRUE(false);
@@ -3668,24 +3667,18 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
     auto collection = result.value();
 
     auto s =
-        collection->AddColumn("int32", nullptr, "int32", AddColumnOptions());
+        collection->AddColumn(nullptr, "int32", AddColumnOptions());
     ASSERT_FALSE(s.ok());
 
-    s = collection->AddColumn("add_int32", nullptr, "", AddColumnOptions());
+    s = collection->AddColumn(nullptr, "", AddColumnOptions());
     ASSERT_FALSE(s.ok());
 
     auto field_schema =
         std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
-    s = collection->AddColumn("", field_schema, "int32", AddColumnOptions());
+    s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
     ASSERT_FALSE(s.ok());
 
-
-    s = collection->AddColumn("add_int32_invalid", field_schema, "int32",
-                              AddColumnOptions());
-    ASSERT_FALSE(s.ok());
-
-    s = collection->AddColumn("add_int32", field_schema, "non_exist_field",
-                              AddColumnOptions());
+    s = collection->AddColumn(field_schema, "non_exist_field", AddColumnOptions());
     ASSERT_FALSE(s.ok());
   }
 
@@ -3697,8 +3690,7 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
     auto field_schema =
         std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
-    auto s = collection->AddColumn("add_int32", field_schema, "int32",
-                                   AddColumnOptions());
+    auto s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
     if (!s.ok()) {
       std::cout << "status: " << s.message() << std::endl;
       ASSERT_TRUE(false);
@@ -3754,8 +3746,7 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
     auto field_schema =
         std::make_shared<FieldSchema>("add_int32_dup", DataType::INT32, false);
-    auto s = collection->AddColumn("add_int32_dup", field_schema, "add_int32",
-                                   AddColumnOptions());
+    auto s = collection->AddColumn(field_schema, "add_int32", AddColumnOptions());
     if (!s.ok()) {
       std::cout << "status: " << s.message() << std::endl;
       ASSERT_TRUE(false);
@@ -3956,8 +3947,7 @@ TEST_F(CollectionTest, Feature_Column_MixOperation) {
   // add column
   auto field_schema =
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
-  s = collection->AddColumn("add_int32", field_schema, "int32",
-                            AddColumnOptions());
+  s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
   if (!s.ok()) {
     std::cout << "status: " << s.message() << std::endl;
     ASSERT_TRUE(false);
@@ -4055,8 +4045,7 @@ TEST_F(CollectionTest, Feature_Column_MixOperation_Empty) {
     // add column
     auto field_schema =
         std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
-    auto s = collection->AddColumn("add_int32", field_schema, "int32",
-                                   AddColumnOptions());
+    auto s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
     ASSERT_TRUE(s.ok());
 
     auto new_schema = collection->Schema().value();

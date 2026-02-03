@@ -171,7 +171,7 @@ class Collection:
                 Defaults to ``AddColumnOption()``.
         """
         self._obj.AddColumn(
-            field_schema.name, field_schema._get_object(), expression, option
+            field_schema._get_object(), expression, option
         )
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 

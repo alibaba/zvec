@@ -93,8 +93,7 @@ class CollectionImpl : public Collection {
 
   Status Optimize(const OptimizeOptions &options) override;
 
-  Status AddColumn(const std::string &column_name,
-                   const FieldSchema::Ptr &column_schema,
+  Status AddColumn(const FieldSchema::Ptr &column_schema,
                    const std::string &expression,
                    const AddColumnOptions &options) override;
 
@@ -1046,16 +1045,10 @@ Status CollectionImpl::validate(const std::string &column,
         return Status::InvalidArgument("Column schema is null");
       }
 
-      if (column.empty()) {
+      if (schema->name().empty()) {
         return Status::InvalidArgument("Column name is empty");
       }
-
-      if (schema->name() != column) {
-        return Status::InvalidArgument(
-            "Column name and schema name are not matched");
-      }
-
-      if (schema_->has_field(column)) {
+      if (schema_->has_field(schema->name())) {
         return Status::InvalidArgument("column already exists");
       }
 
@@ -1143,8 +1136,7 @@ Status CollectionImpl::validate(const std::string &column,
   return Status::OK();
 }
 
-Status CollectionImpl::AddColumn(const std::string &column_name,
-                                 const FieldSchema::Ptr &column_schema,
+Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
                                  const std::string &expression,
                                  const AddColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
@@ -1154,7 +1146,7 @@ Status CollectionImpl::AddColumn(const std::string &column_name,
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   // validate
-  auto s = validate(column_name, column_schema, expression, "", ColumnOp::ADD);
+  auto s = validate("", column_schema, expression, "", ColumnOp::ADD);
   CHECK_RETURN_STATUS(s);
 
   // forbidden writing until index is ready
@@ -1172,7 +1164,7 @@ Status CollectionImpl::AddColumn(const std::string &column_name,
   Version new_version = version_manager_->get_current_version();
 
   // add column on segment manager
-  s = segment_manager_->add_column(column_name, column_schema, expression,
+  s = segment_manager_->add_column(column_schema, expression,
                                    options.concurrency_);
   CHECK_RETURN_STATUS(s);
 

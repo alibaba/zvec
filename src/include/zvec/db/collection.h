@@ -74,8 +74,7 @@ class Collection {
   virtual Status Optimize(const OptimizeOptions &options = OptimizeOptions{
                               0}) = 0;
 
-  virtual Status AddColumn(const std::string &column_name,
-                           const FieldSchema::Ptr &column_schema,
+  virtual Status AddColumn(const FieldSchema::Ptr &column_schema,
                            const std::string &expression,
                            const AddColumnOptions &options = AddColumnOptions{
                                0}) = 0;

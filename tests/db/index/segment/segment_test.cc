@@ -1521,7 +1521,6 @@ TEST_P(SegmentTest, FetchPerf) {
   ASSERT_TRUE(segment != nullptr);
 
   s = segment->add_column(
-      "add_int32",
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false),
       "int32 + 1", AddColumnOptions());
   EXPECT_TRUE(s.ok());
@@ -1575,7 +1574,6 @@ TEST_P(SegmentTest, AddColumn) {
   ASSERT_TRUE(segment != nullptr);
 
   auto s = segment->add_column(
-      "add_int32",
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false),
       "int32 + 1", AddColumnOptions());
   EXPECT_FALSE(s.ok());
@@ -1633,13 +1631,11 @@ TEST_P(SegmentTest, AddColumn) {
   ASSERT_TRUE(segment != nullptr);
 
   s = segment->add_column(
-      "add_int32",
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false), "",
       AddColumnOptions());
   EXPECT_FALSE(s.ok());
 
-  s = segment->add_column("add_undefined",
-                          std::make_shared<FieldSchema>(
+  s = segment->add_column(std::make_shared<FieldSchema>(
                               "add_undefined", DataType::UNDEFINED, false),
                           "", AddColumnOptions());
   EXPECT_FALSE(s.ok());
@@ -1655,12 +1651,12 @@ TEST_P(SegmentTest, AddColumn) {
   }
 
   int add_column_cnt = 0;
-  auto func = [&](const std::string &column_name,
-                  const std::shared_ptr<FieldSchema> &field_schema,
+  auto func = [&](const std::shared_ptr<FieldSchema> &field_schema,
                   const std::string &expression) {
+    auto &column_name = field_schema->name();
     AddColumnOptions add_options;
     status =
-        segment->add_column(column_name, field_schema, expression, add_options);
+        segment->add_column(field_schema, expression, add_options);
     EXPECT_TRUE(status.ok());
 
     // after add column
@@ -1796,7 +1792,7 @@ TEST_P(SegmentTest, AddColumn) {
           field_schema->name(), field_schema->data_type(),
           field_schema->nullable(), field_schema->index_params());
       new_field_schema->set_name(col_name);
-      func(col_name, new_field_schema, expression);
+      func(new_field_schema, expression);
     }
   }
 }

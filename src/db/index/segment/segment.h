@@ -66,8 +66,7 @@ class Segment {
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
 
   // for collection
-  virtual Status add_column(const std::string &column_name,
-                            FieldSchema::Ptr column_schema,
+  virtual Status add_column(FieldSchema::Ptr column_schema,
                             const std::string &expression,
                             const AddColumnOptions &options) = 0;
 

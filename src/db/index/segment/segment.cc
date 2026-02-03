@@ -209,8 +209,7 @@ class SegmentImpl : public Segment,
   RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const override;
 
-  Status add_column(const std::string &column_name,
-                    FieldSchema::Ptr column_schema,
+  Status add_column(FieldSchema::Ptr column_schema,
                     const std::string &expression,
                     const AddColumnOptions &options) override;
 
@@ -2939,8 +2938,7 @@ Status SegmentImpl::reopen_invert_indexer(bool read_only) {
   return Status::OK();
 }
 
-Status SegmentImpl::add_column(const std::string &column_name,
-                               FieldSchema::Ptr column_schema,
+Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
                                const std::string &expression,
                                const AddColumnOptions & /*options*/) {
   if (memory_store_) {
@@ -3003,7 +3001,7 @@ Status SegmentImpl::add_column(const std::string &column_name,
       return Status::InternalError(result.status().message());
     }
     auto dataset = std::move(result).ValueOrDie();
-    auto eval_result = EvaluateExpressionWithDataset(dataset, column_name, expr,
+    auto eval_result = EvaluateExpressionWithDataset(dataset, column_schema->name(), expr,
                                                      expected_type);
     if (!eval_result.ok()) {
       return Status::InternalError("evaluate expression failed:",
@@ -3028,7 +3026,7 @@ Status SegmentImpl::add_column(const std::string &column_name,
 
   std::vector<BlockMeta> new_blocks;
   status = WriteColumnInBlocks(
-      column_name, new_column, filter_column_blocks, path_, segment_meta_->id(),
+      column_schema->name(), new_column, filter_column_blocks, path_, segment_meta_->id(),
       [this]() { return allocate_block_id(); }, !options_.enable_mmap_,
       &new_blocks);
   if (!status.ok()) {
@@ -3077,7 +3075,7 @@ Status SegmentImpl::add_column(const std::string &column_name,
       segment_meta_->add_persisted_block(block);
     }
 
-    auto column_indexer = (*invert_indexers_)[column_name];
+    auto column_indexer = (*invert_indexers_)[column_schema->name()];
     auto s = insert_array_to_invert_indexer(column_schema, new_column,
                                             &column_indexer);
     CHECK_RETURN_STATUS(s);
