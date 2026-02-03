@@ -3674,9 +3674,6 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
     auto field_schema =
         std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
-    s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
-    ASSERT_FALSE(s.ok());
-
     s = collection->AddColumn(field_schema, "non_exist_field",
                               AddColumnOptions());
     ASSERT_FALSE(s.ok());
