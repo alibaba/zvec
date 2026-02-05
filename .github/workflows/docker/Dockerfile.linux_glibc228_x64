@@ -1,0 +1,51 @@
+# =============================================================================
+# Dockerfile.linux_x64
+# Purpose: manylinux_2_28 (glibc 2.28) build env for Zvec
+# Base: quay.io/pypa/manylinux_2_28_x86_64
+# =============================================================================
+
+FROM quay.io/pypa/manylinux_2_28_x86_64:2024-03-10-4935fcc
+
+# Install system dependencies
+RUN yum update -y && \
+    yum install -y \
+        git curl wget vim rsync which \
+        gcc-c++ make ninja-build \
+        libuuid-devel zlib-devel openssl-devel libffi-devel \
+        clang-tools-extra && \
+    yum clean all
+
+# Install Miniforge (optional but useful for conda env management)
+ENV MINIFORGE_VERSION="25.11.0-1"
+ENV MINIFORGE_HOME="/opt/miniforge3"
+RUN curl -sSL "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh" -o miniforge.sh && \
+    bash miniforge.sh -b -p ${MINIFORGE_HOME} && \
+    rm miniforge.sh
+
+ENV PATH="${MINIFORGE_HOME}/bin:${PATH}"
+
+# Create conda environments (optional; manylinux also provides /opt/python/cpXXX)
+RUN conda create -n py310 python=3.10 -y && \
+    conda create -n py311 python=3.11 -y && \
+    conda create -n py312 python=3.12 -y && \
+    conda clean --all -f -y
+
+# Install CMake 3.30.0 from Kitware official binary
+RUN mkdir -p /tmp/cmake && cd /tmp/cmake && \
+    curl -sSL -o cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-x86_64.tar.gz" && \
+    tar -xzf cmake.tar.gz --strip-components=1 && \
+    cp -r bin lib share /usr/local/ && \
+    rm -rf /tmp/cmake
+
+# Alias clang-format
+RUN pip install clang-format==18.1.8 && \
+ ln -sf /opt/miniforge3/bin/clang-format /usr/bin/clang-format-18 || true
+
+# Verify critical tools
+RUN cmake --version && \
+    python3.10 --version && \
+    gcc --version && \
+    ldd --version | head -n1 && \
+    clang-format-18 --version
+
+WORKDIR /workspace

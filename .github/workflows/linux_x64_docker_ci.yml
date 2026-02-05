@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
 
     container:
-      image: zvec-registry.cn-hongkong.cr.aliyuncs.com/zvec/zvec:0.0.2
+      image: zvec-registry.cn-hongkong.cr.aliyuncs.com/zvec/zvec:0.0.4-x64
       options: --user root
 
     steps:
