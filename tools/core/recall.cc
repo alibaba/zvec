@@ -1478,27 +1478,6 @@ void usage(void) {
   cout << "Usage: recall CONFIG.yaml [plugin file path]" << endl;
 }
 
-bool load_index(core_interface::Index::Pointer index, string &index_dir,
-                std::vector<std::vector<uint64_t>> &id_to_tags_list,
-                std::vector<uint64_t> &tag_key_list) {
-  core_interface::StorageOptions storage_options;
-  storage_options.type = core_interface::StorageOptions::StorageType::kMMAP;
-  storage_options.create_new = false;
-  storage_options.read_only = true;
-
-  int ret = index->Open(index_dir, storage_options);
-  if (0 != ret) {
-    cerr << "Index open failed with ret " << ret << endl;
-    return false;
-  }
-
-  // Load tag lists if available
-  load_taglists(index_dir, id_to_tags_list, tag_key_list);
-
-  cout << "Load index done!" << endl;
-  return true;
-};
-
 int recall_dense(std::string &query_type, size_t thread_count,
                  size_t batch_count, string top_k, size_t gt_count,
                  string query_file, string &first_sep, string &second_sep,
@@ -1612,7 +1591,10 @@ int recall_sparse(std::string &query_type, size_t thread_count,
     std::vector<std::vector<uint64_t>> id_to_tags_list;
     std::vector<uint64_t> tag_key_list;
     // Load tag lists if available
-    load_taglists(index_dir, id_to_tags_list, tag_key_list);
+    if (load_taglists(index_dir, id_to_tags_list, tag_key_list) != 0) {
+      cerr << "Failed to load tag lists" << endl;
+      return -1;
+    }
 
     recall.set_tag_lists(id_to_tags_list, tag_key_list);
 
@@ -1638,12 +1620,12 @@ int get_recall_precision(string &recall_precision_string) {
   } catch (const std::invalid_argument &e) {
     std::cerr << "Exeception in getting recall precision: " << e.what()
               << ", value: " << recall_precision_string << std::endl;
-    return false;
+    return -1;
   } catch (const std::out_of_range &e) {
     std::cerr << "Out of range exception in getting recall precision: "
               << e.what() << ", value: " << recall_precision_string
               << std::endl;
-    return false;
+    return -1;
   }
 
   return true;

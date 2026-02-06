@@ -157,9 +157,9 @@ static inline size_t AlignSize(size_t size) {
   return (size + 0x1F) & (~0x1F);
 }
 
-int64_t dump_meta_segment(const IndexDumper::Pointer &dumper,
-                          const std::string &segment_id, const void *data,
-                          size_t size, size_t &writes) {
+bool dump_meta_segment(const IndexDumper::Pointer &dumper,
+                       const std::string &segment_id, const void *data,
+                       size_t size, size_t &writes) {
   size_t len = dumper->write(data, size);
   if (len != size) {
     LOG_ERROR("Dump segment %s data failed, expect: %lu, actual: %lu",
@@ -373,17 +373,17 @@ int build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
   ailego::Params params;
   int ret = storage->init(params);
   if (ret != 0) {
-    cerr << "Storage Failed init";
+    cerr << "Storage Failed init" << endl;
     return IndexError_Runtime;
   }
   ret = storage->open(path, true);
   if (ret != 0) {
-    cerr << "Storage Failed to open";
+    cerr << "Storage Failed to open" << endl;
     return IndexError_Runtime;
   }
   ret = streamer->open(storage);
   if (ret != 0) {
-    cerr << "Failed to open storage";
+    cerr << "Failed to open storage" << endl;
     return IndexError_Runtime;
   }
 
@@ -542,8 +542,6 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
     return IndexError_NoExist;
   }
   ailego::Params params;
-  params.set("proxima.mmap_file.storage.segment_meta_capacity",
-             20 * 1024 * 1024);
   int ret = storage->init(params);
   if (ret != 0) {
     cerr << "Storage Failed init";
@@ -551,12 +549,12 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
   }
   ret = storage->open(path, true);
   if (ret != 0) {
-    cerr << "Storage Failed to open";
+    cerr << "Storage Failed to open" << endl;
     return IndexError_Runtime;
   }
   ret = streamer->open(storage);
   if (ret != 0) {
-    cerr << "Failed to open storage";
+    cerr << "Failed to open storage" << endl;
     return IndexError_Runtime;
   }
 
