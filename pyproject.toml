@@ -216,6 +216,7 @@ ignore = [
     "E731",     # Lambda assignment (used in callbacks)
     "B019",     # `functools.lru_cache` on methods (handled manually)
     "PLR0912",  # Too many branches
+    "PLC0105",  # Ignore contravariant
 ]
 fixable = ["ALL"]
 unfixable = []
