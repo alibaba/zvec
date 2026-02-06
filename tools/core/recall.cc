@@ -82,7 +82,7 @@ class Recall {
       cout << "Loading internal ground truth file" << endl;
 
       if (!load_gt_dense(index, gt_count)) {
-        cerr << "Load ground truth file failed!" << endl;
+        LOG_ERROR("Load ground truth file failed!");
         return;
       }
     }
@@ -100,7 +100,7 @@ class Recall {
       string cmd = "mkdir -p " + output_;
       int ret = system(cmd.c_str());
       if (ret != 0) {
-        std::cerr << "execute cmd " << cmd << " failed" << std::endl;
+        LOG_ERROR("execute cmd %s failed, ret=%d", cmd.c_str(), ret);
         return;
       }
       struct stat sb;
@@ -152,7 +152,7 @@ class Recall {
 
     if (!reader.load_query(query_file, first_sep, second_sep, linear_queries_,
                            linear_sparse_data_, linear_taglists_)) {
-      cerr << "Load query error" << endl;
+      LOG_ERROR("Load query error");
       return false;
     }
 
@@ -220,7 +220,7 @@ class Recall {
     } else if (typeid(T) == typeid(int8_t)) {
       qmeta_.set_meta(IndexMeta::DataType::DT_INT8, dim_);
     } else {
-      cerr << "unsupported type";
+      LOG_ERROR("unsupported type");
       return false;
     }
 
@@ -239,7 +239,7 @@ class Recall {
            << File::BaseName(external_gt_file) << "] done!" << endl;
       external_gt_file_enabled_ = true;
     } else {
-      cerr << "Failed to load ground truth file!" << endl;
+      LOG_ERROR("Failed to load ground truth file!");
     }
 
     return ret;
@@ -330,14 +330,14 @@ class Recall {
         std::shared_ptr<IndexFilter> filter_ptr = nullptr;
         if (filter_mode_ == FM_TAG) {
           if (batch_taglists_[i].size() != 1) {
-            cerr << "query tag list not equal to one!" << endl;
+            LOG_ERROR("query tag list not equal to one!");
             return;
           }
 
           int ret = filter_cache.filter(id_to_tags_list_, batch_taglists_[i][0],
                                         tag_key_list_);
           if (ret != 0) {
-            cerr << "prefilter failed, idx: " << i << std::endl;
+            LOG_ERROR("prefilter failed, idx: %zu", i);
             return;
           }
 
@@ -362,7 +362,8 @@ class Recall {
         core_interface::SearchResult search_result;
         int ret = index->Search(query_data, query_param, &search_result);
         if (ret < 0) {
-          cerr << "Failed to linear search, ret=" << ret << endl;
+          LOG_ERROR("Failed to linear search, ret=%d %s", ret,
+                    IndexError::What(ret));
           error.exchange(true);
           return;
         }
@@ -423,8 +424,8 @@ class Recall {
       gtf.close();
 
       if (!File::Rename(gt_file_temp, gt_file)) {
-        cerr << "failed to rename ground truth file, src: " << gt_file_temp
-             << ", dst: " << gt_file << endl;
+        LOG_ERROR("failed to rename ground truth file, src: %s, dst: %s",
+                  gt_file_temp.c_str(), gt_file.c_str());
 
         return false;
       }
@@ -434,7 +435,7 @@ class Recall {
            << timer.milli_seconds() / 1000 << "s." << endl;
     } else {
       if (!gtf.open(gt_file.c_str(), true)) {
-        cerr << "Failed to open ground truth file[" << gt_file << "]" << endl;
+        LOG_ERROR("Failed to open ground truth file[%s]", gt_file.c_str());
         return false;
       }
       size_t file_size = gtf.size();
@@ -449,7 +450,7 @@ class Recall {
       size_t one_query_line_size = sizeof(int) + GT_PAIR_SIZE * gt_count_input;
 
       if (gt_count != gt_count_input || file_size % one_query_line_size != 0) {
-        cerr << "Ground truth file[" << gt_file << "] content error!" << endl;
+        LOG_ERROR("Ground truth file[%s] content error!", gt_file.c_str());
         gtf.close();
         return false;
       }
@@ -607,14 +608,14 @@ class Recall {
     std::shared_ptr<IndexFilter> filter_ptr = nullptr;
     if (filter_mode_ == FM_TAG) {
       if (batch_taglists_[idx].size() != 1) {
-        cerr << "query tag list not equal to one!" << endl;
+        LOG_ERROR("query tag list not equal to one!");
         return;
       }
 
       int ret = filter_cache.filter(id_to_tags_list_, batch_taglists_[idx][0],
                                     tag_key_list_);
       if (ret != 0) {
-        cerr << "prefilter failed, idx: " << idx << std::endl;
+        LOG_ERROR("prefilter failed, idx: %zu", idx);
         return;
       }
 
@@ -655,8 +656,8 @@ class Recall {
         int ret =
             index->Search(single_query_data, query_param_clone, &search_result);
         if (ret < 0) {
-          cerr << "Failed to knn_search batch, ret=" << ret << " "
-               << IndexError::What(ret) << endl;
+          LOG_ERROR("Failed to knn_search batch, ret=%d %s", ret,
+                    IndexError::What(ret));
           return;
         }
         auto &knn_res = search_result.doc_list_;
@@ -666,8 +667,8 @@ class Recall {
       core_interface::SearchResult search_result;
       int ret = index->Search(query_data, query_param_clone, &search_result);
       if (ret < 0) {
-        cerr << "Failed to knn_search, ret=" << ret << " "
-             << IndexError::What(ret) << endl;
+        LOG_ERROR("Failed to knn_search, ret=%d %s", ret,
+                  IndexError::What(ret));
         return;
       }
       auto &knn_res = search_result.doc_list_;
@@ -770,8 +771,7 @@ class SparseRecall {
       vector<vector<T>> *queries_output,
       vector<vector<T>> *sparse_features_output) {
     if (!queries_output || !sparse_features_output) {
-      std::cerr << "input should not be empty in transfrom queries"
-                << std::endl;
+      LOG_ERROR("input should not be empty in transfrom queries");
 
       return -1;
     }
@@ -815,7 +815,7 @@ class SparseRecall {
       cout << "Loading internal ground truth file" << endl;
 
       if (!load_gt_sparse(index, gt_count)) {
-        cerr << "Load ground truth file failed!" << endl;
+        LOG_ERROR("Load ground truth file failed!");
         return;
       }
     }
@@ -833,7 +833,7 @@ class SparseRecall {
       string cmd = "mkdir -p " + output_;
       int ret = system(cmd.c_str());
       if (ret != 0) {
-        std::cerr << "execute cmd " << cmd << " failed" << std::endl;
+        LOG_ERROR("execute cmd %s failed, ret=%d", cmd.c_str(), ret);
         return;
       }
       struct stat sb;
@@ -885,7 +885,7 @@ class SparseRecall {
 
     if (!reader.load_query(query_file, first_sep, second_sep, linear_queries_,
                            linear_sparse_data_, linear_taglists_)) {
-      cerr << "Load query error" << endl;
+      LOG_ERROR("Load query error");
       return false;
     }
 
@@ -934,7 +934,7 @@ class SparseRecall {
     } else if (typeid(T) == typeid(int8_t)) {
       qmeta_.set_data_type(IndexMeta::DataType::DT_INT8);
     } else {
-      cerr << "unsupported type";
+      LOG_ERROR("unsupported type");
       return false;
     }
 
@@ -988,14 +988,14 @@ class SparseRecall {
         std::shared_ptr<IndexFilter> filter_ptr = nullptr;
         if (filter_mode_ == FM_TAG) {
           if (batch_taglists_[i].size() != 1) {
-            cerr << "query tag list not equal to one!" << endl;
+            LOG_ERROR("query tag list not equal to one!");
             return;
           }
 
           int ret = filter_cache.filter(id_to_tags_list_, batch_taglists_[i][0],
                                         tag_key_list_);
           if (ret != 0) {
-            cerr << "prefilter failed, idx: " << i << std::endl;
+            LOG_ERROR("prefilter failed, idx: %zu", i);
             return;
           }
 
@@ -1022,7 +1022,7 @@ class SparseRecall {
         core_interface::SearchResult search_result;
         int ret = index->Search(query_data, query_param, &search_result);
         if (ret < 0) {
-          cerr << "Failed to sparse linear search, ret=" << ret << endl;
+          LOG_ERROR("Failed to sparse linear search, ret=%d", ret);
           error.exchange(true);
           return;
         }
@@ -1084,8 +1084,8 @@ class SparseRecall {
       gtf.close();
 
       if (!File::Rename(gt_file_temp, gt_file)) {
-        cerr << "failed to rename ground truth file, src: " << gt_file_temp
-             << ", dst: " << gt_file << endl;
+        LOG_ERROR("failed to rename ground truth file, src: %s, dst: %s",
+                  gt_file_temp.c_str(), gt_file.c_str());
 
         return false;
       }
@@ -1095,7 +1095,7 @@ class SparseRecall {
            << timer.milli_seconds() / 1000 << "s." << endl;
     } else {
       if (!gtf.open(gt_file.c_str(), true)) {
-        cerr << "Failed to open ground truth file[" << gt_file << "]" << endl;
+        LOG_ERROR("Failed to open ground truth file[%s]", gt_file.c_str());
         return false;
       }
       size_t file_size = gtf.size();
@@ -1110,7 +1110,7 @@ class SparseRecall {
       size_t one_query_line_size = sizeof(int) + GT_PAIR_SIZE * gt_count_input;
 
       if (gt_count != gt_count_input || file_size % one_query_line_size != 0) {
-        cerr << "Ground truth file[" << gt_file << "] content error!" << endl;
+        LOG_ERROR("Ground truth file[%s] content error!", gt_file.c_str());
         gtf.close();
         return false;
       }
@@ -1157,7 +1157,7 @@ class SparseRecall {
            << File::BaseName(external_gt_file) << "] done!" << endl;
       external_gt_file_enabled_ = true;
     } else {
-      cerr << "Failed to load ground truth file!" << endl;
+      LOG_ERROR("Failed to load ground truth file!");
     }
 
     return ret;
@@ -1314,14 +1314,14 @@ class SparseRecall {
     std::shared_ptr<IndexFilter> filter_ptr = nullptr;
     if (filter_mode_ == FM_TAG) {
       if (batch_taglists_[idx].size() != 1) {
-        cerr << "query tag list not equal to one!" << endl;
+        LOG_ERROR("query tag list not equal to one!");
         return;
       }
 
       int ret = filter_cache.filter(id_to_tags_list_, batch_taglists_[idx][0],
                                     tag_key_list_);
       if (ret != 0) {
-        cerr << "prefilter failed, idx: " << idx << std::endl;
+        LOG_ERROR("prefilter failed, idx: %zu", idx);
         return;
       }
 
@@ -1363,8 +1363,8 @@ class SparseRecall {
         int ret =
             index->Search(single_query_data, query_param_clone, &search_result);
         if (ret < 0) {
-          cerr << "Failed to sparse_knn_search batch, ret=" << ret << " "
-               << IndexError::What(ret) << endl;
+          LOG_ERROR("Failed to sparse_knn_search batch, ret=%d %s", ret,
+                    IndexError::What(ret));
           return;
         }
         auto &knn_res = search_result.doc_list_;
@@ -1374,8 +1374,8 @@ class SparseRecall {
       core_interface::SearchResult search_result;
       int ret = index->Search(query_data, query_param_clone, &search_result);
       if (ret < 0) {
-        cerr << "Failed to sparse_knn_search, ret=" << ret << " "
-             << IndexError::What(ret) << endl;
+        LOG_ERROR("Failed to sparse_knn_search, ret=%d %s", ret,
+                  IndexError::What(ret));
         return;
       }
       auto &knn_res = search_result.doc_list_;
@@ -1442,33 +1442,33 @@ bool SparseRecall<T>::STOP_NOW = false;
 bool check_config(YAML::Node &config_node) {
   auto common = config_node["IndexCommon"];
   if (!common) {
-    cerr << "Can not find [IndexCommon] in config" << endl;
+    LOG_ERROR("Can not find [IndexCommon] in config");
     return false;
   }
   if (!common["IndexConfig"]) {
-    cerr << "Can not find [IndexConfig] in config" << endl;
+    LOG_ERROR("Can not find [IndexConfig] in config");
     return false;
   }
   if (!common["IndexPath"]) {
-    cerr << "Can not find [IndexPath] in config" << endl;
+    LOG_ERROR("Can not find [IndexPath] in config");
     return false;
   }
   if (!common["TopK"]) {
-    cerr << "Can not find [TopK] in config" << endl;
+    LOG_ERROR("Can not find [TopK] in config");
     return false;
   }
   if (!common["QueryFile"]) {
-    cerr << "Can not find [QueryFile] in config" << endl;
+    LOG_ERROR("Can not find [QueryFile] in config");
     return false;
   }
 
   auto query_config = config_node["QueryConfig"];
   if (!query_config) {
-    cerr << "Can not find [QueryConfig] in config" << endl;
+    LOG_ERROR("Can not find [QueryConfig] in config");
     return false;
   }
   if (!query_config["QueryParam"]) {
-    cerr << "Can not find [QueryConfig.QueryParam] in config" << endl;
+    LOG_ERROR("Can not find [QueryConfig.QueryParam] in config");
     return false;
   }
   return true;
@@ -1560,7 +1560,7 @@ int recall_dense(std::string &query_type, size_t thread_count,
 
     recall.run_dense(index, query_param, top_k, gt_count);
   } else {
-    cerr << "Can not recognize type: " << query_type << endl;
+    LOG_ERROR("Can not recognize type: %s", query_type.c_str());
   }
 
   return 0;
@@ -1592,7 +1592,7 @@ int recall_sparse(std::string &query_type, size_t thread_count,
     std::vector<uint64_t> tag_key_list;
     // Load tag lists if available
     if (load_taglists(index_dir, id_to_tags_list, tag_key_list) != 0) {
-      cerr << "Failed to load tag lists" << endl;
+      LOG_ERROR("Failed to load tag lists");
       return -1;
     }
 
@@ -1600,7 +1600,7 @@ int recall_sparse(std::string &query_type, size_t thread_count,
 
     recall.run_sparse(index, query_param, top_k, gt_count);
   } else {
-    cerr << "Can not recognize type: " << query_type << endl;
+    LOG_ERROR("Can not recognize type: %s", query_type.c_str());
   }
 
   return 0;
@@ -1618,13 +1618,13 @@ int get_recall_precision(string &recall_precision_string) {
     g_recall_precision = std::stof(recall_precision_string);
     std::cout << "Recall Score Precesion: " << g_recall_precision << std::endl;
   } catch (const std::invalid_argument &e) {
-    std::cerr << "Exeception in getting recall precision: " << e.what()
-              << ", value: " << recall_precision_string << std::endl;
+    LOG_ERROR("Exeception in getting recall precision: %s, value: %s", e.what(),
+              recall_precision_string.c_str());
     return -1;
   } catch (const std::out_of_range &e) {
-    std::cerr << "Out of range exception in getting recall precision: "
-              << e.what() << ", value: " << recall_precision_string
-              << std::endl;
+    LOG_ERROR(
+        "Out of range exception in getting recall precision: %s, value: %s",
+        e.what(), recall_precision_string.c_str());
     return -1;
   }
 
@@ -1641,8 +1641,7 @@ int main(int argc, char *argv[]) {
   std::string error;
   for (int i = 2; i < argc; ++i) {
     if (!broker.emplace(argv[i], &error)) {
-      cerr << "Failed to load plugin: " << argv[i] << " (" << error << ")"
-           << endl;
+      LOG_ERROR("Failed to load plugin: %s (%s)", argv[i], error.c_str());
       return -1;
     }
   }
@@ -1651,7 +1650,7 @@ int main(int argc, char *argv[]) {
   try {
     config_node = YAML::LoadFile(argv[1]);
   } catch (...) {
-    cerr << "Load YAML file[" << argv[1] << "] failed!" << endl;
+    LOG_ERROR("Load YAML file[%s] failed!", argv[1]);
     return -1;
   }
   if (!check_config(config_node)) {
@@ -1698,8 +1697,8 @@ int main(int argc, char *argv[]) {
           : "";
 
   if (!get_recall_precision(recall_precision_string)) {
-    cerr << "Get recall precision failed, value: " << recall_precision_string
-         << endl;
+    LOG_ERROR("Get recall precision failed, value: %s",
+              recall_precision_string.c_str());
     return -1;
   }
 
@@ -1761,7 +1760,7 @@ int main(int argc, char *argv[]) {
   core_interface::BaseIndexQueryParam::Pointer query_param;
   if (parse_and_load_index_param(config_node, index_dir, index, query_param) !=
       0) {
-    cerr << "Failed to parse and load index param" << endl;
+    LOG_ERROR("Failed to parse and load index param");
     return -1;
   }
 
@@ -1777,7 +1776,7 @@ int main(int argc, char *argv[]) {
                   query_param, index_dir, log_dir, filter_mode);
   } else {
     std::string mode = retrieval_mode == 1 ? "Dense" : "Sparse";
-    cerr << "unsupported retrieval mode: " << mode << endl;
+    LOG_ERROR("unsupported retrieval mode: %s", mode.c_str());
     return -1;
   }
 
