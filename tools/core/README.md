@@ -26,14 +26,17 @@ scalar_labels.parquet
 test.parquet      
 ```
 
-For convenience, we prepared a docker image with cohere bench datasets, which can be run as follows:
+For convenience, we prepared a docker image with cohere bench datasets: registry.cn-hongkong.cr.aliyuncs.com/zvec/cohere-bench-data. 
+
+You can run a container as follows:
+
 ```bash
 docker run -it --net=host -d -e DEBUG_MODE=true  --user root --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -v /home/zvec/:/home/zvec/  -w /home/zvec --name=cohere_bench zvec-registry.cn-hongkong.cr.aliyuncs.com/zvec/cohere-bench-data:0.0.1 bash
 
 docker exec -it cohere_bench bash
 ```
 
-The datasets locate at: /tmp/cohere/
+The datasets locate at /tmp/cohere/
 
 ### Preparing Environment 
 Clone code and init:
@@ -63,7 +66,7 @@ Convert vector data to binary formatted file.
 /home/zvec/workspace/zvec/bin/txt2vecs -input=cohere_train_vector_10m.txt --output=cohere_train_vector_10m.zvec.vecs --dimension=768
 ```
 
-We'v also prepared preprocessed binary formatted files, which can be found:
+We've also prepared preprocessed binary formatted files, which can be found in the container below:
 
 ```bash
 root@iZj6caifjouj5yu8xgsiysZ:/home/zvec# ls -al /tmp/cohere/*zvec 
@@ -86,7 +89,6 @@ drwxr-xr-x 6 root root       4096 Feb  6 03:38 ..
 
 ### Preparing Bench Config 
 Prepare Build Config
-
 
 ```yaml
 BuilderCommon:
