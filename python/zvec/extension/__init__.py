@@ -13,7 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
-from .embedding_function import DenseEmbeddingFunction, QwenEmbeddingFunction
+from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
+from .qwen_embedding_function import QwenEmbeddingFunction
 from .rerank import QwenReRanker, ReRanker, RrfReRanker, WeightedReRanker
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "QwenReRanker",
     "ReRanker",
     "RrfReRanker",
+    "SparseEmbeddingFunction",
     "WeightedReRanker",
 ]

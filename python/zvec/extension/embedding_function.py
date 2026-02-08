@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 
 from typing_extensions import Protocol, runtime_checkable
 
@@ -22,7 +22,7 @@ from ..typing import DataType
 
 
 @runtime_checkable
-class DenseEmbeddingFunction(Protocol[MD], ABC):
+class DenseEmbeddingFunction(Protocol[MD]):
     """Abstract base class for dense vector embedding functions.
 
     Dense embedding functions map multimodal input (text, image, or audio) to
@@ -111,7 +111,7 @@ class DenseEmbeddingFunction(Protocol[MD], ABC):
         return self.embed(input)
 
 
-class SparseEmbeddingFunction(Protocol[MD], ABC):
+class SparseEmbeddingFunction(Protocol[MD]):
     """Abstract base class for sparse vector embedding functions.
 
     Sparse embedding functions map multimodal input (text, image, or audio) to

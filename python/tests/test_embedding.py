@@ -19,11 +19,15 @@ from unittest.mock import MagicMock, patch, Mock
 
 import numpy as np
 import pytest
-from zvec.extension import QwenEmbeddingFunction
+from zvec.extension.qwen_embedding_function import QwenEmbeddingFunction
 from zvec.extension.sentence_transformer_embedding_function import (
     DefaultSentenceTransformerEmbedding,
     SentenceTransformerEmbeddingFunction,
 )
+
+# Environment variable to control integration tests
+# Set ZVEC_RUN_INTEGRATION_TESTS=1 to run real API/model tests
+RUN_INTEGRATION_TESTS = os.environ.get("ZVEC_RUN_INTEGRATION_TESTS", "0") == "1"
 
 
 # ----------------------------
@@ -43,11 +47,6 @@ class TestQwenEmbeddingFunction:
         embedding_func = QwenEmbeddingFunction(dimension=128)
         assert embedding_func._api_key == "env_key"
 
-    def test_init_without_api_key(self):
-        # Test initialization without API key raises ValueError
-        with pytest.raises(ValueError, match="DashScope API key is required"):
-            QwenEmbeddingFunction(dimension=128)
-
     @patch.dict(os.environ, {"DASHSCOPE_API_KEY": ""})
     def test_init_with_empty_env_api_key(self):
         # Test initialization with empty API key from environment
@@ -63,7 +62,7 @@ class TestQwenEmbeddingFunction:
         )
         assert embedding_func.model == "custom-model"
 
-    @patch("zvec.extension.embedding.require_module")
+    @patch("zvec.extension.qwen_embedding_function.require_module")
     def test_embed_with_empty_text(self, mock_require_module):
         # Test embed method with empty text raises ValueError
         embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
@@ -76,7 +75,7 @@ class TestQwenEmbeddingFunction:
         with pytest.raises(TypeError):
             embedding_func.embed(None)
 
-    @patch("zvec.extension.embedding.require_module")
+    @patch("zvec.extension.qwen_embedding_function.require_module")
     def test_embed_success(self, mock_require_module):
         # Test successful embedding
         mock_dashscope = MagicMock()
@@ -86,18 +85,20 @@ class TestQwenEmbeddingFunction:
         mock_dashscope.TextEmbedding.call.return_value = mock_response
         mock_require_module.return_value = mock_dashscope
 
-        embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func = QwenEmbeddingFunction(dimension=3, api_key="test_key")
+        # Clear cache to avoid interference
+        embedding_func.embed.cache_clear()
         result = embedding_func.embed("test text")
 
         assert result == [0.1, 0.2, 0.3]
         mock_dashscope.TextEmbedding.call.assert_called_once_with(
             model="text-embedding-v4",
             input="test text",
-            dimension=128,
+            dimension=3,
             output_type="dense",
         )
 
-    @patch("zvec.extension.embedding.require_module")
+    @patch("zvec.extension.qwen_embedding_function.require_module")
     def test_embed_http_error(self, mock_require_module):
         # Test embedding with HTTP error
         mock_dashscope = MagicMock()
@@ -108,29 +109,39 @@ class TestQwenEmbeddingFunction:
         mock_require_module.return_value = mock_dashscope
 
         embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func.embed.cache_clear()
 
         with pytest.raises(ValueError):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.embedding.require_module")
+    @patch("zvec.extension.qwen_embedding_function.require_module")
     def test_embed_invalid_response(self, mock_require_module):
         # Test embedding with invalid response (wrong number of embeddings)
         mock_dashscope = MagicMock()
         mock_response = MagicMock()
         mock_response.status_code = HTTPStatus.OK
-        mock_response.output.embeddings = []
+        mock_response.output = {"embeddings": []}
         mock_dashscope.TextEmbedding.call.return_value = mock_response
         mock_require_module.return_value = mock_dashscope
 
         embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func.embed.cache_clear()
 
         with pytest.raises(ValueError):
             embedding_func.embed("test text")
 
-    @pytest.mark.skip(reason="Qwen Embedding is not available in CI")
-    def test_embed(self):
-        # Test embedding with invalid dimension
-        embedding_func = QwenEmbeddingFunction(dimension=128, api_key="xxx")
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
+    def test_real_embed_success(self):
+        """Integration test with real DashScope API.
+
+        To run this test, set environment variable:
+            export ZVEC_RUN_INTEGRATION_TESTS=1
+            export DASHSCOPE_API_KEY=your-api-key
+        """
+        embedding_func = QwenEmbeddingFunction(dimension=128)
         dense = embedding_func("test text")
         assert len(dense) == 128
 
@@ -158,9 +169,10 @@ class TestDefaultSentenceTransformerEmbedding:
         # Assertions
         assert emb_func.dimension == 384
         assert emb_func.model_name == "all-MiniLM-L6-v2"
+        assert emb_func.model_source == "huggingface"
         assert emb_func.device == "cpu"
         mock_st.SentenceTransformer.assert_called_once_with(
-            "all-MiniLM-L6-v2", device=None
+            "all-MiniLM-L6-v2", device=None, trust_remote_code=True
         )
 
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
@@ -177,8 +189,51 @@ class TestDefaultSentenceTransformerEmbedding:
 
         assert emb_func.device == "cuda"
         mock_st.SentenceTransformer.assert_called_once_with(
-            "all-MiniLM-L6-v2", device="cuda"
+            "all-MiniLM-L6-v2", device="cuda", trust_remote_code=True
         )
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_init_with_modelscope(self, mock_require_module):
+        """Test initialization with ModelScope as model source."""
+        mock_st = Mock()
+        mock_ms = Mock()
+        mock_model = Mock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+        mock_model.device = "cpu"
+        mock_st.SentenceTransformer.return_value = mock_model
+
+        def require_module_side_effect(module_name):
+            if module_name == "sentence_transformers":
+                return mock_st
+            elif module_name == "modelscope":
+                return mock_ms
+            raise ImportError(f"No module named '{module_name}'")
+
+        mock_require_module.side_effect = require_module_side_effect
+
+        # Mock snapshot_download at the correct import location
+        with patch(
+            "modelscope.hub.snapshot_download.snapshot_download",
+            return_value="/path/to/cached/model",
+        ):
+            emb_func = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+
+        # Assertions
+        assert emb_func.dimension == 384
+        assert emb_func.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
+        assert emb_func.model_source == "modelscope"
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_init_with_invalid_model_source(self, mock_require_module):
+        """Test initialization with invalid model_source raises ValueError."""
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        with pytest.raises(ValueError, match="Invalid model_source"):
+            DefaultSentenceTransformerEmbedding(model_source="invalid_source")
 
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_embed_success(self, mock_require_module):
@@ -326,11 +381,54 @@ class TestDefaultSentenceTransformerEmbedding:
         ):
             DefaultSentenceTransformerEmbedding()
 
-    @pytest.mark.skip(
-        reason="Requires sentence-transformers installed and model download"
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_modelscope_import_error(self, mock_require_module):
+        """Test handling of ModelScope import error."""
+        mock_st = Mock()
+
+        def require_module_side_effect(module_name):
+            if module_name == "sentence_transformers":
+                return mock_st
+            elif module_name == "modelscope":
+                raise ImportError("No module named 'modelscope'")
+
+        mock_require_module.side_effect = require_module_side_effect
+
+        with pytest.raises(
+            ImportError, match="ModelScope support requires the 'modelscope' package"
+        ):
+            DefaultSentenceTransformerEmbedding(model_source="modelscope")
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_embed_dimension_mismatch(self, mock_require_module):
+        """Test handling of dimension mismatch in embedding output."""
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+
+        # Return embedding with wrong dimension
+        fake_embedding = np.random.rand(256).astype(np.float32)
+        mock_model.encode.return_value = fake_embedding
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        emb_func = DefaultSentenceTransformerEmbedding()
+
+        with pytest.raises(ValueError, match="Dimension mismatch"):
+            emb_func.embed("Test text")
+
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
     )
     def test_real_embedding_generation(self):
-        """Integration test with real model (skipped in CI)."""
+        """Integration test with real model (requires sentence-transformers).
+
+        To run this test, set environment variable:
+            export ZVEC_RUN_INTEGRATION_TESTS=1
+
+        Note: First run will download the model (~80MB).
+        """
         emb_func = DefaultSentenceTransformerEmbedding()
 
         # Test basic embedding
@@ -385,5 +483,75 @@ class TestCustomSentenceTransformerEmbedding:
         assert custom_emb.dimension == 768
         assert custom_emb.model_name == "all-mpnet-base-v2"
         mock_st.SentenceTransformer.assert_called_once_with(
-            "all-mpnet-base-v2", device=None
+            "all-mpnet-base-v2", device=None, trust_remote_code=True
         )
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_custom_chinese_model_with_modelscope(self, mock_require_module):
+        """Test creating a custom Chinese embedding function with ModelScope."""
+
+        # Create a custom Chinese embedding class
+        class ChineseEmbedding(SentenceTransformerEmbeddingFunction):
+            def __init__(self, device=None):
+                super().__init__(
+                    model_name="iic/nlp_gte_sentence-embedding_chinese-small",
+                    model_source="modelscope",
+                    device=device,
+                    normalize_embeddings=True,
+                )
+
+        mock_st = Mock()
+        mock_ms = Mock()
+        mock_model = Mock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+        mock_model.device = "cpu"
+        mock_st.SentenceTransformer.return_value = mock_model
+
+        def require_module_side_effect(module_name):
+            if module_name == "sentence_transformers":
+                return mock_st
+            elif module_name == "modelscope":
+                return mock_ms
+            raise ImportError(f"No module named '{module_name}'")
+
+        mock_require_module.side_effect = require_module_side_effect
+
+        with patch(
+            "modelscope.hub.snapshot_download.snapshot_download",
+            return_value="/path/to/cached/chinese/model",
+        ):
+            chinese_emb = ChineseEmbedding()
+
+        assert chinese_emb.dimension == 384
+        assert chinese_emb.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
+        assert chinese_emb.model_source == "modelscope"
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_model_properties(self, mock_require_module):
+        """Test model_name and model_source properties."""
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+        mock_model.device = "cpu"
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        # Test Hugging Face
+        emb_func_hf = DefaultSentenceTransformerEmbedding(model_source="huggingface")
+        assert emb_func_hf.model_name == "all-MiniLM-L6-v2"
+        assert emb_func_hf.model_source == "huggingface"
+
+        # Test ModelScope
+        with patch(
+            "modelscope.hub.snapshot_download.snapshot_download",
+            return_value="/path/to/model",
+        ):
+            mock_ms = Mock()
+            mock_require_module.side_effect = (
+                lambda m: mock_st if m == "sentence_transformers" else mock_ms
+            )
+            emb_func_ms = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+            assert (
+                emb_func_ms.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
+            )
+            assert emb_func_ms.model_source == "modelscope"

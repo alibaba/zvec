@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 
@@ -37,13 +37,20 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
     CPU and GPU acceleration.
 
     Args:
-        model_name (str): Hugging Face model identifier or local path.
-            Common options:
+        model_name (str): Model identifier or local path. Format depends on source:
+            - Hugging Face: ``"sentence-transformers/all-MiniLM-L6-v2"`` or ``"all-MiniLM-L6-v2"``
+            - ModelScope: ``"iic/nlp_gte_sentence-embedding_chinese-small"``
+            Common Hugging Face options:
             - ``"all-MiniLM-L6-v2"``: Fast, 384 dims, good for general use
             - ``"all-mpnet-base-v2"``: High quality, 768 dims
             - ``"paraphrase-multilingual-MiniLM-L12-v2"``: Multilingual, 384 dims
-            - ``"multi-qa-MiniLM-L6-cos-v1"``: Optimized for Q&A, 384 dims
-            Browse more: https://huggingface.co/models?library=sentence-transformers
+            Common ModelScope options (Chinese-optimized):
+            - ``"iic/nlp_gte_sentence-embedding_chinese-small"``: Small, 384 dims, 50MB
+            - ``"iic/nlp_gte_sentence-embedding_chinese-base"``: Base, 768 dims, 200MB
+        model_source (Literal["huggingface", "modelscope"], optional): Model source to use.
+            - ``"huggingface"``: Load from Hugging Face Hub (default, international)
+            - ``"modelscope"``: Load from ModelScope (faster in China)
+            Defaults to ``"huggingface"``.
         device (Optional[str], optional): Device to run the model on.
             Options: ``"cpu"``, ``"cuda"``, ``"mps"`` (for Apple Silicon), or ``None``
             for automatic detection. Defaults to ``None``.
@@ -57,10 +64,11 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
         dimension (int): The embedding vector dimension (auto-detected from model).
         data_type (DataType): Always ``DataType.VECTOR_FP32`` for this implementation.
         model_name (str): The model identifier being used.
+        model_source (str): The model source being used ("huggingface" or "modelscope").
         device (str): The device the model is running on.
 
     Raises:
-        ValueError: If the model cannot be loaded or input is invalid.
+        ValueError: If the model cannot be loaded, input is invalid, or model_source is invalid.
         TypeError: If input to ``embed()`` is not a string.
         RuntimeError: If model inference fails.
 
@@ -68,11 +76,24 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
         - Requires Python 3.10, 3.11, or 3.12
         - Requires the ``sentence-transformers`` package:
           ``pip install sentence-transformers``
-        - First run downloads the model from Hugging Face Hub (~80MB-500MB)
-        - Models are cached locally in ``~/.cache/torch/sentence_transformers/``
+        - For ModelScope support, also requires: ``pip install modelscope``
+        - Hugging Face models cached in ``~/.cache/torch/sentence_transformers/``
+        - ModelScope models cached in ``~/.cache/modelscope/hub/``
+        - First run downloads the model from chosen source (~20MB-500MB)
         - GPU acceleration available with CUDA or Apple Silicon (MPS)
-        - No API keys or network required after initial model download
+        - No API keys required for either source
         - Subclasses should typically only need to set the default ``model_name``
+
+        **For users in China experiencing Hugging Face access issues:**
+
+        Option 1 (Recommended): Use ModelScope
+            - Set ``model_source="modelscope"`` to use ModelScope mirror
+            - Faster download speed and better connectivity in China
+
+        Option 2: Use Hugging Face Mirror
+            - Set environment variable before running:
+              ``export HF_ENDPOINT=https://hf-mirror.com``
+            - Then use ``model_source="huggingface"`` as normal
 
     Examples:
         >>> # Using built-in concrete implementation
@@ -98,18 +119,20 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
         >>> len(vector)
         768
 
-        >>> # Creating multilingual embedding function
-        >>> class MultilingualEmbedding(SentenceTransformerEmbeddingFunction):
-        ...     def __init__(self):
+        >>> # Using ModelScope for faster download in China
+        >>> class ChineseEmbedding(SentenceTransformerEmbeddingFunction):
+        ...     def __init__(self, device: Optional[str] = None):
         ...         super().__init__(
-        ...             model_name="paraphrase-multilingual-MiniLM-L12-v2",
+        ...             model_name="iic/nlp_gte_sentence-embedding_chinese-small",
+        ...             model_source="modelscope",
+        ...             device=device,
         ...             normalize_embeddings=True
         ...         )
         >>>
-        >>> multilingual = MultilingualEmbedding()
-        >>> vector_en = multilingual.embed("Hello")
-        >>> vector_zh = multilingual.embed("你好")
-        >>> # Both produce embeddings in same 384-dim space
+        >>> chinese_emb = ChineseEmbedding()
+        >>> vector = chinese_emb.embed("你好，世界！")
+        >>> len(vector)
+        312
 
     See Also:
         - ``DenseEmbeddingFunction``: Base class for dense embeddings
@@ -121,6 +144,7 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
     def __init__(
         self,
         model_name: str,
+        model_source: Literal["huggingface", "modelscope"] = "huggingface",
         device: Optional[str] = None,
         normalize_embeddings: bool = True,
         batch_size: int = 32,
@@ -128,7 +152,9 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
         """Initialize the Sentence Transformer embedding function.
 
         Args:
-            model_name (str): Hugging Face model name or local path. Required.
+            model_name (str): Model identifier or local path. Required.
+            model_source (Literal["huggingface", "modelscope"]): Model source.
+                Defaults to "huggingface".
             device (Optional[str]): Target device ("cpu", "cuda", "mps", or None).
                 None means automatic detection.
             normalize_embeddings (bool): Whether to L2-normalize output vectors.
@@ -136,10 +162,18 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
             batch_size (int): Batch size for encoding. Defaults to 32.
 
         Raises:
-            ImportError: If sentence-transformers is not installed.
-            ValueError: If model cannot be loaded.
+            ImportError: If sentence-transformers or modelscope is not installed.
+            ValueError: If model cannot be loaded or model_source is invalid.
         """
+        # Validate model_source
+        if model_source not in ("huggingface", "modelscope"):
+            raise ValueError(
+                f"Invalid model_source: '{model_source}'. "
+                "Must be 'huggingface' or 'modelscope'."
+            )
+
         self._model_name = model_name
+        self._model_source = model_source
         self._device = device
         self._normalize_embeddings = normalize_embeddings
         self._batch_size = batch_size
@@ -161,6 +195,15 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
         return self._model_name
 
     @property
+    def model_source(self) -> str:
+        """str: The model source being used.
+
+        Returns:
+            str: Model source ("huggingface" or "modelscope").
+        """
+        return self._model_source
+
+    @property
     def device(self) -> str:
         """str: The device the model is running on.
 
@@ -178,18 +221,41 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
             SentenceTransformer: The loaded model instance.
 
         Raises:
-            ImportError: If sentence-transformers package is not installed.
+            ImportError: If required packages are not installed.
             ValueError: If model cannot be loaded.
         """
         if self._model is None:
             try:
                 sentence_transformers = require_module("sentence_transformers")
-                self._model = sentence_transformers.SentenceTransformer(
-                    self._model_name, device=self._device
-                )
+
+                if self._model_source == "modelscope":
+                    # Load from ModelScope
+                    require_module("modelscope")
+                    from modelscope.hub.snapshot_download import snapshot_download
+
+                    # Download model to cache
+                    model_dir = snapshot_download(self._model_name)
+
+                    # Load from local path
+                    self._model = sentence_transformers.SentenceTransformer(
+                        model_dir, device=self._device, trust_remote_code=True
+                    )
+                else:
+                    # Load from Hugging Face (default)
+                    self._model = sentence_transformers.SentenceTransformer(
+                        self._model_name, device=self._device, trust_remote_code=True
+                    )
+            except ImportError as e:
+                if "modelscope" in str(e) and self._model_source == "modelscope":
+                    raise ImportError(
+                        "ModelScope support requires the 'modelscope' package. "
+                        "Please install it with: pip install modelscope"
+                    ) from e
+                raise
             except Exception as e:
                 raise ValueError(
-                    f"Failed to load Sentence Transformer model '{self._model_name}': {e!s}"
+                    f"Failed to load Sentence Transformer model '{self._model_name}' "
+                    f"from {self._model_source}: {e!s}"
                 ) from e
         return self._model
 
@@ -294,13 +360,18 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
     """Default Sentence Transformer embedding using all-MiniLM-L6-v2 model.
 
     This is a concrete implementation of ``SentenceTransformerEmbeddingFunction``
-    that uses the ``all-MiniLM-L6-v2`` model by default. This model provides a
-    good balance between speed and quality for general-purpose text embedding.
+    that uses the ``all-MiniLM-L6-v2`` model from Hugging Face by default.
+    This model provides a good balance between speed and quality for
+    general-purpose text embedding.
 
     The model produces 384-dimensional embeddings and is optimized for semantic
     similarity tasks. It runs locally without requiring API keys.
 
     Args:
+        model_source (Literal["huggingface", "modelscope"], optional): Model source.
+            - ``"huggingface"``: Use Hugging Face Hub (default, for international users)
+            - ``"modelscope"``: Use ModelScope (recommended for users in China)
+            Defaults to ``"huggingface"``.
         device (Optional[str], optional): Device to run the model on.
             Options: ``"cpu"``, ``"cuda"``, ``"mps"`` (for Apple Silicon), or ``None``
             for automatic detection. Defaults to ``None``.
@@ -309,9 +380,10 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
         batch_size (int, optional): Batch size for encoding. Defaults to ``32``.
 
     Attributes:
-        dimension (int): Always 384 for all-MiniLM-L6-v2.
+        dimension (int): Always 384 for both models.
         data_type (DataType): Always ``DataType.VECTOR_FP32``.
-        model_name (str): Always "all-MiniLM-L6-v2".
+        model_name (str): "all-MiniLM-L6-v2" (HF) or "iic/nlp_gte_sentence-embedding_chinese-small" (MS).
+        model_source (str): The model source being used.
 
     Raises:
         ValueError: If the model cannot be loaded or input is invalid.
@@ -322,13 +394,31 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
         - Requires Python 3.10, 3.11, or 3.12
         - Requires the ``sentence-transformers`` package:
           ``pip install sentence-transformers``
-        - First run downloads the model (~80MB) from Hugging Face Hub
-        - Model is cached locally in ``~/.cache/torch/sentence_transformers/``
+        - For ModelScope, also requires: ``pip install modelscope``
+        - First run downloads the model (~50-80MB) from chosen source
+        - Hugging Face cache: ``~/.cache/torch/sentence_transformers/``
+        - ModelScope cache: ``~/.cache/modelscope/hub/``
         - No API keys or network required after initial download
         - Inference speed: ~1000 sentences/sec on CPU, ~10000 on GPU
 
+        **For users in China:**
+
+        If you encounter Hugging Face access issues, use ModelScope instead:
+
+        .. code-block:: python
+
+            # Recommended for users in China
+            emb = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+
+        Alternatively, use Hugging Face mirror:
+
+        .. code-block:: bash
+
+            export HF_ENDPOINT=https://hf-mirror.com
+            # Then use default Hugging Face mode
+
     Examples:
-        >>> # Basic usage with CPU
+        >>> # Basic usage with Hugging Face (default)
         >>> from zvec.extension import DefaultSentenceTransformerEmbedding
         >>>
         >>> emb_func = DefaultSentenceTransformerEmbedding()
@@ -337,6 +427,18 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
         384
         >>> isinstance(vector, list)
         True
+
+        >>> # Recommended for users in China (uses ModelScope)
+        >>> emb_func = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+        >>> vector = emb_func.embed("你好，世界！")  # Works well with Chinese text
+        >>> len(vector)
+        384
+
+        >>> # Alternative for China users: Use Hugging Face mirror
+        >>> import os
+        >>> os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        >>> emb_func = DefaultSentenceTransformerEmbedding()  # Uses HF mirror
+        >>> vector = emb_func.embed("Hello, world!")
 
         >>> # Using GPU for faster inference
         >>> emb_func = DefaultSentenceTransformerEmbedding(device="cuda")
@@ -378,6 +480,7 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
 
     def __init__(
         self,
+        model_source: Literal["huggingface", "modelscope"] = "huggingface",
         device: Optional[str] = None,
         normalize_embeddings: bool = True,
         batch_size: int = 32,
@@ -385,6 +488,8 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
         """Initialize with all-MiniLM-L6-v2 model.
 
         Args:
+            model_source (Literal["huggingface", "modelscope"]): Model source.
+                Defaults to "huggingface".
             device (Optional[str]): Target device ("cpu", "cuda", "mps", or None).
                 Defaults to None (automatic detection).
             normalize_embeddings (bool): Whether to L2-normalize output vectors.
@@ -392,11 +497,19 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
             batch_size (int): Batch size for encoding. Defaults to 32.
 
         Raises:
-            ImportError: If sentence-transformers is not installed.
+            ImportError: If sentence-transformers or modelscope is not installed.
             ValueError: If model cannot be loaded.
         """
+        # Use different models based on source
+        if model_source == "modelscope":
+            # Use Chinese-optimized model for ModelScope (better for Chinese text)
+            model_name = "iic/nlp_gte_sentence-embedding_chinese-small"
+        else:
+            model_name = "all-MiniLM-L6-v2"
+
         super().__init__(
-            model_name="all-MiniLM-L6-v2",
+            model_name=model_name,
+            model_source=model_source,
             device=device,
             normalize_embeddings=normalize_embeddings,
             batch_size=batch_size,
