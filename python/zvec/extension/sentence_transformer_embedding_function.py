@@ -13,7 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-from abc import ABC
 from typing import Literal, Optional
 
 import numpy as np
@@ -24,7 +23,7 @@ from ..typing import DataType
 from .embedding_function import DenseEmbeddingFunction
 
 
-class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
+class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT]):
     """Abstract base class for Sentence Transformer-based embedding functions.
 
     This abstract class provides a foundation for text-to-vector embedding capabilities
@@ -97,9 +96,9 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
 
     Examples:
         >>> # Using built-in concrete implementation
-        >>> from zvec.extension import DefaultSentenceTransformerEmbedding
+        >>> from zvec.extension import DefaultDenseEmbedding
         >>>
-        >>> emb_func = DefaultSentenceTransformerEmbedding()
+        >>> emb_func = DefaultDenseEmbedding()
         >>> vector = emb_func.embed("Hello, world!")
         >>> len(vector)
         384
@@ -136,8 +135,8 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
 
     See Also:
         - ``DenseEmbeddingFunction``: Base class for dense embeddings
-        - ``DefaultSentenceTransformerEmbedding``: Concrete implementation with all-MiniLM-L6-v2
-        - ``QwenEmbeddingFunction``: Alternative using Qwen API
+        - ``DefaultDenseEmbedding``: Concrete implementation with all-MiniLM-L6-v2
+        - ``QwenDenseEmbedding``: Alternative using Qwen API
         - ``SparseEmbeddingFunction``: Base class for sparse embeddings
     """
 
@@ -356,8 +355,8 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT], ABC):
             raise RuntimeError(f"Failed to generate embedding: {e!s}") from e
 
 
-class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
-    """Default Sentence Transformer embedding using all-MiniLM-L6-v2 model.
+class DefaultDenseEmbedding(SentenceTransformerEmbeddingFunction):
+    """Default dense embedding using all-MiniLM-L6-v2 model.
 
     This is a concrete implementation of ``SentenceTransformerEmbeddingFunction``
     that uses the ``all-MiniLM-L6-v2`` model from Hugging Face by default.
@@ -408,7 +407,7 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
         .. code-block:: python
 
             # Recommended for users in China
-            emb = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+            emb = DefaultDenseEmbedding(model_source="modelscope")
 
         Alternatively, use Hugging Face mirror:
 
@@ -419,9 +418,9 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
 
     Examples:
         >>> # Basic usage with Hugging Face (default)
-        >>> from zvec.extension import DefaultSentenceTransformerEmbedding
+        >>> from zvec.extension import DefaultDenseEmbedding
         >>>
-        >>> emb_func = DefaultSentenceTransformerEmbedding()
+        >>> emb_func = DefaultDenseEmbedding()
         >>> vector = emb_func.embed("Hello, world!")
         >>> len(vector)
         384
@@ -429,7 +428,7 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
         True
 
         >>> # Recommended for users in China (uses ModelScope)
-        >>> emb_func = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+        >>> emb_func = DefaultDenseEmbedding(model_source="modelscope")
         >>> vector = emb_func.embed("你好，世界！")  # Works well with Chinese text
         >>> len(vector)
         384
@@ -437,11 +436,11 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
         >>> # Alternative for China users: Use Hugging Face mirror
         >>> import os
         >>> os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        >>> emb_func = DefaultSentenceTransformerEmbedding()  # Uses HF mirror
+        >>> emb_func = DefaultDenseEmbedding()  # Uses HF mirror
         >>> vector = emb_func.embed("Hello, world!")
 
         >>> # Using GPU for faster inference
-        >>> emb_func = DefaultSentenceTransformerEmbedding(device="cuda")
+        >>> emb_func = DefaultDenseEmbedding(device="cuda")
         >>> vector = emb_func("Machine learning is fascinating")
         >>> # Normalized vector has unit length
         >>> import numpy as np
@@ -475,7 +474,7 @@ class DefaultSentenceTransformerEmbedding(SentenceTransformerEmbeddingFunction):
     See Also:
         - ``SentenceTransformerEmbeddingFunction``: Base class for custom models
         - ``DenseEmbeddingFunction``: Abstract base for all dense embeddings
-        - ``QwenEmbeddingFunction``: Alternative using Qwen API
+        - ``QwenDenseEmbedding``: Alternative using Qwen API
     """
 
     def __init__(

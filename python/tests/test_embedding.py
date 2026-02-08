@@ -19,9 +19,9 @@ from unittest.mock import MagicMock, patch, Mock
 
 import numpy as np
 import pytest
-from zvec.extension.qwen_embedding_function import QwenEmbeddingFunction
+from zvec.extension.qwen_embedding_function import QwenDenseEmbedding
 from zvec.extension.sentence_transformer_embedding_function import (
-    DefaultSentenceTransformerEmbedding,
+    DefaultDenseEmbedding,
     SentenceTransformerEmbeddingFunction,
 )
 
@@ -31,12 +31,12 @@ RUN_INTEGRATION_TESTS = os.environ.get("ZVEC_RUN_INTEGRATION_TESTS", "0") == "1"
 
 
 # ----------------------------
-# QwenEmbeddingFunction Test Case
+# QwenDenseEmbedding Test Case
 # ----------------------------
-class TestQwenEmbeddingFunction:
+class TestQwenDenseEmbedding:
     def test_init_with_api_key(self):
         # Test initialization with explicit API key
-        embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func = QwenDenseEmbedding(dimension=128, api_key="test_key")
         assert embedding_func.dimension == 128
         assert embedding_func.model == "text-embedding-v4"
         assert embedding_func._api_key == "test_key"
@@ -44,20 +44,20 @@ class TestQwenEmbeddingFunction:
     @patch.dict(os.environ, {"DASHSCOPE_API_KEY": "env_key"})
     def test_init_with_env_api_key(self):
         # Test initialization with API key from environment
-        embedding_func = QwenEmbeddingFunction(dimension=128)
+        embedding_func = QwenDenseEmbedding(dimension=128)
         assert embedding_func._api_key == "env_key"
 
     @patch.dict(os.environ, {"DASHSCOPE_API_KEY": ""})
     def test_init_with_empty_env_api_key(self):
         # Test initialization with empty API key from environment
         with pytest.raises(ValueError, match="DashScope API key is required"):
-            QwenEmbeddingFunction(dimension=128)
+            QwenDenseEmbedding(dimension=128)
 
     def test_model_property(self):
-        embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func = QwenDenseEmbedding(dimension=128, api_key="test_key")
         assert embedding_func.model == "text-embedding-v4"
 
-        embedding_func = QwenEmbeddingFunction(
+        embedding_func = QwenDenseEmbedding(
             dimension=128, model="custom-model", api_key="test_key"
         )
         assert embedding_func.model == "custom-model"
@@ -65,7 +65,7 @@ class TestQwenEmbeddingFunction:
     @patch("zvec.extension.qwen_embedding_function.require_module")
     def test_embed_with_empty_text(self, mock_require_module):
         # Test embed method with empty text raises ValueError
-        embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func = QwenDenseEmbedding(dimension=128, api_key="test_key")
 
         with pytest.raises(
             ValueError, match="Input text cannot be empty or whitespace only"
@@ -85,7 +85,7 @@ class TestQwenEmbeddingFunction:
         mock_dashscope.TextEmbedding.call.return_value = mock_response
         mock_require_module.return_value = mock_dashscope
 
-        embedding_func = QwenEmbeddingFunction(dimension=3, api_key="test_key")
+        embedding_func = QwenDenseEmbedding(dimension=3, api_key="test_key")
         # Clear cache to avoid interference
         embedding_func.embed.cache_clear()
         result = embedding_func.embed("test text")
@@ -108,7 +108,7 @@ class TestQwenEmbeddingFunction:
         mock_dashscope.TextEmbedding.call.return_value = mock_response
         mock_require_module.return_value = mock_dashscope
 
-        embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func = QwenDenseEmbedding(dimension=128, api_key="test_key")
         embedding_func.embed.cache_clear()
 
         with pytest.raises(ValueError):
@@ -124,7 +124,7 @@ class TestQwenEmbeddingFunction:
         mock_dashscope.TextEmbedding.call.return_value = mock_response
         mock_require_module.return_value = mock_dashscope
 
-        embedding_func = QwenEmbeddingFunction(dimension=128, api_key="test_key")
+        embedding_func = QwenDenseEmbedding(dimension=128, api_key="test_key")
         embedding_func.embed.cache_clear()
 
         with pytest.raises(ValueError):
@@ -141,16 +141,16 @@ class TestQwenEmbeddingFunction:
             export ZVEC_RUN_INTEGRATION_TESTS=1
             export DASHSCOPE_API_KEY=your-api-key
         """
-        embedding_func = QwenEmbeddingFunction(dimension=128)
+        embedding_func = QwenDenseEmbedding(dimension=128)
         dense = embedding_func("test text")
         assert len(dense) == 128
 
 
 # ----------------------------
-# DefaultSentenceTransformerEmbedding Test Case
+# DefaultDenseEmbedding Test Case
 # ----------------------------
-class TestDefaultSentenceTransformerEmbedding:
-    """Test cases for DefaultSentenceTransformerEmbedding."""
+class TestDefaultDenseEmbedding:
+    """Test cases for DefaultDenseEmbedding."""
 
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_init_success(self, mock_require_module):
@@ -164,7 +164,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_require_module.return_value = mock_st
 
         # Initialize embedding function
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
 
         # Assertions
         assert emb_func.dimension == 384
@@ -185,7 +185,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding(device="cuda")
+        emb_func = DefaultDenseEmbedding(device="cuda")
 
         assert emb_func.device == "cuda"
         mock_st.SentenceTransformer.assert_called_once_with(
@@ -216,7 +216,7 @@ class TestDefaultSentenceTransformerEmbedding:
             "modelscope.hub.snapshot_download.snapshot_download",
             return_value="/path/to/cached/model",
         ):
-            emb_func = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+            emb_func = DefaultDenseEmbedding(model_source="modelscope")
 
         # Assertions
         assert emb_func.dimension == 384
@@ -233,7 +233,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_require_module.return_value = mock_st
 
         with pytest.raises(ValueError, match="Invalid model_source"):
-            DefaultSentenceTransformerEmbedding(model_source="invalid_source")
+            DefaultDenseEmbedding(model_source="invalid_source")
 
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_embed_success(self, mock_require_module):
@@ -248,7 +248,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
         result = emb_func.embed("Hello, world!")
 
         # Assertions
@@ -276,7 +276,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding(normalize_embeddings=True)
+        emb_func = DefaultDenseEmbedding(normalize_embeddings=True)
         result = emb_func.embed("Test sentence")
 
         # Check if vector is normalized (L2 norm should be close to 1.0)
@@ -293,7 +293,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
 
         with pytest.raises(ValueError, match="Input text cannot be empty"):
             emb_func.embed("")
@@ -310,7 +310,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
 
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             emb_func.embed(123)
@@ -329,7 +329,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
 
         # Test calling the function directly
         result = emb_func("Test text")
@@ -357,7 +357,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
 
         v1 = emb_func.embed("The cat sits on the mat")
         v2 = emb_func.embed("A feline rests on a rug")
@@ -379,7 +379,7 @@ class TestDefaultSentenceTransformerEmbedding:
         with pytest.raises(
             ValueError, match="Failed to load Sentence Transformer model"
         ):
-            DefaultSentenceTransformerEmbedding()
+            DefaultDenseEmbedding()
 
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_modelscope_import_error(self, mock_require_module):
@@ -397,7 +397,7 @@ class TestDefaultSentenceTransformerEmbedding:
         with pytest.raises(
             ImportError, match="ModelScope support requires the 'modelscope' package"
         ):
-            DefaultSentenceTransformerEmbedding(model_source="modelscope")
+            DefaultDenseEmbedding(model_source="modelscope")
 
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_embed_dimension_mismatch(self, mock_require_module):
@@ -412,7 +412,7 @@ class TestDefaultSentenceTransformerEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
 
         with pytest.raises(ValueError, match="Dimension mismatch"):
             emb_func.embed("Test text")
@@ -429,7 +429,7 @@ class TestDefaultSentenceTransformerEmbedding:
 
         Note: First run will download the model (~80MB).
         """
-        emb_func = DefaultSentenceTransformerEmbedding()
+        emb_func = DefaultDenseEmbedding()
 
         # Test basic embedding
         vector = emb_func.embed("Hello, world!")
@@ -537,7 +537,7 @@ class TestCustomSentenceTransformerEmbedding:
         mock_require_module.return_value = mock_st
 
         # Test Hugging Face
-        emb_func_hf = DefaultSentenceTransformerEmbedding(model_source="huggingface")
+        emb_func_hf = DefaultDenseEmbedding(model_source="huggingface")
         assert emb_func_hf.model_name == "all-MiniLM-L6-v2"
         assert emb_func_hf.model_source == "huggingface"
 
@@ -550,7 +550,7 @@ class TestCustomSentenceTransformerEmbedding:
             mock_require_module.side_effect = (
                 lambda m: mock_st if m == "sentence_transformers" else mock_ms
             )
-            emb_func_ms = DefaultSentenceTransformerEmbedding(model_source="modelscope")
+            emb_func_ms = DefaultDenseEmbedding(model_source="modelscope")
             assert (
                 emb_func_ms.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
             )

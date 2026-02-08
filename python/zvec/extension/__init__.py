@@ -14,15 +14,21 @@
 from __future__ import annotations
 
 from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
-from .qwen_embedding_function import QwenEmbeddingFunction
+from .qwen_embedding_function import QwenDenseEmbedding
 from .rerank import QwenReRanker, ReRanker, RrfReRanker, WeightedReRanker
+from .sentence_transformer_embedding_function import (
+    DefaultDenseEmbedding,
+    SentenceTransformerEmbeddingFunction,
+)
 
 __all__ = [
+    "DefaultDenseEmbedding",
     "DenseEmbeddingFunction",
-    "QwenEmbeddingFunction",
+    "QwenDenseEmbedding",
     "QwenReRanker",
     "ReRanker",
     "RrfReRanker",
+    "SentenceTransformerEmbeddingFunction",
     "SparseEmbeddingFunction",
     "WeightedReRanker",
 ]

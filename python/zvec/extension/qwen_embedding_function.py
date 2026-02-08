@@ -24,7 +24,7 @@ from ..typing import DataType
 from .embedding_function import DenseEmbeddingFunction
 
 
-class QwenEmbeddingFunction(DenseEmbeddingFunction[TEXT]):
+class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
     """Dense text embedding function using Qwen (DashScope) API.
 
     This class provides text-to-vector embedding capabilities using Alibaba Cloud's
@@ -68,17 +68,17 @@ class QwenEmbeddingFunction(DenseEmbeddingFunction[TEXT]):
 
     Examples:
         >>> # Basic usage with default model
-        >>> from zvec.extension import QwenEmbeddingFunction
+        >>> from zvec.extension import QwenDenseEmbedding
         >>> import os
         >>> os.environ["DASHSCOPE_API_KEY"] = "your-api-key"
         >>>
-        >>> emb_func = QwenEmbeddingFunction(dimension=1024)
+        >>> emb_func = QwenDenseEmbedding(dimension=1024)
         >>> vector = emb_func.embed("Hello, world!")
         >>> len(vector)
         1024
 
         >>> # Using specific model with explicit API key
-        >>> emb_func = QwenEmbeddingFunction(
+        >>> emb_func = QwenDenseEmbedding(
         ...     dimension=512,
         ...     model="text-embedding-v3",
         ...     api_key="sk-xxxxx"
@@ -177,7 +177,7 @@ class QwenEmbeddingFunction(DenseEmbeddingFunction[TEXT]):
                 errors occur.
 
         Examples:
-            >>> emb = QwenEmbeddingFunction(dimension=1024)
+            >>> emb = QwenDenseEmbedding(dimension=1024)
             >>> vector = emb.embed("Natural language processing")
             >>> len(vector)
             1024
