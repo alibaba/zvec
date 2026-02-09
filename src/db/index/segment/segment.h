@@ -134,9 +134,9 @@ class Segment {
 
   virtual Status Delete(const std::string &pk) = 0;
 
-  virtual Status Delete(uint64_t doc_id) = 0;
+  virtual Status Delete(uint64_t g_doc_id) = 0;
 
-  virtual Doc::Ptr Fetch(uint64_t doc_id) = 0;
+  virtual Doc::Ptr Fetch(uint64_t g_doc_id) = 0;
 
   // for sqlengine
   virtual TablePtr fetch(const std::vector<std::string> &columns,

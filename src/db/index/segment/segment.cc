@@ -122,7 +122,7 @@ class SegmentImpl : public Segment,
 
   Status Delete(const std::string &pk) override;
 
-  Status Delete(uint64_t segment_doc_id) override;
+  Status Delete(uint64_t g_doc_id) override;
 
   Doc::Ptr Fetch(uint64_t g_doc_id) override;
 
@@ -911,20 +911,15 @@ Status SegmentImpl::Delete(const std::string &pk) {
   return internal_delete(mutable_doc);
 }
 
-Status SegmentImpl::Delete(uint64_t segment_doc_id) {
+// Note: Here we have no way to determine if g_doc_id is valid
+Status SegmentImpl::Delete(uint64_t g_doc_id) {
   std::lock_guard lock(seg_mtx_);
-  if (segment_doc_id >= doc_ids_.size()) {
-    return Status::InvalidArgument("segment_doc_id:", segment_doc_id,
-                                   " out of range");
-  }
-  auto global_doc_id = doc_ids_[segment_doc_id];
-  if (delete_store_->is_deleted(global_doc_id)) {
-    return Status::NotFound("global_doc_id:", global_doc_id,
-                            " already deleted");
+  if (delete_store_->is_deleted(g_doc_id)) {
+    return Status::NotFound("g_doc_id:", g_doc_id, " already deleted");
   }
 
   Doc mutable_doc;
-  mutable_doc.set_doc_id(global_doc_id);
+  mutable_doc.set_doc_id(g_doc_id);
   mutable_doc.set_operator(Operator::DELETE);
 
   // append wal
