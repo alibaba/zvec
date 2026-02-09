@@ -145,4 +145,4 @@ class SparseEmbeddingFunction(Protocol[MD]):
             SparseVectorType: Mapping from dimension index to non-zero weight.
                 Only dimensions with non-zero values are included.
         """
-        raise NotImplementedError
+        ...
