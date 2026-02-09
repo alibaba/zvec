@@ -68,7 +68,7 @@ class TestQwenDenseEmbedding:
         )
         assert embedding_func.model == "custom-model"
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_with_empty_text(self, mock_require_module):
         # Test embed method with empty text raises ValueError
         embedding_func = QwenDenseEmbedding(dimension=128, api_key="test_key")
@@ -81,7 +81,7 @@ class TestQwenDenseEmbedding:
         with pytest.raises(TypeError):
             embedding_func.embed(None)
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_success(self, mock_require_module):
         # Test successful embedding
         mock_dashscope = MagicMock()
@@ -104,7 +104,7 @@ class TestQwenDenseEmbedding:
             output_type="dense",
         )
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_http_error(self, mock_require_module):
         # Test embedding with HTTP error
         mock_dashscope = MagicMock()
@@ -120,7 +120,7 @@ class TestQwenDenseEmbedding:
         with pytest.raises(ValueError):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_invalid_response(self, mock_require_module):
         # Test embedding with invalid response (wrong number of embeddings)
         mock_dashscope = MagicMock()
@@ -208,7 +208,7 @@ class TestQwenSparseEmbedding:
         )
         assert doc_emb.extra_params.get("encoding_type") == "document"
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_with_empty_text(self, mock_require_module):
         """Test embed method with empty text raises ValueError."""
         embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
@@ -223,7 +223,7 @@ class TestQwenSparseEmbedding:
         ):
             embedding_func.embed("   ")
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_with_non_string_input(self, mock_require_module):
         """Test embed method with non-string input raises TypeError."""
         embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
@@ -234,7 +234,7 @@ class TestQwenSparseEmbedding:
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             embedding_func.embed(None)
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_success(self, mock_require_module):
         """Test successful sparse embedding generation."""
         mock_dashscope = MagicMock()
@@ -282,7 +282,7 @@ class TestQwenSparseEmbedding:
             text_type="query",
         )
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_with_document_encoding_type(self, mock_require_module):
         """Test embedding with document encoding type."""
         mock_dashscope = MagicMock()
@@ -316,7 +316,7 @@ class TestQwenSparseEmbedding:
         assert call_args[1]["text_type"] == "document"
         assert call_args[1]["output_type"] == "sparse"
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_output_sorted_by_indices(self, mock_require_module):
         """Test that output is always sorted by indices in ascending order."""
         mock_dashscope = MagicMock()
@@ -349,7 +349,7 @@ class TestQwenSparseEmbedding:
         # Verify expected sorted order
         assert result_keys == [5, 77, 500, 1234, 9999]
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_filters_zero_values(self, mock_require_module):
         """Test that zero and negative values are filtered out."""
         mock_dashscope = MagicMock()
@@ -392,7 +392,7 @@ class TestQwenSparseEmbedding:
         assert list(result.keys()) == [10, 40]
         assert all(v > 0 for v in result.values())
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_http_error(self, mock_require_module):
         """Test embedding with HTTP error."""
         mock_dashscope = MagicMock()
@@ -408,7 +408,7 @@ class TestQwenSparseEmbedding:
         with pytest.raises(ValueError, match="DashScope API error"):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_invalid_response_no_embeddings(self, mock_require_module):
         """Test embedding with invalid response (no embeddings)."""
         mock_dashscope = MagicMock()
@@ -424,7 +424,7 @@ class TestQwenSparseEmbedding:
         with pytest.raises(ValueError, match="Expected exactly 1 embedding"):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_invalid_response_not_dict(self, mock_require_module):
         """Test embedding with invalid response (sparse_embedding not list)."""
         mock_dashscope = MagicMock()
@@ -445,7 +445,7 @@ class TestQwenSparseEmbedding:
         ):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_callable_interface(self, mock_require_module):
         """Test that embedding function is callable."""
         mock_dashscope = MagicMock()
@@ -472,7 +472,7 @@ class TestQwenSparseEmbedding:
         assert isinstance(result, dict)
         assert list(result.keys()) == [100, 200]
 
-    @patch("zvec.extension.qwen_embedding_function.require_module")
+    @patch("zvec.extension.qwen_function.require_module")
     def test_embed_api_connection_error(self, mock_require_module):
         """Test handling of API connection errors."""
         mock_dashscope = MagicMock()
