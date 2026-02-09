@@ -36,11 +36,21 @@ class DenseEmbeddingFunction(Protocol[MD]):
         dimension (int): Dimensionality of the output embedding vector.
         data_type (DataType, optional): Numeric type of the embedding.
             Defaults to ``DataType.VECTOR_FP32``.
+        **kwargs: Additional model-specific parameters. Stored in ``extra_params``
+            property and can be used by subclasses for custom model configuration.
+            Examples: ``output_type``, ``text_type``, ``encoding_format``, etc.
+
+    Attributes:
+        dimension (int): The embedding vector dimension.
+        data_type (DataType): The numeric data type of embeddings.
+        extra_params (dict): Additional parameters passed during initialization.
 
     Note:
         - Subclasses must implement the ``embed()`` method.
         - This class is callable: ``embedding_func(input)`` is equivalent to
           ``embedding_func.embed(input)``.
+        - The ``extra_params`` allows subclasses to accept custom parameters
+          without modifying the base class signature.
 
     Examples:
         >>> # Using built-in text embedding
@@ -51,14 +61,15 @@ class DenseEmbeddingFunction(Protocol[MD]):
         >>> img_emb = SomeImageEmbedding(dimension=512)
         >>> vector = img_emb.embed("/path/to/image.jpg")
 
-        >>> # Custom text embedding function
+        >>> # Custom text embedding with extra parameters
         >>> class MyTextEmbedding(DenseEmbeddingFunction):
-        ...     def __init__(self):
-        ...         super().__init__(dimension=384)
+        ...     def __init__(self, output_type="dense", **kwargs):
+        ...         super().__init__(dimension=384, output_type=output_type, **kwargs)
+        ...         self.output_type = self.extra_params.get("output_type", "dense")
         ...         self.model = load_my_model()
         ...
         ...     def embed(self, input: str) -> list[float]:
-        ...         return self.model.encode(input).tolist()
+        ...         return self.model.encode(input, output_type=self.output_type).tolist()
 
         >>> # Custom image embedding function
         >>> class MyImageEmbedding(DenseEmbeddingFunction):
@@ -76,9 +87,12 @@ class DenseEmbeddingFunction(Protocol[MD]):
         ...         return self.model.extract_features(image)
     """
 
-    def __init__(self, dimension: int, data_type: DataType = DataType.VECTOR_FP32):
+    def __init__(
+        self, dimension: int, data_type: DataType = DataType.VECTOR_FP32, **kwargs
+    ):
         self._dimension = dimension
         self._data_type = data_type
+        self._extra_params = kwargs
 
     @property
     def dimension(self) -> int:
@@ -89,6 +103,11 @@ class DenseEmbeddingFunction(Protocol[MD]):
     def data_type(self) -> DataType:
         """DataType: The numeric data type of the embedding (e.g., VECTOR_FP32)."""
         return self._data_type
+
+    @property
+    def extra_params(self) -> dict:
+        """dict: Extra parameters for model-specific customization."""
+        return self._extra_params
 
     @abstractmethod
     def embed(self, input: MD) -> DenseVectorType:

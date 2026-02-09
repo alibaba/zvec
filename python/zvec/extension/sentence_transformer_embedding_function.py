@@ -147,6 +147,7 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT]):
         device: Optional[str] = None,
         normalize_embeddings: bool = True,
         batch_size: int = 32,
+        **kwargs,
     ):
         """Initialize the Sentence Transformer embedding function.
 
@@ -159,6 +160,7 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT]):
             normalize_embeddings (bool): Whether to L2-normalize output vectors.
                 Defaults to True.
             batch_size (int): Batch size for encoding. Defaults to 32.
+            **kwargs: Additional parameters passed to parent class.
 
         Raises:
             ImportError: If sentence-transformers or modelscope is not installed.
@@ -182,7 +184,7 @@ class SentenceTransformerEmbeddingFunction(DenseEmbeddingFunction[TEXT]):
         model = self._get_model()
         dimension = model.get_sentence_embedding_dimension()
 
-        super().__init__(dimension, DataType.VECTOR_FP32)
+        super().__init__(dimension, DataType.VECTOR_FP32, **kwargs)
 
     @property
     def model_name(self) -> str:
@@ -483,6 +485,7 @@ class DefaultDenseEmbedding(SentenceTransformerEmbeddingFunction):
         device: Optional[str] = None,
         normalize_embeddings: bool = True,
         batch_size: int = 32,
+        **kwargs,
     ):
         """Initialize with all-MiniLM-L6-v2 model.
 
@@ -494,6 +497,7 @@ class DefaultDenseEmbedding(SentenceTransformerEmbeddingFunction):
             normalize_embeddings (bool): Whether to L2-normalize output vectors.
                 Defaults to True.
             batch_size (int): Batch size for encoding. Defaults to 32.
+            **kwargs: Additional parameters passed to parent class.
 
         Raises:
             ImportError: If sentence-transformers or modelscope is not installed.
@@ -512,4 +516,5 @@ class DefaultDenseEmbedding(SentenceTransformerEmbeddingFunction):
             device=device,
             normalize_embeddings=normalize_embeddings,
             batch_size=batch_size,
+            **kwargs,
         )
