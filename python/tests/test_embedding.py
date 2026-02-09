@@ -586,7 +586,7 @@ class TestOpenAIDenseEmbedding:
             "user": "test-user",
         }
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_with_empty_text(self, mock_require_module):
         """Test embed method with empty text raises ValueError."""
         embedding_func = OpenAIDenseEmbedding(api_key="sk-test")
@@ -601,7 +601,7 @@ class TestOpenAIDenseEmbedding:
         ):
             embedding_func.embed("   ")
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_with_non_string_input(self, mock_require_module):
         """Test embed method with non-string input raises TypeError."""
         embedding_func = OpenAIDenseEmbedding(api_key="sk-test")
@@ -612,7 +612,7 @@ class TestOpenAIDenseEmbedding:
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             embedding_func.embed(None)
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_success(self, mock_require_module):
         """Test successful embedding generation."""
         # Mock OpenAI client
@@ -639,7 +639,7 @@ class TestOpenAIDenseEmbedding:
             model="text-embedding-3-small", input="test text", dimensions=3
         )
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_with_custom_model(self, mock_require_module):
         """Test embedding with custom model."""
         mock_openai = Mock()
@@ -666,7 +666,7 @@ class TestOpenAIDenseEmbedding:
             model="text-embedding-ada-002", input="test text"
         )
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_api_error(self, mock_require_module):
         """Test handling of API errors."""
         mock_openai = Mock()
@@ -690,7 +690,7 @@ class TestOpenAIDenseEmbedding:
         with pytest.raises(RuntimeError, match="Failed to call OpenAI API"):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_invalid_response(self, mock_require_module):
         """Test handling of invalid API response."""
         mock_openai = Mock()
@@ -712,7 +712,7 @@ class TestOpenAIDenseEmbedding:
         with pytest.raises(ValueError, match="no embedding data returned"):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_dimension_mismatch(self, mock_require_module):
         """Test handling of dimension mismatch."""
         mock_openai = Mock()
@@ -737,7 +737,7 @@ class TestOpenAIDenseEmbedding:
         with pytest.raises(ValueError, match="Dimension mismatch"):
             embedding_func.embed("test text")
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_callable(self, mock_require_module):
         """Test that embedding function is callable."""
         mock_openai = Mock()
@@ -763,7 +763,7 @@ class TestOpenAIDenseEmbedding:
         assert isinstance(result, list)
         assert len(result) == 1536
 
-    @patch("zvec.extension.openai_embedding_function.require_module")
+    @patch("zvec.extension.openai_function.require_module")
     def test_embed_with_base_url(self, mock_require_module):
         """Test embedding with custom base URL."""
         mock_openai = Mock()
