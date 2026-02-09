@@ -25,6 +25,7 @@ from .sentence_transformer_embedding_function import (
     DefaultSparseEmbedding,
     SentenceTransformerEmbeddingFunction,
 )
+from .sentence_transformer_rerank_function import SentenceTransformerReRanker
 
 __all__ = [
     "BM25EmbeddingFunction",
@@ -38,6 +39,7 @@ __all__ = [
     "ReRanker",
     "RrfReRanker",
     "SentenceTransformerEmbeddingFunction",
+    "SentenceTransformerReRanker",
     "SparseEmbeddingFunction",
     "WeightedReRanker",
 ]
