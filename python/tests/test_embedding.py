@@ -24,6 +24,7 @@ from zvec.extension.qwen_embedding_function import (
     QwenDenseEmbedding,
     QwenSparseEmbedding,
 )
+from zvec.extension.bm25_embedding_function import BM25EmbeddingFunction
 from zvec.extension.sentence_transformer_embedding_function import (
     DefaultDenseEmbedding,
     DefaultSparseEmbedding,
@@ -1727,3 +1728,469 @@ class TestDefaultSparseEmbedding:
         for i, result in enumerate(results):
             keys = list(result.keys())
             assert keys == sorted(keys), f"Result {i} must have sorted keys"
+
+
+# ----------------------------
+# BM25EmbeddingFunction Test Case
+# ----------------------------
+class TestBM25EmbeddingFunction:
+    """Test suite for BM25EmbeddingFunction (BM25-based sparse embedding)."""
+
+    def test_init_success(self):
+        """Test successful initialization with corpus."""
+        corpus = [
+            "a cat is a feline and likes to purr",
+            "a dog is the human's best friend",
+            "a bird is a beautiful animal that can fly",
+        ]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+            mock_retriever.vocab = {"cat": 0, "dog": 1, "bird": 2}
+            mock_retriever.idf = Mock()
+
+            mock_bm25s.tokenize.return_value = [[0, 1], [1, 2], [2, 3]]
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+
+            assert bm25.corpus_size == 3
+            assert bm25.method == "lucene"
+            assert bm25.vocab_size == 3
+            mock_bm25s.tokenize.assert_called_once()
+            mock_bm25s.BM25.assert_called_once()
+
+    def test_init_with_empty_corpus(self):
+        """Test initialization with empty corpus raises ValueError."""
+        with pytest.raises(ValueError, match="Corpus must be a non-empty list"):
+            BM25EmbeddingFunction(corpus=[])
+
+        with pytest.raises(ValueError, match="Corpus must be a non-empty list"):
+            BM25EmbeddingFunction(corpus=None)
+
+    def test_init_with_invalid_corpus(self):
+        """Test initialization with invalid corpus elements."""
+        with pytest.raises(ValueError, match="All corpus documents must be strings"):
+            BM25EmbeddingFunction(corpus=["text", 123, "another"])
+
+        with pytest.raises(ValueError, match="All corpus documents must be strings"):
+            BM25EmbeddingFunction(corpus=[None, "text"])
+
+    def test_init_with_custom_parameters(self):
+        """Test initialization with custom BM25 parameters."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+            mock_retriever.vocab = {"test": 0}
+
+            mock_bm25s.tokenize.return_value = [[0], [1]]
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(
+                corpus=corpus,
+                method="robertson",
+                k1=1.2,
+                b=0.75,
+                stemmer="english",
+                stopwords="en",
+            )
+
+            assert bm25.method == "robertson"
+            assert bm25.extra_params == {}
+
+    def test_init_with_missing_bm25s_library(self):
+        """Test initialization fails when bm25s library is not installed."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_require.side_effect = ImportError("No module named 'bm25s'")
+
+            with pytest.raises(ImportError, match="No module named 'bm25s'"):
+                BM25EmbeddingFunction(corpus=corpus)
+
+    def test_embed_success(self):
+        """Test successful sparse embedding generation."""
+        corpus = ["cat purrs", "dog barks", "bird sings"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+
+            # Mock vocabulary - these are the actual tokens in vocab
+            mock_retriever.vocab = {"cat": 0, "purr": 1, "loud": 2}
+
+            # Mock IDF values as a dict-like object with get method
+            mock_idf = Mock()
+            mock_idf.get = Mock(
+                side_effect=lambda idx, default: {0: 1.5, 1: 1.2, 2: 2.0}.get(
+                    idx, default
+                )
+            )
+            mock_retriever.idf = mock_idf
+
+            # Mock tokenize to return token IDs (as list, not numpy array)
+            mock_bm25s.tokenize.side_effect = [
+                [[0, 1, 2]],  # Corpus tokenization
+                [
+                    [0, 1, 2]
+                ],  # Query tokenization: tokens "cat"(0), "purr"(1), "loud"(2)
+            ]
+
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            result = bm25.embed("cat purr loud")
+
+            # Verify result structure
+            assert isinstance(result, dict)
+            assert all(isinstance(k, int) for k in result.keys())
+            assert all(isinstance(v, float) for v in result.values())
+
+            # Verify all values are positive
+            assert all(v > 0 for v in result.values())
+
+            # Verify output is sorted by indices
+            keys = list(result.keys())
+            assert keys == sorted(keys), "Output must be sorted by indices"
+
+            # Verify expected keys (tokens in query)
+            assert 0 in result  # cat
+            assert 1 in result  # purr
+            assert 2 in result  # loud
+
+    def test_embed_with_empty_input(self):
+        """Test embedding with empty input raises ValueError."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+            mock_retriever.vocab = {}
+
+            mock_bm25s.tokenize.return_value = [[]]
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+
+            with pytest.raises(ValueError, match="Input text cannot be empty"):
+                bm25.embed("")
+
+            with pytest.raises(ValueError, match="Input text cannot be empty"):
+                bm25.embed("   ")
+
+    def test_embed_with_non_string_input(self):
+        """Test embedding with non-string input raises TypeError."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+            mock_retriever.vocab = {}
+
+            mock_bm25s.tokenize.return_value = [[]]
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+
+            with pytest.raises(TypeError, match="Expected 'input' to be str"):
+                bm25.embed(123)
+
+            with pytest.raises(TypeError, match="Expected 'input' to be str"):
+                bm25.embed(None)
+
+            with pytest.raises(TypeError, match="Expected 'input' to be str"):
+                bm25.embed(["text"])
+
+    def test_embed_callable_interface(self):
+        """Test that BM25EmbeddingFunction is callable."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+            mock_retriever.vocab = {"test": 0}
+            mock_retriever.idf = {0: 1.5}
+
+            mock_bm25s.tokenize.side_effect = [[[0]], [[0]]]
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+
+            # Test callable interface
+            result = bm25("test query")
+            assert isinstance(result, dict)
+
+    def test_embed_output_sorted_by_indices(self):
+        """Test that output is always sorted by indices in ascending order."""
+        corpus = ["doc1", "doc2", "doc3"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+
+            # Create vocabulary with non-sequential indices
+            mock_retriever.vocab = {
+                "token_a": 9999,
+                "token_b": 5,
+                "token_c": 1234,
+                "token_d": 77,
+                "token_e": 500,
+            }
+
+            # Mock IDF values
+            mock_idf_dict = {9999: 1.5, 5: 2.0, 1234: 0.8, 77: 3.2, 500: 1.1}
+            mock_retriever.idf = mock_idf_dict
+
+            # Query tokens in non-sorted order
+            mock_bm25s.tokenize.side_effect = [
+                [[0, 1, 2]],  # Corpus
+                [[9999, 5, 1234, 77, 500]],  # Query with unsorted indices
+            ]
+
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            result = bm25.embed("test query")
+
+            # Verify keys are sorted
+            result_keys = list(result.keys())
+            assert result_keys == sorted(result_keys), (
+                f"Keys must be sorted. Got: {result_keys}, Expected: {sorted(result_keys)}"
+            )
+
+            # Verify expected sorted order: [5, 77, 500, 1234, 9999]
+            expected_keys = [5, 77, 500, 1234, 9999]
+            assert result_keys == expected_keys
+
+    def test_embed_filters_zero_values(self):
+        """Test that zero IDF values are filtered out."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+
+            mock_retriever.vocab = {"positive": 0, "zero": 1, "negative": 2}
+            mock_retriever.idf = {0: 1.5, 1: 0.0, 2: -0.5}  # Zero and negative
+
+            mock_bm25s.tokenize.side_effect = [
+                [[0, 1]],  # Corpus
+                [[0, 1, 2]],  # Query
+            ]
+
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            result = bm25.embed("test")
+
+            # Only positive token should be in result
+            assert 0 in result
+            assert 1 not in result  # Zero value filtered
+            assert 2 not in result  # Negative value filtered
+            assert all(v > 0 for v in result.values())
+
+    def test_embed_with_oov_tokens(self):
+        """Test embedding with out-of-vocabulary tokens."""
+        corpus = ["known words"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+
+            # Vocabulary only has "known"
+            mock_retriever.vocab = {"known": 0}
+            mock_retriever.idf = {0: 1.5}
+
+            # Query includes OOV token "unknown" (not in vocab)
+            mock_bm25s.tokenize.side_effect = [
+                [[0]],  # Corpus
+                [[0]],  # Query: only "known" token
+            ]
+
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            result = bm25.embed("known unknown")
+
+            # Only known token should be in result
+            assert 0 in result
+            assert len(result) == 1
+
+    def test_embed_runtime_error(self):
+        """Test handling of runtime errors during embedding."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+            mock_retriever.vocab = {}
+
+            mock_bm25s.tokenize.side_effect = [
+                [[0]],  # Corpus tokenization succeeds
+                RuntimeError("Tokenization failed"),  # Query tokenization fails
+            ]
+
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+
+            with pytest.raises(RuntimeError, match="Failed to generate BM25 embedding"):
+                bm25.embed("test query")
+
+    def test_embed_fallback_to_term_frequency(self):
+        """Test fallback to term frequency when IDF is not available."""
+        corpus = ["doc1", "doc2"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+
+            mock_retriever.vocab = {"test": 0, "query": 1}
+            # No IDF attribute
+            delattr(mock_retriever, "idf") if hasattr(mock_retriever, "idf") else None
+
+            # Token "test" appears twice
+            mock_bm25s.tokenize.side_effect = [
+                [[0, 1]],  # Corpus
+                [[0, 0, 1]],  # Query: "test" appears twice
+            ]
+
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            result = bm25.embed("test test query")
+
+            # Should use term frequency as fallback
+            assert isinstance(result, dict)
+            assert all(v > 0 for v in result.values())
+
+    def test_properties(self):
+        """Test property accessors."""
+        corpus = ["doc1", "doc2", "doc3"]
+
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_bm25s = Mock()
+            mock_retriever = Mock()
+            mock_retriever.vocab = {"a": 0, "b": 1, "c": 2, "d": 3, "e": 4}
+
+            mock_bm25s.tokenize.return_value = [[0, 1], [2, 3], [4]]
+            mock_bm25s.BM25.return_value = mock_retriever
+            mock_require.return_value = mock_bm25s
+
+            bm25 = BM25EmbeddingFunction(
+                corpus=corpus, method="bm25+", custom_param="test"
+            )
+
+            assert bm25.method == "bm25+"
+            assert bm25.corpus_size == 3
+            assert bm25.vocab_size == 5
+            assert bm25.extra_params == {"custom_param": "test"}
+
+    def test_different_bm25_variants(self):
+        """Test initialization with different BM25 variants."""
+        corpus = ["doc1"]
+        methods = ["robertson", "atire", "bm25l", "bm25+", "lucene"]
+
+        for method in methods:
+            with patch(
+                "zvec.extension.bm25_embedding_function.require_module"
+            ) as mock_require:
+                mock_bm25s = Mock()
+                mock_retriever = Mock()
+                mock_retriever.vocab = {}
+
+                mock_bm25s.tokenize.return_value = [[]]
+                mock_bm25s.BM25.return_value = mock_retriever
+                mock_require.return_value = mock_bm25s
+
+                bm25 = BM25EmbeddingFunction(corpus=corpus, method=method)
+                assert bm25.method == method
+
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
+    def test_real_bm25_embedding(self):
+        """Integration test with real bm25s library.
+
+        To run this test:
+            export ZVEC_RUN_INTEGRATION_TESTS=1
+            pip install bm25s
+
+        Note: First run may take time for tokenization.
+        """
+        corpus = [
+            "The cat sits on the mat",
+            "The dog plays in the garden",
+            "Birds fly in the sky",
+            "Fish swim in the water",
+        ]
+
+        bm25 = BM25EmbeddingFunction(corpus=corpus)
+
+        # Test basic embedding
+        query = "cat on mat"
+        result = bm25.embed(query)
+
+        assert isinstance(result, dict)
+        assert len(result) > 0
+        assert all(isinstance(k, int) for k in result.keys())
+        assert all(isinstance(v, float) and v > 0 for v in result.values())
+
+        # Verify sorted output
+        keys = list(result.keys())
+        assert keys == sorted(keys), "Real BM25 output must be sorted"
+
+        # Test callable interface
+        result2 = bm25(query)
+        assert result == result2
+
+        # Test with stemming and stopwords
+        bm25_advanced = BM25EmbeddingFunction(corpus=corpus, stopwords="en")
+        result_advanced = bm25_advanced.embed(query)
+        assert isinstance(result_advanced, dict)
+
+        # Verify properties
+        assert bm25.corpus_size == 4
+        assert bm25.vocab_size > 0
+        assert bm25.method == "lucene"

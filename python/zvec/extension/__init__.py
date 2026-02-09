@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+from .bm25_embedding_function import BM25EmbeddingFunction
 from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
 from .openai_embedding_function import OpenAIDenseEmbedding
 from .qwen_embedding_function import QwenDenseEmbedding, QwenSparseEmbedding
@@ -24,6 +25,7 @@ from .sentence_transformer_embedding_function import (
 )
 
 __all__ = [
+    "BM25EmbeddingFunction",
     "DefaultDenseEmbedding",
     "DefaultSparseEmbedding",
     "DenseEmbeddingFunction",
