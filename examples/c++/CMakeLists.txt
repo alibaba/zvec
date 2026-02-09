@@ -90,14 +90,23 @@ endif()
 
 # zvec_db: links libzvec_db.a + all deps
 add_library(zvec-db INTERFACE)
-target_link_libraries(zvec-db INTERFACE
-    zvec_db
-    zvec-core
-    zvec-ailego
-    -Wl,--start-group
-    ${zvec_db_deps}
-    -Wl,--end-group
-)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(zvec-db INTERFACE
+        zvec_db
+        zvec-core
+        zvec-ailego
+        -Wl,--start-group
+        ${zvec_db_deps}
+        -Wl,--end-group
+    )
+elseif(APPLE)
+    target_link_libraries(zvec-db INTERFACE
+        zvec_db
+        zvec-core
+        zvec-ailego
+        ${zvec_db_deps}
+    )
+endif()
 
 
 # --- Main executable ---
