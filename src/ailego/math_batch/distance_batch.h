@@ -14,10 +14,10 @@
 
 #pragma once
 
+#include <zvec/ailego/math_batch/utils.h>
 #include "ailego/math/distance_matrix.h"
 #include "cosine_distance_batch.h"
 #include "inner_product_distance_batch.h"
-#include "utils.h"
 
 
 namespace zvec::ailego {
