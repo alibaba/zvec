@@ -821,7 +821,7 @@ class TestOpenAIDenseEmbedding:
 class TestDefaultDenseEmbedding:
     """Test cases for DefaultDenseEmbedding."""
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_success(self, mock_require_module):
         """Test successful initialization with mocked model."""
         # Mock sentence_transformers module
@@ -844,7 +844,7 @@ class TestDefaultDenseEmbedding:
             "all-MiniLM-L6-v2", device=None, trust_remote_code=True
         )
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_with_custom_device(self, mock_require_module):
         """Test initialization with custom device."""
         mock_st = Mock()
@@ -861,7 +861,7 @@ class TestDefaultDenseEmbedding:
             "all-MiniLM-L6-v2", device="cuda", trust_remote_code=True
         )
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_with_modelscope(self, mock_require_module):
         """Test initialization with ModelScope as model source."""
         mock_st = Mock()
@@ -892,7 +892,7 @@ class TestDefaultDenseEmbedding:
         assert emb_func.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
         assert emb_func.model_source == "modelscope"
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_with_invalid_model_source(self, mock_require_module):
         """Test initialization with invalid model_source raises ValueError."""
         mock_st = Mock()
@@ -904,7 +904,7 @@ class TestDefaultDenseEmbedding:
         with pytest.raises(ValueError, match="Invalid model_source"):
             DefaultDenseEmbedding(model_source="invalid_source")
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_success(self, mock_require_module):
         """Test successful embedding generation."""
         # Mock embedding output
@@ -934,7 +934,7 @@ class TestDefaultDenseEmbedding:
             batch_size=32,
         )
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_with_normalization(self, mock_require_module):
         """Test embedding with L2 normalization."""
         # Create a normalized vector
@@ -959,7 +959,7 @@ class TestDefaultDenseEmbedding:
         norm = np.linalg.norm(result_array)
         assert abs(norm - 1.0) < 1e-5
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_empty_string(self, mock_require_module):
         """Test embedding with empty string raises ValueError."""
         mock_st = Mock()
@@ -976,7 +976,7 @@ class TestDefaultDenseEmbedding:
         with pytest.raises(ValueError, match="Input text cannot be empty"):
             emb_func.embed("   ")
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_non_string_input(self, mock_require_module):
         """Test embedding with non-string input raises TypeError."""
         mock_st = Mock()
@@ -993,7 +993,7 @@ class TestDefaultDenseEmbedding:
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             emb_func.embed(None)
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_callable(self, mock_require_module):
         """Test that embedding function is callable."""
         fake_embedding = np.random.rand(384).astype(np.float32)
@@ -1015,7 +1015,7 @@ class TestDefaultDenseEmbedding:
         assert isinstance(result, list)
         assert len(result) == 384
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_semantic_similarity(self, mock_require_module):
         """Test semantic similarity between similar and different texts."""
         # Create mock embeddings for similar and different texts
@@ -1052,7 +1052,7 @@ class TestDefaultDenseEmbedding:
 
         assert similarity_high > similarity_low
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_model_loading_error(self, mock_require_module):
         """Test handling of model loading failure."""
         # Clear model cache
@@ -1070,7 +1070,7 @@ class TestDefaultDenseEmbedding:
         ):
             DefaultDenseEmbedding()
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_modelscope_import_error(self, mock_require_module):
         """Test handling of ModelScope import error."""
         mock_st = Mock()
@@ -1088,7 +1088,7 @@ class TestDefaultDenseEmbedding:
         ):
             DefaultDenseEmbedding(model_source="modelscope")
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_dimension_mismatch(self, mock_require_module):
         """Test handling of dimension mismatch in embedding output."""
         # Return embedding with wrong dimension
@@ -1149,7 +1149,7 @@ class TestDefaultDenseEmbedding:
 class TestCustomSentenceTransformerEmbedding:
     """Test cases for custom subclasses of SentenceTransformerEmbeddingFunction."""
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_custom_model_inheritance(self, mock_require_module):
         """Test creating a custom embedding function with different model."""
 
@@ -1178,7 +1178,7 @@ class TestCustomSentenceTransformerEmbedding:
             "all-mpnet-base-v2", device=None, trust_remote_code=True
         )
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_custom_chinese_model_with_modelscope(self, mock_require_module):
         """Test creating a custom Chinese embedding function with ModelScope."""
 
@@ -1218,7 +1218,7 @@ class TestCustomSentenceTransformerEmbedding:
         assert chinese_emb.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
         assert chinese_emb.model_source == "modelscope"
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_model_properties(self, mock_require_module):
         """Test model_name and model_source properties."""
         mock_st = Mock()
@@ -1267,7 +1267,7 @@ class TestDefaultSparseEmbedding:
         This allows all users to run tests without authentication setup.
     """
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_success(self, mock_require_module):
         """Test successful initialization.
 
@@ -1292,7 +1292,7 @@ class TestDefaultSparseEmbedding:
             trust_remote_code=True,
         )
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_with_custom_device(self, mock_require_module):
         """Test initialization with custom device."""
         mock_st = Mock()
@@ -1310,7 +1310,7 @@ class TestDefaultSparseEmbedding:
             trust_remote_code=True,
         )
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_success(self, mock_require_module):
         """Test successful sparse embedding generation with official API."""
         import numpy as np
@@ -1369,7 +1369,7 @@ class TestDefaultSparseEmbedding:
         assert isinstance(call_args, list)
         assert call_args == ["machine learning"]
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_empty_input(self, mock_require_module):
         """Test embedding with empty input."""
         mock_st = Mock()
@@ -1385,7 +1385,7 @@ class TestDefaultSparseEmbedding:
         with pytest.raises(ValueError, match="Input text cannot be empty"):
             sparse_emb.embed("   ")
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_non_string_input(self, mock_require_module):
         """Test embedding with non-string input."""
         mock_st = Mock()
@@ -1401,7 +1401,7 @@ class TestDefaultSparseEmbedding:
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             sparse_emb.embed(["text"])
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_callable_interface(self, mock_require_module):
         """Test that DefaultSparseEmbedding is callable."""
         import numpy as np
@@ -1443,7 +1443,7 @@ class TestDefaultSparseEmbedding:
         assert keys == sorted(keys), "Callable interface must also return sorted keys"
         assert keys == [100, 200, 300]
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_model_loading_failure(self, mock_require_module):
         """Test handling of model loading failure."""
         # Clear model cache to ensure the test actually tries to load the model
@@ -1462,7 +1462,7 @@ class TestDefaultSparseEmbedding:
         ):
             DefaultSparseEmbedding()
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_inference_failure(self, mock_require_module):
         """Test handling of inference failure."""
         # Clear model cache
@@ -1490,7 +1490,7 @@ class TestDefaultSparseEmbedding:
         with pytest.raises(RuntimeError, match="Failed to generate sparse embedding"):
             sparse_emb.embed("test input")
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_sparse_vector_properties(self, mock_require_module):
         """Test properties of sparse vectors (sparsity, non-zero values, sorted order)."""
         import numpy as np
@@ -1543,7 +1543,7 @@ class TestDefaultSparseEmbedding:
             first_key = next(iter(result.keys()))
             assert first_key == min(result.keys()), "First key must be the smallest"
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_output_sorted_by_indices(self, mock_require_module):
         """Test that output dictionary is always sorted by indices (keys) in ascending order."""
         import numpy as np
@@ -1606,7 +1606,7 @@ class TestDefaultSparseEmbedding:
                     f"Key at position {i} must be greater than previous key"
                 )
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_device_property(self, mock_require_module):
         """Test device property returns correct device."""
         mock_st = Mock()
@@ -1618,7 +1618,7 @@ class TestDefaultSparseEmbedding:
         sparse_emb = DefaultSparseEmbedding(device="cuda")
         assert sparse_emb.device == "cuda"
 
-    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_modelscope_source(self, mock_require_module):
         """Test initialization with ModelScope source."""
         mock_st = Mock()
