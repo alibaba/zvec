@@ -18,13 +18,127 @@ from functools import lru_cache
 from http import HTTPStatus
 from typing import Optional
 
-from ..common.constants import TEXT, DenseVectorType
+from ..common.constants import TEXT, DenseVectorType, SparseVectorType
 from ..tool import require_module
-from ..typing import DataType
-from .embedding_function import DenseEmbeddingFunction
+from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
 
 
-class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
+class QwenEmbeddingBase:
+    """Base class for Qwen (DashScope) embedding functions.
+
+    This base class provides common functionality for calling DashScope API
+    and handling responses. It supports both dense and sparse embeddings.
+
+    This class is not meant to be used directly. Use ``QwenDenseEmbedding``
+    for dense embeddings or ``QwenSparseEmbedding`` for sparse embeddings.
+
+    Args:
+        model (str): DashScope embedding model identifier.
+        api_key (Optional[str]): DashScope API authentication key.
+
+    Note:
+        - This is an internal base class for code reuse
+        - Subclasses should inherit from appropriate Protocol (Dense/Sparse)
+        - Provides API connection and response handling functionality
+    """
+
+    def __init__(
+        self,
+        model: str,
+        api_key: Optional[str] = None,
+    ):
+        """Initialize the base Qwen embedding functionality.
+
+        Args:
+            model (str): DashScope model name.
+            api_key (Optional[str]): API key or None to use environment variable.
+
+        Raises:
+            ValueError: If API key is not provided and not in environment.
+        """
+        self._model = model
+        self._api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
+        if not self._api_key:
+            raise ValueError(
+                "DashScope API key is required. Please provide 'api_key' parameter "
+                "or set the 'DASHSCOPE_API_KEY' environment variable."
+            )
+
+    @property
+    def model(self) -> str:
+        """str: The DashScope embedding model name currently in use."""
+        return self._model
+
+    def _get_connection(self):
+        """Establish connection to DashScope API.
+
+        Returns:
+            module: The dashscope module with API key configured.
+
+        Raises:
+            ImportError: If dashscope package is not installed.
+        """
+        dashscope = require_module("dashscope")
+        dashscope.api_key = self._api_key
+        return dashscope
+
+    def _call_text_embedding_api(
+        self,
+        input: TEXT,
+        dimension: int,
+        output_type: str,
+        text_type: Optional[str] = None,
+    ) -> dict:
+        """Call DashScope TextEmbedding API.
+
+        Args:
+            input (TEXT): Input text to embed.
+            dimension (int): Target embedding dimension.
+            output_type (str): Output type ("dense" or "sparse").
+            text_type (Optional[str]): Text type ("query" or "document").
+
+        Returns:
+            dict: API response output field.
+
+        Raises:
+            RuntimeError: If API call fails.
+            ValueError: If API returns error response.
+        """
+        try:
+            # Prepare API call parameters
+            call_params = {
+                "model": self.model,
+                "input": input,
+                "dimension": dimension,
+                "output_type": output_type,
+            }
+
+            # Add optional text_type parameter if provided
+            if text_type is not None:
+                call_params["text_type"] = text_type
+
+            resp = self._get_connection().TextEmbedding.call(**call_params)
+        except Exception as e:
+            raise RuntimeError(f"Failed to call DashScope API: {e!s}") from e
+
+        if resp.status_code != HTTPStatus.OK:
+            error_msg = getattr(resp, "message", "Unknown error")
+            error_code = getattr(resp, "code", "N/A")
+            raise ValueError(
+                f"DashScope API error: [Code={error_code}, "
+                f"Status={resp.status_code}] {error_msg}"
+            )
+
+        output = getattr(resp, "output", None)
+        if not isinstance(output, dict):
+            raise ValueError(
+                "Invalid API response: missing or malformed 'output' field"
+            )
+
+        return output
+
+
+class QwenDenseEmbedding(QwenEmbeddingBase, DenseEmbeddingFunction[TEXT]):
     """Dense text embedding function using Qwen (DashScope) API.
 
     This class provides text-to-vector embedding capabilities using Alibaba Cloud's
@@ -48,10 +162,6 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
             If ``None``, reads from ``DASHSCOPE_API_KEY`` environment variable.
             Obtain your key from: https://dashscope.console.aliyun.com/
         **kwargs: Additional DashScope API parameters. Supported options:
-            - ``output_type`` (str): Embedding output format. Options:
-              ``"dense"`` (default) or ``"sparse"``. Dense embeddings are
-              continuous vectors suitable for semantic similarity; sparse
-              embeddings are keyword-weighted vectors for lexical matching.
             - ``text_type`` (str): Specifies the text role in retrieval tasks.
               Options: ``"query"`` (search query) or ``"document"`` (indexed content).
               This parameter optimizes embeddings for asymmetric search scenarios.
@@ -80,8 +190,6 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
 
         - Use ``text_type="query"`` for search queries and ``text_type="document"``
           for indexed content to optimize asymmetric retrieval tasks.
-        - ``output_type="dense"`` is recommended for semantic similarity and neural
-          search; ``output_type="sparse"`` for keyword-based and BM25-style retrieval.
         - For detailed API specifications and parameter usage, refer to:
           https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api
 
@@ -106,11 +214,10 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
         >>> isinstance(vector, list)
         True
 
-        >>> # Using with custom parameters (output_type, text_type)
+        >>> # Using with custom parameters (text_type)
         >>> # For search queries - optimize for query-document matching
         >>> emb_func = QwenDenseEmbedding(
         ...     dimension=1024,
-        ...     output_type="dense",
         ...     text_type="query"
         ... )
         >>> query_vector = emb_func.embed("What is machine learning?")
@@ -118,19 +225,11 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
         >>> # For document embeddings - optimize for being matched by queries
         >>> doc_emb_func = QwenDenseEmbedding(
         ...     dimension=1024,
-        ...     output_type="dense",
         ...     text_type="document"
         ... )
         >>> doc_vector = doc_emb_func.embed(
         ...     "Machine learning is a subset of artificial intelligence..."
         ... )
-        >>>
-        >>> # Using sparse embeddings for lexical matching (BM25-style)
-        >>> sparse_emb = QwenDenseEmbedding(
-        ...     dimension=1024,
-        ...     output_type="sparse"
-        ... )
-        >>> sparse_vector = sparse_emb.embed("keyword-based search query")
 
         >>> # Batch processing with caching benefit
         >>> texts = ["First text", "Second text", "First text"]
@@ -156,18 +255,13 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
         api_key: Optional[str] = None,
         **kwargs,
     ):
-        """Initialize the Qwen embedding function.
+        """Initialize the Qwen dense embedding function.
 
         Args:
             dimension (int): Target embedding dimension.
             model (str): DashScope model name. Defaults to "text-embedding-v4".
             api_key (Optional[str]): API key or None to use environment variable.
             **kwargs: Additional DashScope API parameters. Supported options:
-                - ``output_type`` (str): Embedding output format.
-                  * ``"dense"`` (default): Continuous vector representation for
-                    semantic similarity and neural retrieval. Returns float array.
-                  * ``"sparse"``: Sparse keyword-weighted vector for lexical
-                    matching and BM25-style retrieval. Returns sparse dict.
                 - ``text_type`` (str): Text role in asymmetric retrieval.
                   * ``"query"``: Optimize for search queries (short, question-like).
                   * ``"document"``: Optimize for indexed documents (longer content).
@@ -180,39 +274,29 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
         Raises:
             ValueError: If API key is not provided and not in environment.
         """
-        super().__init__(dimension, DataType.VECTOR_FP32, **kwargs)
-        self._model = model
-        self._api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
-        if not self._api_key:
-            raise ValueError(
-                "DashScope API key is required. Please provide 'api_key' parameter "
-                "or set the 'DASHSCOPE_API_KEY' environment variable."
-            )
+        # Initialize base class for API connection
+        QwenEmbeddingBase.__init__(self, model=model, api_key=api_key)
+
+        # Store dense-specific attributes
+        self._dimension = dimension
+        self._extra_params = kwargs
 
     @property
-    def model(self) -> str:
-        """str: The DashScope embedding model name currently in use.
+    def dimension(self) -> int:
+        """int: The expected dimensionality of the embedding vector."""
+        return self._dimension
 
-        Returns:
-            str: Model identifier (e.g., "text-embedding-v4").
-        """
-        return self._model
+    @property
+    def extra_params(self) -> dict:
+        """dict: Extra parameters for model-specific customization."""
+        return self._extra_params
 
-    def _get_connection(self):
-        """Establish connection to DashScope API.
-
-        Returns:
-            module: The dashscope module with API key configured.
-
-        Raises:
-            ImportError: If dashscope package is not installed.
-        """
-        dashscope = require_module("dashscope")
-        dashscope.api_key = self._api_key
-        return dashscope
+    def __call__(self, input: TEXT) -> DenseVectorType:
+        """Make the embedding function callable."""
+        return self.embed(input)
 
     @lru_cache(maxsize=10)
-    def embed(self, input: str) -> DenseVectorType:
+    def embed(self, input: TEXT) -> DenseVectorType:
         """Generate dense embedding vector for the input text.
 
         This method calls the DashScope TextEmbedding API to convert input text
@@ -220,7 +304,7 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
         performance for repeated inputs.
 
         Args:
-            input (str): Input text string to embed. Must be non-empty after
+            input (TEXT): Input text string to embed. Must be non-empty after
                 stripping whitespace. Maximum length depends on the model used
                 (typically 2048-8192 tokens).
 
@@ -257,43 +341,20 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
             - The cache is based on exact string match (case-sensitive).
             - Consider pre-processing text (lowercasing, normalization) for better caching.
         """
-        if not isinstance(input, str):
+        if not isinstance(input, TEXT):
             raise TypeError(f"Expected 'input' to be str, got {type(input).__name__}")
 
         input = input.strip()
         if not input:
             raise ValueError("Input text cannot be empty or whitespace only")
 
-        try:
-            # Prepare API call parameters
-            call_params = {
-                "model": self.model,
-                "input": input,
-                "dimension": self.dimension,
-                "output_type": self.extra_params.get("output_type", "dense"),
-            }
-
-            # Add optional text_type parameter if provided
-            if "text_type" in self.extra_params:
-                call_params["text_type"] = self.extra_params["text_type"]
-
-            resp = self._get_connection().TextEmbedding.call(**call_params)
-        except Exception as e:
-            raise RuntimeError(f"Failed to call DashScope API: {e!s}") from e
-
-        if resp.status_code != HTTPStatus.OK:
-            error_msg = getattr(resp, "message", "Unknown error")
-            error_code = getattr(resp, "code", "N/A")
-            raise ValueError(
-                f"DashScope API error: [Code={error_code}, "
-                f"Status={resp.status_code}] {error_msg}"
-            )
-
-        output = getattr(resp, "output", None)
-        if not isinstance(output, dict):
-            raise ValueError(
-                "Invalid API response: missing or malformed 'output' field"
-            )
+        # Call API with dense output type
+        output = self._call_text_embedding_api(
+            input=input,
+            dimension=self.dimension,
+            output_type="dense",
+            text_type=self.extra_params.get("text_type"),
+        )
 
         embeddings = output.get("embeddings")
         if not isinstance(embeddings, list):
@@ -323,3 +384,271 @@ class QwenDenseEmbedding(DenseEmbeddingFunction[TEXT]):
             )
 
         return list(embedding_vector)
+
+
+class QwenSparseEmbedding(QwenEmbeddingBase, SparseEmbeddingFunction[TEXT]):
+    """Sparse text embedding function using Qwen (DashScope) API.
+
+    This class provides text-to-sparse-vector embedding capabilities using
+    Alibaba Cloud's DashScope service and Qwen embedding models. It generates
+    sparse keyword-weighted vectors suitable for lexical matching and BM25-style
+    retrieval scenarios.
+
+    Sparse embeddings are particularly useful for:
+    - Keyword-based search and exact matching
+    - Hybrid retrieval (combining with dense embeddings)
+    - Interpretable search results (weights show term importance)
+
+    Args:
+        dimension (int): Desired output embedding dimension. Common values:
+            - 512: Balanced performance and accuracy
+            - 1024: Higher accuracy, larger storage
+            - 1536: Maximum accuracy for supported models
+        model (str, optional): DashScope embedding model identifier.
+            Defaults to ``"text-embedding-v4"``. Other options include:
+            - ``"text-embedding-v3"``
+            - ``"text-embedding-v2"``
+        api_key (Optional[str], optional): DashScope API authentication key.
+            If ``None``, reads from ``DASHSCOPE_API_KEY`` environment variable.
+            Obtain your key from: https://dashscope.console.aliyun.com/
+        **kwargs: Additional DashScope API parameters. Supported options:
+            - ``encoding_type`` (Literal["query", "document"]): Encoding type.
+              * ``"query"``: Optimize for search queries (default).
+              * ``"document"``: Optimize for indexed documents.
+              This distinction is important for asymmetric retrieval tasks.
+
+    Attributes:
+        model (str): The DashScope model name being used.
+        encoding_type (str): The encoding type ("query" or "document").
+
+    Raises:
+        ValueError: If API key is not provided and not found in environment,
+            or if API returns an error response.
+        TypeError: If input to ``embed()`` is not a string.
+        RuntimeError: If network error or DashScope service error occurs.
+
+    Note:
+        - Requires Python 3.10, 3.11, or 3.12
+        - Requires the ``dashscope`` package: ``pip install dashscope``
+        - Embedding results are cached (LRU cache, maxsize=10) to reduce API calls
+        - Network connectivity to DashScope API endpoints is required
+        - API usage may incur costs based on your DashScope subscription plan
+        - Sparse vectors have only non-zero dimensions stored as dict
+        - Output is sorted by indices (keys) in ascending order
+
+        **Parameter Guidelines:**
+
+        - Use ``encoding_type="query"`` for search queries and
+          ``encoding_type="document"`` for indexed content to optimize
+          asymmetric retrieval tasks.
+        - For detailed API specifications, refer to:
+          https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api
+
+    Examples:
+        >>> # Basic usage for query embedding
+        >>> from zvec.extension import QwenSparseEmbedding
+        >>> import os
+        >>> os.environ["DASHSCOPE_API_KEY"] = "your-api-key"
+        >>>
+        >>> query_emb = QwenSparseEmbedding(dimension=1024, encoding_type="query")
+        >>> query_vec = query_emb.embed("machine learning")
+        >>> type(query_vec)
+        <class 'dict'>
+        >>> len(query_vec)  # Only non-zero dimensions
+        156
+
+        >>> # Document embedding
+        >>> doc_emb = QwenSparseEmbedding(dimension=1024, encoding_type="document")
+        >>> doc_vec = doc_emb.embed("Machine learning is a subset of AI")
+        >>> isinstance(doc_vec, dict)
+        True
+
+        >>> # Asymmetric retrieval example
+        >>> query_vec = query_emb.embed("what causes aging fast")
+        >>> doc_vec = doc_emb.embed(
+        ...     "UV-A light causes tanning, skin aging, and cataracts..."
+        ... )
+        >>>
+        >>> # Calculate similarity (dot product for sparse vectors)
+        >>> similarity = sum(
+        ...     query_vec.get(k, 0) * doc_vec.get(k, 0)
+        ...     for k in set(query_vec) | set(doc_vec)
+        ... )
+
+        >>> # Output is sorted by indices
+        >>> list(query_vec.items())[:5]  # First 5 dimensions (by index)
+        [(10, 0.45), (23, 0.87), (56, 0.32), (89, 1.12), (120, 0.65)]
+
+        >>> # Hybrid retrieval (combining dense + sparse)
+        >>> from zvec.extension import QwenDenseEmbedding
+        >>> dense_emb = QwenDenseEmbedding(dimension=1024)
+        >>> sparse_emb = QwenSparseEmbedding(dimension=1024)
+        >>>
+        >>> query = "deep learning neural networks"
+        >>> dense_vec = dense_emb.embed(query)   # [0.1, -0.3, 0.5, ...]
+        >>> sparse_vec = sparse_emb.embed(query)  # {12: 0.8, 45: 1.2, ...}
+
+        >>> # Error handling
+        >>> try:
+        ...     sparse_emb.embed("")  # Empty string
+        ... except ValueError as e:
+        ...     print(f"Error: {e}")
+        Error: Input text cannot be empty or whitespace only
+
+    See Also:
+        - ``SparseEmbeddingFunction``: Base class for sparse embeddings
+        - ``QwenDenseEmbedding``: Dense embedding using Qwen API
+        - ``DefaultSparseEmbedding``: Sparse embedding with SPLADE model
+    """
+
+    def __init__(
+        self,
+        dimension: int,
+        model: str = "text-embedding-v4",
+        api_key: Optional[str] = None,
+        **kwargs,
+    ):
+        """Initialize the Qwen sparse embedding function.
+
+        Args:
+            dimension (int): Target embedding dimension.
+            model (str): DashScope model name. Defaults to "text-embedding-v4".
+            api_key (Optional[str]): API key or None to use environment variable.
+            **kwargs: Additional DashScope API parameters. Supported options:
+                - ``encoding_type`` (Literal["query", "document"]): Encoding type.
+                  * ``"query"``: Optimize for search queries (default).
+                  * ``"document"``: Optimize for indexed documents.
+                  This distinction is important for asymmetric retrieval tasks.
+
+        Raises:
+            ValueError: If API key is not provided and not in environment.
+        """
+        # Initialize base class for API connection
+        QwenEmbeddingBase.__init__(self, model=model, api_key=api_key)
+
+        self._dimension = dimension
+        self._extra_params = kwargs
+
+    @property
+    def extra_params(self) -> dict:
+        """dict: Extra parameters for model-specific customization."""
+        return self._extra_params
+
+    def __call__(self, input: TEXT) -> SparseVectorType:
+        """Make the embedding function callable."""
+        return self.embed(input)
+
+    @lru_cache(maxsize=10)
+    def embed(self, input: TEXT) -> SparseVectorType:
+        """Generate sparse embedding vector for the input text.
+
+        This method calls the DashScope TextEmbedding API with sparse output type
+        to convert input text into a sparse vector representation. The result is
+        a dictionary where keys are dimension indices and values are importance
+        weights (only non-zero values included).
+
+        The embedding is optimized based on the ``encoding_type`` specified during
+        initialization: "query" for search queries or "document" for indexed content.
+
+        Args:
+            input (TEXT): Input text string to embed. Must be non-empty after
+                stripping whitespace. Maximum length depends on the model used
+                (typically 2048-8192 tokens).
+
+        Returns:
+            SparseVectorType: A dictionary mapping dimension index to weight.
+                Only non-zero dimensions are included. The dictionary is sorted
+                by indices (keys) in ascending order for consistent output.
+                Example: ``{10: 0.5, 245: 0.8, 1023: 1.2, 5678: 0.5}``
+
+        Raises:
+            TypeError: If ``input`` is not a string.
+            ValueError: If input is empty/whitespace-only, or if the API returns
+                an error or malformed response.
+            RuntimeError: If network connectivity issues or DashScope service
+                errors occur.
+
+        Examples:
+            >>> emb = QwenSparseEmbedding(dimension=1024, encoding_type="query")
+            >>> sparse_vec = emb.embed("machine learning")
+            >>> isinstance(sparse_vec, dict)
+            True
+            >>>
+            >>> # Verify sorted output
+            >>> keys = list(sparse_vec.keys())
+            >>> keys == sorted(keys)
+            True
+
+            >>> # Error: empty input
+            >>> emb.embed("   ")
+            ValueError: Input text cannot be empty or whitespace only
+
+            >>> # Error: non-string input
+            >>> emb.embed(123)
+            TypeError: Expected 'input' to be str, got int
+
+        Note:
+            - This method is cached (maxsize=10). Identical inputs return cached results.
+            - The cache is based on exact string match (case-sensitive).
+            - Output dictionary is always sorted by indices for consistency.
+        """
+        if not isinstance(input, TEXT):
+            raise TypeError(f"Expected 'input' to be str, got {type(input).__name__}")
+
+        input = input.strip()
+        if not input:
+            raise ValueError("Input text cannot be empty or whitespace only")
+
+        # Call API with sparse output type
+        output = self._call_text_embedding_api(
+            input=input,
+            dimension=self._dimension,
+            output_type="sparse",
+            text_type=self.extra_params.get("encoding_type", "query"),
+        )
+
+        embeddings = output.get("embeddings")
+        if not isinstance(embeddings, list):
+            raise ValueError(
+                "Invalid API response: 'embeddings' field is missing or not a list"
+            )
+
+        if len(embeddings) != 1:
+            raise ValueError(
+                f"Expected exactly 1 embedding in response, got {len(embeddings)}"
+            )
+
+        first_emb = embeddings[0]
+        if not isinstance(first_emb, dict):
+            raise ValueError("Invalid API response: embedding item is not a dictionary")
+
+        sparse_embedding = first_emb.get("sparse_embedding")
+        if not isinstance(sparse_embedding, list):
+            raise ValueError(
+                "Invalid API response: 'sparse_embedding' field is missing or not a list"
+            )
+
+        # Parse sparse embedding: convert array of {index, value, token} to dict
+        sparse_dict = {}
+        for item in sparse_embedding:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    "Invalid API response: sparse_embedding item is not a dictionary"
+                )
+
+            index = item.get("index")
+            value = item.get("value")
+
+            if index is None or value is None:
+                raise ValueError(
+                    "Invalid API response: sparse_embedding item missing 'index' or 'value'"
+                )
+
+            # Convert to int and float, filter positive values
+            idx = int(index)
+            val = float(value)
+            if val > 0:
+                sparse_dict[idx] = val
+
+        # Sort by indices (keys) to ensure consistent ordering
+        return dict(sorted(sparse_dict.items()))

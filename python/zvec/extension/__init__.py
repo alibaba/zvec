@@ -15,19 +15,22 @@ from __future__ import annotations
 
 from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
 from .openai_embedding_function import OpenAIDenseEmbedding
-from .qwen_embedding_function import QwenDenseEmbedding
+from .qwen_embedding_function import QwenDenseEmbedding, QwenSparseEmbedding
 from .rerank import QwenReRanker, ReRanker, RrfReRanker, WeightedReRanker
 from .sentence_transformer_embedding_function import (
     DefaultDenseEmbedding,
+    DefaultSparseEmbedding,
     SentenceTransformerEmbeddingFunction,
 )
 
 __all__ = [
     "DefaultDenseEmbedding",
+    "DefaultSparseEmbedding",
     "DenseEmbeddingFunction",
     "OpenAIDenseEmbedding",
     "QwenDenseEmbedding",
     "QwenReRanker",
+    "QwenSparseEmbedding",
     "ReRanker",
     "RrfReRanker",
     "SentenceTransformerEmbeddingFunction",

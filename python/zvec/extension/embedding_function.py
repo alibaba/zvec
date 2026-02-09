@@ -18,96 +18,54 @@ from abc import abstractmethod
 from typing_extensions import Protocol, runtime_checkable
 
 from ..common.constants import MD, DenseVectorType, SparseVectorType
-from ..typing import DataType
 
 
 @runtime_checkable
 class DenseEmbeddingFunction(Protocol[MD]):
-    """Abstract base class for dense vector embedding functions.
+    """Protocol for dense vector embedding functions.
 
     Dense embedding functions map multimodal input (text, image, or audio) to
-    fixed-length real-valued vectors. You can inherit this class to create
-    custom embedding functions for different modalities.
+    fixed-length real-valued vectors. This is a Protocol class that defines
+    the interface - implementations should provide their own initialization
+    and properties.
 
     Type Parameters:
         MD: The type of input data (bound to Embeddable: TEXT, IMAGE, or AUDIO).
 
-    Args:
-        dimension (int): Dimensionality of the output embedding vector.
-        data_type (DataType, optional): Numeric type of the embedding.
-            Defaults to ``DataType.VECTOR_FP32``.
-        **kwargs: Additional model-specific parameters. Stored in ``extra_params``
-            property and can be used by subclasses for custom model configuration.
-            Examples: ``output_type``, ``text_type``, ``encoding_format``, etc.
-
-    Attributes:
-        dimension (int): The embedding vector dimension.
-        data_type (DataType): The numeric data type of embeddings.
-        extra_params (dict): Additional parameters passed during initialization.
-
     Note:
-        - Subclasses must implement the ``embed()`` method.
-        - This class is callable: ``embedding_func(input)`` is equivalent to
-          ``embedding_func.embed(input)``.
-        - The ``extra_params`` allows subclasses to accept custom parameters
-          without modifying the base class signature.
+        - This is a Protocol class - it only defines the ``embed()`` interface.
+        - Implementations are free to define their own ``__init__``, properties,
+          and additional methods as needed.
+        - The ``embed()`` method is the only required interface.
 
     Examples:
-        >>> # Using built-in text embedding
-        >>> text_emb = SomeTextEmbedding(dimension=768)
-        >>> vector = text_emb.embed("Hello world")
-
-        >>> # Using built-in image embedding
-        >>> img_emb = SomeImageEmbedding(dimension=512)
-        >>> vector = img_emb.embed("/path/to/image.jpg")
-
-        >>> # Custom text embedding with extra parameters
-        >>> class MyTextEmbedding(DenseEmbeddingFunction):
-        ...     def __init__(self, output_type="dense", **kwargs):
-        ...         super().__init__(dimension=384, output_type=output_type, **kwargs)
-        ...         self.output_type = self.extra_params.get("output_type", "dense")
-        ...         self.model = load_my_model()
+        >>> # Custom text embedding implementation
+        >>> class MyTextEmbedding:
+        ...     def __init__(self, dimension: int, model_name: str):
+        ...         self.dimension = dimension
+        ...         self.model = load_model(model_name)
         ...
         ...     def embed(self, input: str) -> list[float]:
-        ...         return self.model.encode(input, output_type=self.output_type).tolist()
+        ...         return self.model.encode(input).tolist()
 
-        >>> # Custom image embedding function
-        >>> class MyImageEmbedding(DenseEmbeddingFunction):
-        ...     def __init__(self):
-        ...         super().__init__(dimension=2048, data_type=DataType.VECTOR_FP32)
+        >>> # Custom image embedding implementation
+        >>> class MyImageEmbedding:
+        ...     def __init__(self, dimension: int = 512):
+        ...         self.dimension = dimension
         ...         self.model = load_image_model()
         ...
-        ...     def embed(self, input: Union[str, bytes, np.ndarray]) -> np.ndarray:
+        ...     def embed(self, input: Union[str, bytes, np.ndarray]) -> list[float]:
         ...         if isinstance(input, str):
         ...             image = load_image_from_path(input)
-        ...         elif isinstance(input, bytes):
-        ...             image = decode_image_bytes(input)
         ...         else:
         ...             image = input
-        ...         return self.model.extract_features(image)
+        ...         return self.model.extract_features(image).tolist()
+
+        >>> # Using built-in implementations
+        >>> from zvec.extension import QwenDenseEmbedding
+        >>> text_emb = QwenDenseEmbedding(dimension=768, api_key="sk-xxx")
+        >>> vector = text_emb.embed("Hello world")
     """
-
-    def __init__(
-        self, dimension: int, data_type: DataType = DataType.VECTOR_FP32, **kwargs
-    ):
-        self._dimension = dimension
-        self._data_type = data_type
-        self._extra_params = kwargs
-
-    @property
-    def dimension(self) -> int:
-        """int: The expected dimensionality of the embedding vector."""
-        return self._dimension
-
-    @property
-    def data_type(self) -> DataType:
-        """DataType: The numeric data type of the embedding (e.g., VECTOR_FP32)."""
-        return self._data_type
-
-    @property
-    def extra_params(self) -> dict:
-        """dict: Extra parameters for model-specific customization."""
-        return self._extra_params
 
     @abstractmethod
     def embed(self, input: MD) -> DenseVectorType:
@@ -122,14 +80,12 @@ class DenseEmbeddingFunction(Protocol[MD]):
         Returns:
             DenseVectorType: A dense vector representing the embedding.
                 Can be list[float], list[int], or np.ndarray.
-                Length must equal ``self.dimension``.
+                Length should match the implementation's dimension.
         """
-        raise NotImplementedError
-
-    def __call__(self, input: MD) -> DenseVectorType:
-        return self.embed(input)
+        ...
 
 
+@runtime_checkable
 class SparseEmbeddingFunction(Protocol[MD]):
     """Abstract base class for sparse vector embedding functions.
 

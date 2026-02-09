@@ -20,9 +20,13 @@ from unittest.mock import MagicMock, patch, Mock
 import numpy as np
 import pytest
 from zvec.extension.openai_embedding_function import OpenAIDenseEmbedding
-from zvec.extension.qwen_embedding_function import QwenDenseEmbedding
+from zvec.extension.qwen_embedding_function import (
+    QwenDenseEmbedding,
+    QwenSparseEmbedding,
+)
 from zvec.extension.sentence_transformer_embedding_function import (
     DefaultDenseEmbedding,
+    DefaultSparseEmbedding,
     SentenceTransformerEmbeddingFunction,
 )
 
@@ -148,6 +152,375 @@ class TestQwenDenseEmbedding:
 
 
 # ----------------------------
+# QwenSparseEmbedding Test Case
+# ----------------------------
+class TestQwenSparseEmbedding:
+    """Test suite for QwenSparseEmbedding (Qwen sparse embedding via DashScope API)."""
+
+    def test_init_with_api_key(self):
+        """Test initialization with explicit API key."""
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        assert embedding_func._dimension == 1024
+        assert embedding_func.model == "text-embedding-v4"
+        assert embedding_func._api_key == "test_key"
+        # encoding_type defaults to "query" via extra_params
+        assert embedding_func.extra_params.get("encoding_type", "query") == "query"
+
+    def test_init_with_custom_encoding_type(self):
+        """Test initialization with custom encoding type."""
+        embedding_func = QwenSparseEmbedding(
+            dimension=1024, encoding_type="document", api_key="test_key"
+        )
+        assert embedding_func.extra_params.get("encoding_type") == "document"
+
+    @patch.dict(os.environ, {"DASHSCOPE_API_KEY": "env_key"})
+    def test_init_with_env_api_key(self):
+        """Test initialization with API key from environment."""
+        embedding_func = QwenSparseEmbedding(dimension=1024)
+        assert embedding_func._api_key == "env_key"
+
+    @patch.dict(os.environ, {"DASHSCOPE_API_KEY": ""})
+    def test_init_without_api_key(self):
+        """Test initialization fails without API key."""
+        with pytest.raises(ValueError, match="DashScope API key is required"):
+            QwenSparseEmbedding(dimension=1024)
+
+    def test_model_property(self):
+        """Test model property."""
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        assert embedding_func.model == "text-embedding-v4"
+
+        embedding_func = QwenSparseEmbedding(
+            dimension=1024, model="text-embedding-v3", api_key="test_key"
+        )
+        assert embedding_func.model == "text-embedding-v3"
+
+    def test_encoding_type_property(self):
+        """Test encoding_type via extra_params."""
+        query_emb = QwenSparseEmbedding(
+            dimension=1024, encoding_type="query", api_key="test_key"
+        )
+        assert query_emb.extra_params.get("encoding_type") == "query"
+
+        doc_emb = QwenSparseEmbedding(
+            dimension=1024, encoding_type="document", api_key="test_key"
+        )
+        assert doc_emb.extra_params.get("encoding_type") == "document"
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_with_empty_text(self, mock_require_module):
+        """Test embed method with empty text raises ValueError."""
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+
+        with pytest.raises(
+            ValueError, match="Input text cannot be empty or whitespace only"
+        ):
+            embedding_func.embed("")
+
+        with pytest.raises(
+            ValueError, match="Input text cannot be empty or whitespace only"
+        ):
+            embedding_func.embed("   ")
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_with_non_string_input(self, mock_require_module):
+        """Test embed method with non-string input raises TypeError."""
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+
+        with pytest.raises(TypeError, match="Expected 'input' to be str"):
+            embedding_func.embed(123)
+
+        with pytest.raises(TypeError, match="Expected 'input' to be str"):
+            embedding_func.embed(None)
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_success(self, mock_require_module):
+        """Test successful sparse embedding generation."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.OK
+        # Sparse embedding returns array of {index, value, token} objects
+        mock_response.output = {
+            "embeddings": [
+                {
+                    "sparse_embedding": [
+                        {"index": 10, "value": 0.5, "token": "机器"},
+                        {"index": 245, "value": 0.8, "token": "学习"},
+                        {"index": 1023, "value": 1.2, "token": "算法"},
+                    ]
+                }
+            ]
+        }
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        # Clear cache to avoid interference
+        embedding_func.embed.cache_clear()
+        result = embedding_func.embed("test text")
+
+        # Verify result is a dict
+        assert isinstance(result, dict)
+        # Verify keys are integers
+        assert all(isinstance(k, int) for k in result.keys())
+        # Verify values are floats
+        assert all(isinstance(v, float) for v in result.values())
+        # Verify all values are positive
+        assert all(v > 0 for v in result.values())
+        # Verify sorted by indices
+        keys = list(result.keys())
+        assert keys == sorted(keys)
+        # Verify specific keys
+        assert keys == [10, 245, 1023]
+
+        mock_dashscope.TextEmbedding.call.assert_called_once_with(
+            model="text-embedding-v4",
+            input="test text",
+            dimension=1024,
+            output_type="sparse",
+            text_type="query",
+        )
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_with_document_encoding_type(self, mock_require_module):
+        """Test embedding with document encoding type."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.OK
+        mock_response.output = {
+            "embeddings": [
+                {
+                    "sparse_embedding": [
+                        {"index": 5, "value": 0.3, "token": "文档"},
+                        {"index": 100, "value": 0.7, "token": "内容"},
+                        {"index": 500, "value": 0.9, "token": "检索"},
+                    ]
+                }
+            ]
+        }
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(
+            dimension=1024, encoding_type="document", api_key="test_key"
+        )
+        embedding_func.embed.cache_clear()
+        result = embedding_func.embed("test document")
+
+        assert isinstance(result, dict)
+        assert list(result.keys()) == [5, 100, 500]
+
+        # Verify text_type parameter is "document"
+        call_args = mock_dashscope.TextEmbedding.call.call_args
+        assert call_args[1]["text_type"] == "document"
+        assert call_args[1]["output_type"] == "sparse"
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_output_sorted_by_indices(self, mock_require_module):
+        """Test that output is always sorted by indices in ascending order."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.OK
+        # Return unsorted indices
+        mock_response.output = {
+            "embeddings": [
+                {
+                    "sparse_embedding": [
+                        {"index": 9999, "value": 1.5, "token": "A"},
+                        {"index": 5, "value": 2.0, "token": "B"},
+                        {"index": 1234, "value": 0.8, "token": "C"},
+                        {"index": 77, "value": 3.2, "token": "D"},
+                        {"index": 500, "value": 1.1, "token": "E"},
+                    ]
+                }
+            ]
+        }
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        embedding_func.embed.cache_clear()
+        result = embedding_func.embed("test sorting")
+
+        # Verify keys are sorted
+        result_keys = list(result.keys())
+        assert result_keys == sorted(result_keys)
+        # Verify expected sorted order
+        assert result_keys == [5, 77, 500, 1234, 9999]
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_filters_zero_values(self, mock_require_module):
+        """Test that zero and negative values are filtered out."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.OK
+        # Include zero and negative values
+        mock_response.output = {
+            "embeddings": [
+                {
+                    "sparse_embedding": [
+                        {"index": 10, "value": 0.5, "token": "正"},
+                        {
+                            "index": 20,
+                            "value": 0.0,
+                            "token": "零",
+                        },  # Should be filtered
+                        {
+                            "index": 30,
+                            "value": -0.3,
+                            "token": "负",
+                        },  # Should be filtered
+                        {"index": 40, "value": 0.8, "token": "正"},
+                        {
+                            "index": 50,
+                            "value": 0.0,
+                            "token": "零",
+                        },  # Should be filtered
+                    ]
+                }
+            ]
+        }
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        embedding_func.embed.cache_clear()
+        result = embedding_func.embed("test filtering")
+
+        # Only positive values should remain
+        assert list(result.keys()) == [10, 40]
+        assert all(v > 0 for v in result.values())
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_http_error(self, mock_require_module):
+        """Test embedding with HTTP error."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.BAD_REQUEST
+        mock_response.message = "Bad Request"
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        embedding_func.embed.cache_clear()
+
+        with pytest.raises(ValueError, match="DashScope API error"):
+            embedding_func.embed("test text")
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_invalid_response_no_embeddings(self, mock_require_module):
+        """Test embedding with invalid response (no embeddings)."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.OK
+        mock_response.output = {"embeddings": []}
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        embedding_func.embed.cache_clear()
+
+        with pytest.raises(ValueError, match="Expected exactly 1 embedding"):
+            embedding_func.embed("test text")
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_invalid_response_not_dict(self, mock_require_module):
+        """Test embedding with invalid response (sparse_embedding not list)."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.OK
+        # sparse_embedding should be list, not dict
+        mock_response.output = {
+            "embeddings": [{"sparse_embedding": {"index": 10, "value": 0.5}}]
+        }
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        embedding_func.embed.cache_clear()
+
+        with pytest.raises(
+            ValueError, match="'sparse_embedding' field is missing or not a list"
+        ):
+            embedding_func.embed("test text")
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_callable_interface(self, mock_require_module):
+        """Test that embedding function is callable."""
+        mock_dashscope = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = HTTPStatus.OK
+        mock_response.output = {
+            "embeddings": [
+                {
+                    "sparse_embedding": [
+                        {"index": 100, "value": 1.0, "token": "测试"},
+                        {"index": 200, "value": 0.5, "token": "调用"},
+                    ]
+                }
+            ]
+        }
+        mock_dashscope.TextEmbedding.call.return_value = mock_response
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        embedding_func.embed.cache_clear()
+
+        # Test calling the function directly
+        result = embedding_func("test text")
+        assert isinstance(result, dict)
+        assert list(result.keys()) == [100, 200]
+
+    @patch("zvec.extension.qwen_embedding_function.require_module")
+    def test_embed_api_connection_error(self, mock_require_module):
+        """Test handling of API connection errors."""
+        mock_dashscope = MagicMock()
+        mock_dashscope.TextEmbedding.call.side_effect = Exception("Connection timeout")
+        mock_require_module.return_value = mock_dashscope
+
+        embedding_func = QwenSparseEmbedding(dimension=1024, api_key="test_key")
+        embedding_func.embed.cache_clear()
+
+        with pytest.raises(RuntimeError, match="Failed to call DashScope API"):
+            embedding_func.embed("test text")
+
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
+    def test_real_embed_success(self):
+        """Integration test with real DashScope API.
+
+        To run this test, set environment variable:
+            export ZVEC_RUN_INTEGRATION_TESTS=1
+            export DASHSCOPE_API_KEY=your-api-key
+        """
+        # Test query embedding
+        query_emb = QwenSparseEmbedding(dimension=1024, encoding_type="query")
+        query_vec = query_emb.embed("machine learning")
+
+        assert isinstance(query_vec, dict)
+        assert len(query_vec) > 0
+        assert all(isinstance(k, int) for k in query_vec.keys())
+        assert all(isinstance(v, float) and v > 0 for v in query_vec.values())
+
+        # Verify sorted output
+        keys = list(query_vec.keys())
+        assert keys == sorted(keys)
+
+        # Test document embedding
+        doc_emb = QwenSparseEmbedding(dimension=1024, encoding_type="document")
+        doc_vec = doc_emb.embed("Machine learning is a subset of AI")
+
+        assert isinstance(doc_vec, dict)
+        assert len(doc_vec) > 0
+
+        # Verify sorted output
+        doc_keys = list(doc_vec.keys())
+        assert doc_keys == sorted(doc_keys)
+
+
+# ----------------------------
 # OpenAIDenseEmbedding Test Case
 # ----------------------------
 class TestOpenAIDenseEmbedding:
@@ -194,6 +567,23 @@ class TestOpenAIDenseEmbedding:
             model="text-embedding-ada-002", api_key="sk-test"
         )
         assert embedding_func.model == "text-embedding-ada-002"
+
+    def test_extra_params(self):
+        """Test extra_params property."""
+        # Test without extra params
+        embedding_func = OpenAIDenseEmbedding(api_key="sk-test")
+        assert embedding_func.extra_params == {}
+
+        # Test with extra params
+        embedding_func = OpenAIDenseEmbedding(
+            api_key="sk-test",
+            encoding_format="float",
+            user="test-user",
+        )
+        assert embedding_func.extra_params == {
+            "encoding_format": "float",
+            "user": "test-user",
+        }
 
     @patch("zvec.extension.openai_embedding_function.require_module")
     def test_embed_with_empty_text(self, mock_require_module):
@@ -516,13 +906,16 @@ class TestDefaultDenseEmbedding:
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_embed_success(self, mock_require_module):
         """Test successful embedding generation."""
+        # Mock embedding output
+        fake_embedding = np.random.rand(384).astype(np.float32)
+
         mock_st = Mock()
         mock_model = Mock()
         mock_model.get_sentence_embedding_dimension.return_value = 384
 
-        # Mock embedding output
-        fake_embedding = np.random.rand(384).astype(np.float32)
-        mock_model.encode.return_value = fake_embedding
+        # Configure encode method
+        mock_model.encode = Mock(return_value=fake_embedding)
+
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
@@ -543,14 +936,17 @@ class TestDefaultDenseEmbedding:
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_embed_with_normalization(self, mock_require_module):
         """Test embedding with L2 normalization."""
+        # Create a normalized vector
+        fake_embedding = np.random.rand(384).astype(np.float32)
+        fake_embedding = fake_embedding / np.linalg.norm(fake_embedding)
+
         mock_st = Mock()
         mock_model = Mock()
         mock_model.get_sentence_embedding_dimension.return_value = 384
 
-        # Create a normalized vector
-        fake_embedding = np.random.rand(384).astype(np.float32)
-        fake_embedding = fake_embedding / np.linalg.norm(fake_embedding)
-        mock_model.encode.return_value = fake_embedding
+        # Configure encode method
+        mock_model.encode = Mock(return_value=fake_embedding)
+
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
@@ -599,11 +995,15 @@ class TestDefaultDenseEmbedding:
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_embed_callable(self, mock_require_module):
         """Test that embedding function is callable."""
+        fake_embedding = np.random.rand(384).astype(np.float32)
+
         mock_st = Mock()
         mock_model = Mock()
         mock_model.get_sentence_embedding_dimension.return_value = 384
-        fake_embedding = np.random.rand(384).astype(np.float32)
-        mock_model.encode.return_value = fake_embedding
+
+        # Configure encode method
+        mock_model.encode = Mock(return_value=fake_embedding)
+
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
@@ -617,10 +1017,6 @@ class TestDefaultDenseEmbedding:
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_semantic_similarity(self, mock_require_module):
         """Test semantic similarity between similar and different texts."""
-        mock_st = Mock()
-        mock_model = Mock()
-        mock_model.get_sentence_embedding_dimension.return_value = 384
-
         # Create mock embeddings for similar and different texts
         similar_emb_1 = np.array([1.0, 0.0, 0.0] + [0.0] * 381, dtype=np.float32)
         similar_emb_2 = np.array([0.9, 0.1, 0.0] + [0.0] * 381, dtype=np.float32)
@@ -631,7 +1027,15 @@ class TestDefaultDenseEmbedding:
         similar_emb_2 = similar_emb_2 / np.linalg.norm(similar_emb_2)
         different_emb = different_emb / np.linalg.norm(different_emb)
 
-        mock_model.encode.side_effect = [similar_emb_1, similar_emb_2, different_emb]
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+
+        # Configure encode method with side_effect for multiple calls
+        mock_model.encode = Mock(
+            side_effect=[similar_emb_1, similar_emb_2, different_emb]
+        )
+
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
@@ -650,6 +1054,12 @@ class TestDefaultDenseEmbedding:
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_model_loading_error(self, mock_require_module):
         """Test handling of model loading failure."""
+        # Clear model cache
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
         mock_st = Mock()
         mock_st.SentenceTransformer.side_effect = Exception("Model not found")
         mock_require_module.return_value = mock_st
@@ -680,13 +1090,16 @@ class TestDefaultDenseEmbedding:
     @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
     def test_embed_dimension_mismatch(self, mock_require_module):
         """Test handling of dimension mismatch in embedding output."""
+        # Return embedding with wrong dimension
+        fake_embedding = np.random.rand(256).astype(np.float32)
+
         mock_st = Mock()
         mock_model = Mock()
         mock_model.get_sentence_embedding_dimension.return_value = 384
 
-        # Return embedding with wrong dimension
-        fake_embedding = np.random.rand(256).astype(np.float32)
-        mock_model.encode.return_value = fake_embedding
+        # Configure encode method
+        mock_model.encode = Mock(return_value=fake_embedding)
+
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
@@ -833,3 +1246,484 @@ class TestCustomSentenceTransformerEmbedding:
                 emb_func_ms.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
             )
             assert emb_func_ms.model_source == "modelscope"
+
+
+# -----------------------------------
+# DefaultSparseEmbedding Test Case
+# -----------------------------------
+class TestDefaultSparseEmbedding:
+    """Test suite for DefaultSparseEmbedding (SPLADE sparse embedding).
+
+    Note:
+        DefaultSparseEmbedding uses naver/splade-cocondenser-ensembledistil
+        instead of naver/splade-v3 because:
+
+        - splade-v3 is a gated model requiring Hugging Face authentication
+        - cocondenser-ensembledistil is publicly accessible
+        - Performance difference is minimal (~2%)
+        - Avoids "Access to model is restricted" errors
+
+        This allows all users to run tests without authentication setup.
+    """
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_init_success(self, mock_require_module):
+        """Test successful initialization.
+
+        Verifies that DefaultSparseEmbedding initializes with the publicly
+        accessible naver/splade-cocondenser-ensembledistil model instead of
+        the gated naver/splade-v3 model.
+        """
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cpu"
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+
+        assert sparse_emb.model_name == "naver/splade-cocondenser-ensembledistil"
+        assert sparse_emb.model_source == "huggingface"
+        assert sparse_emb.device == "cpu"
+        mock_st.SentenceTransformer.assert_called_once_with(
+            "naver/splade-cocondenser-ensembledistil",
+            device=None,
+            trust_remote_code=True,
+        )
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_init_with_custom_device(self, mock_require_module):
+        """Test initialization with custom device."""
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cuda"
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding(device="cuda")
+
+        assert sparse_emb.device == "cuda"
+        mock_st.SentenceTransformer.assert_called_once_with(
+            "naver/splade-cocondenser-ensembledistil",
+            device="cuda",
+            trust_remote_code=True,
+        )
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_embed_success(self, mock_require_module):
+        """Test successful sparse embedding generation with official API."""
+        import numpy as np
+        from scipy.sparse import csr_matrix
+
+        # Clear model cache to ensure fresh mock
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        # Create a sparse matrix with specific non-zero values
+        row = np.array([0, 0, 0, 0])
+        col = np.array([10, 245, 1023, 5678])
+        data = np.array([0.5, 0.8, 1.2, 0.3])
+        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cpu"
+
+        # Configure mock methods to return sparse matrix
+        # Must set return_value BEFORE hasattr() check in the code
+        mock_model.encode_query = Mock(return_value=sparse_matrix)
+        mock_model.encode_document = Mock(return_value=sparse_matrix)
+
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+        result = sparse_emb.embed("machine learning")
+
+        # Verify result is a dictionary
+        assert isinstance(result, dict)
+        # Verify keys are integers and values are floats
+        assert all(isinstance(k, int) for k in result.keys())
+        assert all(isinstance(v, float) for v in result.values())
+        # Verify all values are positive
+        assert all(v > 0 for v in result.values())
+        # Sparse vectors should have specific dimensions
+        assert len(result) == 4
+
+        # Verify output is sorted by indices (keys)
+        keys = list(result.keys())
+        assert keys == sorted(keys), (
+            "Sparse vector keys must be sorted in ascending order"
+        )
+
+        # Verify expected keys
+        assert keys == [10, 245, 1023, 5678]
+
+        # Verify encode_query was called with a list
+        mock_model.encode_query.assert_called_once()
+        call_args = mock_model.encode_query.call_args[0][0]
+        assert isinstance(call_args, list)
+        assert call_args == ["machine learning"]
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_embed_empty_input(self, mock_require_module):
+        """Test embedding with empty input."""
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+
+        with pytest.raises(ValueError, match="Input text cannot be empty"):
+            sparse_emb.embed("")
+
+        with pytest.raises(ValueError, match="Input text cannot be empty"):
+            sparse_emb.embed("   ")
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_embed_non_string_input(self, mock_require_module):
+        """Test embedding with non-string input."""
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+
+        with pytest.raises(TypeError, match="Expected 'input' to be str"):
+            sparse_emb.embed(123)
+
+        with pytest.raises(TypeError, match="Expected 'input' to be str"):
+            sparse_emb.embed(["text"])
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_callable_interface(self, mock_require_module):
+        """Test that DefaultSparseEmbedding is callable."""
+        import numpy as np
+        from scipy.sparse import csr_matrix
+
+        # Clear model cache
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        # Create a sparse matrix
+        row = np.array([0, 0, 0])
+        col = np.array([100, 200, 300])
+        data = np.array([1.0, 0.5, 0.8])
+        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cpu"
+
+        # Configure mock methods
+        mock_model.encode_query = Mock(return_value=sparse_matrix)
+        mock_model.encode_document = Mock(return_value=sparse_matrix)
+
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+
+        # Test callable interface
+        result = sparse_emb("test input")
+        assert isinstance(result, dict)
+        assert all(isinstance(k, int) for k in result.keys())
+
+        # Verify sorted output
+        keys = list(result.keys())
+        assert keys == sorted(keys), "Callable interface must also return sorted keys"
+        assert keys == [100, 200, 300]
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_model_loading_failure(self, mock_require_module):
+        """Test handling of model loading failure."""
+        # Clear model cache to ensure the test actually tries to load the model
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        mock_st = Mock()
+        mock_st.SentenceTransformer.side_effect = Exception("Model not found")
+        mock_require_module.return_value = mock_st
+
+        with pytest.raises(
+            ValueError, match="Failed to load Sentence Transformer model"
+        ):
+            DefaultSparseEmbedding()
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_inference_failure(self, mock_require_module):
+        """Test handling of inference failure."""
+        # Clear model cache
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cpu"
+
+        # Configure mock methods to raise RuntimeError
+        mock_model.encode_query = Mock(side_effect=RuntimeError("CUDA out of memory"))
+        mock_model.encode_document = Mock(
+            side_effect=RuntimeError("CUDA out of memory")
+        )
+
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+
+        with pytest.raises(RuntimeError, match="Failed to generate sparse embedding"):
+            sparse_emb.embed("test input")
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_sparse_vector_properties(self, mock_require_module):
+        """Test properties of sparse vectors (sparsity, non-zero values, sorted order)."""
+        import numpy as np
+        from scipy.sparse import csr_matrix
+
+        # Clear model cache
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        # Create a controlled sparse output with non-sequential indices
+        row = np.array([0, 0, 0, 0, 0])
+        col = np.array([50, 100, 200, 400, 500])  # Non-sequential order in code
+        data = np.array([3.0, 2.0, 1.5, 2.5, 1.8])
+        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cpu"
+
+        # Configure mock methods
+        mock_model.encode_query = Mock(return_value=sparse_matrix)
+        mock_model.encode_document = Mock(return_value=sparse_matrix)
+
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+        result = sparse_emb.embed("test")
+
+        vocab_size = 30522
+        # Verify sparsity: result should have much fewer dimensions than vocab_size
+        assert len(result) < vocab_size
+        # All values should be positive
+        assert all(v > 0 for v in result.values())
+
+        # Verify keys are sorted in ascending order
+        keys = list(result.keys())
+        assert keys == sorted(keys), "Sparse vector keys must be sorted"
+
+        # Verify the specific non-zero indices are present and sorted
+        # Expected order: [50, 100, 200, 400, 500] (sorted)
+        expected_keys = [50, 100, 200, 400, 500]
+        assert keys == expected_keys, f"Expected {expected_keys}, got {keys}"
+
+        # First key should be smallest
+        if len(result) > 0:
+            first_key = next(iter(result.keys()))
+            assert first_key == min(result.keys()), "First key must be the smallest"
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_output_sorted_by_indices(self, mock_require_module):
+        """Test that output dictionary is always sorted by indices (keys) in ascending order."""
+        import numpy as np
+        from scipy.sparse import csr_matrix
+
+        # Clear model cache
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        # Create sparse output with deliberately out-of-order indices
+        # Non-sequential indices: 9999, 5, 1234, 77, 500
+        row = np.array([0, 0, 0, 0, 0])
+        col = np.array([9999, 5, 1234, 77, 500])  # Out of order
+        data = np.array([1.5, 2.0, 0.8, 3.2, 1.1])
+        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cpu"
+
+        # Configure mock methods
+        mock_model.encode_query = Mock(return_value=sparse_matrix)
+        mock_model.encode_document = Mock(return_value=sparse_matrix)
+
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding()
+        result = sparse_emb.embed("test sorting")
+
+        # Extract keys from result
+        result_keys = list(result.keys())
+
+        # Verify keys are sorted
+        assert result_keys == sorted(result_keys), (
+            f"Keys must be sorted in ascending order. "
+            f"Got: {result_keys}, Expected: {sorted(result_keys)}"
+        )
+
+        # Verify expected keys are present and in correct order
+        # Expected sorted order: [5, 77, 500, 1234, 9999]
+        expected_sorted_keys = [5, 77, 500, 1234, 9999]
+        assert result_keys == expected_sorted_keys, (
+            f"All expected keys should be present in sorted order. "
+            f"Expected: {expected_sorted_keys}, Got: {result_keys}"
+        )
+
+        # Verify first and last keys
+        assert result_keys[0] == 5, "First key must be minimum"
+        assert result_keys[-1] == 9999, "Last key must be maximum"
+
+        # Verify iteration order matches sorted order
+        for i, (key, value) in enumerate(result.items()):
+            if i > 0:
+                prev_key = list(result.keys())[i - 1]
+                assert key > prev_key, (
+                    f"Key at position {i} must be greater than previous key"
+                )
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_device_property(self, mock_require_module):
+        """Test device property returns correct device."""
+        mock_st = Mock()
+        mock_model = Mock()
+        mock_model.device = "cuda"
+        mock_st.SentenceTransformer.return_value = mock_model
+        mock_require_module.return_value = mock_st
+
+        sparse_emb = DefaultSparseEmbedding(device="cuda")
+        assert sparse_emb.device == "cuda"
+
+    @patch("zvec.extension.sentence_transformer_embedding_function.require_module")
+    def test_modelscope_source(self, mock_require_module):
+        """Test initialization with ModelScope source."""
+        mock_st = Mock()
+        mock_ms = Mock()
+        mock_model = Mock()
+        mock_model.device = "cpu"
+        mock_st.SentenceTransformer.return_value = mock_model
+
+        # Mock ModelScope snapshot_download
+        with patch(
+            "modelscope.hub.snapshot_download.snapshot_download",
+            return_value="/cache/splade-cocondenser",
+        ):
+            mock_require_module.side_effect = (
+                lambda m: mock_st if m == "sentence_transformers" else mock_ms
+            )
+
+            sparse_emb = DefaultSparseEmbedding(model_source="modelscope")
+
+            assert sparse_emb.model_name == "naver/splade-cocondenser-ensembledistil"
+            assert sparse_emb.model_source == "modelscope"
+
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test: requires ZVEC_RUN_INTEGRATION_TESTS=1 and model download",
+    )
+    def test_integration_real_model(self):
+        """Integration test with real SPLADE model (requires model download).
+
+        This test uses naver/splade-cocondenser-ensembledistil instead of
+        naver/splade-v3 because splade-v3 requires Hugging Face authentication.
+        The cocondenser-ensembledistil model is publicly accessible and provides
+        comparable performance.
+
+        To run this test:
+            export ZVEC_RUN_INTEGRATION_TESTS=1
+            pytest tests/test_embedding.py::TestDefaultSparseEmbedding::test_integration_real_model -v
+
+        Note: First run will download ~100MB model from Hugging Face.
+
+        Alternative models:
+            If you have access to splade-v3, you can create a custom embedding
+            class following the example in DefaultSparseEmbedding docstring.
+        """
+        # Clear model cache to ensure fresh load
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        sparse_emb = DefaultSparseEmbedding()
+
+        # Test with real input
+        text = "machine learning and artificial intelligence"
+        result = sparse_emb.embed(text)
+
+        # Verify result structure
+        assert isinstance(result, dict)
+        assert len(result) > 0
+        assert all(isinstance(k, int) and k >= 0 for k in result.keys())
+        assert all(isinstance(v, float) and v > 0 for v in result.values())
+
+        # SPLADE typically produces 100-300 non-zero dimensions
+        assert 50 < len(result) < 500
+
+        # Verify keys are sorted in ascending order
+        keys = list(result.keys())
+        assert keys == sorted(keys), "Real model output must be sorted by indices"
+
+        # Test callable interface
+        result2 = sparse_emb(text)
+        assert result == result2
+
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test: requires ZVEC_RUN_INTEGRATION_TESTS=1",
+    )
+    def test_integration_multiple_inputs(self):
+        """Integration test with multiple different inputs."""
+        # Clear model cache
+        from zvec.extension.sentence_transformer_embedding_function import (
+            DefaultSparseEmbedding,
+        )
+
+        DefaultSparseEmbedding.clear_cache()
+
+        sparse_emb = DefaultSparseEmbedding()
+
+        texts = [
+            "Hello, world!",
+            "Machine learning is fascinating",
+            "Python programming language",
+        ]
+
+        results = [sparse_emb.embed(text) for text in texts]
+
+        # All results should be different
+        assert len(results) == 3
+        assert all(isinstance(r, dict) for r in results)
+
+        # Different inputs should produce different sparse vectors
+        assert results[0] != results[1]
+        assert results[1] != results[2]
+
+        # All results must be sorted by indices
+        for i, result in enumerate(results):
+            keys = list(result.keys())
+            assert keys == sorted(keys), f"Result {i} must have sorted keys"
