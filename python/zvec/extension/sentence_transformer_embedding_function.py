@@ -684,13 +684,13 @@ class DefaultSparseEmbedding(SentenceTransformerSparseEmbeddingFunction):
 
            .. code-block:: python
 
-               from zvec.extension.sentence_transformer_embedding_function import (
-                   SentenceTransformerEmbeddingBase,
-                   SparseEmbeddingFunction
+               from zvec.extension.sentence_transformer_function import (
+                   SentenceTransformerFunctionBase
                )
+               from zvec.extension import SparseEmbeddingFunction
 
                class SpladeV3Embedding(
-                   SentenceTransformerEmbeddingBase,
+                   SentenceTransformerFunctionBase,
                    SparseEmbeddingFunction
                ):
                    def __init__(self, device=None, encoding_type="query"):
