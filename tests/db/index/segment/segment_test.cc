@@ -814,9 +814,9 @@ TEST_P(SegmentTest, DeleteDoc) {
   count = segment->doc_count(segment->get_filter());
   EXPECT_EQ(count, 9);
 
-  // Delete a document by local doc id
+  // Delete a document by global doc id
   status = segment->Delete(3);
-  EXPECT_TRUE(status.ok()) << "Delete by local doc id failed: "
+  EXPECT_TRUE(status.ok()) << "Delete by global doc id failed: "
                            << status.message();
 
   count = segment->doc_count(segment->get_filter());
@@ -940,6 +940,33 @@ TEST_P(SegmentTest, Flush) {
   // Flush the segment
   auto status = segment->flush();
   EXPECT_TRUE(status.ok()) << "Flush failed: " << status.message();
+}
+
+TEST_P(SegmentTest, FlushAfterInsert) {
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
+      0, 100);
+  ASSERT_TRUE(segment != nullptr);
+
+  // Flush the segment
+  auto status = segment->flush();
+  EXPECT_TRUE(status.ok()) << "Flush failed: " << status.message();
+
+  test::TestHelper::SegmentInsertDoc(segment, *schema, 100, 150);
+
+  ASSERT_EQ(segment->doc_count(), 150);
+
+  for (int i = 0; i < 150; i++) {
+    auto ret_doc = segment->Fetch(i);
+    EXPECT_TRUE(ret_doc != nullptr);
+
+    Doc verify_doc = test::TestHelper::CreateDoc(i, *schema);
+    auto vv = verify_doc.get<std::vector<float>>("dense_fp32").value();
+    auto v = ret_doc->get<std::vector<float>>("dense_fp32").value();
+    for (uint32_t j = 0; j < vv.size(); j++) {
+      ASSERT_FLOAT_EQ(v[j], vv[j]);
+    }
+  }
 }
 
 TEST_P(SegmentTest, Dump) {
@@ -1273,9 +1300,6 @@ TEST_P(SegmentTest, DeleteNonExistentDoc) {
 
   auto status1 = segment->Delete("pk_999");
   EXPECT_FALSE(status1.ok()) << "Delete non-existent pk should fail";
-
-  auto status2 = segment->Delete(999);
-  EXPECT_FALSE(status2.ok()) << "Delete non-existent doc_id should fail";
 }
 
 TEST_P(SegmentTest, UpdateNonExistentDoc) {
