@@ -22,22 +22,25 @@ from ..tool import require_module
 
 
 class QwenFunctionBase:
-    """Base class for Qwen (DashScope) embedding functions.
+    """Base class for Qwen (DashScope) functions.
 
-    This base class provides common functionality for calling DashScope API
-    and handling responses. It supports both dense and sparse embeddings.
+    This base class provides common functionality for calling DashScope APIs
+    and handling responses. It supports embeddings (dense and sparse) and
+    re-ranking operations.
 
-    This class is not meant to be used directly. Use ``QwenDenseEmbedding``
-    for dense embeddings or ``QwenSparseEmbedding`` for sparse embeddings.
+    This class is not meant to be used directly. Use concrete implementations:
+    - ``QwenDenseEmbedding`` for dense embeddings
+    - ``QwenSparseEmbedding`` for sparse embeddings
+    - ``QwenReRanker`` for semantic re-ranking
 
     Args:
-        model (str): DashScope embedding model identifier.
+        model (str): DashScope model identifier.
         api_key (Optional[str]): DashScope API authentication key.
 
     Note:
-        - This is an internal base class for code reuse
-        - Subclasses should inherit from appropriate Protocol (Dense/Sparse)
-        - Provides API connection and response handling functionality
+        - This is an internal base class for code reuse across Qwen features
+        - Subclasses should inherit from appropriate Protocol/ABC
+        - Provides unified API connection and response handling
     """
 
     def __init__(
@@ -116,6 +119,53 @@ class QwenFunctionBase:
                 call_params["text_type"] = text_type
 
             resp = self._get_connection().TextEmbedding.call(**call_params)
+        except Exception as e:
+            raise RuntimeError(f"Failed to call DashScope API: {e!s}") from e
+
+        if resp.status_code != HTTPStatus.OK:
+            error_msg = getattr(resp, "message", "Unknown error")
+            error_code = getattr(resp, "code", "N/A")
+            raise ValueError(
+                f"DashScope API error: [Code={error_code}, "
+                f"Status={resp.status_code}] {error_msg}"
+            )
+
+        output = getattr(resp, "output", None)
+        if not isinstance(output, dict):
+            raise ValueError(
+                "Invalid API response: missing or malformed 'output' field"
+            )
+
+        return output
+
+    def _call_rerank_api(
+        self,
+        query: str,
+        documents: list[str],
+        top_n: int,
+    ) -> dict:
+        """Call DashScope TextReRank API.
+
+        Args:
+            query (str): Query text for semantic matching.
+            documents (list[str]): List of document texts to re-rank.
+            top_n (int): Maximum number of documents to return.
+
+        Returns:
+            dict: API response output field containing re-ranked results.
+
+        Raises:
+            RuntimeError: If API call fails.
+            ValueError: If API returns error response.
+        """
+        try:
+            resp = self._get_connection().TextReRank.call(
+                model=self.model,
+                query=query,
+                documents=documents,
+                top_n=top_n,
+                return_documents=False,
+            )
         except Exception as e:
             raise RuntimeError(f"Failed to call DashScope API: {e!s}") from e
 

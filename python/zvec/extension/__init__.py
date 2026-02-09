@@ -18,7 +18,7 @@ from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
 from .multi_vector_reranker import RrfReRanker, WeightedReRanker
 from .openai_embedding_function import OpenAIDenseEmbedding
 from .qwen_embedding_function import QwenDenseEmbedding, QwenSparseEmbedding
-from .rerank_function import QwenReRanker
+from .qwen_rerank_function import QwenReRanker
 from .rerank_function import RerankFunction as ReRanker
 from .sentence_transformer_embedding_function import (
     DefaultDenseEmbedding,

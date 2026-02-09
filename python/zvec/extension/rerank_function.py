@@ -13,13 +13,10 @@
 # limitations under the License.
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
-from http import HTTPStatus
 from typing import Optional
 
 from ..model.doc import Doc
-from ..tool import require_module
 
 
 class RerankFunction(ABC):
@@ -69,122 +66,4 @@ class RerankFunction(ABC):
             list[Doc]: Re-ranked list of documents (length ≤ ``topn``),
                 with updated ``score`` fields.
         """
-        raise NotImplementedError
-
-
-class QwenReRanker(RerankFunction):
-    """Re-ranker using Qwen (DashScope) LLM-based re-ranking API.
-
-    This re-ranker sends documents to the DashScope TextReRank service for
-    cross-encoder style re-ranking based on semantic relevance to the query.
-
-    Args:
-        query (str): Query text for semantic re-ranking. **Required**.
-        topn (int, optional): Number of top documents to return. Defaults to 10.
-        rerank_field (str): Field name containing document text for re-ranking.
-            **Required**.
-        model (str, optional): DashScope re-ranking model name.
-            Defaults to ``"gte-rerank-v2"``.
-        api_key (Optional[str], optional): DashScope API key. If not provided,
-            reads from ``DASHSCOPE_API_KEY`` environment variable.
-
-    Raises:
-        ValueError: If ``query`` is missing, ``rerank_field`` is missing,
-            or API key is not provided.
-
-    Note:
-        Requires the ``dashscope`` Python package.
-        Documents without content in ``rerank_field`` are skipped.
-    """
-
-    def __init__(
-        self,
-        query: Optional[str] = None,
-        topn: int = 10,
-        rerank_field: Optional[str] = None,
-        model: str = "gte-rerank-v2",
-        api_key: Optional[str] = None,
-    ):
-        super().__init__(topn=topn, rerank_field=rerank_field)
-        if not query:
-            raise ValueError("Query is required for reranking")
-        self._query = query
-        self._model = model
-        self._api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
-        if not self._api_key:
-            raise ValueError("DashScope API key is required")
-
-    @property
-    def model(self) -> str:
-        """str: DashScope re-ranking model name."""
-        return self._model
-
-    @property
-    def query(self) -> str:
-        """str: Query text used for re-ranking."""
-        return self._query
-
-    def _connection(self):
-        dashscope = require_module("dashscope")
-        dashscope.api_key = self._api_key
-        return dashscope
-
-    def rerank(self, query_results: dict[str, list[Doc]]) -> list[Doc]:
-        """Re-rank documents using Qwen's TextReRank API.
-
-        Args:
-            query_results (dict[str, list[Doc]]): Results from vector search.
-
-        Returns:
-            list[Doc]: Re-ranked documents with relevance scores from Qwen.
-
-        Raises:
-            ValueError: If API call fails or no valid documents are found.
-        """
-        if not query_results:
-            return []
-
-        id_to_doc: dict[str, Doc] = {}
-        doc_ids: list[str] = []
-        contents: list[str] = []
-
-        for _, query_result in query_results.items():
-            for doc in query_result:
-                doc_id = doc.id
-                if doc_id in id_to_doc:
-                    continue
-
-                field_value = doc.field(self.rerank_field)
-                rank_content = str(field_value).strip() if field_value else ""
-                if not rank_content:
-                    continue
-
-                id_to_doc[doc_id] = doc
-                doc_ids.append(doc_id)
-                contents.append(rank_content)
-
-        if not contents:
-            raise ValueError("No documents to rerank")
-
-        resp = self._connection().TextReRank.call(
-            model=self.model,
-            query=self.query,
-            documents=list(contents),
-            top_n=self.topn,
-            return_documents=False,
-        )
-
-        if resp.status_code != HTTPStatus.OK:
-            raise ValueError(
-                f"QwenReranker failed with status {resp.status_code}: {resp.message}"
-            )
-
-        results: list[Doc] = []
-        for item in resp.output.results:
-            idx = item.index
-            doc_id = doc_ids[idx]
-            doc = id_to_doc[doc_id]
-            new_doc = doc._replace(score=item.relevance_score)
-            results.append(new_doc)
-
-        return results
+        ...
