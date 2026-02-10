@@ -27,8 +27,23 @@ if TYPE_CHECKING:
 
 from . import model as model
 
-# —— Extensions & typing ——
-from .extension import DenseEmbeddingFunction, ReRanker, RrfReRanker, WeightedReRanker
+# —— Extensions ——
+from .extension import (
+    BM25EmbeddingFunction,
+    DefaultLocalDenseEmbedding,
+    DefaultLocalReRanker,
+    DefaultLocalSparseEmbedding,
+    DenseEmbeddingFunction,
+    QwenDenseEmbedding,
+    QwenReRanker,
+    QwenSparseEmbedding,
+    ReRanker,
+    RrfReRanker,
+    SparseEmbeddingFunction,
+    WeightedReRanker,
+)
+
+# —— Typing ——
 from .model import param as param
 from .model import schema as schema
 
@@ -101,9 +116,17 @@ __all__ = [
     "IVFQueryParam",
     # Extensions
     "ReRanker",
-    "DenseEmbeddingFunction",
     "RrfReRanker",
     "WeightedReRanker",
+    "DefaultLocalReRanker",
+    "QwenReRanker",
+    "SparseEmbeddingFunction",
+    "DefaultLocalSparseEmbedding",
+    "QwenSparseEmbedding",
+    "BM25EmbeddingFunction",
+    "DenseEmbeddingFunction",
+    "DefaultLocalDenseEmbedding",
+    "QwenDenseEmbedding",
     # Typing
     "DataType",
     "MetricType",
