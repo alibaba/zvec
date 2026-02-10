@@ -11,7 +11,7 @@ This directory contains zvec's embedding and reranking function extensions. It p
 > **Dependencies:** To run the examples in this document, install the following packages first:
 >
 > ```bash
-> pip install openai dashscope sentence-transformers
+> pip install openai dashscope dashtext sentence-transformers
 > ```
 
 ## 📚 Table of Contents
@@ -35,7 +35,7 @@ This directory contains zvec's embedding and reranking function extensions. It p
 |------|---------------|-------------|
 | Local Dense Embedding | `DefaultLocalDenseEmbedding` | Uses Sentence Transformers with `all-MiniLM-L6-v2` model (384 dimensions, ~80MB) |
 | Local Sparse Embedding | `DefaultLocalSparseEmbedding` | Uses SPLADE `naver/splade-cocondenser-ensembledistil` model (~100MB) |
-| BM25 Embedding | `BM25EmbeddingFunction` | Classic BM25 algorithm for sparse embedding |
+| BM25 Embedding | `BM25EmbeddingFunction` | BM25 algorithm using DashText SDK (local computation, no API key needed) |
 | Qwen Dense Embedding | `QwenDenseEmbedding` | Uses Qwen Dashscope API |
 | Qwen Sparse Embedding | `QwenSparseEmbedding` | Uses Qwen Dashscope API |
 | OpenAI Dense Embedding | `OpenAIDenseEmbedding` | Uses OpenAI API |
@@ -154,24 +154,45 @@ print(f"First 5 dimensions: {list(query_vec.items())[:5]}")
 DefaultLocalSparseEmbedding.clear_cache()
 ```
 
-#### 2. BM25EmbeddingFunction - BM25 Sparse Embedding
+#### 2. BM25EmbeddingFunction - DashText SDK BM25 Sparse Embedding
 
-Based on the classic BM25 algorithm.
+Uses DashText's local BM25 encoder for lexical matching. No API key or network connectivity required.
+
+**Two options:**
+- **Built-in encoder** (recommended for general use): Pre-trained models for Chinese (`language="zh"`) and English (`language="en"`)
+- **Custom encoder**: Train on your own corpus for domain-specific terminology with BM25 parameters (`b`, `k1`)
 
 ```python
 from zvec.extension import BM25EmbeddingFunction
 
-# Requires a document corpus to build the vocabulary
+# Option 1: Using built-in encoder (no corpus needed)
+# For Chinese query encoding
+bm25_query_zh = BM25EmbeddingFunction(language="zh", encoding_type="query")
+query_vec = bm25_query_zh.embed("深度学习神经网络")
+
+# For Chinese document encoding
+bm25_doc_zh = BM25EmbeddingFunction(language="zh", encoding_type="document")
+doc_vec = bm25_doc_zh.embed("机器学习是人工智能的重要分支")
+
+# For English query encoding
+bm25_query_en = BM25EmbeddingFunction(language="en", encoding_type="query")
+query_vec_en = bm25_query_en.embed("deep learning neural networks")
+
+# Option 2: Using custom corpus for better domain accuracy
 corpus = [
     "Machine learning is an important branch of artificial intelligence",
     "Deep learning uses neural networks",
     "Natural language processing handles text data"
 ]
 
-embedding_func = BM25EmbeddingFunction(corpus=corpus)
+bm25_custom = BM25EmbeddingFunction(
+    corpus=corpus,
+    encoding_type="query",
+    b=0.75,   # Document length normalization
+    k1=1.2    # Term frequency saturation
+)
 
-# Generate query vector
-query_vec = embedding_func.embed("deep learning neural networks")
+query_vec = bm25_custom.embed("deep learning neural networks")
 ```
 
 #### 3. QwenSparseEmbedding - Dashscope API Sparse Embedding

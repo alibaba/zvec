@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Literal, Optional
 
 from ..common.constants import TEXT, SparseVectorType
@@ -21,11 +22,11 @@ from .embedding_function import SparseEmbeddingFunction
 
 
 class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
-    """BM25-based sparse embedding function using bm25s library.
+    """BM25-based sparse embedding function using DashText SDK.
 
-    This class provides text-to-sparse-vector embedding capabilities using the
-    BM25 (Best Matching 25) algorithm, implemented via the bm25s library. BM25
-    is a probabilistic retrieval function used for lexical search and document
+    This class provides text-to-sparse-vector embedding capabilities using
+    the DashText library with BM25 algorithm. BM25 (Best Matching 25) is a
+    probabilistic retrieval function used for lexical search and document
     ranking based on term frequency and inverse document frequency.
 
     BM25 generates sparse vectors where each dimension corresponds to a term in
@@ -37,232 +38,238 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
     - Combining with dense embeddings for hybrid search
     - Traditional IR tasks where exact term matching is important
 
-    This implementation uses the bm25s library (https://github.com/xhluca/bm25s),
-    which provides fast and memory-efficient BM25 computation using Scipy sparse
-    matrices.
+    This implementation uses DashText's SparseVectorEncoder, which provides
+    efficient BM25 computation for Chinese and English text using either a
+    built-in encoder or custom corpus training.
 
     Args:
-        corpus (list[str]): List of documents to build the BM25 index from.
-            This corpus is used to calculate IDF statistics and build the vocabulary.
-        method (Literal["robertson", "atire", "bm25l", "bm25+", "lucene"], optional):
-            BM25 variant to use. Defaults to ``"lucene"``.
-            - ``"robertson"``: Original BM25 formulation
-            - ``"atire"``: ATIRE variant
-            - ``"bm25l"``: BM25L variant (handles document length normalization)
-            - ``"bm25+"``: BM25+ variant (adds term independence)
-            - ``"lucene"``: Lucene implementation (default, widely used)
-        k1 (float, optional): BM25 parameter controlling term frequency saturation.
-            Higher values give more weight to term frequency. Defaults to ``1.5``.
-        b (float, optional): BM25 parameter controlling length normalization.
+        corpus (Optional[list[str]], optional): List of documents to train the
+            BM25 encoder. If provided, creates a custom encoder trained on this
+            corpus for better domain-specific accuracy. If ``None``, uses the
+            built-in encoder. Defaults to ``None``.
+        encoding_type (Literal["query", "document"], optional): Encoding mode
+            for text processing. Use ``"query"`` for search queries (default) and
+            ``"document"`` for document indexing. This distinction optimizes the
+            BM25 scoring for asymmetric retrieval tasks. Defaults to ``"query"``.
+        language (Literal["zh", "en"], optional): Language for built-in encoder.
+            Only used when corpus is None. ``"zh"`` for Chinese (trained on Chinese
+            Wikipedia), ``"en"`` for English. Defaults to ``"zh"``.
+        b (float, optional): Document length normalization parameter for BM25.
             Range [0, 1]. 0 means no normalization, 1 means full normalization.
-            Defaults to ``0.75``.
-        stemmer (Optional[str], optional): Stemmer to use for text preprocessing.
-            Options: ``"english"``, ``"porter"``, or ``None`` for no stemming.
-            Defaults to ``None``.
-        stopwords (Optional[str], optional): Language for stopword removal.
-            Options: ``"english"``, ``"en"``, or ``None`` for no stopword removal.
-            Defaults to ``None``.
-        **kwargs: Additional parameters passed to bm25s tokenizer.
+            Only used with custom corpus. Defaults to ``0.75``.
+        k1 (float, optional): Term frequency saturation parameter for BM25.
+            Higher values give more weight to term frequency. Only used with
+            custom corpus. Defaults to ``1.2``.
+        **kwargs: Additional parameters for DashText encoder customization.
 
     Attributes:
-        method (str): The BM25 variant being used.
-        corpus_size (int): Number of documents in the corpus.
-        vocab_size (int): Size of the vocabulary.
+        corpus_size (int): Number of documents in the training corpus (0 if using built-in encoder).
+        encoding_type (str): The encoding type being used ("query" or "document").
+        language (str): The language of the built-in encoder ("zh" or "en").
 
     Raises:
-        ValueError: If corpus is empty or invalid.
-        ImportError: If bm25s package is not installed.
+        ValueError: If corpus is provided but empty or contains non-string elements.
         TypeError: If input to ``embed()`` is not a string.
+        RuntimeError: If DashText encoder initialization or training fails.
 
     Note:
         - Requires Python 3.10, 3.11, or 3.12
-        - Requires the ``bm25s`` package: ``pip install bm25s[full]``
-        - The corpus must be provided at initialization and cannot be changed
-        - BM25 scores are relative to the corpus statistics
+        - Requires the ``dashtext`` package: ``pip install dashtext``
+        - Two encoder options available:
+
+          1. **Built-in encoder** (no corpus needed): Pre-trained models for
+             Chinese (zh) and English (en), good generalization, works out-of-the-box
+          2. **Custom encoder** (corpus required): Better accuracy for domain-specific
+             terminology, requires training on your full corpus with BM25 parameters
+
+        - Encoding types:
+
+          * ``encoding_type="query"``: Optimized for search queries (shorter text)
+          * ``encoding_type="document"``: Optimized for document indexing (longer text)
+
+        - BM25 parameters (b, k1) only apply to custom encoder training
         - Output is sorted by indices (vocabulary term IDs) for consistency
-        - For best results, use the same preprocessing for corpus and queries
+        - Results are cached (LRU cache, maxsize=10) to reduce computation
+        - No API key or network connectivity required (local computation)
 
     Examples:
-        >>> # Basic usage with a small corpus
+        >>> # Option 1: Using built-in encoder for Chinese (no corpus needed)
         >>> from zvec.extension import BM25EmbeddingFunction
         >>>
-        >>> corpus = [
-        ...     "a cat is a feline and likes to purr",
-        ...     "a dog is the human's best friend and loves to play",
-        ...     "a bird is a beautiful animal that can fly",
-        ... ]
-        >>> bm25_emb = BM25EmbeddingFunction(corpus=corpus)
-        >>>
-        >>> # Generate sparse embedding for a query
-        >>> query = "does the cat purr?"
-        >>> sparse_vec = bm25_emb.embed(query)
-        >>> isinstance(sparse_vec, dict)
+        >>> # For query encoding (Chinese)
+        >>> bm25_query_zh = BM25EmbeddingFunction(language="zh", encoding_type="query")
+        >>> query_vec = bm25_query_zh.embed("什么是向量检索服务")
+        >>> isinstance(query_vec, dict)
         True
-        >>> # sparse_vec: {12: 0.89, 45: 1.23, 67: 0.56, ...}
+        >>> # query_vec: {1169440797: 0.29, 2045788977: 0.70, ...}
 
-        >>> # Using different BM25 variants
-        >>> bm25_robertson = BM25EmbeddingFunction(corpus=corpus, method="robertson")
-        >>> bm25_plus = BM25EmbeddingFunction(corpus=corpus, method="bm25+")
+        >>> # For document encoding (Chinese)
+        >>> bm25_doc_zh = BM25EmbeddingFunction(language="zh", encoding_type="document")
+        >>> doc_vec = bm25_doc_zh.embed("向量检索服务DashVector基于阿里云...")
+        >>> isinstance(doc_vec, dict)
+        True
 
-        >>> # With stemming and stopword removal
-        >>> bm25_advanced = BM25EmbeddingFunction(
+        >>> # Using built-in encoder for English
+        >>> bm25_query_en = BM25EmbeddingFunction(language="en", encoding_type="query")
+        >>> query_vec_en = bm25_query_en.embed("what is vector search service")
+        >>> isinstance(query_vec_en, dict)
+        True
+
+        >>> # Option 2: Using custom corpus for domain-specific accuracy
+        >>> corpus = [
+        ...     "向量检索服务DashVector基于阿里云自研的高效向量引擎",
+        ...     "DashVector将其强大的向量管理能力透出",
+        ...     "提供所需的高效向量检索能力"
+        ... ]
+        >>> bm25_custom = BM25EmbeddingFunction(
         ...     corpus=corpus,
-        ...     method="lucene",
-        ...     stemmer="english",
-        ...     stopwords="english",
-        ...     k1=1.2,
-        ...     b=0.75
+        ...     encoding_type="query",
+        ...     b=0.75,
+        ...     k1=1.2
         ... )
-        >>> sparse_vec = bm25_advanced.embed("cat playing with a ball")
+        >>> custom_vec = bm25_custom.embed("向量检索")
+        >>> isinstance(custom_vec, dict)
+        True
 
         >>> # Hybrid search: combining with dense embeddings
-        >>> from zvec.extension import DefaultDenseEmbedding
-        >>> dense_emb = DefaultDenseEmbedding()
-        >>> bm25_emb = BM25EmbeddingFunction(corpus=large_corpus)
+        >>> from zvec.extension import DefaultLocalDenseEmbedding
+        >>> dense_emb = DefaultLocalDenseEmbedding()
+        >>> bm25_emb = BM25EmbeddingFunction(language="zh", encoding_type="query")
         >>>
         >>> query = "machine learning algorithms"
         >>> dense_vec = dense_emb.embed(query)  # Semantic similarity
         >>> sparse_vec = bm25_emb.embed(query)  # Lexical matching
         >>> # Combine scores for hybrid retrieval
 
-        >>> # Document ranking
-        >>> documents = [
-        ...     "Machine learning is a subset of AI",
-        ...     "Deep learning uses neural networks",
-        ...     "Natural language processing handles text",
-        ... ]
-        >>> bm25 = BM25EmbeddingFunction(corpus=documents)
-        >>>
-        >>> # Rank documents by BM25 scores
-        >>> query = "machine learning neural networks"
-        >>> query_vec = bm25.embed(query)
-        >>> # Calculate similarity with each document
-
         >>> # Callable interface
-        >>> sparse_vec = bm25_emb("information retrieval")
+        >>> sparse_vec = bm25_query_zh("information retrieval")
         >>> isinstance(sparse_vec, dict)
         True
 
         >>> # Error handling
         >>> try:
-        ...     bm25_emb.embed("")  # Empty query
+        ...     bm25_query_zh.embed("")  # Empty query
         ... except ValueError as e:
         ...     print(f"Error: {e}")
         Error: Input text cannot be empty or whitespace only
 
     See Also:
         - ``SparseEmbeddingFunction``: Base class for sparse embeddings
-        - ``DefaultSparseEmbedding``: SPLADE-based sparse embedding
+        - ``DefaultLocalSparseEmbedding``: SPLADE-based sparse embedding
         - ``QwenSparseEmbedding``: API-based sparse embedding using Qwen
-        - ``DefaultDenseEmbedding``: Dense embedding for semantic search
+        - ``DefaultLocalDenseEmbedding``: Dense embedding for semantic search
 
     References:
-        - BM25S Library: https://github.com/xhluca/bm25s
+        - DashText Documentation: https://help.aliyun.com/zh/document_detail/2546039.html
+        - DashText PyPI: https://pypi.org/project/dashtext/
         - BM25 Algorithm: Robertson & Zaragoza (2009)
-        - Technical Report: https://arxiv.org/abs/2407.03618
     """
 
     def __init__(
         self,
-        corpus: list[str],
-        method: Literal["robertson", "atire", "bm25l", "bm25+", "lucene"] = "lucene",
-        k1: float = 1.5,
+        corpus: Optional[list[str]] = None,
+        encoding_type: Literal["query", "document"] = "query",
+        language: Literal["zh", "en"] = "zh",
         b: float = 0.75,
-        stemmer: Optional[str] = None,
-        stopwords: Optional[str] = None,
+        k1: float = 1.2,
         **kwargs,
     ):
-        """Initialize the BM25 embedding function with a corpus.
+        """Initialize the BM25 embedding function.
 
         Args:
-            corpus (list[str]): List of documents for building the BM25 index.
-            method (Literal["robertson", "atire", "bm25l", "bm25+", "lucene"]):
-                BM25 variant. Defaults to "lucene".
-            k1 (float): Term frequency saturation parameter. Defaults to 1.5.
-            b (float): Length normalization parameter [0, 1]. Defaults to 0.75.
-            stemmer (Optional[str]): Stemmer language. Defaults to None.
-            stopwords (Optional[str]): Stopwords language. Defaults to None.
-            **kwargs: Additional tokenizer parameters.
+            corpus (Optional[list[str]]): Optional corpus for training custom encoder.
+                If None, uses built-in encoder. Defaults to None.
+            encoding_type (Literal["query", "document"]): Text encoding mode.
+                Use "query" for search queries, "document" for indexing.
+                Defaults to "query".
+            language (Literal["zh", "en"]): Language for built-in encoder.
+                "zh" for Chinese, "en" for English. Defaults to "zh".
+            b (float): Document length normalization for BM25 [0, 1].
+                Only used with custom corpus. Defaults to 0.75.
+            k1 (float): Term frequency saturation for BM25.
+                Only used with custom corpus. Defaults to 1.2.
+            **kwargs: Additional DashText encoder parameters.
 
         Raises:
-            ValueError: If corpus is empty or invalid.
-            ImportError: If bm25s package is not installed.
+            ValueError: If corpus is provided but empty or invalid.
+            ImportError: If dashtext package is not installed.
+            RuntimeError: If encoder initialization or training fails.
         """
-        if not corpus or not isinstance(corpus, list):
-            raise ValueError("Corpus must be a non-empty list of strings")
+        # Validate corpus if provided
+        if corpus is not None:
+            if not corpus or not isinstance(corpus, list):
+                raise ValueError("Corpus must be a non-empty list of strings")
 
-        if not all(isinstance(doc, str) for doc in corpus):
-            raise ValueError("All corpus documents must be strings")
+            if not all(isinstance(doc, str) for doc in corpus):
+                raise ValueError("All corpus documents must be strings")
 
-        # Import bm25s
-        self._bm25s = require_module("bm25s")
+        # Import dashtext
+        self._dashtext = require_module("dashtext")
 
         self._corpus = corpus
-        self._method = method
-        self._k1 = k1
+        self._encoding_type = encoding_type
+        self._language = language
         self._b = b
-        self._stemmer = stemmer
-        self._stopwords = stopwords
+        self._k1 = k1
         self._extra_params = kwargs
 
-        # Build the BM25 index
-        self._build_index()
+        # Initialize the BM25 encoder
+        self._build_encoder()
 
-    def _build_index(self):
-        """Build the BM25 index from the corpus."""
-        # Tokenize the corpus
-        tokenizer_kwargs = {}
-        if self._stemmer:
-            tokenizer_kwargs["stemmer"] = self._stemmer
-        if self._stopwords:
-            tokenizer_kwargs["stopwords"] = self._stopwords
-        tokenizer_kwargs.update(self._extra_params)
+    def _build_encoder(self):
+        """Build the BM25 sparse vector encoder.
 
-        # Tokenize corpus
-        corpus_tokens = self._bm25s.tokenize(self._corpus, **tokenizer_kwargs)
+        Creates either a built-in encoder (pre-trained) or a custom encoder
+        trained on the provided corpus.
 
-        # Create BM25 retriever
-        self._retriever = self._bm25s.BM25(
-            corpus=self._corpus,
-            method=self._method,
-            k1=self._k1,
-            b=self._b,
-        )
+        Raises:
+            RuntimeError: If encoder initialization or training fails.
+            ImportError: If dashtext package is not installed.
+        """
+        try:
+            if self._corpus is None:
+                # Use built-in encoder (pre-trained on Wikipedia)
+                # language: 'zh' for Chinese, 'en' for English
+                self._encoder = self._dashtext.SparseVectorEncoder.default(
+                    name=self._language
+                )
+            else:
+                # Create custom encoder with BM25 parameters
+                self._encoder = self._dashtext.SparseVectorEncoder(
+                    b=self._b, k1=self._k1, **self._extra_params
+                )
 
-        # Index the corpus
-        self._retriever.index(corpus_tokens)
+                # Train encoder with the corpus
+                self._encoder.train(self._corpus)
 
-        # Get vocabulary size
-        if hasattr(self._retriever, "vocab"):
-            # Some bm25s versions may expose vocab on the retriever
-            self._vocab_size = len(self._retriever.vocab)
-        elif hasattr(corpus_tokens, "vocab"):
-            # Fallback: use vocab from the tokenized corpus object
-            self._vocab_size = len(corpus_tokens.vocab)
-        else:
-            # As a last resort, derive size from max token id
-            ids = getattr(corpus_tokens, "ids", corpus_tokens)
-            max_id = max((max(seq) for seq in ids if seq), default=-1)
-            self._vocab_size = max_id + 1 if max_id >= 0 else 0
-
-    @property
-    def method(self) -> str:
-        """str: The BM25 variant being used."""
-        return self._method
+        except ImportError as e:
+            raise ImportError(
+                "dashtext package is required for BM25EmbeddingFunction. "
+                "Install it with: pip install dashtext"
+            ) from e
+        except Exception as e:
+            if isinstance(e, (ValueError, RuntimeError)):
+                raise
+            raise RuntimeError(f"Failed to build BM25 encoder: {e!s}") from e
 
     @property
     def corpus_size(self) -> int:
-        """int: Number of documents in the corpus."""
-        return len(self._corpus)
+        """int: Number of documents in the training corpus (0 if using built-in encoder)."""
+        return len(self._corpus) if self._corpus is not None else 0
 
     @property
-    def vocab_size(self) -> int:
-        """int: Size of the vocabulary."""
-        return self._vocab_size
+    def encoding_type(self) -> str:
+        """str: The encoding type being used ("query" or "document")."""
+        return self._encoding_type
+
+    @property
+    def language(self) -> str:
+        """str: The language of the built-in encoder ("zh" or "en")."""
+        return self._language
 
     @property
     def extra_params(self) -> dict:
-        """dict: Extra parameters for tokenizer customization."""
+        """dict: Extra parameters for DashText encoder customization."""
         return self._extra_params
 
     def __call__(self, input: TEXT) -> SparseVectorType:
@@ -276,12 +283,18 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
         """
         return self.embed(input)
 
+    @lru_cache(maxsize=10)
     def embed(self, input: TEXT) -> SparseVectorType:
         """Generate BM25 sparse embedding for the input text.
 
-        This method computes BM25 scores for the input query against the corpus
-        vocabulary. The result is a sparse vector where keys are term indices in
-        the vocabulary and values are BM25 scores.
+        This method computes BM25 scores for the input text using DashText's
+        SparseVectorEncoder. The encoding behavior depends on the encoding_type:
+
+        - ``encoding_type="query"``: Uses ``encode_queries()`` for search queries
+        - ``encoding_type="document"``: Uses ``encode_documents()`` for documents
+
+        The result is a sparse vector where keys are term indices in the
+        vocabulary and values are BM25 scores.
 
         Args:
             input (TEXT): Input text string to embed. Must be non-empty after
@@ -291,15 +304,15 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
             SparseVectorType: A dictionary mapping vocabulary term index to BM25 score.
                 Only non-zero scores are included. The dictionary is sorted by indices
                 (keys) in ascending order for consistent output.
-                Example: ``{5: 0.89, 12: 1.45, 23: 0.67, 45: 1.12}``
+                Example: ``{1169440797: 0.29, 2045788977: 0.70, ...}``
 
         Raises:
             TypeError: If ``input`` is not a string.
             ValueError: If input is empty or whitespace-only.
-            RuntimeError: If BM25 computation fails.
+            RuntimeError: If BM25 encoding fails.
 
         Examples:
-            >>> bm25 = BM25EmbeddingFunction(corpus=["doc1", "doc2"])
+            >>> bm25 = BM25EmbeddingFunction(language="zh", encoding_type="query")
             >>> sparse_vec = bm25.embed("query text")
             >>> isinstance(sparse_vec, dict)
             True
@@ -320,10 +333,11 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
             TypeError: Expected 'input' to be str, got int
 
         Note:
-            - BM25 scores are relative to the corpus statistics
-            - Longer documents tend to have lower scores due to length normalization
+            - BM25 scores are relative to the vocabulary statistics
             - Output dictionary is always sorted by indices for consistency
             - Terms not in the vocabulary will have zero scores (not included)
+            - This method is cached (maxsize=10) for performance
+            - DashText automatically handles Chinese/English text segmentation
         """
         if not isinstance(input, str):
             raise TypeError(f"Expected 'input' to be str, got {type(input).__name__}")
@@ -333,65 +347,24 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
             raise ValueError("Input text cannot be empty or whitespace only")
 
         try:
-            # Tokenize the query
-            tokenizer_kwargs = {}
-            if self._stemmer:
-                tokenizer_kwargs["stemmer"] = self._stemmer
-            if self._stopwords:
-                tokenizer_kwargs["stopwords"] = self._stopwords
-            tokenizer_kwargs.update(self._extra_params)
+            # Encode based on encoding_type
+            if self._encoding_type == "query":
+                sparse_vector = self._encoder.encode_queries(input)
+            else:  # encoding_type == "document"
+                sparse_vector = self._encoder.encode_documents(input)
 
-            query_tokens = self._bm25s.tokenize(
-                [input],  # bm25s expects a list
-                **tokenizer_kwargs,
-            )
-
-            # For BM25, we compute term-level scores for each query token ID
-            # bm25s may return either a raw list-of-lists or a Tokenized object
-            ids_obj = getattr(query_tokens, "ids", query_tokens)
-            if isinstance(ids_obj, list) and ids_obj and isinstance(ids_obj[0], list):
-                # Shape: [[id0, id1, ...]] -> take first query
-                query_token_ids = ids_obj[0]
-            else:
-                # Shape: [id0, id1, ...] or empty
-                query_token_ids = ids_obj or []
-
+            # DashText returns dict with int/long keys and float values
+            # Convert to standard format: {int: float}
             sparse_dict: dict[int, float] = {}
-
-            for token_id in query_token_ids:
-                # token_id is already the vocabulary index in bm25s
-                if token_id < 0:
+            for key, value in sparse_vector.items():
+                try:
+                    idx = int(key)
+                    val = float(value)
+                    if val > 0:
+                        sparse_dict[idx] = val
+                except (ValueError, TypeError):
+                    # Skip invalid entries
                     continue
-
-                # Compute term frequency in query
-                term_freq = query_token_ids.count(token_id)
-
-                # Get IDF value from retriever.idf
-                idf_source = getattr(self._retriever, "idf", None)
-                if idf_source is not None:
-                    if hasattr(idf_source, "get"):
-                        # dict or dict-like (including Mock with get)
-                        idf = float(idf_source.get(token_id, 0.0))
-                    # sequence/array-like
-                    elif 0 <= token_id < len(idf_source):
-                        idf = float(idf_source[token_id])
-                    else:
-                        idf = 0.0
-                else:
-                    # Fallback IDF when not available
-                    idf = 1.0
-
-                # BM25 score calculation (simplified)
-                score = 0.0
-                if term_freq > 0:
-                    score = idf * (term_freq * (self._k1 + 1)) / (term_freq + self._k1)
-
-                if score > 0:
-                    # If the same token appears multiple times we accumulate
-                    if token_id in sparse_dict:
-                        sparse_dict[int(token_id)] += float(score)
-                    else:
-                        sparse_dict[int(token_id)] = float(score)
 
             # Sort by indices (keys) to ensure consistent ordering
             return dict(sorted(sparse_dict.items()))

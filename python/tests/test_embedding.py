@@ -19,15 +19,13 @@ from unittest.mock import MagicMock, patch, Mock
 
 import numpy as np
 import pytest
-from zvec.extension.openai_embedding_function import OpenAIDenseEmbedding
-from zvec.extension.qwen_embedding_function import (
-    QwenDenseEmbedding,
-    QwenSparseEmbedding,
-)
-from zvec.extension.bm25_embedding_function import BM25EmbeddingFunction
-from zvec.extension.sentence_transformer_embedding_function import (
+from zvec.extension import (
+    BM25EmbeddingFunction,
     DefaultLocalDenseEmbedding,
     DefaultLocalSparseEmbedding,
+    OpenAIDenseEmbedding,
+    QwenDenseEmbedding,
+    QwenSparseEmbedding,
 )
 
 # Environment variable to control integration tests
@@ -1657,10 +1655,28 @@ class TestDefaultLocalSparseEmbedding:
 # BM25EmbeddingFunction Test Case
 # ----------------------------
 class TestBM25EmbeddingFunction:
-    """Test suite for BM25EmbeddingFunction (BM25-based sparse embedding)."""
+    """Test suite for BM25EmbeddingFunction (BM25-based sparse embedding using DashText SDK)."""
 
-    def test_init_success(self):
-        """Test successful initialization with corpus."""
+    def test_init_with_built_in_encoder(self):
+        """Test successful initialization with built-in encoder (no corpus)."""
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
+
+            # Test with default language (Chinese)
+            bm25 = BM25EmbeddingFunction()
+
+            assert bm25.corpus_size == 0
+            assert bm25.encoding_type == "query"
+            assert bm25.language == "zh"
+            mock_dashtext.SparseVectorEncoder.default.assert_called_once_with(name="zh")
+
+    def test_init_with_custom_encoder(self):
+        """Test successful initialization with custom encoder (with corpus)."""
         corpus = [
             "a cat is a feline and likes to purr",
             "a dog is the human's best friend",
@@ -1670,30 +1686,22 @@ class TestBM25EmbeddingFunction:
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-            mock_retriever.vocab = {"cat": 0, "dog": 1, "bird": 2}
-            mock_retriever.idf = Mock()
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_dashtext.SparseVectorEncoder.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            mock_bm25s.tokenize.return_value = [[0, 1], [1, 2], [2, 3]]
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
-
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            bm25 = BM25EmbeddingFunction(corpus=corpus, b=0.75, k1=1.2)
 
             assert bm25.corpus_size == 3
-            assert bm25.method == "lucene"
-            assert bm25.vocab_size == 3
-            mock_bm25s.tokenize.assert_called_once()
-            mock_bm25s.BM25.assert_called_once()
+            assert bm25.encoding_type == "query"
+            mock_dashtext.SparseVectorEncoder.assert_called_once_with(b=0.75, k1=1.2)
+            mock_encoder.train.assert_called_once_with(corpus)
 
     def test_init_with_empty_corpus(self):
         """Test initialization with empty corpus raises ValueError."""
         with pytest.raises(ValueError, match="Corpus must be a non-empty list"):
             BM25EmbeddingFunction(corpus=[])
-
-        with pytest.raises(ValueError, match="Corpus must be a non-empty list"):
-            BM25EmbeddingFunction(corpus=None)
 
     def test_init_with_invalid_corpus(self):
         """Test initialization with invalid corpus elements."""
@@ -1703,79 +1711,67 @@ class TestBM25EmbeddingFunction:
         with pytest.raises(ValueError, match="All corpus documents must be strings"):
             BM25EmbeddingFunction(corpus=[None, "text"])
 
-    def test_init_with_custom_parameters(self):
-        """Test initialization with custom BM25 parameters."""
-        corpus = ["doc1", "doc2"]
-
+    def test_init_with_language_parameter(self):
+        """Test initialization with different language settings."""
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-            mock_retriever.vocab = {"test": 0}
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            mock_bm25s.tokenize.return_value = [[0], [1]]
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
+            # Test English language
+            bm25_en = BM25EmbeddingFunction(language="en")
+            assert bm25_en.language == "en"
+            mock_dashtext.SparseVectorEncoder.default.assert_called_with(name="en")
 
-            bm25 = BM25EmbeddingFunction(
-                corpus=corpus,
-                method="robertson",
-                k1=1.2,
-                b=0.75,
-                stemmer="english",
-                stopwords="en",
-            )
-
-            assert bm25.method == "robertson"
-            assert bm25.extra_params == {}
-
-    def test_init_with_missing_bm25s_library(self):
-        """Test initialization fails when bm25s library is not installed."""
-        corpus = ["doc1", "doc2"]
-
+    def test_init_with_encoding_type(self):
+        """Test initialization with different encoding types."""
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_require.side_effect = ImportError("No module named 'bm25s'")
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            with pytest.raises(ImportError, match="No module named 'bm25s'"):
-                BM25EmbeddingFunction(corpus=corpus)
+            # Test document encoding type
+            bm25_doc = BM25EmbeddingFunction(encoding_type="document")
+            assert bm25_doc.encoding_type == "document"
 
-    def test_embed_success(self):
-        """Test successful sparse embedding generation."""
-        corpus = ["cat purrs", "dog barks", "bird sings"]
-
+    def test_init_with_missing_dashtext_library(self):
+        """Test initialization fails when dashtext library is not installed."""
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
+            mock_require.side_effect = ImportError("dashtext package is required")
 
-            # Mock vocabulary - these are the actual tokens in vocab
-            mock_retriever.vocab = {"cat": 0, "purr": 1, "loud": 2}
+            with pytest.raises(ImportError, match="dashtext package is required"):
+                BM25EmbeddingFunction()
 
-            # Mock IDF values as a dict-like object with get method
-            mock_idf = Mock()
-            mock_idf.get = Mock(
-                side_effect=lambda idx, default: {0: 1.5, 1: 1.2, 2: 2.0}.get(
-                    idx, default
-                )
-            )
-            mock_retriever.idf = mock_idf
+    def test_embed_with_query_encoding(self):
+        """Test successful sparse embedding generation with query encoding."""
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
 
-            # Mock tokenize to return token IDs (as list, not numpy array)
-            mock_bm25s.tokenize.side_effect = [
-                [[0, 1, 2]],  # Corpus tokenization
-                [
-                    [0, 1, 2]
-                ],  # Query tokenization: tokens "cat"(0), "purr"(1), "loud"(2)
-            ]
+            # Mock encode_queries to return sparse vector
+            mock_encoder.encode_queries.return_value = {
+                5: 0.89,
+                12: 1.45,
+                23: 0.67,
+                45: 1.12,
+            }
 
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            bm25 = BM25EmbeddingFunction(encoding_type="query")
+            # Clear LRU cache to ensure fresh call
+            bm25.embed.cache_clear()
             result = bm25.embed("cat purr loud")
 
             # Verify result structure
@@ -1790,27 +1786,44 @@ class TestBM25EmbeddingFunction:
             keys = list(result.keys())
             assert keys == sorted(keys), "Output must be sorted by indices"
 
-            # Verify expected keys (tokens in query)
-            assert 0 in result  # cat
-            assert 1 in result  # purr
-            assert 2 in result  # loud
+            # Verify expected keys from mock response
+            assert result == {5: 0.89, 12: 1.45, 23: 0.67, 45: 1.12}
 
-    def test_embed_with_empty_input(self):
-        """Test embedding with empty input raises ValueError."""
-        corpus = ["doc1", "doc2"]
+            # Verify encode_queries was called
+            mock_encoder.encode_queries.assert_called_once_with("cat purr loud")
 
+    def test_embed_with_document_encoding(self):
+        """Test successful sparse embedding generation with document encoding."""
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-            mock_retriever.vocab = {}
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
 
-            mock_bm25s.tokenize.return_value = [[]]
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
+            # Mock encode_documents to return sparse vector
+            mock_encoder.encode_documents.return_value = {10: 1.5, 20: 2.3}
 
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
+
+            bm25 = BM25EmbeddingFunction(encoding_type="document")
+            bm25.embed.cache_clear()
+            result = bm25.embed("document text")
+
+            assert result == {10: 1.5, 20: 2.3}
+            mock_encoder.encode_documents.assert_called_once_with("document text")
+
+    def test_embed_with_empty_input(self):
+        """Test embedding with empty input raises ValueError."""
+        with patch(
+            "zvec.extension.bm25_embedding_function.require_module"
+        ) as mock_require:
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
+
+            bm25 = BM25EmbeddingFunction()
 
             with pytest.raises(ValueError, match="Input text cannot be empty"):
                 bm25.embed("")
@@ -1820,85 +1833,70 @@ class TestBM25EmbeddingFunction:
 
     def test_embed_with_non_string_input(self):
         """Test embedding with non-string input raises TypeError."""
-        corpus = ["doc1", "doc2"]
-
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-            mock_retriever.vocab = {}
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            mock_bm25s.tokenize.return_value = [[]]
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
+            bm25 = BM25EmbeddingFunction()
 
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
-
+            # Test with hashable non-string types - should get our custom error message
             with pytest.raises(TypeError, match="Expected 'input' to be str"):
                 bm25.embed(123)
 
             with pytest.raises(TypeError, match="Expected 'input' to be str"):
                 bm25.embed(None)
 
-            with pytest.raises(TypeError, match="Expected 'input' to be str"):
+            # Test with unhashable type (list)
+            # Note: lru_cache raises TypeError("unhashable type: 'list'") before our type check
+            # This is still a valid type error, just caught at a different layer
+            with pytest.raises(TypeError, match="unhashable type"):
                 bm25.embed(["text"])
 
     def test_embed_callable_interface(self):
         """Test that BM25EmbeddingFunction is callable."""
-        corpus = ["doc1", "doc2"]
-
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-            mock_retriever.vocab = {"test": 0}
-            mock_retriever.idf = {0: 1.5}
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_encoder.encode_queries.return_value = {10: 1.5}
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            mock_bm25s.tokenize.side_effect = [[[0]], [[0]]]
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
-
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            bm25 = BM25EmbeddingFunction()
+            bm25.embed.cache_clear()
 
             # Test callable interface
             result = bm25("test query")
             assert isinstance(result, dict)
+            assert 10 in result
 
     def test_embed_output_sorted_by_indices(self):
         """Test that output is always sorted by indices in ascending order."""
-        corpus = ["doc1", "doc2", "doc3"]
-
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
 
-            # Create vocabulary with non-sequential indices
-            mock_retriever.vocab = {
-                "token_a": 9999,
-                "token_b": 5,
-                "token_c": 1234,
-                "token_d": 77,
-                "token_e": 500,
+            # Mock encode_queries with unsorted indices
+            mock_encoder.encode_queries.return_value = {
+                9999: 1.5,
+                5: 2.0,
+                1234: 0.8,
+                77: 3.2,
+                500: 1.1,
             }
 
-            # Mock IDF values
-            mock_idf_dict = {9999: 1.5, 5: 2.0, 1234: 0.8, 77: 3.2, 500: 1.1}
-            mock_retriever.idf = mock_idf_dict
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            # Query tokens in non-sorted order
-            mock_bm25s.tokenize.side_effect = [
-                [[0, 1, 2]],  # Corpus
-                [[9999, 5, 1234, 77, 500]],  # Query with unsorted indices
-            ]
-
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
-
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            bm25 = BM25EmbeddingFunction()
+            bm25.embed.cache_clear()
             result = bm25.embed("test query")
 
             # Verify keys are sorted
@@ -1912,117 +1910,31 @@ class TestBM25EmbeddingFunction:
             assert result_keys == expected_keys
 
     def test_embed_filters_zero_values(self):
-        """Test that zero IDF values are filtered out."""
-        corpus = ["doc1", "doc2"]
-
+        """Test that zero and negative values are filtered out."""
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
 
-            mock_retriever.vocab = {"positive": 0, "zero": 1, "negative": 2}
-            mock_retriever.idf = {0: 1.5, 1: 0.0, 2: -0.5}  # Zero and negative
+            # Mock encode_queries with zero and negative values
+            mock_encoder.encode_queries.return_value = {
+                0: 1.5,  # Positive - should be included
+                1: 0.0,  # Zero - should be filtered
+                2: -0.5,  # Negative - should be filtered
+            }
 
-            mock_bm25s.tokenize.side_effect = [
-                [[0, 1]],  # Corpus
-                [[0, 1, 2]],  # Query
-            ]
+            mock_dashtext.SparseVectorEncoder.default.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
-
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
+            bm25 = BM25EmbeddingFunction()
+            bm25.embed.cache_clear()
             result = bm25.embed("test")
 
             # Only positive token should be in result
             assert 0 in result
             assert 1 not in result  # Zero value filtered
             assert 2 not in result  # Negative value filtered
-            assert all(v > 0 for v in result.values())
-
-    def test_embed_with_oov_tokens(self):
-        """Test embedding with out-of-vocabulary tokens."""
-        corpus = ["known words"]
-
-        with patch(
-            "zvec.extension.bm25_embedding_function.require_module"
-        ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-
-            # Vocabulary only has "known"
-            mock_retriever.vocab = {"known": 0}
-            mock_retriever.idf = {0: 1.5}
-
-            # Query includes OOV token "unknown" (not in vocab)
-            mock_bm25s.tokenize.side_effect = [
-                [[0]],  # Corpus
-                [[0]],  # Query: only "known" token
-            ]
-
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
-
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
-            result = bm25.embed("known unknown")
-
-            # Only known token should be in result
-            assert 0 in result
-            assert len(result) == 1
-
-    def test_embed_runtime_error(self):
-        """Test handling of runtime errors during embedding."""
-        corpus = ["doc1", "doc2"]
-
-        with patch(
-            "zvec.extension.bm25_embedding_function.require_module"
-        ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-            mock_retriever.vocab = {}
-
-            mock_bm25s.tokenize.side_effect = [
-                [[0]],  # Corpus tokenization succeeds
-                RuntimeError("Tokenization failed"),  # Query tokenization fails
-            ]
-
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
-
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
-
-            with pytest.raises(RuntimeError, match="Failed to generate BM25 embedding"):
-                bm25.embed("test query")
-
-    def test_embed_fallback_to_term_frequency(self):
-        """Test fallback to term frequency when IDF is not available."""
-        corpus = ["doc1", "doc2"]
-
-        with patch(
-            "zvec.extension.bm25_embedding_function.require_module"
-        ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-
-            mock_retriever.vocab = {"test": 0, "query": 1}
-            # No IDF attribute
-            delattr(mock_retriever, "idf") if hasattr(mock_retriever, "idf") else None
-
-            # Token "test" appears twice
-            mock_bm25s.tokenize.side_effect = [
-                [[0, 1]],  # Corpus
-                [[0, 0, 1]],  # Query: "test" appears twice
-            ]
-
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
-
-            bm25 = BM25EmbeddingFunction(corpus=corpus)
-            result = bm25.embed("test test query")
-
-            # Should use term frequency as fallback
-            assert isinstance(result, dict)
             assert all(v > 0 for v in result.values())
 
     def test_properties(self):
@@ -2032,56 +1944,54 @@ class TestBM25EmbeddingFunction:
         with patch(
             "zvec.extension.bm25_embedding_function.require_module"
         ) as mock_require:
-            mock_bm25s = Mock()
-            mock_retriever = Mock()
-            mock_retriever.vocab = {"a": 0, "b": 1, "c": 2, "d": 3, "e": 4}
-
-            mock_bm25s.tokenize.return_value = [[0, 1], [2, 3], [4]]
-            mock_bm25s.BM25.return_value = mock_retriever
-            mock_require.return_value = mock_bm25s
+            mock_dashtext = Mock()
+            mock_encoder = Mock()
+            mock_dashtext.SparseVectorEncoder.return_value = mock_encoder
+            mock_require.return_value = mock_dashtext
 
             bm25 = BM25EmbeddingFunction(
-                corpus=corpus, method="bm25+", custom_param="test"
+                corpus=corpus,
+                encoding_type="document",
+                language="en",
+                b=0.8,
+                k1=1.5,
+                custom_param="test",
             )
 
-            assert bm25.method == "bm25+"
             assert bm25.corpus_size == 3
-            assert bm25.vocab_size == 5
+            assert bm25.encoding_type == "document"
+            assert bm25.language == "en"
             assert bm25.extra_params == {"custom_param": "test"}
-
-    def test_different_bm25_variants(self):
-        """Test initialization with different BM25 variants."""
-        corpus = ["doc1"]
-        methods = ["robertson", "atire", "bm25l", "bm25+", "lucene"]
-
-        for method in methods:
-            with patch(
-                "zvec.extension.bm25_embedding_function.require_module"
-            ) as mock_require:
-                mock_bm25s = Mock()
-                mock_retriever = Mock()
-                mock_retriever.vocab = {}
-
-                mock_bm25s.tokenize.return_value = [[]]
-                mock_bm25s.BM25.return_value = mock_retriever
-                mock_require.return_value = mock_bm25s
-
-                bm25 = BM25EmbeddingFunction(corpus=corpus, method=method)
-                assert bm25.method == method
 
     @pytest.mark.skipif(
         not RUN_INTEGRATION_TESTS,
         reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
     )
-    def test_real_bm25_embedding(self):
-        """Integration test with real bm25s library.
+    def test_real_dashtext_bm25_embedding(self):
+        """Integration test with real DashText library.
 
         To run this test:
             export ZVEC_RUN_INTEGRATION_TESTS=1
-            pip install bm25s
+            pip install dashtext
 
-        Note: First run may take time for tokenization.
+        Note: This test requires the dashtext package to be installed.
         """
+        # Test built-in encoder (Chinese)
+        bm25_zh = BM25EmbeddingFunction(language="zh", encoding_type="query")
+
+        query_zh = "什么是向量检索服务"
+        result_zh = bm25_zh.embed(query_zh)
+
+        assert isinstance(result_zh, dict)
+        assert len(result_zh) > 0
+        assert all(isinstance(k, int) for k in result_zh.keys())
+        assert all(isinstance(v, float) and v > 0 for v in result_zh.values())
+
+        # Verify sorted output
+        keys = list(result_zh.keys())
+        assert keys == sorted(keys), "Real DashText BM25 output must be sorted"
+
+        # Test custom corpus
         corpus = [
             "The cat sits on the mat",
             "The dog plays in the garden",
@@ -2089,31 +1999,19 @@ class TestBM25EmbeddingFunction:
             "Fish swim in the water",
         ]
 
-        bm25 = BM25EmbeddingFunction(corpus=corpus)
+        bm25_custom = BM25EmbeddingFunction(corpus=corpus, encoding_type="query")
 
-        # Test basic embedding
-        query = "cat on mat"
-        result = bm25.embed(query)
+        query_en = "cat on mat"
+        result_en = bm25_custom.embed(query_en)
 
-        assert isinstance(result, dict)
-        assert len(result) > 0
-        assert all(isinstance(k, int) for k in result.keys())
-        assert all(isinstance(v, float) and v > 0 for v in result.values())
-
-        # Verify sorted output
-        keys = list(result.keys())
-        assert keys == sorted(keys), "Real BM25 output must be sorted"
+        assert isinstance(result_en, dict)
+        assert len(result_en) > 0
+        assert all(isinstance(k, int) for k in result_en.keys())
+        assert all(isinstance(v, float) and v > 0 for v in result_en.values())
 
         # Test callable interface
-        result2 = bm25(query)
-        assert result == result2
-
-        # Test with stemming and stopwords
-        bm25_advanced = BM25EmbeddingFunction(corpus=corpus, stopwords="en")
-        result_advanced = bm25_advanced.embed(query)
-        assert isinstance(result_advanced, dict)
+        result2 = bm25_custom(query_en)
+        assert result_en == result2
 
         # Verify properties
-        assert bm25.corpus_size == 4
-        assert bm25.vocab_size > 0
-        assert bm25.method == "lucene"
+        assert bm25_custom.corpus_size == 4
