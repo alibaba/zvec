@@ -1460,7 +1460,7 @@ class TestDefaultLocalSparseEmbedding:
         with pytest.raises(
             ValueError, match="Failed to load Sentence Transformer model"
         ):
-            DefaultLocalSparseEmbedding
+            DefaultLocalSparseEmbedding()
 
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_inference_failure(self, mock_require_module):
