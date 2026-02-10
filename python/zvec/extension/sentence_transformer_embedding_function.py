@@ -81,7 +81,7 @@ class SentenceTransformerEmbeddingFunction(
     See Also:
         - ``DenseEmbeddingFunction``: Base class for dense embeddings
         - ``DefaultDenseEmbedding``: Concrete implementation with all-MiniLM-L6-v2
-        - ``DefaultSparseEmbedding``: Sparse embedding with SPLADE
+        - ``DefaultLocalSparseEmbedding``: Sparse embedding with SPLADE
     """
 
     def __init__(
@@ -391,77 +391,340 @@ class DefaultDenseEmbedding(SentenceTransformerEmbeddingFunction):
         )
 
 
-class SentenceTransformerSparseEmbeddingFunction(
+class DefaultLocalSparseEmbedding(
     SentenceTransformerFunctionBase, SparseEmbeddingFunction[TEXT]
 ):
-    """Sparse embedding function using Sentence Transformer models.
+    """Default local sparse embedding using SPLADE model.
 
-    This class provides text-to-sparse-vector embedding capabilities using the
-    sentence-transformers library with SPLADE-based models. It supports models
-    from Hugging Face Hub and ModelScope, runs locally without API calls, and
-    supports CPU/GPU acceleration.
+    This class provides sparse vector embedding using the SPLADE (SParse Lexical
+    AnD Expansion) model. SPLADE generates sparse, interpretable representations
+    where each dimension corresponds to a vocabulary term with learned importance
+    weights. It's ideal for lexical matching, BM25-style retrieval, and hybrid
+    search scenarios.
+
+    The default model is ``naver/splade-cocondenser-ensembledistil``, which is
+    publicly available without authentication. It produces sparse vectors with
+    thousands of dimensions but only hundreds of non-zero values, making them
+    efficient for storage and retrieval while maintaining strong lexical matching.
+
+    **Model Caching:**
+
+    This class uses class-level caching to share the SPLADE model across all instances
+    with the same configuration (model_source, device). This significantly reduces
+    memory usage when creating multiple instances for different encoding types
+    (query vs document).
+
+    **Cache Management:**
+
+    The class provides methods to manage the model cache:
+
+    - ``clear_cache()``: Clear all cached models to free memory
+    - ``get_cache_info()``: Get information about cached models
+    - ``remove_from_cache(model_source, device)``: Remove a specific model from cache
+
+    .. note::
+        **Why not use splade-v3?**
+
+        The newer ``naver/splade-v3`` model is gated (requires access approval).
+        We use ``naver/splade-cocondenser-ensembledistil`` instead.
+
+        **To use splade-v3 (if you have access):**
+
+        1. Request access at https://huggingface.co/naver/splade-v3
+        2. Get your Hugging Face token from https://huggingface.co/settings/tokens
+        3. Set environment variable:
+
+           .. code-block:: bash
+
+               export HF_TOKEN="your_huggingface_token"
+
+        4. Or login programmatically:
+
+           .. code-block:: python
+
+               from huggingface_hub import login
+               login(token="your_huggingface_token")
+
+        5. To use a custom SPLADE model, you can subclass this class and override
+           the model_name in ``__init__``, or create your own implementation
+           inheriting from ``SentenceTransformerFunctionBase`` and
+           ``SparseEmbeddingFunction``.
 
     Args:
-        model_name (str): Model identifier or local path. Format depends on source:
-            - Hugging Face: ``"naver/splade-cocondenser-ensembledistil"``
-            - ModelScope: Model availability may vary
-            Common options:
-            - ``"naver/splade-cocondenser-ensembledistil"``: Public SPLADE model
-            - ``"naver/splade-v3"``: Gated model (requires authentication)
         model_source (Literal["huggingface", "modelscope"], optional): Model source.
-            Defaults to ``"huggingface"``.
+            Defaults to ``"huggingface"``. ModelScope support may vary for SPLADE models.
         device (Optional[str], optional): Device to run the model on.
             Options: ``"cpu"``, ``"cuda"``, ``"mps"`` (for Apple Silicon), or ``None``
             for automatic detection. Defaults to ``None``.
         encoding_type (Literal["query", "document"], optional): Encoding type.
             - ``"query"``: Optimize for search queries (default)
             - ``"document"``: Optimize for indexed documents
-        **kwargs: Additional parameters for future extension.
+        **kwargs: Additional parameters (currently unused, for future extension).
 
     Attributes:
-        model_name (str): The model identifier being used.
-        model_source (str): The model source ("huggingface" or "modelscope").
+        model_name (str): Model identifier.
+        model_source (str): The model source being used.
         device (str): The device the model is running on.
 
+    Raises:
+        ValueError: If the model cannot be loaded or input is invalid.
+        TypeError: If input to ``embed()`` is not a string.
+        RuntimeError: If model inference fails.
+
     Note:
-        - Requires ``sentence-transformers`` package
-        - For ModelScope support, also requires ``modelscope`` package
-        - First run downloads the model (~100MB)
-        - No API keys required
+        - Requires Python 3.10, 3.11, or 3.12
+        - Requires the ``sentence-transformers`` package:
+          ``pip install sentence-transformers``
+        - First run downloads the model (~100MB) from Hugging Face
+        - Cache location: ``~/.cache/torch/sentence_transformers/``
+        - No API keys or authentication required
         - Sparse vectors have ~30k dimensions but only ~100-200 non-zero values
+        - Best combined with dense embeddings for hybrid retrieval
+
+        **SPLADE vs Dense Embeddings:**
+
+        - **Dense**: Continuous semantic vectors, good for semantic similarity
+        - **Sparse**: Lexical keyword-based, interpretable, good for exact matching
+        - **Hybrid**: Combine both for best retrieval performance
 
     Examples:
-        >>> # Custom SPLADE model
-        >>> class CustomSparseEmbedding(SentenceTransformerSparseEmbeddingFunction):
-        ...     def __init__(self):
-        ...         super().__init__(
-        ...             model_name="naver/splade-cocondenser-ensembledistil",
-        ...             encoding_type="query"
-        ...         )
+        >>> # Memory-efficient: both instances share the same model (~200MB)
+        >>> from zvec.extension import DefaultLocalSparseEmbedding
+        >>>
+        >>> # Query embedding
+        >>> query_emb = DefaultLocalSparseEmbedding(encoding_type="query")
+        >>> query_vec = query_emb.embed("machine learning algorithms")
+        >>> type(query_vec)
+        <class 'dict'>
+        >>> len(query_vec)  # Only non-zero dimensions
+        156
+
+        >>> # Document embedding (shares model with query_emb)
+        >>> doc_emb = DefaultLocalSparseEmbedding(encoding_type="document")
+        >>> doc_vec = doc_emb.embed("Machine learning is a subset of AI")
+        >>> # Total memory: ~200MB (not 400MB) thanks to model caching
+
+        >>> # Asymmetric retrieval example
+        >>> query_vec = query_emb.embed("what causes aging fast")
+        >>> doc_vec = doc_emb.embed(
+        ...     "UV-A light causes tanning, skin aging, and cataracts..."
+        ... )
+        >>>
+        >>> # Calculate similarity (dot product for sparse vectors)
+        >>> similarity = sum(
+        ...     query_vec.get(k, 0) * doc_vec.get(k, 0)
+        ...     for k in set(query_vec) | set(doc_vec)
+        ... )
+
+        >>> # Batch processing
+        >>> queries = ["query 1", "query 2", "query 3"]
+        >>> query_vecs = [query_emb.embed(q) for q in queries]
+        >>>
+        >>> documents = ["doc 1", "doc 2", "doc 3"]
+        >>> doc_vecs = [doc_emb.embed(d) for d in documents]
+
+        >>> # Inspecting sparse dimensions (output is sorted by indices)
+        >>> query_vec = query_emb.embed("machine learning")
+        >>> list(query_vec.items())[:5]  # First 5 dimensions (by index)
+        [(10, 0.45), (23, 0.87), (56, 0.32), (89, 1.12), (120, 0.65)]
+        >>>
+        >>> # Sort by weight to find most important terms
+        >>> sorted_by_weight = sorted(query_vec.items(), key=lambda x: x[1], reverse=True)
+        >>> top_5 = sorted_by_weight[:5]  # Top 5 most important terms
+        >>> top_5
+        [(1023, 1.45), (245, 1.23), (8901, 0.98), (5678, 0.87), (12034, 0.76)]
+
+        >>> # Using GPU for faster inference
+        >>> sparse_emb = DefaultLocalSparseEmbedding(device="cuda")
+        >>> vector = sparse_emb.embed("natural language processing")
+
+        >>> # Hybrid retrieval example (combining dense + sparse)
+        >>> from zvec.extension import DefaultDenseEmbedding
+        >>> dense_emb = DefaultDenseEmbedding()
+        >>> sparse_emb = DefaultLocalSparseEmbedding()
+        >>>
+        >>> query = "deep learning neural networks"
+        >>> dense_vec = dense_emb.embed(query)   # [0.1, -0.3, 0.5, ...]
+        >>> sparse_vec = sparse_emb.embed(query)  # {12: 0.8, 45: 1.2, ...}
+
+        >>> # Error handling
+        >>> try:
+        ...     sparse_emb.embed("")  # Empty string
+        ... except ValueError as e:
+        ...     print(f"Error: {e}")
+        Error: Input text cannot be empty or whitespace only
+
+        >>> # Cache management
+        >>> # Check cache status
+        >>> info = DefaultLocalSparseEmbedding.get_cache_info()
+        >>> print(f"Cached models: {info['cached_models']}")
+        Cached models: 1
+        >>>
+        >>> # Clear cache to free memory
+        >>> DefaultLocalSparseEmbedding.clear_cache()
+        >>> info = DefaultLocalSparseEmbedding.get_cache_info()
+        >>> print(f"Cached models: {info['cached_models']}")
+        Cached models: 0
+        >>>
+        >>> # Remove specific model from cache
+        >>> query_emb = DefaultLocalSparseEmbedding()  # Creates CPU model
+        >>> cuda_emb = DefaultLocalSparseEmbedding(device="cuda")  # Creates CUDA model
+        >>> info = DefaultLocalSparseEmbedding.get_cache_info()
+        >>> print(f"Cached models: {info['cached_models']}")
+        Cached models: 2
+        >>>
+        >>> # Remove only CPU model
+        >>> removed = DefaultLocalSparseEmbedding.remove_from_cache(device=None)
+        >>> print(f"Removed: {removed}")
+        True
+        >>> info = DefaultLocalSparseEmbedding.get_cache_info()
+        >>> print(f"Cached models: {info['cached_models']}")
+        Cached models: 1
 
     See Also:
         - ``SparseEmbeddingFunction``: Base class for sparse embeddings
-        - ``DefaultSparseEmbedding``: Concrete implementation with SPLADE
-        - ``SentenceTransformerEmbeddingFunction``: Dense embedding function
+        - ``DefaultDenseEmbedding``: Dense embedding with all-MiniLM-L6-v2
+        - ``QwenDenseEmbedding``: Alternative using Qwen API
+
+    References:
+        - SPLADE Paper: https://arxiv.org/abs/2109.10086
+        - Model: https://huggingface.co/naver/splade-cocondenser-ensembledistil
     """
+
+    # Class-level model cache: {(model_name, model_source, device): model}
+    # Shared across all DefaultLocalSparseEmbedding instances to save memory
+    _model_cache: ClassVar[dict] = {}
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clear all cached SPLADE models from memory.
+
+        This is useful for:
+        - Freeing memory when models are no longer needed
+        - Forcing a fresh model reload
+        - Testing and debugging
+                Examples:
+            >>> # Clear cache to free memory
+            >>> DefaultLocalSparseEmbedding.clear_cache()
+
+            >>> # Or in tests to ensure fresh model loading
+            >>> def test_something():
+            ...     DefaultLocalSparseEmbedding.clear_cache()
+            ...     emb = DefaultLocalSparseEmbedding()
+            ...     # Test with fresh model
+        """
+        cls._model_cache.clear()
+
+    @classmethod
+    def get_cache_info(cls) -> dict:
+        """Get information about currently cached models.
+
+        Returns:
+            dict: Dictionary with cache statistics:
+                - cached_models (int): Number of cached model instances
+                - cache_keys (list): List of cache keys (model_name, model_source, device)
+
+        Examples:
+            >>> info = DefaultLocalSparseEmbedding.get_cache_info()
+            >>> print(f"Cached models: {info['cached_models']}")
+            Cached models: 2
+            >>> print(f"Cache keys: {info['cache_keys']}")
+            Cache keys: [('naver/splade-cocondenser-ensembledistil', 'huggingface', None),
+                        ('naver/splade-cocondenser-ensembledistil', 'huggingface', 'cuda')]
+        """
+        return {
+            "cached_models": len(cls._model_cache),
+            "cache_keys": list(cls._model_cache.keys()),
+        }
+
+    @classmethod
+    def remove_from_cache(
+        cls, model_source: str = "huggingface", device: Optional[str] = None
+    ) -> bool:
+        """Remove a specific model from cache.
+
+        Args:
+            model_source (str): Model source ("huggingface" or "modelscope").
+                Defaults to "huggingface".
+            device (Optional[str]): Device identifier. Defaults to None.
+
+        Returns:
+            bool: True if model was found and removed, False otherwise.
+
+        Examples:
+            >>> # Remove CPU model from cache
+            >>> removed = DefaultLocalSparseEmbedding.remove_from_cache()
+            >>> print(f"Removed: {removed}")
+            True
+
+            >>> # Remove CUDA model from cache
+            >>> removed = DefaultLocalSparseEmbedding.remove_from_cache(device="cuda")
+            >>> print(f"Removed: {removed}")
+            True
+        """
+        model_name = "naver/splade-cocondenser-ensembledistil"
+        cache_key = (model_name, model_source, device)
+
+        if cache_key in cls._model_cache:
+            del cls._model_cache[cache_key]
+            return True
+        return False
 
     def __init__(
         self,
-        model_name: str,
         model_source: Literal["huggingface", "modelscope"] = "huggingface",
         device: Optional[str] = None,
         encoding_type: Literal["query", "document"] = "query",
         **kwargs,
     ):
-        """Initialize the Sentence Transformer sparse embedding function.
+        """Initialize with SPLADE model.
 
         Args:
-            model_name (str): Model identifier or local path.
             model_source (Literal["huggingface", "modelscope"]): Model source.
+                Defaults to "huggingface".
             device (Optional[str]): Target device ("cpu", "cuda", "mps", or None).
+                Defaults to None (automatic detection).
             encoding_type (Literal["query", "document"]): Encoding type for embeddings.
+                - "query": Optimize for search queries (default)
+                - "document": Optimize for indexed documents
+                This distinction is important for asymmetric retrieval tasks.
             **kwargs: Additional parameters (reserved for future use).
+
+        Raises:
+            ImportError: If sentence-transformers is not installed.
+            ValueError: If model cannot be loaded.
+
+        Note:
+            Multiple instances with the same (model_source, device) configuration
+            will share the same underlying model to save memory. Different
+            instances can use different encoding_type settings while sharing
+            the model.
+
+            **Model Selection:**
+
+            Uses ``naver/splade-cocondenser-ensembledistil`` instead of the newer
+            ``naver/splade-v3`` because splade-v3 is a gated model requiring
+            Hugging Face authentication. The cocondenser-ensembledistil variant:
+
+            - Does not require authentication or API tokens
+            - Is immediately available for all users
+            - Provides comparable retrieval performance (~2% difference)
+            - Avoids "Access to model is restricted" errors
+
+            If you need splade-v3 and have obtained access, you can subclass
+            this class and override the model_name parameter.
+
+        Examples:
+            >>> # Both instances share the same model (saves memory)
+            >>> query_emb = DefaultLocalSparseEmbedding(encoding_type="query")
+            >>> doc_emb = DefaultLocalSparseEmbedding(encoding_type="document")
+            >>> # Only one model is loaded in memory
         """
+        # Use publicly available SPLADE model (no gated access required)
+        # Note: naver/splade-v3 requires authentication, so we use the
+        # cocondenser-ensembledistil variant which is publicly accessible
+        model_name = "naver/splade-cocondenser-ensembledistil"
+
         # Initialize base class for model loading
         SentenceTransformerFunctionBase.__init__(
             self, model_name=model_name, model_source=model_source, device=device
@@ -469,6 +732,12 @@ class SentenceTransformerSparseEmbeddingFunction(
 
         self._encoding_type = encoding_type
         self._extra_params = kwargs
+
+        # Create cache key for this model configuration
+        self._cache_key = (model_name, model_source, device)
+
+        # Load model to ensure it's available (will use cache if exists)
+        self._get_model()
 
     @property
     def extra_params(self) -> dict:
@@ -506,10 +775,7 @@ class SentenceTransformerSparseEmbeddingFunction(
 
         Examples:
             >>> # Query embedding
-            >>> query_emb = SentenceTransformerSparseEmbeddingFunction(
-            ...     model_name="naver/splade-cocondenser-ensembledistil",
-            ...     encoding_type="query"
-            ... )
+            >>> query_emb = DefaultLocalSparseEmbedding(encoding_type="query")
             >>> query_vec = query_emb.embed("machine learning")
             >>> isinstance(query_vec, dict)
             True
@@ -626,372 +892,6 @@ class SentenceTransformerSparseEmbeddingFunction(
 
             # Sort by indices (keys) to ensure consistent ordering
             return dict(sorted(sparse_dict.items()))
-
-
-class DefaultSparseEmbedding(SentenceTransformerSparseEmbeddingFunction):
-    """Default sparse embedding using SPLADE model.
-
-    This class provides sparse vector embedding using the SPLADE (SParse Lexical
-    AnD Expansion) model. SPLADE generates sparse, interpretable representations
-    where each dimension corresponds to a vocabulary term with learned importance
-    weights. It's ideal for lexical matching, BM25-style retrieval, and hybrid
-    search scenarios.
-
-    The default model is ``naver/splade-cocondenser-ensembledistil``, which is
-    publicly available without authentication. It produces sparse vectors with
-    thousands of dimensions but only hundreds of non-zero values, making them
-    efficient for storage and retrieval while maintaining strong lexical matching.
-
-    **Model Caching:**
-
-    This class uses class-level caching to share the SPLADE model across all instances
-    with the same configuration (model_source, device). This significantly reduces
-    memory usage when creating multiple instances for different encoding types
-    (query vs document).
-
-    **Cache Management:**
-
-    The class provides methods to manage the model cache:
-
-    - ``clear_cache()``: Clear all cached models to free memory
-    - ``get_cache_info()``: Get information about cached models
-    - ``remove_from_cache(model_source, device)``: Remove a specific model from cache
-
-    .. note::
-        **Why not use splade-v3?**
-
-        The newer ``naver/splade-v3`` model is gated (requires access approval).
-        We use ``naver/splade-cocondenser-ensembledistil`` instead.
-
-        **To use splade-v3 (if you have access):**
-
-        1. Request access at https://huggingface.co/naver/splade-v3
-        2. Get your Hugging Face token from https://huggingface.co/settings/tokens
-        3. Set environment variable:
-
-           .. code-block:: bash
-
-               export HF_TOKEN="your_huggingface_token"
-
-        4. Or login programmatically:
-
-           .. code-block:: python
-
-               from huggingface_hub import login
-               login(token="your_huggingface_token")
-
-        5. Then create custom embedding class:
-
-           .. code-block:: python
-
-               from zvec.extension.sentence_transformer_function import (
-                   SentenceTransformerFunctionBase
-               )
-               from zvec.extension import SparseEmbeddingFunction
-
-               class SpladeV3Embedding(
-                   SentenceTransformerFunctionBase,
-                   SparseEmbeddingFunction
-               ):
-                   def __init__(self, device=None, encoding_type="query"):
-                       model_name = "naver/splade-v3"  # Gated model
-                       super().__init__(model_name=model_name, device=device)
-                       self._encoding_type = encoding_type
-
-                   def embed(self, input):
-                       # Use same implementation as DefaultSparseEmbedding
-                       ...
-
-    Args:
-        model_source (Literal["huggingface", "modelscope"], optional): Model source.
-            Defaults to ``"huggingface"``. ModelScope support may vary for SPLADE models.
-        device (Optional[str], optional): Device to run the model on.
-            Options: ``"cpu"``, ``"cuda"``, ``"mps"`` (for Apple Silicon), or ``None``
-            for automatic detection. Defaults to ``None``.
-        encoding_type (Literal["query", "document"], optional): Encoding type.
-            - ``"query"``: Optimize for search queries (default)
-            - ``"document"``: Optimize for indexed documents
-        **kwargs: Additional parameters (currently unused, for future extension).
-
-    Attributes:
-        model_name (str): Model identifier.
-        model_source (str): The model source being used.
-        device (str): The device the model is running on.
-
-    Raises:
-        ValueError: If the model cannot be loaded or input is invalid.
-        TypeError: If input to ``embed()`` is not a string.
-        RuntimeError: If model inference fails.
-
-    Note:
-        - Requires Python 3.10, 3.11, or 3.12
-        - Requires the ``sentence-transformers`` package:
-          ``pip install sentence-transformers``
-        - First run downloads the model (~100MB) from Hugging Face
-        - Cache location: ``~/.cache/torch/sentence_transformers/``
-        - No API keys or authentication required
-        - Sparse vectors have ~30k dimensions but only ~100-200 non-zero values
-        - Best combined with dense embeddings for hybrid retrieval
-
-        **SPLADE vs Dense Embeddings:**
-
-        - **Dense**: Continuous semantic vectors, good for semantic similarity
-        - **Sparse**: Lexical keyword-based, interpretable, good for exact matching
-        - **Hybrid**: Combine both for best retrieval performance
-
-    Examples:
-        >>> # Memory-efficient: both instances share the same model (~200MB)
-        >>> from zvec.extension import DefaultSparseEmbedding
-        >>>
-        >>> # Query embedding
-        >>> query_emb = DefaultSparseEmbedding(encoding_type="query")
-        >>> query_vec = query_emb.embed("machine learning algorithms")
-        >>> type(query_vec)
-        <class 'dict'>
-        >>> len(query_vec)  # Only non-zero dimensions
-        156
-
-        >>> # Document embedding (shares model with query_emb)
-        >>> doc_emb = DefaultSparseEmbedding(encoding_type="document")
-        >>> doc_vec = doc_emb.embed("Machine learning is a subset of AI")
-        >>> # Total memory: ~200MB (not 400MB) thanks to model caching
-
-        >>> # Asymmetric retrieval example
-        >>> query_vec = query_emb.embed("what causes aging fast")
-        >>> doc_vec = doc_emb.embed(
-        ...     "UV-A light causes tanning, skin aging, and cataracts..."
-        ... )
-        >>>
-        >>> # Calculate similarity (dot product for sparse vectors)
-        >>> similarity = sum(
-        ...     query_vec.get(k, 0) * doc_vec.get(k, 0)
-        ...     for k in set(query_vec) | set(doc_vec)
-        ... )
-
-        >>> # Batch processing
-        >>> queries = ["query 1", "query 2", "query 3"]
-        >>> query_vecs = [query_emb.embed(q) for q in queries]
-        >>>
-        >>> documents = ["doc 1", "doc 2", "doc 3"]
-        >>> doc_vecs = [doc_emb.embed(d) for d in documents]
-
-        >>> # Inspecting sparse dimensions (output is sorted by indices)
-        >>> query_vec = query_emb.embed("machine learning")
-        >>> list(query_vec.items())[:5]  # First 5 dimensions (by index)
-        [(10, 0.45), (23, 0.87), (56, 0.32), (89, 1.12), (120, 0.65)]
-        >>>
-        >>> # Sort by weight to find most important terms
-        >>> sorted_by_weight = sorted(query_vec.items(), key=lambda x: x[1], reverse=True)
-        >>> top_5 = sorted_by_weight[:5]  # Top 5 most important terms
-        >>> top_5
-        [(1023, 1.45), (245, 1.23), (8901, 0.98), (5678, 0.87), (12034, 0.76)]
-
-        >>> # Using GPU for faster inference
-        >>> sparse_emb = DefaultSparseEmbedding(device="cuda")
-        >>> vector = sparse_emb.embed("natural language processing")
-
-        >>> # Hybrid retrieval example (combining dense + sparse)
-        >>> from zvec.extension import DefaultDenseEmbedding
-        >>> dense_emb = DefaultDenseEmbedding()
-        >>> sparse_emb = DefaultSparseEmbedding()
-        >>>
-        >>> query = "deep learning neural networks"
-        >>> dense_vec = dense_emb.embed(query)   # [0.1, -0.3, 0.5, ...]
-        >>> sparse_vec = sparse_emb.embed(query)  # {12: 0.8, 45: 1.2, ...}
-
-        >>> # Error handling
-        >>> try:
-        ...     sparse_emb.embed("")  # Empty string
-        ... except ValueError as e:
-        ...     print(f"Error: {e}")
-        Error: Input text cannot be empty or whitespace only
-
-        >>> # Cache management
-        >>> # Check cache status
-        >>> info = DefaultSparseEmbedding.get_cache_info()
-        >>> print(f"Cached models: {info['cached_models']}")
-        Cached models: 1
-        >>>
-        >>> # Clear cache to free memory
-        >>> DefaultSparseEmbedding.clear_cache()
-        >>> info = DefaultSparseEmbedding.get_cache_info()
-        >>> print(f"Cached models: {info['cached_models']}")
-        Cached models: 0
-        >>>
-        >>> # Remove specific model from cache
-        >>> query_emb = DefaultSparseEmbedding()  # Creates CPU model
-        >>> cuda_emb = DefaultSparseEmbedding(device="cuda")  # Creates CUDA model
-        >>> info = DefaultSparseEmbedding.get_cache_info()
-        >>> print(f"Cached models: {info['cached_models']}")
-        Cached models: 2
-        >>>
-        >>> # Remove only CPU model
-        >>> removed = DefaultSparseEmbedding.remove_from_cache(device=None)
-        >>> print(f"Removed: {removed}")
-        True
-        >>> info = DefaultSparseEmbedding.get_cache_info()
-        >>> print(f"Cached models: {info['cached_models']}")
-        Cached models: 1
-
-    See Also:
-        - ``SparseEmbeddingFunction``: Base class for sparse embeddings
-        - ``SentenceTransformerSparseEmbeddingFunction``: Base class for custom sparse models
-        - ``DefaultDenseEmbedding``: Dense embedding with all-MiniLM-L6-v2
-        - ``QwenDenseEmbedding``: Alternative using Qwen API
-
-    References:
-        - SPLADE Paper: https://arxiv.org/abs/2109.10086
-        - Model: https://huggingface.co/naver/splade-cocondenser-ensembledistil
-    """
-
-    # Class-level model cache: {(model_name, model_source, device): model}
-    # Shared across all DefaultSparseEmbedding instances to save memory
-    _model_cache: ClassVar[dict] = {}
-
-    @classmethod
-    def clear_cache(cls) -> None:
-        """Clear all cached SPLADE models from memory.
-
-        This is useful for:
-        - Freeing memory when models are no longer needed
-        - Forcing a fresh model reload
-        - Testing and debugging
-                Examples:
-            >>> # Clear cache to free memory
-            >>> DefaultSparseEmbedding.clear_cache()
-
-            >>> # Or in tests to ensure fresh model loading
-            >>> def test_something():
-            ...     DefaultSparseEmbedding.clear_cache()
-            ...     emb = DefaultSparseEmbedding()
-            ...     # Test with fresh model
-        """
-        cls._model_cache.clear()
-
-    @classmethod
-    def get_cache_info(cls) -> dict:
-        """Get information about currently cached models.
-
-        Returns:
-            dict: Dictionary with cache statistics:
-                - cached_models (int): Number of cached model instances
-                - cache_keys (list): List of cache keys (model_name, model_source, device)
-
-        Examples:
-            >>> info = DefaultSparseEmbedding.get_cache_info()
-            >>> print(f"Cached models: {info['cached_models']}")
-            Cached models: 2
-            >>> print(f"Cache keys: {info['cache_keys']}")
-            Cache keys: [('naver/splade-cocondenser-ensembledistil', 'huggingface', None),
-                        ('naver/splade-cocondenser-ensembledistil', 'huggingface', 'cuda')]
-        """
-        return {
-            "cached_models": len(cls._model_cache),
-            "cache_keys": list(cls._model_cache.keys()),
-        }
-
-    @classmethod
-    def remove_from_cache(
-        cls, model_source: str = "huggingface", device: Optional[str] = None
-    ) -> bool:
-        """Remove a specific model from cache.
-
-        Args:
-            model_source (str): Model source ("huggingface" or "modelscope").
-                Defaults to "huggingface".
-            device (Optional[str]): Device identifier. Defaults to None.
-
-        Returns:
-            bool: True if model was found and removed, False otherwise.
-
-        Examples:
-            >>> # Remove CPU model from cache
-            >>> removed = DefaultSparseEmbedding.remove_from_cache()
-            >>> print(f"Removed: {removed}")
-            True
-
-            >>> # Remove CUDA model from cache
-            >>> removed = DefaultSparseEmbedding.remove_from_cache(device="cuda")
-            >>> print(f"Removed: {removed}")
-            True
-        """
-        model_name = "naver/splade-cocondenser-ensembledistil"
-        cache_key = (model_name, model_source, device)
-
-        if cache_key in cls._model_cache:
-            del cls._model_cache[cache_key]
-            return True
-        return False
-
-    def __init__(
-        self,
-        model_source: Literal["huggingface", "modelscope"] = "huggingface",
-        device: Optional[str] = None,
-        encoding_type: Literal["query", "document"] = "query",
-        **kwargs,
-    ):
-        """Initialize with SPLADE model.
-
-        Args:
-            model_source (Literal["huggingface", "modelscope"]): Model source.
-                Defaults to "huggingface".
-            device (Optional[str]): Target device ("cpu", "cuda", "mps", or None).
-                Defaults to None (automatic detection).
-            encoding_type (Literal["query", "document"]): Encoding type for embeddings.
-                - "query": Optimize for search queries (default)
-                - "document": Optimize for indexed documents
-                This distinction is important for asymmetric retrieval tasks.
-            **kwargs: Additional parameters (reserved for future use).
-
-        Raises:
-            ImportError: If sentence-transformers is not installed.
-            ValueError: If model cannot be loaded.
-
-        Note:
-            Multiple instances with the same (model_source, device) configuration
-            will share the same underlying model to save memory. Different
-            instances can use different encoding_type settings while sharing
-            the model.
-
-            **Model Selection:**
-
-            Uses ``naver/splade-cocondenser-ensembledistil`` instead of the newer
-            ``naver/splade-v3`` because splade-v3 is a gated model requiring
-            Hugging Face authentication. The cocondenser-ensembledistil variant:
-
-            - Does not require authentication or API tokens
-            - Is immediately available for all users
-            - Provides comparable retrieval performance (~2% difference)
-            - Avoids "Access to model is restricted" errors
-
-            If you need splade-v3 and have obtained access, you can create a
-            custom embedding class (see class docstring for example code).
-
-        Examples:
-            >>> # Both instances share the same model (saves memory)
-            >>> query_emb = DefaultSparseEmbedding(encoding_type="query")
-            >>> doc_emb = DefaultSparseEmbedding(encoding_type="document")
-            >>> # Only one model is loaded in memory
-        """
-        # Use publicly available SPLADE model (no gated access required)
-        # Note: naver/splade-v3 requires authentication, so we use the
-        # cocondenser-ensembledistil variant which is publicly accessible
-        model_name = "naver/splade-cocondenser-ensembledistil"
-
-        # Initialize parent class
-        super().__init__(
-            model_name=model_name,
-            model_source=model_source,
-            device=device,
-            encoding_type=encoding_type,
-            **kwargs,
-        )
-
-        # Create cache key for this model configuration
-        self._cache_key = (model_name, model_source, device)
-
-        # Load model to ensure it's available (will use cache if exists)
-        self._get_model()
 
     def _get_model(self):
         """Load or retrieve the SPLADE model from class-level cache.

@@ -22,7 +22,7 @@ from .qwen_rerank_function import QwenReRanker
 from .rerank_function import RerankFunction as ReRanker
 from .sentence_transformer_embedding_function import (
     DefaultDenseEmbedding,
-    DefaultSparseEmbedding,
+    DefaultLocalSparseEmbedding,
     SentenceTransformerEmbeddingFunction,
 )
 from .sentence_transformer_rerank_function import DefaultLocalReRanker
@@ -31,7 +31,7 @@ __all__ = [
     "BM25EmbeddingFunction",
     "DefaultDenseEmbedding",
     "DefaultLocalReRanker",
-    "DefaultSparseEmbedding",
+    "DefaultLocalSparseEmbedding",
     "DenseEmbeddingFunction",
     "OpenAIDenseEmbedding",
     "QwenDenseEmbedding",

@@ -27,7 +27,7 @@ from zvec.extension.qwen_embedding_function import (
 from zvec.extension.bm25_embedding_function import BM25EmbeddingFunction
 from zvec.extension.sentence_transformer_embedding_function import (
     DefaultDenseEmbedding,
-    DefaultSparseEmbedding,
+    DefaultLocalSparseEmbedding,
     SentenceTransformerEmbeddingFunction,
 )
 
@@ -1057,10 +1057,10 @@ class TestDefaultDenseEmbedding:
         """Test handling of model loading failure."""
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
         mock_st = Mock()
         mock_st.SentenceTransformer.side_effect = Exception("Model not found")
         mock_require_module.return_value = mock_st
@@ -1250,13 +1250,13 @@ class TestCustomSentenceTransformerEmbedding:
 
 
 # -----------------------------------
-# DefaultSparseEmbedding Test Case
+# DefaultLocalSparseEmbedding Test Case
 # -----------------------------------
-class TestDefaultSparseEmbedding:
-    """Test suite for DefaultSparseEmbedding (SPLADE sparse embedding).
+class TestDefaultLocalSparseEmbedding:
+    """Test suite for DefaultLocalSparseEmbedding (SPLADE sparse embedding).
 
     Note:
-        DefaultSparseEmbedding uses naver/splade-cocondenser-ensembledistil
+        DefaultLocalSparseEmbedding uses naver/splade-cocondenser-ensembledistil
         instead of naver/splade-v3 because:
 
         - splade-v3 is a gated model requiring Hugging Face authentication
@@ -1271,7 +1271,7 @@ class TestDefaultSparseEmbedding:
     def test_init_success(self, mock_require_module):
         """Test successful initialization.
 
-        Verifies that DefaultSparseEmbedding initializes with the publicly
+        Verifies that DefaultLocalSparseEmbedding initializes with the publicly
         accessible naver/splade-cocondenser-ensembledistil model instead of
         the gated naver/splade-v3 model.
         """
@@ -1281,7 +1281,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
 
         assert sparse_emb.model_name == "naver/splade-cocondenser-ensembledistil"
         assert sparse_emb.model_source == "huggingface"
@@ -1301,7 +1301,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding(device="cuda")
+        sparse_emb = DefaultLocalSparseEmbedding(device="cuda")
 
         assert sparse_emb.device == "cuda"
         mock_st.SentenceTransformer.assert_called_once_with(
@@ -1318,10 +1318,10 @@ class TestDefaultSparseEmbedding:
 
         # Clear model cache to ensure fresh mock
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
         # Create a sparse matrix with specific non-zero values
         row = np.array([0, 0, 0, 0])
@@ -1341,7 +1341,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
         result = sparse_emb.embed("machine learning")
 
         # Verify result is a dictionary
@@ -1377,7 +1377,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
 
         with pytest.raises(ValueError, match="Input text cannot be empty"):
             sparse_emb.embed("")
@@ -1393,7 +1393,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
 
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             sparse_emb.embed(123)
@@ -1409,10 +1409,10 @@ class TestDefaultSparseEmbedding:
 
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
         # Create a sparse matrix
         row = np.array([0, 0, 0])
@@ -1431,7 +1431,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
 
         # Test callable interface
         result = sparse_emb("test input")
@@ -1448,10 +1448,10 @@ class TestDefaultSparseEmbedding:
         """Test handling of model loading failure."""
         # Clear model cache to ensure the test actually tries to load the model
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
         mock_st = Mock()
         mock_st.SentenceTransformer.side_effect = Exception("Model not found")
@@ -1460,17 +1460,17 @@ class TestDefaultSparseEmbedding:
         with pytest.raises(
             ValueError, match="Failed to load Sentence Transformer model"
         ):
-            DefaultSparseEmbedding()
+            DefaultLocalSparseEmbedding
 
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_inference_failure(self, mock_require_module):
         """Test handling of inference failure."""
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
         mock_st = Mock()
         mock_model = Mock()
@@ -1485,7 +1485,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
 
         with pytest.raises(RuntimeError, match="Failed to generate sparse embedding"):
             sparse_emb.embed("test input")
@@ -1498,10 +1498,10 @@ class TestDefaultSparseEmbedding:
 
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
         # Create a controlled sparse output with non-sequential indices
         row = np.array([0, 0, 0, 0, 0])
@@ -1520,7 +1520,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
         result = sparse_emb.embed("test")
 
         vocab_size = 30522
@@ -1551,10 +1551,10 @@ class TestDefaultSparseEmbedding:
 
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
         # Create sparse output with deliberately out-of-order indices
         # Non-sequential indices: 9999, 5, 1234, 77, 500
@@ -1574,7 +1574,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
         result = sparse_emb.embed("test sorting")
 
         # Extract keys from result
@@ -1615,7 +1615,7 @@ class TestDefaultSparseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        sparse_emb = DefaultSparseEmbedding(device="cuda")
+        sparse_emb = DefaultLocalSparseEmbedding(device="cuda")
         assert sparse_emb.device == "cuda"
 
     @patch("zvec.extension.sentence_transformer_function.require_module")
@@ -1636,7 +1636,7 @@ class TestDefaultSparseEmbedding:
                 lambda m: mock_st if m == "sentence_transformers" else mock_ms
             )
 
-            sparse_emb = DefaultSparseEmbedding(model_source="modelscope")
+            sparse_emb = DefaultLocalSparseEmbedding(model_source="modelscope")
 
             assert sparse_emb.model_name == "naver/splade-cocondenser-ensembledistil"
             assert sparse_emb.model_source == "modelscope"
@@ -1665,12 +1665,12 @@ class TestDefaultSparseEmbedding:
         """
         # Clear model cache to ensure fresh load
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
 
         # Test with real input
         text = "machine learning and artificial intelligence"
@@ -1701,12 +1701,12 @@ class TestDefaultSparseEmbedding:
         """Integration test with multiple different inputs."""
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
-            DefaultSparseEmbedding,
+            DefaultLocalSparseEmbedding,
         )
 
-        DefaultSparseEmbedding.clear_cache()
+        DefaultLocalSparseEmbedding.clear_cache()
 
-        sparse_emb = DefaultSparseEmbedding()
+        sparse_emb = DefaultLocalSparseEmbedding()
 
         texts = [
             "Hello, world!",
