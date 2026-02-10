@@ -105,7 +105,7 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
     const auto &sub_docs = vector_index_results->docs();
     for (size_t j = 0; j < sub_docs.size(); ++j) {
       auto doc = sub_docs[j];
-      doc.set_index(block_offset + sub_docs[j].index());
+      doc.set_key(block_offset + sub_docs[j].key());
       doc_list.emplace_back(std::move(doc));
     }
     block_offset += block_meta.doc_count_;
