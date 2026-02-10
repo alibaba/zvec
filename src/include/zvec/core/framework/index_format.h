@@ -40,8 +40,7 @@ struct IndexFormat {
     uint16_t meta_header_size;
     uint16_t meta_footer_size;
     uint32_t meta_footer_offset;
-    uint32_t content_offset;
-    uint32_t reserved2_;
+    uint64_t content_offset;
     uint64_t setup_time;
     uint64_t reserved3_[3];
   };
@@ -56,13 +55,17 @@ struct IndexFormat {
     uint32_t segments_meta_crc;
     uint32_t content_crc;
     uint32_t segment_count;
+    // meta section size
     uint32_t segments_meta_size;
     uint32_t reserved1_;
+    // segments' data section size
     uint64_t content_size;
     uint64_t content_padding_size;
+
     uint64_t check_point;
     uint64_t update_time;
-    uint64_t reserved2_[8];
+    uint64_t reserved2_[7];
+    uint64_t next_meta_header_offset;
     uint64_t total_size;
   };
 
@@ -73,6 +76,7 @@ struct IndexFormat {
    */
   struct SegmentMeta {
     uint32_t segment_id_offset;
+    // used only by immutable segments, e.g., IndexMeta, or searcher
     uint32_t data_crc;
     uint64_t data_index;
     uint64_t data_size;
@@ -153,6 +157,11 @@ struct IndexFormat {
     header->meta_footer_offset = footer_offset;
     header->content_offset = content_offset;
     header->setup_time = ailego::Realtime::Seconds();
+    header->header_crc = ailego::Crc32c::Hash(header, sizeof(MetaHeader), 0);
+  }
+
+  static void UpdateMetaHeader(MetaHeader *header) {
+    header->header_crc = 0;
     header->header_crc = ailego::Crc32c::Hash(header, sizeof(MetaHeader), 0);
   }
 

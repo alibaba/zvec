@@ -27,10 +27,14 @@ else()
 endif()
 
 # --- Dependency groups ---
+find_package(Threads REQUIRED)
+
 set(zvec_ailego_deps
     arrow
     parquet
     arrow_bundled_dependencies
+    ${CMAKE_THREAD_LIBS_INIT}
+    ${CMAKE_DL_LIBS}
 )
 
 set(zvec_core_deps
@@ -66,13 +70,17 @@ target_link_libraries(zvec-ailego INTERFACE
 add_library(zvec-core INTERFACE)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(zvec-core INTERFACE
-        "-Wl,--whole-archive,${ZVEC_LIB_DIR}/libzvec_core.a,-Wl,--no-whole-archive"
+        -Wl,--whole-archive
+        zvec_core
+        -Wl,--no-whole-archive
+        -Wl,--start-group
         zvec-ailego
         ${zvec_core_deps}
+        -Wl,--end-group
     )
 elseif(APPLE)
     target_link_libraries(zvec-core INTERFACE
-        "-Wl,-force_load,${ZVEC_LIB_DIR}/libzvec_core.a"
+        -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_core.a
         zvec-ailego
         ${zvec_core_deps}
     )
@@ -82,12 +90,23 @@ endif()
 
 # zvec_db: links libzvec_db.a + all deps
 add_library(zvec-db INTERFACE)
-target_link_libraries(zvec-db INTERFACE
-    zvec_db
-    zvec-core
-    zvec-ailego
-    ${zvec_db_deps}
-)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(zvec-db INTERFACE
+        zvec_db
+        zvec-core
+        zvec-ailego
+        -Wl,--start-group
+        ${zvec_db_deps}
+        -Wl,--end-group
+    )
+elseif(APPLE)
+    target_link_libraries(zvec-db INTERFACE
+        zvec_db
+        zvec-core
+        zvec-ailego
+        ${zvec_db_deps}
+    )
+endif()
 
 
 # --- Main executable ---

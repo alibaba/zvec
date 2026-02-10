@@ -110,8 +110,7 @@ Status GlobalConfig::Initialize(const ConfigData &config) {
   // Use atomic compare-exchange to ensure only one initialization
   bool expected = false;
   if (!initialized_.compare_exchange_strong(expected, true)) {
-    // Already initialized
-    return Status::InvalidArgument("GlobalConfig is already initialized");
+    return Status::OK();
   }
 
   auto s = Validate(config);

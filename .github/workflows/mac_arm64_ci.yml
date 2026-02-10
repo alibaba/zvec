@@ -104,3 +104,10 @@ jobs:
           cd "$CLEAN_WORKSPACE/build"
           make unittest -j 16
         shell: bash
+
+      - name: Run Cpp Examples
+        run: |
+          cd "$CLEAN_WORKSPACE/examples/c++"
+          mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j 16 && ./db-example && ./core-example && ./ailego-example
+        shell: bash

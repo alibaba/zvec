@@ -1,4 +1,4 @@
-name: Zvec LinuxX64 CI
+name: Zvec LinuxARM64 CI
 
 on:
   push:
@@ -21,8 +21,8 @@ permissions:
 
 jobs:
   build:
-    name: Zvec LinuxX64 CI
-    runs-on: linux_x64
+    name: Zvec LinuxARM64 CI
+    runs-on: linux_arm64
 
     strategy:
       matrix:
@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
 
     container:
-      image: quay.io/pypa/manylinux_2_28_x86_64:2024-03-10-4935fcc
+      image: quay.io/pypa/manylinux_2_28_aarch64:2024-03-10-4935fcc
       options: --user root
 
     steps:
@@ -88,10 +88,10 @@ jobs:
 
       - name: Run clang-format Check
         run: |
-          ${{ env.PIP_BIN }} install clang-format==18.1.8 
+          ${{ env.PIP_BIN }} install clang-format==18.1.8
           cd "$CLEAN_WORKSPACE"
           
-          
+
           CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
             ! -path "./build/*" \
             ! -path "./tests/*" \
@@ -137,7 +137,7 @@ jobs:
           cd "$CLEAN_WORKSPACE/build"
           make unittest -j$(nproc)
         shell: bash
-      
+
       - name: Run Cpp Examples
         run: |
           cd "$CLEAN_WORKSPACE/examples/c++"

@@ -7,10 +7,11 @@
 
 <p align="center">
   <a href="https://github.com/alibaba/zvec/actions/workflows/linux_x64_docker_ci.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/linux_x64_docker_ci.yml/badge.svg?branch=main" alt="Linux x64 CI"/></a>
+  <a href="https://github.com/alibaba/zvec/actions/workflows/linux_arm64_docker_ci.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/linux_arm64_docker_ci.yml/badge.svg?branch=main" alt="Linux ARM64 CI"/></a>
   <a href="https://github.com/alibaba/zvec/actions/workflows/mac_arm64_ci.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/mac_arm64_ci.yml/badge.svg?branch=main" alt="macOS ARM64 CI"/></a>
+  <br>
   <a href="https://codecov.io/github/alibaba/zvec"><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66" alt="Code Coverage"/></a>
   <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
-  <br>
   <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/pyversions/zvec.svg" alt="Python Versions"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
 </p>
@@ -46,7 +47,7 @@ pip install zvec
 
 - Python 3.10 - 3.12
 - **Supported platforms**:
-  - Linux (x86_64)
+  - Linux (x86_64/ARM64)
   - macOS (ARM64)
 
 If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/build/) guide.

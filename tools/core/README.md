@@ -10,12 +10,7 @@ This directory contains benchmarking scripts and reproducing steps.
 Please download the COHERE 10M dataset to cohere_large_10m as follows:
 
 ```bash
-neighbors_head_1p.parquet   
-neighbors_tail_1pgit.parquet   
-neighbors_labels_label_20p.parquet  
-neighbors_labels_label_50p.parquet  
-neighbors_labels_label_80p.parquet  
-neighbors_labels_label_95p.parquet             
+... ...           
 neighbors.parquet    
 shuffle_train-00-of-10.parquet     
 shuffle_train-01-of-10.parquet          
@@ -31,6 +26,18 @@ scalar_labels.parquet
 test.parquet      
 ```
 
+For convenience, we prepared a docker image with cohere bench datasets: registry.cn-hongkong.cr.aliyuncs.com/zvec/cohere-bench-data. 
+
+You can run a container as follows:
+
+```bash
+docker run -it --net=host -d -e DEBUG_MODE=true  --user root --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -v /home/zvec/:/home/zvec/  -w /home/zvec --name=cohere_bench zvec-registry.cn-hongkong.cr.aliyuncs.com/zvec/cohere-bench-data:0.0.1 bash
+
+docker exec -it cohere_bench bash
+```
+
+The datasets locate at /tmp/cohere/
+
 ### Preparing Environment 
 Clone code and init:
 ```bash
@@ -39,26 +46,8 @@ $ cd zvec
 $ git submodule update --init
 ```
 
-Make build docker image:
-```bash
-docker build -t  zvec/build-image:latest -f ./.github/workflows/docker/Dockerfile.ubuntu18.10-glibc228 .
-```
-
-Start bulld container:
-```bash
-docker run -it --net=host -d -e DEBUG_MODE=true  --user root --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -v /home/zvec/:/home/zvec/  -w /home/zvec --name=build_zvec zvec/build-image:latest bash
-```
-
-Turn-off complation option:
-```
-option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" ON)
-=>
-option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
-```
-
 Build source code:
 ```
-$ docker exec -it build_zvec bash
 $ cd /home/zvec/workspace/zvec
 $ mkdir build
 $ cd build  
@@ -77,17 +66,38 @@ Convert vector data to binary formatted file.
 /home/zvec/workspace/zvec/bin/txt2vecs -input=cohere_train_vector_10m.txt --output=cohere_train_vector_10m.zvec.vecs --dimension=768
 ```
 
+We've also prepared preprocessed binary formatted files, which can be found in the container below:
+
+```bash
+root@iZj6caifjouj5yu8xgsiysZ:/home/zvec# ls -al /tmp/cohere/*zvec 
+/tmp/cohere/cohere_large_10m_zvec:
+total 30204572
+drwxr-xr-x 2 root root        4096 Feb  5 13:12 .
+drwxr-xr-x 6 root root        4096 Feb  6 03:38 ..
+-rw-r--r-- 1 root root     8664837 Feb  5 13:06 cohere_test_vector_10m.1000.new.txt
+-rw-r--r-- 1 root root 30920004295 Feb  5 13:04 cohere_train_vector_10m.new.zvec.vecs
+-rw-r--r-- 1 root root      792835 Feb  5 13:05 neighbors.txt
+
+/tmp/cohere/cohere_medium_1m_zvec:
+total 3028688
+drwxr-xr-x 2 root root       4096 Feb  5 13:14 .
+drwxr-xr-x 6 root root       4096 Feb  6 03:38 ..
+-rw-r--r-- 1 root root    8661108 Feb  5 13:07 cohere_test_vector_1m.1000.new.txt
+-rw-r--r-- 1 root root 3092004295 Feb  5 13:08 cohere_train_vector_1m.new.zvec.vecs
+-rw-r--r-- 1 root root     692969 Feb  5 13:08 neighbors.txt
+```
+
 ### Preparing Bench Config 
 Prepare Build Config
 
 ```yaml
 BuilderCommon:
     BuilderClass: HnswStreamer
-    BuildFile: /home/zvec/bench/data/10m/cohere_train_vector_10m.zvec.vecs
+    BuildFile: /tmp/cohere/cohere_large_10m_zvec/cohere_train_vector_10m.zvec.vecs
     NeedTrain: true 
-    TrainFile: /home/zvec/bench/data/10m/cohere_train_vector_10m.zvec.vecs
-    DumpPath:  /home/zvec/bench/config/cohere_train_vector_10m.index
-    IndexPath: /home/zvec/bench/config/cohere_train_vector_10m.2.index
+    TrainFile: /tmp/cohere/cohere_large_10m_zvec/cohere_train_vector_10m.zvec.vecs
+    DumpPath:  /home/zvec/bench/config/cohere_train_vector_10m.dump.index
+    IndexPath: /home/zvec/bench/config/cohere_train_vector_10m.index
 
     ConverterName: CosineInt8Converter
     MetricName: Cosine
@@ -104,13 +114,13 @@ Prepare Search Config
 ```yaml
 SearcherCommon:
     SearcherClass: HnswStreamer
-    IndexPath: /home/zvec/bench/config/cohere_train_vector_10m.2.index
+    IndexPath: /home/zvec/bench/config/cohere_train_vector_10m.index
     TopK: 1,10,50,100 
-    QueryFile: /home/zvec/bench/data/10m/cohere_test_vector_1000.new.txt
+    QueryFile: /tmp/cohere/cohere_large_10m_zvec/cohere_test_vector_1000.new.txt
     QueryType: float 
     QueryFirstSep: ";" 
     QuerySecondSep: " "
-    GroundTruthFile: /home/zvec/bench/data/10m/neighbors.txt
+    GroundTruthFile: /tmp/cohere/cohere_large_10m_zvec/neighbors.txt
     RecallThreadCount: 1
     BenchThreadCount: 16 
     BenchIterCount: 1000000000 
