@@ -24,7 +24,7 @@ from zvec.extension.multi_vector_reranker import (
     WeightedReRanker,
 )
 from zvec.extension.sentence_transformer_rerank_function import (
-    SentenceTransformerReRanker,
+    DefaultLocalReRanker,
 )
 from zvec.extension.qwen_rerank_function import QwenReRanker
 
@@ -427,24 +427,24 @@ class TestQwenReRanker:
 
 
 # ----------------------------
-# SentenceTransformerReRanker Test Case
+# DefaultLocalReRanker Test Case
 # ----------------------------
-class TestSentenceTransformerReRanker:
-    """Test cases for SentenceTransformerReRanker."""
+class TestDefaultLocalReRanker:
+    """Test cases for DefaultLocalReRanker."""
 
     def test_init_without_query(self):
         """Test initialization fails without query."""
         with pytest.raises(
-            ValueError, match="Query is required for SentenceTransformerReRanker"
+            ValueError, match="Query is required for DefaultLocalReRanker"
         ):
-            SentenceTransformerReRanker(rerank_field="content")
+            DefaultLocalReRanker(rerank_field="content")
 
     def test_init_with_empty_query(self):
         """Test initialization fails with empty query."""
         with pytest.raises(
-            ValueError, match="Query is required for SentenceTransformerReRanker"
+            ValueError, match="Query is required for DefaultLocalReRanker"
         ):
-            SentenceTransformerReRanker(query="", rerank_field="content")
+            DefaultLocalReRanker(query="", rerank_field="content")
 
     @patch("zvec.extension.sentence_transformer_rerank_function.require_module")
     def test_init_success(self, mock_require_module):
@@ -457,7 +457,7 @@ class TestSentenceTransformerReRanker:
         mock_st.CrossEncoder.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        reranker = SentenceTransformerReRanker(
+        reranker = DefaultLocalReRanker(
             query="test query",
             topn=5,
             rerank_field="content",
@@ -481,7 +481,7 @@ class TestSentenceTransformerReRanker:
         mock_st.CrossEncoder.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        reranker = SentenceTransformerReRanker(
+        reranker = DefaultLocalReRanker(
             query="custom query",
             topn=10,
             rerank_field="title",
@@ -508,7 +508,7 @@ class TestSentenceTransformerReRanker:
         mock_require_module.return_value = mock_st
 
         with pytest.raises(ValueError, match="does not appear to be a cross-encoder"):
-            SentenceTransformerReRanker(query="test", rerank_field="content")
+            DefaultLocalReRanker(query="test", rerank_field="content")
 
     def test_query_property(self):
         """Test query property."""
@@ -522,9 +522,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
-                query="test query", rerank_field="content"
-            )
+            reranker = DefaultLocalReRanker(query="test query", rerank_field="content")
             assert reranker.query == "test query"
 
     def test_topn_property(self):
@@ -539,7 +537,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="test", topn=15, rerank_field="content"
             )
             assert reranker.topn == 15
@@ -556,7 +554,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(query="test", rerank_field="title")
+            reranker = DefaultLocalReRanker(query="test", rerank_field="title")
             assert reranker.rerank_field == "title"
 
     def test_batch_size_property(self):
@@ -571,7 +569,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="test", rerank_field="content", batch_size=128
             )
             assert reranker.batch_size == 128
@@ -588,7 +586,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(query="test", rerank_field="content")
+            reranker = DefaultLocalReRanker(query="test", rerank_field="content")
             results = reranker.rerank({})
             assert results == []
 
@@ -604,7 +602,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(query="test", rerank_field="content")
+            reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
             # Document without the rerank_field
             query_results = {"vector1": [Doc(id="1")]}
@@ -623,7 +621,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(query="test", rerank_field="content")
+            reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
             query_results = {
                 "vector1": [
@@ -654,7 +652,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="test query", topn=3, rerank_field="content"
             )
 
@@ -705,7 +703,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="test", topn=2, rerank_field="content"
             )
 
@@ -745,7 +743,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="test", topn=5, rerank_field="content"
             )
 
@@ -786,7 +784,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="test", topn=3, rerank_field="content"
             )
 
@@ -824,7 +822,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(query="test", rerank_field="content")
+            reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
             query_results = {"vector1": [Doc(id="1", fields={"content": "Document 1"})]}
 
@@ -848,7 +846,7 @@ class TestSentenceTransformerReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="test", rerank_field="content", batch_size=64
             )
 
@@ -879,7 +877,7 @@ class TestSentenceTransformerReRanker:
         download the MS MARCO MiniLM model (~80MB) on first run.
         """
         # Create reranker with real model (using default lightweight model)
-        reranker = SentenceTransformerReRanker(
+        reranker = DefaultLocalReRanker(
             query="What is machine learning?",
             topn=3,
             rerank_field="content",

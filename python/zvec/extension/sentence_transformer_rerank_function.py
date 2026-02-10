@@ -21,7 +21,7 @@ from .rerank_function import RerankFunction
 from .sentence_transformer_function import SentenceTransformerFunctionBase
 
 
-class SentenceTransformerReRanker(SentenceTransformerFunctionBase, RerankFunction):
+class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
     """Re-ranker using Sentence Transformer cross-encoder models for semantic re-ranking.
 
     This re-ranker leverages pre-trained cross-encoder models to perform deep semantic
@@ -201,7 +201,7 @@ class SentenceTransformerReRanker(SentenceTransformerFunctionBase, RerankFunctio
 
         # Validate query
         if not query:
-            raise ValueError("Query is required for SentenceTransformerReRanker")
+            raise ValueError("Query is required for DefaultLocalReRanker")
         self._query = query
         self._batch_size = batch_size
 
