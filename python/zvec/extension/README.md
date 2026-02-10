@@ -2,6 +2,18 @@
 
 This directory contains zvec's embedding and reranking function extensions. It provides multiple out-of-the-box implementations and supports custom extensions.
 
+> **Note for users in mainland China:** To download models from Hugging Face more reliably, configure the mirror endpoint before running Python:
+>
+> ```bash
+> export HF_ENDPOINT=https://hf-mirror.com
+> ```
+>
+> **Dependencies:** To run the examples in this document, install the following packages first:
+>
+> ```bash
+> pip install openai dashscope sentence-transformers
+> ```
+
 ## 📚 Table of Contents
 
 - [Overview](#overview)
@@ -76,11 +88,11 @@ similarity = np.dot(v1, v2)  # Normalized vectors, dot product = cosine similari
 print(f"Similarity: {similarity:.4f}")
 ```
 
-#### 2. QwenDenseEmbedding - Qwen API Dense Embedding
+#### 2. QwenDenseEmbedding - Dashscope API Dense Embedding
 
 Uses Qwen's Dashscope embedding API.
 
-**Note:** Requires Dashscope API key. Visit [Dashscope Console](https://dashscope.console.aliyun.com/) to get your API key.
+**Note:** Requires Dashscope API key, and **dimension must be specified explicitly**.
 
 ```python
 from zvec.extension import QwenDenseEmbedding
@@ -88,11 +100,12 @@ from zvec.extension import QwenDenseEmbedding
 # API key required
 embedding_func = QwenDenseEmbedding(
     api_key="your-dashscope-api-key",
-    model="text-embedding-v3"  # Optional, uses latest model by default
+    model="text-embedding-v4",   # Optional, uses latest model by default
+    dimension=256,               # Required: embedding dimension
 )
 
 vector = embedding_func.embed("Vector database")
-print(f"Dimensions: {embedding_func.dimension}")
+print(f"Dimensions: {embedding_func.dimension}")  # 256
 ```
 
 #### 3. OpenAIDenseEmbedding - OpenAI API Dense Embedding
@@ -104,7 +117,8 @@ from zvec.extension import OpenAIDenseEmbedding
 
 embedding_func = OpenAIDenseEmbedding(
     api_key="your-openai-api-key",
-    model="text-embedding-3-small"  # or text-embedding-3-large
+    model="text-embedding-4",  # Optional, uses latest model by default
+    dimension=256,            # Required: embedding dimension
 )
 
 vector = embedding_func.embed("Vector database")
@@ -136,12 +150,6 @@ doc_vec = doc_embedding.embed("Machine learning is a subfield of artificial inte
 print(f"Non-zero dimensions: {len(query_vec)}")
 print(f"First 5 dimensions: {list(query_vec.items())[:5]}")
 
-# Compute sparse vector similarity (dot product)
-similarity = sum(
-    query_vec.get(k, 0) * doc_vec.get(k, 0)
-    for k in set(query_vec) | set(doc_vec)
-)
-
 # Clear model cache
 DefaultLocalSparseEmbedding.clear_cache()
 ```
@@ -166,14 +174,17 @@ embedding_func = BM25EmbeddingFunction(corpus=corpus)
 query_vec = embedding_func.embed("deep learning neural networks")
 ```
 
-#### 3. QwenSparseEmbedding - Qwen API Sparse Embedding
+#### 3. QwenSparseEmbedding - Dashscope API Sparse Embedding
 
 **Note:** Requires Dashscope API key. Visit [Dashscope Console](https://dashscope.console.aliyun.com/) to get your API key.
 
 ```python
 from zvec.extension import QwenSparseEmbedding
 
-embedding_func = QwenSparseEmbedding(api_key="your-dashscope-api-key")
+embedding_func = QwenSparseEmbedding(
+    api_key="your-dashscope-api-key",
+    dimension=256,  # dashscope api required input dimension
+)
 sparse_vec = embedding_func.embed("sparse vector")
 ```
 
@@ -193,6 +204,7 @@ Uses a Cross-Encoder model for reranking.
 
 ```python
 from zvec.extension import DefaultLocalReRanker
+from zvec import Doc
 
 # Initialize reranker
 reranker = DefaultLocalReRanker(
@@ -202,40 +214,80 @@ reranker = DefaultLocalReRanker(
 )
 
 # Prepare document list
-documents = [
-    {"id": 1, "content": "Supervised learning is the most common ML algorithm"},
-    {"id": 2, "content": "Unsupervised learning discovers patterns in data"},
-    {"id": 3, "content": "Deep learning uses neural networks"},
-    {"id": 4, "content": "Reinforcement learning learns through rewards"},
-]
+documents = {
+    "vector1": [
+        Doc(
+            id="1",
+            fields={
+                "content": "Machine learning is a subset of artificial intelligence that focuses on building systems that can learn from data."
+            },
+        ),
+        Doc(
+            id="2",
+            fields={
+                "content": "The weather is nice today with clear skies and sunshine."
+            },
+        ),
+        Doc(
+            id="3",
+            fields={
+                "content": "Deep learning is a specialized branch of machine learning using neural networks with multiple layers."
+            },
+        ),
+    ],
+}
 
 # Perform reranking
 reranked_docs = reranker.rerank(documents)
 
 for doc in reranked_docs:
-    print(f"ID: {doc['id']}, Content: {doc['content']}")
+    print(doc)
 ```
 
-### 2. QwenReRanker - Qwen API Reranking
+### 2. QwenReRanker - Dashscope API Reranking
 
 **Note:** Requires Dashscope API key. Visit [Dashscope Console](https://dashscope.console.aliyun.com/) to get your API key.
 
 ```python
 from zvec.extension import QwenReRanker
+from zvec import Doc
 
 reranker = QwenReRanker(
     query="What is a vector database",
+    model="gte-rerank-v2",
     api_key="your-dashscope-api-key",
-    topn=3
+    topn=3,
+    rerank_field="content",
 )
 
-documents = [
-    {"text": "Vector databases store and retrieve vectors"},
-    {"text": "Relational databases store structured data"},
-    {"text": "Vector retrieval is based on similarity computation"},
-]
+documents = {
+    "vector1": [
+        Doc(
+            id="1",
+            fields={
+                "content": "Vector databases store and retrieve vectors"
+            },
+        ),
+        Doc(
+            id="2",
+            fields={
+                "content": "Relational databases store structured data"
+            },
+        ),
+        Doc(
+            id="3",
+            fields={
+                "content": "Vector retrieval is based on similarity computation"
+            },
+        ),
+    ],
+}
 
-reranked = reranker.rerank(documents, rerank_field="text")
+# Perform reranking
+reranked_docs = reranker.rerank(documents)
+
+for doc in reranked_docs:
+    print(doc)
 ```
 
 ### 3. RrfReRanker - Reciprocal Rank Fusion
@@ -263,23 +315,34 @@ Fuses multiple scored retrieval results according to weights. **Specifically des
 
 ```python
 from zvec.extension import WeightedReRanker
+from zvec import Doc
 
-# Prepare scored results from multiple retrieval methods
-dense_results = [
-    {"id": "A", "score": 0.9},
-    {"id": "B", "score": 0.8}
-]
-sparse_results = [
-    {"id": "B", "score": 0.95},
-    {"id": "C", "score": 0.85}
-]
+# Prepare multiple retrieval results
+documents = {
+    "vector1": [
+        Doc(
+            id="1",
+            score=0.8,
+        ),
+        Doc(
+            id="2",
+            score=0.7,
+        ),
+        Doc(
+            id="3",
+            score=0.75,
+        ),
+    ],
+}
 
 reranker = WeightedReRanker(
-    weights=[0.6, 0.4],  # Weights for each result set
+    weights=[1.0],  # Weights for each result set
     topn=3
 )
 
-fused_results = reranker.rerank([dense_results, sparse_results])
+# Fuse results
+fused_results = reranker.rerank(documents)
+print(fused_results)
 ```
 
 ---
@@ -464,7 +527,6 @@ class CustomSentenceTransformerEmbedding(
             self, 
             model_name=model_name,
             model_source=model_source,
-            device=None  # or specify device
         )
         
         self._normalize_embeddings = normalize_embeddings
@@ -964,7 +1026,7 @@ from zvec.extension import DefaultLocalDenseEmbedding
 # Option 1: Use ModelScope
 embedding = DefaultLocalDenseEmbedding(model_source="modelscope")
 
-# Option 2: Use Hugging Face mirror
+# Option 2: Use Hugging Face mirror in Python
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 embedding = DefaultLocalDenseEmbedding(model_source="huggingface")
 ```
