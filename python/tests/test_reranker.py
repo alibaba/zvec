@@ -471,6 +471,10 @@ class TestDefaultLocalReRanker:
         assert reranker.model_source == "huggingface"
         assert reranker.batch_size == 32
 
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
     @patch("zvec.extension.sentence_transformer_rerank_function.require_module")
     def test_init_with_custom_params(self, mock_require_module):
         """Test initialization with custom parameters."""

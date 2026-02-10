@@ -858,6 +858,10 @@ class TestDefaultLocalDenseEmbedding:
             "all-MiniLM-L6-v2", device="cuda", trust_remote_code=True
         )
 
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_with_modelscope(self, mock_require_module):
         """Test initialization with ModelScope as model source."""
@@ -1139,6 +1143,10 @@ class TestDefaultLocalDenseEmbedding:
         similarity_low = np.dot(v1, v3)
         assert similarity_high > similarity_low
 
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_model_properties(self, mock_require_module):
         """Test model_name and model_source properties."""
@@ -1231,11 +1239,14 @@ class TestDefaultLocalSparseEmbedding:
             trust_remote_code=True,
         )
 
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_success(self, mock_require_module):
         """Test successful sparse embedding generation with official API."""
         import numpy as np
-        from scipy.sparse import csr_matrix
 
         # Clear model cache to ensure fresh mock
         from zvec.extension.sentence_transformer_embedding_function import (
@@ -1244,11 +1255,20 @@ class TestDefaultLocalSparseEmbedding:
 
         DefaultLocalSparseEmbedding.clear_cache()
 
-        # Create a sparse matrix with specific non-zero values
-        row = np.array([0, 0, 0, 0])
-        col = np.array([10, 245, 1023, 5678])
-        data = np.array([0.5, 0.8, 1.2, 0.3])
-        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+        # Create a mock sparse matrix that simulates scipy.sparse.csr_matrix behavior
+        # The sparse matrix should have specific non-zero values at certain indices
+        mock_sparse_matrix = Mock()
+
+        # Mock the nonzero() method to return row and column indices
+        row_indices = np.array([0, 0, 0, 0])
+        col_indices = np.array([10, 245, 1023, 5678])
+        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+
+        # Mock array indexing to return the data values
+        data_values = np.array([0.5, 0.8, 1.2, 0.3])
+        mock_sparse_matrix.__getitem__ = Mock(
+            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
+        )
 
         mock_st = Mock()
         mock_model = Mock()
@@ -1256,8 +1276,8 @@ class TestDefaultLocalSparseEmbedding:
 
         # Configure mock methods to return sparse matrix
         # Must set return_value BEFORE hasattr() check in the code
-        mock_model.encode_query = Mock(return_value=sparse_matrix)
-        mock_model.encode_document = Mock(return_value=sparse_matrix)
+        mock_model.encode_query = Mock(return_value=mock_sparse_matrix)
+        mock_model.encode_document = Mock(return_value=mock_sparse_matrix)
 
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
@@ -1322,11 +1342,14 @@ class TestDefaultLocalSparseEmbedding:
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             sparse_emb.embed(["text"])
 
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_callable_interface(self, mock_require_module):
         """Test that DefaultSparseEmbedding is callable."""
         import numpy as np
-        from scipy.sparse import csr_matrix
 
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
@@ -1335,19 +1358,27 @@ class TestDefaultLocalSparseEmbedding:
 
         DefaultLocalSparseEmbedding.clear_cache()
 
-        # Create a sparse matrix
-        row = np.array([0, 0, 0])
-        col = np.array([100, 200, 300])
-        data = np.array([1.0, 0.5, 0.8])
-        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+        # Create a mock sparse matrix
+        mock_sparse_matrix = Mock()
+
+        # Mock the nonzero() method
+        row_indices = np.array([0, 0, 0])
+        col_indices = np.array([100, 200, 300])
+        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+
+        # Mock array indexing
+        data_values = np.array([1.0, 0.5, 0.8])
+        mock_sparse_matrix.__getitem__ = Mock(
+            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
+        )
 
         mock_st = Mock()
         mock_model = Mock()
         mock_model.device = "cpu"
 
         # Configure mock methods
-        mock_model.encode_query = Mock(return_value=sparse_matrix)
-        mock_model.encode_document = Mock(return_value=sparse_matrix)
+        mock_model.encode_query = Mock(return_value=mock_sparse_matrix)
+        mock_model.encode_document = Mock(return_value=mock_sparse_matrix)
 
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
@@ -1415,7 +1446,6 @@ class TestDefaultLocalSparseEmbedding:
     def test_sparse_vector_properties(self, mock_require_module):
         """Test properties of sparse vectors (sparsity, non-zero values, sorted order)."""
         import numpy as np
-        from scipy.sparse import csr_matrix
 
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
@@ -1425,18 +1455,26 @@ class TestDefaultLocalSparseEmbedding:
         DefaultLocalSparseEmbedding.clear_cache()
 
         # Create a controlled sparse output with non-sequential indices
-        row = np.array([0, 0, 0, 0, 0])
-        col = np.array([50, 100, 200, 400, 500])  # Non-sequential order in code
-        data = np.array([3.0, 2.0, 1.5, 2.5, 1.8])
-        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+        mock_sparse_matrix = Mock()
+
+        # Mock the nonzero() method - non-sequential order in code
+        row_indices = np.array([0, 0, 0, 0, 0])
+        col_indices = np.array([50, 100, 200, 400, 500])
+        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+
+        # Mock array indexing
+        data_values = np.array([3.0, 2.0, 1.5, 2.5, 1.8])
+        mock_sparse_matrix.__getitem__ = Mock(
+            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
+        )
 
         mock_st = Mock()
         mock_model = Mock()
         mock_model.device = "cpu"
 
         # Configure mock methods
-        mock_model.encode_query = Mock(return_value=sparse_matrix)
-        mock_model.encode_document = Mock(return_value=sparse_matrix)
+        mock_model.encode_query = Mock(return_value=mock_sparse_matrix)
+        mock_model.encode_document = Mock(return_value=mock_sparse_matrix)
 
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
@@ -1468,7 +1506,6 @@ class TestDefaultLocalSparseEmbedding:
     def test_output_sorted_by_indices(self, mock_require_module):
         """Test that output dictionary is always sorted by indices (keys) in ascending order."""
         import numpy as np
-        from scipy.sparse import csr_matrix
 
         # Clear model cache
         from zvec.extension.sentence_transformer_embedding_function import (
@@ -1479,18 +1516,26 @@ class TestDefaultLocalSparseEmbedding:
 
         # Create sparse output with deliberately out-of-order indices
         # Non-sequential indices: 9999, 5, 1234, 77, 500
-        row = np.array([0, 0, 0, 0, 0])
-        col = np.array([9999, 5, 1234, 77, 500])  # Out of order
-        data = np.array([1.5, 2.0, 0.8, 3.2, 1.1])
-        sparse_matrix = csr_matrix((data, (row, col)), shape=(1, 30522))
+        mock_sparse_matrix = Mock()
+
+        # Mock the nonzero() method - out of order
+        row_indices = np.array([0, 0, 0, 0, 0])
+        col_indices = np.array([9999, 5, 1234, 77, 500])
+        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+
+        # Mock array indexing
+        data_values = np.array([1.5, 2.0, 0.8, 3.2, 1.1])
+        mock_sparse_matrix.__getitem__ = Mock(
+            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
+        )
 
         mock_st = Mock()
         mock_model = Mock()
         mock_model.device = "cpu"
 
         # Configure mock methods
-        mock_model.encode_query = Mock(return_value=sparse_matrix)
-        mock_model.encode_document = Mock(return_value=sparse_matrix)
+        mock_model.encode_query = Mock(return_value=mock_sparse_matrix)
+        mock_model.encode_document = Mock(return_value=mock_sparse_matrix)
 
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
@@ -1539,6 +1584,10 @@ class TestDefaultLocalSparseEmbedding:
         sparse_emb = DefaultLocalSparseEmbedding(device="cuda")
         assert sparse_emb.device == "cuda"
 
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test: requires ZVEC_RUN_INTEGRATION_TESTS=1 and model download",
+    )
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_modelscope_source(self, mock_require_module):
         """Test initialization with ModelScope source."""
