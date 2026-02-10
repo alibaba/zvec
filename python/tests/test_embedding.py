@@ -26,9 +26,8 @@ from zvec.extension.qwen_embedding_function import (
 )
 from zvec.extension.bm25_embedding_function import BM25EmbeddingFunction
 from zvec.extension.sentence_transformer_embedding_function import (
-    DefaultDenseEmbedding,
+    DefaultLocalDenseEmbedding,
     DefaultLocalSparseEmbedding,
-    SentenceTransformerEmbeddingFunction,
 )
 
 # Environment variable to control integration tests
@@ -816,10 +815,10 @@ class TestOpenAIDenseEmbedding:
 
 
 # ----------------------------
-# DefaultDenseEmbedding Test Case
+# DefaultLocalDenseEmbedding Test Case
 # ----------------------------
-class TestDefaultDenseEmbedding:
-    """Test cases for DefaultDenseEmbedding."""
+class TestDefaultLocalDenseEmbedding:
+    """Test cases for DefaultLocalDenseEmbedding."""
 
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_init_success(self, mock_require_module):
@@ -833,7 +832,7 @@ class TestDefaultDenseEmbedding:
         mock_require_module.return_value = mock_st
 
         # Initialize embedding function
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
 
         # Assertions
         assert emb_func.dimension == 384
@@ -854,7 +853,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding(device="cuda")
+        emb_func = DefaultLocalDenseEmbedding(device="cuda")
 
         assert emb_func.device == "cuda"
         mock_st.SentenceTransformer.assert_called_once_with(
@@ -885,7 +884,7 @@ class TestDefaultDenseEmbedding:
             "modelscope.hub.snapshot_download.snapshot_download",
             return_value="/path/to/cached/model",
         ):
-            emb_func = DefaultDenseEmbedding(model_source="modelscope")
+            emb_func = DefaultLocalDenseEmbedding(model_source="modelscope")
 
         # Assertions
         assert emb_func.dimension == 384
@@ -902,7 +901,7 @@ class TestDefaultDenseEmbedding:
         mock_require_module.return_value = mock_st
 
         with pytest.raises(ValueError, match="Invalid model_source"):
-            DefaultDenseEmbedding(model_source="invalid_source")
+            DefaultLocalDenseEmbedding(model_source="invalid_source")
 
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_success(self, mock_require_module):
@@ -920,7 +919,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
         result = emb_func.embed("Hello, world!")
 
         # Assertions
@@ -951,7 +950,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding(normalize_embeddings=True)
+        emb_func = DefaultLocalDenseEmbedding(normalize_embeddings=True)
         result = emb_func.embed("Test sentence")
 
         # Check if vector is normalized (L2 norm should be close to 1.0)
@@ -968,7 +967,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
 
         with pytest.raises(ValueError, match="Input text cannot be empty"):
             emb_func.embed("")
@@ -985,7 +984,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
 
         with pytest.raises(TypeError, match="Expected 'input' to be str"):
             emb_func.embed(123)
@@ -1008,7 +1007,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
 
         # Test calling the function directly
         result = emb_func("Test text")
@@ -1040,7 +1039,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
 
         v1 = emb_func.embed("The cat sits on the mat")
         v2 = emb_func.embed("A feline rests on a rug")
@@ -1068,7 +1067,7 @@ class TestDefaultDenseEmbedding:
         with pytest.raises(
             ValueError, match="Failed to load Sentence Transformer model"
         ):
-            DefaultDenseEmbedding()
+            DefaultLocalDenseEmbedding()
 
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_modelscope_import_error(self, mock_require_module):
@@ -1086,7 +1085,7 @@ class TestDefaultDenseEmbedding:
         with pytest.raises(
             ImportError, match="ModelScope support requires the 'modelscope' package"
         ):
-            DefaultDenseEmbedding(model_source="modelscope")
+            DefaultLocalDenseEmbedding(model_source="modelscope")
 
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_embed_dimension_mismatch(self, mock_require_module):
@@ -1104,7 +1103,7 @@ class TestDefaultDenseEmbedding:
         mock_st.SentenceTransformer.return_value = mock_model
         mock_require_module.return_value = mock_st
 
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
 
         with pytest.raises(ValueError, match="Dimension mismatch"):
             emb_func.embed("Test text")
@@ -1121,7 +1120,7 @@ class TestDefaultDenseEmbedding:
 
         Note: First run will download the model (~80MB).
         """
-        emb_func = DefaultDenseEmbedding()
+        emb_func = DefaultLocalDenseEmbedding()
 
         # Test basic embedding
         vector = emb_func.embed("Hello, world!")
@@ -1142,82 +1141,6 @@ class TestDefaultDenseEmbedding:
         similarity_low = np.dot(v1, v3)
         assert similarity_high > similarity_low
 
-
-# ----------------------------
-# Custom SentenceTransformerEmbeddingFunction Test
-# ----------------------------
-class TestCustomSentenceTransformerEmbedding:
-    """Test cases for custom subclasses of SentenceTransformerEmbeddingFunction."""
-
-    @patch("zvec.extension.sentence_transformer_function.require_module")
-    def test_custom_model_inheritance(self, mock_require_module):
-        """Test creating a custom embedding function with different model."""
-
-        # Create a custom embedding class
-        class CustomEmbedding(SentenceTransformerEmbeddingFunction):
-            def __init__(self, device=None):
-                super().__init__(
-                    model_name="all-mpnet-base-v2",
-                    device=device,
-                    normalize_embeddings=True,
-                    batch_size=64,
-                )
-
-        mock_st = Mock()
-        mock_model = Mock()
-        mock_model.get_sentence_embedding_dimension.return_value = 768
-        mock_model.device = "cpu"
-        mock_st.SentenceTransformer.return_value = mock_model
-        mock_require_module.return_value = mock_st
-
-        custom_emb = CustomEmbedding()
-
-        assert custom_emb.dimension == 768
-        assert custom_emb.model_name == "all-mpnet-base-v2"
-        mock_st.SentenceTransformer.assert_called_once_with(
-            "all-mpnet-base-v2", device=None, trust_remote_code=True
-        )
-
-    @patch("zvec.extension.sentence_transformer_function.require_module")
-    def test_custom_chinese_model_with_modelscope(self, mock_require_module):
-        """Test creating a custom Chinese embedding function with ModelScope."""
-
-        # Create a custom Chinese embedding class
-        class ChineseEmbedding(SentenceTransformerEmbeddingFunction):
-            def __init__(self, device=None):
-                super().__init__(
-                    model_name="iic/nlp_gte_sentence-embedding_chinese-small",
-                    model_source="modelscope",
-                    device=device,
-                    normalize_embeddings=True,
-                )
-
-        mock_st = Mock()
-        mock_ms = Mock()
-        mock_model = Mock()
-        mock_model.get_sentence_embedding_dimension.return_value = 384
-        mock_model.device = "cpu"
-        mock_st.SentenceTransformer.return_value = mock_model
-
-        def require_module_side_effect(module_name):
-            if module_name == "sentence_transformers":
-                return mock_st
-            elif module_name == "modelscope":
-                return mock_ms
-            raise ImportError(f"No module named '{module_name}'")
-
-        mock_require_module.side_effect = require_module_side_effect
-
-        with patch(
-            "modelscope.hub.snapshot_download.snapshot_download",
-            return_value="/path/to/cached/chinese/model",
-        ):
-            chinese_emb = ChineseEmbedding()
-
-        assert chinese_emb.dimension == 384
-        assert chinese_emb.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
-        assert chinese_emb.model_source == "modelscope"
-
     @patch("zvec.extension.sentence_transformer_function.require_module")
     def test_model_properties(self, mock_require_module):
         """Test model_name and model_source properties."""
@@ -1229,7 +1152,7 @@ class TestCustomSentenceTransformerEmbedding:
         mock_require_module.return_value = mock_st
 
         # Test Hugging Face
-        emb_func_hf = DefaultDenseEmbedding(model_source="huggingface")
+        emb_func_hf = DefaultLocalDenseEmbedding(model_source="huggingface")
         assert emb_func_hf.model_name == "all-MiniLM-L6-v2"
         assert emb_func_hf.model_source == "huggingface"
 
@@ -1242,7 +1165,7 @@ class TestCustomSentenceTransformerEmbedding:
             mock_require_module.side_effect = (
                 lambda m: mock_st if m == "sentence_transformers" else mock_ms
             )
-            emb_func_ms = DefaultDenseEmbedding(model_source="modelscope")
+            emb_func_ms = DefaultLocalDenseEmbedding(model_source="modelscope")
             assert (
                 emb_func_ms.model_name == "iic/nlp_gte_sentence-embedding_chinese-small"
             )
