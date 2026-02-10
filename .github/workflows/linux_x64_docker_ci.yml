@@ -131,9 +131,16 @@ jobs:
           ${{ env.PYTHON_BIN }} -m pytest python/tests/ --cov=zvec --cov-report=xml --no-cov-on-fail
         shell: bash
 
-      - name: Run Cpp Tests with Coverage
+      - name: Run Cpp Tests
         run: |
           ${{ env.PIP_BIN }} install pybind11==3.0
           cd "$CLEAN_WORKSPACE/build"
           make unittest -j$(nproc)
+        shell: bash
+      
+      - name: Run Cpp Examples
+        run: |
+          cd "$CLEAN_WORKSPACE/examples/c++"
+          mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j $(nproc) && ./db-example && ./core-example && ./ailego-example
         shell: bash

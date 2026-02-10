@@ -66,7 +66,7 @@ class Bench {
 
     if (!reader.load_query(query_file, first_sep, second_sep, queries,
                            sparse_data, taglists)) {
-      cerr << "Load query error" << endl;
+      LOG_ERROR("Load query error");
       return false;
     }
 
@@ -134,7 +134,7 @@ class Bench {
     } else if (typeid(T) == typeid(int8_t)) {
       qmeta_.set_meta(IndexMeta::DataType::DT_INT8, dim_);
     } else {
-      cerr << "unsupported type";
+      LOG_ERROR("unsupported type");
       return false;
     }
 
@@ -195,14 +195,14 @@ class Bench {
       std::shared_ptr<IndexFilter> filter_ptr = nullptr;
       if (filter_mode_ == FM_TAG) {
         if (batch_taglists_[idx].size() != 1) {
-          cerr << "query tag list not equal to one!" << endl;
+          LOG_ERROR("query tag list not equal to one!");
           return;
         }
 
         int ret = filter_cache.filter(id_to_tags_list_, batch_taglists_[idx][0],
                                       tag_key_list_);
         if (ret != 0) {
-          cerr << "prefilter failed, idx: " << idx << std::endl;
+          LOG_ERROR("prefilter failed, idx: %d", idx);
           return;
         }
 
@@ -227,13 +227,13 @@ class Bench {
         }
 
         if (ret != 0) {
-          cerr << "Failed to knn search, ret=" << ret << " "
-               << IndexError::What(ret) << endl;
+          LOG_ERROR("Failed to knn search, ret=%d %s", ret,
+                    IndexError::What(ret));
           return;
         }
       } else {
         std::string mode = retrieval_mode_ == 1 ? "Dense" : "Sparse";
-        cerr << "unsupported retrieval mode: " << mode << endl;
+        LOG_ERROR("unsupported retrieval mode: %s", mode.c_str());
       }
 
       uint64_t end = Monotime::MicroSeconds();
@@ -262,7 +262,7 @@ class Bench {
     }
 
     if (search_result.doc_list_.empty()) {
-      cerr << "Search results is empty" << endl;
+      LOG_ERROR("Search results is empty");
     }
 
     return 0;
@@ -291,7 +291,7 @@ class Bench {
       }
 
       if (search_result.doc_list_.empty()) {
-        cerr << "Search results is empty for batch query " << i << endl;
+        LOG_ERROR("Search results is empty for batch query %zu", i);
       }
     }
 
@@ -370,7 +370,7 @@ class SparseBench {
 
     if (!reader.load_query(query_file, first_sep, second_sep, queries,
                            sparse_data, taglists)) {
-      cerr << "Load query error" << endl;
+      LOG_ERROR("Load query error");
       return false;
     }
 
@@ -431,7 +431,7 @@ class SparseBench {
     } else if (typeid(T) == typeid(int8_t)) {
       qmeta_.set_data_type(IndexMeta::DataType::DT_INT8);
     } else {
-      cerr << "unsupported type";
+      LOG_ERROR("unsupported type");
       return false;
     }
 
@@ -494,14 +494,14 @@ class SparseBench {
       std::shared_ptr<IndexFilter> filter_ptr = nullptr;
       if (filter_mode_ == FM_TAG) {
         if (batch_taglists_[idx].size() != 1) {
-          cerr << "query tag list not equal to one!" << endl;
+          LOG_ERROR("query tag list not equal to one!");
           return;
         }
 
         int ret = filter_cache.filter(id_to_tags_list_, batch_taglists_[idx][0],
                                       tag_key_list_);
         if (ret != 0) {
-          cerr << "prefilter failed, idx: " << idx << std::endl;
+          LOG_ERROR("prefilter failed, idx: %d", idx);
           return;
         }
 
@@ -519,8 +519,7 @@ class SparseBench {
       int ret;
       if (batch_count_ == 1) {
         if (batch_sparse_counts_[idx].size() != 1) {
-          cerr << "Sparse count size should be 1, since batch count is 1"
-               << endl;
+          LOG_ERROR("Sparse count size should be 1, since batch count is 1");
           return;
         }
         ret = do_knn_search<T>(index, batch_sparse_counts_[idx][0],
@@ -533,8 +532,8 @@ class SparseBench {
       }
 
       if (ret != 0) {
-        cerr << "Failed to sparse knn search, ret=" << ret << " "
-             << IndexError::What(ret) << endl;
+        LOG_ERROR("Failed to sparse knn search, ret=%d %s", ret,
+                  IndexError::What(ret));
         return;
       }
 
@@ -567,7 +566,7 @@ class SparseBench {
     }
 
     if (search_result.doc_list_.empty()) {
-      cerr << "Search results is empty" << endl;
+      LOG_ERROR("Search results is empty");
     }
 
     return 0;
@@ -617,7 +616,7 @@ class SparseBench {
       }
 
       if (search_result.doc_list_.empty()) {
-        cerr << "Search results is empty for batch query " << i << endl;
+        LOG_ERROR("Search results is empty for batch query %zu", i);
       }
     }
 
@@ -666,33 +665,33 @@ bool SparseBench<T>::STOP_NOW = false;
 bool check_config(YAML::Node &config_node) {
   auto common = config_node["IndexCommon"];
   if (!common) {
-    cerr << "Can not find [IndexCommon] in config" << endl;
+    LOG_ERROR("Can not find [IndexCommon] in config");
     return false;
   }
   if (!common["IndexConfig"]) {
-    cerr << "Can not find [IndexConfig] in config" << endl;
+    LOG_ERROR("Can not find [IndexConfig] in config");
     return false;
   }
   if (!common["IndexPath"]) {
-    cerr << "Can not find [IndexPath] in config" << endl;
+    LOG_ERROR("Can not find [IndexPath] in config");
     return false;
   }
   if (!common["TopK"]) {
-    cerr << "Can not find [TopK] in config" << endl;
+    LOG_ERROR("Can not find [TopK] in config");
     return false;
   }
   if (!common["QueryFile"]) {
-    cerr << "Can not find [QueryFile] in config" << endl;
+    LOG_ERROR("Can not find [QueryFile] in config");
     return false;
   }
 
   auto query_config = config_node["QueryConfig"];
   if (!query_config) {
-    cerr << "Can not find [QueryConfig] in config" << endl;
+    LOG_ERROR("Can not find [QueryConfig] in config");
     return false;
   }
   if (!query_config["QueryParam"]) {
-    cerr << "Can not find [QueryConfig.QueryParam] in config" << endl;
+    LOG_ERROR("Can not find [QueryConfig.QueryParam] in config");
     return false;
   }
 
@@ -713,7 +712,7 @@ int bench(std::string &query_type, size_t thread_count, size_t batch_count,
           string &index_dir, RetrievalMode retrieval_mode,
           FilterMode filter_mode) {
   if (filter_mode == FM_TAG && batch_count > 1) {
-    cerr << "filter mode can not be run in batch mode" << endl;
+    LOG_ERROR("filter mode can not be run in batch mode");
     return -1;
   }
 
@@ -747,7 +746,7 @@ int bench(std::string &query_type, size_t thread_count, size_t batch_count,
     bench.set_tag_lists(id_to_tags_list, tag_key_list);
     bench.run(index, query_param, iter_count, top_k);
   } else {
-    cerr << "Can not recognize type: " << query_type << endl;
+    LOG_ERROR("Can not recognize type: %s", query_type.c_str());
   }
 
   return 0;
@@ -760,7 +759,7 @@ int bench_sparse(std::string &query_type, size_t thread_count,
                  core_interface::BaseIndexQueryParam::Pointer query_param,
                  string &index_dir, FilterMode filter_mode) {
   if (filter_mode == FM_TAG && batch_count > 1) {
-    cerr << "filter mode can not be run in batch mode" << endl;
+    LOG_ERROR("filter mode can not be run in batch mode");
     return -1;
   }
 
@@ -782,7 +781,7 @@ int bench_sparse(std::string &query_type, size_t thread_count,
     bench.set_tag_lists(id_to_tags_list, tag_key_list);
     bench.run(index, query_param, iter_count, top_k);
   } else {
-    cerr << "Can not recognize type: " << query_type << endl;
+    LOG_ERROR("Can not recognize type: %s", query_type.c_str());
   }
 
   return 0;
@@ -798,8 +797,7 @@ int main(int argc, char *argv[]) {
   std::string error;
   for (int i = 2; i < argc; ++i) {
     if (!broker.emplace(argv[i], &error)) {
-      cerr << "Failed to load plugin: " << argv[i] << " (" << error << ")"
-           << endl;
+      LOG_ERROR("Failed to load plugin: %s (%s)", argv[i], error.c_str());
       return -1;
     }
   }
@@ -808,7 +806,7 @@ int main(int argc, char *argv[]) {
   try {
     config_node = YAML::LoadFile(argv[1]);
   } catch (...) {
-    cerr << "Load YAML file[" << argv[1] << "] failed!" << endl;
+    LOG_ERROR("Load YAML file[%s] failed!", argv[1]);
     return -1;
   }
 
@@ -888,7 +886,7 @@ int main(int argc, char *argv[]) {
   core_interface::BaseIndexQueryParam::Pointer query_param;
   if (0 !=
       parse_and_load_index_param(config_node, index_dir, index, query_param)) {
-    cerr << "Failed to parse and load index param" << endl;
+    LOG_ERROR("Failed to parse and load index param");
     return -1;
   }
 

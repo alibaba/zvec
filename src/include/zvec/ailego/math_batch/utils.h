@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 namespace zvec::ailego::DistanceBatch {
 
 typedef void (*DistanceBatchQueryPreprocessFunc)(void *query, size_t dim);
