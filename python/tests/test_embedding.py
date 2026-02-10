@@ -1255,20 +1255,28 @@ class TestDefaultLocalSparseEmbedding:
 
         DefaultLocalSparseEmbedding.clear_cache()
 
-        # Create a mock sparse matrix that simulates scipy.sparse.csr_matrix behavior
-        # The sparse matrix should have specific non-zero values at certain indices
+        # Create a mock sparse matrix that simulates scipy.sparse behavior
+        # The code will call: sparse_matrix[0].toarray().flatten()
         mock_sparse_matrix = Mock()
 
-        # Mock the nonzero() method to return row and column indices
-        row_indices = np.array([0, 0, 0, 0])
-        col_indices = np.array([10, 245, 1023, 5678])
-        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+        # Create a dense array representation with vocab_size=30522
+        vocab_size = 30522
+        dense_array = np.zeros(vocab_size)
+        # Set specific non-zero values at indices [10, 245, 1023, 5678]
+        dense_array[10] = 0.5
+        dense_array[245] = 0.8
+        dense_array[1023] = 1.2
+        dense_array[5678] = 0.3
 
-        # Mock array indexing to return the data values
-        data_values = np.array([0.5, 0.8, 1.2, 0.3])
-        mock_sparse_matrix.__getitem__ = Mock(
-            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
-        )
+        # Mock the method chain: sparse_matrix[0].toarray().flatten()
+        mock_row = Mock()
+        mock_dense = Mock()
+        mock_row.toarray.return_value = mock_dense
+        mock_dense.flatten.return_value = dense_array
+        mock_sparse_matrix.__getitem__ = Mock(return_value=mock_row)
+
+        # Also mock hasattr check for 'toarray'
+        mock_sparse_matrix.toarray = Mock()
 
         mock_st = Mock()
         mock_model = Mock()
@@ -1361,16 +1369,23 @@ class TestDefaultLocalSparseEmbedding:
         # Create a mock sparse matrix
         mock_sparse_matrix = Mock()
 
-        # Mock the nonzero() method
-        row_indices = np.array([0, 0, 0])
-        col_indices = np.array([100, 200, 300])
-        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+        # Create a dense array representation with vocab_size=30522
+        vocab_size = 30522
+        dense_array = np.zeros(vocab_size)
+        # Set specific non-zero values at indices [100, 200, 300]
+        dense_array[100] = 1.0
+        dense_array[200] = 0.5
+        dense_array[300] = 0.8
 
-        # Mock array indexing
-        data_values = np.array([1.0, 0.5, 0.8])
-        mock_sparse_matrix.__getitem__ = Mock(
-            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
-        )
+        # Mock the method chain: sparse_matrix[0].toarray().flatten()
+        mock_row = Mock()
+        mock_dense = Mock()
+        mock_row.toarray.return_value = mock_dense
+        mock_dense.flatten.return_value = dense_array
+        mock_sparse_matrix.__getitem__ = Mock(return_value=mock_row)
+
+        # Also mock hasattr check for 'toarray'
+        mock_sparse_matrix.toarray = Mock()
 
         mock_st = Mock()
         mock_model = Mock()
@@ -1454,19 +1469,29 @@ class TestDefaultLocalSparseEmbedding:
 
         DefaultLocalSparseEmbedding.clear_cache()
 
-        # Create a controlled sparse output with non-sequential indices
+        # Create a mock sparse matrix that simulates scipy.sparse behavior
+        # The code will call: sparse_matrix[0].toarray().flatten()
         mock_sparse_matrix = Mock()
 
-        # Mock the nonzero() method - non-sequential order in code
-        row_indices = np.array([0, 0, 0, 0, 0])
-        col_indices = np.array([50, 100, 200, 400, 500])
-        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+        # Create a dense array representation with vocab_size=30522
+        vocab_size = 30522
+        dense_array = np.zeros(vocab_size)
+        # Set specific non-zero values at indices [50, 100, 200, 400, 500]
+        dense_array[50] = 3.0
+        dense_array[100] = 2.0
+        dense_array[200] = 1.5
+        dense_array[400] = 2.5
+        dense_array[500] = 1.8
 
-        # Mock array indexing
-        data_values = np.array([3.0, 2.0, 1.5, 2.5, 1.8])
-        mock_sparse_matrix.__getitem__ = Mock(
-            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
-        )
+        # Mock the method chain: sparse_matrix[0].toarray().flatten()
+        mock_row = Mock()
+        mock_dense = Mock()
+        mock_row.toarray.return_value = mock_dense
+        mock_dense.flatten.return_value = dense_array
+        mock_sparse_matrix.__getitem__ = Mock(return_value=mock_row)
+
+        # Also mock hasattr check for 'toarray'
+        mock_sparse_matrix.toarray = Mock()
 
         mock_st = Mock()
         mock_model = Mock()
@@ -1482,7 +1507,6 @@ class TestDefaultLocalSparseEmbedding:
         sparse_emb = DefaultLocalSparseEmbedding()
         result = sparse_emb.embed("test")
 
-        vocab_size = 30522
         # Verify sparsity: result should have much fewer dimensions than vocab_size
         assert len(result) < vocab_size
         # All values should be positive
@@ -1518,16 +1542,25 @@ class TestDefaultLocalSparseEmbedding:
         # Non-sequential indices: 9999, 5, 1234, 77, 500
         mock_sparse_matrix = Mock()
 
-        # Mock the nonzero() method - out of order
-        row_indices = np.array([0, 0, 0, 0, 0])
-        col_indices = np.array([9999, 5, 1234, 77, 500])
-        mock_sparse_matrix.nonzero.return_value = (row_indices, col_indices)
+        # Create a dense array representation with vocab_size=30522
+        vocab_size = 30522
+        dense_array = np.zeros(vocab_size)
+        # Set specific non-zero values at out-of-order indices
+        dense_array[9999] = 1.5
+        dense_array[5] = 2.0
+        dense_array[1234] = 0.8
+        dense_array[77] = 3.2
+        dense_array[500] = 1.1
 
-        # Mock array indexing
-        data_values = np.array([1.5, 2.0, 0.8, 3.2, 1.1])
-        mock_sparse_matrix.__getitem__ = Mock(
-            side_effect=lambda idx: data_values if isinstance(idx, tuple) else Mock()
-        )
+        # Mock the method chain: sparse_matrix[0].toarray().flatten()
+        mock_row = Mock()
+        mock_dense = Mock()
+        mock_row.toarray.return_value = mock_dense
+        mock_dense.flatten.return_value = dense_array
+        mock_sparse_matrix.__getitem__ = Mock(return_value=mock_row)
+
+        # Also mock hasattr check for 'toarray'
+        mock_sparse_matrix.toarray = Mock()
 
         mock_st = Mock()
         mock_model = Mock()
