@@ -1197,13 +1197,16 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerQueryWithPks) {
   auto query = vector_column_params::VectorData{
       vector_column_params::DenseVector{.data = query_vector.data()}};
   auto query_params = vector_column_params::QueryParams{
+      .data_type = dense_fp32_field->data_type(),
       .dimension = dense_fp32_field->dimension(),
       .topk = 10,
       .filter = nullptr,
       .fetch_vector = false,
+      .query_params = std::make_shared<zvec::QueryParams>(IndexType::HNSW),
+      .group_by = nullptr,
       .bf_pks = bf_pks,
-      .query_params = std::make_shared<zvec::QueryParams>(IndexType::HNSW)};
-  query_params.query_params->set_is_using_refiner(true);
+      .refiner_param = nullptr,
+      .extra_params = {}};
 
   auto results = combined_indexer->Search(query, query_params);
   ASSERT_TRUE(results.has_value());
