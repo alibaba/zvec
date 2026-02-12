@@ -51,7 +51,7 @@ jobs:
           --is-using-refiner 2>&1 | tee $LOG_FILE
 
           # 2. Extract the JSON result path from the log
-          RESULT_JSON=$(grep "write results to disk" $LOG_FILE | awk '{print $NF}')
+          RESULT_JSON=$(grep "write results to disk" $LOG_FILE | awk '{print $(NF-2)}')
 
           # 3. Parse metrics using jq
           # Note: VectorDBBench JSON structure usually contains a list of results
