@@ -4,12 +4,10 @@ on:
     branches: [ "main" ]
     paths-ignore:
       - '**.md'
-  # merge_group:
-  # pull_request:
-  #   branches: [ "main" ]
-  #   paths-ignore:
-  #     - '**.md'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   benchmark:
