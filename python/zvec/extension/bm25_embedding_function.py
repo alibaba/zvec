@@ -98,14 +98,14 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
         >>>
         >>> # For query encoding (Chinese)
         >>> bm25_query_zh = BM25EmbeddingFunction(language="zh", encoding_type="query")
-        >>> query_vec = bm25_query_zh.embed("什么是向量检索服务")
+        >>> query_vec = bm25_query_zh.embed("什么是机器学习")
         >>> isinstance(query_vec, dict)
         True
         >>> # query_vec: {1169440797: 0.29, 2045788977: 0.70, ...}
 
         >>> # For document encoding (Chinese)
         >>> bm25_doc_zh = BM25EmbeddingFunction(language="zh", encoding_type="document")
-        >>> doc_vec = bm25_doc_zh.embed("向量检索服务DashVector基于阿里云...")
+        >>> doc_vec = bm25_doc_zh.embed("机器学习是人工智能的一个重要分支...")
         >>> isinstance(doc_vec, dict)
         True
 
@@ -117,9 +117,9 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
 
         >>> # Option 2: Using custom corpus for domain-specific accuracy
         >>> corpus = [
-        ...     "向量检索服务DashVector基于阿里云自研的高效向量引擎",
-        ...     "DashVector将其强大的向量管理能力透出",
-        ...     "提供所需的高效向量检索能力"
+        ...     "机器学习是人工智能的一个重要分支",
+        ...     "深度学习使用多层神经网络进行特征提取",
+        ...     "自然语言处理技术用于理解和生成人类语言"
         ... ]
         >>> bm25_custom = BM25EmbeddingFunction(
         ...     corpus=corpus,
@@ -127,7 +127,7 @@ class BM25EmbeddingFunction(SparseEmbeddingFunction[TEXT]):
         ...     b=0.75,
         ...     k1=1.2
         ... )
-        >>> custom_vec = bm25_custom.embed("向量检索")
+        >>> custom_vec = bm25_custom.embed("机器学习算法")
         >>> isinstance(custom_vec, dict)
         True
 
