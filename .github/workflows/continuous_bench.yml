@@ -34,7 +34,7 @@ jobs:
           #          git submodule update --init
           #
           #          python3 -m venv .venv
-          source ../.venv/bin/activate
+          # source ../.venv/bin/activate
           #          pip install cmake ninja
           #
           #          CMAKE_GENERATOR="Unix Makefiles" \
