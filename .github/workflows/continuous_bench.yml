@@ -20,7 +20,8 @@ jobs:
       - name: Run VectorDBBench
         run: |
           COMMIT_ID=$(echo ${GITHUB_WORKFLOW_SHA} | cut -c1-7)
-          echo "GITHUB_WORKFLOW_SHA: $COMMIT_ID"
+          echo "COMMIT_ID: $COMMIT_ID"
+          echo "GITHUB_WORKFLOW_SHA: $GITHUB_WORKFLOW_SHA"
           echo "workspace: $GITHUB_WORKSPACE"
           pwd
           DATASET="Performance768D1M"
