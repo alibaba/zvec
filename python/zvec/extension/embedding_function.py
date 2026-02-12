@@ -14,8 +14,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-
-from typing_extensions import Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ..common.constants import MD, DenseVectorType, SparseVectorType
 
