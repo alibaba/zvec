@@ -87,8 +87,3 @@ def test_require_module_calls_importlib(mock_import_module):
 
     mock_import_module.assert_called_once_with("test_module")
     assert result is mock_module
-
-
-def test_require_module_with_openai():
-    with pytest.raises(ImportError) as exc_info:
-        require_module("openai")

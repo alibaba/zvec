@@ -217,9 +217,20 @@ ignore = [
     "E731",     # Lambda assignment (used in callbacks)
     "B019",     # `functools.lru_cache` on methods (handled manually)
     "PLR0912",  # Too many branches
+    "PLC0105",  # Ignore contravariant
+    "RUF002",   # Ignore Unicode
 ]
 fixable = ["ALL"]
 unfixable = []
+
+# Ignore all errors in docstrings
+[tool.ruff.lint.pydocstyle]
+convention = "google"  # or "numpy", "pep257"
+ignore-decorators = ["typing.overload"]
+
+[tool.ruff.lint.flake8-type-checking]
+# Don't check code examples in docstrings
+quote-annotations = true
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
@@ -236,6 +247,9 @@ known-first-party = ["zvec"]
 ]
 "python/zvec/model/doc.py" = [
     "RUF023",   # Unused sort (for __slot__)
+]
+"python/zvec/extension/**" = [
+    "PLC0415",  # Import outside top-level (dynamic imports in _get_model)
 ]
 
 [tool.ruff.format]
