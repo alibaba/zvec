@@ -319,15 +319,28 @@ Fuses multiple retrieval results using Reciprocal Rank Fusion (RRF). **Specifica
 
 ```python
 from zvec.extension import RrfReRanker
+from zvec import Doc
+# Prepare multiple retrieval results
+documents = {
+        "vector1": [
+            Doc(
+                id="1",
+                score=0.8,
+            ),
+            Doc(
+                id="2",
+                score=0.7,
+            ),
+            Doc(
+                id="3",
+                score=0.75,
+            ),
+        ],
+    }
 
-# Prepare multiple retrieval results (e.g., from dense and sparse embeddings)
-dense_results = [{"id": "A"}, {"id": "B"}, {"id": "C"}]
-sparse_results = [{"id": "B"}, {"id": "D"}, {"id": "A"}]
-
-reranker = RrfReRanker(topn=3, k=60)  # k is the smoothing parameter
-
+reranker = RrfReRanker(topn=3)
 # Fuse results
-fused_results = reranker.rerank([dense_results, sparse_results])
+fused_results = reranker.rerank(documents)
 ```
 
 ### 4. WeightedReRanker - Weighted Fusion
@@ -1004,13 +1017,18 @@ query = "What is a vector database"
 dense_vec = dense_emb.embed(query)
 sparse_vec = sparse_emb.embed(query)
 
-# Retrieve using both vectors separately (pseudo-code)
-# dense_results = vector_db.search(dense_vec, topk=100)
-# sparse_results = vector_db.search(sparse_vec, topk=100)
-
 # Fuse results using RRF
-# reranker = RrfReRanker(topn=10)
-# final_results = reranker.rerank([dense_results, sparse_results])
+rrf_ranker = RrfReRanker(topn=3)
+
+# Retrieve using both vectors separately (pseudo-code)
+final_results = zvec.collection.query(
+    vectors=[
+        VectorQuery("dense", vector=dense_vec),
+        VectorQuery("sparse", vector=dense_vec),
+    ],
+    topk=10,
+    reranker=rrf_ranker,
+)
 ```
 
 ### 2. Two-Stage Retrieval
@@ -1027,15 +1045,19 @@ from zvec.extension import (
 dense_emb = DefaultLocalDenseEmbedding()
 query_vec = dense_emb.embed("machine learning tutorial")
 
-# Recall top-100 (pseudo-code)
-# candidates = vector_db.search(query_vec, topk=100)
-
 # Stage 2: Precise reranking
 reranker = DefaultLocalReRanker(
     query="machine learning tutorial",
+    rerank_field="content",
     topn=10
 )
-# final_results = reranker.rerank(candidates, rerank_field="content")
+
+# Recall top-100 (pseudo-code)
+final_results = zvec.collection.query(
+    vectors=VectorQuery("dense", vector=query_vec),
+    topk=100,
+    reranker=reranker,
+)
 ```
 
 ### 3. Network Configuration for Chinese Users
