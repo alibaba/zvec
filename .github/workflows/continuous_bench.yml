@@ -19,7 +19,8 @@ jobs:
 
       - name: Run VectorDBBench
         run: |
-          COMMIT_ID=$(echo ${{ env.COMMIT_SHA }} | cut -c1-7)
+          COMMIT_ID=$(echo ${GITHUB_WORKFLOW_SHA} | cut -c1-7)
+          echo "GITHUB_WORKFLOW_SHA: $COMMIT_ID"
           DATASET="Performance768D1M"
           DATE=$(date +%Y-%m-%d)
           DB_LABEL="Zvec16c64g-$COMMIT_ID-$DATASET"
