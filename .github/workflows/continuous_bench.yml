@@ -31,25 +31,25 @@ jobs:
           NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 
           # install zvec
-          #          git submodule update --init
-          #
-          #          python3 -m venv .venv
-          # source ../.venv/bin/activate
-          #          pip install cmake ninja
-          #
-          #          CMAKE_GENERATOR="Unix Makefiles" \
-          #          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-          #          pip install -v .
-          #
-          #          # 1. Execute bench and capture the result path from logs
-          #          # We use 'tee' to see output and 'grep' to find the result file path
-          #          pip install -e /opt/VectorDBBench
-          #          vectordbbench zvec --path $DATASET \
-          #          --db-label $DB_LABEL \
-          #          --case-type $DATASET \
-          #          --num-concurrency 12,14,16,18,20 \
-          #          --quantize-type int8 --m 50 --ef-search 118 \
-          #          --is-using-refiner 2>&1 | tee $LOG_FILE
+          git submodule update --init
+
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install cmake ninja
+
+          CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+          pip install -v .
+
+          # 1. Execute bench and capture the result path from logs
+          # We use 'tee' to see output and 'grep' to find the result file path
+          pip install -e /opt/VectorDBBench
+          vectordbbench zvec --path $DATASET \
+          --db-label $DB_LABEL \
+          --case-type $DATASET \
+          --num-concurrency 12,14,16,18,20 \
+          --quantize-type int8 --m 50 --ef-search 118 \
+          --is-using-refiner 2>&1 | tee $LOG_FILE
 
           # 2. Extract the JSON result path from the log
           RESULT_JSON=$(grep -o "/opt/VectorDBBench/.*\.json" $LOG_FILE)
