@@ -37,7 +37,7 @@
 
 ## 📦 Installation
 
-### Python
+### [Python](https://pypi.org/project/zvec/)
 
 **Requirements**: Python 3.10 - 3.12
 
@@ -45,7 +45,7 @@
 pip install zvec
 ```
 
-### Node.js
+### [Node.js](https://www.npmjs.com/package/@zvec/zvec)
 
 ```bash
 npm install @zvec/zvec
@@ -72,7 +72,7 @@ schema = zvec.CollectionSchema(
 )
 
 # Create collection
-collection = zvec.create_and_open(path="./zvec_example", schema=schema,)
+collection = zvec.create_and_open(path="./zvec_example", schema=schema)
 
 # Insert documents
 collection.insert([
