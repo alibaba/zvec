@@ -1,6 +1,6 @@
 set -e
 
-QUANTIZE_TYPE="int8 int4 fp16 fp32"
+QUANTIZE_TYPE_LIST="int8 int4 fp16 fp32"
 CASE_TYPE_LIST="Performance768D1M Performance1536D500K" # respectively test cosine, ip # Performance960D1M l2 metrics
 LOG_FILE="bench.log"
 DATE=$(date +%Y-%m-%d)
