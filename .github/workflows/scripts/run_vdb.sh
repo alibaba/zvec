@@ -17,6 +17,7 @@ DB_LABEL_PREFIX="Zvec16c64g-$COMMIT_ID"
 git submodule update --init
 
 cd .. # for debug
+pwd
 
 python3 -m venv .venv
 source .venv/bin/activate
