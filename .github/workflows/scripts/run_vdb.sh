@@ -26,6 +26,7 @@ pip install -e /opt/VectorDBBench
 
 CMAKE_GENERATOR="Unix Makefiles" \
 CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+SKBUILD_BUILD_DIR="./build" \
 pip install -v "$GITHUB_WORKSPACE"
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
