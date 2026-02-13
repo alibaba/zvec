@@ -11,6 +11,12 @@ COMMIT_ID = os.environ["COMMIT_ID"]
 DATASET = os.environ["DATASET"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
+DATASET_NAME_MAP = {
+    "Performance768D1M": "cosine - Cohere1M768",
+    "Performance1536D500K": "ip - OpenAI500K1536",
+    "Performance960D1M": "l2 - GIST1M960",
+}
+
 
 def get_latest_result() -> Path:
     # VectorDBBench saves results in a nested structure
@@ -41,7 +47,7 @@ def upload_to_postgres():
 
     values = (
         COMMIT_ID,
-        DATASET,
+        DATASET_NAME_MAP[DATASET],
         metrics["qps"],
         metrics["recall"],
         metrics["serial_latency_p99"],
@@ -54,7 +60,7 @@ def upload_to_postgres():
     conn.commit()
     cur.close()
     conn.close()
-    logger.info(f"Successfully uploaded metrics from {result_file}")
+    logger.info(f"Successfully uploaded metrics from {result_file}: {values}")
 
 
 if __name__ == "__main__":
