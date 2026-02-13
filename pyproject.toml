@@ -171,7 +171,8 @@ archs = ["auto"]
 test-command = "cd {project} && pytest python/tests -v --tb=short"
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
-skip = "*musllinux*"
+# Skip 32-bit builds and musllinux
+skip = ["*-manylinux_i686", "*-musllinux*"]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
