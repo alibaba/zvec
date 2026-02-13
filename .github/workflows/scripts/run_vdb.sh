@@ -34,6 +34,7 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
     fi
     for QUANTIZE_TYPE in $QUANTIZE_TYPE_LIST; do
         DB_LABEL="$DB_LABEL_PREFIX-$CASE_TYPE-$QUANTIZE_TYPE"
+        echo "Running VectorDBBench for $DB_LABEL"
         vectordbbench zvec --path "${DB_LABEL}" \
         --db-label "${DB_LABEL}" \
         --case-type "${CASE_TYPE}" \
