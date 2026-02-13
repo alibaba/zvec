@@ -19,7 +19,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install cmake ninja psycopg2-binary
 
-python .github/workflows/scripts/upload_bench_results.py
+DATASET=Performance768D1M COMMIT_ID="xxx" python .github/workflows/scripts/upload_bench_results.py
 
 # CMAKE_GENERATOR="Unix Makefiles" \
 # CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \

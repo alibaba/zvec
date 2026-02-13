@@ -19,9 +19,9 @@ def upload_to_postgres():
     with result_file.open() as f:
         data = json.load(f)
 
-    # Based on your log, we extract the core metrics
-    # Note: Structure might vary slightly based on VectorDBBench version
-    metrics = data["results"][0]["result"]
+    # VectorDBBench result schema: run_id, task_label, results[{ metrics, task_config, label }]
+    result = data["results"][0]
+    metrics = result["metrics"]
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     cur = conn.cursor()
@@ -33,14 +33,14 @@ def upload_to_postgres():
 
     values = (
         os.environ["COMMIT_ID"],
-        data["results"][0]["case_config"]["dataset"]["data"]["name"],  # dataset name
+        os.environ["DATASET"],
         os.environ["DB_LABEL"],
         metrics["qps"],
         metrics["recall"],
         metrics["serial_latency_p99"],
         metrics["serial_latency_p95"],
         metrics["ndcg"],
-        metrics["load_dur"],
+        metrics["load_duration"],
     )
 
     cur.execute(sql, values)
