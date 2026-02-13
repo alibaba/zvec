@@ -5,6 +5,11 @@ import os
 from pathlib import Path
 
 import psycopg2
+from loguru import logger
+
+COMMIT_ID = os.environ["COMMIT_ID"]
+DATASET = os.environ["DATASET"]
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 
 def get_latest_result() -> Path:
@@ -15,26 +20,28 @@ def get_latest_result() -> Path:
 
 
 def upload_to_postgres():
+    logger.info(f"Uploading metrics to PostgreSQL: {DATABASE_URL}")
     result_file = get_latest_result()
     with result_file.open() as f:
         data = json.load(f)
+    logger.info(f"Loaded data from {result_file}: {data}")
 
     # VectorDBBench result schema: run_id, task_label, results[{ metrics, task_config, label }]
     result = data["results"][0]
     metrics = result["metrics"]
+    logger.info(f"Metrics: {metrics}")
 
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
 
     sql = """
-          INSERT INTO bench_results (commit_sha, dataset, db_label, qps, recall, p99, p95, ndcg, load_time)
+          INSERT INTO bench_results (commit_sha, dataset, qps, recall, p99, p95, ndcg, load_time)
           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) \
           """
 
     values = (
-        os.environ["COMMIT_ID"],
-        os.environ["DATASET"],
-        os.environ["DB_LABEL"],
+        COMMIT_ID,
+        DATASET,
         metrics["qps"],
         metrics["recall"],
         metrics["serial_latency_p99"],
@@ -47,7 +54,7 @@ def upload_to_postgres():
     conn.commit()
     cur.close()
     conn.close()
-    # print(f"Successfully uploaded metrics from {result_file}")
+    logger.info(f"Successfully uploaded metrics from {result_file}")
 
 
 if __name__ == "__main__":

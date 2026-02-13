@@ -17,7 +17,7 @@ git submodule update --init
 
 python3 -m venv .venv
 source .venv/bin/activate
-pip install cmake ninja psycopg2-binary
+pip install cmake ninja psycopg2-binary loguru
 
 DATASET=Performance768D1M COMMIT_ID="xxx" python .github/workflows/scripts/upload_bench_results.py
 
