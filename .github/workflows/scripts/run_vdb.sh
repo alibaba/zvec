@@ -16,6 +16,8 @@ DB_LABEL_PREFIX="Zvec16c64g-$COMMIT_ID"
 # install zvec
 git submodule update --init
 
+cd .. # for debug
+
 python3 -m venv .venv
 source .venv/bin/activate
 pip install cmake ninja psycopg2-binary loguru fire
@@ -23,7 +25,7 @@ pip install -e /opt/VectorDBBench
 
 CMAKE_GENERATOR="Unix Makefiles" \
 CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-pip install -v .
+pip install -v "$GITHUB_WORKSPACE"
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
     DATASET_DESC=""
