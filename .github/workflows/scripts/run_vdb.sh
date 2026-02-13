@@ -7,7 +7,7 @@ DATE=$(date +%Y-%m-%d)
 NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 
 # COMMIT_ID = branch-date-sha
-COMMIT_ID=${GITHUB_REF}-"$DATE"-$(echo ${GITHUB_WORKFLOW_SHA} | cut -c1-8)
+COMMIT_ID=${GITHUB_REF_NAME}-"$DATE"-$(echo ${GITHUB_WORKFLOW_SHA} | cut -c1-8)
 echo "COMMIT_ID: $COMMIT_ID"
 echo "GITHUB_WORKFLOW_SHA: $GITHUB_WORKFLOW_SHA"
 echo "workspace: $GITHUB_WORKSPACE"
