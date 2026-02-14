@@ -77,7 +77,8 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
         # TYPE vdb_bench_load_duration gauge
         vdb_bench_load_duration{$label_list} $LOAD_DURATION
 EOF
-
+        echo "prom_metrics:"
+        cat prom_metrics.txt
         curl --data-binary @prom_metrics.txt "http://47.93.34.27:9091/metrics/job/benchmarks-${CASE_TYPE}/case_type/${CASE_TYPE}/quantize_type/${QUANTIZE_TYPE}" -v
     done
 done
