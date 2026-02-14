@@ -847,8 +847,8 @@ TEST_F(FlatStreamerTest, TestMaxIndexSize) {
       writeCnt1 * 128 * 4 + writeCnt1 * 8 + writeCnt1 * 28 / 32;
   LOG_INFO("increment1: %lu, expect_size: %lu", increment1, expect_size);
 
-  ASSERT_GT(expect_size, increment1 * 0.8f);
-  ASSERT_LT(expect_size, increment1 * 1.2f);
+  ASSERT_GT(expect_size, increment1 * 0.75f);
+  ASSERT_LT(expect_size, increment1 * 1.25f);
 
   streamer->flush(0UL);
   streamer.reset();

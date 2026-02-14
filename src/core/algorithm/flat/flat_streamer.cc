@@ -376,7 +376,7 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
       if (!filter.is_valid() || !filter(key)) {
         dist_t dist = 0;
         IndexStorage::MemoryBlock block;
-        entity_.get_vector_by_key(key, block);
+        if (entity_.get_vector_by_key(key, block) != 0) continue;
         entity_.row_major_distance(query, block.data(), 1, &dist);
         heap->emplace(key, dist);
       }
@@ -418,7 +418,7 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
         dist_t dist = 0;
         IndexStorage::MemoryBlock block;
-        entity_.get_vector_by_key(key, block);
+        if (entity_.get_vector_by_key(key, block) != 0) continue;
         entity_.row_major_distance(query, block.data(), 1, &dist);
 
         std::string group_id = group_by(key);
@@ -466,7 +466,7 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
         dist_t dist = 0;
         IndexStorage::MemoryBlock block;
-        entity_.get_vector_by_key(key, block);
+        if (entity_.get_vector_by_key(key, block) != 0) continue;
         entity_.row_major_distance(query, block.data(), 1, &dist);
 
         std::string group_id = group_by(key);

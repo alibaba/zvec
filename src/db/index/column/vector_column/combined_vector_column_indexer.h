@@ -52,6 +52,7 @@ class CombinedVectorColumnIndexer {
   std::vector<VectorColumnIndexer::Ptr> indexers_;
   std::vector<VectorColumnIndexer::Ptr> normal_indexers_;
   std::vector<BlockMeta> blocks_;
+  std::vector<uint32_t> block_offsets_;
   MetricType metric_type_{MetricType::UNDEFINED};
   bool is_quantized_{false};
   uint64_t min_doc_id_{0};

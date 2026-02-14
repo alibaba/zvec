@@ -82,6 +82,12 @@ class IndexMapping {
     mutable bool dirty_{false};
   };
 
+  struct SegmentInfo {
+    Segment segment;
+    uint64_t segment_header_start_offset;
+    IndexFormat::MetaHeader *segment_header;
+  };
+
   //! Constructor
   IndexMapping(void) {}
 
@@ -119,8 +125,6 @@ class IndexMapping {
 
   //! Create a index file
   int create(const std::string &path, size_t segs_size);
-
-  int create_hugepage(size_t segs_size);
 
   //! Close the index
   void close(void);
@@ -183,6 +187,9 @@ class IndexMapping {
 
   bool Ishugetlbfs(const std::string &path) const;
 
+  int init_meta_section();
+  int init_hugepage_meta_section();
+
  private:
   //! Disable them
   IndexMapping(const IndexMapping &) = delete;
@@ -192,14 +199,18 @@ class IndexMapping {
   uint32_t segment_ids_offset_{0};
   IndexFormat::SegmentMeta *segment_start_{nullptr};
   IndexFormat::MetaHeader *header_{nullptr};
+  std::map<uint64_t, IndexFormat::MetaHeader *> header_addr_map_{};
   IndexFormat::MetaFooter *footer_{nullptr};
-  std::map<std::string, Segment> segments_{};
+  std::map<std::string, SegmentInfo> segments_{};
   size_t index_size_{0u};
   ailego::File file_{};
+  std::string path_;
   bool copy_on_write_{false};
   bool full_mode_{false};
   bool header_dirty_{false};
   bool huge_page_{false};
+  size_t seg_meta_capacity_{0u};
+  uint64_t current_header_start_offset_{0u};
 };
 
 }  // namespace core

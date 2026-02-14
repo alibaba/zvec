@@ -7,10 +7,11 @@
 
 <p align="center">
   <a href="https://github.com/alibaba/zvec/actions/workflows/linux_x64_docker_ci.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/linux_x64_docker_ci.yml/badge.svg?branch=main" alt="Linux x64 CI"/></a>
+  <a href="https://github.com/alibaba/zvec/actions/workflows/linux_arm64_docker_ci.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/linux_arm64_docker_ci.yml/badge.svg?branch=main" alt="Linux ARM64 CI"/></a>
   <a href="https://github.com/alibaba/zvec/actions/workflows/mac_arm64_ci.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/mac_arm64_ci.yml/badge.svg?branch=main" alt="macOS ARM64 CI"/></a>
+  <br>
   <a href="https://codecov.io/github/alibaba/zvec"><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66" alt="Code Coverage"/></a>
   <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
-  <br>
   <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/pyversions/zvec.svg" alt="Python Versions"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
 </p>
@@ -29,25 +30,33 @@
 ## 💫 Features
 
 - **Blazing Fast**: Searches billions of vectors in milliseconds.
-- **Simple, Just Works**: Install with `pip install zvec` and start searching in seconds. No servers, no config, no fuss.
+- **Simple, Just Works**: [Install](#-installation) and start searching in seconds. No servers, no config, no fuss.
 - **Dense + Sparse Vectors**: Work with both dense and sparse embeddings, with native support for multi-vector queries in a single call.
 - **Hybrid Search**: Combine semantic similarity with structured filters for precise results.
 - **Runs Anywhere**: As an in-process library, Zvec runs wherever your code runs — notebooks, servers, CLI tools, or even edge devices.
 
 ## 📦 Installation
 
-Install Zvec from PyPI with a single command:
+### [Python](https://pypi.org/project/zvec/)
+
+**Requirements**: Python 3.10 - 3.12
 
 ```bash
 pip install zvec
 ```
 
-**Requirements**:
+### [Node.js](https://www.npmjs.com/package/@zvec/zvec)
 
-- Python 3.10 - 3.12
-- **Supported platforms**:
-  - Linux (x86_64)
-  - macOS (ARM64)
+```bash
+npm install @zvec/zvec
+```
+
+### ✅ Supported Platforms
+
+- Linux (x86_64, ARM64)
+- macOS (ARM64)
+
+### 🛠️ Building from Source
 
 If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/build/) guide.
 
@@ -63,7 +72,7 @@ schema = zvec.CollectionSchema(
 )
 
 # Create collection
-collection = zvec.create_and_open(path="./zvec_example", schema=schema,)
+collection = zvec.create_and_open(path="./zvec_example", schema=schema)
 
 # Insert documents
 collection.insert([
@@ -99,11 +108,11 @@ Stay updated and get support — scan or click:
   <tr>
     <td align="center" style="padding: 8px; width: 25%;">
       <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">💬 DingTalk</div>
-      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
+      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" alt="DingTalk QR Code" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
     </td>
     <td align="center" style="padding: 8px; width: 25%;">
       <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">📱 WeChat</div>
-      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
+      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png" alt="WeChat QR Code" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
     </td>
     <td align="center" style="padding: 8px; width: 25%;">
       <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">🎮 Discord</div>
