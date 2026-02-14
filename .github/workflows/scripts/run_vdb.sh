@@ -8,6 +8,7 @@ NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 
 # COMMIT_ID = branch-date-sha
 COMMIT_ID=${GITHUB_REF_NAME}-"$DATE"-$(echo ${GITHUB_WORKFLOW_SHA} | cut -c1-8)
+COMMIT_ID=$(echo "$COMMIT_ID" | sed 's/\//_/g')
 echo "COMMIT_ID: $COMMIT_ID"
 echo "GITHUB_WORKFLOW_SHA: $GITHUB_WORKFLOW_SHA"
 echo "workspace: $GITHUB_WORKSPACE"
@@ -24,10 +25,10 @@ source .venv/bin/activate
 pip install cmake ninja psycopg2-binary loguru fire
 pip install -e /opt/VectorDBBench
 
-CMAKE_GENERATOR="Unix Makefiles" \
-CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build" \
-pip install -v "$GITHUB_WORKSPACE"
+# CMAKE_GENERATOR="Unix Makefiles" \
+# CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+# SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build" \
+# pip install -v "$GITHUB_WORKSPACE"
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
     DATASET_DESC=""
@@ -63,7 +64,7 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
         #quote the var to avoid space in the label
         label_list="case_type=\"${CASE_TYPE}\" dataset_desc=\"${DATASET_DESC}\" db_label=\"${DB_LABEL}\" commit=\"${COMMIT_ID}\" date=\"${DATE}\" quantize_type=\"${QUANTIZE_TYPE}\""
         # replace `/` with `_` in label_list
-        label_list=$(echo $label_list | sed 's/\//_/g')
+        label_list=$(echo "$label_list" | sed 's/\//_/g')
         cat <<EOF > prom_metrics.txt
         # TYPE vdb_bench_qps gauge
         vdb_bench_qps{$label_list} $QPS
