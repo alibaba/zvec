@@ -1,7 +1,7 @@
 name: Continuous Benchmark
 on:
   push:
-    branches: [ "main", "ci/continuous_bench" ]
+    branches: [ "main", "ci/continuous_bench", "feat/ip_int4_one2many" ]
     paths-ignore:
       - '**.md'
   merge_group:
