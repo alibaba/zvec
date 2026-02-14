@@ -13,10 +13,9 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Optional, TypeVar, Union
 
 import numpy as np
-from typing_extensions import TypeVar
 
 # VectorType: DenseVectorType | SparseVectorType
 DenseVectorType = Union[list[float], list[int], np.ndarray]

@@ -46,6 +46,28 @@ jobs:
           echo "PIP_BIN=$PY_PATH/bin/pip" >> $GITHUB_ENV
           echo "CLANG_FORMATTER_BIN=$PY_PATH/bin/clang-format" >> $GITHUB_ENV
           $PY_PATH/bin/python --version
+
+          # Set number of processors for parallel builds
+          NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> $GITHUB_ENV
+          echo "Using $NPROC parallel jobs for builds"
+          
+          # Add Python user base bin to PATH for pip-installed CLI tools
+          echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
+        shell: bash
+      
+      - name: Install dependencies
+        run: |
+           ${{ env.PYTHON_BIN }} -m pip install --upgrade pip \
+            ruff==v0.14.4 \
+            clang-format==18.1.8 \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            pytest \
+            pytest-cov \
+            scikit-build-core \
+            setuptools_scm
         shell: bash
 
       - name: Prepare clean build directory
@@ -69,11 +91,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
 
-      - name: Install dependencies
-        run: |
-          ${{ env.PIP_BIN }} install --upgrade pip ruff==v0.14.4 clang-format==18.1.8 pybind11==3.0 pytest pytest-cov
-        shell: bash
-
       - name: Run Ruff Linter
         run: |
           cd "$CLEAN_WORKSPACE"
@@ -89,7 +106,6 @@ jobs:
       - name: Run clang-format Check
         run: |
           cd "$CLEAN_WORKSPACE"
-          
           
           CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
             ! -path "./build/*" \
@@ -110,13 +126,11 @@ jobs:
       - name: Install Python dependencies and build package
         run: |
           cd "$CLEAN_WORKSPACE"
-          NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
-
-          ${{ env.PIP_BIN }} install cmake ninja
-
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-          ${{ env.PIP_BIN }} install -v . --config-settings='cmake.define.BUILD_TOOLS="ON"'
+          ${{ env.PYTHON_BIN }} -m pip install -v . \
+            --no-build-isolation \
+            --config-settings='cmake.define.BUILD_TOOLS="ON"'
         shell: bash
 
       - name: Run Python Tests with Coverage
@@ -128,12 +142,12 @@ jobs:
       - name: Run Cpp Tests
         run: |
           cd "$CLEAN_WORKSPACE/build"
-          make unittest -j$(nproc)
+          make unittest -j$NPROC
         shell: bash
       
       - name: Run Cpp Examples
         run: |
           cd "$CLEAN_WORKSPACE/examples/c++"
           mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j $(nproc) && ./db-example && ./core-example && ./ailego-example
+          make -j $NPROC && ./db-example && ./core-example && ./ailego-example
         shell: bash

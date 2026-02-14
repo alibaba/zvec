@@ -22,24 +22,66 @@ permissions:
 jobs:
   build:
     name: Zvec MacArm64 CI
-    runs-on: mac_m1_arm
+    runs-on: macos-15
+
+    strategy:
+      matrix:
+        python-version: ['3.10']
+      fail-fast: false
 
     steps:
-      - name: Run Ruff Linter
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Set up environment variables
         run: |
-          cd "$CLEAN_WORKSPACE"
-          ruff check .
+          # Set number of processors for parallel builds
+          NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> $GITHUB_ENV
+          echo "Using $NPROC parallel jobs for builds"
+          
+          # Add Python user base bin to PATH for pip-installed CLI tools
+          echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
         shell: bash
 
-      - name: Run Ruff Formatter Check (ensure code is formatted)
+      - name: Install dependencies
         run: |
-          cd "$CLEAN_WORKSPACE"
-          ruff format --check .
+          python -m pip install --upgrade pip \
+            ruff==v0.14.4 \
+            clang-format==18.1.8 \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            pytest \
+            pytest-cov \
+            scikit-build-core \
+            setuptools_scm
+        shell: bash
+
+      - name: Run Ruff Linter
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python -m ruff check .
+        shell: bash
+
+      - name: Run Ruff Formatter Check
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python -m ruff format --check .
         shell: bash
 
       - name: Run clang-format Check
         run: |
-          cd "$CLEAN_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
 
           CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
             ! -path "./build/*" \
@@ -57,57 +99,34 @@ jobs:
           clang-format --dry-run --Werror $CPP_FILES
         shell: bash
 
-      - name: Prepare clean build directory
+      - name: Build from source
         run: |
-          export CLEAN_WORKSPACE="/tmp/zvec"
-          rm -rf "$CLEAN_WORKSPACE"
-          mkdir -p "$CLEAN_WORKSPACE"
-          cd "$CLEAN_WORKSPACE"
-
-          git config --global --add safe.directory "$CLEAN_WORKSPACE"
-          git clone --recursive "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
-
-          if [ -n "${{ github.event.number }}" ]; then
-            git fetch origin "pull/${{ github.event.number }}/head"
-            git checkout FETCH_HEAD
-          else
-            git checkout "${{ github.sha }}"
-          fi
-
-          echo "CLEAN_WORKSPACE=$CLEAN_WORKSPACE" >> $GITHUB_ENV
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-
-      - name: Install Python dependencies and build package
-        run: |
-          cd "$CLEAN_WORKSPACE"
-          pip install --upgrade pip pytest pytest-cov ruff
-          
-          NPROC=$(nproc 2>/dev/null || echo $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2))
-          echo "ParallelGroup: Using $NPROC parallel jobs for build"
+          cd "$GITHUB_WORKSPACE"
           
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-          pip install -v . \
+          python -m pip install -v . \
+            --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS="ON"'
+        shell: bash
+
+      - name: Run Cpp Tests
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          make unittest -j$NPROC
         shell: bash
 
       - name: Run Python Tests with Coverage
         run: |
-          cd "$CLEAN_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/ --cov=zvec --cov-report=xml --no-cov-on-fail
         shell: bash
 
-      - name: Run Cpp Tests with Coverage
-        run: |
-          cd "$CLEAN_WORKSPACE/build"
-          make unittest -j 16
-        shell: bash
 
       - name: Run Cpp Examples
         run: |
-          cd "$CLEAN_WORKSPACE/examples/c++"
-          mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j 16 && ./db-example && ./core-example && ./ailego-example
+          cd "$GITHUB_WORKSPACE/examples/c++"
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j $NPROC && ./db-example && ./core-example && ./ailego-example
         shell: bash

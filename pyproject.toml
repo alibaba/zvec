@@ -80,7 +80,13 @@ dev = [
 # BUILD SYSTEM CONFIGURATION (scikit-build-core)
 ######################################################################################################
 [build-system]
-requires = ["scikit-build-core >=0.11", "pybind11 >=3.0", "setuptools_scm>=8.0"]
+requires = [
+    "scikit-build-core >=0.11",
+    "pybind11 >=3.0",
+    "setuptools_scm>=8.0",
+    "cmake>=3.26,<4.0",
+    "ninja>=1.11",
+]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
@@ -165,7 +171,8 @@ archs = ["auto"]
 test-command = "cd {project} && pytest python/tests -v --tb=short"
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
-skip = "*musllinux*"
+# Skip 32-bit builds and musllinux
+skip = ["*-manylinux_i686", "*-musllinux*"]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
