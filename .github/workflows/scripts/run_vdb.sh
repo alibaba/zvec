@@ -32,10 +32,10 @@ pip install -e /opt/VectorDBBench
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
     DATASET_DESC=""
-    if [ "$CASE_TYPE" == "Performance960D1M" ]; then
-        DATASET_DESC="Performance768D1M - Cohere1M768 Cosine"
+    if [ "$CASE_TYPE" == "Performance768D1M" ]; then
+        DATASET_DESC="Performance768D1M - Cohere Cosine"
     else
-        DATASET_DESC="Performance1536D500K - OpenAI500K1536 IP"
+        DATASET_DESC="Performance1536D500K - OpenAI IP"
     fi
     for QUANTIZE_TYPE in $QUANTIZE_TYPE_LIST; do
         DB_LABEL="$DB_LABEL_PREFIX-$CASE_TYPE-$QUANTIZE_TYPE"
@@ -77,6 +77,6 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
         vdb_bench_load_duration{$label_list} $LOAD_DURATION
 EOF
 
-        curl --data-binary @prom_metrics.txt "http://47.93.34.27:9091/metrics/job/benchmarks/date/${DATE}/commit/${COMMIT_ID}/case_type/${CASE_TYPE}/quantize_type/${QUANTIZE_TYPE}" -v
+        curl --data-binary @prom_metrics.txt "http://47.93.34.27:9091/metrics/job/benchmarks-${CASE_TYPE}/date/${DATE}/commit/${COMMIT_ID}/case_type/${CASE_TYPE}/quantize_type/${QUANTIZE_TYPE}" -v
     done
 done
