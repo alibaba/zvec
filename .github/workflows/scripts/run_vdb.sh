@@ -17,7 +17,7 @@ DB_LABEL_PREFIX="Zvec16c64g-$COMMIT_ID"
 # install zvec
 git submodule update --init
 
-cd .. # for debug
+#cd .. # for debug
 pwd
 
 python3 -m venv .venv
@@ -25,10 +25,10 @@ source .venv/bin/activate
 pip install cmake ninja psycopg2-binary loguru fire
 pip install -e /opt/VectorDBBench
 
-# CMAKE_GENERATOR="Unix Makefiles" \
-# CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-# SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build" \
-# pip install -v "$GITHUB_WORKSPACE"
+ CMAKE_GENERATOR="Unix Makefiles" \
+ CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+ SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build" \
+ pip install -v "$GITHUB_WORKSPACE"
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
     DATASET_DESC=""
@@ -77,6 +77,6 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
         vdb_bench_load_duration{$label_list} $LOAD_DURATION
 EOF
 
-        curl --data-binary @prom_metrics.txt "http://47.93.34.27:9091/metrics/job/benchmarks-${CASE_TYPE}/date/${DATE}/commit/${COMMIT_ID}/case_type/${CASE_TYPE}/quantize_type/${QUANTIZE_TYPE}" -v
+        curl --data-binary @prom_metrics.txt "http://47.93.34.27:9091/metrics/job/benchmarks-${CASE_TYPE}/case_type/${CASE_TYPE}/quantize_type/${QUANTIZE_TYPE}" -v
     done
 done
