@@ -60,6 +60,7 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
         QPS=$(jq -r '.results[0].metrics.qps' "$RESULT_JSON_PATH")
         RECALL=$(jq -r '.results[0].metrics.recall' "$RESULT_JSON_PATH")
         LATENCY_P99=$(jq -r '.results[0].metrics.serial_latency_p99' "$RESULT_JSON_PATH")
+        LOAD_DURATION=$(jq -r '.results[0].metrics.load_duration' "$RESULT_JSON_PATH")
 
         #quote the var to avoid space in the label
         label_list="case_type=\"${CASE_TYPE}\" dataset_desc=\"${DATASET_DESC}\" db_label=\"${DB_LABEL}\" commit=\"${COMMIT_ID}\" date=\"${DATE}\" quantize_type=\"${QUANTIZE_TYPE}\""
@@ -72,8 +73,10 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
         vdb_bench_recall{$label_list} $RECALL
         # TYPE vdb_bench_latency_p99 gauge
         vdb_bench_latency_p99{$label_list} $LATENCY_P99
+        # TYPE vdb_bench_load_duration gauge
+        vdb_bench_load_duration{$label_list} $LOAD_DURATION
 EOF
 
-        curl --data-binary @prom_metrics.txt "http://47.93.34.27:9091/metrics/job/benchmarks/date/${DATE}/commit/${COMMIT_ID}/case_type/${CASE_TYPE}/quantize_type/${QUANTIZE_TYPE}/" -v
+        curl --data-binary @prom_metrics.txt "http://47.93.34.27:9091/metrics/job/benchmarks/date/${DATE}/commit/${COMMIT_ID}/case_type/${CASE_TYPE}/quantize_type/${QUANTIZE_TYPE}" -v
     done
 done
