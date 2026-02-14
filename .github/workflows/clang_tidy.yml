@@ -77,8 +77,8 @@ jobs:
         if: steps.changed_files.outputs.any_changed == 'true'
         run: |
           mapfile -t changed_files <<'EOF'
-${{ steps.changed_files.outputs.all_changed_files }}
-EOF
+          ${{ steps.changed_files.outputs.all_changed_files }}
+          EOF
 
           for file in "${changed_files[@]}"; do
             if [ -f "$file" ]; then
