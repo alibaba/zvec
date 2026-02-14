@@ -609,37 +609,86 @@ Status SegmentHelper::ReduceVectorIndex(
     auto vector_index_params =
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
 
-    auto vector_block_id = block_id_generator();
-    if (vector_index_params->quantize_type() == QuantizeType::UNDEFINED) {
-      auto vector_index_path = FileHelper::MakeVectorIndexPath(
-          output_segment_path, field->name(), vector_block_id);
-
-      // only create original vector indexer
-      auto vector_indexer =
-          std::make_shared<VectorColumnIndexer>(vector_index_path, *field);
-      s = vector_indexer->Open({true, true});
-      CHECK_RETURN_STATUS(s);
-
-      std::vector<VectorColumnIndexer::Ptr> merge_indexers;
-      for (auto &input_segment : input_segments) {
-        // merge_indexers should be ordered put
-        auto to_merge_indexers =
-            input_segment->get_vector_indexer(field->name());
-        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
-                              to_merge_indexers.end());
-      }
-
+    auto build_merge_options = [&]() {
       vector_column_params::MergeOptions merge_options;
       if (concurrency == 0) {
         merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
       } else {
         merge_options.write_concurrency = concurrency;
       }
+      return merge_options;
+    };
 
-      s = vector_indexer->Merge(merge_indexers, filter, merge_options);
-      CHECK_RETURN_STATUS(s);
+    auto can_reuse_first_indexer = [&](auto &&fetch_indexers) {
+      if (filter != nullptr || input_segments.size() <= 1) {
+        return false;
+      }
+      for (const auto &input_segment : input_segments) {
+        if (fetch_indexers(input_segment).size() != 1) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    auto collect_merge_indexers = [&](auto &&fetch_indexers,
+                                      size_t start_index) {
+      std::vector<VectorColumnIndexer::Ptr> merge_indexers;
+      for (size_t i = start_index; i < input_segments.size(); ++i) {
+        auto to_merge_indexers = fetch_indexers(input_segments[i]);
+        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
+                              to_merge_indexers.end());
+      }
+      return merge_indexers;
+    };
+
+    auto merge_with_optional_reuse = [&](const std::string &output_index_path,
+                                         const FieldSchema &index_field,
+                                         auto &&fetch_indexers) -> Status {
+      auto vector_indexer =
+          std::make_shared<VectorColumnIndexer>(output_index_path, index_field);
+      auto merge_options = build_merge_options();
+      bool reused_base_index = false;
+
+      if (can_reuse_first_indexer(fetch_indexers)) {
+        auto first_indexer = fetch_indexers(input_segments.front())[0];
+        if (FileHelper::CopyFile(first_indexer->index_file_path(),
+                                 output_index_path)) {
+          // Reuse first segment index as merge base to avoid rebuilding it.
+          s = vector_indexer->Open({true, false});
+          CHECK_RETURN_STATUS(s);
+
+          auto merge_indexers = collect_merge_indexers(fetch_indexers, 1);
+          s = vector_indexer->Merge(merge_indexers, filter, merge_options);
+          CHECK_RETURN_STATUS(s);
+          reused_base_index = true;
+        }
+      }
+
+      if (!reused_base_index) {
+        s = vector_indexer->Open({true, true});
+        CHECK_RETURN_STATUS(s);
+
+        auto merge_indexers = collect_merge_indexers(fetch_indexers, 0);
+        s = vector_indexer->Merge(merge_indexers, filter, merge_options);
+        CHECK_RETURN_STATUS(s);
+      }
 
       s = vector_indexer->Flush();
+      CHECK_RETURN_STATUS(s);
+      return Status::OK();
+    };
+
+    auto vector_block_id = block_id_generator();
+    if (vector_index_params->quantize_type() == QuantizeType::UNDEFINED) {
+      auto vector_index_path = FileHelper::MakeVectorIndexPath(
+          output_segment_path, field->name(), vector_block_id);
+
+      s = merge_with_optional_reuse(
+          vector_index_path, *field,
+          [&](const Segment::Ptr &input_segment) {
+            return input_segment->get_vector_indexer(field->name());
+          });
       CHECK_RETURN_STATUS(s);
 
       BlockMeta new_block_meta;
@@ -659,32 +708,11 @@ Status SegmentHelper::ReduceVectorIndex(
       field_without_quantize->set_index_params(
           MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
 
-      // create flat index
-      auto vector_indexer = std::make_shared<VectorColumnIndexer>(
-          vector_index_path, *field_without_quantize);
-      s = vector_indexer->Open({true, true});
-      CHECK_RETURN_STATUS(s);
-
-      std::vector<VectorColumnIndexer::Ptr> merge_indexers;
-      for (auto &input_segment : input_segments) {
-        // merge_indexers should be ordered put
-        auto to_merge_indexers =
-            input_segment->get_vector_indexer(field->name());
-        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
-                              to_merge_indexers.end());
-      }
-
-      vector_column_params::MergeOptions merge_options;
-      if (concurrency == 0) {
-        merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
-      } else {
-        merge_options.write_concurrency = concurrency;
-      }
-
-      s = vector_indexer->Merge(merge_indexers, filter, merge_options);
-      CHECK_RETURN_STATUS(s);
-
-      s = vector_indexer->Flush();
+      s = merge_with_optional_reuse(
+          vector_index_path, *field_without_quantize,
+          [&](const Segment::Ptr &input_segment) {
+            return input_segment->get_vector_indexer(field->name());
+          });
       CHECK_RETURN_STATUS(s);
 
       BlockMeta new_block_meta;
@@ -699,24 +727,11 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      auto vector_indexer_quantize =
-          std::make_shared<VectorColumnIndexer>(vector_quan_index_path, *field);
-      s = vector_indexer_quantize->Open({true, true});
-      CHECK_RETURN_STATUS(s);
-
-      merge_indexers.clear();
-      for (auto &input_segment : input_segments) {
-        // merge_indexers should be ordered put
-        auto to_merge_indexers =
-            input_segment->get_quant_vector_indexer(field->name());
-        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
-                              to_merge_indexers.end());
-      }
-
-      s = vector_indexer_quantize->Merge(merge_indexers, filter, merge_options);
-      CHECK_RETURN_STATUS(s);
-
-      s = vector_indexer_quantize->Flush();
+      s = merge_with_optional_reuse(
+          vector_quan_index_path, *field,
+          [&](const Segment::Ptr &input_segment) {
+            return input_segment->get_quant_vector_indexer(field->name());
+          });
       CHECK_RETURN_STATUS(s);
 
       new_block_meta.set_id(vector_quan_block_id);
