@@ -39,19 +39,31 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
     for QUANTIZE_TYPE in $QUANTIZE_TYPE_LIST; do
         DB_LABEL="$DB_LABEL_PREFIX-$CASE_TYPE-$QUANTIZE_TYPE"
         echo "Running VectorDBBench for $DB_LABEL"
-        vectordbbench zvec --path "${DB_LABEL}" \
-        --db-label "${DB_LABEL}" \
-        --case-type "${CASE_TYPE}" \
-        --num-concurrency 12,16,20,30 \
-        --quantize-type "${QUANTIZE_TYPE}" --m 50 --ef-search 118 \
-        --is-using-refiner 2>&1 | tee $LOG_FILE
+        # if quantize = fp32, do not pass --is-using-refiner
+        if [ "$QUANTIZE_TYPE" == "fp32" ]; then
+            vectordbbench zvec --path "${DB_LABEL}" \
+              --db-label "${DB_LABEL}" \
+              --case-type "${CASE_TYPE}" \
+              --num-concurrency 12,16,20,30 \
+              --m 50 --ef-search 118 2>&1 | tee $LOG_FILE
+        else
+            vectordbbench zvec --path "${DB_LABEL}" \
+              --db-label "${DB_LABEL}" \
+              --case-type "${CASE_TYPE}" \
+              --num-concurrency 12,16,20,30 \
+              --quantize-type "${QUANTIZE_TYPE}" --m 50 --ef-search 118 \
+              --is-using-refiner 2>&1 | tee $LOG_FILE
+        fi
 
         RESULT_JSON_PATH=$(grep -o "/opt/VectorDBBench/.*\.json" $LOG_FILE)
         QPS=$(jq -r '.results[0].metrics.qps' "$RESULT_JSON_PATH")
         RECALL=$(jq -r '.results[0].metrics.recall' "$RESULT_JSON_PATH")
         LATENCY_P99=$(jq -r '.results[0].metrics.serial_latency_p99' "$RESULT_JSON_PATH")
 
-        label_list="case_type=${CASE_TYPE} dataset_desc=${DATASET_DESC} db_label=${DB_LABEL} commit=${COMMIT_ID} date=${DATE} quantize_type=${QUANTIZE_TYPE}"
+        #quote the var to avoid space in the label
+        label_list="case_type=\"${CASE_TYPE}\" dataset_desc=\"${DATASET_DESC}\" db_label=\"${DB_LABEL}\" commit=\"${COMMIT_ID}\" date=\"${DATE}\" quantize_type=\"${QUANTIZE_TYPE}\""
+        # replace `/` with `_` in label_list
+        label_list=$(echo $label_list | sed 's/\//_/g')
         cat <<EOF > prom_metrics.txt
         # TYPE vdb_bench_qps gauge
         vdb_bench_qps{$label_list} $QPS
