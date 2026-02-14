@@ -22,7 +22,7 @@ permissions:
 jobs:
   build:
     name: Zvec LinuxX64 CI
-    runs-on: linux_x64
+    runs-on: ubuntu-latest
 
     strategy:
       matrix:

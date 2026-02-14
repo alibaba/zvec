@@ -13,7 +13,7 @@ permissions:
 jobs:
   coverage:
     name: Nightly Coverage Report
-    runs-on: linux_x64
+    runs-on: ubuntu-latest
 
     strategy:
       matrix:
