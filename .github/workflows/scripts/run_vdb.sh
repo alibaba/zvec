@@ -3,7 +3,7 @@ set -e
 QUANTIZE_TYPE_LIST="int8 int4 fp16 fp32"
 CASE_TYPE_LIST="Performance768D1M Performance1536D500K" # respectively test cosine, ip # Performance960D1M l2 metrics
 LOG_FILE="bench.log"
-DATE=$(date +%Y-%m-%d)
+DATE=$(date +%Y-%m-%d_%H-%M-%S)
 NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 
 # COMMIT_ID = branch-date-sha
@@ -25,10 +25,10 @@ source .venv/bin/activate
 pip install cmake ninja psycopg2-binary loguru fire
 pip install -e /opt/VectorDBBench
 
- CMAKE_GENERATOR="Unix Makefiles" \
- CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
- SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build" \
- pip install -v "$GITHUB_WORKSPACE"
+CMAKE_GENERATOR="Unix Makefiles" \
+CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build" \
+pip install -v "$GITHUB_WORKSPACE"
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
     DATASET_DESC=""
