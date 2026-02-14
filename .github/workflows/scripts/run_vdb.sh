@@ -45,7 +45,7 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
             vectordbbench zvec --path "${DB_LABEL}" \
               --db-label "${DB_LABEL}" \
               --case-type "${CASE_TYPE}" \
-              --num-concurrency 12,16,20,30 \
+              --num-concurrency 12,16,20 \
               --m 50 --ef-search 118 2>&1 | tee $LOG_FILE
         else
             vectordbbench zvec --path "${DB_LABEL}" \
@@ -63,7 +63,7 @@ for CASE_TYPE in $CASE_TYPE_LIST; do
         LOAD_DURATION=$(jq -r '.results[0].metrics.load_duration' "$RESULT_JSON_PATH")
 
         #quote the var to avoid space in the label
-        label_list="case_type=\"${CASE_TYPE}\" dataset_desc=\"${DATASET_DESC}\" db_label=\"${DB_LABEL}\" commit=\"${COMMIT_ID}\" date=\"${DATE}\" quantize_type=\"${QUANTIZE_TYPE}\""
+        label_list="case_type=\"${CASE_TYPE}\",dataset_desc=\"${DATASET_DESC}\",db_label=\"${DB_LABEL}\",commit=\"${COMMIT_ID}\",date=\"${DATE}\",quantize_type=\"${QUANTIZE_TYPE}\""
         # replace `/` with `_` in label_list
         label_list=$(echo "$label_list" | sed 's/\//_/g')
         cat <<EOF > prom_metrics.txt
