@@ -17,7 +17,9 @@ DB_LABEL_PREFIX="Zvec16c64g-$COMMIT_ID"
 # install zvec
 git submodule update --init
 
-#cd .. # for debug
+# for debug
+#cd ..
+#export SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build"
 pwd
 
 python3 -m venv .venv
@@ -27,7 +29,6 @@ pip install -e /opt/VectorDBBench
 
 CMAKE_GENERATOR="Unix Makefiles" \
 CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/../build" \
 pip install -v "$GITHUB_WORKSPACE"
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
