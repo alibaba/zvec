@@ -38,13 +38,20 @@ set(ARCH_OPTIONS
   ENABLE_ARMV8.5A ENABLE_ARMV8.6A
 )
 
-set(AUTO_DETECT_ARCH ON)
+option(AUTO_DETECT_ARCH
+  "Auto-detect architecture flags when no explicit ENABLE_* arch option is set"
+  ON)
+set(_EXPLICIT_ARCH_SELECTED OFF)
 foreach(opt IN LISTS ARCH_OPTIONS)
   if(${opt})
-    set(AUTO_DETECT_ARCH OFF)
+    set(_EXPLICIT_ARCH_SELECTED ON)
     break()
   endif()
 endforeach()
+if(_EXPLICIT_ARCH_SELECTED)
+  # Explicit architecture options always win over auto-detection.
+  set(AUTO_DETECT_ARCH OFF)
+endif()
 
 include(CheckCCompilerFlag)
 
@@ -89,11 +96,23 @@ function(_detect_armv8_best)
 endfunction()
 
 function(_detect_x86_best)
+  if(NOT CMAKE_CROSSCOMPILING)
+    # For native builds, match the actual host CPU capabilities.
+    check_c_compiler_flag("-march=native" _COMP_SUPP_native)
+    if(_COMP_SUPP_native)
+      _AppendFlags(CMAKE_C_FLAGS "-march=native")
+      _AppendFlags(CMAKE_CXX_FLAGS "-march=native")
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" PARENT_SCOPE)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" PARENT_SCOPE)
+      return()
+    endif()
+  endif()
+
   set(_x86_flags
-    "graniterapids" "emeraldrapids" "sapphirerapids"
-    "skylake-avx512" "skylake"
-    "broadwell" "haswell" "sandybridge" "nehalem"
+    "haswell" "broadwell" "skylake"
+    "sandybridge" "nehalem"
     "znver3" "znver2" "znver1"
+    "x86-64-v2" "x86-64"
   )
   foreach(_arch IN LISTS _x86_flags)
     check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
