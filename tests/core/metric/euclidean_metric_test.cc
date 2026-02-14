@@ -12,11 +12,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <iostream>
+#include <vector>
 #include <gtest/gtest.h>
 #include "zvec/core/framework/index_factory.h"
 
 using namespace zvec;
 using namespace zvec::core;
+
+template <typename T>
+void CheckBatchDistanceMatchesSingle(const IndexMetric::Pointer &metric,
+                                     const std::vector<std::vector<T>> &vecs,
+                                     const std::vector<T> &query, size_t dim,
+                                     float tolerance) {
+  auto single_distance = metric->distance();
+  auto batch_distance = metric->batch_distance();
+  ASSERT_TRUE(single_distance);
+  ASSERT_TRUE(batch_distance);
+
+  std::vector<const void *> ptrs;
+  ptrs.reserve(vecs.size());
+  for (const auto &vec : vecs) {
+    ptrs.push_back(vec.data());
+  }
+
+  std::vector<float> batch_result(vecs.size(), 0.0f);
+  batch_distance(ptrs.data(), query.data(), vecs.size(), dim,
+                 batch_result.data());
+
+  for (size_t i = 0; i < vecs.size(); ++i) {
+    float single_result = 0.0f;
+    single_distance(vecs[i].data(), query.data(), dim, &single_result);
+    EXPECT_NEAR(single_result, batch_result[i], tolerance);
+  }
+}
 
 TEST(SquaredEuclideanMetric, General) {
   auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
@@ -79,6 +107,42 @@ TEST(SquaredEuclideanMetric, General) {
   float result = 1.0f;
   metric->normalize(&result);
   EXPECT_FLOAT_EQ(1.0f, result);
+}
+
+TEST(SquaredEuclideanMetric, BatchDistanceMatchesSingleFp32) {
+  auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+  ASSERT_TRUE(metric);
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, 8);
+  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
+
+  std::vector<std::vector<float>> vecs{
+      {1.0f, 2.0f, 3.0f, 4.0f, 1.5f, -2.0f, 0.5f, -1.0f},
+      {0.0f, -1.0f, 1.0f, 2.0f, -0.5f, 4.0f, -2.5f, 3.0f},
+      {-3.0f, 2.5f, 1.5f, 0.0f, 3.0f, -1.0f, 2.0f, 1.0f},
+  };
+  std::vector<float> query{2.0f, -1.0f, 0.5f, 3.0f, 1.0f, -2.0f, 4.0f, -1.5f};
+
+  CheckBatchDistanceMatchesSingle(metric, vecs, query, 8, 1e-5f);
+}
+
+TEST(SquaredEuclideanMetric, BatchDistanceMatchesSingleInt8) {
+  auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+  ASSERT_TRUE(metric);
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_INT8, 8);
+  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
+
+  std::vector<std::vector<int8_t>> vecs{
+      {1, 2, 3, 4, 5, 6, 7, 8},
+      {-1, 0, 2, -3, 4, -5, 6, -7},
+      {8, 7, 6, 5, 4, 3, 2, 1},
+  };
+  std::vector<int8_t> query{2, -1, 3, 1, -2, 4, -3, 5};
+
+  CheckBatchDistanceMatchesSingle(metric, vecs, query, 8, 1e-5f);
 }
 
 TEST(EuclideanMetric, General) {
