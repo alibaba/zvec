@@ -1,7 +1,7 @@
 set -e
 
 QUANTIZE_TYPE_LIST="int8 int4 fp16 fp32"
-CASE_TYPE_LIST="Performance768D1M Performance1536D500K" # respectively test cosine, ip # Performance960D1M l2 metrics
+CASE_TYPE_LIST="Performance768D1M Performance768D10M Performance1536D500K" # respectively test cosine, ip # Performance960D1M l2 metrics
 LOG_FILE="bench.log"
 DATE=$(date +%Y-%m-%d_%H-%M-%S)
 NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
@@ -32,29 +32,33 @@ CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
 pip install -v "$GITHUB_WORKSPACE"
 
 for CASE_TYPE in $CASE_TYPE_LIST; do
+    echo "Running VectorDBBench for $CASE_TYPE"
     DATASET_DESC=""
     if [ "$CASE_TYPE" == "Performance768D1M" ]; then
         DATASET_DESC="Performance768D1M - Cohere Cosine"
+    elif [ "$CASE_TYPE" == "Performance768D10M" ]; then
+        DATASET_DESC="Performance768D10M - Cohere Cosine"
     else
         DATASET_DESC="Performance1536D500K - OpenAI IP"
     fi
+
     for QUANTIZE_TYPE in $QUANTIZE_TYPE_LIST; do
         DB_LABEL="$DB_LABEL_PREFIX-$CASE_TYPE-$QUANTIZE_TYPE"
         echo "Running VectorDBBench for $DB_LABEL"
-        # if quantize = fp32, do not pass --is-using-refiner
+
+        VDB_PARAMS="--path \"${DB_LABEL}\" --db-label \"${DB_LABEL}\" --case-type \"${CASE_TYPE}\" --num-concurrency 12,14,16,18,20"
+        if [ "$CASE_TYPE" == "Performance768D1M" ]; then
+            VDB_PARAMS="${VDB_PARAMS} --m 15 --ef-search 180"
+        elif [ "$CASE_TYPE" == "Performance768D10M" ]; then
+            VDB_PARAMS="${VDB_PARAMS} --m 50 --ef-search 118 --is-using-refiner"
+        else #Performance1536D500K using default params + refiner to monitor performance degradation
+            VDB_PARAMS="${VDB_PARAMS} --m 50 --ef-search 100 --is-using-refiner"
+        fi
+
         if [ "$QUANTIZE_TYPE" == "fp32" ]; then
-            vectordbbench zvec --path "${DB_LABEL}" \
-              --db-label "${DB_LABEL}" \
-              --case-type "${CASE_TYPE}" \
-              --num-concurrency 12,16,20 \
-              --m 50 --ef-search 118 2>&1 | tee $LOG_FILE
+            vectordbbench zvec ${VDB_PARAMS} 2>&1 | tee $LOG_FILE
         else
-            vectordbbench zvec --path "${DB_LABEL}" \
-              --db-label "${DB_LABEL}" \
-              --case-type "${CASE_TYPE}" \
-              --num-concurrency 12,16,20,30 \
-              --quantize-type "${QUANTIZE_TYPE}" --m 50 --ef-search 118 \
-              --is-using-refiner 2>&1 | tee $LOG_FILE
+            vectordbbench zvec ${VDB_PARAMS} --quantize-type "${QUANTIZE_TYPE}" 2>&1 | tee $LOG_FILE
         fi
 
         RESULT_JSON_PATH=$(grep -o "/opt/VectorDBBench/.*\.json" $LOG_FILE)
