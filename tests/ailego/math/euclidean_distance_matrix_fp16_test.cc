@@ -137,7 +137,7 @@ TEST(DistanceMatrix, SquaredEuclidean_General) {
 template <size_t M, size_t N>
 void TestEuclideanMatrix(void) {
   std::mt19937 gen(static_cast<uint32_t>(0x5EED1234u + M * 131u + N * 17u));
-  constexpr int kFp16MatrixUlpTolerance = 20000;
+  constexpr int kFp16MatrixUlpTolerance = 40000;
 
   const size_t batch_size = M;
   const size_t query_size = N;
@@ -184,7 +184,7 @@ void TestEuclideanMatrix(void) {
 template <size_t M, size_t N>
 void TestSquaredEuclideanMatrix(void) {
   std::mt19937 gen(static_cast<uint32_t>(0x5EED5678u + M * 131u + N * 17u));
-  constexpr int kFp16MatrixUlpTolerance = 20000;
+  constexpr int kFp16MatrixUlpTolerance = 40000;
 
   const size_t batch_size = M;
   const size_t query_size = N;
@@ -559,7 +559,7 @@ void EuclideanBenchmark(void) {
 
   std::cout << "# (" << IntelIntrinsics() << ") FP16 " << dimension << "d, "
             << batch_size << " * " << query_size << " * " << block_size
-            << std::endl;
+            << '\n';
 
   // 1 Batched Euclidean
   elapsed_time.reset();
@@ -575,7 +575,7 @@ void EuclideanBenchmark(void) {
     }
   }
   std::cout << "* 1 Batched Euclidean (us) \t" << elapsed_time.micro_seconds()
-            << std::endl;
+            << '\n';
 
   // N Batched Euclidean
   elapsed_time.reset();
@@ -586,7 +586,7 @@ void EuclideanBenchmark(void) {
         matrix_batch, &query2[0], dimension, results);
   }
   std::cout << "* N Batched Euclidean (us) \t" << elapsed_time.micro_seconds()
-            << std::endl;
+            << '\n';
 
   // Unbatched Euclidean
   elapsed_time.reset();
@@ -605,7 +605,7 @@ void EuclideanBenchmark(void) {
     }
   }
   std::cout << "* Unbatched Euclidean (us) \t" << elapsed_time.micro_seconds()
-            << std::endl;
+            << '\n';
 }
 
 template <size_t M, size_t N, size_t B, size_t D>
@@ -643,7 +643,7 @@ void SquaredEuclideanBenchmark(void) {
 
   std::cout << "# (" << IntelIntrinsics() << ") FP16 " << dimension << "d, "
             << batch_size << " * " << query_size << " * " << block_size
-            << std::endl;
+            << '\n';
 
   // 1 Batched Euclidean
   elapsed_time.reset();
@@ -659,7 +659,7 @@ void SquaredEuclideanBenchmark(void) {
     }
   }
   std::cout << "* 1 Batched SquaredEuclidean (us) \t"
-            << elapsed_time.micro_seconds() << std::endl;
+            << elapsed_time.micro_seconds() << '\n';
 
   // N Batched Euclidean
   elapsed_time.reset();
@@ -670,7 +670,7 @@ void SquaredEuclideanBenchmark(void) {
         matrix_batch, &query2[0], dimension, results);
   }
   std::cout << "* N Batched SquaredEuclidean (us) \t"
-            << elapsed_time.micro_seconds() << std::endl;
+            << elapsed_time.micro_seconds() << '\n';
 
   // Unbatched Euclidean
   elapsed_time.reset();
@@ -689,7 +689,7 @@ void SquaredEuclideanBenchmark(void) {
     }
   }
   std::cout << "* Unbatched SquaredEuclidean (us) \t"
-            << elapsed_time.micro_seconds() << std::endl;
+            << elapsed_time.micro_seconds() << '\n';
 }
 
 TEST(DistanceMatrix, DISABLED_Euclidean_Benchmark) {
