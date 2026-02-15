@@ -2,18 +2,18 @@ name: Zvec LinuxARM64 CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
     paths-ignore:
-      - '**.md'
+      - "**.md"
   merge_group:
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
     paths-ignore:
-      - '**.md'
+      - "**.md"
   workflow_dispatch:
 
 concurrency:
-  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -22,18 +22,28 @@ permissions:
 jobs:
   build:
     name: Zvec LinuxARM64 CI
-    runs-on: linux_arm64
+    # Use GitHub-hosted ARM runner (replaces self-hosted `linux_arm64` label)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
 
     strategy:
       matrix:
-        python-version: ['3.10']
+        python-version: ["3.10"]
       fail-fast: false
 
     container:
       image: quay.io/pypa/manylinux_2_28_aarch64:2024-03-10-4935fcc
       options: --user root
 
+    env:
+      PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip
+
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Set up Python path for manylinux
         run: |
           case "${{ matrix.python-version }}" in
@@ -42,36 +52,32 @@ jobs:
             "3.12") PY_PATH="/opt/python/cp312-cp312" ;;
             *) echo "Unsupported Python version: ${{ matrix.python-version }}"; exit 1 ;;
           esac
-          echo "PYTHON_BIN=$PY_PATH/bin/python" >> $GITHUB_ENV
-          echo "PIP_BIN=$PY_PATH/bin/pip" >> $GITHUB_ENV
-          echo "CLANG_FORMATTER_BIN=$PY_PATH/bin/clang-format" >> $GITHUB_ENV
+
+          echo "PYTHON_BIN=$PY_PATH/bin/python" >> "$GITHUB_ENV"
+          echo "PIP_BIN=$PY_PATH/bin/pip" >> "$GITHUB_ENV"
+          echo "CLANG_FORMATTER_BIN=$PY_PATH/bin/clang-format" >> "$GITHUB_ENV"
+
+          NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          echo "Using $NPROC parallel jobs for builds"
+
+          mkdir -p "$PIP_CACHE_DIR"
           $PY_PATH/bin/python --version
         shell: bash
 
-      - name: Prepare clean build directory
-        run: |
-          export CLEAN_WORKSPACE="/tmp/zvec"
-          mkdir -p "$CLEAN_WORKSPACE"
-          cd "$CLEAN_WORKSPACE"
-
-          git config --global --add safe.directory "$CLEAN_WORKSPACE"
-          git clone --recursive "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
-
-          if [ -n "${{ github.event.number }}" ]; then
-            git fetch origin "pull/${{ github.event.number }}/head"
-            git checkout FETCH_HEAD
-          else
-            git checkout "${{ github.sha }}"
-          fi
-
-          echo "CLEAN_WORKSPACE=$CLEAN_WORKSPACE" >> $GITHUB_ENV
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/pip
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-pip-${{ matrix.python-version }}-
+            ${{ runner.os }}-${{ runner.arch }}-pip-
 
       - name: Install dependencies
         run: |
-          ${{ env.PIP_BIN }} install --upgrade pip \
+          ${{ env.PYTHON_BIN }} -m pip install --upgrade pip
+          ${{ env.PYTHON_BIN }} -m pip install \
             ruff==v0.14.4 \
             clang-format==18.1.8 \
             pybind11==3.0 \
@@ -85,20 +91,19 @@ jobs:
 
       - name: Run Ruff Linter
         run: |
-          cd "$CLEAN_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
           ${{ env.PYTHON_BIN }} -m ruff check .
         shell: bash
 
       - name: Run Ruff Formatter Check
         run: |
-          cd "$CLEAN_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
           ${{ env.PYTHON_BIN }} -m ruff format --check .
         shell: bash
 
       - name: Run clang-format Check
         run: |
-          cd "$CLEAN_WORKSPACE"
-          
+          cd "$GITHUB_WORKSPACE"
 
           CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
             ! -path "./build/*" \
@@ -116,33 +121,33 @@ jobs:
           ${{ env.CLANG_FORMATTER_BIN }} --dry-run --Werror $CPP_FILES
         shell: bash
 
-      - name: Install Python dependencies and build package
+      - name: Build from source
         run: |
-          cd "$CLEAN_WORKSPACE"
-          NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+          cd "$GITHUB_WORKSPACE"
 
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-          ${{ env.PIP_BIN }} install -v . \
+          ${{ env.PYTHON_BIN }} -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS="ON"'
         shell: bash
 
       - name: Run Python Tests with Coverage
         run: |
-          cd "$CLEAN_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
           ${{ env.PYTHON_BIN }} -m pytest python/tests/ --cov=zvec --cov-report=xml --no-cov-on-fail
         shell: bash
 
       - name: Run Cpp Tests
         run: |
-          cd "$CLEAN_WORKSPACE/build"
-          make unittest -j$(nproc)
+          cd "$GITHUB_WORKSPACE/build"
+          make unittest -j"$NPROC"
         shell: bash
 
       - name: Run Cpp Examples
         run: |
-          cd "$CLEAN_WORKSPACE/examples/c++"
-          mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j $(nproc) && ./db-example && ./core-example && ./ailego-example
+          cd "$GITHUB_WORKSPACE/examples/c++"
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j "$NPROC" && ./db-example && ./core-example && ./ailego-example
         shell: bash

@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -23,6 +23,7 @@ jobs:
   build:
     name: Zvec MacArm64 CI
     runs-on: macos-15
+    timeout-minutes: 40
 
     strategy:
       matrix:
