@@ -684,9 +684,8 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_index_path = FileHelper::MakeVectorIndexPath(
           output_segment_path, field->name(), vector_block_id);
 
-      s = merge_with_optional_reuse(
-          vector_index_path, *field,
-          [&](const Segment::Ptr &input_segment) {
+      s = merge_with_optional_reuse(vector_index_path, *field,
+                                    [&](const Segment::Ptr &input_segment) {
             return input_segment->get_vector_indexer(field->name());
           });
       CHECK_RETURN_STATUS(s);
