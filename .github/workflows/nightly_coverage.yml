@@ -91,7 +91,7 @@ jobs:
         shell: bash
 
       - name: Upload Coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ${{ env.CLEAN_WORKSPACE }}/proxima-zvec-filtered.lcov.info,${{ env.CLEAN_WORKSPACE }}/coverage.xml
           flags: python,cpp,nightly
