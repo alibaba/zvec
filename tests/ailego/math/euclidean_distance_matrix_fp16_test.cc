@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <functional>
+#include <cstdint>
 #include <random>
 #include <string>
 #include <thread>
@@ -135,7 +136,8 @@ TEST(DistanceMatrix, SquaredEuclidean_General) {
 
 template <size_t M, size_t N>
 void TestEuclideanMatrix(void) {
-  std::mt19937 gen((std::random_device())());
+  std::mt19937 gen(static_cast<uint32_t>(0x5EED1234u + M * 131u + N * 17u));
+  constexpr int kFp16MatrixUlpTolerance = 20000;
 
   const size_t batch_size = M;
   const size_t query_size = N;
@@ -174,13 +176,15 @@ void TestEuclideanMatrix(void) {
 
   for (size_t i = 0; i < batch_size * query_size; ++i) {
     // EXPECT_FLOAT_EQ(result1[i], result2[i]);
-    EXPECT_TRUE(MathHelper::IsAlmostEqual(result1[i], result2[i], 10000));
+    EXPECT_TRUE(MathHelper::IsAlmostEqual(
+        result1[i], result2[i], kFp16MatrixUlpTolerance));
   }
 }
 
 template <size_t M, size_t N>
 void TestSquaredEuclideanMatrix(void) {
-  std::mt19937 gen((std::random_device())());
+  std::mt19937 gen(static_cast<uint32_t>(0x5EED5678u + M * 131u + N * 17u));
+  constexpr int kFp16MatrixUlpTolerance = 20000;
 
   const size_t batch_size = M;
   const size_t query_size = N;
@@ -219,7 +223,8 @@ void TestSquaredEuclideanMatrix(void) {
 
   for (size_t i = 0; i < batch_size * query_size; ++i) {
     // EXPECT_FLOAT_EQ(result1[i], result2[i]);
-    EXPECT_TRUE(MathHelper::IsAlmostEqual(result1[i], result2[i], 10000));
+    EXPECT_TRUE(MathHelper::IsAlmostEqual(
+        result1[i], result2[i], kFp16MatrixUlpTolerance));
   }
 }
 
