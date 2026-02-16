@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#גגכחדגנכחידגנכיחדגנ
 project_name=proxima-zvec
 gcov_tool=gcov
 zip_html=false
