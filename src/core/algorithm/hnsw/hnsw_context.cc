@@ -77,7 +77,7 @@ int HnswContext::init(ContextType type) {
       update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
       candidates_.limit(max_scan_num_);
 
-      check_need_adjuct_ctx();
+      check_need_adjust_ctx();
       break;
 
     default:

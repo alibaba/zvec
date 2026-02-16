@@ -361,8 +361,8 @@ class HnswContext : public IndexContext {
     return level_topks_[level];
   }
 
-  inline void check_need_adjuct_ctx(void) {
-    check_need_adjuct_ctx(entity_->doc_cnt());
+  inline void check_need_adjust_ctx(void) {
+    check_need_adjust_ctx(entity_->doc_cnt());
   }
 
   inline size_t compute_reserve_cnt(uint32_t cur_doc) const {
@@ -375,7 +375,7 @@ class HnswContext : public IndexContext {
   }
 
   //! candidates heap and visitfilter need to resize as doc cnt growing up
-  inline void check_need_adjuct_ctx(uint32_t doc_cnt) {
+  inline void check_need_adjust_ctx(uint32_t doc_cnt) {
     if (ailego_unlikely(doc_cnt + kTriggerReserveCnt > reserve_max_doc_cnt_)) {
       while (doc_cnt + kTriggerReserveCnt > reserve_max_doc_cnt_) {
         reserve_max_doc_cnt_ =

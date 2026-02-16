@@ -485,7 +485,7 @@ int HnswSparseStreamer::add_with_id_impl(uint32_t id,
                                    sparse_query_buffer);
 
   ctx->reset_query(sparse_query_buffer.data());
-  ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  ctx->check_need_adjust_ctx(entity_.doc_cnt());
 
   level_t level = alg_->get_random_level();
   ret =
@@ -570,7 +570,7 @@ int HnswSparseStreamer::add_impl(uint64_t pkey, const uint32_t sparse_count,
                                    sparse_query_buffer);
 
   ctx->reset_query(sparse_query_buffer.data());
-  ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  ctx->check_need_adjust_ctx(entity_.doc_cnt());
 
   level_t level = alg_->get_random_level();
   node_id_t id;
@@ -637,7 +637,7 @@ int HnswSparseStreamer::search_impl(
   ctx->clear();
   ctx->update_dist_caculator_distance(search_distance_);
   ctx->resize_results(count);
-  ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  ctx->check_need_adjust_ctx(entity_.doc_cnt());
 
   const uint32_t *sparse_indices_tmp = sparse_indices;
   const void *sparse_query_tmp = sparse_query;

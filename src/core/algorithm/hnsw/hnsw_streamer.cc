@@ -391,7 +391,7 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
     LOG_DEBUG("HnswStreamer doc_count[%zu] estimate[%zu]",
               (size_t)entity_.doc_cnt(), (size_t)estimate_doc_count);
   }
-  ctx->check_need_adjuct_ctx(std::max(entity_.doc_cnt(), estimate_doc_count));
+  ctx->check_need_adjust_ctx(std::max(entity_.doc_cnt(), estimate_doc_count));
 
   return Context::Pointer(ctx);
 }
@@ -466,7 +466,7 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
   ctx->clear();
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
   ctx->reset_query(query);
-  ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  ctx->check_need_adjust_ctx(entity_.doc_cnt());
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -546,7 +546,7 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
   ctx->clear();
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
   ctx->reset_query(query);
-  ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  ctx->check_need_adjust_ctx(entity_.doc_cnt());
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -618,7 +618,7 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->clear();
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
-  ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  ctx->check_need_adjust_ctx(entity_.doc_cnt());
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
     ret = alg_->search(ctx);
