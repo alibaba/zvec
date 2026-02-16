@@ -130,7 +130,10 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
           } else if (index_param.data_type == DataType::DT_FP32) {
             converter_name = "CosineNormalizeConverter";
           } else {
-            LOG_ERROR("Unsupported data type: ");
+            LOG_ERROR(
+                "Cosine metric without quantizer only supports FP32 and FP16 "
+                "data types. For INT8 data, use a quantizer "
+                "(e.g. QuantizerType::kInt8).");
             return core::IndexError_Unsupported;
           }
           break;
