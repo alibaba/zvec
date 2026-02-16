@@ -89,23 +89,20 @@ function(_detect_armv8_best)
 endfunction()
 
 function(_detect_x86_best)
-  set(_x86_flags
-    "graniterapids" "emeraldrapids" "sapphirerapids"
-    "skylake-avx512" "skylake"
-    "broadwell" "haswell" "sandybridge" "nehalem"
-    "znver3" "znver2" "znver1"
-  )
-  foreach(_arch IN LISTS _x86_flags)
-    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
-    if(_COMP_SUPP_${_arch})
-      _AppendFlags(CMAKE_C_FLAGS "-march=${_arch}")
-      _AppendFlags(CMAKE_CXX_FLAGS "-march=${_arch}")
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" PARENT_SCOPE)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-  message(WARNING "No known x86 microarchitecture flag supported; falling back to generic.")
+  # Use -march=native to target the actual build machine's CPU.
+  # The previous approach iterated from highest to lowest arch and checked
+  # whether the *compiler* accepted the flag — but the compiler will accept
+  # e.g. -march=skylake-avx512 on any machine, which then emits AVX-512
+  # instructions that crash on CPUs without those extensions (see #128, #92).
+  check_c_compiler_flag("-march=native" _COMP_SUPP_NATIVE)
+  if(_COMP_SUPP_NATIVE)
+    _AppendFlags(CMAKE_C_FLAGS "-march=native")
+    _AppendFlags(CMAKE_CXX_FLAGS "-march=native")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" PARENT_SCOPE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" PARENT_SCOPE)
+    return()
+  endif()
+  message(WARNING "Compiler does not support -march=native; falling back to generic x86-64.")
 endfunction()
 
 if(MSVC)
