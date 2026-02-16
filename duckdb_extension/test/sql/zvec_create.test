@@ -1,0 +1,18 @@
+# name: test/sql/zvec_create.test
+# description: Test zvec_create function
+# group: [zvec]
+
+require zvec
+
+# Create a simple collection with string and vector fields
+query I
+SELECT zvec_create('/tmp/duckdb_zvec_test_create', '{
+  "name": "test_col",
+  "fields": [
+    {"name": "title", "type": "STRING"},
+    {"name": "embedding", "type": "VECTOR_FP32", "dimension": 4,
+     "index": {"type": "HNSW", "metric": "COSINE"}}
+  ]
+}');
+----
+Created collection at /tmp/duckdb_zvec_test_create

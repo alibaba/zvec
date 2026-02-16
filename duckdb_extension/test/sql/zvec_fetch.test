@@ -1,0 +1,32 @@
+# name: test/sql/zvec_fetch.test
+# description: Test zvec_fetch function
+# group: [zvec]
+
+require zvec
+
+# Create collection
+query I
+SELECT zvec_create('/tmp/duckdb_zvec_test_fetch', '{
+  "name": "docs",
+  "fields": [
+    {"name": "title", "type": "STRING"},
+    {"name": "count", "type": "INT32"},
+    {"name": "embedding", "type": "VECTOR_FP32", "dimension": 4,
+     "index": {"type": "HNSW", "metric": "COSINE"}}
+  ]
+}');
+----
+Created collection at /tmp/duckdb_zvec_test_fetch
+
+# Insert a document
+query I
+SELECT zvec_insert('/tmp/duckdb_zvec_test_fetch', 'doc1',
+  '{"title": "test document", "count": 42, "embedding": [0.1, 0.2, 0.3, 0.4]}');
+----
+Inserted doc1
+
+# Fetch by primary key
+query III
+SELECT pk, title, count FROM zvec_fetch('/tmp/duckdb_zvec_test_fetch', 'doc1');
+----
+doc1	test document	42

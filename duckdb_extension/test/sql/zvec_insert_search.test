@@ -1,0 +1,48 @@
+# name: test/sql/zvec_insert_search.test
+# description: Test zvec_insert and zvec_search functions
+# group: [zvec]
+
+require zvec
+
+# Create collection
+query I
+SELECT zvec_create('/tmp/duckdb_zvec_test_search', '{
+  "name": "articles",
+  "fields": [
+    {"name": "title", "type": "STRING"},
+    {"name": "score_val", "type": "FLOAT"},
+    {"name": "embedding", "type": "VECTOR_FP32", "dimension": 4,
+     "index": {"type": "HNSW", "metric": "COSINE"}}
+  ]
+}');
+----
+Created collection at /tmp/duckdb_zvec_test_search
+
+# Insert documents
+query I
+SELECT zvec_insert('/tmp/duckdb_zvec_test_search', 'doc1',
+  '{"title": "hello world", "score_val": 1.0, "embedding": [1.0, 0.0, 0.0, 0.0]}');
+----
+Inserted doc1
+
+query I
+SELECT zvec_insert('/tmp/duckdb_zvec_test_search', 'doc2',
+  '{"title": "goodbye world", "score_val": 2.0, "embedding": [0.0, 1.0, 0.0, 0.0]}');
+----
+Inserted doc2
+
+query I
+SELECT zvec_insert('/tmp/duckdb_zvec_test_search', 'doc3',
+  '{"title": "hello again", "score_val": 3.0, "embedding": [0.9, 0.1, 0.0, 0.0]}');
+----
+Inserted doc3
+
+# Search for vectors similar to [1.0, 0.0, 0.0, 0.0]
+# doc1 should be most similar (exact match), doc3 next (close), doc2 last
+query II
+SELECT pk, title FROM zvec_search('/tmp/duckdb_zvec_test_search', 'embedding',
+  [1.0, 0.0, 0.0, 0.0]::FLOAT[], 3) ORDER BY score DESC;
+----
+doc1	hello world
+doc3	hello again
+doc2	goodbye world
