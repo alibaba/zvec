@@ -254,7 +254,7 @@ class CosineConverter : public IndexConverter {
     IndexMeta::DataType type = meta_.data_type();
 
     if (type != original_type_) {
-      LOG_ERROR("Orignal Type Not Matched: (%d, %d)", type, original_type_);
+      LOG_ERROR("Original Type Not Matched: (%d, %d)", type, original_type_);
       return IndexError_Mismatch;
     }
 

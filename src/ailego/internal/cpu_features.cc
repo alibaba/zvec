@@ -327,7 +327,7 @@ bool CpuFeatures::VMX(void) {
   return !!(flags_.L1_ECX & (1u << 5));
 }
 
-// ！Running on a hypervisor
+//! Running on a hypervisor
 bool CpuFeatures::HYPERVISOR(void) {
   return !!(flags_.L1_ECX & (1u << 31));
 }

@@ -179,7 +179,7 @@ class CpuFeatures {
   //! Hardware virtualization
   static bool VMX(void);
 
-  // ！Running on a hypervisor
+  //! Running on a hypervisor
   static bool HYPERVISOR(void);
 
   //! Intrinsics of compiling
@@ -359,7 +359,7 @@ class CpuFeatures {
     //! Hardware virtualization
     bool VMX = CpuFeatures::VMX();
 
-    // ！Running on a hypervisor
+    //! Running on a hypervisor
     bool HYPERVISOR = CpuFeatures::HYPERVISOR();
   };
   static StaticFlags static_flags_;
