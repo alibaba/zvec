@@ -213,7 +213,7 @@ class IndexStreamerReducer : public IndexReducerBase {
   //! Index Reducer Pointer
   typedef std::shared_ptr<IndexStreamerReducer> Pointer;
 
-  virtual int set_target_streamer_wiht_info(
+  virtual int set_target_streamer_with_info(
       const IndexBuilder::Pointer builder,
       const IndexStreamer::Pointer streamer,
       const IndexConverter::Pointer converter,

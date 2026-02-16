@@ -55,7 +55,7 @@ int MixedStreamerReducer::cleanup(void) {
   return 0;
 }
 
-int MixedStreamerReducer::set_target_streamer_wiht_info(
+int MixedStreamerReducer::set_target_streamer_with_info(
     const IndexBuilder::Pointer builder, const IndexStreamer::Pointer streamer,
     const IndexConverter::Pointer converter,
     const IndexReformer::Pointer reformer,

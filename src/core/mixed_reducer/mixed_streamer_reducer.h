@@ -45,7 +45,7 @@ class MixedStreamerReducer : public IndexStreamerReducer {
   int dump(const IndexDumper::Pointer &dumper) override;
 
  public:  // StreamerReducer's unique methods
-  int set_target_streamer_wiht_info(
+  int set_target_streamer_with_info(
       const IndexBuilder::Pointer builder,
       const IndexStreamer::Pointer streamer,
       const IndexConverter::Pointer converter,

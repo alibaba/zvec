@@ -123,7 +123,7 @@ class VectorColumnIndexer {
 
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
-                           // static/template/seperate class
+                           // static/template/separate class
 };
 
 

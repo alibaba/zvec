@@ -146,7 +146,7 @@ class HnswSparseBuilderEntity : public HnswSparseEntity {
   std::string neighbors_buffer_{};        // level 0 neighbors buffer
   std::string upper_neighbors_buffer_{};  // upper layer neighbors buffer
 
-  std::string sparse_data_buffer_{};  // aligned spase data buffer
+  std::string sparse_data_buffer_{};  // aligned sparse data buffer
   size_t sparse_data_offset_{0};      //
 
   // upper layer offset + level in upper_neighbors_buffer_

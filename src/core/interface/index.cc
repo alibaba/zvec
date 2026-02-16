@@ -769,7 +769,7 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
-  if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
+  if (reducer->set_target_streamer_with_info(builder_, streamer_, converter_,
                                              reformer_,
                                              input_vector_meta_) != 0) {
     LOG_ERROR("Failed to set target streamer");
