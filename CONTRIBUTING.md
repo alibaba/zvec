@@ -19,7 +19,7 @@ By participating, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md
 ### Clone & Initialize
 
 ```bash
-git clone --recursive https://github.com/your-org/zvec.git
+git clone --recursive https://github.com/alibaba/zvec.git
 cd zvec
 ```
 
