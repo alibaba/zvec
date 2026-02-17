@@ -95,7 +95,7 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         .. code-block:: python
 
             # Recommended for users in China
-            reranker = SentenceTransformerReRanker(
+            reranker = DefaultLocalReRanker(
                 query="机器学习算法",
                 rerank_field="content",
                 model_source="modelscope"
@@ -109,9 +109,9 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
 
     Examples:
         >>> # Basic usage with default MS MARCO MiniLM model
-        >>> from zvec.extension import SentenceTransformerReRanker
+        >>> from zvec.extension import DefaultLocalReRanker
         >>>
-        >>> reranker = SentenceTransformerReRanker(
+        >>> reranker = DefaultLocalReRanker(
         ...     query="machine learning algorithms",
         ...     topn=5,
         ...     rerank_field="content"
@@ -125,7 +125,7 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         ... )
 
         >>> # Using ModelScope for users in China
-        >>> reranker = SentenceTransformerReRanker(
+        >>> reranker = DefaultLocalReRanker(
         ...     query="深度学习",
         ...     topn=10,
         ...     rerank_field="content",
@@ -133,7 +133,7 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         ... )
 
         >>> # Using larger model for better quality
-        >>> reranker = SentenceTransformerReRanker(
+        >>> reranker = DefaultLocalReRanker(
         ...     query="neural networks",
         ...     topn=5,
         ...     rerank_field="content",
@@ -177,7 +177,7 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         device: Optional[str] = None,
         batch_size: int = 32,
     ):
-        """Initialize SentenceTransformerReRanker with query and configuration.
+        """Initialize DefaultLocalReRanker with query and configuration.
 
         Args:
             query (Optional[str]): Query text for semantic matching. Required.
@@ -214,59 +214,19 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
             )
         self._model = model
 
-    def _get_model(self):
-        """Load or retrieve the CrossEncoder model.
-
-        This overrides the base class method to load CrossEncoder instead of
-        SentenceTransformer, as reranking requires cross-encoder models.
+    @property
+    def _get_model_class(self):
+        """Get the Sentence Transformer class.
 
         Returns:
-            CrossEncoder: The loaded cross-encoder model instance.
+            class: CrossEncoder, the class used for cross-encoder re-ranking.
 
         Raises:
             ImportError: If required packages are not installed.
-            ValueError: If model cannot be loaded.
         """
-        # Return cached model if exists
-        if self._model is not None:
-            return self._model
+        sentence_transformers = require_module("sentence_transformers")
 
-        # Load cross-encoder model
-        try:
-            sentence_transformers = require_module("sentence_transformers")
-
-            if self._model_source == "modelscope":
-                # Load from ModelScope
-                require_module("modelscope")
-                from modelscope.hub.snapshot_download import snapshot_download
-
-                # Download model to cache
-                model_dir = snapshot_download(self._model_name)
-
-                # Load CrossEncoder from local path
-                model = sentence_transformers.CrossEncoder(
-                    model_dir, device=self._device
-                )
-            else:
-                # Load CrossEncoder from Hugging Face (default)
-                model = sentence_transformers.CrossEncoder(
-                    self._model_name, device=self._device
-                )
-
-            return model
-
-        except ImportError as e:
-            if "modelscope" in str(e) and self._model_source == "modelscope":
-                raise ImportError(
-                    "ModelScope support requires the 'modelscope' package. "
-                    "Please install it with: pip install modelscope"
-                ) from e
-            raise
-        except Exception as e:
-            raise ValueError(
-                f"Failed to load CrossEncoder model '{self._model_name}' "
-                f"from {self._model_source}: {e!s}"
-            ) from e
+        return sentence_transformers.CrossEncoder
 
     @property
     def query(self) -> str:
@@ -305,7 +265,7 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
             - Processing time is O(n) where n is the number of documents
 
         Examples:
-            >>> reranker = SentenceTransformerReRanker(
+            >>> reranker = DefaultLocalReRanker(
             ...     query="machine learning",
             ...     topn=3,
             ...     rerank_field="content"

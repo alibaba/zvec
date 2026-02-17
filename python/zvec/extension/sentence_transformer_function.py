@@ -88,6 +88,18 @@ class SentenceTransformerFunctionBase:
             return str(model.device)
         return self._device or "cpu"
 
+    @property
+    def _get_model_class(self): 
+        """Get the Sentence Transformer class.
+
+        Returns:
+            class: The Sentence Transformer class to use for loading models.
+
+        Raises:
+            ImportError: If required packages are not installed.
+        """
+        raise NotImplementedError()
+
     def _get_model(self):
         """Load or retrieve the Sentence Transformer model.
 
@@ -104,8 +116,6 @@ class SentenceTransformerFunctionBase:
 
         # Load model
         try:
-            sentence_transformers = require_module("sentence_transformers")
-
             if self._model_source == "modelscope":
                 # Load from ModelScope
                 require_module("modelscope")
@@ -115,12 +125,13 @@ class SentenceTransformerFunctionBase:
                 model_dir = snapshot_download(self._model_name)
 
                 # Load from local path
-                self._model = sentence_transformers.SentenceTransformer(
+                self._model = self._get_model_class(
                     model_dir, device=self._device, trust_remote_code=True
                 )
             else:
                 # Load from Hugging Face (default)
-                self._model = sentence_transformers.SentenceTransformer(
+                self._model = self._get_model_class(
+
                     self._model_name, device=self._device, trust_remote_code=True
                 )
 
@@ -138,13 +149,3 @@ class SentenceTransformerFunctionBase:
                 f"Failed to load Sentence Transformer model '{self._model_name}' "
                 f"from {self._model_source}: {e!s}"
             ) from e
-
-    def _is_sparse_model(self) -> bool:
-        """Check if the loaded model is a sparse encoder (e.g., SPLADE).
-
-        Returns:
-            bool: True if model supports sparse encoding.
-        """
-        model = self._get_model()
-        # Check if model has sparse encoding methods
-        return hasattr(model, "encode_query") or hasattr(model, "encode_document")
