@@ -116,6 +116,14 @@ class Collection:
         Vector index types (HNSW, IVF, FLAT) can only be applied to vector fields.
         Inverted index (`InvertIndexParam`) is for scalar fields.
 
+        Note:
+            Some combinations of vector data type and similarity metric are not yet
+            fully supported by the C++ core. For example, the cosine metric currently
+            works only with floating-point vector types; attempting to create an
+            HNSW/IVF/Flat index with `MetricType.COSINE` on an INT8 vector field will
+            result in an error. This method captures such errors and re-raises them
+            with a more descriptive message.
+
         Args:
             field_name (str): Name of the field to index.
             index_param (Union[HnswIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam]):
@@ -125,6 +133,8 @@ class Collection:
 
         Raises:
             ValueError: If a vector index is applied to a non-vector field.
+            RuntimeError: If the combination of metric, index type, or vector data type
+                is not supported by the C++ core.
         """
         if index_param in _VECTOR_INDEX_TYPES and not self.schema.vector(field_name):
             supported_types = ", ".join(cls.__name__ for cls in _VECTOR_INDEX_TYPES)
@@ -132,7 +142,20 @@ class Collection:
                 f"Cannot apply vector index to non-vector field '{field_name}'. "
                 f"The field must be of vector type to use index types like {supported_types}."
             )
-        self._obj.CreateIndex(field_name, index_param, option)
+        
+        # Attempt to create the index in the C++ core. If it fails (e.g., due to
+        # an unsupported metric for the given vector data type), catch the error
+        # and provide a more informative message.
+        try:
+            self._obj.CreateIndex(field_name, index_param, option)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Failed to create index on vector field '{field_name}' with "
+                f"{type(index_param).__name__}. This may occur when using a "
+                f"metric or data type that is not yet supported for this index type. "
+                f"Original error: {exc}"
+            ) from exc
+        
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 
     def drop_index(self, field_name: str) -> None:
@@ -150,8 +173,19 @@ class Collection:
         Args:
             option (Optional[OptimizeOption], optional): Optimization options.
                 Defaults to ``OptimizeOption()``.
+        
+        Raises:
+            RuntimeError: If optimization fails, possibly due to unsupported index
+                configurations or metrics.
         """
-        self._obj.Optimize(option)
+        try:
+            self._obj.Optimize(option)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Failed to optimize collection at '{self.path}'. This may be "
+                f"triggered by unsupported index configurations or metrics. "
+                f"Original error: {exc}"
+            ) from exc
 
     # ========== COLUMN DDL Methods ==========
     def add_column(
