@@ -181,8 +181,12 @@ class Collection:
         try:
             self._obj.Optimize(option)
         except RuntimeError as exc:
+            try:
+                collection_path = self.path
+            except Exception:
+                collection_path = "<unavailable>"
             raise RuntimeError(
-                f"Failed to optimize collection at '{self.path}'. This may be "
+                f"Failed to optimize collection at '{collection_path}'. This may be "
                 f"triggered by unsupported index configurations or metrics. "
                 f"Original error: {exc}"
             ) from exc
