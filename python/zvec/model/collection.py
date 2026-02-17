@@ -144,16 +144,16 @@ class Collection:
             )
         
         # Attempt to create the index in the C++ core. If it fails (e.g., due to
-        # an unsupported metric for the given vector data type), catch the error
+        # an unsupported configuration, metric, or data type), catch the error
         # and provide a more informative message.
         try:
             self._obj.CreateIndex(field_name, index_param, option)
         except RuntimeError as exc:
             raise RuntimeError(
-                f"Failed to create index on vector field '{field_name}' with "
+                f"Failed to create index on field '{field_name}' with "
                 f"{type(index_param).__name__}. This may occur when using a "
-                f"metric or data type that is not yet supported for this index type. "
-                f"Original error: {exc}"
+                f"configuration, metric, or data type that is not yet supported "
+                f"for this index type. Original error: {exc}"
             ) from exc
         
         self._schema = CollectionSchema._from_core(self._obj.Schema())
