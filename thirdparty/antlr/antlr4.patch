@@ -1,9 +1,25 @@
 diff --git a/runtime/Cpp/CMakeLists.txt b/runtime/Cpp/CMakeLists.txt
-index 390078151..de657dcc4 100644
+index 390078151..213258ac8 100644
 --- a/runtime/Cpp/CMakeLists.txt
 +++ b/runtime/Cpp/CMakeLists.txt
-@@ -39,10 +39,10 @@ if(CMAKE_VERSION VERSION_EQUAL "3.3.0" OR
-   CMAKE_POLICY(SET CMP0054 OLD)
+@@ -28,21 +28,21 @@ project(LIBANTLR4)
+ if(CMAKE_VERSION VERSION_EQUAL "3.0.0" OR
+    CMAKE_VERSION VERSION_GREATER "3.0.0")
+   CMAKE_POLICY(SET CMP0026 NEW)
+-  CMAKE_POLICY(SET CMP0054 OLD)
+-  CMAKE_POLICY(SET CMP0045 OLD)
+-  CMAKE_POLICY(SET CMP0042 OLD)
++  CMAKE_POLICY(SET CMP0054 NEW)
++  CMAKE_POLICY(SET CMP0045 NEW)
++  CMAKE_POLICY(SET CMP0042 NEW)
+ endif()
+ 
+ if(CMAKE_VERSION VERSION_EQUAL "3.3.0" OR
+    CMAKE_VERSION VERSION_GREATER "3.3.0")
+-  CMAKE_POLICY(SET CMP0059 OLD)
+-  CMAKE_POLICY(SET CMP0054 OLD)
++  CMAKE_POLICY(SET CMP0059 NEW)
++  CMAKE_POLICY(SET CMP0054 NEW)
  endif()
  
 -if(CMAKE_SYSTEM_NAME MATCHES "Linux")
@@ -18,7 +34,7 @@ index 390078151..de657dcc4 100644
    find_library(COREFOUNDATION_LIBRARY CoreFoundation)
  endif()
 diff --git a/runtime/Cpp/runtime/CMakeLists.txt b/runtime/Cpp/runtime/CMakeLists.txt
-index 2c5e7376f..bcc0134dc 100644
+index 2c5e7376f..ae992f9cc 100644
 --- a/runtime/Cpp/runtime/CMakeLists.txt
 +++ b/runtime/Cpp/runtime/CMakeLists.txt
 @@ -25,7 +25,7 @@ file(GLOB libantlrcpp_SRC
