@@ -17,6 +17,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/20830" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20830" alt="alibaba%2Fzvec | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
+
+<p align="center">
   <a href="https://zvec.org/en/docs/quickstart/">🚀 <strong>Quickstart</strong> </a> |
   <a href="https://zvec.org/en/">🏠 <strong>Home</strong> </a> |
   <a href="https://zvec.org/en/docs/">📚 <strong>Docs</strong> </a> |
