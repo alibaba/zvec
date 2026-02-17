@@ -136,7 +136,7 @@ class Collection:
             RuntimeError: If the combination of metric, index type, or vector data type
                 is not supported by the C++ core.
         """
-        if index_param in _VECTOR_INDEX_TYPES and not self.schema.vector(field_name):
+        if isinstance(index_param, _VECTOR_INDEX_TYPES) and not self.schema.vector(field_name):
             supported_types = ", ".join(cls.__name__ for cls in _VECTOR_INDEX_TYPES)
             raise ValueError(
                 f"Cannot apply vector index to non-vector field '{field_name}'. "
