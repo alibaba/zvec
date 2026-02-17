@@ -142,7 +142,7 @@ class Collection:
                 f"Cannot apply vector index to non-vector field '{field_name}'. "
                 f"The field must be of vector type to use index types like {supported_types}."
             )
-        
+
         # Attempt to create the index in the C++ core. If it fails (e.g., due to
         # an unsupported configuration, metric, or data type), catch the error
         # and provide a more informative message.
@@ -155,7 +155,7 @@ class Collection:
                 f"configuration, metric, or data type that is not yet supported "
                 f"for this index type. Original error: {exc}"
             ) from exc
-        
+
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 
     def drop_index(self, field_name: str) -> None:
@@ -173,7 +173,7 @@ class Collection:
         Args:
             option (Optional[OptimizeOption], optional): Optimization options.
                 Defaults to ``OptimizeOption()``.
-        
+
         Raises:
             RuntimeError: If optimization fails, possibly due to unsupported index
                 configurations or metrics.
