@@ -143,9 +143,7 @@ class JinaDenseEmbedding(JinaFunctionBase, DenseEmbeddingFunction[TEXT]):
                 or if task is not a valid task type.
         """
         # Initialize base class for API connection
-        JinaFunctionBase.__init__(
-            self, model=model, api_key=api_key, task=task
-        )
+        JinaFunctionBase.__init__(self, model=model, api_key=api_key, task=task)
 
         # Store dimension configuration
         self._custom_dimension = dimension
