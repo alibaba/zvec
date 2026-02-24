@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import json
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 from _zvec.schema import _CollectionSchema, _FieldSchema
 
@@ -23,6 +23,9 @@ from .field_schema import FieldSchema, VectorSchema
 __all__ = [
     "CollectionSchema",
 ]
+
+# Compression methods
+COMPRESSION_METHODS = Literal["zstd", "gzip", "lzma", "auto", "none"]
 
 
 class CollectionSchema:
@@ -38,6 +41,13 @@ class CollectionSchema:
             One or more scalar field definitions. Defaults to None.
         vectors (Optional[Union[VectorSchema, list[VectorSchema]]], optional):
             One or more vector field definitions. Defaults to None.
+        compression (Optional[COMPRESSION_METHODS], optional):
+            Compression method for vector storage. Defaults to "none".
+            - "zstd": Zstandard compression (best, requires Python 3.14+)
+            - "gzip": Gzip compression (good balance)
+            - "lzma": LZMA compression (best ratio, slowest)
+            - "auto": Automatic selection based on vector size
+            - "none": No compression
 
     Raises:
         TypeError: If `fields` or `vectors` are of unsupported types.
@@ -50,7 +60,8 @@ class CollectionSchema:
         >>> schema = CollectionSchema(
         ...     name="my_collection",
         ...     fields=id_field,
-        ...     vectors=emb_field
+        ...     vectors=emb_field,
+        ...     compression="gzip"
         ... )
         >>> print(schema.name)
         my_collection
@@ -61,11 +72,23 @@ class CollectionSchema:
         name: str,
         fields: Optional[Union[FieldSchema, list[FieldSchema]]] = None,
         vectors: Optional[Union[VectorSchema, list[VectorSchema]]] = None,
+        compression: Optional[COMPRESSION_METHODS] = "none",
     ):
         if name is None or not isinstance(name, str):
             raise ValueError(
                 f"schema validate failed: collection name must be str, got {type(name).__name__}"
             )
+
+        # Validate compression method
+        valid_compression = ["zstd", "gzip", "lzma", "auto", "none"]
+        if compression is None:
+            compression = "none"
+        elif compression not in valid_compression:
+            raise ValueError(
+                f"schema validate failed: compression must be one of {valid_compression}, got {compression}"
+            )
+
+        self._compression = compression
 
         # handle fields
         _fields_name: list[str] = []
@@ -197,6 +220,11 @@ class CollectionSchema:
         _vectors = self._cpp_obj.vector_fields()
         return [VectorSchema._from_core(_vector) for _vector in _vectors]
 
+    @property
+    def compression(self) -> str:
+        """str: Compression method for vector storage."""
+        return self._compression
+
     def _get_object(self) -> _CollectionSchema:
         return self._cpp_obj
 
@@ -204,6 +232,7 @@ class CollectionSchema:
         try:
             schema = {
                 "name": self.name,
+                "compression": self.compression,
                 "fields": {field.name: field.__dict__() for field in self.fields},
                 "vectors": {vector.name: vector.__dict__() for vector in self.vectors},
             }

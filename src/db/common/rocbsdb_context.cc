@@ -13,6 +13,8 @@
 // limitations under the License.
 
 
+#include <algorithm>
+#include <rocksdb/convenience.h>
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
@@ -276,7 +278,46 @@ void RocksdbContext::prepare_options(
   // Optimize for level-based compaction style with default setting
   create_opts_.OptimizeLevelStyleCompaction();
 
-  // TODO: enable compression?
+  // Enable compression for storage efficiency
+  // Prefer ZSTD, fall back to LZ4, then Snappy, then none
+  auto supported = rocksdb::GetSupportedCompressions();
+  auto has = [&](rocksdb::CompressionType t) {
+    return std::find(supported.begin(), supported.end(), t) != supported.end();
+  };
+
+  bool has_zstd = has(rocksdb::CompressionType::kZSTD);
+  bool has_lz4 = has(rocksdb::CompressionType::kLZ4Compression);
+  bool has_snappy = has(rocksdb::CompressionType::kSnappyCompression);
+
+  // Pick the best available default compression
+  if (has_zstd) {
+    create_opts_.compression = rocksdb::CompressionType::kZSTD;
+  } else if (has_lz4) {
+    create_opts_.compression = rocksdb::CompressionType::kLZ4Compression;
+  } else if (has_snappy) {
+    create_opts_.compression = rocksdb::CompressionType::kSnappyCompression;
+  } else {
+    create_opts_.compression = rocksdb::CompressionType::kNoCompression;
+  }
+
+  // Per-level compression: fast codec for L1-2, best codec for L3-6
+  auto fast_codec = has_lz4      ? rocksdb::CompressionType::kLZ4Compression
+                    : has_snappy ? rocksdb::CompressionType::kSnappyCompression
+                                 : rocksdb::CompressionType::kNoCompression;
+  auto best_codec = has_zstd     ? rocksdb::CompressionType::kZSTD
+                    : has_lz4    ? rocksdb::CompressionType::kLZ4Compression
+                    : has_snappy ? rocksdb::CompressionType::kSnappyCompression
+                                 : rocksdb::CompressionType::kNoCompression;
+
+  create_opts_.compression_per_level = {
+      rocksdb::CompressionType::kNoCompression,  // Level 0 (memtable flush)
+      fast_codec,                                // Level 1
+      fast_codec,                                // Level 2
+      best_codec,                                // Level 3
+      best_codec,                                // Level 4
+      best_codec,                                // Level 5
+      best_codec,                                // Level 6
+  };
 
   // Setting this to 1 means that when a memtable is full, it will be flushed
   // to disk immediately rather than being merged with other memtables

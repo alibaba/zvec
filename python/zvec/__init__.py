@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 # Public API — grouped by category
 # ==============================
 
+from . import compression
 from . import model as model
 
 # —— Extensions ——
