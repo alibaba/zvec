@@ -369,7 +369,7 @@ void MixedStreamerReducer::add_vec_with_builder(int *result) {
     std::string out_vector_buffer = std::string(
         static_cast<const char *>(vector),
         original_query_meta_.dimension() * original_query_meta_.unit_size());
-    PushToDocCache(target_streamer_query_meta, (uint32_t)vector_item.pkey_,
+    PushToDocCache(original_query_meta_, (uint32_t)vector_item.pkey_,
                    out_vector_buffer);
   }
 
