@@ -325,7 +325,7 @@ class CosineConverter : public IndexConverter {
 
   //! Transform the data
   int transform(IndexHolder::Pointer holder) override {
-    if (holder->data_type() != IndexMeta::DataType::DT_FP32 ||
+    if (holder->data_type() != original_type_ ||
         holder->dimension() != meta_.dimension() - ExtraDimension(dst_type_)) {
       return IndexError_Mismatch;
     }
