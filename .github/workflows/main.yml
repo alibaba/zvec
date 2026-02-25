@@ -1,4 +1,4 @@
-name: Zvec CI
+name: Main
 
 on:
   push:
