@@ -106,12 +106,14 @@ jobs:
           # Set architecture flags to use native CPU features (avoid AVX512 on GitHub runners)
           # This mimics the behavior of PR #101's X86_ARCH_NATIVE option
           export CFLAGS="-march=native"
+          export CXXFLAGS="-march=native"
           
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
-            --config-settings='cmake.define.BUILD_TOOLS="ON"'
+            --config-settings='cmake.define.BUILD_TOOLS="ON"' \
+            --config-settings='cmake.define.ENABLE_NEHALEM="ON"'
         shell: bash
 
       - name: Run Cpp Tests
