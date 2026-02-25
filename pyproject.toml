@@ -109,6 +109,14 @@ build-dir = "build"
 wheel.expand-macos-universal-tags = true
 wheel.packages = ["python/zvec"]
 
+# Exclude unnecessary files from wheel
+wheel.exclude = [
+    "**/*.dylib",
+    "**/*.a",
+    "lib/cmake/**",
+    "lib/pkgconfig/**",
+]
+
 # Source distribution
 sdist.include = [
     "README.md",

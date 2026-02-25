@@ -97,9 +97,15 @@ if(DEFINED ENV{USE_OSS_MIRROR} AND NOT "$ENV{USE_OSS_MIRROR}" STREQUAL "")
 endif()
 message(STATUS "USE_OSS_MIRROR:${USE_OSS_MIRROR}")
 
+option(BUILD_EXAMPLES "Build examples" ON)
+message(STATUS "BUILD_EXAMPLES:${BUILD_EXAMPLES}")
+
 cc_directory(thirdparty)
 cc_directories(src)
 cc_directories(tests)
+if(BUILD_EXAMPLES)
+    cc_directories(examples)
+endif()
 
 if(BUILD_TOOLS)
     cc_directories(tools)

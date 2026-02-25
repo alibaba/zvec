@@ -1,0 +1,193 @@
+name: Release
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - 'v*'  # Match v0.3.0, v1.0.0, etc.
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  # ============================================================================
+  # Linux x64 Build
+  # ============================================================================
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential
+
+      - name: Build libzvec_c_api.so
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_EXAMPLES=OFF
+          cmake --build build --parallel --target zvec_c_api
+
+      - name: Verify library
+        run: |
+          echo "=== Library file ==="
+          ls -lh build/src/c_api/libzvec_c_api.so
+          echo "=== Check dependencies ==="
+          ldd build/src/c_api/libzvec_c_api.so || true
+
+      - name: Create tarball
+        run: |
+          cp src/include/zvec/c_api.h .
+          cp build/src/c_api/libzvec_c_api.so .
+          tar -czvf libzvec-capi-linux-x64.tar.gz \
+            c_api.h \
+            libzvec_c_api.so
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zvec-capi-linux-x64
+          path: libzvec-capi-linux-x64.tar.gz
+
+  # ============================================================================
+  # Linux ARM64 Build
+  # ============================================================================
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential
+
+      - name: Build libzvec_c_api.so (ARM64)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_EXAMPLES=OFF
+          cmake --build build --parallel --target zvec_c_api
+
+      - name: Verify library
+        run: |
+          echo "=== Library file ==="
+          ls -lh build/src/c_api/libzvec_c_api.so
+          echo "=== Check dependencies ==="
+          ldd build/src/c_api/libzvec_c_api.so || true
+
+      - name: Create tarball
+        run: |
+          cp src/include/zvec/c_api.h .
+          cp build/src/c_api/libzvec_c_api.so .
+          tar -czvf libzvec-capi-linux-arm64.tar.gz \
+            c_api.h \
+            libzvec_c_api.so
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zvec-capi-linux-arm64
+          path: libzvec-capi-linux-arm64.tar.gz
+
+  # ============================================================================
+  # macOS Universal Build (arm64 + x86_64)
+  # ============================================================================
+  macos-universal:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja
+
+      - name: Build libzvec_c_api.dylib (Universal Binary)
+        env:
+          CMAKE_OSX_ARCHITECTURES: "arm64;x86_64"
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0" \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_EXAMPLES=OFF
+          cmake --build build --parallel --target zvec_c_api
+
+      - name: Verify library
+        run: |
+          echo "=== Library file ==="
+          ls -lh build/src/c_api/libzvec_c_api.dylib
+          echo "=== Check architectures ==="
+          lipo -archs build/src/c_api/libzvec_c_api.dylib
+
+      - name: Create tarball
+        run: |
+          cp src/include/zvec/c_api.h .
+          cp build/src/c_api/libzvec_c_api.dylib .
+          tar -czvf libzvec-capi-macos-universal.tar.gz \
+            c_api.h \
+            libzvec_c_api.dylib
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zvec-capi-macos-universal
+          path: libzvec-capi-macos-universal.tar.gz
+
+  # ============================================================================
+  # Upload to GitHub Releases
+  # ============================================================================
+  upload-release:
+    needs: [linux-x64, linux-arm64, macos-universal]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Download build artifacts for each platform
+      - uses: actions/download-artifact@v4
+        with:
+          name: zvec-capi-linux-x64
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zvec-capi-linux-arm64
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zvec-capi-macos-universal
+          path: dist/
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      # Upload to GitHub Releases
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
