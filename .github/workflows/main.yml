@@ -125,7 +125,6 @@ jobs:
             cmake==3.30.0 \
             ninja==1.11.1 \
             pytest \
-            pytest-cov \
             scikit-build-core \
             setuptools_scm
         shell: bash
@@ -148,10 +147,10 @@ jobs:
           make unittest -j$NPROC
         shell: bash
 
-      - name: Run Python Tests with Coverage
+      - name: Run Python Tests
         run: |
           cd "$GITHUB_WORKSPACE"
-          python -m pytest python/tests/ --cov=zvec --cov-report=xml --no-cov-on-fail
+          python -m pytest python/tests/
         shell: bash
 
       - name: Run C++ Examples
@@ -164,12 +163,3 @@ jobs:
           ./core-example
           ./ailego-example
         shell: bash
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: ./coverage.xml
-          flags: ${{ matrix.platform }}
-          name: ${{ matrix.platform }}-py3.10
-          fail_ci_if_error: false
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
