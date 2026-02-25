@@ -55,7 +55,7 @@ jobs:
           cd "$CLEAN_WORKSPACE"
 
           git config --global --add safe.directory "$CLEAN_WORKSPACE"
-          git clone --recursive "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
 
           if [ -n "${{ github.event.number }}" ]; then
             git fetch origin "pull/${{ github.event.number }}/head"
@@ -63,6 +63,8 @@ jobs:
           else
             git checkout "${{ github.sha }}"
           fi
+
+          git submodule update --init --recursive
 
           echo "CLEAN_WORKSPACE=$CLEAN_WORKSPACE" >> $GITHUB_ENV
         env:
@@ -98,7 +100,7 @@ jobs:
       - name: Run clang-format Check
         run: |
           cd "$CLEAN_WORKSPACE"
-          
+
 
           CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
             ! -path "./build/*" \
