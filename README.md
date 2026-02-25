@@ -1,4 +1,4 @@
-<div align=" center">
+<div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://zvec.oss-cn-hongkong.aliyuncs.com/logo/github_log_2.svg" />
     <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/logo/github_logo_1.svg" width="400" alt="zvec logo" />
@@ -108,30 +108,14 @@ For detailed benchmark methodology, configurations, and complete results, please
 
 Stay updated and get support — scan or click:
 
-<table align="center" style="border-collapse: collapse; margin: 16px auto; width: 100%; max-width: 520px;">
-  <tr>
-    <td align="center" style="padding: 8px; width: 25%;">
-      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">💬 DingTalk</div>
-      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" alt="DingTalk QR Code" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
-    </td>
-    <td align="center" style="padding: 8px; width: 25%;">
-      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">📱 WeChat</div>
-      <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png" alt="WeChat QR Code" width="100" style="border-radius: 8px; border: 1px solid #ddd;">
-    </td>
-    <td align="center" style="padding: 8px; width: 25%;">
-      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">🎮 Discord</div>
-      <a href="https://discord.gg/rKddFBBu9z" target="_blank" style="display: inline-block; width: 100px; height: 100px; background: #5865F2; border-radius: 8px; text-decoration: none; color: white; font-size: 12px; display: flex; align-items: center; justify-content: center; line-height: 1;">
-        Join Server
-      </a>
-    </td>
-    <td align="center" style="padding: 8px; width: 25%;">
-      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px;">🐦 X (Twitter)</div>
-      <a href="https://x.com/zvec_ai" target="_blank" style="display: inline-block; width: 100px; height: 100px; background: #000; border-radius: 8px; text-decoration: none; color: white; font-size: 12px; display: flex; align-items: center; justify-content: center; line-height: 1;">
-        Follow @zvec_ai
-      </a>
-    </td>
-  </tr>
-</table>
+<div align="center">
+
+| 💬 DingTalk | 📱 WeChat | 🎮 Discord |
+|:---:|:---:|:---:|
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=2" width="150"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) |
+| Scan to join | Scan to join | Click to join |
+
+</div>
 
 </div>
 

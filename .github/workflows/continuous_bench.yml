@@ -1,0 +1,26 @@
+name: Continuous Benchmark
+on:
+  push:
+    branches: [ "main", "ci/continuous_bench_squash" ]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: cb-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: vdbbench
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run VectorDBBench
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          bash .github/workflows/scripts/run_vdb.sh
