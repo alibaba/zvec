@@ -1,0 +1,165 @@
+name: Main
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  merge_group:
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Code quality checks (fast, run first)
+  lint:
+    name: Code Quality Checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip \
+            ruff==v0.14.4 \
+            clang-format==18.1.8
+        shell: bash
+
+      - name: Run Ruff Linter
+        run: python -m ruff check .
+        shell: bash
+
+      - name: Run Ruff Formatter Check
+        run: python -m ruff format --check .
+        shell: bash
+
+      - name: Run clang-format Check
+        run: |
+          CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
+            ! -path "./build/*" \
+            ! -path "./tests/*" \
+            ! -path "./scripts/*" \
+            ! -path "./python/*" \
+            ! -path "./thirdparty/*" \
+            ! -path "./.git/*")
+
+          if [ -z "$CPP_FILES" ]; then
+            echo "No C++ files found to check."
+            exit 0
+          fi
+
+          clang-format --dry-run --Werror $CPP_FILES
+        shell: bash
+
+  # Build and test matrix (parallel execution)
+  build-and-test:
+    name: Build & Test (${{ matrix.platform }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+            arch_flag: ""  # ARM64 uses auto-detection
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+            arch_flag: ""  # ARM64 uses auto-detection
+          - os: ubuntu-24.04
+            platform: linux-x64
+            # FIXME: ENABLE_ZEN3 is hardcoded for the current GitHub-hosted runner (AMD EPYC 7T83).
+            # This should be removed once #101 is resolved.
+            arch_flag: "--config-settings='cmake.define.ENABLE_ZEN3=\"ON\"'"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Set up environment variables
+        run: |
+          # Set number of processors for parallel builds
+          if [[ "${{ matrix.platform }}" == "macos-arm64" ]]; then
+            NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
+          else
+            NPROC=$(nproc 2>/dev/null || echo 2)
+          fi
+          echo "NPROC=$NPROC" >> $GITHUB_ENV
+          echo "Using $NPROC parallel jobs for builds"
+          
+          # Add Python user base bin to PATH for pip-installed CLI tools
+          echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            pytest \
+            scikit-build-core \
+            setuptools_scm
+        shell: bash
+
+      - name: Build from source
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          
+          CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+          python -m pip install -v . \
+            --no-build-isolation \
+            --config-settings='cmake.define.BUILD_TOOLS="ON"' \
+            ${{ matrix.arch_flag }}
+        shell: bash
+
+      - name: Run C++ Tests
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          make unittest -j$NPROC
+        shell: bash
+
+      - name: Run Python Tests
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python -m pytest python/tests/
+        shell: bash
+
+      - name: Run C++ Examples
+        run: |
+          cd "$GITHUB_WORKSPACE/examples/c++"
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j $NPROC
+          ./db-example
+          ./core-example
+          ./ailego-example
+        shell: bash
