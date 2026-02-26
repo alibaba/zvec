@@ -64,8 +64,7 @@ class CosineConverterHolder : public IndexHolder {
 
     //! Retrieve pointer of data
     const void *data(void) const override {
-      return type_ == IndexMeta::DataType::DT_FP32 ? normalize_buffer_.data()
-                                                   : buffer_.data();
+      return type_ == original_type_ ? normalize_buffer_.data() : buffer_.data();
     }
 
     //! Test if the iterator is valid
