@@ -40,9 +40,6 @@ class DefaultLocalDenseEmbedding(
     similarity tasks. It runs locally without requiring API keys.
 
     Args:
-        model_name (Optional[str]): Model identifier or local path. Defaults to:
-            - ``"all-MiniLM-L6-v2"`` for Hugging Face
-            - ``"iic/nlp_gte_sentence-embedding_chinese-small"`` for ModelScope
         model_source (Literal["huggingface", "modelscope"], optional): Model source.
             - ``"huggingface"``: Use Hugging Face Hub (default, for international users)
             - ``"modelscope"``: Use ModelScope (recommended for users in China)
@@ -157,7 +154,6 @@ class DefaultLocalDenseEmbedding(
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
         model_source: Literal["huggingface", "modelscope"] = "huggingface",
         device: Optional[str] = None,
         normalize_embeddings: bool = True,
@@ -167,9 +163,6 @@ class DefaultLocalDenseEmbedding(
         """Initialize with all-MiniLM-L6-v2 model.
 
         Args:
-            model_name (Optional[str]): Model identifier or local path. Defaults to:
-                - ``"all-MiniLM-L6-v2"`` for Hugging Face
-                - ``"iic/nlp_gte_sentence-embedding_chinese-small"`` for ModelScope
             model_source (Literal["huggingface", "modelscope"]): Model source.
                 Defaults to "huggingface".
             device (Optional[str]): Target device ("cpu", "cuda", "mps", or None).
@@ -184,12 +177,11 @@ class DefaultLocalDenseEmbedding(
             ValueError: If model cannot be loaded.
         """
         # Use different models based on source
-        if model_name is None:
-            if model_source == "modelscope":
-                # Use Chinese-optimized model for ModelScope (better for Chinese text)
-                model_name = "iic/nlp_gte_sentence-embedding_chinese-small"
-            else:
-                model_name = "all-MiniLM-L6-v2"
+        if model_source == "modelscope":
+            # Use Chinese-optimized model for ModelScope (better for Chinese text)
+            model_name = "iic/nlp_gte_sentence-embedding_chinese-small"
+        else:
+            model_name = "all-MiniLM-L6-v2"
 
         # Initialize base class for model loading
         SentenceTransformerFunctionBase.__init__(
@@ -385,14 +377,11 @@ class DefaultLocalSparseEmbedding(
                from huggingface_hub import login
                login(token="your_huggingface_token")
 
-        5. To use a custom SPLADE model, you can subclass this class and override
-           the model_name in ``__init__``, or create your own implementation
+        5. To use a custom SPLADE model, create your own implementation
            inheriting from ``SentenceTransformerFunctionBase`` and
            ``SparseEmbeddingFunction``.
 
     Args:
-        model_name (Optional[str]): Model identifier or local path. Defaults to
-            ``"naver/splade-cocondenser-ensembledistil"`` if None.
         model_source (Literal["huggingface", "modelscope"], optional): Model source.
             Defaults to ``"huggingface"``. ModelScope support may vary for SPLADE models.
         device (Optional[str], optional): Device to run the model on.
@@ -614,7 +603,6 @@ class DefaultLocalSparseEmbedding(
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
         model_source: Literal["huggingface", "modelscope"] = "huggingface",
         device: Optional[str] = None,
         encoding_type: Literal["query", "document"] = "query",
@@ -623,8 +611,6 @@ class DefaultLocalSparseEmbedding(
         """Initialize with SPLADE model.
 
         Args:
-            model_name (Optional[str]): Model identifier or local path. Defaults to
-                ``"naver/splade-cocondenser-ensembledistil"`` if None.
             model_source (Literal["huggingface", "modelscope"]): Model source.
                 Defaults to "huggingface".
             device (Optional[str]): Target device ("cpu", "cuda", "mps", or None).
@@ -668,8 +654,7 @@ class DefaultLocalSparseEmbedding(
         # Use publicly available SPLADE model (no gated access required)
         # Note: naver/splade-v3 requires authentication, so we use the
         # cocondenser-ensembledistil variant which is publicly accessible
-        if model_name is None:
-            model_name = "naver/splade-cocondenser-ensembledistil"
+        model_name = "naver/splade-cocondenser-ensembledistil"
 
         # Initialize base class for model loading
         SentenceTransformerFunctionBase.__init__(
