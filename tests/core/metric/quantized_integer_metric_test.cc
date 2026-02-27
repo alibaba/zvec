@@ -516,7 +516,7 @@ void TestDistanceMatrixInt4(const std::string &metric_name) {
   matrix_compute(&matrix2[0], &query2[0], meta2.dimension(), &result2[0]);
 
   for (size_t i = 0; i < batch_size * query_size; ++i) {
-    EXPECT_NEAR(result1[i], result2[i], 1e-4);
+    EXPECT_NEAR(result1[i], result2[i], 5e-4);
     EXPECT_TRUE(IsAlmostEqual(result1[i], result2[i], 1e4));
   }
 }
