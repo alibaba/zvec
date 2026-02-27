@@ -752,6 +752,8 @@ class DefaultLocalSparseEmbedding(
             # The decode method returns a list of (token_string, score) pairs for non-zero dimensions
             # Then we post-process the tokens to IDs again
             decoded = model.decode(sparse_matrix)[0]
+            if not decoded:
+                return {}
             token_strings, scores = zip(*decoded, strict=True)
             token_ids = model.tokenizer.convert_tokens_to_ids(token_strings)
             sparse_dict = dict(zip(token_ids, scores, strict=True))
