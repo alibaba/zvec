@@ -320,6 +320,97 @@ TEST_F(IVFSearcherTest, TestSimple) {
   EXPECT_EQ(0, ret);
 }
 
+TEST_F(IVFSearcherTest, TestSimpleCosine) {
+  IVFBuilder builder;
+  //    index_meta_.set_major_order(IndexMeta::MO_ROW);
+  params_.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "1");
+  params_.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+
+  Params converter_params;
+  auto converter = IndexFactory::CreateConverter("CosineNormalizeConverter");
+  ASSERT_TRUE(converter != nullptr);
+  auto original_index_meta = index_meta_;
+  original_index_meta.set_metric("Cosine", 0, Params());
+  EXPECT_EQ(0, converter->init(original_index_meta, converter_params));
+  IndexMeta index_meta = converter->meta();
+  auto reformer = IndexFactory::CreateReformer(index_meta.reformer_name());
+  ASSERT_TRUE(reformer != nullptr);
+  ASSERT_EQ(0, reformer->init(index_meta.reformer_params()));
+
+  int ret = builder.init(index_meta, params_);
+  EXPECT_EQ(0, ret);
+  prepare_index_holder(0, 33);
+  converter->transform(holder_);
+  auto holder = converter->result();
+
+  EXPECT_EQ(0, builder.train(threads_, holder));
+  EXPECT_EQ(0, builder.build(threads_, holder));
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  EXPECT_EQ(0, dumper->create(index_path_));
+
+  ret = builder.dump(dumper);
+  EXPECT_EQ((size_t)33, builder.stats().built_count());
+  EXPECT_EQ((size_t)33, builder.stats().dumped_count());
+  EXPECT_EQ((size_t)0, builder.stats().discarded_count());
+  EXPECT_EQ(0, dumper->close());
+
+  IVFSearcher searcher;
+  Params params;
+  params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+  params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+
+  ret = searcher.init(params);
+  EXPECT_EQ(0, ret);
+
+  IndexStorage::Pointer container =
+      IndexFactory::CreateStorage("MMapFileReadStorage");
+  EXPECT_TRUE(!!container);
+
+  Params container_params;
+  container_params.set("proxima.mmap_file.container.memory_warmup", true);
+  container->init(container_params);
+  ret = container->open(index_path_, false);
+  EXPECT_EQ(0, ret);
+
+  ret = searcher.load(container, IndexMetric::Pointer());
+  EXPECT_EQ(0, ret);
+
+  std::vector<float> query;
+  for (size_t i = 0; i < dimension_; ++i) {
+    query.push_back(32.0f + i);
+  }
+
+  size_t qnum = 33;
+  std::vector<float> query1;
+  for (size_t i = 0; i < dimension_ * qnum; ++i) {
+    query1.push_back(i / dimension_);
+  }
+  auto context = searcher.create_context();
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+
+  // single bf search
+  {
+    size_t topk = 33;
+    context->set_topk(topk);
+    
+    std::string new_vec;
+    IndexQueryMeta new_meta;
+    ASSERT_EQ(0, reformer->convert(query.data(), qmeta, &new_vec, &new_meta));
+
+    ret = searcher.search_bf_impl(new_vec.data(), new_meta, context);
+    EXPECT_EQ(0, ret);
+
+    const IndexDocumentList &result = context->result(0);
+    EXPECT_EQ((size_t)topk, result.size());
+    for (size_t i = 0; i < 1; ++i) {
+      // ASSERT_EQ(29, result[i].key());
+      EXPECT_NEAR(0, result[i].score(), 1e-2);
+    }
+  }
+  ret = searcher.unload();
+  EXPECT_EQ(0, ret);
+}
+
 TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
   IVFBuilder builder;
   //    index_meta_.set_major_order(IndexMeta::MO_ROW);

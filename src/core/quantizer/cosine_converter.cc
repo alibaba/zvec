@@ -64,8 +64,8 @@ class CosineConverterHolder : public IndexHolder {
 
     //! Retrieve pointer of data
     const void *data(void) const override {
-      return type_ == IndexMeta::DataType::DT_FP32 ? normalize_buffer_.data()
-                                                   : buffer_.data();
+      return type_ == original_type_ ? normalize_buffer_.data()
+                                     : buffer_.data();
     }
 
     //! Test if the iterator is valid
@@ -325,7 +325,7 @@ class CosineConverter : public IndexConverter {
 
   //! Transform the data
   int transform(IndexHolder::Pointer holder) override {
-    if (holder->data_type() != IndexMeta::DataType::DT_FP32 ||
+    if (holder->data_type() != original_type_ ||
         holder->dimension() != meta_.dimension() - ExtraDimension(dst_type_)) {
       return IndexError_Mismatch;
     }
