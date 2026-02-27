@@ -13,87 +13,81 @@ permissions:
 jobs:
   coverage:
     name: Nightly Coverage Report
-    runs-on: linux_x64
+    runs-on: ubuntu-24.04
 
     strategy:
       matrix:
         python-version: ['3.10']
       fail-fast: false
 
-    container:
-      image: zvec-registry.cn-hongkong.cr.aliyuncs.com/zvec/zvec:0.0.2
-      options: --user root
-
     steps:
-      - name: Activate Conda environment
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: main  # Always use main for nightly
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Set up environment variables
         run: |
-          if [[ "${{ matrix.python-version }}" == "3.10" ]]; then
-            ENV_NAME="py310"
-          elif [[ "${{ matrix.python-version }}" == "3.11" ]]; then
-            ENV_NAME="py311"
-          elif [[ "${{ matrix.python-version }}" == "3.12" ]]; then
-            ENV_NAME="py312"
-          else
-            echo "Unsupported Python version"
-            exit 1
-          fi
-          echo "CONDA_ENV_NAME=$ENV_NAME" >> $GITHUB_ENV
-          source /opt/miniforge3/bin/activate "$ENV_NAME"
-          python --version
+          # Set number of processors for parallel builds
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> $GITHUB_ENV
+          echo "Using $NPROC parallel jobs for builds"
+          
+          # Add Python user base bin to PATH for pip-installed CLI tools
+          echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
         shell: bash
 
-      - name: Prepare clean build directory
+      - name: Install dependencies
         run: |
-          export CLEAN_WORKSPACE="/tmp/zvec"
-          mkdir -p "$CLEAN_WORKSPACE"
-          cd "$CLEAN_WORKSPACE"
-
-          git config --global --add safe.directory "$CLEAN_WORKSPACE"
-          git clone --recursive "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
-
-          git checkout main  # Always use main for nightly
-
-          echo "CLEAN_WORKSPACE=$CLEAN_WORKSPACE" >> $GITHUB_ENV
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          python -m pip install --upgrade pip \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            pytest \
+            pytest-cov \
+            scikit-build-core \
+            setuptools_scm
         shell: bash
 
       - name: Build with COVERAGE config
         run: |
-          source /opt/miniforge3/bin/activate "${{ env.CONDA_ENV_NAME }}"
-          cd "$CLEAN_WORKSPACE"
-          pip install --upgrade pip pytest pytest-cov
-          
-          NPROC=$(nproc 2>/dev/null || echo 2)
-          echo "Using $NPROC parallel jobs"
+          cd "$GITHUB_WORKSPACE"
           
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
-          pip install -v . \
-            --config-settings="cmake.build-type=COVERAGE"
+          python -m pip install -v . \
+            --no-build-isolation \
+            --config-settings="cmake.build-type=COVERAGE" \
+            --config-settings='cmake.define.ENABLE_ZEN3="ON"'
         shell: bash
 
       - name: Run Python Tests with Coverage
         run: |
-          source /opt/miniforge3/bin/activate "${{ env.CONDA_ENV_NAME }}"
-          cd "$CLEAN_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/ --cov=zvec --cov-report=xml
         shell: bash
 
       - name: Run C++ Tests and Generate Coverage
         run: |
-          cd "$CLEAN_WORKSPACE/build"
-          make unittest -j$(nproc)  # Run all (nightly can afford it)
-          cd "$CLEAN_WORKSPACE"
+          cd "$GITHUB_WORKSPACE/build"
+          make unittest -j$NPROC
+          cd "$GITHUB_WORKSPACE"
           # Ensure gcov.sh is executable
           chmod +x scripts/gcov.sh
           bash scripts/gcov.sh -k
         shell: bash
 
       - name: Upload Coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
-          files: ${{ env.CLEAN_WORKSPACE }}/proxima-zvec-filtered.lcov.info,${{ env.CLEAN_WORKSPACE }}/coverage.xml
+          files: ./proxima-zvec-filtered.lcov.info,./coverage.xml
           flags: python,cpp,nightly
           name: nightly-linux-py${{ matrix.python-version }}
           token: ${{ secrets.CODECOV_TOKEN }}
