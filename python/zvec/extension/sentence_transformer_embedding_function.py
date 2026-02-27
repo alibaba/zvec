@@ -198,7 +198,6 @@ class DefaultLocalDenseEmbedding(
         # Store extra parameters
         self._extra_params = kwargs
 
-    @property
     def _get_model_class(self):
         """Get the Sentence Transformer class.
 
@@ -670,7 +669,6 @@ class DefaultLocalSparseEmbedding(
         # Load model to ensure it's available (will use cache if exists)
         self._get_model()
 
-    @property
     def _get_model_class(self):
         """Get the Sentence Transformer class based on the model source.
 

@@ -88,7 +88,6 @@ class SentenceTransformerFunctionBase:
             return str(model.device)
         return self._device or "cpu"
 
-    @property
     def _get_model_class(self):
         """Get the Sentence Transformer class.
 

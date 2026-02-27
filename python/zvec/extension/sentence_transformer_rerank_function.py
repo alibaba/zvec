@@ -214,7 +214,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
             )
         self._model = model
 
-    @property
     def _get_model_class(self):
         """Get the Sentence Transformer class.
 
