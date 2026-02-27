@@ -27,6 +27,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -161,6 +163,8 @@ build = [
     "cp310-*",
     "cp311-*",
     "cp312-*",
+    "cp313-*",
+    "cp314-*",
 ]
 build-frontend = "build"
 test-requires = ["pytest", "numpy"]
