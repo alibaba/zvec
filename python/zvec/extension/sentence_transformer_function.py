@@ -131,7 +131,6 @@ class SentenceTransformerFunctionBase:
             else:
                 # Load from Hugging Face (default)
                 self._model = self._get_model_class(
-
                     self._model_name, device=self._device, trust_remote_code=True
                 )
 
