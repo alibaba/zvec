@@ -86,9 +86,7 @@ jobs:
             arch_flag: ""  # ARM64 uses auto-detection
           - os: ubuntu-24.04
             platform: linux-x64
-            # FIXME: ENABLE_ZEN3 is hardcoded for the current GitHub-hosted runner (AMD EPYC 7T83).
-            # This should be removed once #101 is resolved.
-            arch_flag: "--config-settings='cmake.define.ENABLE_ZEN3=\"ON\"'"
+            arch_flag: ""  # Use native CPU microarchitecture
 
     steps:
       - name: Checkout code
