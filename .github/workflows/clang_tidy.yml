@@ -67,17 +67,70 @@ jobs:
             **/*.cc
             **/*.cpp
             **/*.cxx
-            **/*.h
-            **/*.hpp
             !thirdparty/**
             !build/**
           separator: "\n"
 
-      - name: Run clang-tidy
+      - name: Filter changed files to compile database entries
+        id: tidy_files
         if: steps.changed_files.outputs.any_changed == 'true'
         run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          changed = [line.strip() for line in """${{ steps.changed_files.outputs.all_changed_files }}""".splitlines() if line.strip()]
+          compile_db_path = Path("build/compile_commands.json")
+          with compile_db_path.open("r", encoding="utf-8") as f:
+              compile_db = json.load(f)
+
+          compile_entries = set()
+          for entry in compile_db:
+              file_path = entry.get("file")
+              if not file_path:
+                  continue
+              normalized = os.path.normpath(file_path).replace("\\", "/")
+              compile_entries.add(normalized)
+
+          selected = []
+          skipped = []
+          cwd = Path.cwd()
+          for file_path in changed:
+              if not Path(file_path).is_file():
+                  skipped.append(f"{file_path} (missing)")
+                  continue
+
+              abs_normalized = os.path.normpath(str((cwd / file_path).resolve())).replace("\\", "/")
+              rel_normalized = os.path.normpath(file_path).replace("\\", "/")
+
+              if abs_normalized in compile_entries or rel_normalized in compile_entries:
+                  selected.append(file_path)
+              else:
+                  skipped.append(f"{file_path} (no compile_commands entry)")
+
+          output_path = os.environ["GITHUB_OUTPUT"]
+          with open(output_path, "a", encoding="utf-8") as out:
+              out.write(f"any_tidy_files={'true' if selected else 'false'}\n")
+              out.write("all_tidy_files<<EOF\n")
+              out.write("\n".join(selected))
+              out.write("\nEOF\n")
+              out.write("skipped_files<<EOF\n")
+              out.write("\n".join(skipped))
+              out.write("\nEOF\n")
+          PY
+
+      - name: Show skipped files
+        if: steps.changed_files.outputs.any_changed == 'true' && steps.tidy_files.outputs.skipped_files != ''
+        run: |
+          echo "Skipping files:"
+          printf '%s\n' "${{ steps.tidy_files.outputs.skipped_files }}"
+
+      - name: Run clang-tidy
+        if: steps.tidy_files.outputs.any_tidy_files == 'true'
+        run: |
           mapfile -t changed_files <<'EOF'
-          ${{ steps.changed_files.outputs.all_changed_files }}
+          ${{ steps.tidy_files.outputs.all_tidy_files }}
           EOF
 
           for file in "${changed_files[@]}"; do
@@ -87,7 +140,7 @@ jobs:
             fi
           done
 
-      - name: No changed C/C++ files
-        if: steps.changed_files.outputs.any_changed != 'true'
+      - name: No clang-tidy files to analyze
+        if: steps.changed_files.outputs.any_changed != 'true' || steps.tidy_files.outputs.any_tidy_files != 'true'
         run: |
-          echo "No changed C/C++ files matched clang-tidy patterns."
+          echo "No changed source files with compile_commands entries matched clang-tidy patterns."
