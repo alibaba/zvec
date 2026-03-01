@@ -752,6 +752,73 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndexThreeSegmentsRegression) {
   ASSERT_NE(output_segment->Fetch(899), nullptr);
 }
 
+TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegression) {
+  auto schema = test::TestHelper::CreateSchemaWithVectorIndex(
+      false, col_name,
+      std::make_shared<HnswIndexParams>(MetricType::IP, 16, 20,
+                                        QuantizeType::FP16));
+
+  Version version;
+  version.set_schema(*schema);
+  auto version_manager_tmp = VersionManager::Create(col_path, version);
+  if (!version_manager_tmp.has_value()) {
+    throw std::runtime_error("Failed to create version manager");
+  }
+
+  auto version_manager = version_manager_tmp.value();
+  bool forward_use_parquet = false;
+  auto seg_options =
+      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
+
+  auto seg1 = test::TestHelper::CreateSegmentWithDoc(
+      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
+      seg_options, 0, 300);
+  auto seg2 = test::TestHelper::CreateSegmentWithDoc(
+      GetColPath(), *schema, 1, 300, id_map, delete_store, version_manager,
+      seg_options, 300, 300);
+  auto seg3 = test::TestHelper::CreateSegmentWithDoc(
+      GetColPath(), *schema, 2, 600, id_map, delete_store, version_manager,
+      seg_options, 600, 300);
+  ASSERT_TRUE(seg1 != nullptr);
+  ASSERT_TRUE(seg2 != nullptr);
+  ASSERT_TRUE(seg3 != nullptr);
+  ASSERT_TRUE(seg1->flush().ok());
+  ASSERT_TRUE(seg2->flush().ok());
+  ASSERT_TRUE(seg3->flush().ok());
+  ASSERT_GT(seg1->get_quant_vector_indexer("dense_fp32").size(), 0u);
+  ASSERT_GT(seg2->get_quant_vector_indexer("dense_fp32").size(), 0u);
+  ASSERT_GT(seg3->get_quant_vector_indexer("dense_fp32").size(), 0u);
+
+  CompactTask task(GetColPath(), schema, {seg1, seg2, seg3}, 3, nullptr,
+                   forward_use_parquet, 1);
+  auto segment_task = SegmentTask::CreateComapctTask(task);
+  ASSERT_TRUE(segment_task != nullptr);
+
+  auto status = SegmentHelper::Execute(segment_task);
+  ASSERT_TRUE(status.ok());
+
+  auto compact_task = std::get<CompactTask>(segment_task->task_info());
+  ASSERT_TRUE(compact_task.output_segment_meta_ != nullptr);
+
+  auto tmp_segment_path = FileHelper::MakeTempSegmentPath(GetColPath(), 3);
+  auto new_segment_path = FileHelper::MakeSegmentPath(GetColPath(), 3);
+  ASSERT_TRUE(FileHelper::MoveDirectory(tmp_segment_path, new_segment_path));
+
+  seg_options.read_only_ = true;
+  version_manager->set_enable_mmap(!forward_use_parquet);
+  auto output_segment_ret =
+      Segment::Open(GetColPath(), *schema, *compact_task.output_segment_meta_,
+                    id_map, delete_store, version_manager, seg_options);
+  ASSERT_TRUE(output_segment_ret.has_value());
+  auto output_segment = std::move(output_segment_ret.value());
+
+  ASSERT_EQ(output_segment->doc_count(), 900);
+  ASSERT_NE(output_segment->Fetch(0), nullptr);
+  ASSERT_NE(output_segment->Fetch(899), nullptr);
+  ASSERT_GT(output_segment->get_vector_indexer("dense_fp32").size(), 0u);
+  ASSERT_GT(output_segment->get_quant_vector_indexer("dense_fp32").size(), 0u);
+}
+
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
 
