@@ -122,6 +122,25 @@ TEST(InnerProductMetric, BatchDistanceMatchesSingleFp32) {
   CheckBatchDistanceMatchesSingle(metric, vecs, query, 8, 1e-5f);
 }
 
+TEST(InnerProductMetric, BatchDistanceMatchesSingleFp16) {
+  auto metric = IndexFactory::CreateMetric("InnerProduct");
+  ASSERT_TRUE(metric);
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP16, 8);
+  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
+
+  std::vector<std::vector<ailego::Float16>> vecs{
+      {0.25f, -0.5f, 1.0f, 2.0f, -1.5f, 0.75f, 1.25f, -0.25f},
+      {1.5f, 2.5f, -1.0f, 0.5f, 0.25f, -0.75f, 2.0f, -2.0f},
+      {-0.5f, 1.0f, 0.75f, -1.25f, 1.5f, 2.0f, -0.25f, 0.5f},
+  };
+  std::vector<ailego::Float16> query{
+      0.5f, -1.0f, 1.5f, -0.25f, 0.75f, -1.5f, 2.0f, 0.25f};
+
+  CheckBatchDistanceMatchesSingle(metric, vecs, query, 8, 5e-2f);
+}
+
 TEST(InnerProductMetric, BatchDistanceMatchesSingleInt8) {
   auto metric = IndexFactory::CreateMetric("InnerProduct");
   ASSERT_TRUE(metric);
@@ -136,6 +155,24 @@ TEST(InnerProductMetric, BatchDistanceMatchesSingleInt8) {
       {8, 7, 6, 5, 4, 3, 2, 1},
   };
   std::vector<int8_t> query{2, -1, 3, 1, -2, 4, -3, 5};
+
+  CheckBatchDistanceMatchesSingle(metric, vecs, query, 8, 1e-5f);
+}
+
+TEST(InnerProductMetric, BatchDistanceMatchesSingleInt4) {
+  auto metric = IndexFactory::CreateMetric("InnerProduct");
+  ASSERT_TRUE(metric);
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_INT4, 8);
+  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
+
+  std::vector<std::vector<uint8_t>> vecs{
+      {0x12, 0x34, 0x56, 0x78, 0x21, 0x43, 0x65, 0x87},
+      {0x10, 0x32, 0x54, 0x76, 0x11, 0x22, 0x33, 0x44},
+      {0x89, 0x67, 0x45, 0x23, 0x98, 0x76, 0x54, 0x32},
+  };
+  std::vector<uint8_t> query{0x01, 0x23, 0x45, 0x67, 0x10, 0x32, 0x54, 0x76};
 
   CheckBatchDistanceMatchesSingle(metric, vecs, query, 8, 1e-5f);
 }
