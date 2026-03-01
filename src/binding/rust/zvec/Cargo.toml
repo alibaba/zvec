@@ -1,0 +1,12 @@
+[package]
+name = "zvec"
+version = "0.1.0"
+authors = ["The zvec project"]
+edition = "2021"
+
+[dependencies]
+zvec-sys = { path = "../zvec-sys" }
+
+[[example]]
+name = "one_minute"
+path = "examples/one_minute.rs"

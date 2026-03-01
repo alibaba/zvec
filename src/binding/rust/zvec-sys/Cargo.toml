@@ -1,0 +1,8 @@
+[package]
+name = "zvec-sys"
+version = "0.1.0"
+authors = ["The zvec project"]
+edition = "2021"
+
+[dependencies]
+# No external dependencies for -sys crate

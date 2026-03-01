@@ -1,4 +1,8 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+
+if(NOT BUILD_PYTHON_BINDINGS)
+    return()
+endif()
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 set(CMAKE_CXX_STANDARD 17)

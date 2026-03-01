@@ -1,0 +1,11 @@
+package zvec:db@0.1.0;
+
+/// A WASM component that provides zvec vector database functionality.
+world zvec-guest {
+    export types;
+}
+
+/// A WASM component that consumes zvec as an import.
+world zvec-host {
+    import types;
+}

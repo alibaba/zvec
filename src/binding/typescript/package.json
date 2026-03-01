@@ -1,0 +1,20 @@
+{
+  "name": "zvec",
+  "version": "0.1.0",
+  "description": "Node.js bindings for zvec in-process vector database",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp build && tsc",
+    "test": "node --test test/zvec.test.mjs"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^10.0.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "Apache-2.0"
+}

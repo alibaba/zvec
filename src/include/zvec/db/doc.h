@@ -64,7 +64,7 @@ class Doc {
     pk_ = std::move(pk);
   }
 
-  std::string pk() const {
+  const std::string &pk() const {
     return pk_;
   }
 

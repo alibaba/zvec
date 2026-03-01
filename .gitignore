@@ -1,3 +1,4 @@
+# Dotfiles (blanket), then whitelist specifics
 .*
 *~
 bazel-*
@@ -19,35 +20,88 @@ tests/de_integration/*.log
 !.clang-format
 !.circleci
 !.drone.yml
-sdk/python/dist/
+
+# Build output
+build*/
+target/
+bin/
+lib/
+dist/
+bazel-*
+
+# C/C++ objects and CMake
+*.o
+*.a
+*.so
+*.dylib
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+_deps/
 compile_commands.json
-dist
-html
-*.lcov.info
 
-# Dependencies
-/node_modules
+# Rust
+*.profraw
+*.profdata
+perf.data*
+flamegraph.svg
+criterion/
+proptest-regressions/
 
-# Production
-/build
+# ML models
+*.safetensors
+*.onnx
+*.ot
+*.bin
+!deny.toml
 
-# Generated files
-.docusaurus
-.cache-loader
+# Python
+venv*/
+**/__pycache__/
 
-# Misc
-.DS_Store
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
+# Node
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# ── Python ────────────────────────────────────────────────────────
+venv/
+.venv/
+ENV/
+env/
+
+# C#
+*.csproj.user
+*.user
+*.suo
+*.ntvs*
+*.njsproj
+*.sln.docstates
+*.Tests/obj
+*.Tests/bin
+obj
+bin
+
+# Test output
+tests/integration/conf/
+tests/integration/log
+tests/integration/*.log
+tests/de_integration/conf/
+tests/de_integration/log
+tests/de_integration/*.log
+tests/bench/log/
 allure-*
+*.lcov.info
+Testing/
 
 !build_android.sh
 !build_ios.sh
 
+# Misc
+var/
+thirdparty/
+html/
+sdk/python/dist/
+*.swp
+*.swo

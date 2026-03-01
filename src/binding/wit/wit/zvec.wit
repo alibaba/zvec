@@ -1,0 +1,107 @@
+package zvec:db@0.1.0;
+
+interface types {
+    // --- Data Types ---
+    enum data-type {
+        dt-undefined,
+        dt-binary,
+        dt-string,
+        dt-bool,
+        dt-int32,
+        dt-int64,
+        dt-uint32,
+        dt-uint64,
+        dt-float32,
+        dt-float64,
+        dt-vector-binary32,
+        dt-vector-fp16,
+        dt-vector-fp32,
+        dt-vector-fp64,
+        dt-vector-int8,
+        dt-sparse-vector-fp16,
+        dt-sparse-vector-fp32,
+        dt-array-string,
+        dt-array-int32,
+        dt-array-float,
+    }
+
+    // --- Error Type ---
+    enum error-code {
+        not-found,
+        already-exists,
+        invalid-argument,
+        permission-denied,
+        failed-precondition,
+        resource-exhausted,
+        unavailable,
+        internal-error,
+        not-supported,
+        unknown,
+    }
+
+    record zvec-error {
+        code: error-code,
+        message: string,
+    }
+
+    // --- Schema Resource ---
+    resource schema {
+        constructor(name: string);
+        add-field: func(name: string, data-type: data-type, dimension: u32) -> result<_, zvec-error>;
+    }
+
+    // --- Doc Resource ---
+    resource doc {
+        constructor();
+        set-pk: func(pk: string);
+        pk: func() -> string;
+        set-score: func(score: f32);
+        score: func() -> f32;
+        set-string: func(field: string, value: string) -> result<_, zvec-error>;
+        set-int32: func(field: string, value: s32) -> result<_, zvec-error>;
+        set-float: func(field: string, value: f32) -> result<_, zvec-error>;
+        set-vector: func(field: string, data: list<f32>) -> result<_, zvec-error>;
+    }
+
+    // --- Query Result ---
+    record query-result {
+        pk: string,
+        score: f32,
+    }
+
+    // --- Collection Resource ---
+    resource collection {
+        /// Create a new collection at `path` with the given schema.
+        create: static func(path: string, schema: borrow<schema>) -> result<collection, zvec-error>;
+
+        /// Open an existing collection at `path`.
+        open: static func(path: string) -> result<collection, zvec-error>;
+
+        /// Upsert documents into the collection.
+        upsert: func(docs: list<borrow<doc>>) -> result<_, zvec-error>;
+
+        /// Insert documents (fails if PK exists).
+        insert: func(docs: list<borrow<doc>>) -> result<_, zvec-error>;
+
+        /// Update documents (must already exist).
+        update: func(docs: list<borrow<doc>>) -> result<_, zvec-error>;
+
+        /// Delete documents by primary keys.
+        delete: func(pks: list<string>) -> result<_, zvec-error>;
+
+        /// Fetch documents by primary keys.
+        fetch: func(pks: list<string>) -> result<list<query-result>, zvec-error>;
+
+        /// Query by vector similarity.
+        query: func(field: string, vector: list<f32>, topk: s32) -> result<list<query-result>, zvec-error>;
+
+        /// Flush pending writes to disk.
+        flush: func() -> result<_, zvec-error>;
+
+        /// Get total document count.
+        stats: func() -> result<u64, zvec-error>;
+
+        /// Destroy the collection on disk.
+        destroy-physical: func() -> result<_, zvec-error>;
+    }
+}
