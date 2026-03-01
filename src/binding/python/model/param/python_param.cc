@@ -31,6 +31,8 @@ static std::string index_type_to_string(const IndexType type) {
       return "IVF";
     case IndexType::HNSW:
       return "HNSW";
+    case IndexType::OMEGA:
+      return "OMEGA";
     default:
       return "UNDEFINED";
   }

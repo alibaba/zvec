@@ -1,0 +1,118 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/core/interface/training.h>
+#include <zvec/db/status.h>
+#include "db/index/segment/segment.h"
+
+namespace zvec {
+
+/**
+ * @brief Configuration options for training data collection
+ */
+struct TrainingDataCollectorOptions {
+  // Number of training queries to generate
+  size_t num_training_queries = 1000;
+
+  // Gaussian noise scale for query generation
+  float noise_scale = 0.01f;
+
+  // ef parameter for training searches (large value for recall ≈ 1)
+  int ef_training = 1000;
+
+  // Top-K results to retrieve per query
+  size_t topk = 100;
+
+  // K_train: number of ground truth results that must be collected for label=1
+  // Label=1 iff the top K_train ground truth nodes are all in collected_node_ids
+  // Typically set to 1 (i.e., label=1 when the 1st ground truth is found)
+  size_t k_train = 1;
+
+  // Random seed for reproducibility
+  uint64_t seed = 42;
+};
+
+/**
+ * @brief Collector for OMEGA training data
+ *
+ * This class collects training data by:
+ * 1. Generating training queries from base vectors
+ * 2. Computing ground truth with brute force search
+ * 3. Performing searches in training mode with large ef
+ * 4. Labeling collected records based on ground truth
+ */
+class TrainingDataCollector {
+ public:
+  /**
+   * @brief Collect training data from a persisted segment
+   *
+   * @param segment The segment to collect data from (must be persisted)
+   * @param field_name Vector field name to train on
+   * @param options Collection options
+   * @param indexers Optional specific indexers to use (if empty, will use segment->get_vector_indexer)
+   * @return Training records with labels filled
+   */
+  static Result<std::vector<core_interface::TrainingRecord>> CollectTrainingData(
+      const Segment::Ptr& segment,
+      const std::string& field_name,
+      const TrainingDataCollectorOptions& options,
+      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
+
+ private:
+  /**
+   * @brief Compute ground truth using brute force search
+   *
+   * @param segment The segment to search
+   * @param field_name Vector field name
+   * @param queries Training query vectors
+   * @param topk Number of top results to retrieve
+   * @return Ground truth doc IDs for each query
+   */
+  static std::vector<std::vector<uint64_t>> ComputeGroundTruth(
+      const Segment::Ptr& segment,
+      const std::string& field_name,
+      const std::vector<std::vector<float>>& queries,
+      size_t topk);
+
+  /**
+   * @brief Fill labels in training records based on ground truth
+   *
+   * Label=1 iff the top K_train ground truth nodes are ALL in collected_node_ids.
+   * Label=0 otherwise.
+   *
+   * This follows big-ann-benchmarks labeling strategy:
+   * - Training records represent search states
+   * - label=1 means "we've found enough results, can stop now"
+   * - label=0 means "need to continue searching"
+   *
+   * @param records Training records to fill (modified in-place)
+   * @param ground_truth Ground truth doc IDs per query (sorted by distance)
+   * @param search_results Search result doc IDs per query (unused but kept for compatibility)
+   * @param k_train Number of top ground truth results that must be collected
+   */
+  static void FillLabels(
+      std::vector<core_interface::TrainingRecord>* records,
+      const std::vector<std::vector<uint64_t>>& ground_truth,
+      const std::vector<std::vector<uint64_t>>& search_results,
+      size_t k_train);
+};
+
+}  // namespace zvec

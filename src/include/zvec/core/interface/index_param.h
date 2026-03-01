@@ -61,6 +61,7 @@ enum class IndexType {
   kFlat,
   kIVF,  // it's actual a two-layer index
   kHNSW,
+  kOMEGA,  // HNSW with learned early stopping
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };
@@ -183,6 +184,16 @@ struct HNSWQueryParam : public BaseIndexQueryParam {
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<HNSWQueryParam>(*this);
+  }
+};
+
+struct OmegaQueryParam : public HNSWQueryParam {
+  using Pointer = std::shared_ptr<OmegaQueryParam>;
+
+  float target_recall = 0.95f;
+
+  BaseIndexQueryParam::Pointer Clone() const override {
+    return std::make_shared<OmegaQueryParam>(*this);
   }
 };
 

@@ -817,7 +817,58 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     return Status::OK();
   }
 
-  // build segment compact task
+  // Step 1: Build vector indexes if not ready
+  // This ensures indexes are built even for single segments that won't be compacted
+  std::vector<SegmentTask::Ptr> index_build_tasks;
+  for (auto &segment : persist_segments) {
+    if (!segment->all_vector_index_ready()) {
+      // Build all vector indexes for this segment
+      index_build_tasks.push_back(SegmentTask::CreateCreateVectorIndexTask(
+          CreateVectorIndexTask{segment, "", nullptr, options.concurrency_}));
+    }
+  }
+
+  if (!index_build_tasks.empty()) {
+    LOG_INFO("Building vector indexes for %zu segments", index_build_tasks.size());
+    auto s = execute_tasks(index_build_tasks);
+    CHECK_RETURN_STATUS(s);
+
+    // Update segment metadata
+    std::lock_guard write_lock(write_mtx_);
+    Version new_version = version_manager_->get_current_version();
+
+    for (auto &task : index_build_tasks) {
+      auto task_info = task->task_info();
+      if (std::holds_alternative<CreateVectorIndexTask>(task_info)) {
+        auto create_index_task = std::get<CreateVectorIndexTask>(task_info);
+        s = new_version.update_persisted_segment_meta(
+            create_index_task.output_segment_meta_);
+        CHECK_RETURN_STATUS(s);
+      }
+    }
+
+    s = version_manager_->apply(new_version);
+    CHECK_RETURN_STATUS(s);
+    s = version_manager_->flush();
+    CHECK_RETURN_STATUS(s);
+
+    // Reload indexes in segments
+    for (auto &task : index_build_tasks) {
+      auto task_info = task->task_info();
+      if (std::holds_alternative<CreateVectorIndexTask>(task_info)) {
+        auto create_index_task = std::get<CreateVectorIndexTask>(task_info);
+        s = create_index_task.input_segment_->reload_vector_index(
+            *schema_, create_index_task.output_segment_meta_,
+            create_index_task.output_vector_indexers_,
+            create_index_task.output_quant_vector_indexers_);
+        CHECK_RETURN_STATUS(s);
+      }
+    }
+
+    LOG_INFO("Completed building vector indexes");
+  }
+
+  // Step 2: build segment compact task
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
       build_compact_task(schema_, persist_segments, options.concurrency_,

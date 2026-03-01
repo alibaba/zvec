@@ -21,6 +21,7 @@ __all__: list[str] = [
     "IndexOption",
     "IndexParam",
     "InvertIndexParam",
+    "OmegaIndexParam",
     "OptimizeOption",
     "QueryParam",
     "SegmentOption",
@@ -521,6 +522,78 @@ class InvertIndexParam(IndexParam):
     def enable_range_optimization(self) -> bool:
         """
         bool: Whether range optimization is enabled for this inverted index.
+        """
+
+class OmegaIndexParam(VectorIndexParam):
+    """
+
+    Parameters for configuring an OMEGA index.
+
+    OMEGA is an advanced graph-based index that can fall back to HNSW when omega
+    functionality is disabled. This class encapsulates its construction hyperparameters.
+
+    Attributes:
+        metric_type (MetricType): Distance metric used for similarity computation.
+            Default is ``MetricType.IP`` (inner product).
+        m (int): Number of bi-directional links created for every new element
+            during construction. Higher values improve accuracy but increase
+            memory usage and construction time. Default is 100.
+        ef_construction (int): Size of the dynamic candidate list for nearest
+            neighbors during index construction. Larger values yield better
+            graph quality at the cost of slower build time. Default is 500.
+        quantize_type (QuantizeType): Optional quantization type for vector
+            compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+            disable quantization.
+
+    Examples:
+        >>> from zvec.typing import MetricType, QuantizeType
+        >>> params = OmegaIndexParam(
+        ...     metric_type=MetricType.COSINE,
+        ...     m=16,
+        ...     ef_construction=200,
+        ...     quantize_type=QuantizeType.INT8
+        ... )
+        >>> print(params)
+        {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8'}
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: _zvec.typing.MetricType = ...,
+        m: typing.SupportsInt = 100,
+        ef_construction: typing.SupportsInt = 500,
+        quantize_type: _zvec.typing.QuantizeType = ...,
+    ) -> None:
+        """
+        Constructs an OmegaIndexParam instance.
+
+        Args:
+            metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
+            m (int, optional): Number of bi-directional links. Defaults to 100.
+            ef_construction (int, optional): Candidate list size during construction.
+                Defaults to 500.
+            quantize_type (QuantizeType, optional): Vector quantization type.
+                Defaults to QuantizeType.UNDEFINED.
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def ef_construction(self) -> int:
+        """
+        int: Candidate list size during index construction.
+        """
+
+    @property
+    def m(self) -> int:
+        """
+        int: Maximum number of neighbors per node in upper layers.
         """
 
 class OptimizeOption:

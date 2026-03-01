@@ -170,6 +170,9 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
     for (size_t i = 0; i < streamers_.size(); i++) {
       read_results[i] = read_vec(i, filter, id_offset, &next_id);
+      fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: read_vec(%zu) returned %d, next_id=%u\n",
+              i, read_results[i], next_id);
+      fflush(stderr);
       id_offset += streamers_[i]->create_provider()->count();
     }
 
@@ -194,8 +197,110 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
   stats_.set_reduced_costtime(timer.seconds());
   state_ = STATE_REDUCE;
+
+  fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: target_builder_=%p\n",
+          target_builder_.get());
+  fflush(stderr);
+
   if (target_builder_ != nullptr) {
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: calling IndexBuild()\n");
+    fflush(stderr);
     IndexBuild();
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: IndexBuild() completed\n");
+    fflush(stderr);
+
+    // CRITICAL FIX: After IndexBuild(), the builder's entity has the graph data (1500 docs),
+    // but the streamer's entity is still empty (0 docs). They are separate objects!
+    // Solution: Dump builder to storage, then close and reopen streamer to reload the data.
+
+    if (target_storage_ == nullptr) {
+      LOG_ERROR("target_storage_ is null, cannot dump/reload");
+      return IndexError_Runtime;
+    }
+
+    if (target_file_path_.empty()) {
+      LOG_ERROR("target_file_path_ is empty, cannot dump/reload");
+      return IndexError_Runtime;
+    }
+
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: dumping builder to storage at path=%s\n",
+            target_file_path_.c_str());
+    fflush(stderr);
+
+    // Create a FileDumper that writes to the file
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    if (dumper == nullptr) {
+      LOG_ERROR("Failed to create dumper");
+      return IndexError_Runtime;
+    }
+
+    // Initialize the dumper with the file path
+    int ret = dumper->create(target_file_path_);
+    if (ret != 0) {
+      LOG_ERROR("Failed to create dumper at path=%s, ret=%d", target_file_path_.c_str(), ret);
+      return ret;
+    }
+
+    // Dump the builder's entity to the file
+    ret = target_builder_->dump(dumper);
+    if (ret != 0) {
+      LOG_ERROR("Failed to dump builder, ret=%d", ret);
+      return ret;
+    }
+
+    // Close the dumper to flush data
+    ret = dumper->close();
+    if (ret != 0) {
+      LOG_ERROR("Failed to close dumper, ret=%d", ret);
+      return ret;
+    }
+
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: builder dumped, now closing streamer\n");
+    fflush(stderr);
+
+    // Close the streamer
+    ret = target_streamer_->close();
+    if (ret != 0) {
+      LOG_ERROR("Failed to close streamer, ret=%d", ret);
+      return ret;
+    }
+
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: streamer closed, now closing storage\n");
+    fflush(stderr);
+
+    // Close the storage before reopening it
+    ret = target_storage_->close();
+    if (ret != 0) {
+      LOG_ERROR("Failed to close storage, ret=%d", ret);
+      return ret;
+    }
+
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: storage closed, now reopening storage\n");
+    fflush(stderr);
+
+    // Reopen the storage from the file - this is critical!
+    // The storage needs to reload the data that was just dumped to the file
+    ret = target_storage_->open(target_file_path_, false);
+    if (ret != 0) {
+      LOG_ERROR("Failed to reopen storage, ret=%d", ret);
+      return ret;
+    }
+
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: storage reopened, now reopening streamer\n");
+    fflush(stderr);
+
+    // Now reopen the streamer with the refreshed storage
+    ret = target_streamer_->open(target_storage_);
+    if (ret != 0) {
+      LOG_ERROR("Failed to reopen streamer, ret=%d", ret);
+      return ret;
+    }
+
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: streamer reopened successfully\n");
+    fflush(stderr);
+  } else {
+    fprintf(stderr, "[DEBUG] MixedStreamerReducer::reduce: target_builder_ is null, skipping IndexBuild()\n");
+    fflush(stderr);
   }
 
   LOG_INFO("End brute force reduce. cost time: [%zu]s",
@@ -509,6 +614,9 @@ void MixedStreamerReducer::PushToDocCache(const IndexQueryMeta &meta,
 }
 
 int MixedStreamerReducer::IndexBuild() {
+  fprintf(stderr, "[DEBUG] IndexBuild: doc_cache_ size=%zu\n", doc_cache_.size());
+  fflush(stderr);
+
   const bool need_convert = !is_target_and_source_same_reformer_ &&
                             target_streamer_reformer_ != nullptr;
   IndexHolder::Pointer target_holder;
@@ -568,8 +676,18 @@ int MixedStreamerReducer::IndexBuild() {
                                             target_holder);
     target_holder = target_builder_converter_->result();
   }
+
+  fprintf(stderr, "[DEBUG] IndexBuild: calling target_builder_->train()\n");
+  fflush(stderr);
   target_builder_->train(target_holder);
+
+  fprintf(stderr, "[DEBUG] IndexBuild: calling target_builder_->build()\n");
+  fflush(stderr);
   target_builder_->build(target_holder);
+
+  fprintf(stderr, "[DEBUG] IndexBuild: build() completed\n");
+  fflush(stderr);
+
   return 0;
 }
 

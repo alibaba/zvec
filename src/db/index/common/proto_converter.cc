@@ -75,6 +75,28 @@ proto::IVFIndexParams ProtoConverter::ToPb(const IVFIndexParams *params) {
   return params_pb;
 }
 
+// OmegaIndexParams
+OmegaIndexParams::OPtr ProtoConverter::FromPb(
+    const proto::OmegaIndexParams &params_pb) {
+  auto params = std::make_shared<OmegaIndexParams>(
+      MetricTypeCodeBook::Get(params_pb.base().metric_type()), params_pb.m(),
+      params_pb.ef_construction(),
+      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()));
+
+  return params;
+}
+
+proto::OmegaIndexParams ProtoConverter::ToPb(const OmegaIndexParams *params) {
+  proto::OmegaIndexParams params_pb;
+  params_pb.mutable_base()->set_metric_type(
+      MetricTypeCodeBook::Get(params->metric_type()));
+  params_pb.mutable_base()->set_quantize_type(
+      QuantizeTypeCodeBook::Get(params->quantize_type()));
+  params_pb.set_ef_construction(params->ef_construction());
+  params_pb.set_m(params->m());
+  return params_pb;
+}
+
 // InvertIndexParams
 InvertIndexParams::OPtr ProtoConverter::FromPb(
     const proto::InvertIndexParams &params_pb) {
@@ -157,6 +179,8 @@ IndexParams::Ptr ProtoConverter::FromPb(const proto::IndexParams &params_pb) {
     return ProtoConverter::FromPb(params_pb.ivf());
   } else if (params_pb.has_flat()) {
     return ProtoConverter::FromPb(params_pb.flat());
+  } else if (params_pb.has_omega()) {
+    return ProtoConverter::FromPb(params_pb.omega());
   }
 
   return nullptr;
@@ -208,6 +232,13 @@ proto::IndexParams ProtoConverter::ToPb(const IndexParams *params) {
       auto flat_params = dynamic_cast<const FlatIndexParams *>(params);
       if (flat_params) {
         params_pb.mutable_flat()->CopyFrom(ProtoConverter::ToPb(flat_params));
+      }
+      break;
+    }
+    case IndexType::OMEGA: {
+      auto omega_params = dynamic_cast<const OmegaIndexParams *>(params);
+      if (omega_params) {
+        params_pb.mutable_omega()->CopyFrom(ProtoConverter::ToPb(omega_params));
       }
       break;
     }

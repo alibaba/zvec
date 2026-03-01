@@ -112,18 +112,9 @@ class HnswSearcher : public IndexSearcher {
   int update_context(HnswContext *ctx) const;
 
  protected:
-  uint32_t ef_{HnswEntity::kDefaultEf};
-
- private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
 
-  HnswSearcherEntity entity_{};
-  HnswAlgorithm::UPointer alg_;  // impl graph algorithm
-
-  IndexMetric::Pointer metric_{};
-  IndexMeta meta_{};
-  ailego::Params params_{};
-  Stats stats_;
+  uint32_t ef_{HnswEntity::kDefaultEf};
   uint32_t max_scan_num_{0U};
   uint32_t bruteforce_threshold_{HnswEntity::kDefaultBruteForceThreshold};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
@@ -133,8 +124,16 @@ class HnswSearcher : public IndexSearcher {
   bool force_padding_topk_enabled_{false};
   float bf_negative_probility_{HnswEntity::kDefaultBFNegativeProbility};
   uint32_t magic_{0U};
-
   State state_{STATE_INIT};
+  HnswSearcherEntity entity_{};
+  IndexMetric::Pointer metric_{};
+  IndexMeta meta_{};
+
+ private:
+  HnswAlgorithm::UPointer alg_;  // impl graph algorithm
+
+  ailego::Params params_{};
+  Stats stats_;
 };
 
 }  // namespace core

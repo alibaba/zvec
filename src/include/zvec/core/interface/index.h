@@ -31,6 +31,13 @@
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/training.h>
+#include <zvec/core/interface/training_capable.h>
+#include <zvec/db/status.h>
+
+namespace zvec::core {
+class OmegaSearcher;  // Forward declaration
+}
 
 namespace zvec::core_interface {
 
@@ -131,6 +138,28 @@ class Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
+  // Capability Pattern: Query optional capabilities
+  /**
+   * @brief Get training capability interface if supported.
+   *
+   * This method allows indexes to optionally provide training functionality
+   * without polluting the base Index class. Follows the Capability Pattern.
+   *
+   * @return Pointer to ITrainingCapable interface if supported, nullptr otherwise
+   *
+   * @example
+   * @code
+   *   if (auto* training = index->GetTrainingCapability()) {
+   *       training->EnableTrainingMode(true);
+   *       // ... perform searches ...
+   *       auto records = training->GetTrainingRecords();
+   *   }
+   * @endcode
+   */
+  virtual class ITrainingCapable* GetTrainingCapability() {
+    return nullptr;  // Default: capability not supported
+  }
+
   virtual BaseIndexParam::Pointer GetParam() const {
     return std::make_shared<BaseIndexParam>(param_);
   }
@@ -214,6 +243,7 @@ class Index {
 
   size_t context_index_;
   core::IndexStorage::Pointer storage_{};
+  std::string file_path_;  // Storage file path
 
   bool is_open_{false};
   bool is_sparse_{false};
@@ -290,6 +320,43 @@ class HNSWIndex : public Index {
 
  private:
   HNSWIndexParam param_{};
+};
+
+
+//! OMEGA Index - HNSW with learned early stopping
+/**
+ * OmegaIndex is a specialized HNSW index that supports training mode for
+ * collecting features to train the OMEGA early stopping model.
+ *
+ * It implements the ITrainingCapable interface to provide training functionality
+ * without modifying the generic HNSWIndex class.
+ */
+class OmegaIndex : public HNSWIndex, public ITrainingCapable {
+ public:
+  OmegaIndex() = default;
+
+  // Override GetTrainingCapability to return this
+  ITrainingCapable* GetTrainingCapability() override {
+    return this;
+  }
+
+  // Implement ITrainingCapable interface
+  zvec::Status EnableTrainingMode(bool enable) override;
+  void SetCurrentQueryId(int query_id) override;
+  std::vector<TrainingRecord> GetTrainingRecords() const override;
+  void ClearTrainingRecords() override;
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+
+ private:
+  // Training mode state (tracked locally for convenience)
+  bool training_mode_enabled_{false};
+  int current_query_id_{0};
 };
 
 

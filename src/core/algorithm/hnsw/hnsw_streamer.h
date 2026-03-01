@@ -163,7 +163,8 @@ class HnswStreamer : public IndexStreamer {
   //! current streamer/searcher
   int update_context(HnswContext *ctx) const;
 
- private:
+ protected:
+  // Changed from private to protected to allow OmegaStreamer inheritance
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {
    public:

@@ -93,6 +93,29 @@ class HnswQueryParams : public QueryParams {
   int ef_;
 };
 
+class OmegaQueryParams : public HnswQueryParams {
+ public:
+  OmegaQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
+                   float target_recall = 0.95f,
+                   float radius = 0.0f, bool is_linear = false,
+                   bool is_using_refiner = false)
+      : HnswQueryParams(ef, radius, is_linear, is_using_refiner),
+        target_recall_(target_recall) {}
+
+  virtual ~OmegaQueryParams() = default;
+
+  float target_recall() const {
+    return target_recall_;
+  }
+
+  void set_target_recall(float target_recall) {
+    target_recall_ = target_recall;
+  }
+
+ private:
+  float target_recall_;
+};
+
 class IVFQueryParams : public QueryParams {
  public:
   IVFQueryParams(int nprobe = 10, bool is_using_refiner = false,

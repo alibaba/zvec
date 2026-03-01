@@ -51,6 +51,12 @@ class MixedStreamerReducer : public IndexStreamerReducer {
       const IndexConverter::Pointer converter,
       const IndexReformer::Pointer reformer,
       const IndexQueryMeta &original_query_meta) override;
+
+  // Set the storage and file path for dump/reload operations
+  void set_storage(const IndexStorage::Pointer &storage, const std::string &file_path) {
+    target_storage_ = storage;
+    target_file_path_ = file_path;
+  }
   // feed_streamer
   int feed_streamer_with_reformer(
       IndexStreamer::Pointer streamer,
@@ -105,6 +111,8 @@ class MixedStreamerReducer : public IndexStreamerReducer {
 
   IndexBuilder::Pointer target_builder_{nullptr};
   IndexConverter::Pointer target_builder_converter_{nullptr};
+  IndexStorage::Pointer target_storage_{nullptr};
+  std::string target_file_path_;
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
   const uint64_t kInvalidKey = std::numeric_limits<uint64_t>::max();

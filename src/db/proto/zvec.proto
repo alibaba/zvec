@@ -58,6 +58,8 @@ enum IndexType {
   IT_FLAT = 3;
   // Invert Index
   IT_INVERT = 10;
+  // OMEGA Index (HNSW with learned early stopping)
+  IT_OMEGA = 11;
 };
 
 enum QuantizeType {
@@ -98,12 +100,20 @@ message IVFIndexParams {
   bool use_soar = 4;
 }
 
+message OmegaIndexParams {
+  BaseIndexParams base = 1;
+  int32 m = 2;
+  int32 ef_construction = 3;
+  // TODO: Add OMEGA-specific params like min_vector_threshold, model_dir
+}
+
 message IndexParams {
   oneof params {
     InvertIndexParams invert = 1;
     HnswIndexParams hnsw = 2;
     FlatIndexParams flat = 3;
     IVFIndexParams ivf = 4;
+    OmegaIndexParams omega = 5;
   };
 };
 

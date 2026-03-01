@@ -162,6 +162,33 @@ class ProximaEngineHelper {
         return std::move(hnsw_query_param);
       }
 
+      case IndexType::OMEGA: {
+        // OMEGA uses extended query params with target_recall
+        auto omega_query_param_result =
+            _build_common_query_param<core_interface::OmegaQueryParam>(
+                query_params);
+        if (!omega_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              omega_query_param_result.error().message()));
+        }
+        auto &omega_query_param = omega_query_param_result.value();
+        if (query_params.query_params) {
+          // Try to cast to OmegaQueryParams first
+          if (auto* db_omega_query_params = dynamic_cast<const OmegaQueryParams *>(
+              query_params.query_params.get())) {
+            omega_query_param->ef_search = db_omega_query_params->ef();
+            omega_query_param->target_recall = db_omega_query_params->target_recall();
+          } else if (auto* db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
+              query_params.query_params.get())) {
+            // Fallback to HnswQueryParams (backward compatibility)
+            omega_query_param->ef_search = db_hnsw_query_params->ef();
+            // target_recall will use default value (0.95f)
+          }
+        }
+        return std::move(omega_query_param);
+      }
+
       case IndexType::IVF: {
         auto ivf_query_param_result =
             _build_common_query_param<core_interface::IVFQueryParam>(
@@ -320,6 +347,46 @@ class ProximaEngineHelper {
             db_index_params->ef_construction());
 
         return index_param_builder->Build();
+      }
+
+      case IndexType::OMEGA: {
+        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: OMEGA case entered!\n");
+        fflush(stderr);
+        // OMEGA uses its own index type at core_interface level
+        auto index_param_builder_result =
+            _build_common_index_param<OmegaIndexParams,
+                                      core_interface::HNSWIndexParamBuilder>(
+                field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const OmegaIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->WithM(db_index_params->m());
+        index_param_builder->WithEFConstruction(
+            db_index_params->ef_construction());
+
+        // Override index_type to kOMEGA
+        auto hnsw_param = index_param_builder->Build();
+        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: Before override, index_type=%d\n",
+                static_cast<int>(hnsw_param->index_type));
+        fflush(stderr);
+        hnsw_param->index_type = core_interface::IndexType::kOMEGA;
+        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: After override, index_type=%d\n",
+                static_cast<int>(hnsw_param->index_type));
+        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: kOMEGA enum value=%d\n",
+                static_cast<int>(core_interface::IndexType::kOMEGA));
+        fflush(stderr);
+
+        // TODO: Store OMEGA-specific params (min_vector_threshold, model_dir)
+        // in the params field for now
+        // These will be used by the IndexFlow when creating the OmegaSearcher
+
+        return hnsw_param;
       }
 
       case IndexType::IVF: {

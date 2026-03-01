@@ -43,6 +43,8 @@ Index::Pointer IndexFactory::CreateAndInitIndex(const BaseIndexParam &param) {
     ptr = std::make_shared<FlatIndex>();
   } else if (param.index_type == IndexType::kHNSW) {
     ptr = std::make_shared<HNSWIndex>();
+  } else if (param.index_type == IndexType::kOMEGA) {
+    ptr = std::make_shared<OmegaIndex>();
   } else if (param.index_type == IndexType::kIVF) {
     ptr = std::make_shared<IVFIndex>();
   } else {

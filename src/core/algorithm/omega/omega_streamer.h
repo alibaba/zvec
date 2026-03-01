@@ -13,129 +13,69 @@
 // limitations under the License.
 #pragma once
 
-#include <zvec/core/framework/index_framework.h>
 #include "../hnsw/hnsw_streamer.h"
+#include <zvec/core/interface/training.h>
+#include <mutex>
+#include <memory>
 
 namespace zvec {
 namespace core {
 
-//! OMEGA Index Streamer - wraps HNSW streamer
-class OmegaStreamer : public IndexStreamer {
+/**
+ * @brief OMEGA Index Streamer
+ *
+ * Inherits from HnswStreamer and overrides dump() to set "OmegaSearcher"
+ * as the searcher type, ensuring that disk-persisted indices will use
+ * OmegaSearcher (with training support) when loaded.
+ *
+ * For in-memory indices, currently delegates to parent HNSW search.
+ * Future: Implement adaptive search with OMEGA C API directly.
+ */
+class OmegaStreamer : public HnswStreamer {
  public:
-  using ContextPointer = IndexStreamer::Context::Pointer;
-
-  OmegaStreamer(void);
-  virtual ~OmegaStreamer(void);
+  OmegaStreamer(void) : HnswStreamer() {}
+  virtual ~OmegaStreamer(void) {}
 
   OmegaStreamer(const OmegaStreamer &streamer) = delete;
   OmegaStreamer &operator=(const OmegaStreamer &streamer) = delete;
 
+  // Training mode support (for future implementation)
+  void EnableTrainingMode(bool enable) { training_mode_enabled_ = enable; }
+  void SetCurrentQueryId(int query_id) { current_query_id_ = query_id; }
+  std::vector<core_interface::TrainingRecord> GetTrainingRecords() const {
+    std::lock_guard<std::mutex> lock(training_mutex_);
+    return collected_records_;
+  }
+  void ClearTrainingRecords() {
+    std::lock_guard<std::mutex> lock(training_mutex_);
+    collected_records_.clear();
+  }
+
  protected:
-  //! Initialize Streamer
-  virtual int init(const IndexMeta &imeta,
-                   const ailego::Params &params) override;
-
-  //! Cleanup Streamer
-  virtual int cleanup(void) override;
-
-  // TODO: These methods call protected methods and need to be fixed
-  /*
-  //! Add a vector into index (delegate to HNSW)
-  virtual int add_impl(uint64_t pkey, const void *query,
-                       const IndexQueryMeta &qmeta,
-                       Context::Pointer &context) override {
-    return hnsw_streamer_->add_impl(pkey, query, qmeta, context);
-  }
-
-  //! Add a vector with id into index (delegate to HNSW)
-  virtual int add_with_id_impl(uint32_t id, const void *query,
-                               const IndexQueryMeta &qmeta,
-                               Context::Pointer &context) override {
-    return hnsw_streamer_->add_with_id_impl(id, query, qmeta, context);
-  }
-
-  //! Similarity search (delegate to HNSW)
+  /**
+   * @brief Override search to potentially use OMEGA adaptive search
+   *
+   * Currently delegates to parent HNSW search.
+   * Future: Implement OMEGA adaptive search with learned early stopping.
+   */
   virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
-                          Context::Pointer &context) const override {
-    return hnsw_streamer_->search_impl(query, qmeta, context);
-  }
+                          Context::Pointer &context) const override;
 
-  //! Similarity search (delegate to HNSW)
   virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
                           uint32_t count,
-                          Context::Pointer &context) const override {
-    return hnsw_streamer_->search_impl(query, qmeta, count, context);
-  }
-  */
+                          Context::Pointer &context) const override;
 
-  // TODO: These methods call protected methods and need to be fixed
-  /*
-  //! Similarity brute force search (delegate to HNSW)
-  virtual int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
-                             Context::Pointer &context) const override {
-    return hnsw_streamer_->search_bf_impl(query, qmeta, context);
-  }
-
-  //! Similarity brute force search (delegate to HNSW)
-  virtual int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
-                             uint32_t count,
-                             Context::Pointer &context) const override {
-    return hnsw_streamer_->search_bf_impl(query, qmeta, count, context);
-  }
-
-  //! Linear search by primary keys (delegate to HNSW)
-  virtual int search_bf_by_p_keys_impl(
-      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
-      const IndexQueryMeta &qmeta, ContextPointer &context) const override {
-    return hnsw_streamer_->search_bf_by_p_keys_impl(query, p_keys, qmeta,
-                                                     context);
-  }
-
-  //! Linear search by primary keys (delegate to HNSW)
-  virtual int search_bf_by_p_keys_impl(
-      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
-      const IndexQueryMeta &qmeta, uint32_t count,
-      ContextPointer &context) const override {
-    return hnsw_streamer_->search_bf_by_p_keys_impl(query, p_keys, qmeta,
-                                                     count, context);
-  }
-  */
-
-  // TODO: These methods call protected methods and need to be fixed
-  /*
-  //! Remove a vector from index (delegate to HNSW)
-  virtual int remove_impl(uint64_t pkey, Context::Pointer &context) override {
-    return hnsw_streamer_->remove_impl(pkey, context);
-  }
-
-  //! Fetch vector by key (delegate to HNSW)
-  virtual const void *get_vector(uint64_t key) const override {
-    return hnsw_streamer_->get_vector(key);
-  }
-
-  //! Retrieve statistics (delegate to HNSW)
-  virtual const Stats &stats(void) const override {
-    return hnsw_streamer_->stats();
-  }
-
-  //! Retrieve meta of index (delegate to HNSW)
-  virtual const IndexMeta &meta(void) const override {
-    return hnsw_streamer_->meta();
-  }
-
-  //! Retrieve params of index - NOTE: Not overriding base class method
-  const ailego::Params &params(void) const {
-    return params_;
-  }
-
-  virtual void print_debug_info() override {
-    hnsw_streamer_->print_debug_info();
-  }
-  */
+  /**
+   * @brief Override dump to set "OmegaSearcher" instead of "HnswSearcher"
+   */
+  virtual int dump(const IndexDumper::Pointer &dumper) override;
 
  private:
-  std::shared_ptr<HnswStreamer> hnsw_streamer_;
-  ailego::Params params_{};
+  // Training mode state (for future implementation)
+  bool training_mode_enabled_{false};
+  int current_query_id_{0};
+  mutable std::mutex training_mutex_{};
+  mutable std::vector<core_interface::TrainingRecord> collected_records_{};
 };
 
 }  // namespace core

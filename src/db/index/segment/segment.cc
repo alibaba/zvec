@@ -55,6 +55,8 @@
 #include "db/index/storage/wal/wal_file.h"
 #include "column_merging_reader.h"
 #include "sql_expr_parser.h"
+#include "db/training/training_data_collector.h"
+#include "db/training/omega_model_trainer.h"
 
 namespace zvec {
 
@@ -272,6 +274,11 @@ class SegmentImpl : public Segment,
   Status internal_update(Doc &doc);
   Status internal_upsert(Doc &doc);
   Status internal_delete(const Doc &doc);
+
+  // Auto-training for OMEGA index (called after Merge completes)
+  Status auto_train_omega_index_internal(
+      const std::string& field_name,
+      const std::vector<VectorColumnIndexer::Ptr>& indexers);
 
   Status recover();
   Status open_wal_file();
@@ -1440,15 +1447,27 @@ CombinedVectorColumnIndexer::Ptr SegmentImpl::get_combined_vector_indexer(
   auto iter = vector_indexers_.find(field_name);
   if (iter != vector_indexers_.end()) {
     indexers = iter->second;
+    fprintf(stderr, "[DEBUG] get_combined_vector_indexer: found %zu persisted indexers\n",
+            indexers.size());
+    fflush(stderr);
   }
   auto m_iter = memory_vector_indexers_.find(field_name);
   if (m_iter != memory_vector_indexers_.end()) {
+    fprintf(stderr, "[DEBUG] get_combined_vector_indexer: FOUND memory indexer! Adding to list\n");
+    fflush(stderr);
     indexers.push_back(m_iter->second);
+  } else {
+    fprintf(stderr, "[DEBUG] get_combined_vector_indexer: NO memory indexer\n");
+    fflush(stderr);
   }
 
   auto field = collection_schema_->get_field(field_name);
   auto vector_index_params =
       std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
+  fprintf(stderr, "[DEBUG] get_combined_vector_indexer: field index_type=%d\n",
+          static_cast<int>(vector_index_params->type()));
+  fflush(stderr);
+
   MetricType metric_type = vector_index_params->metric_type();
   auto blocks = get_persist_block_metas(BlockType::VECTOR_INDEX, field_name);
 
@@ -1563,12 +1582,29 @@ Status SegmentImpl::create_all_vector_index(
   new_segment_meta->set_indexed_vector_fields(vector_field_names);
   *segment_meta = new_segment_meta;
 
+  fprintf(stderr, "[DEBUG] create_vector_index_internal: marked fields as indexed, vector_field_names.size()=%zu\n",
+          vector_field_names.size());
+  for (const auto& field_name : vector_field_names) {
+    fprintf(stderr, "[DEBUG] create_vector_index_internal: indexed field=%s, vector_indexed=%d\n",
+            field_name.c_str(), new_segment_meta->vector_indexed(field_name));
+  }
+  fflush(stderr);
+
+  // Note: OMEGA training is now performed in merge_vector_indexer() immediately
+  // after the index is built via Merge(). This is the recommended approach per
+  // Alibaba expert advice - train right after reduce() completes when data is
+  // still in memory.
+
   return Status::OK();
 }
 
 Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     const std::string &index_file_path, const std::string &column,
     const FieldSchema &field, int concurrency) {
+  fprintf(stderr, "[DEBUG] merge_vector_indexer called for field '%s', index_type=%d\n",
+          column.c_str(), static_cast<int>(field.index_params()->type()));
+  fflush(stderr);
+
   VectorColumnIndexer::Ptr vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
 
@@ -1578,6 +1614,11 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   CHECK_RETURN_STATUS_EXPECTED(s);
   std::vector<VectorColumnIndexer::Ptr> to_merge_indexers =
       vector_indexers_[column];
+
+  fprintf(stderr, "[DEBUG] merge_vector_indexer: merging %zu indexers\n",
+          to_merge_indexers.size());
+  fflush(stderr);
+
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
@@ -1588,8 +1629,47 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   }
   s = vector_indexer->Merge(to_merge_indexers, filter_, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
+
+  fprintf(stderr, "[DEBUG] merge_vector_indexer: Merge completed successfully, doc_count=%zu\n",
+          vector_indexer->doc_count());
+  fflush(stderr);
+
+  // CRITICAL: Train BEFORE Flush!
+  // After Merge, the index is in memory and searchable (builder and streamer are ready).
+  // Flush() will clear the in-memory data (doc_count becomes 0), so training must
+  // happen BEFORE Flush while the index is still searchable.
+  auto* training_capable = vector_indexer->GetTrainingCapability();
+  if (training_capable != nullptr) {
+    fprintf(stderr, "[DEBUG] merge_vector_indexer: Trainable index detected (type=%d)!\n",
+            static_cast<int>(field.index_params()->type()));
+    fflush(stderr);
+
+    LOG_INFO("Trainable index detected after merge, training BEFORE flush for field '%s' in segment %d",
+             column.c_str(), id());
+
+    // Train with the in-memory index (data is still accessible)
+    s = auto_train_omega_index_internal(column, {vector_indexer});
+    if (!s.ok()) {
+      LOG_WARN("Failed to auto-train index after merge: %s (non-fatal, continuing)",
+               s.message().c_str());
+      // Don't fail the merge operation if training fails
+    }
+  } else {
+    fprintf(stderr, "[DEBUG] merge_vector_indexer: Index does not support training (type=%d), skipping\n",
+            static_cast<int>(field.index_params()->type()));
+    fflush(stderr);
+  }
+
+  // Now flush to persist the data (this will clear in-memory data)
   s = vector_indexer->Flush();
   CHECK_RETURN_STATUS_EXPECTED(s);
+
+  fprintf(stderr, "[DEBUG] merge_vector_indexer: Flush completed, doc_count=%zu\n",
+          vector_indexer->doc_count());
+  fflush(stderr);
+
+  fprintf(stderr, "[DEBUG] merge_vector_indexer: returning vector_indexer\n");
+  fflush(stderr);
 
   return vector_indexer;
 }
@@ -2192,6 +2272,98 @@ Status SegmentImpl::destroy() {
 Status SegmentImpl::cleanup() {
   auto seg_path = FileHelper::MakeSegmentPath(path_, segment_meta_->id());
   FileHelper::RemoveDirectory(seg_path);
+  return Status::OK();
+}
+
+Status SegmentImpl::auto_train_omega_index_internal(
+    const std::string& field_name,
+    const std::vector<VectorColumnIndexer::Ptr>& indexers) {
+  LOG_INFO("Starting auto-training for OMEGA index on field '%s' in segment %d",
+           field_name.c_str(), id());
+
+  // Step 1: Collect training data using the provided indexers
+  TrainingDataCollectorOptions collector_options;
+  collector_options.num_training_queries = 1000;  // TODO: Make configurable
+  collector_options.ef_training = 1000;           // Large ef for recall ≈ 1
+  collector_options.topk = 100;
+  collector_options.noise_scale = 0.01f;
+
+  fprintf(stderr, "[DEBUG] auto_train_omega_index_internal: calling CollectTrainingData with %zu provided indexers\n",
+          indexers.size());
+  fflush(stderr);
+
+  auto training_records_result = TrainingDataCollector::CollectTrainingData(
+      shared_from_this(), field_name, collector_options, indexers);
+
+  if (!training_records_result.has_value()) {
+    return Status::InternalError(
+        "Failed to collect training data: " +
+        training_records_result.error().message());
+  }
+
+  auto& training_records = training_records_result.value();
+  LOG_INFO("Collected %zu training records for segment %d",
+           training_records.size(), id());
+
+  if (training_records.empty()) {
+    LOG_WARN("No training records collected, skipping model training");
+    return Status::OK();
+  }
+
+  // Check if we have enough positive and negative samples
+  size_t positive_count = 0;
+  size_t negative_count = 0;
+  for (const auto& record : training_records) {
+    if (record.label == 1) {
+      positive_count++;
+    } else {
+      negative_count++;
+    }
+  }
+
+  if (positive_count == 0 || negative_count == 0) {
+    LOG_WARN("Insufficient training samples: %zu positive, %zu negative. Need both > 0. Skipping training.",
+             positive_count, negative_count);
+    return Status::OK();
+  }
+
+  // Need at least 50 samples of each class for reasonable training
+  if (positive_count < 50 || negative_count < 50) {
+    LOG_WARN("Too few training samples: %zu positive, %zu negative. Need at least 50 of each. Skipping training.",
+             positive_count, negative_count);
+    return Status::OK();
+  }
+
+  LOG_INFO("Training data stats: %zu positive, %zu negative samples",
+           positive_count, negative_count);
+
+  // Step 2: Train OMEGA model
+  OmegaModelTrainerOptions trainer_options;
+  trainer_options.output_dir = FileHelper::MakeSegmentPath(path_, id()) + "/omega_model";
+  trainer_options.verbose = true;
+
+  // Create output directory if it doesn't exist
+  if (!FileHelper::DirectoryExists(trainer_options.output_dir)) {
+    if (!FileHelper::CreateDirectory(trainer_options.output_dir)) {
+      return Status::InternalError(
+          "Failed to create model output directory: " +
+          trainer_options.output_dir);
+    }
+  }
+
+  auto train_status = OmegaModelTrainer::TrainModel(training_records, trainer_options);
+  if (!train_status.ok()) {
+    return Status::InternalError(
+        "Failed to train OMEGA model: " + train_status.message());
+  }
+
+  LOG_INFO("Successfully trained OMEGA model for segment %d, output: %s",
+           id(), trainer_options.output_dir.c_str());
+
+  // Step 3: Load model into the provided indexers
+  // TODO: Implement model loading into VectorColumnIndexer
+  // For now, the model will be loaded when the index is reopened
+
   return Status::OK();
 }
 
@@ -3867,30 +4039,70 @@ Status SegmentImpl::load_scalar_index_blocks(bool create) {
 }
 
 Status SegmentImpl::load_vector_index_blocks() {
+  fprintf(stderr, "[DEBUG] load_vector_index_blocks: loading %zu blocks\n",
+          segment_meta_->persisted_blocks().size());
+  fflush(stderr);
+
+  int block_index = 0;
   for (const auto &block : segment_meta_->persisted_blocks()) {
+    fprintf(stderr, "[DEBUG] load_vector_index_blocks: block[%d] type=%d\n",
+            block_index++, static_cast<int>(block.type()));
+    fflush(stderr);
+
     if (block.type() == BlockType::VECTOR_INDEX ||
         block.type() == BlockType::VECTOR_INDEX_QUANTIZE) {
       // vector block only contained 1 column
       auto column = block.columns()[0];
 
+      fprintf(stderr, "[DEBUG] load_vector_index_blocks: block[%d] column=%s, vector_indexed=%d\n",
+              block_index-1, column.c_str(), segment_meta_->vector_indexed(column));
+      fflush(stderr);
+
       FieldSchema new_field_params =
           *collection_schema_->get_vector_field(column);
 
+      fprintf(stderr, "[DEBUG] load_vector_index_blocks: original schema field index_type=%d\n",
+              static_cast<int>(new_field_params.index_params()->type()));
+      fflush(stderr);
+
       auto vector_index_params = std::dynamic_pointer_cast<VectorIndexParams>(
           new_field_params.index_params());
+
+      fprintf(stderr, "[DEBUG] load_vector_index_blocks: original index_type=%d\n",
+              static_cast<int>(vector_index_params->type()));
+      fprintf(stderr, "[DEBUG] load_vector_index_blocks: quantize_type=%d\n",
+              static_cast<int>(vector_index_params->quantize_type()));
+      fflush(stderr);
+
       if (block.type_ == BlockType::VECTOR_INDEX) {
         if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED ||
             !segment_meta_->vector_indexed(column)) {
+          fprintf(stderr, "[DEBUG] load_vector_index_blocks: CONDITION MET! quantize_type=%d, vector_indexed=%d\n",
+                  static_cast<int>(vector_index_params->quantize_type()),
+                  segment_meta_->vector_indexed(column));
+          fprintf(stderr, "[DEBUG] load_vector_index_blocks: replacing with default FLAT params!\n");
+          fflush(stderr);
           new_field_params.set_index_params(
               MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
+        } else {
+          fprintf(stderr, "[DEBUG] load_vector_index_blocks: CONDITION NOT MET, keeping original index_type=%d\n",
+                  static_cast<int>(vector_index_params->type()));
+          fflush(stderr);
         }
-      } else {
+      } else{
         if (!segment_meta_->vector_indexed(column)) {
           new_field_params.set_index_params(MakeDefaultQuantVectorIndexParams(
               vector_index_params->metric_type(),
               vector_index_params->quantize_type()));
         }
       }
+
+      fprintf(stderr, "[DEBUG] load_vector_index_blocks: block[%d] creating VectorColumnIndexer with final index_type=%d\n",
+              block_index-1, static_cast<int>(std::dynamic_pointer_cast<VectorIndexParams>(new_field_params.index_params())->type()));
+      fprintf(stderr, "[DEBUG] load_vector_index_blocks: new_field_params details: name=%s, index_type=%d\n",
+              new_field_params.name().c_str(),
+              static_cast<int>(new_field_params.index_params()->type()));
+      fflush(stderr);
 
       std::string index_path;
       if (block.type_ == BlockType::VECTOR_INDEX) {

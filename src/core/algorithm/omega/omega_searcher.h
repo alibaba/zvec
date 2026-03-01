@@ -14,8 +14,12 @@
 #pragma once
 
 #include <zvec/core/framework/index_framework.h>
+#include <zvec/core/interface/training.h>
+#include <zvec/db/status.h>
 #include "../hnsw/hnsw_searcher.h"
 #include <omega/omega_api.h>
+#include <mutex>
+#include <vector>
 
 namespace zvec {
 namespace core {
@@ -31,6 +35,61 @@ class OmegaSearcher : public HnswSearcher {
 
   OmegaSearcher(const OmegaSearcher &) = delete;
   OmegaSearcher &operator=(const OmegaSearcher &) = delete;
+
+ public:
+  // OMEGA Training Mode Support
+  /**
+   * @brief Enable or disable training mode for collecting training features.
+   *
+   * When training mode is enabled:
+   * - Early stopping is disabled (complete HNSW search)
+   * - Training features are collected for each visited node
+   * - query_id must be set via SetCurrentQueryId() before each search
+   *
+   * @param enable True to enable training mode, false to disable
+   * @return Status indicating success or failure
+   */
+  zvec::Status EnableTrainingMode(bool enable);
+
+  /**
+   * @brief Set the query ID for the next search operation.
+   *
+   * Must be called before search_impl() when training mode is enabled.
+   * The query_id will be included in all training records collected
+   * during that search.
+   *
+   * @param query_id Unique identifier for the query
+   */
+  void SetCurrentQueryId(int query_id);
+
+  /**
+   * @brief Get all collected training records.
+   *
+   * Returns a copy of all training records collected since training mode
+   * was enabled or since the last ClearTrainingRecords() call.
+   *
+   * @return Vector of TrainingRecord structures
+   */
+  std::vector<core_interface::TrainingRecord> GetTrainingRecords() const;
+
+  /**
+   * @brief Clear all collected training records.
+   *
+   * Removes all training records from internal storage. Useful for
+   * starting a fresh training data collection session.
+   */
+  void ClearTrainingRecords();
+
+  /**
+   * @brief Public search method for OmegaStreamer to call
+   *
+   * This allows OmegaStreamer to delegate search to OmegaSearcher
+   * without needing to access protected methods.
+   */
+  int search(const void *query, const IndexQueryMeta &qmeta,
+             uint32_t count, ContextPointer &context) const {
+    return search_impl(query, qmeta, count, context);
+  }
 
  protected:
   //! Initialize Searcher
@@ -56,6 +115,9 @@ class OmegaSearcher : public HnswSearcher {
   virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
                           uint32_t count,
                           ContextPointer &context) const override;
+
+  //! Create a searcher context (creates OmegaContext instead of HnswContext)
+  virtual ContextPointer create_context() const override;
 
   // TODO: These methods call protected methods of HnswSearcher and need to be fixed
   /*
@@ -97,6 +159,12 @@ class OmegaSearcher : public HnswSearcher {
  private:
   //! Check if OMEGA mode should be used
   bool should_use_omega() const {
+    // Use OMEGA adaptive search if:
+    // 1. Training mode is enabled (to collect features even without model), OR
+    // 2. OMEGA is enabled and model is loaded
+    if (training_mode_enabled_) {
+      return true;  // Always use adaptive_search in training mode
+    }
     return omega_enabled_ && use_omega_mode_ &&
            omega_model_ != nullptr &&
            omega_model_is_loaded(omega_model_);
@@ -115,6 +183,12 @@ class OmegaSearcher : public HnswSearcher {
   uint32_t min_vector_threshold_;
   size_t current_vector_count_;
   std::string model_dir_;
+
+  // Training mode support
+  bool training_mode_enabled_;
+  int current_query_id_;
+  mutable std::mutex training_mutex_;
+  mutable std::vector<core_interface::TrainingRecord> collected_records_;
 };
 
 }  // namespace core

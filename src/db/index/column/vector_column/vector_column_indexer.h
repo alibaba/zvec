@@ -15,11 +15,13 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <mutex>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/training.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
@@ -88,6 +90,52 @@ class VectorColumnIndexer {
   // Result<VectorDataset> BatchFetch(const std::vector<uint32_t> &doc_ids)
   // const;
 
+ public:
+  // OMEGA Training Mode Support
+  /**
+   * @brief Check if the underlying index supports training capability.
+   *
+   * @return Pointer to ITrainingCapable interface if supported, nullptr otherwise
+   */
+  core_interface::ITrainingCapable* GetTrainingCapability() const;
+
+  /**
+   * @brief Enable or disable training mode for collecting training features.
+   *
+   * Propagates the training mode setting to the underlying index.
+   * When enabled, searches will collect training features.
+   *
+   * @param enable True to enable training mode, false to disable
+   * @return Status indicating success or failure
+   */
+  Status EnableTrainingMode(bool enable);
+
+  /**
+   * @brief Set the query ID for the next search operation.
+   *
+   * Must be called before Search() when training mode is enabled.
+   * The query_id will be propagated to the underlying index.
+   *
+   * @param query_id Unique identifier for the query
+   */
+  void SetCurrentQueryId(int query_id);
+
+  /**
+   * @brief Get all collected training records.
+   *
+   * Returns a copy of all training records collected from the
+   * underlying index since training mode was enabled.
+   *
+   * @return Vector of TrainingRecord structures
+   */
+  std::vector<core_interface::TrainingRecord> GetTrainingRecords() const;
+
+  /**
+   * @brief Clear all collected training records.
+   *
+   * Clears training records from both this layer and the underlying index.
+   */
+  void ClearTrainingRecords();
 
  public:
   std::string index_file_path() const {
@@ -124,6 +172,12 @@ class VectorColumnIndexer {
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
+
+  // Training mode support
+  bool training_mode_enabled_{false};
+  int current_query_id_{0};
+  mutable std::mutex training_mutex_;
+  mutable std::vector<core_interface::TrainingRecord> collected_records_;
 };
 
 
