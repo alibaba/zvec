@@ -115,6 +115,7 @@ class SentenceTransformerFunctionBase:
 
         # Load model
         try:
+            model_class = self._get_model_class()
             if self._model_source == "modelscope":
                 # Load from ModelScope
                 require_module("modelscope")
@@ -124,12 +125,12 @@ class SentenceTransformerFunctionBase:
                 model_dir = snapshot_download(self._model_name)
 
                 # Load from local path
-                self._model = self._get_model_class(
+                self._model = model_class(
                     model_dir, device=self._device, trust_remote_code=True
                 )
             else:
                 # Load from Hugging Face (default)
-                self._model = self._get_model_class(
+                self._model = model_class(
                     self._model_name, device=self._device, trust_remote_code=True
                 )
 
