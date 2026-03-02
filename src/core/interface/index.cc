@@ -283,18 +283,12 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  fprintf(stderr, "[DEBUG] Index::Open: Before streamer_->open(), streamer_=%p, builder_=%p\n",
-          (void*)streamer_.get(), (void*)builder_.get());
-  fflush(stderr);
 
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
   }
 
-  fprintf(stderr, "[DEBUG] Index::Open: After streamer_->open(), streamer_=%p, builder_=%p\n",
-          (void*)streamer_.get(), (void*)builder_.get());
-  fflush(stderr);
 
   // converter/reformer/metric are created in IndexFactory::CreateIndex
   // TODO: init
@@ -783,17 +777,11 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     return core::IndexError_Runtime;
   }
 
-  fprintf(stderr, "[DEBUG] Index::Merge: builder_=%p, streamer_=%p\n",
-          (void*)builder_.get(), (void*)streamer_.get());
-  fflush(stderr);
 
   // Set storage and file path for dump/reload operations
   auto* mixed_reducer = dynamic_cast<core::MixedStreamerReducer*>(reducer.get());
   if (mixed_reducer != nullptr) {
     mixed_reducer->set_storage(storage_, file_path_);
-    fprintf(stderr, "[DEBUG] Index::Merge: set storage and file_path=%s for reducer\n",
-            file_path_.c_str());
-    fflush(stderr);
   }
 
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
@@ -820,8 +808,6 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
   // The actual training orchestration happens at the db layer (Segment level)
   auto* training_capable = this->GetTrainingCapability();
   if (training_capable != nullptr) {
-    fprintf(stderr, "[DEBUG] Index::Merge: Index has training capability, training should be triggered at db layer\n");
-    fflush(stderr);
     LOG_INFO("Index merge completed for trainable index, training can now be performed");
   }
 

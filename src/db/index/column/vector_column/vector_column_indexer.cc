@@ -36,20 +36,6 @@ Status VectorColumnIndexer::Open(
 
 Status VectorColumnIndexer::CreateProximaIndex(
     const vector_column_params::ReadOptions &read_options) {
-  fprintf(stderr, "[DEBUG] CreateProximaIndex: field_schema_.name()=%s\n",
-          field_schema_.name().c_str());
-  fflush(stderr);
-
-  // CRITICAL DEBUG: Check field_schema_.index_params()->type() BEFORE conversion
-  if (field_schema_.index_params()) {
-    fprintf(stderr, "[DEBUG] CreateProximaIndex: field_schema_.index_params()->type()=%d (BEFORE conversion)\n",
-            static_cast<int>(field_schema_.index_params()->type()));
-    fflush(stderr);
-  } else {
-    fprintf(stderr, "[DEBUG] CreateProximaIndex: field_schema_.index_params() is NULL!\n");
-    fflush(stderr);
-  }
-
   auto index_param_result =
       ProximaEngineHelper::convert_to_engine_index_param(field_schema_);
   if (!index_param_result.has_value()) {
@@ -57,19 +43,11 @@ Status VectorColumnIndexer::CreateProximaIndex(
   }
   auto &index_param = index_param_result.value();
 
-  fprintf(stderr, "[DEBUG] CreateProximaIndex: index_param->index_type=%d (AFTER conversion)\n",
-          static_cast<int>(index_param->index_type));
-  fflush(stderr);
-
   // Use IndexFactory for all index types (including OMEGA)
   index = core_interface::IndexFactory::CreateAndInitIndex(*index_param);
   if (index == nullptr) {
     return Status::InternalError("Failed to create index");
   }
-
-  fprintf(stderr, "[DEBUG] CreateProximaIndex: created index type=%s\n",
-          typeid(*index).name());
-  fflush(stderr);
 
   auto storage_type =
       read_options.use_mmap
@@ -131,10 +109,6 @@ Status VectorColumnIndexer::Merge(
     return Status::InvalidArgument("Index not opened");
   }
 
-  fprintf(stderr, "[DEBUG] VectorColumnIndexer::Merge: BEFORE merge, index type=%s\n",
-          typeid(*index).name());
-  fflush(stderr);
-
   if (indexers.empty()) {
     return Status::OK();
   }
@@ -145,9 +119,6 @@ Status VectorColumnIndexer::Merge(
     if (indexer->index_file_path() == this->index_file_path()) {
       continue;
     }
-    fprintf(stderr, "[DEBUG] VectorColumnIndexer::Merge: source indexer type=%s\n",
-            typeid(*indexer->index).name());
-    fflush(stderr);
     engine_indexers.push_back(indexer->index);
   }
   auto engine_filter =
@@ -160,10 +131,6 @@ Status VectorColumnIndexer::Merge(
                    {merge_options.write_concurrency, merge_options.pool})) {
     return Status::InternalError("Failed to merge index");
   }
-
-  fprintf(stderr, "[DEBUG] VectorColumnIndexer::Merge: AFTER merge, index type=%s\n",
-          typeid(*index).name());
-  fflush(stderr);
 
   return Status::OK();
 }
@@ -202,19 +169,9 @@ Result<vector_column_params::VectorDataBuffer> VectorColumnIndexer::Fetch(
 Result<IndexResults::Ptr> VectorColumnIndexer::Search(
     const vector_column_params::VectorData &vector_data,
     const vector_column_params::QueryParams &query_params) {
-  fprintf(stderr, "[DEBUG] VectorColumnIndexer::Search called, index=%p, training_mode_enabled_=%d\n",
-          (void*)index.get(), training_mode_enabled_);
-  fflush(stderr);
-
   if (index == nullptr) {
-    fprintf(stderr, "[DEBUG] VectorColumnIndexer::Search: index is NULL!\n");
-    fflush(stderr);
     return tl::make_unexpected(Status::InvalidArgument("Index not opened"));
   }
-
-  fprintf(stderr, "[DEBUG] VectorColumnIndexer::Search: index doc_count=%u\n",
-          index->GetDocCount());
-  fflush(stderr);
 
   // Set query_id before search if training mode is enabled
   if (training_mode_enabled_) {
@@ -257,6 +214,9 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
       auto records = training_capable->GetTrainingRecords();
       collected_records_.insert(collected_records_.end(),
                                records.begin(), records.end());
+      // CRITICAL: Clear records from underlying index to avoid memory explosion
+      // Without this, records accumulate across queries and get copied repeatedly
+      training_capable->ClearTrainingRecords();
     }
   }
 
@@ -269,30 +229,14 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
 
 // Training mode method implementations
 Status VectorColumnIndexer::EnableTrainingMode(bool enable) {
-  fprintf(stderr, "[DEBUG] VectorColumnIndexer::EnableTrainingMode called with enable=%d\n", enable);
-  fflush(stderr);
-
   std::lock_guard<std::mutex> lock(training_mutex_);
   training_mode_enabled_ = enable;
 
   // Propagate to underlying index if it exists and supports training
   if (index != nullptr) {
-    fprintf(stderr, "[DEBUG] VectorColumnIndexer: index is not null, type_name=%s\n",
-            typeid(*index).name());
-    fflush(stderr);
-
     if (auto* training_capable = index->GetTrainingCapability()) {
-      fprintf(stderr, "[DEBUG] VectorColumnIndexer: GetTrainingCapability returned non-null\n");
-      fflush(stderr);
       return training_capable->EnableTrainingMode(enable);
-    } else {
-      fprintf(stderr, "[DEBUG] VectorColumnIndexer: GetTrainingCapability returned null (index is type=%s)\n",
-              typeid(*index).name());
-      fflush(stderr);
     }
-  } else {
-    fprintf(stderr, "[DEBUG] VectorColumnIndexer: index is null\n");
-    fflush(stderr);
   }
 
   return Status::OK();
@@ -311,19 +255,8 @@ void VectorColumnIndexer::SetCurrentQueryId(int query_id) {
 
 std::vector<core_interface::TrainingRecord> VectorColumnIndexer::GetTrainingRecords() const {
   std::lock_guard<std::mutex> lock(training_mutex_);
-
-  // Get records from underlying index if it exists and supports training
-  if (index != nullptr) {
-    if (auto* training_capable = index->GetTrainingCapability()) {
-      auto index_records = training_capable->GetTrainingRecords();
-
-      // Merge with local collected records
-      std::vector<core_interface::TrainingRecord> all_records = collected_records_;
-      all_records.insert(all_records.end(), index_records.begin(), index_records.end());
-      return all_records;
-    }
-  }
-
+  // All records are already collected in collected_records_ during Search()
+  // The underlying index records are cleared after each Search to avoid duplication
   return collected_records_;
 }
 

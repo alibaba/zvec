@@ -32,22 +32,15 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                uint32_t count,
                                Context::Pointer &context) const {
-  fprintf(stderr, "[DEBUG] OmegaStreamer::search_impl called, training_mode_enabled_=%d, current_query_id_=%d\n",
-          training_mode_enabled_, current_query_id_);
-  fflush(stderr);
 
   // In training mode, use OMEGA library's training feature collection
   if (!training_mode_enabled_) {
     // Normal mode: just use parent HNSW search for now
     // TODO: Load OMEGA model and use adaptive search for inference
-    fprintf(stderr, "[DEBUG] OmegaStreamer: training mode disabled, using parent HNSW search\n");
-    fflush(stderr);
     LOG_DEBUG("OmegaStreamer: training mode disabled, using parent HNSW search");
     return HnswStreamer::search_impl(query, qmeta, count, context);
   }
 
-  fprintf(stderr, "[DEBUG] OmegaStreamer: training mode ENABLED, proceeding with OMEGA training\n");
-  fflush(stderr);
   LOG_INFO("OmegaStreamer: training mode enabled (query_id=%d), using OMEGA library to collect features", current_query_id_);
 
   // Training mode: Use OMEGA library with nullptr model (training-only mode)
@@ -58,8 +51,6 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   OmegaSearchHandle omega_search = omega_search_create_with_params(
       nullptr, target_recall, count, 100);  // model=nullptr for training mode
 
-  fprintf(stderr, "[DEBUG] omega_search_create_with_params returned: %p\n", (void*)omega_search);
-  fflush(stderr);
 
   if (omega_search == nullptr) {
     LOG_ERROR("Failed to create OMEGA search context for training mode");
@@ -68,26 +59,32 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
   // Enable training mode (CRITICAL: must be before search)
   omega_search_enable_training(omega_search, current_query_id_);
-  fprintf(stderr, "[DEBUG] omega_search_enable_training called for query_id=%d\n", current_query_id_);
-  fflush(stderr);
   LOG_DEBUG("Training mode enabled for query_id=%d", current_query_id_);
 
   // Cast context to HnswContext to access HNSW-specific features
   auto *hnsw_ctx = dynamic_cast<HnswContext*>(context.get());
   if (hnsw_ctx == nullptr) {
-    fprintf(stderr, "[DEBUG] FAILED: Context is not HnswContext\n");
-    fflush(stderr);
     LOG_ERROR("Context is not HnswContext");
     omega_search_destroy(omega_search);
     return IndexError_InvalidArgument;
   }
-  fprintf(stderr, "[DEBUG] Successfully cast context to HnswContext\n");
-  fflush(stderr);
+
+  // CRITICAL: Update context if it was created by another searcher/streamer
+  // This ensures the entity reference is fresh with correct entry_point
+  if (hnsw_ctx->magic() != magic_) {
+    int ret = update_context(hnsw_ctx);
+    if (ret != 0) {
+      omega_search_destroy(omega_search);
+      return ret;
+    }
+  }
+
+  // Initialize context for search (CRITICAL: must call before topk_to_result)
+  hnsw_ctx->clear();
+  hnsw_ctx->resize_results(count);
 
   // Initialize query in distance calculator
   hnsw_ctx->reset_query(query);
-  fprintf(stderr, "[DEBUG] Query reset in distance calculator\n");
-  fflush(stderr);
 
   // Get entity and distance calculator from context
   const auto &entity = hnsw_ctx->get_entity();
@@ -95,43 +92,29 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   auto &visit_filter = hnsw_ctx->visit_filter();
   auto &candidates = hnsw_ctx->candidates();
   auto &topk_heap = hnsw_ctx->topk_heap();
-  fprintf(stderr, "[DEBUG] Got entity and distance calculator from context\n");
-  fflush(stderr);
 
   // Get entry point
   auto max_level = entity.cur_max_level();
   auto entry_point = entity.entry_point();
 
-  fprintf(stderr, "[DEBUG] Entry point: %lu, max_level: %d\n",
-          static_cast<unsigned long>(entry_point), static_cast<int>(max_level));
-  fflush(stderr);
 
   if (entry_point == kInvalidNodeId) {
-    fprintf(stderr, "[DEBUG] Entry point is INVALID, returning early (no nodes in index)\n");
-    fflush(stderr);
     omega_search_destroy(omega_search);
     return 0;
   }
 
   // Navigate to layer 0
   dist_t dist = dc.dist(entry_point);
-  fprintf(stderr, "[DEBUG] Starting navigation from level %d, initial dist=%f\n",
-          static_cast<int>(max_level), dist);
-  fflush(stderr);
 
   for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     const Neighbors neighbors = entity.get_neighbors(cur_level, entry_point);
     if (neighbors.size() == 0) {
-      fprintf(stderr, "[DEBUG] No neighbors at level %d, breaking\n", static_cast<int>(cur_level));
-      fflush(stderr);
       break;
     }
 
     std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
     int ret = entity.get_vector(&neighbors[0], neighbors.size(), neighbor_vec_blocks);
     if (ret != 0) {
-      fprintf(stderr, "[DEBUG] Failed to get vectors at level %d, breaking\n", static_cast<int>(cur_level));
-      fflush(stderr);
       break;
     }
 
@@ -146,20 +129,13 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       }
     }
     if (!find_closer) {
-      fprintf(stderr, "[DEBUG] No closer neighbor at level %d, breaking\n", static_cast<int>(cur_level));
-      fflush(stderr);
       break;
     }
   }
 
-  fprintf(stderr, "[DEBUG] Reached layer 0, entry_point=%lu, dist=%f\n",
-          static_cast<unsigned long>(entry_point), dist);
-  fflush(stderr);
 
   // Set dist_start for OMEGA
   omega_search_set_dist_start(omega_search, dist);
-  fprintf(stderr, "[DEBUG] omega_search_set_dist_start called with dist=%f\n", dist);
-  fflush(stderr);
 
   // Now perform HNSW search on layer 0 with OMEGA feature collection
   candidates.clear();
@@ -173,23 +149,11 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
   // Report initial visit to OMEGA
   omega_search_report_visit(omega_search, entry_point, dist, 1);  // is_in_topk=1
-  fprintf(stderr, "[DEBUG] omega_search_report_visit called for entry_point=%lu, dist=%f, is_in_topk=1\n",
-          static_cast<unsigned long>(entry_point), dist);
-  fflush(stderr);
 
   dist_t lowerBound = dist;
 
-  int loop_iterations = 0;
-  int total_visits = 0;
-
   // Main search loop with OMEGA feature collection
   while (!candidates.empty()) {
-    loop_iterations++;
-    if (loop_iterations == 1 || loop_iterations % 10 == 0) {
-      fprintf(stderr, "[DEBUG] Search loop iteration %d, candidates.size()=%zu, topk_heap.size()=%zu\n",
-              loop_iterations, candidates.size(), topk_heap.size());
-      fflush(stderr);
-    }
 
     auto top = candidates.begin();
     node_id_t current_node = top->first;
@@ -197,9 +161,6 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
     // Standard HNSW stopping condition
     if (topk_heap.full() && candidate_dist > lowerBound) {
-      fprintf(stderr, "[DEBUG] Stopping condition met: topk_heap.full()=%d, candidate_dist=%f > lowerBound=%f\n",
-              topk_heap.full(), candidate_dist, lowerBound);
-      fflush(stderr);
       break;
     }
 
@@ -230,8 +191,6 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                 unvisited_neighbors.size(),
                                 neighbor_vec_blocks);
     if (ret != 0) {
-      fprintf(stderr, "[DEBUG] Failed to get neighbor vectors, breaking\n");
-      fflush(stderr);
       break;
     }
 
@@ -246,7 +205,6 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
       // Report visit to OMEGA (this will collect training features)
       omega_search_report_visit(omega_search, neighbor, neighbor_dist, is_in_topk ? 1 : 0);
-      total_visits++;
 
       // Consider this candidate
       if (is_in_topk) {
@@ -266,9 +224,6 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     }
   }
 
-  fprintf(stderr, "[DEBUG] Search loop completed: %d iterations, %d total visits, topk_heap.size()=%zu\n",
-          loop_iterations, total_visits, topk_heap.size());
-  fflush(stderr);
 
   // Convert results to context format
   hnsw_ctx->topk_to_result();
@@ -276,64 +231,53 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   // Get final statistics
   int hops, cmps, collected_gt;
   omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
-  fprintf(stderr, "[DEBUG] omega_search_get_stats: hops=%d, cmps=%d, collected_gt=%d\n",
-          hops, cmps, collected_gt);
-  fflush(stderr);
   LOG_DEBUG("OMEGA training search completed: cmps=%d, hops=%d, results=%zu",
             cmps, hops, topk_heap.size());
 
   // Collect training records from OMEGA library
   size_t record_count = omega_search_get_training_records_count(omega_search);
-  fprintf(stderr, "[DEBUG] omega_search_get_training_records_count returned: %zu\n", record_count);
-  fflush(stderr);
 
   if (record_count > 0) {
-    fprintf(stderr, "[DEBUG] Extracting %zu training records...\n", record_count);
-    fflush(stderr);
 
     const void* records_ptr = omega_search_get_training_records(omega_search);
 
-    // Cast to omega::TrainingRecord array
-    const auto* omega_records = static_cast<const omega::TrainingRecord*>(records_ptr);
+    // NOTE: omega_search_get_training_records returns pointer to std::vector, not array
+    const auto* records_vec = static_cast<const std::vector<omega::TrainingRecord>*>(records_ptr);
 
     // Convert and store training records
     std::lock_guard<std::mutex> lock(training_mutex_);
     for (size_t i = 0; i < record_count; ++i) {
+      const auto& omega_record = (*records_vec)[i];
       core_interface::TrainingRecord record;
-      record.query_id = omega_records[i].query_id;
-      record.hops_visited = omega_records[i].hops;
-      record.cmps_visited = omega_records[i].cmps;
-      record.dist_1st = omega_records[i].dist_1st;
-      record.dist_start = omega_records[i].dist_start;
+      record.query_id = omega_record.query_id;
+      record.hops_visited = omega_record.hops;
+      record.cmps_visited = omega_record.cmps;
+      record.dist_1st = omega_record.dist_1st;
+      record.dist_start = omega_record.dist_start;
 
       // Copy 7 traversal window statistics
-      if (omega_records[i].traversal_window_stats.size() == 7) {
-        std::copy(omega_records[i].traversal_window_stats.begin(),
-                  omega_records[i].traversal_window_stats.end(),
+      if (omega_record.traversal_window_stats.size() == 7) {
+        std::copy(omega_record.traversal_window_stats.begin(),
+                  omega_record.traversal_window_stats.end(),
                   record.traversal_window_stats.begin());
       } else {
         LOG_WARN("Unexpected traversal_window_stats size: %zu (expected 7)",
-                 omega_records[i].traversal_window_stats.size());
+                 omega_record.traversal_window_stats.size());
       }
 
       // Copy collected_node_ids (convert int to node_id_t)
       record.collected_node_ids.assign(
-          omega_records[i].collected_node_ids.begin(),
-          omega_records[i].collected_node_ids.end());
+          omega_record.collected_node_ids.begin(),
+          omega_record.collected_node_ids.end());
 
-      record.label = omega_records[i].label;  // Default 0
+      record.label = omega_record.label;  // Default 0
 
       collected_records_.push_back(std::move(record));
     }
 
-    fprintf(stderr, "[DEBUG] Successfully collected %zu training records for query_id=%d\n",
-            record_count, current_query_id_);
-    fflush(stderr);
     LOG_DEBUG("Collected %zu training records for query_id=%d",
               record_count, current_query_id_);
   } else {
-    fprintf(stderr, "[DEBUG] WARNING: No training records collected for query_id=%d\n", current_query_id_);
-    fflush(stderr);
     LOG_WARN("No training records collected for query_id=%d", current_query_id_);
   }
 

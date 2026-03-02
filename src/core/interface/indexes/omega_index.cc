@@ -22,39 +22,18 @@ namespace zvec::core_interface {
 
 // OmegaIndex uses OmegaStreamer which provides OMEGA adaptive search
 int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
-  fprintf(stderr, "[DEBUG] OmegaIndex::CreateAndInitStreamer CALLED!\n");
-  fflush(stderr);
 
   // First call parent to set up all parameters and create basic streamer
   int ret = HNSWIndex::CreateAndInitStreamer(param);
   if (ret != core::IndexError_Success) {
-    fprintf(stderr, "[DEBUG] OmegaIndex: parent CreateAndInitStreamer failed with ret=%d\n", ret);
-    fflush(stderr);
     return ret;
   }
 
-  fprintf(stderr, "[DEBUG] OmegaIndex: creating HnswBuilder...\n");
-  fflush(stderr);
-
-  // Create HnswBuilder for OMEGA (needed for Merge to build the graph)
-  builder_ = core::IndexFactory::CreateBuilder("HnswBuilder");
-  if (ailego_unlikely(!builder_)) {
-    fprintf(stderr, "[DEBUG] OmegaIndex: FAILED to create HnswBuilder!\n");
-    fflush(stderr);
-    LOG_ERROR("Failed to create HnswBuilder for OMEGA");
-    return core::IndexError_Runtime;
-  }
-  fprintf(stderr, "[DEBUG] OmegaIndex: HnswBuilder created successfully, initializing...\n");
-  fflush(stderr);
-
-  if (ailego_unlikely(builder_->init(proxima_index_meta_, proxima_index_params_) != 0)) {
-    fprintf(stderr, "[DEBUG] OmegaIndex: FAILED to init HnswBuilder!\n");
-    fflush(stderr);
-    LOG_ERROR("Failed to init HnswBuilder for OMEGA");
-    return core::IndexError_Runtime;
-  }
-  fprintf(stderr, "[DEBUG] OmegaIndex: HnswBuilder initialized successfully!\n");
-  fflush(stderr);
+  // NOTE: We intentionally DO NOT create a builder here!
+  // HNSW works by having data written directly to the streamer during Merge
+  // (via add_with_id_impl). If we create a builder, the MixedStreamerReducer
+  // will use add_vec_with_builder() which puts data into the builder instead
+  // of the streamer, causing doc_count=0 after Merge and subsequent crashes.
 
   // Now replace the HnswStreamer with OmegaStreamer
   // Save the current meta and params before replacing streamer
@@ -62,30 +41,18 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   ailego::Params saved_params = proxima_index_params_;
 
   // Create OmegaStreamer
-  fprintf(stderr, "[DEBUG] OmegaIndex: Creating OmegaStreamer...\n");
-  fflush(stderr);
   streamer_ = core::IndexFactory::CreateStreamer("OmegaStreamer");
   if (ailego_unlikely(!streamer_)) {
-    fprintf(stderr, "[DEBUG] OmegaIndex: FAILED to create OmegaStreamer!\n");
-    fflush(stderr);
     LOG_ERROR("Failed to create OmegaStreamer");
     return core::IndexError_Runtime;
   }
-  fprintf(stderr, "[DEBUG] OmegaIndex: OmegaStreamer created successfully, streamer_=%p\n", (void*)streamer_.get());
-  fflush(stderr);
 
   // Initialize OmegaStreamer with the same parameters
-  fprintf(stderr, "[DEBUG] OmegaIndex: Initializing OmegaStreamer...\n");
-  fflush(stderr);
   if (ailego_unlikely(
           streamer_->init(saved_meta, saved_params) != 0)) {
-    fprintf(stderr, "[DEBUG] OmegaIndex: FAILED to init OmegaStreamer!\n");
-    fflush(stderr);
     LOG_ERROR("Failed to init OmegaStreamer");
     return core::IndexError_Runtime;
   }
-  fprintf(stderr, "[DEBUG] OmegaIndex: OmegaStreamer initialized successfully!\n");
-  fflush(stderr);
 
   // CRITICAL: Set "OmegaSearcher" in metadata for disk-persisted indices
   // This ensures that when the index is saved and loaded later,
@@ -97,36 +64,21 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 
 
 zvec::Status OmegaIndex::EnableTrainingMode(bool enable) {
-  fprintf(stderr, "[DEBUG] OmegaIndex::EnableTrainingMode called with enable=%d\n", enable);
-  fflush(stderr);
-
   LOG_INFO("OmegaIndex::EnableTrainingMode called with enable=%d", enable);
   training_mode_enabled_ = enable;
 
   // Delegate to OmegaStreamer if available
   if (streamer_) {
-    fprintf(stderr, "[DEBUG] OmegaIndex: streamer_ exists\n");
-    fflush(stderr);
-
     LOG_INFO("OmegaIndex: streamer_ exists, attempting dynamic_cast to OmegaStreamer");
     auto* omega_streamer = dynamic_cast<core::OmegaStreamer*>(streamer_.get());
     if (omega_streamer) {
-      fprintf(stderr, "[DEBUG] OmegaIndex: Successfully cast to OmegaStreamer\n");
-      fflush(stderr);
-
       LOG_INFO("OmegaIndex: Successfully cast to OmegaStreamer, calling EnableTrainingMode");
       omega_streamer->EnableTrainingMode(enable);
       return zvec::Status::OK();
     } else {
-      fprintf(stderr, "[DEBUG] OmegaIndex: Failed to cast to OmegaStreamer\n");
-      fflush(stderr);
-
       LOG_WARN("OmegaIndex: Failed to cast streamer_ to OmegaStreamer");
     }
   } else {
-    fprintf(stderr, "[DEBUG] OmegaIndex: streamer_ is null\n");
-    fflush(stderr);
-
     LOG_WARN("OmegaIndex: streamer_ is null");
   }
 

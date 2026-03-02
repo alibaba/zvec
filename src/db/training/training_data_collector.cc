@@ -36,9 +36,6 @@ TrainingDataCollector::CollectTrainingData(
       segment, field_name, options.num_training_queries,
       options.noise_scale, options.seed);
 
-  fprintf(stderr, "[DEBUG] CollectTrainingData: generated %zu training queries\n",
-          training_queries.size());
-  fflush(stderr);
 
   if (training_queries.empty()) {
     return tl::make_unexpected(
@@ -63,13 +60,8 @@ TrainingDataCollector::CollectTrainingData(
   std::vector<VectorColumnIndexer::Ptr> indexers;
 
   if (!provided_indexers.empty()) {
-    fprintf(stderr, "[DEBUG] CollectTrainingData: using %zu provided (just-merged) indexers\n",
-            provided_indexers.size());
-    fflush(stderr);
     indexers = provided_indexers;
   } else {
-    fprintf(stderr, "[DEBUG] CollectTrainingData: using indexers from segment\n");
-    fflush(stderr);
     indexers = segment->get_vector_indexer(field_name);
   }
 
@@ -100,12 +92,6 @@ TrainingDataCollector::CollectTrainingData(
   for (size_t query_idx = 0; query_idx < training_queries.size(); ++query_idx) {
     const auto& query_vector = training_queries[query_idx];
 
-    if (query_idx == 0) {
-      fprintf(stderr, "[DEBUG] CollectTrainingData: Starting training searches, query 0 vector size=%zu\n",
-              query_vector.size());
-      fflush(stderr);
-    }
-
     // Set query ID for this query
     for (auto& indexer : indexers) {
       indexer->SetCurrentQueryId(static_cast<int>(query_idx));
@@ -127,12 +113,6 @@ TrainingDataCollector::CollectTrainingData(
     hnsw_params->set_ef(options.ef_training);
     query_params.query_params = hnsw_params;
 
-    if (query_idx == 0) {
-      fprintf(stderr, "[DEBUG] CollectTrainingData: Calling indexers[0]->Search for query 0, topk=%zu, ef=%d\n",
-              options.topk, options.ef_training);
-      fflush(stderr);
-    }
-
     // Perform search directly on the indexer (assumes single indexer, which is true for just-merged case)
     // For multiple indexers, we would need to merge results
     if (indexers.size() != 1) {
@@ -143,16 +123,8 @@ TrainingDataCollector::CollectTrainingData(
     if (!search_result.has_value()) {
       LOG_WARN("Search failed for query %zu: %s", query_idx,
                search_result.error().message().c_str());
-      fprintf(stderr, "[DEBUG] CollectTrainingData: Search FAILED for query %zu: %s\n",
-              query_idx, search_result.error().message().c_str());
-      fflush(stderr);
       search_results.push_back({});
       continue;
-    }
-
-    if (query_idx == 0) {
-      fprintf(stderr, "[DEBUG] CollectTrainingData: Search completed for query 0\n");
-      fflush(stderr);
     }
 
     // Extract result doc IDs
@@ -165,18 +137,8 @@ TrainingDataCollector::CollectTrainingData(
       iter->next();
     }
 
-    if (query_idx == 0) {
-      fprintf(stderr, "[DEBUG] CollectTrainingData: Query 0 returned %zu results\n",
-              result_ids.size());
-      fflush(stderr);
-    }
-
     search_results.push_back(std::move(result_ids));
   }
-
-  fprintf(stderr, "[DEBUG] CollectTrainingData: Completed all %zu training searches\n",
-          training_queries.size());
-  fflush(stderr);
 
   // Step 6: Collect training records from all indexers
   LOG_INFO("Collecting training records from indexers");

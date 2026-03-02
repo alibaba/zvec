@@ -158,12 +158,10 @@ class HnswStreamer : public IndexStreamer {
     return 0;
   }
 
- private:
-  //! To share ctx across streamer/searcher, we need to update the context for
-  //! current streamer/searcher
-  int update_context(HnswContext *ctx) const;
-
  protected:
+  //! To share ctx across streamer/searcher, we need to update the context for
+  //! current streamer/searcher (moved to protected for OmegaStreamer)
+  int update_context(HnswContext *ctx) const;
   // Changed from private to protected to allow OmegaStreamer inheritance
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {
