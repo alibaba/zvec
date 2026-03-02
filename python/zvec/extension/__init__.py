@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from .bm25_embedding_function import BM25EmbeddingFunction
 from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
+from .jina_embedding_function import JinaDenseEmbedding
+from .jina_function import JinaFunctionBase
 from .multi_vector_reranker import RrfReRanker, WeightedReRanker
 from .openai_embedding_function import OpenAIDenseEmbedding
 from .openai_function import OpenAIFunctionBase
@@ -35,6 +37,8 @@ __all__ = [
     "DefaultLocalReRanker",
     "DefaultLocalSparseEmbedding",
     "DenseEmbeddingFunction",
+    "JinaDenseEmbedding",
+    "JinaFunctionBase",
     "OpenAIDenseEmbedding",
     "OpenAIFunctionBase",
     "QwenDenseEmbedding",

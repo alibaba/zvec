@@ -576,7 +576,7 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
       float *data = (float *)iter->data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur += 2;
@@ -657,7 +657,7 @@ TEST_F(HnswStreamerTest, TestCreateIterator) {
       float *data = (float *)iter->data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur++;
@@ -689,7 +689,7 @@ TEST_F(HnswStreamerTest, TestCreateIterator) {
     const float *data = (const float *)provider->get_vector(i);
     ASSERT_NE(data, nullptr);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(i, data[j]);
+      ASSERT_FLOAT_EQ(i, data[j]);
     }
   }
 }
@@ -730,7 +730,7 @@ TEST_F(HnswStreamerTest, TestForceFlush) {
       float *data = (float *)iter->data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur++;
@@ -768,7 +768,7 @@ TEST_F(HnswStreamerTest, TestForceFlush) {
     const float *data = (const float *)provider->get_vector(i);
     ASSERT_NE(data, nullptr);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(i, data[j]);
+      ASSERT_FLOAT_EQ(i, data[j]);
     }
   }
 }
@@ -830,7 +830,7 @@ TEST_F(HnswStreamerTest, TestKnnMultiThread) {
   while (iter->is_valid()) {
     float *data = (float *)iter->data();
     for (size_t d = 0; d < dim; ++d) {
-      ASSERT_EQ((float)iter->key(), data[d]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[d]);
     }
     total++;
     min = std::min(min, iter->key());
@@ -1008,7 +1008,7 @@ TEST_F(HnswStreamerTest, TestKnnConcurrentAddAndSearch) {
   while (iter->is_valid()) {
     float *data = (float *)iter->data();
     for (size_t d = 0; d < dim; ++d) {
-      ASSERT_EQ((float)iter->key(), data[d]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[d]);
     }
     total++;
     min = std::min(min, iter->key());
@@ -1584,7 +1584,7 @@ TEST_F(HnswStreamerTest, TestCheckDuplicateAndGetVector) {
     const float *data = (const float *)provider->get_vector(i);
     ASSERT_NE(data, nullptr);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(i, data[j]);
+      ASSERT_FLOAT_EQ(i, data[j]);
     }
   }
 
@@ -2275,7 +2275,7 @@ TEST_F(HnswStreamerTest, TestFetchVector) {
     ASSERT_NE(vector, nullptr);
 
     float vector_value = *(float *)(vector);
-    ASSERT_EQ(vector_value, i);
+    ASSERT_FLOAT_EQ(vector_value, i);
   }
 
   auto linearCtx = streamer->create_context();
@@ -2310,7 +2310,7 @@ TEST_F(HnswStreamerTest, TestFetchVector) {
 
     ASSERT_NE(knnResult[0].vector(), nullptr);
     float vector_value = *((float *)(knnResult[0].vector()));
-    ASSERT_EQ(vector_value, i);
+    ASSERT_FLOAT_EQ(vector_value, i);
   }
   std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
   std::cout << "linearTotalTime: " << linearTotalTime << std::endl;

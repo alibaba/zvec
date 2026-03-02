@@ -1,3 +1,7 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+  
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.4
@@ -31,14 +35,11 @@ repos:
 
 
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v3.0.0
+    rev: v4.3.0
     hooks:
       - id: conventional-pre-commit
-        stages: [ commit-msg ]
-        args: [
-          --types, feat,fix,docs,style,refactor,test,chore,perf,ci,build,revert,
-          --scope-optional
-        ]
+        stages: [commit-msg]
+        args: [--verbose]
 
 
   - repo: local

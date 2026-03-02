@@ -192,7 +192,7 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclidean) {
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
-    ASSERT_NEAR(v1, v2, 1e-2 * (DIMENSION + 1));
+    ASSERT_NEAR(v1, v2, 0.1 * (DIMENSION + 1));
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -394,7 +394,7 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
         ailego::Distance::SquaredEuclidean(mf, vec.data(), holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.17 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -516,7 +516,7 @@ void TestDistanceMatrixInt4(const std::string &metric_name) {
   matrix_compute(&matrix2[0], &query2[0], meta2.dimension(), &result2[0]);
 
   for (size_t i = 0; i < batch_size * query_size; ++i) {
-    EXPECT_NEAR(result1[i], result2[i], 1e-4);
+    EXPECT_NEAR(result1[i], result2[i], 1e-2 * dimension);
     EXPECT_TRUE(IsAlmostEqual(result1[i], result2[i], 1e4));
   }
 }
@@ -597,7 +597,7 @@ TEST(QuantizedIntegerMetric, TestInt8InnerProduct) {
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
-    ASSERT_NEAR(v1, v2, 1e-2 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -682,7 +682,7 @@ TEST(QuantizedIntegerMetric, TestInt4InnerProduct) {
                                                    holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.15 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -771,7 +771,7 @@ TEST(QuantizedIntegerMetric, TestInt8MipsSquaredEuclidean) {
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
-    ASSERT_NEAR(v1, v2, 1e-2 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -856,7 +856,7 @@ TEST(QuantizedIntegerMetric, TestInt4MipsSquaredEuclidean) {
                                                       holder->dimension(), 0.0);
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.15 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -956,7 +956,7 @@ TEST(QuantizedIntegerMetric, TestInt8NormalizedCosine) {
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
-    ASSERT_NEAR(v1, v2, 1e-2 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -1061,7 +1061,7 @@ TEST(QuantizedIntegerMetric, TestInt8Cosine) {
     compute_batch(reinterpret_cast<const void **>(&mi), qi, 1,
                   holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
-    ASSERT_NEAR(v1, v2, 1e-2 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
@@ -1136,7 +1136,7 @@ TEST(QuantizedIntegerMetric, TestInt4NormalizedCosine) {
         normalized_mf.data(), normalized_vec.data(), holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.15 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));

@@ -229,7 +229,7 @@ TEST_F(HnswStreamerTest, TestHnswSearchMMap) {
     ASSERT_EQ(0, provider->get_vector(result1[0].key(), block));
     const float *data = (float *)block.data();
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(data[j], i);
+      ASSERT_FLOAT_EQ(data[j], i);
     }
     ASSERT_EQ(i, result1[0].key());
 

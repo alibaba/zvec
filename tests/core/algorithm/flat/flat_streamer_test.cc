@@ -93,7 +93,7 @@ TEST_F(FlatStreamerTest, TestAddVector) {
     streamer->add_impl(i, vec.data(), qmeta, ctx);
     const float *data = (float *)provider->get_vector(i);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(data[j], i);
+      ASSERT_FLOAT_EQ(data[j], i);
     }
   }
 
@@ -141,7 +141,7 @@ TEST_F(FlatStreamerTest, TestLinearSearch) {
     ASSERT_EQ(topk, result1.size());
     for (size_t j = 0; j < dim; ++j) {
       const float *data = (float *)provider->get_vector(result1[0].key());
-      ASSERT_EQ(data[j], i);
+      ASSERT_FLOAT_EQ(data[j], i);
     }
     ASSERT_EQ(i, result1[0].key());
 
@@ -376,7 +376,7 @@ TEST_F(FlatStreamerTest, TestOpenClose) {
     while (iter->is_valid()) {
       float *data = (float *)provider->get_vector(cur);
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur += 2;
@@ -463,7 +463,7 @@ TEST_F(FlatStreamerTest, TestForceFlush) {
     while (iter->is_valid()) {
       float *data = (float *)provider->get_vector(cur);
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur++;
@@ -501,7 +501,7 @@ TEST_F(FlatStreamerTest, TestForceFlush) {
     const float *data = (const float *)provider->get_vector(i);
     ASSERT_NE(data, nullptr);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(i, data[j]);
+      ASSERT_FLOAT_EQ(i, data[j]);
     }
   }
 }
@@ -556,7 +556,7 @@ TEST_F(FlatStreamerTest, TestMultiThread) {
   while (iter->is_valid()) {
     float *data = (float *)iter->data();
     for (size_t d = 0; d < dim; ++d) {
-      ASSERT_EQ((float)iter->key(), data[d]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[d]);
     }
     total++;
     min = std::min(min, iter->key());
@@ -716,7 +716,7 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
   while (iter->is_valid()) {
     float *data = (float *)iter->data();
     for (size_t d = 0; d < dim; ++d) {
-      ASSERT_EQ((float)iter->key(), data[d]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[d]);
     }
     total++;
     min = std::min(min, iter->key());
