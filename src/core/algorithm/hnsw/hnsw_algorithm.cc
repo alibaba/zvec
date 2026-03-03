@@ -14,6 +14,7 @@
 #include "hnsw_algorithm.h"
 #include <chrono>
 #include <iostream>
+#include <vector>
 #include <ailego/internal/cpu_features.h>
 
 namespace zvec {
@@ -132,13 +133,13 @@ void HnswAlgorithm::select_entry_point(level_t level, node_id_t *entry_point,
 
     bool find_closer = false;
 
-    float dists[size];
-    const void *neighbor_vecs[size];
+    std::vector<float> dists(size);
+    std::vector<const void *> neighbor_vecs(size);
     for (uint32_t i = 0; i < size; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
     }
 
-    dc.batch_dist(neighbor_vecs, size, dists);
+    dc.batch_dist(neighbor_vecs.data(), size, dists.data());
 
     for (uint32_t i = 0; i < size; ++i) {
       dist_t cur_dist = dists[i];
@@ -213,7 +214,7 @@ void HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
       (*ctx->mutable_stats_get_neighbors())++;
     }
 
-    node_id_t neighbor_ids[neighbors.size()];
+    std::vector<node_id_t> neighbor_ids(neighbors.size());
     uint32_t size = 0;
     for (uint32_t i = 0; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
@@ -231,7 +232,7 @@ void HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
     }
 
     std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
-    int ret = entity.get_vector(neighbor_ids, size, neighbor_vec_blocks);
+    int ret = entity.get_vector(neighbor_ids.data(), size, neighbor_vec_blocks);
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -247,14 +248,14 @@ void HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
     }
     // done
 
-    float dists[size];
-    const void *neighbor_vecs[size];
+    std::vector<float> dists(size);
+    std::vector<const void *> neighbor_vecs(size);
 
     for (uint32_t i = 0; i < size; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
     }
 
-    dc.batch_dist(neighbor_vecs, size, dists);
+    dc.batch_dist(neighbor_vecs.data(), size, dists.data());
 
     for (uint32_t i = 0; i < size; ++i) {
       node_id_t node = neighbor_ids[i];
@@ -336,7 +337,7 @@ void HnswAlgorithm::expand_neighbors_by_group(TopkHeap &topk,
         (*ctx->mutable_stats_get_neighbors())++;
       }
 
-      node_id_t neighbor_ids[neighbors.size()];
+      std::vector<node_id_t> neighbor_ids(neighbors.size());
       uint32_t size = 0;
       for (uint32_t i = 0; i < neighbors.size(); ++i) {
         node_id_t node = neighbors[i];
@@ -354,7 +355,8 @@ void HnswAlgorithm::expand_neighbors_by_group(TopkHeap &topk,
       }
 
       std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
-      int ret = entity.get_vector(neighbor_ids, size, neighbor_vec_blocks);
+      int ret =
+          entity.get_vector(neighbor_ids.data(), size, neighbor_vec_blocks);
       if (ailego_unlikely(ctx->debugging())) {
         (*ctx->mutable_stats_get_vector())++;
       }

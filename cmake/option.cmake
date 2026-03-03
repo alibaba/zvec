@@ -13,6 +13,8 @@ option(ENABLE_SAPPHIRERAPIDS "Enable Intel Sapphire Rapids Server CPU microarchi
 option(ENABLE_EMERALDRAPIDS "Enable Intel Emerald Rapids Server CPU microarchitecture" OFF)
 option(ENABLE_GRANITERAPIDS "Enable Intel Granite Rapids Server CPU microarchitecture" OFF)
 
+option(ENABLE_NATIVE "Enable native CPU microarchitecture" ON)
+
 ## AMD Microarchitectures
 option(ENABLE_ZEN1 "Enable AMD Zen+ Family 17h CPU microarchitecture" OFF)
 option(ENABLE_ZEN2 "Enable AMD Zen 2 Family 17h CPU microarchitecture" OFF)
@@ -36,9 +38,10 @@ set(ARCH_OPTIONS
   ENABLE_ZEN1 ENABLE_ZEN2 ENABLE_ZEN3
   ENABLE_ARMV8A ENABLE_ARMV8.1A ENABLE_ARMV8.2A ENABLE_ARMV8.3A ENABLE_ARMV8.4A
   ENABLE_ARMV8.5A ENABLE_ARMV8.6A
+  ENABLE_NATIVE
 )
 
-set(AUTO_DETECT_ARCH ON)
+option(AUTO_DETECT_ARCH "Auto detect CPU microarchitecture" ON)
 foreach(opt IN LISTS ARCH_OPTIONS)
   if(${opt})
     set(AUTO_DETECT_ARCH OFF)
@@ -122,8 +125,11 @@ if(MSVC)
   return()
 endif()
 
-
 if(NOT AUTO_DETECT_ARCH)
+  if(ENABLE_NATIVE)
+    add_arch_flag("-march=native" NATIVE ENABLE_NATIVE)
+  endif()
+
   if(ENABLE_ZEN3)
     add_arch_flag("-march=znver3" ZNVER3 ENABLE_ZEN3)
   endif()

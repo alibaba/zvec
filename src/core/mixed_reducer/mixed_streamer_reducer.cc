@@ -239,6 +239,9 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
   bool need_revert = (target_streamer_->meta().reformer_name() !=
                           streamer->meta().reformer_name() &&
                       reformer != nullptr);
+  if (target_builder_ && reformer) {
+    need_revert = true;
+  }
 
   IndexProvider::Pointer provider = streamer->create_provider();
   IndexProvider::Iterator::Pointer iterator = provider->create_iterator();
@@ -366,7 +369,7 @@ void MixedStreamerReducer::add_vec_with_builder(int *result) {
     std::string out_vector_buffer = std::string(
         static_cast<const char *>(vector),
         original_query_meta_.dimension() * original_query_meta_.unit_size());
-    PushToDocCache(target_streamer_query_meta, (uint32_t)vector_item.pkey_,
+    PushToDocCache(original_query_meta_, (uint32_t)vector_item.pkey_,
                    out_vector_buffer);
   }
 
@@ -509,8 +512,6 @@ void MixedStreamerReducer::PushToDocCache(const IndexQueryMeta &meta,
 }
 
 int MixedStreamerReducer::IndexBuild() {
-  const bool need_convert = !is_target_and_source_same_reformer_ &&
-                            target_streamer_reformer_ != nullptr;
   IndexHolder::Pointer target_holder;
   if (original_query_meta_.data_type() == core::IndexMeta::DataType::DT_FP16) {
     auto holder = std::make_shared<
@@ -563,7 +564,7 @@ int MixedStreamerReducer::IndexBuild() {
     LOG_ERROR("data_type is not support");
     return core::IndexError_Runtime;
   }
-  if (target_builder_converter_ && need_convert) {
+  if (target_builder_converter_) {
     core::IndexConverter::TrainAndTransform(target_builder_converter_,
                                             target_holder);
     target_holder = target_builder_converter_->result();

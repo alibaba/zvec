@@ -30,7 +30,7 @@ compute_one_to_many_avx512fp16_fp16(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, dp_batch> &prefetch_ptrs,
     size_t dimensionality, float *results) {
-  __m512h accs[dp_batch];
+  std::vector<__m512h> accs(dp_batch);
 
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm512_setzero_ph();
@@ -40,7 +40,7 @@ compute_one_to_many_avx512fp16_fp16(
   for (; dim + 32 <= dimensionality; dim += 32) {
     __m512h q = _mm512_loadu_ph(query + dim);
 
-    __m512h data_regs[dp_batch];
+    std::vector<__m512h> data_regs(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] = _mm512_loadu_ph(ptrs[i] + dim);
     }
@@ -86,7 +86,7 @@ compute_one_to_many_avx512f_fp16(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, dp_batch> &prefetch_ptrs,
     size_t dimensionality, float *results) {
-  __m512 accs[dp_batch];
+  std::vector<__m512> accs(dp_batch);
 
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm512_setzero_ps();
@@ -100,8 +100,8 @@ compute_one_to_many_avx512f_fp16(
     __m512 q1 = _mm512_cvtph_ps(_mm512_castsi512_si256(q));
     __m512 q2 = _mm512_cvtph_ps(_mm512_extracti64x4_epi64(q, 1));
 
-    __m512 data_regs_1[dp_batch];
-    __m512 data_regs_2[dp_batch];
+    std::vector<__m512> data_regs_1(dp_batch);
+    std::vector<__m512> data_regs_2(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       __m512i m =
           _mm512_loadu_si512(reinterpret_cast<const __m512i *>(ptrs[i] + dim));
@@ -126,7 +126,7 @@ compute_one_to_many_avx512f_fp16(
     __m512 q = _mm512_cvtph_ps(
         _mm256_loadu_si256(reinterpret_cast<const __m256i *>(query + dim)));
 
-    __m512 data_regs[dp_batch];
+    std::vector<__m512> data_regs(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] = _mm512_cvtph_ps(
           _mm256_loadu_si256(reinterpret_cast<const __m256i *>(ptrs[i] + dim)));
@@ -136,7 +136,7 @@ compute_one_to_many_avx512f_fp16(
     dim += 16;
   }
 
-  __m256 acc_new[dp_batch];
+  std::vector<__m256> acc_new(dp_batch);
   for (size_t i = 0; i < dp_batch; ++i) {
     acc_new[i] = _mm256_add_ps(
         _mm512_castps512_ps256(accs[i]),
@@ -176,7 +176,7 @@ compute_one_to_many_avx2_fp16(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, dp_batch> &prefetch_ptrs,
     size_t dimensionality, float *results) {
-  __m256 accs[dp_batch];
+  std::vector<__m256> accs(dp_batch);
 
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm256_setzero_ps();
@@ -190,8 +190,8 @@ compute_one_to_many_avx2_fp16(
     __m256 q1 = _mm256_cvtph_ps(_mm256_castsi256_si128(q));
     __m256 q2 = _mm256_cvtph_ps(_mm256_extractf128_si256(q, 1));
 
-    __m256 data_regs_1[dp_batch];
-    __m256 data_regs_2[dp_batch];
+    std::vector<__m256> data_regs_1(dp_batch);
+    std::vector<__m256> data_regs_2(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       __m256i m =
           _mm256_loadu_si256(reinterpret_cast<const __m256i *>(ptrs[i] + dim));
@@ -216,7 +216,7 @@ compute_one_to_many_avx2_fp16(
     __m256 q = _mm256_cvtph_ps(
         _mm_loadu_si128(reinterpret_cast<const __m128i *>(query + dim)));
 
-    __m256 data_regs[dp_batch];
+    std::vector<__m256> data_regs(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] = _mm256_cvtph_ps(
           _mm_loadu_si128(reinterpret_cast<const __m128i *>(ptrs[i] + dim)));

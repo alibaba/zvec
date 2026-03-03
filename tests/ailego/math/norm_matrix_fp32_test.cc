@@ -247,7 +247,7 @@ void Norm1Benchmark(void) {
   }
 
   ElapsedTime elapsed_time;
-  float results[batch_size];
+  std::vector<float> results(batch_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") FP32 " << dimension << "d, "
             << batch_size << " * " << block_size << std::endl;
@@ -298,7 +298,7 @@ void Norm2Benchmark(void) {
   }
 
   ElapsedTime elapsed_time;
-  float results[batch_size];
+  std::vector<float> results(batch_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") FP32 " << dimension << "d, "
             << batch_size << " * " << block_size << std::endl;

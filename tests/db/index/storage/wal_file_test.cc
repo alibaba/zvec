@@ -288,12 +288,12 @@ TEST_F(WalFileTest, TestBoundaryCondition) {
 
   // write very large record 4Mb
   size_t BIG_DATA_SIZE = 4 * 1024 * 1024;
-  uint8_t big_data[BIG_DATA_SIZE];
+  std::vector<uint8_t> big_data(BIG_DATA_SIZE);
   for (size_t i = 0; i < BIG_DATA_SIZE; i++) {
     big_data[i] = i % 256;
   }
   str.clear();
-  str.assign((const char *)big_data, BIG_DATA_SIZE);
+  str.assign((const char *)big_data.data(), BIG_DATA_SIZE);
   wal_option.create_new = true;
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);

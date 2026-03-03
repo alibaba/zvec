@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <random>
+#include <vector>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/type_helper.h>
@@ -247,7 +248,7 @@ class LloydCluster {
  protected:
   //! Cluster the cache features
   void cluster_cache_features(void) {
-    float scores[BatchCount];
+    std::vector<float> scores(BatchCount);
 
     for (size_t i = 0, n = feature_cache_.count(); i != n; ++i) {
       size_t count = centroids_matrix_.count() / BatchCount * BatchCount;
@@ -258,7 +259,7 @@ class LloydCluster {
       for (size_t j = 0; j != count; j += BatchCount) {
         ContextType::template BatchDistance<1>(centroids_matrix_[j], feature,
                                                centroids_matrix_.dimension(),
-                                               scores);
+                                               scores.data());
 
         for (size_t k = 0; k < BatchCount; ++k) {
           if (scores[k] < nearest_score) {
@@ -271,7 +272,7 @@ class LloydCluster {
       for (size_t j = count, total = centroids_matrix_.count(); j != total;
            ++j) {
         ContextType::Distance(centroids_matrix_[j], feature,
-                              centroids_matrix_.dimension(), scores);
+                              centroids_matrix_.dimension(), scores.data());
 
         if (scores[0] < nearest_score) {
           nearest_score = scores[0];
@@ -295,8 +296,8 @@ class LloydCluster {
       return i < j;
     };
 
-    float nearest_scores[BatchCount];
-    size_t nearest_indexes[BatchCount];
+    std::vector<float> nearest_scores(BatchCount);
+    std::vector<size_t> nearest_indexes(BatchCount);
 
     rows.resize(BatchCount);
     for (size_t i = first * BatchCount; i != last * BatchCount;
@@ -304,14 +305,14 @@ class LloydCluster {
       size_t count = centroids_matrix_.count() / BatchCount * BatchCount;
       const StoreType *block = feature_matrix_[i];
 
-      std::fill(nearest_indexes, nearest_indexes + BatchCount, 0);
-      std::fill(nearest_scores, nearest_scores + BatchCount,
+      std::fill(nearest_indexes.data(), nearest_indexes.data() + BatchCount, 0);
+      std::fill(nearest_scores.data(), nearest_scores.data() + BatchCount,
                 std::numeric_limits<float>::max());
 
       for (size_t j = 0; j != count; j += BatchCount) {
         ContextType::template BatchDistance<BatchCount>(
             centroids_matrix_[j], block, centroids_matrix_.dimension(),
-            &scores[0]);
+            scores.data());
 
         for (size_t k = 0; k < BatchCount; ++k) {
           const float *start = &scores[k * BatchCount];
@@ -328,7 +329,7 @@ class LloydCluster {
            ++j) {
         ContextType::template BatchDistance<1>(block, centroids_matrix_[j],
                                                centroids_matrix_.dimension(),
-                                               &scores[0]);
+                                               scores.data());
 
         for (size_t k = 0; k < BatchCount; ++k) {
           float score = scores[k];
