@@ -28,7 +28,7 @@ except ImportError:
     LIGHTGBM_AVAILABLE = False
 
 
-def train_omega_model(csv_path: str, output_dir: str, verbose: bool = False, topk: int = 100):
+def train_omega_model(csv_path: str, output_dir: str, verbose: bool = False, topk: int = 100, gt_cmps_path: str = None):
     """Train OMEGA model from CSV training data.
 
     Args:
@@ -36,6 +36,7 @@ def train_omega_model(csv_path: str, output_dir: str, verbose: bool = False, top
         output_dir: Directory to save trained model and tables
         verbose: Enable verbose logging
         topk: Top-K value used during training data collection (default: 100)
+        gt_cmps_path: Optional path to gt_cmps.csv for generating real tables
 
     Returns:
         str: Path to the trained model directory
@@ -172,33 +173,98 @@ def train_omega_model(csv_path: str, output_dir: str, verbose: bool = False, top
     if verbose:
         print(f"Interval table saved to: {interval_table_path}")
 
-    # Generate placeholder gt_collected_table and gt_cmps_all_table
-    # These tables require access to ground truth data during search, which is not
-    # available from the CSV export. They should be generated during the training
-    # data collection phase in C++.
-
-    # Create empty placeholder files with the correct format
+    # Generate gt_collected_table and gt_cmps_all_table
     gt_collected_table_path = os.path.join(output_dir, "gt_collected_table.txt")
-    with open(gt_collected_table_path, "w") as f:
-        # Format: row_index:value1,value2,...,valueK
-        # Each row represents a "collected" count, columns are ranks
-        for collected in range(topk + 1):
-            row_values = ["1.0" if i < collected else "0.0" for i in range(topk)]
-            f.write(f"{collected}:{','.join(row_values)}\n")
-
-    if verbose:
-        print(f"GT collected table (placeholder) saved to: {gt_collected_table_path}")
-
     gt_cmps_all_table_path = os.path.join(output_dir, "gt_cmps_all_table.txt")
-    with open(gt_cmps_all_table_path, "w") as f:
-        # Format: row_index:value1,value2,...,value100
-        # Each row represents a rank, columns are percentiles (1-100)
-        for rank in range(topk + 1):
-            percentiles = [str(rank * 10 + p) for p in range(100)]  # Placeholder values
-            f.write(f"{rank}:{','.join(percentiles)}\n")
 
-    if verbose:
-        print(f"GT cmps all table (placeholder) saved to: {gt_cmps_all_table_path}")
+    if gt_cmps_path is not None and os.path.exists(gt_cmps_path):
+        # Load gt_cmps data and generate real tables
+        if verbose:
+            print(f"Loading gt_cmps data from: {gt_cmps_path}")
+
+        gt_cmps_df = pd.read_csv(gt_cmps_path)
+        num_queries = gt_cmps_df['query_id'].max() + 1
+
+        # Reshape gt_cmps into a 2D array: [query_id][rank] = cmps
+        gt_cmps = np.zeros((num_queries, topk), dtype=np.int32)
+        for _, row in gt_cmps_df.iterrows():
+            query_id = int(row['query_id'])
+            rank = int(row['rank'])
+            cmps = int(row['cmps'])
+            if query_id < num_queries and rank < topk:
+                gt_cmps[query_id, rank] = cmps
+
+        # Generate gt_cmps_all_table: percentiles of cmps for each rank
+        # Format: rank:percentile_1,percentile_2,...,percentile_100
+        if verbose:
+            print("Generating gt_cmps_all_table...")
+
+        with open(gt_cmps_all_table_path, "w") as f:
+            for rank in range(topk):
+                cmps_values = gt_cmps[:, rank]
+                # Calculate percentiles (1-100)
+                percentiles = np.percentile(cmps_values, range(1, 101))
+                percentiles_str = ','.join([str(int(p)) for p in percentiles])
+                f.write(f"{rank}:{percentiles_str}\n")
+
+        if verbose:
+            print(f"GT cmps all table saved to: {gt_cmps_all_table_path}")
+
+        # Generate gt_collected_table
+        # For each "collected" count (0 to topk), for each rank r:
+        # What's the probability that GT[r] was collected when we've found "collected" GTs
+        # This is computed by: fraction of queries where cmps[r] <= cmps[collected-1]
+        if verbose:
+            print("Generating gt_collected_table...")
+
+        with open(gt_collected_table_path, "w") as f:
+            for collected in range(topk + 1):
+                row_values = []
+                if collected == 0:
+                    # No GTs collected yet, all probabilities are 0
+                    row_values = ["0.0"] * topk
+                else:
+                    # Get the cmps threshold: when we've collected 'collected' GTs,
+                    # the threshold is the cmps when the (collected-1)th GT was found
+                    for rank in range(topk):
+                        if rank < collected:
+                            # Ranks before "collected" are always found
+                            row_values.append("1.0")
+                        else:
+                            # For ranks >= collected, compute probability
+                            # GT[rank] is collected if cmps[rank] <= cmps[collected-1]
+                            threshold_rank = collected - 1
+                            prob_found = np.mean(gt_cmps[:, rank] <= gt_cmps[:, threshold_rank])
+                            row_values.append(f"{prob_found:.6f}")
+                f.write(f"{collected}:{','.join(row_values)}\n")
+
+        if verbose:
+            print(f"GT collected table saved to: {gt_collected_table_path}")
+
+    else:
+        # Generate placeholder tables when gt_cmps is not available
+        if verbose:
+            print("Generating placeholder tables (gt_cmps not available)...")
+
+        with open(gt_collected_table_path, "w") as f:
+            # Format: row_index:value1,value2,...,valueK
+            # Each row represents a "collected" count, columns are ranks
+            for collected in range(topk + 1):
+                row_values = ["1.0" if i < collected else "0.0" for i in range(topk)]
+                f.write(f"{collected}:{','.join(row_values)}\n")
+
+        if verbose:
+            print(f"GT collected table (placeholder) saved to: {gt_collected_table_path}")
+
+        with open(gt_cmps_all_table_path, "w") as f:
+            # Format: row_index:value1,value2,...,value100
+            # Each row represents a rank, columns are percentiles (1-100)
+            for rank in range(topk + 1):
+                percentiles = [str(rank * 10 + p) for p in range(100)]  # Placeholder values
+                f.write(f"{rank}:{','.join(percentiles)}\n")
+
+        if verbose:
+            print(f"GT cmps all table (placeholder) saved to: {gt_cmps_all_table_path}")
 
     # Print final statistics
     if verbose:
@@ -208,8 +274,12 @@ def train_omega_model(csv_path: str, output_dir: str, verbose: bool = False, top
         print(f"  - model.txt")
         print(f"  - threshold_table.txt")
         print(f"  - interval_table.txt")
-        print(f"  - gt_collected_table.txt (placeholder)")
-        print(f"  - gt_cmps_all_table.txt (placeholder)")
+        if gt_cmps_path is not None and os.path.exists(gt_cmps_path):
+            print(f"  - gt_collected_table.txt")
+            print(f"  - gt_cmps_all_table.txt")
+        else:
+            print(f"  - gt_collected_table.txt (placeholder)")
+            print(f"  - gt_cmps_all_table.txt (placeholder)")
 
     return output_dir
 
@@ -244,6 +314,12 @@ def main():
         default=100,
         help="Top-K value used during training (default: 100)"
     )
+    parser.add_argument(
+        "--gt_cmps",
+        type=str,
+        default=None,
+        help="Path to gt_cmps.csv for generating real tables (optional)"
+    )
 
     args = parser.parse_args()
 
@@ -253,7 +329,8 @@ def main():
                 csv_path=args.input,
                 output_dir=args.output,
                 verbose=args.verbose,
-                topk=args.topk
+                topk=args.topk,
+                gt_cmps_path=args.gt_cmps
             )
             print("✓ Training completed successfully")
             sys.exit(0)

@@ -73,7 +73,7 @@ class HnswQueryParams : public QueryParams {
   HnswQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
                   float radius = 0.0f, bool is_linear = false,
                   bool is_using_refiner = false)
-      : QueryParams(IndexType::HNSW), ef_(ef) {
+      : QueryParams(IndexType::HNSW), ef_(ef), training_query_id_(-1) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
@@ -89,8 +89,19 @@ class HnswQueryParams : public QueryParams {
     ef_ = ef;
   }
 
+  // Training query ID for parallel training searches
+  // -1 means not set (use global current_query_id from indexer)
+  int training_query_id() const {
+    return training_query_id_;
+  }
+
+  void set_training_query_id(int query_id) {
+    training_query_id_ = query_id;
+  }
+
  private:
   int ef_;
+  int training_query_id_;
 };
 
 class OmegaQueryParams : public HnswQueryParams {

@@ -128,13 +128,30 @@ int OmegaIndex::_prepare_for_search(
     return ret;
   }
 
+  ailego::Params params;
+
   // Extract OMEGA-specific parameter (target_recall)
   const auto &omega_search_param =
       std::dynamic_pointer_cast<OmegaQueryParam>(search_param);
   if (omega_search_param) {
-    ailego::Params params;
     params.set(core::PARAM_OMEGA_SEARCHER_TARGET_RECALL,
                omega_search_param->target_recall);
+    // Pass training_query_id for parallel training searches
+    if (omega_search_param->training_query_id >= 0) {
+      params.set(core::PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID,
+                 omega_search_param->training_query_id);
+    }
+  } else {
+    // Fallback: try HNSW params for training_query_id
+    const auto &hnsw_search_param =
+        std::dynamic_pointer_cast<HNSWQueryParam>(search_param);
+    if (hnsw_search_param && hnsw_search_param->training_query_id >= 0) {
+      params.set(core::PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID,
+                 hnsw_search_param->training_query_id);
+    }
+  }
+
+  if (!params.empty()) {
     context->update(params);
   }
 

@@ -55,6 +55,22 @@ class OmegaModelTrainer {
       const std::vector<core_interface::TrainingRecord>& training_records,
       const OmegaModelTrainerOptions& options);
 
+  /**
+   * @brief Train OMEGA model with gt_cmps data for table generation
+   *
+   * This is the extended version that also exports gt_cmps data for
+   * generating gt_collected_table and gt_cmps_all_table.
+   *
+   * @param training_records Training data collected from searches
+   * @param gt_cmps_data Ground truth cmps data for table generation
+   * @param options Training configuration
+   * @return Status indicating success or failure
+   */
+  static Status TrainModelWithGtCmps(
+      const std::vector<core_interface::TrainingRecord>& training_records,
+      const core_interface::GtCmpsData& gt_cmps_data,
+      const OmegaModelTrainerOptions& options);
+
  private:
   /**
    * @brief Export training records to CSV format
@@ -72,6 +88,20 @@ class OmegaModelTrainer {
       const std::string& csv_path);
 
   /**
+   * @brief Export gt_cmps data to CSV format
+   *
+   * CSV format:
+   * query_id,rank,cmps
+   *
+   * @param gt_cmps_data Ground truth cmps data
+   * @param csv_path Output CSV file path
+   * @return Status indicating success or failure
+   */
+  static Status ExportGtCmpsToCSV(
+      const core_interface::GtCmpsData& gt_cmps_data,
+      const std::string& csv_path);
+
+  /**
    * @brief Invoke Python training script
    *
    * Calls: python3 -m zvec._omega_training train \
@@ -79,11 +109,13 @@ class OmegaModelTrainer {
    *
    * @param csv_path Input CSV file path
    * @param options Training configuration
+   * @param gt_cmps_path Optional path to gt_cmps CSV file
    * @return Status indicating success or failure
    */
   static Status InvokePythonTrainer(
       const std::string& csv_path,
-      const OmegaModelTrainerOptions& options);
+      const OmegaModelTrainerOptions& options,
+      const std::string& gt_cmps_path = "");
 };
 
 }  // namespace zvec

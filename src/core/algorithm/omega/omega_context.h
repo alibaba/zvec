@@ -29,12 +29,12 @@ class OmegaContext : public HnswContext {
   //! Constructor
   OmegaContext(size_t dimension, const IndexMetric::Pointer &metric,
                const HnswEntity::Pointer &entity)
-      : HnswContext(dimension, metric, entity), target_recall_(0.95f) {}
+      : HnswContext(dimension, metric, entity), target_recall_(0.95f), training_query_id_(-1) {}
 
   //! Constructor
   OmegaContext(const IndexMetric::Pointer &metric,
                const HnswEntity::Pointer &entity)
-      : HnswContext(metric, entity), target_recall_(0.95f) {}
+      : HnswContext(metric, entity), target_recall_(0.95f), training_query_id_(-1) {}
 
   //! Destructor
   virtual ~OmegaContext() = default;
@@ -42,6 +42,11 @@ class OmegaContext : public HnswContext {
   //! Get target recall for this query
   float target_recall() const {
     return target_recall_;
+  }
+
+  //! Get training query ID for this query (-1 means not set, use global)
+  int training_query_id() const {
+    return training_query_id_;
   }
 
   //! Update context parameters (overrides HnswContext::update)
@@ -56,12 +61,16 @@ class OmegaContext : public HnswContext {
     if (params.has(PARAM_OMEGA_SEARCHER_TARGET_RECALL)) {
       params.get(PARAM_OMEGA_SEARCHER_TARGET_RECALL, &target_recall_);
     }
+    if (params.has(PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID)) {
+      params.get(PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID, &training_query_id_);
+    }
 
     return 0;
   }
 
  private:
   float target_recall_;  // Per-query target recall
+  int training_query_id_;  // Per-query training query ID for parallel training
 };
 
 }  // namespace core

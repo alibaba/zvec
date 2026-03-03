@@ -158,6 +158,7 @@ class ProximaEngineHelper {
           auto db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
               query_params.query_params.get());
           hnsw_query_param->ef_search = db_hnsw_query_params->ef();
+          hnsw_query_param->training_query_id = db_hnsw_query_params->training_query_id();
         }
         return std::move(hnsw_query_param);
       }
@@ -179,10 +180,12 @@ class ProximaEngineHelper {
               query_params.query_params.get())) {
             omega_query_param->ef_search = db_omega_query_params->ef();
             omega_query_param->target_recall = db_omega_query_params->target_recall();
+            omega_query_param->training_query_id = db_omega_query_params->training_query_id();
           } else if (auto* db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
               query_params.query_params.get())) {
             // Fallback to HnswQueryParams (backward compatibility)
             omega_query_param->ef_search = db_hnsw_query_params->ef();
+            omega_query_param->training_query_id = db_hnsw_query_params->training_query_id();
             // target_recall will use default value (0.95f)
           }
         }
@@ -382,9 +385,13 @@ class ProximaEngineHelper {
                 static_cast<int>(core_interface::IndexType::kOMEGA));
         fflush(stderr);
 
-        // TODO: Store OMEGA-specific params (min_vector_threshold, model_dir)
-        // in the params field for now
-        // These will be used by the IndexFlow when creating the OmegaSearcher
+        // Store OMEGA-specific params in the params field
+        // These will be used by OmegaSearcher::init()
+        hnsw_param->params.insert("omega.enabled", true);
+        hnsw_param->params.insert("omega.min_vector_threshold",
+                                  db_index_params->min_vector_threshold());
+        hnsw_param->params.insert("omega.model_dir",
+                                  db_index_params->model_dir());
 
         return hnsw_param;
       }

@@ -104,7 +104,8 @@ message OmegaIndexParams {
   BaseIndexParams base = 1;
   int32 m = 2;
   int32 ef_construction = 3;
-  // TODO: Add OMEGA-specific params like min_vector_threshold, model_dir
+  uint32 min_vector_threshold = 4;
+  string model_dir = 5;
 }
 
 message IndexParams {

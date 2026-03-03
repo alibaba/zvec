@@ -322,17 +322,24 @@ class OmegaIndexParams : public VectorIndexParams {
   OmegaIndexParams(
       MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
-      QuantizeType quantize_type = QuantizeType::UNDEFINED)
+      QuantizeType quantize_type = QuantizeType::UNDEFINED,
+      uint32_t min_vector_threshold = 100000,
+      const std::string& model_dir = "./omega_models",
+      size_t num_training_queries = 1000)
       : VectorIndexParams(IndexType::OMEGA, metric_type, quantize_type),
         m_(m),
-        ef_construction_(ef_construction) {}
+        ef_construction_(ef_construction),
+        min_vector_threshold_(min_vector_threshold),
+        model_dir_(model_dir),
+        num_training_queries_(num_training_queries) {}
 
   using OPtr = std::shared_ptr<OmegaIndexParams>;
 
  public:
   Ptr clone() const override {
     return std::make_shared<OmegaIndexParams>(metric_type_, m_, ef_construction_,
-                                             quantize_type_);
+                                             quantize_type_, min_vector_threshold_,
+                                             model_dir_, num_training_queries_);
   }
 
   std::string to_string() const override {
@@ -340,7 +347,9 @@ class OmegaIndexParams : public VectorIndexParams {
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
     oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
-        << "}";
+        << ",min_vector_threshold:" << min_vector_threshold_
+        << ",model_dir:" << model_dir_
+        << ",num_training_queries:" << num_training_queries_ << "}";
     return oss.str();
   }
 
@@ -351,6 +360,12 @@ class OmegaIndexParams : public VectorIndexParams {
            m_ == static_cast<const OmegaIndexParams &>(other).m_ &&
            ef_construction_ ==
                static_cast<const OmegaIndexParams &>(other).ef_construction_ &&
+           min_vector_threshold_ ==
+               static_cast<const OmegaIndexParams &>(other).min_vector_threshold_ &&
+           model_dir_ ==
+               static_cast<const OmegaIndexParams &>(other).model_dir_ &&
+           num_training_queries_ ==
+               static_cast<const OmegaIndexParams &>(other).num_training_queries_ &&
            quantize_type() ==
                static_cast<const OmegaIndexParams &>(other).quantize_type();
   }
@@ -367,10 +382,31 @@ class OmegaIndexParams : public VectorIndexParams {
   int ef_construction() const {
     return ef_construction_;
   }
+  void set_min_vector_threshold(uint32_t min_vector_threshold) {
+    min_vector_threshold_ = min_vector_threshold;
+  }
+  uint32_t min_vector_threshold() const {
+    return min_vector_threshold_;
+  }
+  void set_model_dir(const std::string& model_dir) {
+    model_dir_ = model_dir;
+  }
+  const std::string& model_dir() const {
+    return model_dir_;
+  }
+  void set_num_training_queries(size_t num_training_queries) {
+    num_training_queries_ = num_training_queries;
+  }
+  size_t num_training_queries() const {
+    return num_training_queries_;
+  }
 
  private:
   int m_;
   int ef_construction_;
+  uint32_t min_vector_threshold_;
+  std::string model_dir_;
+  size_t num_training_queries_;
 };
 
 }  // namespace zvec

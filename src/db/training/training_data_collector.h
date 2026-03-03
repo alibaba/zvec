@@ -48,6 +48,17 @@ struct TrainingDataCollectorOptions {
 
   // Random seed for reproducibility
   uint64_t seed = 42;
+
+  // Number of threads for parallel operations (0 = hardware_concurrency)
+  size_t num_threads = 0;
+};
+
+/**
+ * @brief Result of training data collection, includes both records and gt_cmps
+ */
+struct TrainingDataCollectorResult {
+  std::vector<core_interface::TrainingRecord> records;
+  core_interface::GtCmpsData gt_cmps_data;
 };
 
 /**
@@ -76,6 +87,24 @@ class TrainingDataCollector {
       const TrainingDataCollectorOptions& options,
       const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
 
+  /**
+   * @brief Collect training data with gt_cmps information for table generation
+   *
+   * This is the extended version that also computes gt_cmps data needed for
+   * generating gt_collected_table and gt_cmps_all_table.
+   *
+   * @param segment The segment to collect data from (must be persisted)
+   * @param field_name Vector field name to train on
+   * @param options Collection options
+   * @param indexers Optional specific indexers to use
+   * @return TrainingDataCollectorResult with records and gt_cmps_data
+   */
+  static Result<TrainingDataCollectorResult> CollectTrainingDataWithGtCmps(
+      const Segment::Ptr& segment,
+      const std::string& field_name,
+      const TrainingDataCollectorOptions& options,
+      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
+
  private:
   /**
    * @brief Compute ground truth using brute force search
@@ -84,13 +113,15 @@ class TrainingDataCollector {
    * @param field_name Vector field name
    * @param queries Training query vectors
    * @param topk Number of top results to retrieve
+   * @param num_threads Number of threads (0 = hardware_concurrency)
    * @return Ground truth doc IDs for each query
    */
   static std::vector<std::vector<uint64_t>> ComputeGroundTruth(
       const Segment::Ptr& segment,
       const std::string& field_name,
       const std::vector<std::vector<float>>& queries,
-      size_t topk);
+      size_t topk,
+      size_t num_threads);
 
   /**
    * @brief Fill labels in training records based on ground truth
@@ -113,6 +144,22 @@ class TrainingDataCollector {
       const std::vector<std::vector<uint64_t>>& ground_truth,
       const std::vector<std::vector<uint64_t>>& search_results,
       size_t k_train);
+
+  /**
+   * @brief Compute gt_cmps data from training records and ground truth
+   *
+   * For each query and each GT rank, find the cmps value when that GT was first
+   * collected. This data is used to generate gt_collected_table and gt_cmps_all_table.
+   *
+   * @param records Training records (must be sorted by query_id, then by cmps)
+   * @param ground_truth Ground truth doc IDs per query
+   * @param topk Number of top results per query
+   * @return GtCmpsData structure with computed gt_cmps
+   */
+  static core_interface::GtCmpsData ComputeGtCmps(
+      const std::vector<core_interface::TrainingRecord>& records,
+      const std::vector<std::vector<uint64_t>>& ground_truth,
+      size_t topk);
 };
 
 }  // namespace zvec

@@ -59,4 +59,27 @@ struct TrainingRecord {
         label(0) {}
 };
 
+/**
+ * @brief Ground truth cmps data for OMEGA table generation.
+ *
+ * For each query, stores the cmps value when each ground truth result was found.
+ * This data is used to generate gt_collected_table and gt_cmps_all_table.
+ *
+ * gt_cmps[query_id][rank] = cmps value when GT[rank] was collected
+ *                         = total_cmps if GT[rank] was never found
+ */
+struct GtCmpsData {
+  // gt_cmps[query_id][rank] = cmps when GT of rank was found
+  std::vector<std::vector<int>> gt_cmps;
+
+  // total_cmps[query_id] = total comparisons for this query
+  std::vector<int> total_cmps;
+
+  // topk value used during training
+  size_t topk = 0;
+
+  // Number of queries
+  size_t num_queries = 0;
+};
+
 }  // namespace zvec::core_interface

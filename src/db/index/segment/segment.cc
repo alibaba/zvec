@@ -1644,24 +1644,34 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     if (!reopen_status.ok()) {
       LOG_WARN("Failed to reopen indexer for training: %s", reopen_status.message().c_str());
     } else {
+      // Get training params from index params
+      size_t num_training_queries = 1000;  // default
+      int ef_training = 1000;  // default
+      if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(field.index_params())) {
+        num_training_queries = omega_params->num_training_queries();
+        ef_training = omega_params->ef_construction();  // Use ef_construction for training
+        LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d",
+                 num_training_queries, ef_training);
+      }
+
       // Collect training data
       TrainingDataCollectorOptions collector_opts;
       size_t doc_count = training_indexer->doc_count();
-      collector_opts.num_training_queries = std::min(doc_count, size_t(1000));
-      collector_opts.ef_training = 1000;  // Large ef for recall ≈ 1
+      collector_opts.num_training_queries = std::min(doc_count, num_training_queries);
+      collector_opts.ef_training = ef_training;
       collector_opts.topk = 100;
       collector_opts.k_train = 1;  // Label=1 when top-1 GT found
 
       std::vector<VectorColumnIndexer::Ptr> training_indexers = {training_indexer};
 
-      auto training_result = TrainingDataCollector::CollectTrainingData(
+      auto training_result = TrainingDataCollector::CollectTrainingDataWithGtCmps(
           shared_from_this(), column, collector_opts, training_indexers);
 
       if (training_result.has_value()) {
-        auto& records = training_result.value();
-        LOG_INFO("Collected %zu training records", records.size());
+        auto& result = training_result.value();
+        LOG_INFO("Collected %zu training records", result.records.size());
 
-        if (records.size() >= 100) {
+        if (result.records.size() >= 100) {
           // Train the model
           OmegaModelTrainerOptions trainer_opts;
           trainer_opts.output_dir = model_output_dir;
@@ -1674,14 +1684,15 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
             }
           }
 
-          auto train_status = OmegaModelTrainer::TrainModel(records, trainer_opts);
+          auto train_status = OmegaModelTrainer::TrainModelWithGtCmps(
+              result.records, result.gt_cmps_data, trainer_opts);
           if (train_status.ok()) {
             LOG_INFO("OMEGA model training completed successfully: %s", trainer_opts.output_dir.c_str());
           } else {
             LOG_WARN("OMEGA model training failed: %s", train_status.message().c_str());
           }
         } else {
-          LOG_INFO("Skipping model training: only %zu records collected (need >= 100)", records.size());
+          LOG_INFO("Skipping model training: only %zu records collected (need >= 100)", result.records.size());
         }
       } else {
         LOG_WARN("Failed to collect training data: %s", training_result.error().message().c_str());
@@ -2300,15 +2311,28 @@ Status SegmentImpl::auto_train_omega_index_internal(
   LOG_INFO("Starting auto-training for OMEGA index on field '%s' in segment %d",
            field_name.c_str(), id());
 
+  // Get training params from index params
+  size_t num_training_queries = 1000;  // default
+  int ef_training = 1000;  // default
+  auto field = collection_schema_->get_field(field_name);
+  if (field && field->index_params()) {
+    if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(field->index_params())) {
+      num_training_queries = omega_params->num_training_queries();
+      ef_training = omega_params->ef_construction();  // Use ef_construction for training
+      LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d",
+               num_training_queries, ef_training);
+    }
+  }
+
   // Step 1: Collect training data using the provided indexers
   TrainingDataCollectorOptions collector_options;
-  collector_options.num_training_queries = 1000;  // TODO: Make configurable
-  collector_options.ef_training = 1000;           // Large ef for recall ≈ 1
+  collector_options.num_training_queries = num_training_queries;
+  collector_options.ef_training = ef_training;
   collector_options.topk = 100;
   collector_options.noise_scale = 0.01f;
 
 
-  auto training_records_result = TrainingDataCollector::CollectTrainingData(
+  auto training_records_result = TrainingDataCollector::CollectTrainingDataWithGtCmps(
       shared_from_this(), field_name, collector_options, indexers);
 
   if (!training_records_result.has_value()) {
@@ -2317,7 +2341,8 @@ Status SegmentImpl::auto_train_omega_index_internal(
         training_records_result.error().message());
   }
 
-  auto& training_records = training_records_result.value();
+  auto& training_result = training_records_result.value();
+  auto& training_records = training_result.records;
   LOG_INFO("Collected %zu training records for segment %d",
            training_records.size(), id());
 
@@ -2353,7 +2378,7 @@ Status SegmentImpl::auto_train_omega_index_internal(
   LOG_INFO("Training data stats: %zu positive, %zu negative samples",
            positive_count, negative_count);
 
-  // Step 2: Train OMEGA model
+  // Step 2: Train OMEGA model with gt_cmps data
   OmegaModelTrainerOptions trainer_options;
   trainer_options.output_dir = FileHelper::MakeSegmentPath(path_, id()) + "/omega_model";
   trainer_options.verbose = true;
@@ -2367,7 +2392,8 @@ Status SegmentImpl::auto_train_omega_index_internal(
     }
   }
 
-  auto train_status = OmegaModelTrainer::TrainModel(training_records, trainer_options);
+  auto train_status = OmegaModelTrainer::TrainModelWithGtCmps(
+      training_records, training_result.gt_cmps_data, trainer_options);
   if (!train_status.ok()) {
     return Status::InternalError(
         "Failed to train OMEGA model: " + train_status.message());

@@ -549,8 +549,9 @@ Args:
       omega_params(m, "OmegaIndexParam", R"pbdoc(
 Parameters for configuring an OMEGA index.
 
-OMEGA is an advanced graph-based index that can fall back to HNSW when omega
-functionality is disabled. This class encapsulates its construction hyperparameters.
+OMEGA is an advanced graph-based index that uses machine learning to optimize
+search performance. It builds on HNSW and can automatically train a model to
+predict when to stop searching.
 
 Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
@@ -564,31 +565,52 @@ Attributes:
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
         disable quantization.
+    min_vector_threshold (int): Minimum number of vectors required to enable
+        OMEGA optimization. Below this threshold, standard HNSW is used.
+        Default is 100000.
+    model_dir (str): Directory path for storing/loading OMEGA models.
+        Default is "./omega_models".
+    num_training_queries (int): Number of training queries to generate for
+        OMEGA model training. Default is 1000.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
     >>> params = OmegaIndexParam(
-    ...     metric_type=MetricType.COSINE,
+    ...     metric_type=MetricType.L2,
     ...     m=16,
     ...     ef_construction=200,
-    ...     quantize_type=QuantizeType.INT8
+    ...     min_vector_threshold=50000,
+    ...     model_dir="./my_omega_models",
+    ...     num_training_queries=500
     ... )
-    >>> print(params)
-    {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8'}
+    >>> print(params.num_training_queries)
+    500
 )pbdoc");
   omega_params
-      .def(py::init<MetricType, int, int, QuantizeType>(),
+      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, std::string, size_t>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
                core_interface::kDefaultHnswEfConstruction,
-           py::arg("quantize_type") = QuantizeType::UNDEFINED)
+           py::arg("quantize_type") = QuantizeType::UNDEFINED,
+           py::arg("min_vector_threshold") = 100000,
+           py::arg("model_dir") = "./omega_models",
+           py::arg("num_training_queries") = 1000)
       .def_property_readonly(
           "m", &OmegaIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
       .def_property_readonly(
           "ef_construction", &OmegaIndexParams::ef_construction,
           "int: Candidate list size during index construction.")
+      .def_property_readonly(
+          "min_vector_threshold", &OmegaIndexParams::min_vector_threshold,
+          "int: Minimum vectors required to enable OMEGA optimization.")
+      .def_property_readonly(
+          "model_dir", &OmegaIndexParams::model_dir,
+          "str: Directory path for OMEGA models.")
+      .def_property_readonly(
+          "num_training_queries", &OmegaIndexParams::num_training_queries,
+          "int: Number of training queries for OMEGA model training.")
       .def(
           "to_dict",
           [](const OmegaIndexParams &self) -> py::dict {
@@ -597,6 +619,9 @@ Examples:
             dict["metric_type"] = metric_type_to_string(self.metric_type());
             dict["m"] = self.m();
             dict["ef_construction"] = self.ef_construction();
+            dict["min_vector_threshold"] = self.min_vector_threshold();
+            dict["model_dir"] = self.model_dir();
+            dict["num_training_queries"] = self.num_training_queries();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -610,20 +635,28 @@ Examples:
                     ", \"m\":" + std::to_string(self.m()) +
                     ", \"ef_construction\":" +
                     std::to_string(self.ef_construction()) +
+                    ", \"min_vector_threshold\":" +
+                    std::to_string(self.min_vector_threshold()) +
+                    ", \"model_dir\":\"" + self.model_dir() + "\"" +
+                    ", \"num_training_queries\":" +
+                    std::to_string(self.num_training_queries()) +
                     ", \"quantize_type\":" +
                     quantize_type_to_string(self.quantize_type()) + "}";
            })
       .def(py::pickle(
           [](const OmegaIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.m(),
-                                  self.ef_construction(), self.quantize_type());
+                                  self.ef_construction(), self.quantize_type(),
+                                  self.min_vector_threshold(), self.model_dir(),
+                                  self.num_training_queries());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 7)
               throw std::runtime_error("Invalid state for OmegaIndexParams");
             return std::make_shared<OmegaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<QuantizeType>());
+                t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
+                t[5].cast<std::string>(), t[6].cast<size_t>());
           }));
 }
 

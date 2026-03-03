@@ -22,6 +22,10 @@ namespace zvec::core {
 static const std::string PARAM_OMEGA_SEARCHER_TARGET_RECALL(
     "proxima.omega.searcher.target_recall");
 
+// Training query ID for parallel training searches
+static const std::string PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID(
+    "proxima.omega.searcher.training_query_id");
+
 // OMEGA streamer parameters (used at index time)
 static const std::string PARAM_OMEGA_STREAMER_TARGET_RECALL(
     "proxima.omega.streamer.target_recall");

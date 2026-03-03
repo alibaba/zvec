@@ -81,7 +81,9 @@ OmegaIndexParams::OPtr ProtoConverter::FromPb(
   auto params = std::make_shared<OmegaIndexParams>(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()), params_pb.m(),
       params_pb.ef_construction(),
-      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()));
+      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
+      params_pb.min_vector_threshold(),
+      params_pb.model_dir());
 
   return params;
 }
@@ -94,6 +96,8 @@ proto::OmegaIndexParams ProtoConverter::ToPb(const OmegaIndexParams *params) {
       QuantizeTypeCodeBook::Get(params->quantize_type()));
   params_pb.set_ef_construction(params->ef_construction());
   params_pb.set_m(params->m());
+  params_pb.set_min_vector_threshold(params->min_vector_threshold());
+  params_pb.set_model_dir(params->model_dir());
   return params_pb;
 }
 

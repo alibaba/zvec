@@ -18,6 +18,8 @@
 #include <zvec/core/framework/index_logger.h>
 #include "../hnsw/hnsw_entity.h"
 #include "../hnsw/hnsw_context.h"
+#include "omega_context.h"
+#include "omega_params.h"
 #include <omega/omega_api.h>
 #include <omega/search_context.h>
 
@@ -41,7 +43,15 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     return HnswStreamer::search_impl(query, qmeta, count, context);
   }
 
-  LOG_INFO("OmegaStreamer: training mode enabled (query_id=%d), using OMEGA library to collect features", current_query_id_);
+  // Cast context to OmegaContext to access training_query_id
+  auto *omega_ctx = dynamic_cast<OmegaContext*>(context.get());
+  int query_id = current_query_id_;  // Default to member variable
+  if (omega_ctx != nullptr && omega_ctx->training_query_id() >= 0) {
+    // Use training_query_id from context (for parallel training searches)
+    query_id = omega_ctx->training_query_id();
+  }
+
+  LOG_INFO("OmegaStreamer: training mode enabled (query_id=%d), using OMEGA library to collect features", query_id);
 
   // Training mode: Use OMEGA library with nullptr model (training-only mode)
   // The OMEGA library will collect training features automatically
@@ -58,8 +68,8 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   // Enable training mode (CRITICAL: must be before search)
-  omega_search_enable_training(omega_search, current_query_id_);
-  LOG_DEBUG("Training mode enabled for query_id=%d", current_query_id_);
+  omega_search_enable_training(omega_search, query_id);
+  LOG_DEBUG("Training mode enabled for query_id=%d", query_id);
 
   // Cast context to HnswContext to access HNSW-specific features
   auto *hnsw_ctx = dynamic_cast<HnswContext*>(context.get());
@@ -276,15 +286,55 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     }
 
     LOG_DEBUG("Collected %zu training records for query_id=%d",
-              record_count, current_query_id_);
+              record_count, query_id);
   } else {
-    LOG_WARN("No training records collected for query_id=%d", current_query_id_);
+    LOG_WARN("No training records collected for query_id=%d", query_id);
   }
 
   // Destroy OMEGA search context
   omega_search_destroy(omega_search);
 
   return 0;
+}
+
+IndexStreamer::Context::Pointer OmegaStreamer::create_context(void) const {
+  if (ailego_unlikely(state_ != STATE_OPENED)) {
+    LOG_ERROR("Create OmegaContext failed, open storage first!");
+    return Context::Pointer();
+  }
+
+  HnswEntity::Pointer entity = entity_.clone();
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("OmegaContext clone entity failed");
+    return Context::Pointer();
+  }
+
+  // Create OmegaContext instead of HnswContext for OMEGA-specific features
+  OmegaContext *ctx =
+      new (std::nothrow) OmegaContext(meta_.dimension(), metric_, entity);
+  if (ailego_unlikely(ctx == nullptr)) {
+    LOG_ERROR("Failed to new OmegaContext");
+    return Context::Pointer();
+  }
+
+  // Copy all HNSW settings from parent
+  ctx->set_ef(ef_);
+  ctx->set_max_scan_limit(max_scan_limit_);
+  ctx->set_min_scan_limit(min_scan_limit_);
+  ctx->set_max_scan_ratio(max_scan_ratio_);
+  ctx->set_filter_mode(bf_enabled_ ? VisitFilter::BloomFilter
+                                   : VisitFilter::ByteMap);
+  ctx->set_filter_negative_probility(bf_negative_prob_);
+  ctx->set_magic(magic_);
+  ctx->set_force_padding_topk(force_padding_topk_enabled_);
+  ctx->set_bruteforce_threshold(bruteforce_threshold_);
+
+  if (ailego_unlikely(ctx->init(HnswContext::kStreamerContext)) != 0) {
+    LOG_ERROR("Init OmegaContext failed");
+    delete ctx;
+    return Context::Pointer();
+  }
+  return Context::Pointer(ctx);
 }
 
 int OmegaStreamer::dump(const IndexDumper::Pointer &dumper) {

@@ -14,6 +14,7 @@
 #pragma once
 
 #include "../hnsw/hnsw_streamer.h"
+#include "omega_context.h"
 #include <zvec/core/interface/training.h>
 #include <mutex>
 #include <memory>
@@ -64,6 +65,11 @@ class OmegaStreamer : public HnswStreamer {
   virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
                           uint32_t count,
                           Context::Pointer &context) const override;
+
+  /**
+   * @brief Override create_context to return OmegaContext
+   */
+  virtual Context::Pointer create_context() const override;
 
   /**
    * @brief Override dump to set "OmegaSearcher" instead of "HnswSearcher"
