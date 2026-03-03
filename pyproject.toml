@@ -52,6 +52,7 @@ test = [
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
     "cibuildwheel == 2.17.0",
+    "sentence-transformers",
 ]
 docs = [
     "mkdocs >=1.5",
