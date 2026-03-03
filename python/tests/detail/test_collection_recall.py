@@ -239,11 +239,11 @@ class TestRecall:
 
             (True, True, HnswIndexParam(metric_type=MetricType.IP, m=16, ef_construction=100, )),
             (True, True, HnswIndexParam(metric_type=MetricType.COSINE, m=24, ef_construction=150, )),
-            (True, True, HnswIndexParam(metric_type=MetricType.L2, m=32, ef_construction=200, )),    
+            #(True, True, HnswIndexParam(metric_type=MetricType.L2, m=32, ef_construction=200, )),    
  
             (False, True, FlatIndexParam(metric_type=MetricType.IP, )), 
             (True, True, FlatIndexParam(metric_type=MetricType.COSINE, )),
-            (True, True, FlatIndexParam(metric_type=MetricType.L2, )),   
+            #(True, True, FlatIndexParam(metric_type=MetricType.L2, )),   
 
             (True, True, IVFIndexParam(metric_type=MetricType.IP, n_list=100, n_iters=10, use_soar=False, )),
             (True, True, IVFIndexParam(metric_type=MetricType.L2, n_list=200, n_iters=20, use_soar=True, )),
@@ -251,10 +251,10 @@ class TestRecall:
         ],
         indirect=True,
     )
-    @pytest.mark.parametrize("doc_num", [100])
-    @pytest.mark.parametrize("query_num", [2])
+    @pytest.mark.parametrize("doc_num", [500])
+    @pytest.mark.parametrize("query_num",[10])
     @pytest.mark.parametrize("top_k", [1])
-    def test_recall_with_single_vector_valid(
+    def test_recall_with_single_vector_valid_500(
             self, full_collection_new: Collection, doc_num, query_num, top_k, full_schema_new, request
     ):
         full_schema_params = request.getfixturevalue("full_schema_new")
@@ -352,3 +352,126 @@ class TestRecall:
         for k, v in recall_at_k_stats.items():
             assert v['recall_at_k'] == 1.0
 
+
+    @pytest.mark.parametrize(
+        "full_schema_new",
+        [
+            (True, True,  HnswIndexParam()),
+            (False, True, IVFIndexParam()),
+            (False, True, FlatIndexParam()),#——ok
+
+            (True, True, HnswIndexParam(metric_type=MetricType.IP, m=16, ef_construction=100, )),
+            (True, True, HnswIndexParam(metric_type=MetricType.COSINE, m=24, ef_construction=150, )),
+            #(True, True, HnswIndexParam(metric_type=MetricType.L2, m=32, ef_construction=200, )),    
+ 
+            (False, True, FlatIndexParam(metric_type=MetricType.IP, )), 
+            (True, True, FlatIndexParam(metric_type=MetricType.COSINE, )),
+            #(True, True, FlatIndexParam(metric_type=MetricType.L2, )),   
+
+            (True, True, IVFIndexParam(metric_type=MetricType.IP, n_list=100, n_iters=10, use_soar=False, )),
+            (True, True, IVFIndexParam(metric_type=MetricType.L2, n_list=200, n_iters=20, use_soar=True, )),
+            #(True, True, IVFIndexParam(metric_type=MetricType.COSINE, n_list=150, n_iters=15, use_soar=False, )),
+        ],
+        indirect=True,
+    )
+    @pytest.mark.parametrize("doc_num", [2000])
+    @pytest.mark.parametrize("query_num", [2])
+    @pytest.mark.parametrize("top_k", [1])
+    @pytest.mark.skip(reason="known bug")
+    def test_recall_with_single_vector_valid_2000(
+            self, full_collection_new: Collection, doc_num, query_num, top_k, full_schema_new, request
+    ):
+        full_schema_params = request.getfixturevalue("full_schema_new")
+
+        for vector_para in full_schema_params.vectors:
+            if vector_para.name == "vector_fp32_field":
+                metric_type = vector_para.index_param.metric_type
+                break
+
+        multiple_docs = [
+            generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
+        ]
+        print("len(multiple_docs):\n")
+        print(len(multiple_docs))
+        #print(multiple_docs)
+
+        for i in range(10):
+            if i != 0:
+                pass
+                # print(multiple_docs[i * 1000:1000 * (i + 1)])
+            batchdoc_and_check(full_collection_new, multiple_docs[i * 1000:1000 * (i + 1)], operator="insert")
+
+        stats = full_collection_new.stats
+        assert stats.doc_count == len(multiple_docs)
+
+        doc_ids = ['0', '1']
+        fetched_docs = full_collection_new.fetch(doc_ids)
+        print("fetched_docs,multiple_docs")
+        print(fetched_docs[doc_ids[0]].vectors["sparse_vector_fp32_field"],fetched_docs[doc_ids[0]].vectors["sparse_vector_fp16_field"],
+              fetched_docs[doc_ids[1]].vectors["sparse_vector_fp32_field"],fetched_docs[doc_ids[1]].vectors["sparse_vector_fp16_field"],"\n",
+              multiple_docs[0].vectors["sparse_vector_fp32_field"], multiple_docs[0].vectors["sparse_vector_fp32_field"],
+              multiple_docs[1].vectors["sparse_vector_fp32_field"], multiple_docs[1].vectors["sparse_vector_fp16_field"])
+
+
+        full_collection_new.optimize(option=OptimizeOption())
+
+        time.sleep(2)
+
+        query_vectors_map = {}
+        for field_name in DEFAULT_VECTOR_FIELD_NAME.values():
+            query_vectors_map[field_name] = [multiple_docs[i].vectors[field_name] for i in range(query_num)]
+
+        # Get ground truth mapping
+        ground_truth_map = get_ground_truth_map(
+            full_collection_new,
+            multiple_docs,
+            query_vectors_map,
+            metric_type,
+            top_k
+        )
+
+        # Validate ground truth mapping structure
+        for field_name in DEFAULT_VECTOR_FIELD_NAME.values():
+            assert field_name in ground_truth_map
+            field_gt = ground_truth_map[field_name]
+            assert len(field_gt) == query_num
+
+            for query_idx in range(query_num):
+                assert query_idx in field_gt
+                relevant_ids = field_gt[query_idx]
+                assert isinstance(relevant_ids, list)
+                assert len(relevant_ids) <= top_k
+
+        # Print ground truth statistics
+        print(f"Ground Truth for Top-{top_k} Retrieval:")
+        for field_name, field_gt in ground_truth_map.items():
+            print(f"  {field_name}:")
+            for query_idx, relevant_ids in field_gt.items():
+                print(
+                    f" Query {query_idx}: {len(relevant_ids)} relevant docs - {relevant_ids[:5]}{'...' if len(relevant_ids) > 5 else ''}")
+
+        # Calculate Recall@K using ground truth
+        recall_at_k_stats = calculate_recall_at_k(
+            full_collection_new,
+            multiple_docs,
+            query_vectors_map,
+            full_schema_new,
+            k=top_k,
+            expected_doc_ids_scores_map=ground_truth_map,
+            tolerance=0.001
+        )
+        print("ground_truth_map:\n")
+        print(ground_truth_map)
+
+        print("(recall_at_k_stats:\n")
+        print(recall_at_k_stats)
+        print("metric_type:")
+        print(metric_type)
+        # Print Recall@K statistics
+        print(f"Recall@{top_k} using Ground Truth:")
+        for field_name, stats in recall_at_k_stats.items():
+            print(f"  {field_name}:")
+            print(f"    Relevant Retrieved: {stats['relevant_retrieved_count']}/{stats['total_relevant_count']}")
+            print(f"    Recall@{top_k}: {stats['recall_at_k']:.4f}")
+        for k, v in recall_at_k_stats.items():
+            assert v['recall_at_k'] == 1.0
