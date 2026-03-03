@@ -64,7 +64,8 @@ jobs:
             pytest \
             pytest-cov \
             scikit-build-core \
-            setuptools_scm
+            setuptools_scm \
+            sentence-transformers
         shell: bash
 
       - name: Run Ruff Linter
