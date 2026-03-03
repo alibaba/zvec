@@ -124,7 +124,8 @@ jobs:
             ninja==1.11.1 \
             pytest \
             scikit-build-core \
-            setuptools_scm
+            setuptools_scm \
+            sentence-transformers
         shell: bash
 
       - name: Build from source
