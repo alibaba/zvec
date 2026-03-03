@@ -247,7 +247,7 @@ class TestRecall:
 
             (True, True, IVFIndexParam(metric_type=MetricType.IP, n_list=100, n_iters=10, use_soar=False, )),
             (True, True, IVFIndexParam(metric_type=MetricType.L2, n_list=200, n_iters=20, use_soar=True, )),
-            #(True, True, IVFIndexParam(metric_type=MetricType.COSINE, n_list=150, n_iters=15, use_soar=False, )),
+            (True, True, IVFIndexParam(metric_type=MetricType.COSINE, n_list=150, n_iters=15, use_soar=False, )),
         ],
         indirect=True,
     )
