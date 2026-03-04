@@ -67,8 +67,12 @@ def cosine_distance_dense(
         vec2 = [float(np.float16(b)) for b in vec2]
     elif dtype == DataType.VECTOR_INT8:
         # For INT8 vectors, convert to integers for proper calculation
-        vec1 = [int(round(min(max(val, -128), 127))) for val in vec1]  # Clamp to valid INT8 range
-        vec2 = [int(round(min(max(val, -128), 127))) for val in vec2]  # Clamp to valid INT8 range
+        vec1 = [
+            int(round(min(max(val, -128), 127))) for val in vec1
+        ]  # Clamp to valid INT8 range
+        vec2 = [
+            int(round(min(max(val, -128), 127))) for val in vec2
+        ]  # Clamp to valid INT8 range
 
     dot_product = sum(a * b for a, b in zip(vec1, vec2))
 
@@ -85,8 +89,14 @@ def cosine_distance_dense(
 
     # For identical vectors (within floating point precision), ensure cosine distance is 0.0
     # This is especially important for low-precision types which have limited precision
-    if dtype == DataType.VECTOR_FP16 or quantize_type == QuantizeType.FP16 or dtype == DataType.VECTOR_INT8:
-        if abs(cosine_similarity - 1.0) < 1e-3:  # Handle precision issues for low-precision types
+    if (
+        dtype == DataType.VECTOR_FP16
+        or quantize_type == QuantizeType.FP16
+        or dtype == DataType.VECTOR_INT8
+    ):
+        if (
+            abs(cosine_similarity - 1.0) < 1e-3
+        ):  # Handle precision issues for low-precision types
             cosine_similarity = 1.0
 
     # Return cosine distance (1 - cosine similarity) to maintain compatibility
@@ -102,12 +112,16 @@ def dp_distance_dense(
 ):
     if dtype == DataType.VECTOR_FP16 or quantize_type == QuantizeType.FP16:
         # More stable computation to avoid numerical issues
-        products = [float(np.float16(a)) * float(np.float16(b)) for a, b in zip(vec1, vec2)]
+        products = [
+            float(np.float16(a)) * float(np.float16(b)) for a, b in zip(vec1, vec2)
+        ]
         return sum(products)
     elif dtype == DataType.VECTOR_INT8:
         # For INT8 vectors, convert to integers for proper calculation
-        products = [int(round(min(max(a, -128), 127))) * int(round(min(max(b, -128), 127)))
-                   for a, b in zip(vec1, vec2)]
+        products = [
+            int(round(min(max(a, -128), 127))) * int(round(min(max(b, -128), 127)))
+            for a, b in zip(vec1, vec2)
+        ]
         return sum(products)
     return sum(a * b for a, b in zip(vec1, vec2))
 
@@ -124,21 +138,26 @@ def euclidean_distance_dense(
         squared_diffs = []
         for a, b in zip(vec1, vec2):
             diff = np.float16(a) - np.float16(b)
-            squared_diff = float(diff) * float(diff)  # Convert to float for multiplication
+            squared_diff = float(diff) * float(
+                diff
+            )  # Convert to float for multiplication
             squared_diffs.append(squared_diff)
         squared_distance = sum(squared_diffs)
     elif dtype == DataType.VECTOR_INT8:
         # For INT8 vectors, convert to integers and handle potential scaling
         # INT8 values might be treated differently in the library implementation
-        vec1_int = [int(round(min(max(val, -128), 127))) for val in vec1]  # Clamp to valid INT8 range
-        vec2_int = [int(round(min(max(val, -128), 127))) for val in vec2]  # Clamp to valid INT8 range
+        vec1_int = [
+            int(round(min(max(val, -128), 127))) for val in vec1
+        ]  # Clamp to valid INT8 range
+        vec2_int = [
+            int(round(min(max(val, -128), 127))) for val in vec2
+        ]  # Clamp to valid INT8 range
         # Use float type to prevent overflow when summing large squared differences
         squared_distance = sum(float(a - b) ** 2 for a, b in zip(vec1_int, vec2_int))
     else:
         squared_distance = sum((a - b) ** 2 for a, b in zip(vec1, vec2))
 
     return squared_distance  # Return squared distance for INT8
-
 
 
 def distance_dense(
@@ -167,7 +186,7 @@ def dp_distance_sparse(
     dot_product = 0.0
     for dim in set(vec1.keys()) & set(vec2.keys()):
         print("dim,vec1,vec2:\n")
-        print(dim,vec1,vec2)
+        print(dim, vec1, vec2)
         if (
             data_type == DataType.SPARSE_VECTOR_FP16
             or quantize_type == QuantizeType.FP16
@@ -198,6 +217,8 @@ def distance(
         return dp_distance_sparse(vec1, vec2, data_type, quantize_type)
     else:
         return distance_dense(vec1, vec2, metric, data_type, quantize_type)
+
+
 def distance_recall(
     vec1,
     vec2,
@@ -215,7 +236,10 @@ def distance_recall(
     else:
         if data_type in [DataType.VECTOR_FP32, DataType.VECTOR_FP16]:
             return distance_dense(vec1, vec2, metric, data_type, quantize_type)
-        elif data_type in [DataType.VECTOR_INT8] and metric in [MetricType.L2,MetricType.IP]:
+        elif data_type in [DataType.VECTOR_INT8] and metric in [
+            MetricType.L2,
+            MetricType.IP,
+        ]:
             return distance_dense(vec1, vec2, metric, data_type, quantize_type)
         else:
             return dp_distance_dense(vec1, vec2, data_type, quantize_type)
