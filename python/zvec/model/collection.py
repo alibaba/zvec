@@ -231,10 +231,12 @@ class Collection:
 
     # ========== Collection DDL Methods ==========
     @overload
-    def insert(self, docs: Doc) -> Status: ...
+    def insert(self, docs: Doc) -> Status:
+        pass
 
     @overload
-    def insert(self, docs: list[Doc]) -> list[Status]: ...
+    def insert(self, docs: list[Doc]) -> list[Status]:
+        pass
 
     def insert(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Insert new documents into the collection.
@@ -256,10 +258,12 @@ class Collection:
         return results[0] if is_single else results
 
     @overload
-    def upsert(self, docs: Doc) -> Status: ...
+    def upsert(self, docs: Doc) -> Status:
+        pass
 
     @overload
-    def upsert(self, docs: list[Doc]) -> list[Status]: ...
+    def upsert(self, docs: list[Doc]) -> list[Status]:
+        pass
 
     def upsert(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Insert new documents or update existing ones by ID.
@@ -279,10 +283,12 @@ class Collection:
         return results[0] if is_single else results
 
     @overload
-    def update(self, docs: Doc) -> Status: ...
+    def update(self, docs: Doc) -> Status:
+        pass
 
     @overload
-    def update(self, docs: list[Doc]) -> list[Status]: ...
+    def update(self, docs: list[Doc]) -> list[Status]:
+        pass
 
     def update(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Update existing documents by ID.
@@ -304,10 +310,12 @@ class Collection:
         return results[0] if is_single else results
 
     @overload
-    def delete(self, ids: str) -> Status: ...
+    def delete(self, ids: str) -> Status:
+        pass
 
     @overload
-    def delete(self, ids: list[str]) -> list[Status]: ...
+    def delete(self, ids: list[str]) -> list[Status]:
+        pass
 
     def delete(self, ids: Union[str, list[str]]) -> Union[Status, list[Status]]:
         """Delete documents by ID.
