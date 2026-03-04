@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Optional, Union, overload
 
 from _zvec import _Collection
 
@@ -230,6 +230,12 @@ class Collection:
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 
     # ========== Collection DDL Methods ==========
+    @overload
+    def insert(self, docs: Doc) -> Status: ...
+
+    @overload
+    def insert(self, docs: list[Doc]) -> list[Status]: ...
+
     def insert(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Insert new documents into the collection.
 
@@ -249,6 +255,12 @@ class Collection:
         )
         return results[0] if is_single else results
 
+    @overload
+    def upsert(self, docs: Doc) -> Status: ...
+
+    @overload
+    def upsert(self, docs: list[Doc]) -> list[Status]: ...
+
     def upsert(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Insert new documents or update existing ones by ID.
 
@@ -265,6 +277,12 @@ class Collection:
             [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
         )
         return results[0] if is_single else results
+
+    @overload
+    def update(self, docs: Doc) -> Status: ...
+
+    @overload
+    def update(self, docs: list[Doc]) -> list[Status]: ...
 
     def update(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Update existing documents by ID.
@@ -284,6 +302,12 @@ class Collection:
             [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
         )
         return results[0] if is_single else results
+
+    @overload
+    def delete(self, ids: str) -> Status: ...
+
+    @overload
+    def delete(self, ids: list[str]) -> list[Status]: ...
 
     def delete(self, ids: Union[str, list[str]]) -> Union[Status, list[Status]]:
         """Delete documents by ID.
