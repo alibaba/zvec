@@ -374,7 +374,7 @@ class TestRecall:
         ],
         indirect=True,
     )
-    @pytest.mark.parametrize("doc_num", [200])
+    @pytest.mark.parametrize("doc_num", [500])
     @pytest.mark.parametrize("query_num", [10])
     @pytest.mark.parametrize("top_k", [1])
     def test_recall_with_single_vector_valid_500(
