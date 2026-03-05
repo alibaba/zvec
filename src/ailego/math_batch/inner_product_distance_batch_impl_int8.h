@@ -55,7 +55,7 @@ static void compute_one_to_many_avx512_vnni_int8(
     const int8_t *query, const int8_t **ptrs,
     std::array<const int8_t *, dp_batch> &prefetch_ptrs, size_t dimensionality,
     float *results) {
-  __m512i accs[dp_batch];
+  std::vector<__m512i> accs(dp_batch);
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm512_setzero_si512();
   }
@@ -63,7 +63,7 @@ static void compute_one_to_many_avx512_vnni_int8(
   for (; dim + 64 <= dimensionality; dim += 64) {
     __m512i q =
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + dim));
-    __m512i data_regs[dp_batch];
+    std::vector<__m512i> data_regs(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] =
           _mm512_loadu_si512(reinterpret_cast<const __m512i *>(ptrs[i] + dim));
@@ -100,12 +100,12 @@ static void compute_one_to_many_avx512_vnni_int8(
 //     const int8_t *query, const int8_t **ptrs,
 //     std::array<const int8_t *, dp_batch> &prefetch_ptrs, size_t
 //     dimensionality, float *results) {
-//   __m512i accs[dp_batch];
+//   std::vector<__m512i> accs(dp_batch);
 //   size_t dim = 0;
 //   for (; dim + 64 <= dimensionality; dim += 64) {
 //     __m512i q =
 //         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + dim));
-//     __m512i data_regs[dp_batch];
+//     std::vector<__m512i> data_regs(dp_batch);
 //     for (size_t i = 0; i < dp_batch; ++i) {
 //       data_regs[i] =
 //           _mm512_loadu_si512(reinterpret_cast<const __m512i *>(ptrs[i] +
@@ -118,16 +118,16 @@ static void compute_one_to_many_avx512_vnni_int8(
 //     }
 //     __m512i q_lo = _mm512_cvtepi8_epi16(_mm512_extracti64x4_epi64(q, 0));
 //     __m512i q_hi = _mm512_cvtepi8_epi16(_mm512_extracti64x4_epi64(q, 1));
-//     __m512i data_lo[dp_batch];
-//     __m512i data_hi[dp_batch];
+//     std::vector<__m512i> data_lo(dp_batch);
+//     std::vector<__m512i> data_hi(dp_batch);
 //     for (size_t i = 0; i < dp_batch; ++i) {
 //       data_lo[i] =
 //           _mm512_cvtepi8_epi16(_mm512_extracti64x4_epi64(data_regs[i], 0));
 //       data_hi[i] =
 //           _mm512_cvtepi8_epi16(_mm512_extracti64x4_epi64(data_regs[i], 1));
 //     }
-//     __m512i prod_lo[dp_batch];
-//     __m512i prod_hi[dp_batch];
+//     std::vector<__m512i> prod_lo(dp_batch);
+//     std::vector<__m512i> prod_hi(dp_batch);
 //     for (size_t i = 0; i < dp_batch; ++i) {
 //       prod_lo[i] = _mm512_madd_epi16(q_lo, data_lo[i]);
 //       prod_hi[i] = _mm512_madd_epi16(q_hi, data_hi[i]);
@@ -163,14 +163,14 @@ compute_one_to_many_avx2_int8(
     const int8_t *query, const int8_t **ptrs,
     std::array<const int8_t *, dp_batch> &prefetch_ptrs, size_t dimensionality,
     float *results) {
-  __m256i accs[dp_batch];
+  std::vector<__m256i> accs(dp_batch);
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm256_setzero_si256();
   }
   size_t dim = 0;
   for (; dim + 32 <= dimensionality; dim += 32) {
     __m256i q = _mm256_loadu_si256((const __m256i *)(query + dim));
-    __m256i data_regs[dp_batch];
+    std::vector<__m256i> data_regs(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] = _mm256_loadu_si256((const __m256i *)(ptrs[i] + dim));
     }
@@ -181,15 +181,15 @@ compute_one_to_many_avx2_int8(
     }
     __m256i q_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(q));
     __m256i q_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(q, 1));
-    __m256i data_lo[dp_batch];
-    __m256i data_hi[dp_batch];
+    std::vector<__m256i> data_lo(dp_batch);
+    std::vector<__m256i> data_hi(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       data_lo[i] = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(data_regs[i]));
       data_hi[i] =
           _mm256_cvtepi8_epi16(_mm256_extracti128_si256(data_regs[i], 1));
     }
-    __m256i prod_lo[dp_batch];
-    __m256i prod_hi[dp_batch];
+    std::vector<__m256i> prod_lo(dp_batch);
+    std::vector<__m256i> prod_hi(dp_batch);
     for (size_t i = 0; i < dp_batch; ++i) {
       prod_lo[i] = _mm256_madd_epi16(q_lo, data_lo[i]);
       prod_hi[i] = _mm256_madd_epi16(q_hi, data_hi[i]);

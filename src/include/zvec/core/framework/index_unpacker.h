@@ -107,22 +107,29 @@ class IndexUnpacker {
                                                 const void **, size_t>::value,
                   "Invocable function type");
 
-    if (!this->unpack_header(read_data)) {
-      LOG_ERROR("Failed to unpack index header");
-      return false;
+    while (true) {
+      if (!this->unpack_header(read_data)) {
+        LOG_ERROR("Failed to unpack index header");
+        return false;
+      }
+      if (!this->unpack_footer(read_data, total)) {
+        LOG_ERROR("Failed to unpack index footer");
+        return false;
+      }
+      if (!this->unpack_segments(read_data, total)) {
+        LOG_ERROR("Failed to unpack index segments' meta");
+        return false;
+      }
+      if (checksum && !this->validate_checksum(read_data)) {
+        LOG_ERROR("Failed to validate checksum of index content");
+        return false;
+      }
+      if (footer_.next_meta_header_offset == 0) {
+        break;
+      }
+      current_header_start_offset_ = footer_.next_meta_header_offset;
     }
-    if (!this->unpack_footer(read_data, total)) {
-      LOG_ERROR("Failed to unpack index footer");
-      return false;
-    }
-    if (!this->unpack_segments(read_data, total)) {
-      LOG_ERROR("Failed to unpack index segments' meta");
-      return false;
-    }
-    if (checksum && !this->validate_checksum(read_data)) {
-      LOG_ERROR("Failed to validate checksum of index content");
-      return false;
-    }
+
     if (!this->unpack_version(read_data)) {
       LOG_ERROR("Failed to unpack index version");
       return false;
@@ -137,7 +144,8 @@ class IndexUnpacker {
                                                 const void **, size_t>::value,
                   "Invocable function type");
     const void *data = nullptr;
-    if (read_data(0u, &data, sizeof(header_)) != sizeof(header_)) {
+    if (read_data(current_header_start_offset_, &data, sizeof(header_)) !=
+        sizeof(header_)) {
       return false;
     }
 
@@ -170,15 +178,15 @@ class IndexUnpacker {
     }
 
     const void *data = nullptr;
-    if (read_data(footer_offset, &data, sizeof(footer_)) != sizeof(footer_)) {
+    if (read_data(current_header_start_offset_ + footer_offset, &data,
+                  sizeof(footer_)) != sizeof(footer_)) {
       return false;
     }
 
     memcpy(&footer_, data, sizeof(footer_));
-    if ((footer_.total_size != total) ||
-        (footer_.content_size + footer_.content_padding_size +
-             header_.content_offset >
-         total)) {
+    if (footer_.content_size + footer_.content_padding_size +
+            header_.content_offset >
+        footer_.total_size) {
       return false;
     }
     if (ailego::Crc32c::Hash(&footer_, sizeof(footer_), footer_.footer_crc) !=
@@ -207,8 +215,8 @@ class IndexUnpacker {
     offset -= footer_.segments_meta_size;
 
     const void *data = nullptr;
-    if (read_data(offset, &data, footer_.segments_meta_size) !=
-        footer_.segments_meta_size) {
+    if (read_data(current_header_start_offset_ + offset, &data,
+                  footer_.segments_meta_size) != footer_.segments_meta_size) {
       return false;
     }
     if (ailego::Crc32c::Hash(data, footer_.segments_meta_size, 0u) !=
@@ -230,8 +238,9 @@ class IndexUnpacker {
       segments_.emplace(
           std::string(reinterpret_cast<const char *>(data) +
                       seg->segment_id_offset),
-          SegmentMeta(seg->data_index + header_.content_offset, seg->data_size,
-                      seg->padding_size, seg->data_crc));
+          SegmentMeta(seg->data_index + header_.content_offset +
+                          current_header_start_offset_,
+                      seg->data_size, seg->padding_size, seg->data_crc));
     }
     return true;
   }
@@ -251,7 +260,7 @@ class IndexUnpacker {
     const SegmentMeta &segment = it->second;
     const void *data = nullptr;
 
-    if (read_data(segment.data_offset(), &data, segment.data_size()) !=
+    if (read_data(0 + segment.data_offset(), &data, segment.data_size()) !=
         segment.data_size()) {
       return false;
     }
@@ -280,14 +289,16 @@ class IndexUnpacker {
     size_t offset = sizeof(header_);
 
     while (total >= block_size) {
-      if (read_data(offset, &data, block_size) != block_size) {
+      if (read_data(current_header_start_offset_ + offset, &data, block_size) !=
+          block_size) {
         return false;
       }
       checksum = ailego::Crc32c::Hash(data, block_size, checksum);
       total -= block_size;
       offset += block_size;
     }
-    if (read_data(offset, &data, total) != total) {
+    if (read_data(current_header_start_offset_ + offset, &data, total) !=
+        total) {
       return false;
     }
     checksum = ailego::Crc32c::Hash(data, total, checksum);
@@ -295,10 +306,11 @@ class IndexUnpacker {
   }
 
  private:
-  IndexFormat::MetaHeader header_;
-  IndexFormat::MetaFooter footer_;
+  IndexFormat::MetaHeader header_{};
+  IndexFormat::MetaFooter footer_{};
   std::string version_{};
   std::map<std::string, SegmentMeta> segments_{};
+  uint64_t current_header_start_offset_{0u};
 };
 
 }  // namespace core

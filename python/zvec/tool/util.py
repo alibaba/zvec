@@ -59,5 +59,5 @@ def require_module(module: str, mitigation: Optional[str] = None) -> Any:
             else:
                 msg += f"please pip install '{top_level}'."
         else:
-            msg += f"Please pip install '{package}."
+            msg += f"Please pip install '{package}'."
         raise ImportError(msg) from e

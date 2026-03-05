@@ -122,7 +122,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
         owner_->entity().get_vector_by_key(key, block);
         results_[idx].emplace_back(key, score, key, block);
       } else {
-        results_[idx].emplace_back(key, score);
+        results_[idx].emplace_back(key, score, key);
       }
     }
   }

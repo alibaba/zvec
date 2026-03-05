@@ -1,4 +1,4 @@
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
 file(GLOB_RECURSE ALL_TEST_SRCS *_test.cc)
 
@@ -9,6 +9,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       STRICT
       LIBS zvec_ailego core_framework core_metric core_quantizer
       SRCS ${CC_SRCS}
-      INCS . ${CMAKE_SOURCE_DIR}/src/core/
+      INCS . ${PROJECT_ROOT_DIR}/src/core/
     )
 endforeach()

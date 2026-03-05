@@ -2799,9 +2799,18 @@ TEST_F(CollectionTest, Feature_Optimize_Delete) {
   check_doc();
   std::cout << "check success 2" << std::endl;
 
+  // delete by filter
+  s = collection->DeleteByFilter("int32 < 10");
+  if (!s.ok()) {
+    std::cout << s.message() << std::endl;
+  }
+  ASSERT_TRUE(s.ok());
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, doc_count - 10);
+
   // delete all docs
   std::vector<std::string> pks;
-  for (int i = 0; i < doc_count; ++i) {
+  for (int i = 10; i < doc_count; ++i) {
     pks.push_back(TestHelper::MakePK(i));
   }
   auto res = collection->Delete(pks);

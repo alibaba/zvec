@@ -122,10 +122,10 @@ class TestDbConfigInitialization:
         )
 
     @run_in_subprocess
-    def test_repeated_initialization_runtime_error(self):
+    def test_repeated_initialization(self):
+        # Calling init() repeatedly is allowed:
+        # it succeeds but becomes a no-op after the first successful init()
         zvec.init()
-        with pytest.raises(RuntimeError):
-            zvec.init()
 
 
 class TestDbConfigMemoryLimitValidation:

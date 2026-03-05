@@ -56,4 +56,4 @@ elseif (APPLE)
     )
 endif ()
 
-target_include_directories(_zvec PRIVATE ${PYBIND11_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/binding/python/include)
+target_include_directories(_zvec PRIVATE ${PYBIND11_INCLUDE_DIR} ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/binding/python/include)

@@ -40,9 +40,15 @@ CombinedVectorColumnIndexer::CombinedVectorColumnIndexer(
     }
   }
 
+  int block_offset = 0;
+  for (size_t i = 0; i < indexers_.size(); ++i) {
+    auto &block_meta = blocks_[i];
+    block_offsets_.push_back(block_offset);
+    block_offset += block_meta.doc_count_;
+  }
+
   min_doc_id_ = segment_meta.min_doc_id();
 }
-
 
 Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
     const vector_column_params::VectorData &vector_data,
@@ -50,12 +56,37 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
   core::IndexDocumentList doc_list;
   std::vector<std::string> reverted_vector_list;
   std::vector<std::string> reverted_sparse_values_list;
-  int block_offset = 0;
+
+  // query_params.bf_pks is segment level, here we need to convert it to block
+  // level
+  std::vector<std::vector<uint64_t>> block_bf_pks(indexers_.size());
+
+  if (!query_params.bf_pks.empty()) {
+    // dispatcher pks to corresponding block_bf_pks
+    for (auto &pk : query_params.bf_pks[0]) {
+      for (size_t i = 0; i < block_offsets_.size(); ++i) {
+        if (pk >= block_offsets_[i] &&
+            pk < block_offsets_[i] + blocks_[i].doc_count_) {
+          block_bf_pks[i].push_back(
+              static_cast<uint64_t>(pk - block_offsets_[i]));
+          break;
+        }
+      }
+    }
+  }
 
   auto q_params = query_params.query_params;
   for (size_t i = 0; i < indexers_.size(); ++i) {
-    auto &block_meta = blocks_[i];
+    if (!query_params.bf_pks.empty() && block_bf_pks[i].empty()) {
+      LOG_DEBUG(
+          "query_params has bf_pks, but block_bf_pks[%zu] is empty, just skip "
+          "this indexer",
+          i);
+      continue;
+    }
     zvec::Result<zvec::IndexResults::Ptr> result{nullptr};
+    float scale_factor{};
+    bool need_refine{false};
     if (q_params && q_params->is_using_refiner()) {
       if (normal_indexers_.size() != indexers_.size()) {
         return tl::make_unexpected(Status::InvalidArgument(
@@ -63,7 +94,6 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
             "] not match indexers size[", indexers_.size(), "]"));
       }
       // query_params of HNSW doesn't have scale_factor
-      float scale_factor{};
       if (q_params->type() == IndexType::FLAT) {
         scale_factor = std::dynamic_pointer_cast<FlatQueryParams>(q_params)
                            ->scale_factor();
@@ -71,29 +101,34 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
         scale_factor =
             std::dynamic_pointer_cast<IVFQueryParams>(q_params)->scale_factor();
       }
-      vector_column_params::QueryParams modified_query_params{
-          query_params.data_type,
-          query_params.dimension,
-          query_params.topk,
-          query_params.filter,
-          query_params.fetch_vector,
-          query_params.query_params,
-          query_params.group_by
-              ? std::make_unique<vector_column_params::GroupByParams>(
-                    query_params.group_by->group_topk,
-                    query_params.group_by->group_count,
-                    query_params.group_by->group_by)
-              : nullptr,
-          query_params.bf_pks,
-          std::shared_ptr<vector_column_params::RefinerParam>(
-              new vector_column_params::RefinerParam{scale_factor,
-                                                     normal_indexers_[i]}),
-          query_params.extra_params};
-      result = indexers_[i]->Search(vector_data, modified_query_params);
-    } else {
-      result = indexers_[i]->Search(vector_data, query_params);
+      need_refine = true;
     }
 
+    vector_column_params::QueryParams modified_query_params{
+        query_params.data_type,
+        query_params.dimension,
+        query_params.topk,
+        query_params.filter,
+        query_params.fetch_vector,
+        query_params.query_params,
+        query_params.group_by
+            ? std::make_unique<vector_column_params::GroupByParams>(
+                  query_params.group_by->group_topk,
+                  query_params.group_by->group_count,
+                  query_params.group_by->group_by)
+            : nullptr,
+        {},
+        need_refine ? std::shared_ptr<vector_column_params::RefinerParam>(
+                          new vector_column_params::RefinerParam{
+                              scale_factor, normal_indexers_[i]})
+                    : nullptr,
+        query_params.extra_params};
+
+    if (!query_params.bf_pks.empty()) {
+      modified_query_params.bf_pks.emplace_back(block_bf_pks[i]);
+    }
+
+    result = indexers_[i]->Search(vector_data, modified_query_params);
     if (!result) {
       return tl::make_unexpected(result.error());
     }
@@ -105,10 +140,9 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
     const auto &sub_docs = vector_index_results->docs();
     for (size_t j = 0; j < sub_docs.size(); ++j) {
       auto doc = sub_docs[j];
-      doc.set_index(block_offset + sub_docs[j].index());
+      doc.set_key(block_offsets_[i] + sub_docs[j].key());
       doc_list.emplace_back(std::move(doc));
     }
-    block_offset += block_meta.doc_count_;
 
     auto &&temp_vector_list = vector_index_results->reverted_vector_list();
     reverted_vector_list.insert(

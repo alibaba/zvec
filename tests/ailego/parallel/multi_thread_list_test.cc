@@ -68,8 +68,8 @@ TEST(MultiThreadListTest, General) {
     uint32_t num_of_producer = 100;
     uint32_t num_of_producer_done = 100;
 
-    uint32_t consumer_results[num_of_consumer];
-    memset(consumer_results, 0, sizeof(uint32_t) * num_of_consumer);
+    std::vector<uint32_t> consumer_results(num_of_consumer);
+    std::fill(consumer_results.begin(), consumer_results.end(), 0);
 
     for (uint32_t i = 0; i < num_of_consumer; i++) {
       consumer_pool.execute(consumer, i + 1, &consumer_results[i]);
@@ -124,8 +124,8 @@ TEST(MultiThreadListTest, ConsumeStopResume) {
   uint32_t num_of_consumer = 100;
   uint32_t num_of_producer = 100;
 
-  uint32_t consumer_results[2 * num_of_consumer];
-  memset(consumer_results, 0, sizeof(uint32_t) * 2 * num_of_consumer);
+  std::vector<uint32_t> consumer_results(2 * num_of_consumer);
+  std::fill(consumer_results.begin(), consumer_results.end(), 0);
 
   for (uint32_t i = 0; i < num_of_consumer; i++) {
     consumer_pool.execute(consumer, i + 1, &consumer_results[i]);
@@ -227,8 +227,8 @@ TEST(MultiThreadListTest, General_Moveable) {
     uint32_t num_of_producer = 100;
     uint32_t num_of_producer_done = 100;
 
-    uint32_t consumer_results[num_of_consumer];
-    memset(consumer_results, 0, sizeof(uint32_t) * num_of_consumer);
+    std::vector<uint32_t> consumer_results(num_of_consumer);
+    std::fill(consumer_results.begin(), consumer_results.end(), 0);
 
     for (uint32_t i = 0; i < num_of_consumer; i++) {
       consumer_pool.execute(consumer_moveable, i + 1, &consumer_results[i]);

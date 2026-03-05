@@ -504,7 +504,7 @@ void Hamming32Benchmark(void) {
   MatrixTranspose(&query2[0], query1.data(), count, query_size);
 
   ElapsedTime elapsed_time;
-  float results[batch_size * query_size];
+  std::vector<float> results(batch_size * query_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") UINT32 " << count << "d, "
             << batch_size << " * " << query_size << " * " << block_size
@@ -532,7 +532,7 @@ void Hamming32Benchmark(void) {
     const uint32_t *matrix_batch = &matrix2[i * batch_size * count];
 
     HammingDistanceMatrix<uint32_t, batch_size, query_size>::Compute(
-        matrix_batch, &query2[0], count * 32, results);
+        matrix_batch, &query2[0], count * 32, results.data());
   }
   std::cout << "* N Batched Hamming (us) \t" << elapsed_time.micro_seconds()
             << std::endl;
@@ -1001,7 +1001,7 @@ void Hamming64Benchmark(void) {
   MatrixTranspose(&query2[0], query1.data(), count, query_size);
 
   ElapsedTime elapsed_time;
-  float results[batch_size * query_size];
+  std::vector<float> results(batch_size * query_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") UINT64 " << count << "d, "
             << batch_size << " * " << query_size << " * " << block_size
@@ -1029,7 +1029,7 @@ void Hamming64Benchmark(void) {
     const uint64_t *matrix_batch = &matrix2[i * batch_size * count];
 
     HammingDistanceMatrix<uint64_t, batch_size, query_size>::Compute(
-        matrix_batch, &query2[0], count * 64, results);
+        matrix_batch, &query2[0], count * 64, results.data());
   }
   std::cout << "* N Batched Hamming (us) \t" << elapsed_time.micro_seconds()
             << std::endl;

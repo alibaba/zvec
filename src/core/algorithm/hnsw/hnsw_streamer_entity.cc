@@ -80,8 +80,8 @@ int HnswStreamerEntity::cleanup() {
 int HnswStreamerEntity::update_neighbors(
     level_t level, node_id_t id,
     const std::vector<std::pair<node_id_t, dist_t>> &neighbors) {
-  char buffer[neighbor_size_];
-  NeighborsHeader *hd = reinterpret_cast<NeighborsHeader *>(buffer);
+  std::vector<char> buffer(neighbor_size_);
+  NeighborsHeader *hd = reinterpret_cast<NeighborsHeader *>(buffer.data());
   hd->neighbor_cnt = neighbors.size();
   size_t i = 0;
   for (; i < neighbors.size(); ++i) {

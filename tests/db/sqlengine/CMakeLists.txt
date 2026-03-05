@@ -1,6 +1,6 @@
 
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 if(APPLE)
   set(APPLE_FRAMEWORK_LIBS
@@ -35,7 +35,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}
     SRCS ${CC_SRCS}
-    INCS . ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/db ${CMAKE_SOURCE_DIR}/src/db/common
+    INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/db ${PROJECT_ROOT_DIR}/src/db/common
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
   )
   cc_test_suite(zvec_sqlengine ${CC_TARGET})

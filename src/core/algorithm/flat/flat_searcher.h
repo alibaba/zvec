@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
-
+#include <unordered_map>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_searcher.h>
 #include "flat_distance_matrix.h"
@@ -163,7 +163,7 @@ class FlatSearcher : public IndexSearcher {
  private:
   //! Members
   const uint64_t *keys_{nullptr};
-  std::map<key_t, node_id_t> key_id_mapping_;
+  std::unordered_map<key_t, node_id_t> key_id_mapping_;
   uint32_t magic_{IndexContext::GenerateMagic()};
   uint32_t read_block_size_{FLAT_DEFAULT_READ_BLOCK_SIZE};
   bool column_major_order_{false};

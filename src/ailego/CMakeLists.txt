@@ -3,7 +3,7 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 find_package(Threads REQUIRED)
 
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT ANDROID)
     find_library(LIB_RT NAMES rt)
 else()
     set(LIB_RT "")
