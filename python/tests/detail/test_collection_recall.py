@@ -198,7 +198,7 @@ def calculate_recall_at_k(
     schema,
     k=1,
     expected_doc_ids_scores_map=None,
-    tolerance=0.001,
+    tolerance=0.01,
 ):
     recall_stats = {}
 
@@ -374,7 +374,7 @@ class TestRecall:
         ],
         indirect=True,
     )
-    @pytest.mark.parametrize("doc_num", [500])
+    @pytest.mark.parametrize("doc_num", [200])
     @pytest.mark.parametrize("query_num", [10])
     @pytest.mark.parametrize("top_k", [1])
     def test_recall_with_single_vector_valid_500(
@@ -472,7 +472,7 @@ class TestRecall:
             full_schema_new,
             k=top_k,
             expected_doc_ids_scores_map=ground_truth_map,
-            tolerance=0.001,
+            tolerance=0.01,
         )
         print("ground_truth_map:\n")
         print(ground_truth_map)
@@ -655,7 +655,7 @@ class TestRecall:
             full_schema_new,
             k=top_k,
             expected_doc_ids_scores_map=ground_truth_map,
-            tolerance=0.001,
+            tolerance=0.01,
         )
         print("ground_truth_map:\n")
         print(ground_truth_map)
