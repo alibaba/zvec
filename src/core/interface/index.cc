@@ -403,6 +403,9 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
+  // Clear training records before search (context may be reused from pool)
+  context->clear_training_records();
+
   if (_prepare_for_search(vector_data, search_param, context) != 0) {
     LOG_ERROR("Failed to prepare for search");
     return core::IndexError_Runtime;
@@ -654,6 +657,9 @@ int Index::_dense_search(const VectorData &vector_data,
       }
     }
   }
+
+  // Extract training records from context (for OMEGA training mode)
+  result->training_records_ = context->take_training_records();
 
   return 0;
 }

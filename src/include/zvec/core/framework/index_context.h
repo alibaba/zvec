@@ -22,6 +22,7 @@
 #include <zvec/core/framework/index_groupby.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_stats.h>
+#include <zvec/core/interface/training.h>
 
 namespace zvec {
 namespace core {
@@ -247,6 +248,15 @@ class IndexContext {
   Profiler &profiler() {
     return profiler_;
   }
+
+  //! Get training records collected during search (for OMEGA training mode)
+  //! Default implementation returns empty vector. Override in OmegaContext.
+  virtual std::vector<core_interface::TrainingRecord> take_training_records() {
+    return {};
+  }
+
+  //! Clear training records (call before each search if context is reused)
+  virtual void clear_training_records() {}
 
  private:
   //! Members

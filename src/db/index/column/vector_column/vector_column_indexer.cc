@@ -173,13 +173,6 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
     return tl::make_unexpected(Status::InvalidArgument("Index not opened"));
   }
 
-  // Set query_id before search if training mode is enabled
-  if (training_mode_enabled_) {
-    if (auto* training_capable = index->GetTrainingCapability()) {
-      training_capable->SetCurrentQueryId(current_query_id_);
-    }
-  }
-
   auto engine_vector_data =
       ProximaEngineHelper::convert_to_engine_vector(vector_data, is_sparse_);
   core_interface::SearchResult search_result;
@@ -207,17 +200,13 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
         Status::InternalError("Failed to search vector"));
   }
 
-  // Collect training records after search if training mode is enabled
-  if (training_mode_enabled_) {
+  // Collect training records from search result (stored in context during search)
+  // This is thread-safe because each search has its own context
+  if (training_mode_enabled_ && !search_result.training_records_.empty()) {
     std::lock_guard<std::mutex> lock(training_mutex_);
-    if (auto* training_capable = index->GetTrainingCapability()) {
-      auto records = training_capable->GetTrainingRecords();
-      collected_records_.insert(collected_records_.end(),
-                               records.begin(), records.end());
-      // CRITICAL: Clear records from underlying index to avoid memory explosion
-      // Without this, records accumulate across queries and get copied repeatedly
-      training_capable->ClearTrainingRecords();
-    }
+    collected_records_.insert(collected_records_.end(),
+                             std::make_move_iterator(search_result.training_records_.begin()),
+                             std::make_move_iterator(search_result.training_records_.end()));
   }
 
   auto result = std::make_shared<VectorIndexResults>(

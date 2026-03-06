@@ -98,24 +98,14 @@ void OmegaIndex::SetCurrentQueryId(int query_id) {
 }
 
 std::vector<TrainingRecord> OmegaIndex::GetTrainingRecords() const {
-  // Get training records from OmegaStreamer
-  if (streamer_) {
-    auto* omega_streamer = dynamic_cast<core::OmegaStreamer*>(streamer_.get());
-    if (omega_streamer) {
-      return omega_streamer->GetTrainingRecords();
-    }
-  }
+  // Training records are collected via SearchResult.training_records_ (from OmegaContext),
+  // not through this method. This is kept for ITrainingCapable interface compliance.
   return {};
 }
 
 void OmegaIndex::ClearTrainingRecords() {
-  // Clear training records in OmegaStreamer
-  if (streamer_) {
-    auto* omega_streamer = dynamic_cast<core::OmegaStreamer*>(streamer_.get());
-    if (omega_streamer) {
-      omega_streamer->ClearTrainingRecords();
-    }
-  }
+  // Training records are managed per-search via OmegaContext,
+  // no shared state to clear here.
 }
 
 int OmegaIndex::_prepare_for_search(

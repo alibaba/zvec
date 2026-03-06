@@ -16,6 +16,7 @@
 
 #include "../hnsw/hnsw_context.h"
 #include "omega_params.h"
+#include <zvec/core/interface/training.h>
 
 namespace zvec {
 namespace core {
@@ -23,6 +24,8 @@ namespace core {
 /**
  * OmegaContext extends HnswContext to support OMEGA-specific parameters
  * like target_recall that can be set per-query.
+ *
+ * Training records are stored per-context (no shared state, no locks needed).
  */
 class OmegaContext : public HnswContext {
  public:
@@ -49,6 +52,27 @@ class OmegaContext : public HnswContext {
     return training_query_id_;
   }
 
+  //! Get training records collected during this search (no locks needed)
+  const std::vector<core_interface::TrainingRecord>& training_records() const {
+    return training_records_;
+  }
+
+  //! Move training records out (override base class virtual method)
+  std::vector<core_interface::TrainingRecord> take_training_records() override {
+    return std::move(training_records_);
+  }
+
+  //! Add a training record
+  void add_training_record(core_interface::TrainingRecord record) {
+    training_records_.push_back(std::move(record));
+  }
+
+  //! Clear training records (override base class virtual method)
+  //! Called before each search when context is reused from pool
+  void clear_training_records() override {
+    training_records_.clear();
+  }
+
   //! Update context parameters (overrides HnswContext::update)
   int update(const ailego::Params &params) override {
     // First call parent to update HNSW parameters
@@ -71,6 +95,7 @@ class OmegaContext : public HnswContext {
  private:
   float target_recall_;  // Per-query target recall
   int training_query_id_;  // Per-query training query ID for parallel training
+  std::vector<core_interface::TrainingRecord> training_records_;  // Per-query training records
 };
 
 }  // namespace core

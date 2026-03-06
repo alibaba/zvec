@@ -28,6 +28,7 @@
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_reducer.h>
 #include <zvec/core/framework/index_reformer.h>
+#include <zvec/core/interface/training.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
@@ -103,6 +104,8 @@ struct SearchResult {
   // use string to manage memory
   std::vector<std::string> reverted_vector_list_{};
   std::vector<std::string> reverted_sparse_values_list_{};
+  // Training records collected during search (for OMEGA training mode)
+  std::vector<TrainingRecord> training_records_{};
 };
 
 class Index {

@@ -73,26 +73,27 @@ TrainingDataCollector::CollectTrainingData(
     const std::string& field_name,
     const TrainingDataCollectorOptions& options,
     const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
-  // Step 1: Generate training queries
-  LOG_INFO("Generating %zu training queries for field '%s'",
+  // Step 1: Generate training queries using held-out approach
+  LOG_INFO("Generating %zu held-out training queries for field '%s'",
            options.num_training_queries, field_name.c_str());
 
-  auto training_queries = TrainingQueryGenerator::GenerateTrainingQueries(
-      segment, field_name, options.num_training_queries,
-      options.noise_scale, options.seed);
-
+  auto sampled = TrainingQueryGenerator::GenerateHeldOutQueries(
+      segment, field_name, options.num_training_queries, options.seed);
+  auto training_queries = std::move(sampled.vectors);
+  auto query_doc_ids = std::move(sampled.doc_ids);
 
   if (training_queries.empty()) {
     return tl::make_unexpected(
         Status::InternalError("Failed to generate training queries"));
   }
 
-  // Step 2: Compute ground truth (brute force search with recall = 1)
-  LOG_INFO("Computing ground truth with brute force search (topk=%zu)",
+  // Step 2: Compute ground truth (brute force search, excluding self-matches)
+  LOG_INFO("Computing ground truth with brute force search (topk=%zu, excluding self)",
            options.topk);
 
   auto ground_truth = ComputeGroundTruth(
-      segment, field_name, training_queries, options.topk, options.num_threads);
+      segment, field_name, training_queries, options.topk, options.num_threads,
+      query_doc_ids);
 
   if (ground_truth.empty()) {
     return tl::make_unexpected(
@@ -255,8 +256,15 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
     const std::string& field_name,
     const std::vector<std::vector<float>>& queries,
     size_t topk,
-    size_t num_threads) {
+    size_t num_threads,
+    const std::vector<uint64_t>& query_doc_ids) {
   std::vector<std::vector<uint64_t>> ground_truth(queries.size());
+
+  // Check if we have query doc_ids for self-exclusion (held-out mode)
+  bool held_out_mode = !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
+  if (held_out_mode) {
+    LOG_INFO("Computing ground truth in held-out mode (excluding self-matches)");
+  }
 
   // Get vector indexer (use brute force with is_linear=true)
   auto combined_indexer = segment->get_combined_vector_indexer(field_name);
@@ -285,6 +293,9 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
     for (size_t query_idx = start_idx; query_idx < end_idx; ++query_idx) {
       const auto& query_vector = queries[query_idx];
 
+      // In held-out mode, request topk+1 results since we'll exclude self
+      size_t search_topk = held_out_mode ? topk + 1 : topk;
+
       // Prepare query parameters for brute force search
       vector_column_params::VectorData vector_data;
       vector_data.vector = vector_column_params::DenseVector{
@@ -292,12 +303,12 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       };
 
       vector_column_params::QueryParams query_params;
-      query_params.topk = topk;
+      query_params.topk = search_topk;
       query_params.fetch_vector = false;
       query_params.filter = segment->get_filter().get();
 
       // Use linear search (brute force) for ground truth
-      auto base_params = std::make_shared<HnswQueryParams>(topk);
+      auto base_params = std::make_shared<HnswQueryParams>(search_topk);
       base_params->set_is_linear(true);
       query_params.query_params = base_params;
 
@@ -309,13 +320,20 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
         continue;
       }
 
-      // Extract result doc IDs
+      // Extract result doc IDs, excluding self in held-out mode
       auto& results = search_result.value();
       std::vector<uint64_t> gt_ids;
-      gt_ids.reserve(results->count());
+      gt_ids.reserve(topk);
+
+      uint64_t self_doc_id = held_out_mode ? query_doc_ids[query_idx] : UINT64_MAX;
+
       auto iter = results->create_iterator();
-      while (iter->valid()) {
-        gt_ids.push_back(iter->doc_id());
+      while (iter->valid() && gt_ids.size() < topk) {
+        uint64_t doc_id = iter->doc_id();
+        // Skip self in held-out mode
+        if (doc_id != self_doc_id) {
+          gt_ids.push_back(doc_id);
+        }
         iter->next();
       }
       ground_truth[query_idx] = std::move(gt_ids);
@@ -375,69 +393,107 @@ void TrainingDataCollector::FillLabels(
     return;
   }
 
-  // Build sets from collected_node_ids for fast lookup
-  size_t labeled_count = 0;
-  size_t positive_count = 0;
-  size_t negative_count = 0;
+  auto fill_start = std::chrono::high_resolution_clock::now();
 
-  for (auto& record : *records) {
-    int query_id = record.query_id;
+  // Use parallel processing for large record counts
+  size_t num_records = records->size();
+  size_t num_threads = std::min(static_cast<size_t>(std::thread::hardware_concurrency()),
+                                 std::max(num_records / 10000, static_cast<size_t>(1)));
 
-    // Validate query_id
-    if (query_id < 0 || query_id >= static_cast<int>(ground_truth.size())) {
-      LOG_WARN("Invalid query_id %d in training record (ground_truth size: %zu)",
-               query_id, ground_truth.size());
-      record.label = 0;
-      negative_count++;
-      continue;
-    }
+  std::atomic<size_t> positive_count{0};
+  std::atomic<size_t> negative_count{0};
+  std::atomic<size_t> processed_count{0};
 
-    const auto& gt = ground_truth[query_id];
-    if (gt.empty()) {
-      // No ground truth for this query, label as negative
-      record.label = 0;
-      negative_count++;
-      labeled_count++;
-      continue;
-    }
+  auto worker = [&](size_t start_idx, size_t end_idx) {
+    size_t local_positive = 0;
+    size_t local_negative = 0;
 
-    // Take top k_train ground truth nodes
-    size_t actual_k = std::min(k_train, gt.size());
+    for (size_t idx = start_idx; idx < end_idx; ++idx) {
+      auto& record = (*records)[idx];
+      int query_id = record.query_id;
 
-    // Convert collected_node_ids to set for fast lookup
-    std::unordered_set<uint64_t> collected_set(
-        record.collected_node_ids.begin(),
-        record.collected_node_ids.end());
+      // Validate query_id
+      if (query_id < 0 || query_id >= static_cast<int>(ground_truth.size())) {
+        record.label = 0;
+        local_negative++;
+        continue;
+      }
 
-    // Check if ALL top k_train ground truth nodes are in collected_node_ids
-    bool all_found = true;
-    for (size_t i = 0; i < actual_k; ++i) {
-      if (collected_set.find(gt[i]) == collected_set.end()) {
-        all_found = false;
-        break;
+      const auto& gt = ground_truth[query_id];
+      if (gt.empty()) {
+        record.label = 0;
+        local_negative++;
+        continue;
+      }
+
+      // Take top k_train ground truth nodes
+      size_t actual_k = std::min(k_train, gt.size());
+
+      // For small k_train (typical case: k_train=1), use linear search
+      // This is faster than building a hash set for each record
+      bool all_found = true;
+      const auto& collected = record.collected_node_ids;
+
+      for (size_t i = 0; i < actual_k && all_found; ++i) {
+        uint64_t gt_node = gt[i];
+        // Linear search in collected_node_ids
+        bool found = false;
+        for (uint64_t node : collected) {
+          if (node == gt_node) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          all_found = false;
+        }
+      }
+
+      if (all_found) {
+        record.label = 1;
+        local_positive++;
+      } else {
+        record.label = 0;
+        local_negative++;
       }
     }
 
-    // Label based on whether all top k_train GT nodes are collected
-    if (all_found) {
-      record.label = 1;
-      positive_count++;
-    } else {
-      record.label = 0;
-      negative_count++;
-    }
+    positive_count += local_positive;
+    negative_count += local_negative;
+    processed_count += (end_idx - start_idx);
+  };
 
-    labeled_count++;
+  // Launch threads
+  std::vector<std::thread> threads;
+  size_t records_per_thread = (num_records + num_threads - 1) / num_threads;
+
+  for (size_t t = 0; t < num_threads; ++t) {
+    size_t start_idx = t * records_per_thread;
+    size_t end_idx = std::min(start_idx + records_per_thread, num_records);
+    if (start_idx < end_idx) {
+      threads.emplace_back(worker, start_idx, end_idx);
+    }
   }
 
-  LOG_INFO("Filled labels for %zu/%zu records (%zu positive, %zu negative, k_train=%zu)",
-           labeled_count, records->size(), positive_count, negative_count, k_train);
+  // Wait for all threads
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  auto fill_end = std::chrono::high_resolution_clock::now();
+  auto fill_ms = std::chrono::duration_cast<std::chrono::milliseconds>(fill_end - fill_start).count();
+
+  LOG_INFO("Filled labels for %zu/%zu records (%zu positive, %zu negative, k_train=%zu) in %zu ms (%zu threads)",
+           processed_count.load(), records->size(), positive_count.load(), negative_count.load(), k_train,
+           fill_ms, num_threads);
 }
 
 core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
     const std::vector<core_interface::TrainingRecord>& records,
     const std::vector<std::vector<uint64_t>>& ground_truth,
     size_t topk) {
+  auto compute_start = std::chrono::high_resolution_clock::now();
+
   core_interface::GtCmpsData result;
   result.topk = topk;
   result.num_queries = ground_truth.size();
@@ -459,7 +515,11 @@ core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
   // Records are ordered by (query_id, cmps_visited)
   int current_query = -1;
   int max_cmps_for_query = 0;
-  std::unordered_set<uint64_t> gt_set;
+  size_t gt_found_count = 0;  // Track how many GT nodes we've found (for early exit)
+  size_t gt_target_count = 0; // How many GT nodes we need to find for current query
+
+  // Map from GT node_id to its rank (for O(1) lookup instead of linear search)
+  std::unordered_map<uint64_t, size_t> gt_node_to_rank;
   const std::vector<uint64_t>* current_gt = nullptr;
 
   for (const auto& record : records) {
@@ -483,20 +543,32 @@ core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
       current_query = query_id;
       max_cmps_for_query = record.cmps_visited;
       current_gt = &ground_truth[query_id];
-      gt_set.clear();
-      for (size_t i = 0; i < std::min(topk, current_gt->size()); ++i) {
-        gt_set.insert((*current_gt)[i]);
+      gt_found_count = 0;
+
+      // Build map from GT node_id to rank for O(1) lookup
+      gt_node_to_rank.clear();
+      gt_target_count = std::min(topk, current_gt->size());
+      for (size_t i = 0; i < gt_target_count; ++i) {
+        gt_node_to_rank[(*current_gt)[i]] = i;
       }
+    }
+
+    // OPTIMIZATION: Early exit if we've found all GT nodes for this query
+    if (gt_found_count >= gt_target_count) {
+      continue;
     }
 
     // Check which GT nodes are in collected_node_ids
     for (uint64_t node_id : record.collected_node_ids) {
-      // Check if this node is a GT node and we haven't recorded its cmps yet
-      if (gt_set.count(node_id) > 0) {
-        // Find the rank of this GT node
-        for (size_t rank = 0; rank < std::min(topk, current_gt->size()); ++rank) {
-          if ((*current_gt)[rank] == node_id && result.gt_cmps[query_id][rank] == -1) {
-            result.gt_cmps[query_id][rank] = record.cmps_visited;
+      auto it = gt_node_to_rank.find(node_id);
+      if (it != gt_node_to_rank.end()) {
+        size_t rank = it->second;
+        // Only record if we haven't found this GT yet
+        if (result.gt_cmps[query_id][rank] == -1) {
+          result.gt_cmps[query_id][rank] = record.cmps_visited;
+          gt_found_count++;
+          // Early exit from inner loop if all found
+          if (gt_found_count >= gt_target_count) {
             break;
           }
         }
@@ -518,7 +590,10 @@ core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
     }
   }
 
-  LOG_INFO("Computed gt_cmps for %zu queries, topk=%zu", result.num_queries, result.topk);
+  auto compute_end = std::chrono::high_resolution_clock::now();
+  auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_end - compute_start).count();
+
+  LOG_INFO("Computed gt_cmps for %zu queries, topk=%zu in %zu ms", result.num_queries, result.topk, compute_ms);
   return result;
 }
 
@@ -530,17 +605,21 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
     const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
   ScopedTimer total_timer("CollectTrainingDataWithGtCmps [TOTAL]");
 
-  // Step 1: Generate training queries
-  LOG_INFO("Generating %zu training queries for field '%s'",
+  // Step 1: Generate training queries using held-out approach
+  // (sample vectors directly from index, no noise)
+  LOG_INFO("Generating %zu held-out training queries for field '%s'",
            options.num_training_queries, field_name.c_str());
 
   std::vector<std::vector<float>> training_queries;
+  std::vector<uint64_t> query_doc_ids;  // doc_ids for self-exclusion in GT
   {
-    ScopedTimer timer("Step1: GenerateTrainingQueries");
-    training_queries = TrainingQueryGenerator::GenerateTrainingQueries(
-        segment, field_name, options.num_training_queries,
-        options.noise_scale, options.seed);
-    DebugLog("  Generated " + std::to_string(training_queries.size()) + " queries");
+    ScopedTimer timer("Step1: GenerateHeldOutQueries");
+    auto sampled = TrainingQueryGenerator::GenerateHeldOutQueries(
+        segment, field_name, options.num_training_queries, options.seed);
+    training_queries = std::move(sampled.vectors);
+    query_doc_ids = std::move(sampled.doc_ids);
+    DebugLog("  Generated " + std::to_string(training_queries.size()) +
+             " held-out queries (with doc_ids for self-exclusion)");
   }
 
   if (training_queries.empty()) {
@@ -548,18 +627,19 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
         Status::InternalError("Failed to generate training queries"));
   }
 
-  // Step 2: Compute ground truth (brute force search with recall = 1)
-  LOG_INFO("Computing ground truth with brute force search (topk=%zu)",
+  // Step 2: Compute ground truth (brute force search, excluding self-matches)
+  LOG_INFO("Computing ground truth with brute force search (topk=%zu, excluding self)",
            options.topk);
 
   std::vector<std::vector<uint64_t>> ground_truth;
   {
-    ScopedTimer timer("Step2: ComputeGroundTruth (BRUTE FORCE PARALLEL)");
+    ScopedTimer timer("Step2: ComputeGroundTruth (BRUTE FORCE PARALLEL, HELD-OUT)");
     DebugLog("  num_queries=" + std::to_string(training_queries.size()) +
              ", topk=" + std::to_string(options.topk) +
              ", threads=" + std::to_string(options.num_threads == 0 ? std::thread::hardware_concurrency() : options.num_threads));
     ground_truth = ComputeGroundTruth(
-        segment, field_name, training_queries, options.topk, options.num_threads);
+        segment, field_name, training_queries, options.topk, options.num_threads,
+        query_doc_ids);  // Pass doc_ids for self-exclusion
     DebugLog("  Computed ground truth for " + std::to_string(ground_truth.size()) + " queries");
   }
 

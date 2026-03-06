@@ -114,6 +114,7 @@ class TrainingDataCollector {
    * @param queries Training query vectors
    * @param topk Number of top results to retrieve
    * @param num_threads Number of threads (0 = hardware_concurrency)
+   * @param query_doc_ids Optional doc_ids of query vectors (for self-exclusion in held-out mode)
    * @return Ground truth doc IDs for each query
    */
   static std::vector<std::vector<uint64_t>> ComputeGroundTruth(
@@ -121,7 +122,8 @@ class TrainingDataCollector {
       const std::string& field_name,
       const std::vector<std::vector<float>>& queries,
       size_t topk,
-      size_t num_threads);
+      size_t num_threads,
+      const std::vector<uint64_t>& query_doc_ids = {});
 
   /**
    * @brief Fill labels in training records based on ground truth

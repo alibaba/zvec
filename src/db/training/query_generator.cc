@@ -19,18 +19,18 @@
 
 namespace zvec {
 
-std::vector<std::vector<float>> TrainingQueryGenerator::SampleBaseVectors(
+SampledVectors TrainingQueryGenerator::SampleBaseVectorsWithIds(
     const Segment::Ptr& segment,
     const std::string& field_name,
     size_t num_samples,
     uint64_t seed) {
-  std::vector<std::vector<float>> sampled_vectors;
+  SampledVectors result;
 
   // Get total document count
   uint64_t doc_count = segment->doc_count();
   if (doc_count == 0) {
     LOG_WARN("Segment has no documents, cannot sample base vectors");
-    return sampled_vectors;
+    return result;
   }
 
   // Adjust num_samples if it exceeds doc_count
@@ -44,7 +44,8 @@ std::vector<std::vector<float>> TrainingQueryGenerator::SampleBaseVectors(
   std::mt19937_64 rng(seed);
   std::uniform_int_distribution<uint64_t> dist(0, doc_count - 1);
 
-  sampled_vectors.reserve(actual_samples);
+  result.vectors.reserve(actual_samples);
+  result.doc_ids.reserve(actual_samples);
 
   // Sample vectors
   for (size_t i = 0; i < actual_samples; ++i) {
@@ -67,13 +68,24 @@ std::vector<std::vector<float>> TrainingQueryGenerator::SampleBaseVectors(
       continue;
     }
 
-    sampled_vectors.push_back(vector_opt.value());
+    result.vectors.push_back(vector_opt.value());
+    result.doc_ids.push_back(doc_idx);
   }
 
-  LOG_INFO("Successfully sampled %zu/%zu vectors from segment",
-           sampled_vectors.size(), actual_samples);
+  LOG_INFO("Successfully sampled %zu/%zu vectors with doc_ids from segment",
+           result.vectors.size(), actual_samples);
 
-  return sampled_vectors;
+  return result;
+}
+
+std::vector<std::vector<float>> TrainingQueryGenerator::SampleBaseVectors(
+    const Segment::Ptr& segment,
+    const std::string& field_name,
+    size_t num_samples,
+    uint64_t seed) {
+  // Use the new method and extract just the vectors
+  auto sampled = SampleBaseVectorsWithIds(segment, field_name, num_samples, seed);
+  return std::move(sampled.vectors);
 }
 
 std::vector<std::vector<float>> TrainingQueryGenerator::AddGaussianNoise(
@@ -114,6 +126,26 @@ std::vector<std::vector<float>> TrainingQueryGenerator::AddGaussianNoise(
            noise_scale, noisy_vectors.size());
 
   return noisy_vectors;
+}
+
+SampledVectors TrainingQueryGenerator::GenerateHeldOutQueries(
+    const Segment::Ptr& segment,
+    const std::string& field_name,
+    size_t num_queries,
+    uint64_t seed) {
+  // Sample vectors directly from the index - no noise added
+  // These vectors will be used as queries, with their doc_ids excluded from ground truth
+  auto result = SampleBaseVectorsWithIds(segment, field_name, num_queries, seed);
+
+  if (result.vectors.empty()) {
+    LOG_ERROR("Failed to sample vectors from segment for held-out queries");
+    return result;
+  }
+
+  LOG_INFO("Generated %zu held-out queries (vectors sampled directly from index)",
+           result.vectors.size());
+
+  return result;
 }
 
 std::vector<std::vector<float>> TrainingQueryGenerator::GenerateTrainingQueries(

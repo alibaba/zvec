@@ -24,5 +24,12 @@ add_subdirectory(rocksdb rocksdb EXCLUDE_FROM_ALL)
 add_subdirectory(CRoaring CRoaring EXCLUDE_FROM_ALL)
 add_subdirectory(arrow arrow EXCLUDE_FROM_ALL)
 add_subdirectory(magic_enum magic_enum EXCLUDE_FROM_ALL)
-add_subdirectory(omega omega EXCLUDE_FROM_ALL)
+
+# omega is only built when ZVEC_ENABLE_OMEGA is ON
+if(ZVEC_ENABLE_OMEGA)
+  message(STATUS "ZVEC: Building omega library with LightGBM support")
+  add_subdirectory(omega omega EXCLUDE_FROM_ALL)
+else()
+  message(STATUS "ZVEC: Skipping omega library (ZVEC_ENABLE_OMEGA=OFF)")
+endif()
 

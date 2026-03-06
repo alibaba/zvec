@@ -7,4 +7,8 @@ cc_directory(flat_sparse)
 cc_directory(ivf)
 cc_directory(hnsw)
 cc_directory(hnsw_sparse)
-cc_directory(omega)
+
+# Only include omega when ZVEC_ENABLE_OMEGA is ON
+if(ZVEC_ENABLE_OMEGA)
+    cc_directory(omega)
+endif()

@@ -14,6 +14,8 @@
 
 #pragma once
 
+#ifdef ZVEC_ENABLE_OMEGA
+
 #include <string>
 #include <vector>
 #include <zvec/core/interface/training.h>
@@ -28,19 +30,21 @@ struct OmegaModelTrainerOptions {
   // Output directory for trained model files
   std::string output_dir;
 
-  // Path to Python executable (default: python3)
-  std::string python_executable = "python3";
+  // LightGBM training parameters
+  int num_iterations = 100;
+  int num_leaves = 31;
+  double learning_rate = 0.1;
+  int num_threads = 8;
 
   // Enable verbose logging during training
   bool verbose = false;
 };
 
 /**
- * @brief OMEGA model trainer (calls Python training script)
+ * @brief OMEGA model trainer using LightGBM C API
  *
- * This class bridges C++ training data collection with Python model training.
- * It exports TrainingRecord data to CSV format and invokes the Python
- * _omega_training.py script to train a LightGBM model.
+ * This class trains a LightGBM binary classifier directly in C++,
+ * eliminating the need for Python subprocess and CSV serialization.
  */
 class OmegaModelTrainer {
  public:
@@ -58,8 +62,8 @@ class OmegaModelTrainer {
   /**
    * @brief Train OMEGA model with gt_cmps data for table generation
    *
-   * This is the extended version that also exports gt_cmps data for
-   * generating gt_collected_table and gt_cmps_all_table.
+   * This is the extended version that also generates gt_collected_table
+   * and gt_cmps_all_table from gt_cmps data.
    *
    * @param training_records Training data collected from searches
    * @param gt_cmps_data Ground truth cmps data for table generation
@@ -70,52 +74,8 @@ class OmegaModelTrainer {
       const std::vector<core_interface::TrainingRecord>& training_records,
       const core_interface::GtCmpsData& gt_cmps_data,
       const OmegaModelTrainerOptions& options);
-
- private:
-  /**
-   * @brief Export training records to CSV format
-   *
-   * CSV format:
-   * query_id,hops_visited,cmps_visited,dist_1st,dist_start,
-   * stat_0,stat_1,stat_2,stat_3,stat_4,stat_5,stat_6,label
-   *
-   * @param records Training records to export
-   * @param csv_path Output CSV file path
-   * @return Status indicating success or failure
-   */
-  static Status ExportToCSV(
-      const std::vector<core_interface::TrainingRecord>& records,
-      const std::string& csv_path);
-
-  /**
-   * @brief Export gt_cmps data to CSV format
-   *
-   * CSV format:
-   * query_id,rank,cmps
-   *
-   * @param gt_cmps_data Ground truth cmps data
-   * @param csv_path Output CSV file path
-   * @return Status indicating success or failure
-   */
-  static Status ExportGtCmpsToCSV(
-      const core_interface::GtCmpsData& gt_cmps_data,
-      const std::string& csv_path);
-
-  /**
-   * @brief Invoke Python training script
-   *
-   * Calls: python3 -m zvec._omega_training train \
-   *          --input <csv_path> --output <output_dir> [--verbose]
-   *
-   * @param csv_path Input CSV file path
-   * @param options Training configuration
-   * @param gt_cmps_path Optional path to gt_cmps CSV file
-   * @return Status indicating success or failure
-   */
-  static Status InvokePythonTrainer(
-      const std::string& csv_path,
-      const OmegaModelTrainerOptions& options,
-      const std::string& gt_cmps_path = "");
 };
 
 }  // namespace zvec
+
+#endif  // ZVEC_ENABLE_OMEGA

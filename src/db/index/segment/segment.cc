@@ -56,7 +56,9 @@
 #include "column_merging_reader.h"
 #include "sql_expr_parser.h"
 #include "db/training/training_data_collector.h"
+#ifdef ZVEC_ENABLE_OMEGA
 #include "db/training/omega_model_trainer.h"
+#endif
 
 namespace zvec {
 
@@ -1672,6 +1674,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
         LOG_INFO("Collected %zu training records", result.records.size());
 
         if (result.records.size() >= 100) {
+#ifdef ZVEC_ENABLE_OMEGA
           // Train the model
           OmegaModelTrainerOptions trainer_opts;
           trainer_opts.output_dir = model_output_dir;
@@ -1691,6 +1694,9 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
           } else {
             LOG_WARN("OMEGA model training failed: %s", train_status.message().c_str());
           }
+#else
+          LOG_INFO("OMEGA training skipped (ZVEC_ENABLE_OMEGA not defined)");
+#endif
         } else {
           LOG_INFO("Skipping model training: only %zu records collected (need >= 100)", result.records.size());
         }
@@ -2378,6 +2384,7 @@ Status SegmentImpl::auto_train_omega_index_internal(
   LOG_INFO("Training data stats: %zu positive, %zu negative samples",
            positive_count, negative_count);
 
+#ifdef ZVEC_ENABLE_OMEGA
   // Step 2: Train OMEGA model with gt_cmps data
   OmegaModelTrainerOptions trainer_options;
   trainer_options.output_dir = FileHelper::MakeSegmentPath(path_, id()) + "/omega_model";
@@ -2401,6 +2408,9 @@ Status SegmentImpl::auto_train_omega_index_internal(
 
   LOG_INFO("Successfully trained OMEGA model for segment %d, output: %s",
            id(), trainer_options.output_dir.c_str());
+#else
+  LOG_INFO("OMEGA training skipped (ZVEC_ENABLE_OMEGA not defined)");
+#endif
 
   // Step 3: Load model into the provided indexers
   // TODO: Implement model loading into VectorColumnIndexer

@@ -28,6 +28,12 @@ message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 option(BUILD_TOOLS "Build tools" ON)
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
+option(ZVEC_ENABLE_OMEGA "Enable OMEGA support with LightGBM (requires LightGBM library)" OFF)
+message(STATUS "ZVEC_ENABLE_OMEGA:${ZVEC_ENABLE_OMEGA}")
+if(ZVEC_ENABLE_OMEGA)
+    add_definitions(-DZVEC_ENABLE_OMEGA)
+endif()
+
 cc_directory(thirdparty)
 cc_directories(src)
 cc_directories(tests)

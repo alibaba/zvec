@@ -40,17 +40,9 @@ class OmegaStreamer : public HnswStreamer {
   OmegaStreamer(const OmegaStreamer &streamer) = delete;
   OmegaStreamer &operator=(const OmegaStreamer &streamer) = delete;
 
-  // Training mode support (for future implementation)
+  // Training mode support
   void EnableTrainingMode(bool enable) { training_mode_enabled_ = enable; }
   void SetCurrentQueryId(int query_id) { current_query_id_ = query_id; }
-  std::vector<core_interface::TrainingRecord> GetTrainingRecords() const {
-    std::lock_guard<std::mutex> lock(training_mutex_);
-    return collected_records_;
-  }
-  void ClearTrainingRecords() {
-    std::lock_guard<std::mutex> lock(training_mutex_);
-    collected_records_.clear();
-  }
 
  protected:
   /**
@@ -80,8 +72,7 @@ class OmegaStreamer : public HnswStreamer {
   // Training mode state (for future implementation)
   bool training_mode_enabled_{false};
   int current_query_id_{0};
-  mutable std::mutex training_mutex_{};
-  mutable std::vector<core_interface::TrainingRecord> collected_records_{};
+  // Note: training records are now stored per-context in OmegaContext, not here
 };
 
 }  // namespace core

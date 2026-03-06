@@ -244,18 +244,17 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   LOG_DEBUG("OMEGA training search completed: cmps=%d, hops=%d, results=%zu",
             cmps, hops, topk_heap.size());
 
-  // Collect training records from OMEGA library
+  // Collect training records from OMEGA library and store in context (no locks needed)
   size_t record_count = omega_search_get_training_records_count(omega_search);
 
-  if (record_count > 0) {
+  if (record_count > 0 && omega_ctx != nullptr) {
 
     const void* records_ptr = omega_search_get_training_records(omega_search);
 
     // NOTE: omega_search_get_training_records returns pointer to std::vector, not array
     const auto* records_vec = static_cast<const std::vector<omega::TrainingRecord>*>(records_ptr);
 
-    // Convert and store training records
-    std::lock_guard<std::mutex> lock(training_mutex_);
+    // Convert and store training records in context (per-query, no shared state)
     for (size_t i = 0; i < record_count; ++i) {
       const auto& omega_record = (*records_vec)[i];
       core_interface::TrainingRecord record;
@@ -282,11 +281,13 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
       record.label = omega_record.label;  // Default 0
 
-      collected_records_.push_back(std::move(record));
+      omega_ctx->add_training_record(std::move(record));
     }
 
-    LOG_DEBUG("Collected %zu training records for query_id=%d",
+    LOG_DEBUG("Collected %zu training records for query_id=%d (stored in context)",
               record_count, query_id);
+  } else if (record_count > 0) {
+    LOG_WARN("Training records collected but context is not OmegaContext, records lost");
   } else {
     LOG_WARN("No training records collected for query_id=%d", query_id);
   }
