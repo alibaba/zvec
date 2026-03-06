@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <vector>
+#include <array>
 #include <ailego/math/inner_product_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <zvec/ailego/internal/platform.h>
