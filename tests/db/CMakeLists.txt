@@ -2,6 +2,7 @@ include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 cc_directory(common)
+cc_directories(crash_recovery)
 cc_directory(sqlengine)
 cc_directories(index)
 
