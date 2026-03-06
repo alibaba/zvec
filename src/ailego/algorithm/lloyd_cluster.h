@@ -15,8 +15,8 @@
 #pragma once
 
 #include <algorithm>
-#include <random>
 #include <array>
+#include <random>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/type_helper.h>
