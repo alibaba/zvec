@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <vector>
+#include <array>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <zvec/ailego/internal/platform.h>
@@ -109,8 +109,8 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
-    std::vector<float> v2(N);
+    std::array<float, M> u2;
+    std::array<float, N> v2;
     for (size_t i = 0; i < M; ++i) {
       const ValueType p_val = p[i];
       u2[i] = static_cast<float>(p_val * p_val);
@@ -162,8 +162,8 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
-    std::vector<float> v2(N);
+    std::array<float, M> u2;
+    std::array<float, N> v2;
     for (size_t i = 0; i < M; ++i) {
       const ValueType p_val = p[i];
       u2[i] = static_cast<float>(p_val * p_val);
@@ -241,7 +241,7 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
+    std::array<float, M> u2;
     ValueType q_val = *q++;
     float v2 = static_cast<float>(q_val * q_val);
     for (size_t i = 0; i < M; ++i) {
@@ -275,7 +275,7 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
+    std::array<float, M> u2;
     ValueType q_val = *q++;
     float v2 = static_cast<float>(q_val * q_val);
     for (size_t i = 0; i < M; ++i) {
@@ -328,8 +328,8 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
-    std::vector<float> v2(N);
+    std::array<float, M> u2;
+    std::array<float, N> v2;
     const uint32_t *p_it = reinterpret_cast<const uint32_t *>(p);
     const uint32_t *q_it = reinterpret_cast<const uint32_t *>(q);
     for (size_t i = 0; i < M; ++i) {
@@ -384,8 +384,8 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
-    std::vector<float> v2(N);
+    std::array<float, M> u2;
+    std::array<float, N> v2;
     const uint32_t *p_it = reinterpret_cast<const uint32_t *>(p);
     const uint32_t *q_it = reinterpret_cast<const uint32_t *>(q);
     for (size_t i = 0; i < M; ++i) {
@@ -496,7 +496,7 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
+    std::array<float, M> u2;
     uint32_t q_val = *q_it++;
     float v2 = Squared(q_val);
     for (size_t i = 0; i < M; ++i) {
@@ -532,7 +532,7 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
+    std::array<float, M> u2;
     uint32_t q_val = *q_it++;
     float v2 = Squared(q_val);
     for (size_t i = 0; i < M; ++i) {
@@ -614,8 +614,8 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
-    std::vector<float> v2(N);
+    std::array<float, M> u2;
+    std::array<float, N> v2;
     const uint32_t *p_it = reinterpret_cast<const uint32_t *>(p);
     const uint32_t *q_it = reinterpret_cast<const uint32_t *>(q);
     for (size_t i = 0; i < M; ++i) {
@@ -670,8 +670,8 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
-    std::vector<float> v2(N);
+    std::array<float, M> u2;
+    std::array<float, N> v2;
     const uint32_t *p_it = reinterpret_cast<const uint32_t *>(p);
     const uint32_t *q_it = reinterpret_cast<const uint32_t *>(q);
     for (size_t i = 0; i < M; ++i) {
@@ -857,7 +857,7 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
+    std::array<float, M> u2;
     uint32_t q_val = *q_it++;
     float v2 = Squared(q_val);
     for (size_t i = 0; i < M; ++i) {
@@ -893,7 +893,7 @@ struct MipsSquaredEuclideanDistanceMatrix<
       return;
     }
 
-    std::vector<float> u2(M);
+    std::array<float, M> u2;
     uint32_t q_val = *q_it++;
     float v2 = Squared(q_val);
     for (size_t i = 0; i < M; ++i) {
