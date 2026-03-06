@@ -286,7 +286,7 @@ class LloydCluster {
 
   //! Cluster the matrix features
   void cluster_matrix_features(size_t first, size_t last) {
-    std::vector<float> scores(BatchCount * BatchCount, 0);
+    std::array<float, BatchCount * BatchCount> scores;
     ContainerType rows(centroids_matrix_.dimension());
 
     auto comp = [](float i, float j) {
