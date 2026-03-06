@@ -3939,6 +3939,14 @@ VectorColumnIndexer::Ptr SegmentImpl::create_vector_indexer(
     memory_vector_block_ids_[field_name] = block_id;
   }
 
+  if (FileHelper::FileExists(index_file_path)) {
+    LOG_WARN(
+        "Index file[%s] already exists (possible crash residue); cleaning and "
+        "overwriting.",
+        index_file_path.c_str());
+    FileHelper::RemoveFile(index_file_path);
+  }
+
   auto vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
   vector_column_params::ReadOptions options{true, true};
@@ -3958,6 +3966,13 @@ Status SegmentImpl::init_memory_components() {
   // create and open memory forward block
   auto mem_path = FileHelper::MakeForwardBlockPath(seg_path_, mem_block.id_,
                                                    !options_.enable_mmap_);
+  if (FileHelper::FileExists(mem_path)) {
+    LOG_WARN(
+        "ForwardBlock file[%s] already exists (possible crash residue); "
+        "cleaning and overwriting.",
+        mem_path.c_str());
+    FileHelper::RemoveFile(mem_path);
+  }
   memory_store_ = std::make_shared<MemForwardStore>(
       collection_schema_, mem_path,
       options_.enable_mmap_ ? FileFormat::IPC : FileFormat::PARQUET,
@@ -4104,18 +4119,17 @@ Status SegmentImpl::recover() {
   }
 
   const auto added_docs = recovered_doc_count[0] +  // INSERT
-                          recovered_doc_count[1] +  // UPDATE
-                          recovered_doc_count[2];   // UPSERT
+                          recovered_doc_count[1] +  // UPSERT
+                          recovered_doc_count[2];   // UPDATE
   mem_block.max_doc_id_ += added_docs;
 
   LOG_INFO(
-      "Recover from wal finished. total_recovered_doc_count[%zu] "
-      "insert[%zu] update[%zu] upsert[%zu] "
-      "delete[%zu] path[%s]",
+      "Recover from wal finished. total_recovered_doc_count[%zu] insert[%zu] "
+      "upsert[%zu] update[%zu] delete[%zu] path[%s]",
       (size_t)total_recovered_doc_count,
       (size_t)recovered_doc_count[0],  // INSERT
-      (size_t)recovered_doc_count[1],  // UPDATE
-      (size_t)recovered_doc_count[2],  // UPSERT
+      (size_t)recovered_doc_count[1],  // UPSERT
+      (size_t)recovered_doc_count[2],  // UPDATE
       (size_t)recovered_doc_count[3],  // DELETE
       wal_file_path.c_str());
 
