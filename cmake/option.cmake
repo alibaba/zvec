@@ -74,6 +74,20 @@ macro(add_arch_flag FLAG VAR_NAME OPTION_NAME)
   endif()
 endmacro()
 
+# Like add_arch_flag but tries -march=BASE+fp16 first, falls back to -march=BASE.
+# FP16 NEON intrinsics (vfmaq_f16, etc.) in ailego math kernels require +fp16
+# on GCC. Apple Clang enables FP16 by default on ARM64.
+macro(add_arch_flag_with_fp16 BASE_ARCH VAR_NAME OPTION_NAME)
+  check_c_compiler_flag("-march=${BASE_ARCH}+fp16" COMPILER_SUPPORT_${VAR_NAME}_FP16)
+  if(COMPILER_SUPPORT_${VAR_NAME}_FP16)
+    add_arch_flag("-march=${BASE_ARCH}+fp16" ${VAR_NAME} ${OPTION_NAME})
+    message(STATUS "ARM64: using -march=${BASE_ARCH}+fp16 (FP16 NEON enabled)")
+  else()
+    add_arch_flag("-march=${BASE_ARCH}" ${VAR_NAME} ${OPTION_NAME})
+    message(STATUS "ARM64: using -march=${BASE_ARCH} (FP16 not supported by compiler)")
+  endif()
+endmacro()
+
 function(_detect_armv8_best)
   set(_arm_flags
     "armv8.6-a" "armv8.5-a" "armv8.4-a" "armv8.3-a" "armv8.2-a" "armv8.1-a" "armv8-a" "armv8"
@@ -191,29 +205,28 @@ if(NOT AUTO_DETECT_ARCH)
 
   # ARM (newest first — allow multiple? usually only one)
   # But GCC allows only one -march=, so honor highest enabled.
-  # Append +fp16 when supported — required for FP16 NEON intrinsics
-  # (vfmaq_f16, etc.) used in ailego math kernels. Apple Clang enables
-  # FP16 by default on ARM64; GCC requires the explicit +fp16 flag.
+  # Try +fp16 first (required for FP16 NEON intrinsics in ailego math
+  # kernels), fall back to base flag if compiler doesn't support it.
   if(ENABLE_ARMV8.6A)
-    add_arch_flag("-march=armv8.6-a+fp16" ARMV86A ENABLE_ARMV8.6A)
+    add_arch_flag_with_fp16("armv8.6-a" ARMV86A ENABLE_ARMV8.6A)
   endif()
   if(ENABLE_ARMV8.5A)
-    add_arch_flag("-march=armv8.5-a+fp16" ARMV85A ENABLE_ARMV8.5A)
+    add_arch_flag_with_fp16("armv8.5-a" ARMV85A ENABLE_ARMV8.5A)
   endif()
   if(ENABLE_ARMV8.4A)
-    add_arch_flag("-march=armv8.4-a+fp16" ARMV84A ENABLE_ARMV8.4A)
+    add_arch_flag_with_fp16("armv8.4-a" ARMV84A ENABLE_ARMV8.4A)
   endif()
   if(ENABLE_ARMV8.3A)
-    add_arch_flag("-march=armv8.3-a+fp16" ARMV83A ENABLE_ARMV8.3A)
+    add_arch_flag_with_fp16("armv8.3-a" ARMV83A ENABLE_ARMV8.3A)
   endif()
   if(ENABLE_ARMV8.2A)
-    add_arch_flag("-march=armv8.2-a+fp16" ARMV82A ENABLE_ARMV8.2A)
+    add_arch_flag_with_fp16("armv8.2-a" ARMV82A ENABLE_ARMV8.2A)
   endif()
   if(ENABLE_ARMV8.1A)
-    add_arch_flag("-march=armv8.1-a+fp16" ARMV81A ENABLE_ARMV8.1A)
+    add_arch_flag_with_fp16("armv8.1-a" ARMV81A ENABLE_ARMV8.1A)
   endif()
   if(ENABLE_ARMV8A)
-    add_arch_flag("-march=armv8-a+fp16" ARMV8A ENABLE_ARMV8A)
+    add_arch_flag_with_fp16("armv8-a" ARMV8A ENABLE_ARMV8A)
   endif()
 
 else()
