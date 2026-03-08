@@ -49,6 +49,7 @@ from .model.param import (
     IVFIndexParam,
     IVFQueryParam,
     OmegaIndexParam,
+    OmegaQueryParam,
     OptimizeOption,
 )
 from .model.param.vector_query import VectorQuery
@@ -101,6 +102,7 @@ __all__ = [
     "AlterColumnOption",
     "HnswQueryParam",
     "IVFQueryParam",
+    "OmegaQueryParam",
     # Extensions
     "ReRanker",
     "DenseEmbeddingFunction",

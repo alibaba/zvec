@@ -22,6 +22,7 @@ __all__: list[str] = [
     "IndexParam",
     "InvertIndexParam",
     "OmegaIndexParam",
+    "OmegaQueryParam",
     "OptimizeOption",
     "QueryParam",
     "SegmentOption",
@@ -594,6 +595,60 @@ class OmegaIndexParam(VectorIndexParam):
     def m(self) -> int:
         """
         int: Maximum number of neighbors per node in upper layers.
+        """
+
+class OmegaQueryParam(HnswQueryParam):
+    """
+
+    Query parameters for OMEGA index with adaptive early stopping.
+
+    OMEGA extends HNSW with machine learning-based early stopping that can
+    dynamically adjust search effort to meet a target recall.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.OMEGA``.
+        ef (int): Size of the dynamic candidate list during search.
+            Larger values improve recall but slow down search.
+            Default is 300.
+        target_recall (float): Target recall for OMEGA early stopping.
+            OMEGA will stop searching when predicted recall meets this target.
+            Valid range: 0.0 to 1.0. Default is 0.95.
+        radius (float): Search radius for range queries. Default is 0.0.
+        is_linear (bool): Force linear search. Default is False.
+        is_using_refiner (bool): Whether to use refiner for the query. Default is False.
+
+    Examples:
+        >>> params = OmegaQueryParam(ef=300, target_recall=0.98)
+        >>> print(params.target_recall)
+        0.98
+    """
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        ef: typing.SupportsInt = 300,
+        target_recall: typing.SupportsFloat = 0.95,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+    ) -> None:
+        """
+        Constructs an OmegaQueryParam instance.
+
+        Args:
+            ef (int, optional): Search-time candidate list size.
+                Higher values improve accuracy. Defaults to 300.
+            target_recall (float, optional): Target recall for early stopping.
+                Valid range: 0.0 to 1.0. Defaults to 0.95.
+            radius (float, optional): Search radius for range queries. Default is 0.0.
+            is_linear (bool, optional): Force linear search. Default is False.
+            is_using_refiner (bool, optional): Whether to use refiner. Default is False.
+        """
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def target_recall(self) -> float:
+        """
+        float: Target recall for OMEGA early stopping (0.0 to 1.0).
         """
 
 class OptimizeOption:

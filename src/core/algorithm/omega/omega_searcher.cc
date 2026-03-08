@@ -33,7 +33,7 @@ OmegaSearcher::OmegaSearcher(void)
       omega_enabled_(false),
       use_omega_mode_(false),
       target_recall_(0.95f),
-      min_vector_threshold_(10000),
+      min_vector_threshold_(100000),
       current_vector_count_(0),
       training_mode_enabled_(false),
       current_query_id_(0) {}
@@ -46,7 +46,7 @@ int OmegaSearcher::init(const ailego::Params &params) {
   // Get OMEGA-specific parameters
   omega_enabled_ = params.has("omega.enabled") ? params.get_as_bool("omega.enabled") : false;
   target_recall_ = params.has("omega.target_recall") ? params.get_as_float("omega.target_recall") : 0.95f;
-  min_vector_threshold_ = params.has("omega.min_vector_threshold") ? params.get_as_uint32("omega.min_vector_threshold") : 10000;
+  min_vector_threshold_ = params.has("omega.min_vector_threshold") ? params.get_as_uint32("omega.min_vector_threshold") : 100000;
   model_dir_ = params.has("omega.model_dir") ? params.get_as_string("omega.model_dir") : "";
 
   // Call parent class init

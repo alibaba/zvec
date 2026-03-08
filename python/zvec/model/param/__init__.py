@@ -25,6 +25,7 @@ from _zvec.param import (
     IVFIndexParam,
     IVFQueryParam,
     OmegaIndexParam,
+    OmegaQueryParam,
     OptimizeOption,
 )
 
@@ -40,5 +41,6 @@ __all__ = [
     "IndexOption",
     "InvertIndexParam",
     "OmegaIndexParam",
+    "OmegaQueryParam",
     "OptimizeOption",
 ]

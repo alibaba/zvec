@@ -17,6 +17,7 @@
 #include <pybind11/stl.h>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/index_params.h>
+#include <zvec/db/query_params.h>
 #include "python_doc.h"
 
 namespace zvec {
@@ -772,6 +773,82 @@ Args:
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            return obj;
+          }));
+
+  // binding omega query params
+  py::class_<OmegaQueryParams, HnswQueryParams, std::shared_ptr<OmegaQueryParams>>
+      omega_query_params(m, "OmegaQueryParam", R"pbdoc(
+Query parameters for OMEGA index with adaptive early stopping.
+
+OMEGA extends HNSW with machine learning-based early stopping that can
+dynamically adjust search effort to meet a target recall.
+
+Attributes:
+    type (IndexType): Always ``IndexType.OMEGA``.
+    ef (int): Size of the dynamic candidate list during search.
+        Larger values improve recall but slow down search.
+        Default is 300.
+    target_recall (float): Target recall for OMEGA early stopping.
+        OMEGA will stop searching when predicted recall meets this target.
+        Valid range: 0.0 to 1.0. Default is 0.95.
+    radius (float): Search radius for range queries. Default is 0.0.
+    is_linear (bool): Force linear search. Default is False.
+    is_using_refiner (bool): Whether to use refiner for the query. Default is False.
+
+Examples:
+    >>> params = OmegaQueryParam(ef=300, target_recall=0.98)
+    >>> print(params.target_recall)
+    0.98
+)pbdoc");
+  omega_query_params
+      .def(py::init<int, float, float, bool, bool>(),
+           py::arg("ef") = core_interface::kDefaultHnswEfSearch,
+           py::arg("target_recall") = 0.95f,
+           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("is_using_refiner") = false,
+           R"pbdoc(
+Constructs an OmegaQueryParam instance.
+
+Args:
+    ef (int, optional): Search-time candidate list size.
+        Higher values improve accuracy. Defaults to 300.
+    target_recall (float, optional): Target recall for early stopping.
+        Valid range: 0.0 to 1.0. Defaults to 0.95.
+    radius (float, optional): Search radius for range queries. Default is 0.0.
+    is_linear (bool, optional): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner. Default is False.
+)pbdoc")
+      .def_property_readonly(
+          "target_recall",
+          [](const OmegaQueryParams &self) -> float { return self.target_recall(); },
+          "float: Target recall for OMEGA early stopping (0.0 to 1.0).")
+      .def("__repr__",
+           [](const OmegaQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":" +
+                    index_type_to_string(self.type()) +
+                    ", \"ef\":" + std::to_string(self.ef()) +
+                    ", \"target_recall\":" + std::to_string(self.target_recall()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) + "}";
+           })
+      .def(py::pickle(
+          [](const OmegaQueryParams &self) {
+            return py::make_tuple(self.ef(), self.target_recall(),
+                                  self.radius(), self.is_linear(),
+                                  self.is_using_refiner());
+          },
+          [](py::tuple t) {
+            if (t.size() != 5)
+              throw std::runtime_error("Invalid state for OmegaQueryParams");
+            auto obj = std::make_shared<OmegaQueryParams>(
+                t[0].cast<int>(), t[1].cast<float>());
+            obj->set_radius(t[2].cast<float>());
+            obj->set_is_linear(t[3].cast<bool>());
+            obj->set_is_using_refiner(t[4].cast<bool>());
             return obj;
           }));
 

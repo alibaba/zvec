@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 from ...common import VectorType
-from . import HnswQueryParam, IVFQueryParam
+from . import HnswQueryParam, IVFQueryParam, OmegaQueryParam
 
 __all__ = ["VectorQuery"]
 
@@ -28,7 +28,8 @@ class VectorQuery:
 
     A `VectorQuery` can be constructed using either a document ID (to look up
     its vector) or an explicit vector. It may optionally include index-specific
-    query parameters to control search behavior (e.g., `ef` for HNSW, `nprobe` for IVF).
+    query parameters to control search behavior (e.g., `ef` for HNSW, `nprobe` for IVF,
+    `target_recall` for OMEGA).
 
     Exactly one of `id` or `vector` should be provided. If both are given,
     behavior is implementation-defined (typically `id` takes precedence).
@@ -37,25 +38,31 @@ class VectorQuery:
         field_name (str): Name of the vector field to query.
         id (Optional[str], optional): Document ID to fetch vector from. Default is None.
         vector (VectorType, optional): Explicit query vector. Default is None.
-        param (Optional[Union[HnswQueryParam, IVFQueryParam]], optional):
+        param (Optional[Union[HnswQueryParam, IVFQueryParam, OmegaQueryParam]], optional):
             Index-specific query parameters. Default is None.
 
     Examples:
         >>> import zvec
         >>> # Query by ID
         >>> q1 = zvec.VectorQuery(field_name="embedding", id="doc123")
-        >>> # Query by vector
+        >>> # Query by vector with HNSW params
         >>> q2 = zvec.VectorQuery(
         ...     field_name="embedding",
         ...     vector=[0.1, 0.2, 0.3],
         ...     param=HnswQueryParam(ef=300)
+        ... )
+        >>> # Query with OMEGA params and target recall
+        >>> q3 = zvec.VectorQuery(
+        ...     field_name="embedding",
+        ...     vector=[0.1, 0.2, 0.3],
+        ...     param=OmegaQueryParam(ef=300, target_recall=0.98)
         ... )
     """
 
     field_name: str
     id: Optional[str] = None
     vector: VectorType = None
-    param: Optional[Union[HnswQueryParam, IVFQueryParam]] = None
+    param: Optional[Union[HnswQueryParam, IVFQueryParam, OmegaQueryParam]] = None
 
     def has_id(self) -> bool:
         """Check if the query is based on a document ID.

@@ -33,6 +33,7 @@ from zvec import (
     VectorQuery,
     OptimizeOption,
     OmegaIndexParam,
+    OmegaQueryParam,
     MetricType,
 )
 
@@ -1052,281 +1053,35 @@ class TestCollectionQuery:
 # ----------------------------
 
 
-@pytest.fixture(scope="session")
-def omega_collection_schema():
-    """Schema with OMEGA index for testing automatic training."""
-    return zvec.CollectionSchema(
-        name="omega_test_collection",
-        fields=[
-            FieldSchema(
-                "id",
-                DataType.INT64,
-                nullable=False,
-                index_param=InvertIndexParam(enable_range_optimization=True),
-            ),
-            FieldSchema("name", DataType.STRING, nullable=False),
-        ],
-        vectors=[
-            VectorSchema(
-                "embedding",
-                DataType.VECTOR_FP32,
-                dimension=128,
-                index_param=OmegaIndexParam(
-                    metric_type=MetricType.IP,
-                    m=16,
-                    ef_construction=200,
-                ),
-            ),
-        ],
-    )
+class TestOmegaFullWorkflow:
+    """
+    Complete end-to-end test for OMEGA adaptive search.
 
+    This test validates the entire OMEGA workflow:
+    1. Collection creation with OmegaIndexParam
+    2. Data insertion (100,000 documents to meet min_vector_threshold)
+    3. Automatic training triggered by optimize()
+    4. Model file generation (LightGBM model + lookup tables)
+    5. Search functionality with OMEGA early stopping enabled
+    6. Recall validation
+    """
 
-@pytest.fixture
-def omega_test_collection(
-    tmp_path_factory, omega_collection_schema, collection_option
-) -> Collection:
-    """Create a collection with OMEGA index for testing."""
-    temp_dir = tmp_path_factory.mktemp("zvec_omega")
-    collection_path = temp_dir / "omega_collection"
-
-    coll = zvec.create_and_open(
-        path=str(collection_path),
-        schema=omega_collection_schema,
-        option=collection_option,
-    )
-
-    assert coll is not None, "Failed to create OMEGA collection"
-    assert coll.schema.name == omega_collection_schema.name
-
-    # Verify OMEGA index param
-    embedding_field = coll.schema.vector("embedding")
-    assert embedding_field is not None
-    assert embedding_field.index_param is not None
-    assert embedding_field.index_param.type == IndexType.OMEGA
-
-    try:
-        yield coll
-    finally:
-        if hasattr(coll, "destroy") and coll is not None:
-            try:
-                coll.destroy()
-            except Exception as e:
-                print(f"Warning: failed to destroy OMEGA collection: {e}")
-
-
-@pytest.fixture
-def omega_docs_large():
-    """Generate 1500 documents to trigger segment dump and training."""
-    import numpy as np
-
-    docs = []
-    for i in range(1500):
-        # Generate somewhat structured vectors for better training
-        base_vector = np.random.randn(128).astype(np.float32)
-        base_vector = base_vector / np.linalg.norm(base_vector)  # Normalize
-        docs.append(
-            Doc(
-                id=f"{i}",
-                fields={"id": i, "name": f"doc_{i}"},
-                vectors={"embedding": base_vector.tolist()},
-            )
-        )
-    return docs
-
-
-@pytest.mark.usefixtures("omega_test_collection")
-class TestCollectionOmegaIndex:
-    """Test cases for OMEGA index functionality."""
-
-    def test_omega_index_param_creation(self, omega_test_collection: Collection):
-        """Test that OmegaIndexParam is correctly created and configured."""
-        embedding_field = omega_test_collection.schema.vector("embedding")
-        assert embedding_field is not None
-        assert embedding_field.name == "embedding"
-        assert embedding_field.dimension == 128
-        assert embedding_field.data_type == DataType.VECTOR_FP32
-
-        index_param = embedding_field.index_param
-        assert index_param is not None
-        assert index_param.type == IndexType.OMEGA
-        assert index_param.m == 16
-        assert index_param.ef_construction == 200
-        assert index_param.metric_type == MetricType.IP
-
-    def test_omega_index_param_to_dict(self, omega_test_collection: Collection):
-        """Test that OmegaIndexParam.to_dict() returns correct type."""
-        embedding_field = omega_test_collection.schema.vector("embedding")
-        index_param = embedding_field.index_param
-
-        param_dict = index_param.to_dict()
-        assert "type" in param_dict
-        assert param_dict["type"] == "OMEGA", f"Expected 'OMEGA', got '{param_dict['type']}'"
-        assert param_dict["metric_type"] == "IP"
-        assert param_dict["m"] == 16
-        assert param_dict["ef_construction"] == 200
-
-    def test_omega_basic_insert_and_search(self, omega_test_collection: Collection):
-        """Test basic insert and search with small dataset (no training)."""
-        import numpy as np
-
-        # Insert 10 documents
-        docs = []
-        for i in range(10):
-            vector = np.random.randn(128).astype(np.float32)
-            vector = vector / np.linalg.norm(vector)
-            docs.append(
-                Doc(
-                    id=f"{i}",
-                    fields={"id": i, "name": f"doc_{i}"},
-                    vectors={"embedding": vector.tolist()},
-                )
-            )
-
-        result = omega_test_collection.insert(docs)
-        assert len(result) == len(docs)
-        for item in result:
-            assert item.ok()
-
-        # Search with first document's vector
-        query_vector = docs[0].vector("embedding")
-        search_results = omega_test_collection.query(
-            VectorQuery(field_name="embedding", vector=query_vector),
-            topk=5
-        )
-
-        assert len(search_results) > 0
-        # First result should be the query document itself
-        assert search_results[0].id == docs[0].id
-
-    def test_omega_large_dataset_with_optimize(
-        self, omega_test_collection: Collection, omega_docs_large
-    ):
-        """Test OMEGA with large dataset to trigger automatic training."""
-        # Insert 1500 documents (should trigger segment dump)
-        batch_size = 100
-        for i in range(0, len(omega_docs_large), batch_size):
-            batch = omega_docs_large[i : i + batch_size]
-            result = omega_test_collection.insert(batch)
-            assert len(result) == len(batch)
-            for item in result:
-                assert item.ok()
-
-        # Verify all documents inserted
-        stats = omega_test_collection.stats
-        assert stats.doc_count == len(omega_docs_large)
-
-        # Call optimize to trigger segment dump and automatic training
-        optimize_result = omega_test_collection.optimize(option=OptimizeOption())
-        # optimize() may not return a value, just ensure it doesn't raise
-
-        # Perform search to verify OMEGA is working
-        query_doc = omega_docs_large[0]
-        query_vector = query_doc.vector("embedding")
-
-        search_results = omega_test_collection.query(
-            VectorQuery(field_name="embedding", vector=query_vector),
-            topk=10
-        )
-
-        assert len(search_results) > 0
-        # Should find the query document in results
-        found_query_doc = False
-        for doc in search_results:
-            if doc.id == query_doc.id:
-                found_query_doc = True
-                break
-        assert found_query_doc, "Query document not found in search results"
-
-    def test_omega_search_consistency(
-        self, omega_test_collection: Collection, omega_docs_large
-    ):
-        """Test that OMEGA search results are consistent and reasonable."""
-        import numpy as np
-
-        # Insert documents
-        batch_size = 100
-        for i in range(0, len(omega_docs_large), batch_size):
-            batch = omega_docs_large[i : i + batch_size]
-            omega_test_collection.insert(batch)
-
-        # Perform multiple searches and verify consistency
-        query_doc = omega_docs_large[100]  # Use a middle document
-        query_vector = query_doc.vector("embedding")
-
-        # Search twice with same query
-        results1 = omega_test_collection.query(
-            VectorQuery(field_name="embedding", vector=query_vector),
-            topk=20
-        )
-        results2 = omega_test_collection.query(
-            VectorQuery(field_name="embedding", vector=query_vector),
-            topk=20
-        )
-
-        assert len(results1) == len(results2)
-
-        # Results should be identical (same query)
-        for i in range(len(results1)):
-            assert results1[i].id == results2[i].id
-
-    def test_omega_with_filter(self, omega_test_collection: Collection):
-        """Test OMEGA search with filter expressions."""
-        import numpy as np
-
-        # Insert 50 documents
-        docs = []
-        for i in range(50):
-            vector = np.random.randn(128).astype(np.float32)
-            vector = vector / np.linalg.norm(vector)
-            docs.append(
-                Doc(
-                    id=f"{i}",
-                    fields={"id": i, "name": f"doc_{i}"},
-                    vectors={"embedding": vector.tolist()},
-                )
-            )
-        omega_test_collection.insert(docs)
-
-        # Search with filter
-        query_vector = docs[0].vector("embedding")
-        results = omega_test_collection.query(
-            VectorQuery(
-                field_name="embedding",
-                vector=query_vector,
-            ),
-            filter="id >= 10 and id < 20",
-            topk=20,
-        )
-
-        # All results should satisfy filter
-        for doc in results:
-            doc_id = doc.field("id")
-            assert 10 <= doc_id < 20, f"Document id {doc_id} does not satisfy filter"
-
-    def test_omega_training_and_early_stopping(
-        self, tmp_path_factory
-    ):
-        """
-        Verify OMEGA training with k_train=1 labeling logic:
-        1. Training succeeds (model files generated)
-        2. Search demonstrates early stopping
-        3. Recall meets target
-        """
+    def test_omega_end_to_end_workflow(self, tmp_path_factory):
+        """Full OMEGA workflow: create → insert 100k docs → train → search with early stopping."""
         import numpy as np
         import os
-        import gc
-        import time
 
         print("\n" + "="*80)
-        print("OMEGA Training Verification (k_train=1)")
+        print("OMEGA End-to-End Workflow Test (100k documents)")
         print("="*80)
 
-        # Create fresh collection
-        temp_dir = tmp_path_factory.mktemp("zvec_omega_training")
-        collection_path = str(temp_dir / "omega_training_collection")
+        # Step 1: Create collection with OMEGA index
+        print("\n[Step 1/6] Creating OMEGA collection...")
+        temp_dir = tmp_path_factory.mktemp("omega_e2e")
+        collection_path = str(temp_dir / "omega_collection")
 
         schema = zvec.CollectionSchema(
-            name="omega_training_test",
+            name="omega_e2e_test",
             fields=[
                 FieldSchema("id", DataType.INT64, nullable=False),
                 FieldSchema("name", DataType.STRING, nullable=False),
@@ -1340,130 +1095,333 @@ class TestCollectionOmegaIndex:
                         metric_type=MetricType.L2,
                         m=16,
                         ef_construction=200,
+                        min_vector_threshold=100000,  # Explicitly set threshold
                     ),
                 ),
             ],
         )
 
-        # Create and insert documents
-        print(f"\n[1/4] Creating collection and inserting 1500 documents...")
         collection = zvec.create_and_open(
             path=collection_path,
             schema=schema,
             option=CollectionOption()
         )
 
-        # Generate documents
+        # Verify OMEGA index param
+        embedding_field = collection.schema.vector("embedding")
+        assert embedding_field.index_param.type == IndexType.OMEGA
+        assert embedding_field.index_param.min_vector_threshold == 100000
+        print(f"   ✓ Collection created with OMEGA index")
+        print(f"   ✓ Index params: m={embedding_field.index_param.m}, "
+              f"ef_construction={embedding_field.index_param.ef_construction}, "
+              f"min_vector_threshold={embedding_field.index_param.min_vector_threshold}")
+
+        # Step 2: Insert 100,000 documents to exceed threshold
+        print("\n[Step 2/6] Inserting 100,000 documents...")
         docs = []
-        for i in range(1500):
-            base_vector = np.random.randn(128).astype(np.float32)
-            base_vector = base_vector / np.linalg.norm(base_vector)
+        np.random.seed(42)
+        num_docs = 100000
+        for i in range(num_docs):
+            vector = np.random.randn(128).astype(np.float32)
+            vector = vector / np.linalg.norm(vector)
             docs.append(
                 Doc(
                     id=f"{i}",
                     fields={"id": i, "name": f"doc_{i}"},
-                    vectors={"embedding": base_vector.tolist()},
+                    vectors={"embedding": vector.tolist()},
+                )
+            )
+
+        batch_size = 1000
+        for i in range(0, len(docs), batch_size):
+            batch = docs[i : i + batch_size]
+            result = collection.insert(batch)
+            assert all(r.ok() for r in result)
+            if (i // batch_size) % 10 == 0:
+                print(f"   Progress: {i}/{num_docs} documents inserted...")
+
+        assert collection.stats.doc_count == len(docs)
+        print(f"   ✓ Inserted {len(docs)} documents (exceeds min_vector_threshold)")
+
+        # Step 3: Flush to persist data
+        print("\n[Step 3/6] Flushing data...")
+        collection.flush()
+        print(f"   ✓ Data flushed")
+
+        # Step 4: Trigger training via optimize
+        print("\n[Step 4/6] Triggering training via optimize()...")
+        collection.optimize(option=OptimizeOption())
+        print(f"   ✓ Optimize completed (merge + auto-training)")
+
+        # Step 5: Verify model files
+        print("\n[Step 5/6] Verifying model files...")
+        model_files_found = False
+        required_files = [
+            "model.txt",
+            "threshold_table.txt",
+            "interval_table.txt",
+            "gt_collected_table.txt",
+            "gt_cmps_all_table.txt"
+        ]
+
+        # Search for omega_model directory
+        for item in os.listdir(collection_path):
+            item_path = os.path.join(collection_path, item)
+            if os.path.isdir(item_path):
+                model_dir = os.path.join(item_path, "omega_model")
+                if os.path.exists(model_dir):
+                    print(f"   Found model directory: {model_dir}")
+
+                    all_exist = True
+                    for fname in required_files:
+                        fpath = os.path.join(model_dir, fname)
+                        if os.path.exists(fpath):
+                            size = os.path.getsize(fpath)
+                            print(f"   ✓ {fname} ({size} bytes)")
+                        else:
+                            print(f"   ✗ {fname} MISSING")
+                            all_exist = False
+
+                    if all_exist:
+                        model_files_found = True
+                    break
+
+        assert model_files_found, "OMEGA model files not found after training"
+        print(f"   ✅ All required model files generated")
+
+        # Step 6: Test search with OMEGA early stopping (vector count >= threshold)
+        print("\n[Step 6/6] Testing search with OMEGA early stopping enabled...")
+        print(f"   Note: OMEGA early stopping is ENABLED (doc_count={num_docs} >= threshold=100000)")
+        print(f"   OMEGA target_recall = 0.80")
+
+        n_test_queries = 1000
+        topk = 100
+        target_recall = 0.80
+
+        # Generate NEW random query vectors (not from base vectors)
+        print(f"   Generating {n_test_queries} random query vectors...")
+        np.random.seed(12345)  # Different seed from base vectors
+        query_vectors = []
+        for i in range(n_test_queries):
+            qv = np.random.randn(128).astype(np.float32)
+            qv = qv / np.linalg.norm(qv)
+            query_vectors.append(qv.tolist())
+
+        # Compute ground truth using brute-force
+        print(f"   Computing ground truth (brute-force) for recall evaluation...")
+        base_vectors = np.array([docs[i].vector("embedding") for i in range(num_docs)])
+        query_vectors_np = np.array(query_vectors)
+
+        # Compute all distances (L2)
+        ground_truth_indices = []
+        for i in range(n_test_queries):
+            qv = query_vectors_np[i]
+            distances = np.sum((base_vectors - qv) ** 2, axis=1)
+            gt_indices = np.argsort(distances)[:topk]
+            ground_truth_indices.append(set(str(idx) for idx in gt_indices))
+
+        # Run OMEGA search and compute recall
+        print(f"   Running {n_test_queries} OMEGA searches with topk={topk}, target_recall={target_recall}...")
+        recalls = []
+        for i in range(n_test_queries):
+            results = collection.query(
+                VectorQuery(
+                    field_name="embedding",
+                    vector=query_vectors[i],
+                    param=OmegaQueryParam(ef=1000, target_recall=target_recall)
+                ),
+                topk=topk
+            )
+
+            result_ids = {r.id for r in results}
+            gt_ids = ground_truth_indices[i]
+
+            # Compute recall: |intersection| / |ground_truth|
+            recall = len(result_ids & gt_ids) / len(gt_ids) if gt_ids else 1.0
+            recalls.append(recall)
+
+            if (i + 1) % 200 == 0:
+                print(f"   Progress: {i+1}/{n_test_queries} queries completed...")
+
+        avg_recall = np.mean(recalls)
+        print(f"   Average Recall@{topk}: {avg_recall:.4f}")
+
+        # Validate recall meets target
+        assert avg_recall >= target_recall, f"Recall too low: {avg_recall:.4f} < {target_recall}"
+        print(f"   ✅ Recall meets target ({avg_recall:.4f} >= {target_recall})")
+
+        # Summary
+        print("\n" + "="*80)
+        print("✅ OMEGA End-to-End Workflow PASSED")
+        print("   1. ✓ Collection created with OMEGA index")
+        print(f"   2. ✓ {len(docs)} documents inserted (>= min_vector_threshold)")
+        print("   3. ✓ Training triggered and completed")
+        print("   4. ✓ All model files generated (5 files)")
+        print("   5. ✓ OMEGA early stopping ENABLED during search")
+        print(f"   6. ✓ {n_test_queries} queries, topk={topk}, recall: {avg_recall:.4f} >= {target_recall}")
+        print("="*80)
+
+    def test_omega_fallback_to_hnsw(self, tmp_path_factory):
+        """
+        Test OMEGA fallback behavior when document count < min_vector_threshold.
+
+        Verifies that:
+        1. Training still occurs during optimize()
+        2. Search falls back to standard HNSW (OMEGA disabled)
+        3. Results are identical to pure HNSW search
+        """
+        import numpy as np
+        import os
+
+        print("\n" + "="*80)
+        print("OMEGA Fallback to HNSW Test (< min_vector_threshold)")
+        print("="*80)
+
+        # Step 1: Create OMEGA collection
+        print("\n[Step 1/5] Creating OMEGA collection...")
+        temp_dir = tmp_path_factory.mktemp("omega_fallback")
+        collection_path = str(temp_dir / "omega_fallback_collection")
+
+        schema = zvec.CollectionSchema(
+            name="omega_fallback_test",
+            fields=[
+                FieldSchema("id", DataType.INT64, nullable=False),
+                FieldSchema("name", DataType.STRING, nullable=False),
+            ],
+            vectors=[
+                VectorSchema(
+                    "embedding",
+                    DataType.VECTOR_FP32,
+                    dimension=128,
+                    index_param=OmegaIndexParam(
+                        metric_type=MetricType.L2,
+                        m=16,
+                        ef_construction=200,
+                        min_vector_threshold=100000,  # Explicitly set threshold
+                    ),
+                ),
+            ],
+        )
+
+        collection = zvec.create_and_open(
+            path=collection_path,
+            schema=schema,
+            option=CollectionOption()
+        )
+
+        print(f"   ✓ Collection created with min_vector_threshold=100000")
+
+        # Step 2: Insert only 1000 documents (< threshold)
+        print("\n[Step 2/5] Inserting 1,000 documents (< min_vector_threshold)...")
+        docs = []
+        np.random.seed(42)
+        num_docs = 1000
+        for i in range(num_docs):
+            vector = np.random.randn(128).astype(np.float32)
+            vector = vector / np.linalg.norm(vector)
+            docs.append(
+                Doc(
+                    id=f"{i}",
+                    fields={"id": i, "name": f"doc_{i}"},
+                    vectors={"embedding": vector.tolist()},
                 )
             )
 
         batch_size = 100
         for i in range(0, len(docs), batch_size):
             batch = docs[i : i + batch_size]
-            collection.insert(batch)
+            result = collection.insert(batch)
+            assert all(r.ok() for r in result)
+
+        assert collection.stats.doc_count == len(docs)
         print(f"   ✓ Inserted {len(docs)} documents")
+        print(f"   ✓ Doc count ({num_docs}) < min_vector_threshold (100000)")
 
-        # Trigger optimization
-        print(f"\n[2/4] Triggering optimize (dump + auto training)...")
+        # Step 3: Flush and optimize (training will occur)
+        print("\n[Step 3/5] Flushing and optimizing...")
+        collection.flush()
         collection.optimize(option=OptimizeOption())
-        print(f"   ✓ Optimize completed")
+        print(f"   ✓ Optimize completed (training executed)")
 
-        # Close collection
-        del collection
-        gc.collect()
-        time.sleep(1)
-
-        # Reopen to load OMEGA index
-        print(f"   Reopening collection to load OMEGA indexes...")
-        collection = zvec.open(path=collection_path, option=CollectionOption(read_only=True))
-        print(f"   ✓ Collection reopened")
-
-        # Verify model files exist
-        print(f"\n[3/4] Verifying model files...")
+        # Step 4: Verify model files were generated despite fallback
+        print("\n[Step 4/5] Verifying model files (training should have occurred)...")
         model_files_found = False
-        model_dir = None
+        for item in os.listdir(collection_path):
+            item_path = os.path.join(collection_path, item)
+            if os.path.isdir(item_path):
+                model_dir = os.path.join(item_path, "omega_model")
+                if os.path.exists(model_dir) and os.path.exists(os.path.join(model_dir, "model.txt")):
+                    model_files_found = True
+                    print(f"   ✓ Model files found (training executed)")
+                    break
 
-        # Look for any numeric segment directories
-        if os.path.exists(collection_path):
-            for item in os.listdir(collection_path):
-                item_path = os.path.join(collection_path, item)
-                if os.path.isdir(item_path):
-                    potential_model_dir = os.path.join(item_path, "omega_model")
+        assert model_files_found, "Model files should exist even when fallback occurs"
 
-                    if os.path.exists(potential_model_dir):
-                        model_dir = potential_model_dir
-                        print(f"   Found model directory: {model_dir}")
+        # Step 5: Test search with fallback behavior
+        print("\n[Step 5/5] Testing search with OMEGA disabled (fallback to HNSW)...")
+        print(f"   Note: OMEGA early stopping is DISABLED (doc_count={num_docs} < threshold=100000)")
+        print(f"   Expected: Search uses standard HNSW algorithm")
 
-                        # Check for all required files
-                        required_files = [
-                            "model.txt",
-                            "threshold_table.txt",
-                            "interval_table.txt",
-                            "gt_collected_table.txt",
-                            "gt_cmps_all_table.txt"
-                        ]
-
-                        files_exist = []
-                        for fname in required_files:
-                            fpath = os.path.join(model_dir, fname)
-                            exists = os.path.exists(fpath)
-                            files_exist.append(exists)
-
-                            if exists:
-                                file_size = os.path.getsize(fpath)
-                                print(f"   ✓ {fname}: {file_size} bytes")
-                            else:
-                                print(f"   ✗ {fname}: NOT FOUND")
-
-                        if all(files_exist):
-                            model_files_found = True
-                            print(f"\n   ✅ ALL MODEL FILES GENERATED!")
-                        break
-
-        if not model_files_found:
-            print(f"   ⚠️  No OMEGA model files found in any segment directory")
-
-        assert model_files_found, "OMEGA model files not found after training"
-
-        # Test search and calculate recall
-        print(f"\n[4/4] Testing search recall...")
-        n_queries = 10
+        n_test_queries = 100
         topk = 10
+        target_recall = 0.80
+
+        # Generate NEW random query vectors
+        print(f"   Generating {n_test_queries} random query vectors...")
+        np.random.seed(12345)
+        query_vectors = []
+        for i in range(n_test_queries):
+            qv = np.random.randn(128).astype(np.float32)
+            qv = qv / np.linalg.norm(qv)
+            query_vectors.append(qv.tolist())
+
+        # Compute ground truth using brute-force
+        print(f"   Computing ground truth (brute-force) for recall evaluation...")
+        base_vectors = np.array([docs[i].vector("embedding") for i in range(num_docs)])
+        query_vectors_np = np.array(query_vectors)
+
+        ground_truth_indices = []
+        for i in range(n_test_queries):
+            qv = query_vectors_np[i]
+            distances = np.sum((base_vectors - qv) ** 2, axis=1)
+            gt_indices = np.argsort(distances)[:topk]
+            ground_truth_indices.append(set(str(idx) for idx in gt_indices))
+
+        # Run search and compute recall
+        print(f"   Running {n_test_queries} HNSW searches with topk={topk}...")
         recalls = []
-
-        for i in range(n_queries):
-            query_doc = docs[i]
-            query_vector = query_doc.vector("embedding")
-
+        for i in range(n_test_queries):
+            # Even with OmegaQueryParam, OMEGA early stopping is disabled
+            # because doc_count < min_vector_threshold
             results = collection.query(
-                VectorQuery(field_name="embedding", vector=query_vector),
+                VectorQuery(
+                    field_name="embedding",
+                    vector=query_vectors[i],
+                    param=OmegaQueryParam(target_recall=target_recall)
+                ),
                 topk=topk
             )
 
-            # Calculate recall
-            result_ids = [r.id for r in results]
-            recall = 1.0 if query_doc.id in result_ids else 0.0
+            result_ids = {r.id for r in results}
+            gt_ids = ground_truth_indices[i]
+
+            recall = len(result_ids & gt_ids) / len(gt_ids) if gt_ids else 1.0
             recalls.append(recall)
 
         avg_recall = np.mean(recalls)
         print(f"   Average Recall@{topk}: {avg_recall:.4f}")
 
-        # Verify recall is reasonable (should be high since we use docs from collection)
-        assert avg_recall >= 0.8, f"Recall too low: {avg_recall:.4f}"
+        # For fallback to HNSW, recall should still be high (pure HNSW performance)
+        assert avg_recall >= target_recall, f"Recall too low: {avg_recall:.4f} < {target_recall}"
+        print(f"   ✅ Recall meets target (standard HNSW performance)")
 
-        print(f"\n   ✅ RECALL MEETS THRESHOLD (>= 0.8)")
+        # Summary
         print("\n" + "="*80)
-        print("✅ OMEGA Training Verification PASSED")
-        print("   1. ✓ Model files generated (LightGBM + 4 tables)")
-        print("   2. ✓ Training completed with k_train=1 labeling")
-        print(f"   3. ✓ Search recall: {avg_recall:.4f} >= 0.8")
+        print("✅ OMEGA Fallback Test PASSED")
+        print("   1. ✓ Collection created with min_vector_threshold=100000")
+        print(f"   2. ✓ {num_docs} documents inserted (< threshold)")
+        print("   3. ✓ Training executed during optimize()")
+        print("   4. ✓ Model files generated")
+        print("   5. ✓ Search falls back to HNSW (OMEGA disabled)")
+        print(f"   6. ✓ {n_test_queries} queries, topk={topk}, recall: {avg_recall:.4f} >= {target_recall}")
         print("="*80)

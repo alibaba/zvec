@@ -23,6 +23,8 @@ from .model.param import (
     InvertIndexParam,
     IVFIndexParam,
     IVFQueryParam,
+    OmegaIndexParam,
+    OmegaQueryParam,
     OptimizeOption,
 )
 from .model.param.vector_query import VectorQuery
@@ -62,6 +64,8 @@ __all__: list = [
     "LogLevel",
     "LogType",
     "MetricType",
+    "OmegaIndexParam",
+    "OmegaQueryParam",
     "OptimizeOption",
     "QuantizeType",
     "ReRanker",
