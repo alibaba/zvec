@@ -14,6 +14,7 @@
 
 
 #include <unistd.h>
+#include <filesystem>
 #include <thread>
 #include <zvec/db/collection.h>
 #include "zvec/ailego/logger/logger.h"
@@ -108,13 +109,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  char cwd[PATH_MAX];
-  if (getcwd(cwd, sizeof(cwd)) != nullptr) {
-    std::cerr << "[data_generator] Current Working Directory: " << cwd
+  try {
+    std::filesystem::path cwd = std::filesystem::current_path();
+    std::cout << "[data_generator] Current Working Directory: " << cwd.string()
               << std::endl;
-  } else {
-    std::cerr << "[data_generator] getcwd failed: " << strerror(errno)
-              << std::endl;
+  } catch (const std::filesystem::filesystem_error &e) {
+    std::cout
+        << "[data_generator] Failed to get the current working directory: "
+        << e.what() << std::endl;
   }
 
   // Determine if we should create updated documents
