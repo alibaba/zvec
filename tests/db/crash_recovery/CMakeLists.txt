@@ -62,5 +62,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
         INCS .. ../../src
         LDFLAGS ${APPLE_FRAMEWORK_LIBS}
     )
+    add_dependencies(${CC_TARGET} data_generator)
     cc_test_suite(zvec_crash_recovery ${CC_TARGET})
 endforeach()

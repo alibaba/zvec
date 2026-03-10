@@ -168,9 +168,9 @@ TEST_F(CrashRecoveryTest, CrashRecovery_DuringInsertion) {
       }
       const auto actual_doc = map.at(expected_doc.pk());
       ASSERT_EQ(*actual_doc, expected_doc)
-          << "Data mismatch for doc_id[" << doc_id << "]";
+          << "Data mismatch for doc[" << expected_doc.pk() << "]";
     } else {
-      FAIL() << "Failed to fetch doc[" << doc_id << "]";
+      FAIL() << "Failed to fetch doc[" << expected_doc.pk() << "]";
     }
   }
 }
