@@ -140,10 +140,10 @@ TEST_F(CrashRecoveryTest, CrashRecovery_DuringInsertion) {
     int status;
     waitpid(pid, &status, 0);
 
-    // if (!WIFSIGNALED(status)) {
-    //   FAIL() << "Child process was not killed by a signal. It exited
-    //   normally?"; return;
-    // }
+    if (!WIFSIGNALED(status)) {
+      FAIL() << "Child process was not killed by a signal. It exited normally?";
+      return;
+    }
 
     LOG_INFO("Successfully simulated crash (SIGKILL) during insertion.");
   }
@@ -167,15 +167,6 @@ TEST_F(CrashRecoveryTest, CrashRecovery_DuringInsertion) {
                << "]";
       }
       const auto actual_doc = map.at(expected_doc.pk());
-      std::cout << "actual doc: " << actual_doc->to_detail_string()
-                << std::endl;
-      std::cout << "expected doc: " << expected_doc.to_detail_string()
-                << std::endl;
-      if (*actual_doc == expected_doc) {
-        std::cout << "Equal" << std::endl;
-      } else {
-        std::cout << "Not Equal" << std::endl;
-      }
       ASSERT_EQ(*actual_doc, expected_doc)
           << "Data mismatch for doc_id[" << doc_id << "]";
     } else {
