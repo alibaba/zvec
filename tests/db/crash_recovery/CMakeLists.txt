@@ -63,5 +63,10 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
         LDFLAGS ${APPLE_FRAMEWORK_LIBS}
     )
     add_dependencies(${CC_TARGET} data_generator)
+    add_custom_command(TARGET ${CC_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+        $<TARGET_FILE:data_generator>
+        $<TARGET_FILE_DIR:${CC_TARGET}>
+    )
     cc_test_suite(zvec_crash_recovery ${CC_TARGET})
 endforeach()
