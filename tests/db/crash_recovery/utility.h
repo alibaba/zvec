@@ -66,18 +66,18 @@ inline CollectionSchema::Ptr CreateTestSchema(
  * - int32_field: doc_id (cast to int32)
  * - int64_field: doc_id, null if doc_id % 60 == 0
  * - float_field: doc_id / 1000.0, null if doc_id % 70 == 0
- * - string_field: "value_{doc_id}" or "updated_value_{doc_id}" if updated
- * - bool_field: doc_id % 2 == 0 or flipped if is_update
+ * - string_field: "{version}_{doc_id}"
+ * - bool_field: doc_id % 2 == 0 or flipped if version % 2 !=0
  * - array_int32_field: [doc_id, doc_id+1, doc_id+2], null if doc_id % 100 == 0
- * - array_string_field: ["str_0", ...] or ["updated_str_0", ...] if updated
+ * - array_string_field: ["str_{version}_0", ...]
  * - dense_fp32_field: vector where dense[i] = (doc_id + i) / 1000.0f
  * - sparse_fp32_field: sparse vector with indices [0, 10, ...]
  *
  * @param doc_id The document ID (determines all field values)
- * @param is_update If true, create updated version of the document
+ * @param version The version of the document
  * @return Doc The created document
  */
-inline Doc CreateTestDoc(uint64_t doc_id, bool is_update = false) {
+inline Doc CreateTestDoc(uint64_t doc_id, int version) {
   Doc doc;
 
   // Set primary key
@@ -98,14 +98,13 @@ inline Doc CreateTestDoc(uint64_t doc_id, bool is_update = false) {
   }
 
   // string_field: "value_{id}" or "updated_value_{id}"
-  std::string string_value = is_update
-                                 ? "updated_value_" + std::to_string(doc_id)
-                                 : "value_" + std::to_string(doc_id);
+  std::string string_value =
+      std::to_string(version) + "_" + std::to_string(doc_id);
   doc.set<std::string>("string_field", string_value);
 
   // bool_field: alternating based on doc_id, flipped if updated
   bool bool_value = (doc_id % 2 == 0);
-  if (is_update) {
+  if (version % 2 != 0) {
     bool_value = !bool_value;
   }
   doc.set<bool>("bool_field", bool_value);
@@ -123,11 +122,8 @@ inline Doc CreateTestDoc(uint64_t doc_id, bool is_update = false) {
   std::vector<std::string> array_string;
   size_t array_size = doc_id % 5 + 1;  // 1 to 5 elements
   for (size_t i = 0; i < array_size; i++) {
-    if (is_update) {
-      array_string.push_back("updated_str_" + std::to_string(i));
-    } else {
-      array_string.push_back("str_" + std::to_string(i));
-    }
+    array_string.push_back("str_" + std::to_string(version) + "_" +
+                           std::to_string(i));
   }
   doc.set<std::vector<std::string>>("array_string_field", array_string);
 

@@ -21,15 +21,16 @@
 #include "utility.h"
 
 
-constexpr uint64_t kBatchSize = 20;
-constexpr uint64_t kBatchDelayMs = 10;
+constexpr int kBatchSize = 20;
+constexpr int kBatchDelayMs = 10;
 
 
 struct Config {
   std::string path;
-  uint64_t start_id = 0;
-  uint64_t end_id = 0;
-  std::string operation;  // "insert", "upsert", "update"
+  int start_id = 0;
+  int end_id = 0;
+  std::string operation;  // "insert", "upsert", "update", "delete"
+  int version = 999999;
 };
 
 
@@ -40,11 +41,13 @@ bool ParseArgs(int argc, char **argv, Config &config) {
     if (arg == "--path" && i + 1 < argc) {
       config.path = argv[++i];
     } else if (arg == "--start" && i + 1 < argc) {
-      config.start_id = std::stoull(argv[++i]);
+      config.start_id = std::stoi(argv[++i]);
     } else if (arg == "--end" && i + 1 < argc) {
-      config.end_id = std::stoull(argv[++i]);
+      config.end_id = std::stoi(argv[++i]);
     } else if (arg == "--op" && i + 1 < argc) {
       config.operation = argv[++i];
+    } else if (arg == "--version" && i + 1 < argc) {
+      config.version = std::stoi(argv[++i]);
     } else if (arg == "--help" || arg == "-h") {
       return false;
     }
@@ -52,15 +55,16 @@ bool ParseArgs(int argc, char **argv, Config &config) {
 
   // Validate required arguments
   if (config.path.empty() || config.operation.empty() ||
-      config.start_id >= config.end_id) {
+      config.start_id >= config.end_id || config.version == 999999) {
     return false;
   }
 
   // Validate operation
   if (config.operation != "insert" && config.operation != "upsert" &&
-      config.operation != "update") {
+      config.operation != "update" && config.operation != "delete") {
     std::cerr << "Error: Invalid operation '" << config.operation
-              << "'. Must be 'insert', 'upsert', or 'update'." << std::endl;
+              << "'. Must be 'insert', 'upsert', 'update', or 'delete'."
+              << std::endl;
     return false;
   }
 
@@ -80,23 +84,27 @@ void PrintUsage(const char *program) {
             << std::endl;
   std::cout << "  --end       Ending document ID (exclusive, required)"
             << std::endl;
-  std::cout << "  --op        Operation: insert, upsert, or update (required)"
-            << std::endl;
+  std::cout
+      << "  --op        Operation: insert, upsert, update, or delete (required)"
+      << std::endl;
+  std::cout << "  --version   Operation: version (required)" << std::endl;
   std::cout << std::endl;
   std::cout << "Examples:" << std::endl;
   std::cout << "  # Insert 1000 documents (pk_0 to pk_999)" << std::endl;
   std::cout << "  " << program
-            << " --path ./test_db --start 0 --end 1000 --op insert"
+            << " --path ./test_db --start 0 --end 1000 --op insert --version 0"
             << std::endl;
   std::cout << std::endl;
   std::cout << "  # Update documents 1000-1999" << std::endl;
-  std::cout << "  " << program
-            << " --path ./test_db --start 1000 --end 2000 --op update"
-            << std::endl;
+  std::cout
+      << "  " << program
+      << " --path ./test_db --start 1000 --end 2000 --op update --version 1"
+      << std::endl;
   std::cout << std::endl;
   std::cout << "  # Upsert documents 0-499" << std::endl;
   std::cout << "  " << program
-            << " --path ./test_db --start 0 --end 500 --op upsert" << std::endl;
+            << " --path ./test_db --start 0 --end 500 --op upsert --version 2"
+            << std::endl;
 }
 
 
@@ -119,9 +127,6 @@ int main(int argc, char **argv) {
         << e.what() << std::endl;
   }
 
-  // Determine if we should create updated documents
-  bool is_update = (config.operation == "update");
-
   std::cout << "Configuration:" << std::endl;
   std::cout << "  Path:      " << config.path << std::endl;
   std::cout << "  Range:     [" << config.start_id << ", " << config.end_id
@@ -143,20 +148,20 @@ int main(int argc, char **argv) {
   LOG_INFO("Collection[%s] opened successfully", config.path.c_str());
 
   // Process documents in batches
-  uint64_t total_docs = config.end_id - config.start_id;
-  uint64_t processed = 0;
-  uint64_t batch_num = 0;
-  uint64_t next_progress_threshold = total_docs / 10;  // 10% increments
-  uint64_t progress_percent = 0;
+  int total_docs = config.end_id - config.start_id;
+  int processed = 0;
+  int batch_num = 0;
+  int next_progress_threshold = total_docs / 10;  // 10% increments
+  int progress_percent = 0;
 
   while (config.start_id < config.end_id) {
-    uint64_t batch_end = std::min(config.start_id + kBatchSize, config.end_id);
-    uint64_t batch_count = batch_end - config.start_id;
+    int batch_end = std::min(config.start_id + kBatchSize, config.end_id);
+    int batch_count = batch_end - config.start_id;
 
     std::vector<zvec::Doc> docs;
     docs.reserve(batch_count);
     for (uint64_t i = config.start_id; i < batch_end; i++) {
-      docs.push_back(zvec::CreateTestDoc(i, is_update));
+      docs.push_back(zvec::CreateTestDoc(i, config.version));
     }
 
     zvec::Result<zvec::WriteResults> results;
@@ -166,6 +171,12 @@ int main(int argc, char **argv) {
       results = collection->Upsert(docs);
     } else if (config.operation == "update") {
       results = collection->Update(docs);
+    } else if (config.operation == "delete") {
+      std::vector<std::string> pks{};
+      for (const auto &doc : docs) {
+        pks.emplace_back(doc.pk());
+      }
+      results = collection->Delete(pks);
     }
     if (!results) {
       LOG_ERROR("Failed to perform operation[%s], reason: %s",
@@ -187,7 +198,7 @@ int main(int argc, char **argv) {
     // Print progress every 10%
     if (processed >= next_progress_threshold) {
       progress_percent++;
-      LOG_INFO("Progress: %llu%% (%llu/%llu documents)", progress_percent * 10,
+      LOG_INFO("Progress: %d (%d/%d documents)", progress_percent * 10,
                processed, total_docs);
       next_progress_threshold = (progress_percent + 1) * total_docs / 10;
     }
