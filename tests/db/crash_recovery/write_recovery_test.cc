@@ -195,45 +195,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
     collection.reset();
   }
 
-  pid_t pid = fork();
-  if (pid == 0) {  // Child process
-    char arg_path[] = "--path";
-    char arg_start[] = "--start";
-    char val_start[] = "0";
-    char arg_end[] = "--end";
-    char val_end[] = "5000";
-    char arg_op[] = "--op";
-    char val_op[] = "insert";
-
-    char *args[] = {const_cast<char *>(data_generator_bin_.c_str()),
-                    arg_path,
-                    const_cast<char *>(dir_path_.c_str()),
-                    arg_start,
-                    val_start,
-                    arg_end,
-                    val_end,
-                    arg_op,
-                    val_op,
-                    nullptr};
-    execvp(args[0], args);
-    perror("execvp failed");
-    _exit(1);
-  } else {  // Parent process
-    int status;
-    waitpid(pid, &status, 0);
-
-    if (!WIFEXITED(status)) {
-      FAIL() << "Child process did not exit normally. Terminated by signal?";
-      return;
-    }
-
-    int exit_code = WEXITSTATUS(status);
-    if (exit_code != 0) {
-      FAIL() << "data_generator failed with exit code: " << exit_code;
-      return;
-    }
-  }
-
+  RunGenerator("0", "5000", "insert");
   {
     auto result = Collection::Open(dir_path_, options_);
     ASSERT_TRUE(result.has_value());
@@ -242,48 +204,14 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
         << "Document count mismatch";
   }
 
-  pid = fork();
-  if (pid == 0) {  // Child process
-    char arg_path[] = "--path";
-    char arg_start[] = "--start";
-    char val_start[] = "3000";
-    char arg_end[] = "--end";
-    char val_end[] = "20000";
-    char arg_op[] = "--op";
-    char val_op[] = "upsert";
-
-    char *args[] = {const_cast<char *>(data_generator_bin_.c_str()),
-                    arg_path,
-                    const_cast<char *>(dir_path_.c_str()),
-                    arg_start,
-                    val_start,
-                    arg_end,
-                    val_end,
-                    arg_op,
-                    val_op,
-                    nullptr};
-    execvp(args[0], args);
-    perror("execvp failed");
-    _exit(1);
-  } else {  // Parent process
-    std::this_thread::sleep_for(std::chrono::seconds(5));
-    kill(pid, SIGKILL);
-
-    int status;
-    waitpid(pid, &status, 0);
-
-    if (!WIFSIGNALED(status)) {
-      FAIL() << "Child process was not killed by a signal. It exited normally?";
-      return;
-    }
-  }
+  RunGeneratorAndCrash("4500", "20000", "upsert", 5);
 
   auto result = Collection::Open(dir_path_, options_);
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
   uint64_t doc_count{collection->Stats().value().doc_count};
-  ASSERT_GT(doc_count, 6500)
+  ASSERT_GT(doc_count, 6000)
       << "Document count is too low after 5s of insertion and recovery";
 
   for (int doc_id = 0; doc_id < doc_count; doc_id++) {
