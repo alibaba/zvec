@@ -14,6 +14,7 @@
 
 
 #include <csignal>
+#include <filesystem>
 #include <thread>
 #include <gtest/gtest.h>
 #include <zvec/db/collection.h>
@@ -26,7 +27,23 @@
 namespace zvec {
 
 
-const std::string data_generator_bin_{"./data_generator"};
+static std::string LocateDataGenerator() {
+  namespace fs = std::filesystem;
+
+  const std::vector<std::string> candidates{"./data_generator",
+                                            "./bin/data_generator"};
+
+  for (const auto &p : candidates) {
+    if (fs::exists(p)) {
+      return fs::canonical(p).string();
+    }
+  }
+
+  throw std::runtime_error("data_generator binary not found");
+}
+
+
+static std::string data_generator_bin_;
 const std::string collection_name_{"crash_test"};
 const std::string dir_path_{"crash_test_db"};
 const zvec::CollectionOptions options_{false, true};
@@ -36,6 +53,7 @@ class CrashRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
     system("rm -rf ./crash_test_db");
+    data_generator_bin_ = LocateDataGenerator();
   }
 
   void TearDown() override {
