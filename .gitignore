@@ -49,3 +49,6 @@ yarn-error.log*
 allure-*
 
 !build_android.sh
+
+# Rust crate build artifacts
+zvec-rs/target/

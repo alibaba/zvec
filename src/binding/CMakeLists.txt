@@ -5,4 +5,10 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 git_version(ZVEC_VERSION ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Add repository
-cc_directory(python)
+if(BUILD_PYTHON_BINDINGS)
+    cc_directory(python)
+endif()
+
+if(BUILD_C_BINDINGS)
+    cc_directory(c)
+endif()
