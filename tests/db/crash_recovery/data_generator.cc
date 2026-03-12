@@ -136,8 +136,8 @@ int main(int argc, char **argv) {
   std::cout << "  BatchDelay: " << kBatchDelayMs << "ms" << std::endl;
   std::cout << std::endl;
 
-  auto result =
-      zvec::Collection::Open(config.path, zvec::CollectionOptions{false, true});
+  auto result = zvec::Collection::Open(
+      config.path, zvec::CollectionOptions{false, true, 4 * 1024 * 1024});
   if (!result) {
     LOG_ERROR("Failed to open collection[%s]: %s", config.path.c_str(),
               result.error().c_str());
@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
 
     std::vector<zvec::Doc> docs;
     docs.reserve(batch_count);
-    for (uint64_t i = config.start_id; i < batch_end; i++) {
+    for (int i = config.start_id; i < batch_end; i++) {
       docs.push_back(zvec::CreateTestDoc(i, config.version));
     }
 

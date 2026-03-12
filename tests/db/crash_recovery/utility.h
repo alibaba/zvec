@@ -31,7 +31,7 @@ namespace zvec {
 inline CollectionSchema::Ptr CreateTestSchema(
     const std::string &name = "crash_recovery_test") {
   auto schema = std::make_shared<CollectionSchema>(name);
-  schema->set_max_doc_count_per_segment(2000);
+  schema->set_max_doc_count_per_segment(10000);
 
   schema->add_field(
       std::make_shared<FieldSchema>("int32_field", DataType::INT32, false));
