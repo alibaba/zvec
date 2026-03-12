@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <ailego/internal/cpu_features.h>
+#include "ailego/internal/cpu_features.h"
 #include "norm2_matrix.h"
 #include "norm_matrix_fp32.i"
 
