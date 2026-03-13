@@ -35,7 +35,8 @@ compute_one_to_many_inner_product_avx2_int8(
   for (; dim + 32 <= dimensionality; dim += 32) {
     __m256i q = _mm256_loadu_si256((const __m256i *)(query + dim));
 
-    __m256i data_regs[dp_batch] for (size_t i = 0; i < dp_batch; ++i) {
+    __m256i data_regs[dp_batch];
+    for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] = _mm256_loadu_si256((const __m256i *)(ptrs[i] + dim));
     }
     if (prefetch_ptrs[0]) {

@@ -76,7 +76,7 @@ static void compute_one_to_many_inner_product_avx512_vnni_int8(
     }
   }
 
-  int temp_results[dp_batch];
+  int temp_results[dp_batch]{};
   for (size_t i = 0; i < dp_batch; ++i) {
     temp_results[i] = _mm512_reduce_add_epi32(accs[i]);
   }
