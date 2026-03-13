@@ -52,7 +52,8 @@ static void compute_one_to_many_inner_product_avx512_vnni_int8(
     const int8_t *query, const int8_t **ptrs,
     std::array<const int8_t *, dp_batch> &prefetch_ptrs, size_t dimensionality,
     float *results) {
-  std::array<__m512i, dp_batch> accs;
+
+  __m512i accs[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm512_setzero_si512();
   }
@@ -60,7 +61,8 @@ static void compute_one_to_many_inner_product_avx512_vnni_int8(
   for (; dim + 64 <= dimensionality; dim += 64) {
     __m512i q =
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + dim));
-    std::array<__m512i, dp_batch> data_regs;
+
+    __m512i data_regs[dp_batch];
     for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] =
           _mm512_loadu_si512(reinterpret_cast<const __m512i *>(ptrs[i] + dim));
@@ -74,7 +76,8 @@ static void compute_one_to_many_inner_product_avx512_vnni_int8(
       accs[i] = _mm512_dpbusd_epi32(accs[i], q, data_regs[i]);
     }
   }
-  std::array<int, dp_batch> temp_results{};
+
+  int temp_results[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
     temp_results[i] = _mm512_reduce_add_epi32(accs[i]);
   }
@@ -88,6 +91,7 @@ static void compute_one_to_many_inner_product_avx512_vnni_int8(
     results[i] = static_cast<float>(temp_results[i]);
   }
 }
+
 //
 // #elif defined(__AVX512BW__)
 // // TODO: this version is problematic

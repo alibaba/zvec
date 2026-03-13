@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <vector>
+#include <array>
 #include <ailego/utility/math_helper.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/type_helper.h>
@@ -27,14 +27,16 @@ compute_one_to_many_inner_product_avx2_int8(
     const int8_t *query, const int8_t **ptrs,
     std::array<const int8_t *, dp_batch> &prefetch_ptrs, size_t dimensionality,
     float *results) {
-  std::vector<__m256i> accs(dp_batch);
+
+  __m256i accs[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm256_setzero_si256();
   }
   size_t dim = 0;
   for (; dim + 32 <= dimensionality; dim += 32) {
     __m256i q = _mm256_loadu_si256((const __m256i *)(query + dim));
-    std::vector<__m256i> data_regs(dp_batch);
+    
+    __m256i data_regs[dp_batch]
     for (size_t i = 0; i < dp_batch; ++i) {
       data_regs[i] = _mm256_loadu_si256((const __m256i *)(ptrs[i] + dim));
     }
@@ -63,7 +65,8 @@ compute_one_to_many_inner_product_avx2_int8(
           _mm256_add_epi32(accs[i], _mm256_add_epi32(prod_lo[i], prod_hi[i]));
     }
   }
-  std::array<int, dp_batch> temp_results;
+  
+  int temp_results[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
     __m128i lo = _mm256_castsi256_si128(accs[i]);
     __m128i hi = _mm256_extracti128_si256(accs[i], 1);
