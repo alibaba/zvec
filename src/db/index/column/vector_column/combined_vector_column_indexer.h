@@ -43,6 +43,7 @@ class CombinedVectorColumnIndexer {
       uint32_t segment_doc_id) const;
 
 
+ protected:
   /**
    * A filter wrapper that applies an offset to document IDs before
    * delegating to an inner filter.
@@ -65,9 +66,7 @@ class CombinedVectorColumnIndexer {
     uint64_t offset_;
   };
 
-
   // for ut
- protected:
   CombinedVectorColumnIndexer() = default;
 
 
