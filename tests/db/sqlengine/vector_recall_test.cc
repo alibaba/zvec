@@ -248,7 +248,7 @@ TEST_F(VectorRecallTest, DeleteFilter) {
 }
 
 TEST_F(VectorRecallTest, HybridInvertForwardDeleteFilter) {
-  // In previous test, docs[0-4000] has been deleted
+  // In previous test, docs[0-4000) has been deleted
   VectorQuery query;
   query.output_fields_ = {"name", "age"};
   query.filter_ = "invert_id >= 6000 and id < 6080";
