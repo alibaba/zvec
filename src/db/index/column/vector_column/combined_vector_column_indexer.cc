@@ -111,7 +111,6 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
       if (block_offsets_[i] > 0) {
         filter = &per_block_filter;
       } else {
-        std::cout << "offset is 0" << std::endl;
         filter = query_params.filter;
       }
     }
