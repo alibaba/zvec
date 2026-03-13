@@ -82,7 +82,7 @@ compute_one_to_many_inner_product_avx512f_fp16(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, dp_batch> &prefetch_ptrs,
     size_t dimensionality, float *results) {
-  __m512 data_regs[dp_batch];
+  __m512 accs[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm512_setzero_ps();
   }
