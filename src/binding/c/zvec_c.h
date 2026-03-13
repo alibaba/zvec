@@ -21,7 +21,7 @@ extern "C" {
 #include <stdint.h>
 
 /** Opaque handle to an open Collection. */
-typedef void* zvec_collection_t;
+typedef void *zvec_collection_t;
 
 /**
  * Status returned from every API call.
@@ -31,7 +31,7 @@ typedef void* zvec_collection_t;
  */
 typedef struct {
   int code;
-  const char* message;
+  const char *message;
 } zvec_status_t;
 
 /* Status codes (mirror zvec::StatusCode) */
@@ -73,11 +73,18 @@ typedef struct {
  * Supported metrics:     L2, IP, COSINE, MIPSL2
  * Supported quantize:    FP16, INT8, INT4  (optional field)
  */
-zvec_status_t zvec_create_and_open(const char* path,
-                                   const char* schema_json,
-                                   zvec_collection_t* out);
+zvec_status_t zvec_create_and_open(const char *path, const char *schema_json,
+                                   zvec_collection_t *out);
 
-zvec_status_t zvec_open(const char* path, zvec_collection_t* out);
+zvec_status_t zvec_open(const char *path, zvec_collection_t *out);
+
+/**
+ * Open an existing collection in read-only mode.
+ *
+ * Multiple read-only handles can coexist with one active writer.
+ * Write APIs invoked through this handle will return read-only errors.
+ */
+zvec_status_t zvec_open_read_only(const char *path, zvec_collection_t *out);
 
 /** Release the in-memory handle without deleting on-disk data. */
 void zvec_collection_free(zvec_collection_t col);
@@ -104,29 +111,24 @@ zvec_status_t zvec_collection_flush(zvec_collection_t col);
  * results_json output (must be freed with zvec_free_string):
  * [ { "pk": "doc_1", "code": 0, "message": "" }, ... ]
  */
-zvec_status_t zvec_insert(zvec_collection_t col,
-                          const char* docs_json,
-                          char** results_json);
+zvec_status_t zvec_insert(zvec_collection_t col, const char *docs_json,
+                          char **results_json);
 
-zvec_status_t zvec_upsert(zvec_collection_t col,
-                          const char* docs_json,
-                          char** results_json);
+zvec_status_t zvec_upsert(zvec_collection_t col, const char *docs_json,
+                          char **results_json);
 
-zvec_status_t zvec_update(zvec_collection_t col,
-                          const char* docs_json,
-                          char** results_json);
+zvec_status_t zvec_update(zvec_collection_t col, const char *docs_json,
+                          char **results_json);
 
 /**
  * pks_json: JSON array of string PKs, e.g. ["doc_1", "doc_2"]
  * results_json output: [ { "pk": "doc_1", "code": 0, "message": "" }, ... ]
  */
-zvec_status_t zvec_delete_by_pks(zvec_collection_t col,
-                                 const char* pks_json,
-                                 char** results_json);
+zvec_status_t zvec_delete_by_pks(zvec_collection_t col, const char *pks_json,
+                                 char **results_json);
 
 /** filter: SQL-like filter expression, e.g. "category = 'tech'" */
-zvec_status_t zvec_delete_by_filter(zvec_collection_t col,
-                                    const char* filter);
+zvec_status_t zvec_delete_by_filter(zvec_collection_t col, const char *filter);
 
 /* ── DQL ─────────────────────────────────────────────────────────────────────
  *
@@ -143,17 +145,15 @@ zvec_status_t zvec_delete_by_filter(zvec_collection_t col,
  * results_json output (must be freed with zvec_free_string):
  * [ { "pk": "doc_1", "score": 0.42, "fields": { "title": "hello" } }, ... ]
  */
-zvec_status_t zvec_query(zvec_collection_t col,
-                         const char* query_json,
-                         char** results_json);
+zvec_status_t zvec_query(zvec_collection_t col, const char *query_json,
+                         char **results_json);
 
 /**
  * pks_json: JSON array of string PKs.
  * results_json output: same format as zvec_query results.
  */
-zvec_status_t zvec_fetch(zvec_collection_t col,
-                         const char* pks_json,
-                         char** results_json);
+zvec_status_t zvec_fetch(zvec_collection_t col, const char *pks_json,
+                         char **results_json);
 
 /**
  * Sparse vector similarity query.
@@ -173,9 +173,8 @@ zvec_status_t zvec_fetch(zvec_collection_t col,
  *
  * results_json output: same format as zvec_query.
  */
-zvec_status_t zvec_sparse_query(zvec_collection_t col,
-                                const char* query_json,
-                                char** results_json);
+zvec_status_t zvec_sparse_query(zvec_collection_t col, const char *query_json,
+                                char **results_json);
 
 /* ── DDL ─────────────────────────────────────────────────────────────────────
  *
@@ -185,40 +184,36 @@ zvec_status_t zvec_sparse_query(zvec_collection_t col,
  *   { "type": "IVF",  "metric": "L2", "n_list": 1024 }
  *   { "type": "INVERT", "enable_range_optimization": true }
  */
-zvec_status_t zvec_create_index(zvec_collection_t col,
-                                const char* column_name,
-                                const char* index_params_json);
+zvec_status_t zvec_create_index(zvec_collection_t col, const char *column_name,
+                                const char *index_params_json);
 
-zvec_status_t zvec_drop_index(zvec_collection_t col,
-                              const char* column_name);
+zvec_status_t zvec_drop_index(zvec_collection_t col, const char *column_name);
 
 /**
  * field_schema_json: single field object (same format as entries in
  * schema.fields[]).  expression: default-value expression (may be "").
  */
 zvec_status_t zvec_add_column(zvec_collection_t col,
-                              const char* field_schema_json,
-                              const char* expression);
+                              const char *field_schema_json,
+                              const char *expression);
 
-zvec_status_t zvec_drop_column(zvec_collection_t col,
-                               const char* column_name);
+zvec_status_t zvec_drop_column(zvec_collection_t col, const char *column_name);
 
 /**
  * new_name: new column name, or NULL / "" to keep current name.
  * field_schema_json: updated schema, or NULL / "" to keep current schema.
  */
-zvec_status_t zvec_alter_column(zvec_collection_t col,
-                                const char* column_name,
-                                const char* new_name,
-                                const char* field_schema_json);
+zvec_status_t zvec_alter_column(zvec_collection_t col, const char *column_name,
+                                const char *new_name,
+                                const char *field_schema_json);
 
 /* ── Memory management ───────────────────────────────────────────────────── */
 
 /** Free a string returned by any API function. */
-void zvec_free_string(char* s);
+void zvec_free_string(char *s);
 
 /** Free the message inside a non-OK status. Safe to call on OK statuses. */
-void zvec_status_free(zvec_status_t* status);
+void zvec_status_free(zvec_status_t *status);
 
 #ifdef __cplusplus
 }

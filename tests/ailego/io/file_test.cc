@@ -15,6 +15,9 @@
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/io/file.h>
+#if !defined(_WIN64) && !defined(_WIN32)
+#include <fcntl.h>
+#endif
 
 using namespace zvec::ailego;
 
@@ -196,6 +199,33 @@ TEST(File, CreateAndOpen) {
   }
   File::Delete(file_path);
 }
+
+#if !defined(_WIN64) && !defined(_WIN32)
+TEST(File, CreateAndOpen_SetsCloseOnExecFlag) {
+  const char *file_path = "file_cloexec_testing.tmp";
+
+  File::Delete(file_path);
+  EXPECT_FALSE(File::IsRegular(file_path));
+
+  {
+    File file;
+    ASSERT_TRUE(file.create(file_path, 64));
+    const int flags = fcntl(file.native_handle(), F_GETFD);
+    ASSERT_NE(flags, -1);
+    EXPECT_NE(flags & FD_CLOEXEC, 0);
+  }
+
+  {
+    File file;
+    ASSERT_TRUE(file.open(file_path, true));
+    const int flags = fcntl(file.native_handle(), F_GETFD);
+    ASSERT_NE(flags, -1);
+    EXPECT_NE(flags & FD_CLOEXEC, 0);
+  }
+
+  File::Delete(file_path);
+}
+#endif
 
 TEST(File, ReadAndWrite) {
   const char *file_path = "file_read_testing.tmp";

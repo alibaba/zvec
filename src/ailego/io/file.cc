@@ -39,6 +39,50 @@ static inline int OpenSafely(const char *path, int flags) {
   return fd;
 }
 
+static inline bool SetCloseOnExec(int fd) {
+  int current_flags = fcntl(fd, F_GETFD);
+  while (current_flags == -1 && errno == EINTR) {
+    current_flags = fcntl(fd, F_GETFD);
+  }
+  if (current_flags == -1) {
+    return false;
+  }
+  if ((current_flags & FD_CLOEXEC) != 0) {
+    return true;
+  }
+
+  int ret = fcntl(fd, F_SETFD, current_flags | FD_CLOEXEC);
+  while (ret == -1 && errno == EINTR) {
+    ret = fcntl(fd, F_SETFD, current_flags | FD_CLOEXEC);
+  }
+  return ret == 0;
+}
+
+static inline int OpenWithCloseOnExec(const char *path, int flags) {
+#ifdef O_CLOEXEC
+  int cloexec_fd = OpenSafely(path, flags | O_CLOEXEC);
+  if (cloexec_fd != -1) {
+    return cloexec_fd;
+  }
+  if (errno != EINVAL) {
+    return -1;
+  }
+#endif
+
+  int fd = OpenSafely(path, flags);
+  if (fd == -1) {
+    return -1;
+  }
+  if (!SetCloseOnExec(fd)) {
+    int ret = close(fd);
+    while (ret == -1 && errno == EINTR) {
+      ret = close(fd);
+    }
+    return -1;
+  }
+  return fd;
+}
+
 static inline void CloseSafely(int fd) {
   int ret = close(fd);
   while (ret == -1 && errno == EINTR) {
@@ -144,7 +188,7 @@ bool File::create(const char *path, size_t len, bool direct) {
   (void)direct;
 #endif
 
-  int fd = OpenSafely(path, flags);
+  int fd = OpenWithCloseOnExec(path, flags);
   ailego_false_if_lt_zero(fd);
 
 #ifdef F_NOCACHE
@@ -178,7 +222,7 @@ bool File::open(const char *path, bool rdonly, bool direct) {
   (void)direct;
 #endif
 
-  int fd = OpenSafely(path, flags);
+  int fd = OpenWithCloseOnExec(path, flags);
   ailego_false_if_lt_zero(fd);
 
 #ifdef F_NOCACHE

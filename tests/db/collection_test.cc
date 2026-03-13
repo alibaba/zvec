@@ -14,12 +14,14 @@
 
 #include "zvec/db/collection.h"
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -37,6 +39,10 @@
 #include "zvec/db/schema.h"
 #include "zvec/db/status.h"
 #include "zvec/db/type.h"
+#if !defined(_WIN64) && !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using namespace zvec;
 using namespace zvec::test;
@@ -175,6 +181,49 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
   ASSERT_TRUE(result1.has_value());
   auto col1 = result1.value();
 }
+
+#if !defined(_WIN64) && !defined(_WIN32)
+TEST_F(CollectionTest, Feature_LockFdIsNotInheritedAcrossExec) {
+  CollectionOptions options;
+  options.read_only_ = false;
+  options.enable_mmap_ = true;
+
+  auto schema = TestHelper::CreateNormalSchema();
+  auto created = Collection::CreateAndOpen(col_path, *schema, options);
+  ASSERT_TRUE(created.has_value());
+  auto collection = std::move(created.value());
+
+  pid_t pid = fork();
+  ASSERT_GE(pid, 0);
+
+  if (pid == 0) {
+    char cmd[] = "sleep 5";
+    char *args[] = {const_cast<char *>("/bin/sh"),
+                    const_cast<char *>("-c"), cmd, nullptr};
+    execvp(args[0], args);
+    _exit(127);
+  }
+
+  collection.reset();
+
+  bool reopened_while_child_running = false;
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    auto reopened = Collection::Open(col_path, options);
+    if (reopened.has_value()) {
+      reopened_while_child_running = true;
+      reopened.value().reset();
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  int status = 0;
+  waitpid(pid, &status, 0);
+  ASSERT_TRUE(WIFEXITED(status));
+  ASSERT_EQ(WEXITSTATUS(status), 0);
+  ASSERT_TRUE(reopened_while_child_running);
+}
+#endif
 
 TEST_F(CollectionTest, Feature_CreateAndOpen_Empty) {
   int doc_count = 0;
