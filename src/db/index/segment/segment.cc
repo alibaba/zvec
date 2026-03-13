@@ -302,14 +302,14 @@ class SegmentImpl : public Segment,
   void fresh_persist_chunked_array();
 
  private:
-  // scalar forward
+  // scalar forward (uses segment-local doc ID)
   MemForwardStore::Ptr memory_store_;
   std::vector<BaseForwardStore::Ptr> persist_stores_;
 
-  // scalar index
+  // scalar index (uses segment-local doc ID)
   InvertedIndexer::Ptr invert_indexers_;
 
-  // vector index
+  // vector index (uses block-local doc ID, each indexer starts from 0)
   std::unordered_map<std::string, VectorColumnIndexer::Ptr>
       memory_vector_indexers_;
 
@@ -339,7 +339,7 @@ class SegmentImpl : public Segment,
   IDMap::Ptr id_map_;
   DeleteStore::Ptr delete_store_;
 
-  // local_id(index) -> global_doc_id(value)
+  // Maps segment-local doc ID (array index) to global doc ID (stored value)
   std::vector<uint64_t> doc_ids_;
 
   std::array<std::variant<std::vector<int>,
