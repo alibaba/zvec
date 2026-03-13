@@ -439,8 +439,10 @@ int HnswSparseStreamer::add_with_id_impl(uint32_t id,
   }
 
   if (ailego_unlikely(sparse_count >= HnswSparseEntity::kSparseMaxDimSize)) {
-    LOG_WARN("Add vector failed, dim size too larg, dim_size=%u, id=%u",
-             sparse_count, id);
+    LOG_WARN(
+        "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
+        "maximum allowed (%u), id=%u",
+        sparse_count, HnswSparseEntity::kSparseMaxDimSize, id);
     return IndexError_InvalidValue;
   }
 
@@ -524,8 +526,10 @@ int HnswSparseStreamer::add_impl(uint64_t pkey, const uint32_t sparse_count,
   }
 
   if (ailego_unlikely(sparse_count >= HnswSparseEntity::kSparseMaxDimSize)) {
-    LOG_WARN("Add vector failed, dim size too larg, dim_size=%u, key=%zu",
-             sparse_count, (size_t)pkey);
+    LOG_WARN(
+        "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
+        "maximum allowed (%u), key=%zu",
+        sparse_count, HnswSparseEntity::kSparseMaxDimSize, (size_t)pkey);
     return IndexError_InvalidValue;
   }
 
