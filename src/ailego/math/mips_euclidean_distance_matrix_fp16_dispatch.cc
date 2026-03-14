@@ -44,9 +44,10 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = MipsEucldeanDistanceSphericalInjectionAVX512(p, q, dim, e2);
+    return;
   } 
 #endif 
-  *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
+  *out = MipsEucldeanDistanceSphericalInjectionSSE(p, q, dim, e2);
 #endif  //__ARM_NEON
 }
 
@@ -63,7 +64,7 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     return;
   } 
 #endif
-  *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(p, q, dim, m, e2);
+  *out = MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, m, e2);
 #endif  //__ARM_NEON
 }
 

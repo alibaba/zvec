@@ -37,6 +37,7 @@ void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
+    return;
   } 
 #endif 
   *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
