@@ -122,7 +122,9 @@ float InnerProductAndSquaredNormNEON(const Float16 *lhs, const Float16 *rhs,
 
 #endif  // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
 
-float MipsEucldeanDistanceSphericalInjectionNEON(const Float16 *lhs, const Float16 *rhs, size_t size, float e2) {
+float MipsEucldeanDistanceSphericalInjectionNEON(const Float16 *lhs,
+                                                 const Float16 *rhs,
+                                                 size_t size, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
@@ -132,7 +134,10 @@ float MipsEucldeanDistanceSphericalInjectionNEON(const Float16 *lhs, const Float
   return ComputeSphericalInjection(sum, u2, v2, e2);
 }
 
-float MipsEucldeanDistanceRepeatedQuadraticInjectionNEON(const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2) {
+float MipsEucldeanDistanceRepeatedQuadraticInjectionNEON(const Float16 *lhs,
+                                                         const Float16 *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
@@ -147,7 +152,7 @@ float MipsEucldeanDistanceRepeatedQuadraticInjectionNEON(const Float16 *lhs, con
     u2 = u2 * u2;
     v2 = v2 * v2;
   }
-  
+
   return sum;
 }
 #endif  // __ARM_NEON && __aarch64__
