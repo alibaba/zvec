@@ -38,12 +38,12 @@ float MipsEucldeanDistanceSphericalInjectionAVX512(const Float16 *lhs,
                                                    size_t size, float e2);
 #endif
 
-#if defined(__SSE4_1__)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const Float16 *lhs,
+#if defined(__AVX__)
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const Float16 *lhs,
                                                         const Float16 *rhs,
                                                         size_t size, size_t m,
                                                         float e2);
-float MipsEucldeanDistanceSphericalInjectionSSE(const Float16 *lhs,
+float MipsEucldeanDistanceSphericalInjectionAVX(const Float16 *lhs,
                                                 const Float16 *rhs, size_t size,
                                                 float e2);
 #endif
@@ -62,7 +62,7 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     return;
   }
 #endif
-  *out = MipsEucldeanDistanceSphericalInjectionSSE(p, q, dim, e2);
+  *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
 #endif  //__ARM_NEON
 }
 
@@ -80,7 +80,7 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     return;
   }
 #endif
-  *out = MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, m, e2);
+  *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(p, q, dim, m, e2);
 #endif  //__ARM_NEON
 }
 
