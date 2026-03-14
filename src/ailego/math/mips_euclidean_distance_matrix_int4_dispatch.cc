@@ -20,14 +20,14 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__AVX__)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const uint8_t *lhs,
-                                                        const uint8_t *rhs,
-                                                        size_t size, size_t m,
-                                                        float e2);
-float MipsEucldeanDistanceSphericalInjectionAVX(const uint8_t *lhs,
-                                                const uint8_t *rhs, size_t size,
-                                                float e2);
+#if defined(__AVX2__)
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX2(const uint8_t *lhs,
+                                                         const uint8_t *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2);
+float MipsEucldeanDistanceSphericalInjectionAVX2(const uint8_t *lhs,
+                                                 const uint8_t *rhs,
+                                                 size_t size, float e2);
 #endif
 
 #if defined(__SSE4_1__)
@@ -44,22 +44,22 @@ float MipsEucldeanDistanceSphericalInjectionSSE(const uint8_t *lhs,
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
-#if defined(__AVX__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
-    *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
+#if defined(__AVX2__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    *out = MipsEucldeanDistanceSphericalInjectionAVX2(p, q, dim, e2);
     return;
   }
 #endif
-  *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
+  *out = MipsEucldeanDistanceSphericalInjectionSSE(p, q, dim, e2);
 }
 
 //! Compute the distance between matrix and query by RepeatedQuadraticInjection
 void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
     float *out) {
-#if defined(__AVX__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
-    *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(p, q, dim, m, e2);
+#if defined(__AVX2__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX2(p, q, dim, m, e2);
     return;
   }
 #endif
