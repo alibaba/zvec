@@ -101,12 +101,12 @@ float MipsEucldeanDistanceSphericalInjectionAVX512(const float *lhs, const float
   float sum{0.0f};
 
   if (dim > 15) {
-    sum = InnerProductAndSquaredNormAVX512(p, q, dim, &u2, &v2);
+    sum = InnerProductAndSquaredNormAVX512(lhs, rhs, size, &u2, &v2);
   } else if (dim > 7) {
-    sum = InnerProductAndSquaredNormAVX(p, q, dim, &u2, &v2);
+    sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
   } 
   else {
-    sum = InnerProductAndSquaredNormSSE(p, q, dim, &u2, &v2);
+    sum = InnerProductAndSquaredNormSSE(lhs, rhs, size, &u2, &v2);
   }
 
   rerurn ComputeSphericalInjection(sum, u2, v2, e2);
@@ -118,13 +118,13 @@ float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(const float *lhs, con
   float sum{0.0f};
 
   if (dim > 15) {
-    sum = InnerProductAndSquaredNormAVX512(p, q, dim, &u2, &v2);
+    sum = InnerProductAndSquaredNormAVX512(lhs, rhs, size, &u2, &v2);
   } 
   else if (dim > 7) {
-    sum = InnerProductAndSquaredNormAVX(p, q, dim, &u2, &v2);
+    sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
   } 
   else {
-    sum = InnerProductAndSquaredNormSSE(p, q, dim, &u2, &v2);
+    sum = InnerProductAndSquaredNormSSE(lhs, rhs, size, &u2, &v2);
   }
 
   sum = e2 * (u2 + v2 - 2 * sum);

@@ -104,7 +104,7 @@ float MipsEucldeanDistanceSphericalInjectionSSE(const int8_t *lhs, const int8_t 
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormSSE(p, q, dim >> 1, &u2, &v2);
+  sum = InnerProductAndSquaredNormSSE(lhs, rhs, size>> 1, &u2, &v2);
 
   return ComputeSphericalInjection(sum, u2, v2, e2);
 }
@@ -114,7 +114,7 @@ float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const int8_t *lhs, const
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormSSE(p, q, dim >> 1, &u2, &v2);
+  sum = InnerProductAndSquaredNormSSE(lhs, rhs, size>> 1, &u2, &v2);
 
   sum = e2 * (u2 + v2 - 2 * sum);
   u2 *= e2;
