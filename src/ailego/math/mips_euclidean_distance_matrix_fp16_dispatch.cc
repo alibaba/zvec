@@ -19,18 +19,33 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__ARM_NEON)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionNEON(const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2);
-float MipsEucldeanDistanceSphericalInjectionNEON(const Float16 *lhs, const Float16 *rhs, size_t size, float e2);
+float MipsEucldeanDistanceRepeatedQuadraticInjectionNEON(const Float16 *lhs,
+                                                         const Float16 *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2);
+float MipsEucldeanDistanceSphericalInjectionNEON(const Float16 *lhs,
+                                                 const Float16 *rhs,
+                                                 size_t size, float e2);
 #endif
 
 #if defined(__AVX512F__)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2);
-float MipsEucldeanDistanceSphericalInjectionAVX512(const Float16 *lhs, const Float16 *rhs, size_t size, float e2);
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(const Float16 *lhs,
+                                                           const Float16 *rhs,
+                                                           size_t size,
+                                                           size_t m, float e2);
+float MipsEucldeanDistanceSphericalInjectionAVX512(const Float16 *lhs,
+                                                   const Float16 *rhs,
+                                                   size_t size, float e2);
 #endif
 
 #if defined(__SSE4_1__)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2);
-float MipsEucldeanDistanceSphericalInjectionSSE(const Float16 *lhs, const Float16 *rhs, size_t size, float e2);
+float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const Float16 *lhs,
+                                                        const Float16 *rhs,
+                                                        size_t size, size_t m,
+                                                        float e2);
+float MipsEucldeanDistanceSphericalInjectionSSE(const Float16 *lhs,
+                                                const Float16 *rhs, size_t size,
+                                                float e2);
 #endif
 
 #if (defined(__F16C__) && defined(__AVX__)) || \
@@ -45,8 +60,8 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = MipsEucldeanDistanceSphericalInjectionAVX512(p, q, dim, e2);
     return;
-  } 
-#endif 
+  }
+#endif
   *out = MipsEucldeanDistanceSphericalInjectionSSE(p, q, dim, e2);
 #endif  //__ARM_NEON
 }
@@ -60,9 +75,10 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
-    *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512F(p, q, dim, m, e2);
+    *out =
+        MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(p, q, dim, m, e2);
     return;
-  } 
+  }
 #endif
   *out = MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, m, e2);
 #endif  //__ARM_NEON

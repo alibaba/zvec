@@ -74,6 +74,11 @@ float InnerProductSSE(const float *lhs, const float *rhs, size_t size) {
   return result;
 }
 
+
+float MinusInnerProductSSE(const float *lhs, const float *rhs, size_t size) {
+  return -1 * InnerProductSSE(lhs, rhs, size);
+}
+
 #endif  // __SSE__
 
 // #if 1

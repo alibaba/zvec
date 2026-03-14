@@ -25,6 +25,7 @@ float MinusInnerProductNEON(const float *lhs, const float *rhs, size_t size);
 
 #if defined(__AVX512F__)
 float InnerProductAVX512(const float *lhs, const float *rhs, size_t size);
+float MinusInnerProductAVX512(const float *lhs, const float *rhs, size_t size);
 #endif
 
 #if defined(__AVX__)
@@ -36,6 +37,10 @@ float MinusInnerProductAVX(const float *lhs, const float *rhs, size_t size);
 float InnerProductSSE(const float *lhs, const float *rhs, size_t size);
 float MinusInnerProductSSE(const float *lhs, const float *rhs, size_t size);
 #endif
+
+
+// #pragma GCC novector
+
 
 #if defined(__SSE__) || defined(__ARM_NEON)
 //! Compute the distance between matrix and query (FP32, M=1, N=1)
@@ -70,12 +75,12 @@ void MinusInnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
                                                    const ValueType *q,
                                                    size_t dim, float *out) {
 #if defined(__ARM_NEON)
-  *out = -InnerProductNEON(m, q, dim);
+  *out = MinusInnerProductNEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     if (dim > 15) {
-      *out = -InnerProductAVX512(m, q, dim);
+      *out = MinusInnerProductAVX512(m, q, dim);
       return;
     }
   }
@@ -83,12 +88,12 @@ void MinusInnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     if (dim > 7) {
-      *out = -InnerProductAVX(m, q, dim);
+      *out = MinusInnerProductAVX(m, q, dim);
       return;
     }
   }
 #endif  // __AVX__
-  *out = -InnerProductSSE(m, q, dim);
+  *out = MinusInnerProductSSE(m, q, dim);
 #endif  // __ARM_NEON
 }
 

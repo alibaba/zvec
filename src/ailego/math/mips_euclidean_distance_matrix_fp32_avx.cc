@@ -19,6 +19,11 @@
 namespace zvec {
 namespace ailego {
 
+#if defined(__SSE__)
+float InnerProductAndSquaredNormSSE(const float *lhs, const float *rhs,
+                                    size_t size, float *sql, float *sqr);
+#endif
+
 #if defined(__AVX__)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
 float InnerProductAndSquaredNormAVX(const float *lhs, const float *rhs,
@@ -109,30 +114,33 @@ float InnerProductAndSquaredNormAVX(const float *lhs, const float *rhs,
   return result;
 }
 
-float MipsEucldeanDistanceSphericalInjectionAVX(const float *lhs, const float *rhs, size_t size, float e2) {
+float MipsEucldeanDistanceSphericalInjectionAVX(const float *lhs,
+                                                const float *rhs, size_t size,
+                                                float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  if (dim > 7) {
+  if (size > 7) {
     sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
-  } 
-  else {
+  } else {
     sum = InnerProductAndSquaredNormSSE(lhs, rhs, size, &u2, &v2);
   }
 
-  rerurn ComputeSphericalInjection(sum, u2, v2, e2);
+  return ComputeSphericalInjection(sum, u2, v2, e2);
 }
 
-float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const float *lhs, const float *rhs, size_t size, size_t m, float e2) {
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const float *lhs,
+                                                        const float *rhs,
+                                                        size_t size, size_t m,
+                                                        float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  if (dim > 7) {
+  if (size > 7) {
     sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
-  } 
-  else {
+  } else {
     sum = InnerProductAndSquaredNormSSE(lhs, rhs, size, &u2, &v2);
   }
 
@@ -144,7 +152,7 @@ float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const float *lhs, const 
     u2 = u2 * u2;
     v2 = v2 * v2;
   }
-  
+
   return sum;
 }
 #endif  // __AVX__

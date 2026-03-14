@@ -88,6 +88,10 @@ float InnerProductAVX(const float *lhs, const float *rhs, size_t size) {
   return result;
 }
 
+float MinusInnerProductAVX(const float *lhs, const float *rhs, size_t size) {
+  return -1 * InnerProductAVX(lhs, rhs, size);
+}
+
 #endif  // __AVX__
 
 }  // namespace ailego
