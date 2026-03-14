@@ -71,34 +71,6 @@ float InnerProductAndSquaredNormNEON(const float *lhs, const float *rhs,
   return result;
 }
 
-//! Compute the distance between matrix and query by SphericalInjection
-void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
-    const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
-  float u2;
-  float v2;
-  float sum = InnerProductAndSquaredNormNEON(p, q, dim, &u2, &v2);
-
-  *out = ComputeSphericalInjection(sum, u2, v2, e2);
-}
-
-//! Compute the distance between matrix and query by RepeatedQuadraticInjection
-void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
-    const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
-    float *out) {
-  float u2;
-  float v2;
-  float sum = InnerProductAndSquaredNormNEON(p, q, dim, &u2, &v2);
-
-  sum = e2 * (u2 + v2 - 2 * sum);
-  u2 *= e2;
-  v2 *= e2;
-  for (size_t i = 0; i < m; ++i) {
-    sum += (u2 - v2) * (u2 - v2);
-    u2 = u2 * u2;
-    v2 = v2 * v2;
-  }
-  *out = sum;
-}
 #endif  //__ARM_NEON
 
 }  // namespace ailego
