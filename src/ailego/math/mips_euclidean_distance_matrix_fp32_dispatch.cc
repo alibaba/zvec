@@ -43,7 +43,7 @@ float MipsEucldeanDistanceSphericalInjectionAVX(const float *lhs,
                                                 float e2);
 #endif
 
-#if defined(__SSE4_1__)
+#if defined(__SSE__)
 float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const float *lhs,
                                                         const float *rhs,
                                                         size_t size, size_t m,
