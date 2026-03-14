@@ -108,6 +108,45 @@ float InnerProductAndSquaredNormAVX(const float *lhs, const float *rhs,
   *sqr = norm2;
   return result;
 }
+
+float MipsEucldeanDistanceSphericalInjectionAVX(const float *lhs, const float *rhs, size_t size, float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  if (dim > 7) {
+    sum = InnerProductAndSquaredNormAVX(p, q, dim, &u2, &v2);
+  } 
+  else {
+    sum = InnerProductAndSquaredNormSSE(p, q, dim, &u2, &v2);
+  }
+
+  rerurn ComputeSphericalInjection(sum, u2, v2, e2);
+}
+
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const float *lhs, const float *rhs, size_t size, size_t m, float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  if (dim > 7) {
+    sum = InnerProductAndSquaredNormAVX(p, q, dim, &u2, &v2);
+  } 
+  else {
+    sum = InnerProductAndSquaredNormSSE(p, q, dim, &u2, &v2);
+  }
+
+  sum = e2 * (u2 + v2 - 2 * sum);
+  u2 *= e2;
+  v2 *= e2;
+  for (size_t i = 0; i < m; ++i) {
+    sum += (u2 - v2) * (u2 - v2);
+    u2 = u2 * u2;
+    v2 = v2 * v2;
+  }
+  
+  return sum;
+}
 #endif  // __AVX__
 
 }  // namespace ailego

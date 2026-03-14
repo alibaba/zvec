@@ -21,7 +21,7 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__AVX2__)
+#if defined(__AVX__)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
 float InnerProductAndSquaredNormAVX(const uint8_t *lhs, const uint8_t *rhs,
                                     size_t size, float *sql, float *sqr) {
@@ -134,7 +134,36 @@ float InnerProductAndSquaredNormAVX(const uint8_t *lhs, const uint8_t *rhs,
   *sqr = norm2;
   return result;
 }
-#endif  // __AVX2__
+
+float MipsEucldeanDistanceSphericalInjectionAVX(const uint8_t *lhs, const uint8_t *rhs, size_t size, float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  sum = InnerProductAndSquaredNormAVX(p, q, dim >> 1, &u2, &v2);
+
+  return ComputeSphericalInjection(sum, u2, v2, e2);
+}
+
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const uint8_t *lhs, const uint8_t *rhs, size_t size, size_t m, float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  sum = InnerProductAndSquaredNormAVX(p, q, dim >> 1, &u2, &v2);
+
+  sum = e2 * (u2 + v2 - 2 * sum);
+  u2 *= e2;
+  v2 *= e2;
+  for (size_t i = 0; i < m; ++i) {
+    sum += (u2 - v2) * (u2 - v2);
+    u2 = u2 * u2;
+    v2 = v2 * v2;
+  }
+  
+  return sum;
+}
+#endif  // __AVX__
 
 }  // namespace ailego
 }  // namespace zvec

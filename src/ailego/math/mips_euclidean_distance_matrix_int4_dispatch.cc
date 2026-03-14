@@ -21,61 +21,38 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__AVX__)
-float InnerProductAndSquaredNormAVX(const uint8_t *lhs, const uint8_t *rhs,
-                                    size_t size, float *sql, float *sqr);
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const uint8_t *lhs, const uint8_t *rhs, size_t size, size_t m, float e2);
+float MipsEucldeanDistanceSphericalInjectionAVX(const uint8_t *lhs, const uint8_t *rhs, size_t size, float e2);
 #endif
 
-#if defined(__SSE__)
-float InnerProductAndSquaredNormSSE(const uint8_t *lhs, const uint8_t *rhs,
-                                    size_t size, float *sql, float *sqr);
+#if defined(__SSE4_1__)
+float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const uint8_t *lhs, const uint8_t *rhs, size_t size, size_t m, float e2);
+float MipsEucldeanDistanceSphericalInjectionSSE(const uint8_t *lhs, const uint8_t *rhs, size_t size, float e2);
 #endif
 
 #if defined(__SSE4_1__)
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
-  float u2{0.0f};
-  float v2{0.0f};
-  float sum{0.0f};
-
-#if defined(__AVX2__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-    sum = InnerProductAndSquaredNormAVX(p, q, dim >> 1, &u2, &v2);
-  } else
-#endif
-  {
-    sum = InnerProductAndSquaredNormSSE(p, q, dim >> 1, &u2, &v2);
-  }
-
-  *out = ComputeSphericalInjection(sum, u2, v2, e2);
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
+  } 
+#endif 
+  *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
 }
 
 //! Compute the distance between matrix and query by RepeatedQuadraticInjection
 void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
     float *out) {
-  float u2{0.0f};
-  float v2{0.0f};
-  float sum{0.0f};
-
-#if defined(__AVX2__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-    sum = InnerProductAndSquaredNormAVX(p, q, dim >> 1, &u2, &v2);
-  } else
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(p, q, dim, e2);
+    return;
+  } 
 #endif
-  {
-    sum = InnerProductAndSquaredNormSSE(p, q, dim >> 1, &u2, &v2);
-  }
-
-  sum = e2 * (u2 + v2 - 2 * sum);
-  u2 *= e2;
-  v2 *= e2;
-  for (size_t i = 0; i < m; ++i) {
-    sum += (u2 - v2) * (u2 - v2);
-    u2 = u2 * u2;
-    v2 = v2 * v2;
-  }
-  *out = sum;
+  *out = MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, e2);
 }
 #endif
 
