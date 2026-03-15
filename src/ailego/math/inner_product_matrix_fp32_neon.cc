@@ -51,6 +51,11 @@ float InnerProductNEON(const float *lhs, const float *rhs, size_t size) {
   }
   return result;
 }
+
+float MinusInnerProductNEON(const float *lhs, const float *rhs, size_t size) {
+  return -1 * InnerProductNEON(lhs, rhs, size);
+}
+
 #endif  // __ARM_NEON
 
 }  // namespace ailego

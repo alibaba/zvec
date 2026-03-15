@@ -132,8 +132,8 @@ float MipsSquaredEuclideanSparseDistanceMatrix<float>::
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
-  float u2;
-  float v2;
+  float u2{0.0f};
+  float v2{0.0f};
   float sum = InnerProductAndSquaredNormNEON(p, q, dim, &u2, &v2);
 
   *out = ComputeSphericalInjection(sum, u2, v2, e2);
@@ -143,8 +143,8 @@ void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
 void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
     float *out) {
-  float u2;
-  float v2;
+  float u2{0.0f};
+  float v2{0.0f};
   float sum = InnerProductAndSquaredNormNEON(p, q, dim, &u2, &v2);
 
   sum = e2 * (u2 + v2 - 2 * sum);
