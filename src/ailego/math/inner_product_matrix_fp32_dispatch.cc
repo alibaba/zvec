@@ -38,10 +38,6 @@ float InnerProductSSE(const float *lhs, const float *rhs, size_t size);
 float MinusInnerProductSSE(const float *lhs, const float *rhs, size_t size);
 #endif
 
-
-// #pragma GCC novector
-
-
 #if defined(__SSE__) || defined(__ARM_NEON)
 //! Compute the distance between matrix and query (FP32, M=1, N=1)
 void InnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
