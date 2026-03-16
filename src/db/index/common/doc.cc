@@ -1253,7 +1253,9 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
     // validate sparse indices size
     if (query_sparse_indices_.size() >= kSparseMaxDimSize * sizeof(uint32_t)) {
       return Status::InvalidArgument(
-          "query validate failed: sparse indices size is too large");
+          "query validate failed: the number of sparse indices exceeds the "
+          "maximum limit %d",
+          kSparseMaxDimSize);
     }
   } else {
     return Status::InvalidArgument(
