@@ -23,6 +23,7 @@
   <a href="https://zvec.org/en/">🏠 <strong>Home</strong> </a> |
   <a href="https://zvec.org/en/docs/">📚 <strong>Docs</strong> </a> |
   <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>Benchmarks</strong> </a> |
+  <a href="https://codecov.io/github/alibaba/zvec">🛡️ <strong>Code Coverage</strong> </a> |
   <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a>
 </p>
 
