@@ -438,7 +438,7 @@ int HnswSparseStreamer::add_with_id_impl(uint32_t id,
     return ret;
   }
 
-  if (ailego_unlikely(sparse_count >= HnswSparseEntity::kSparseMaxDimSize)) {
+  if (ailego_unlikely(sparse_count > HnswSparseEntity::kSparseMaxDimSize)) {
     LOG_WARN(
         "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
         "maximum allowed (%u), id=%u",

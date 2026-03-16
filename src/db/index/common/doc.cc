@@ -1251,10 +1251,10 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
     }
   } else if (schema->is_sparse_vector()) {
     // validate sparse indices size
-    if (query_sparse_indices_.size() >= kSparseMaxDimSize * sizeof(uint32_t)) {
+    if (query_sparse_indices_.size() > kSparseMaxDimSize * sizeof(uint32_t)) {
       return Status::InvalidArgument(
           "query validate failed: the number of sparse indices exceeds the "
-          "maximum limit %d",
+          "maximum limit ",
           kSparseMaxDimSize);
     }
   } else {
