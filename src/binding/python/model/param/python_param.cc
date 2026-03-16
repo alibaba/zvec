@@ -573,6 +573,16 @@ Attributes:
         Default is "./omega_models".
     num_training_queries (int): Number of training queries to generate for
         OMEGA model training. Default is 1000.
+    ef_training (int): Size of the candidate list (ef) used during training
+        searches. Larger values collect more training data but take longer.
+        Default is 1000.
+    window_size (int): Size of the sliding window for computing distance
+        statistics during search. Must be the same for training and inference.
+        Default is 100.
+    ef_groundtruth (int): Size of the candidate list (ef) used when computing
+        ground truth for training. If 0, brute force search is used (slower but exact).
+        If > 0, HNSW search with this ef is used (faster but approximate).
+        Default is 0 (brute force).
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -582,13 +592,16 @@ Examples:
     ...     ef_construction=200,
     ...     min_vector_threshold=50000,
     ...     model_dir="./my_omega_models",
-    ...     num_training_queries=500
+    ...     num_training_queries=500,
+    ...     ef_training=800,
+    ...     window_size=100,
+    ...     ef_groundtruth=2000  # Use HNSW for faster ground truth computation
     ... )
-    >>> print(params.num_training_queries)
-    500
+    >>> print(params.ef_groundtruth)
+    2000
 )pbdoc");
   omega_params
-      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, std::string, size_t>(),
+      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, std::string, size_t, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
@@ -596,7 +609,10 @@ Examples:
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("min_vector_threshold") = 100000,
            py::arg("model_dir") = "./omega_models",
-           py::arg("num_training_queries") = 1000)
+           py::arg("num_training_queries") = 1000,
+           py::arg("ef_training") = 1000,
+           py::arg("window_size") = 100,
+           py::arg("ef_groundtruth") = 0)
       .def_property_readonly(
           "m", &OmegaIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
@@ -612,6 +628,15 @@ Examples:
       .def_property_readonly(
           "num_training_queries", &OmegaIndexParams::num_training_queries,
           "int: Number of training queries for OMEGA model training.")
+      .def_property_readonly(
+          "ef_training", &OmegaIndexParams::ef_training,
+          "int: Candidate list size (ef) used during training searches.")
+      .def_property_readonly(
+          "window_size", &OmegaIndexParams::window_size,
+          "int: Sliding window size for distance statistics.")
+      .def_property_readonly(
+          "ef_groundtruth", &OmegaIndexParams::ef_groundtruth,
+          "int: ef for ground truth computation (0=brute force, >0=HNSW).")
       .def(
           "to_dict",
           [](const OmegaIndexParams &self) -> py::dict {
@@ -623,6 +648,9 @@ Examples:
             dict["min_vector_threshold"] = self.min_vector_threshold();
             dict["model_dir"] = self.model_dir();
             dict["num_training_queries"] = self.num_training_queries();
+            dict["ef_training"] = self.ef_training();
+            dict["window_size"] = self.window_size();
+            dict["ef_groundtruth"] = self.ef_groundtruth();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -641,6 +669,12 @@ Examples:
                     ", \"model_dir\":\"" + self.model_dir() + "\"" +
                     ", \"num_training_queries\":" +
                     std::to_string(self.num_training_queries()) +
+                    ", \"ef_training\":" +
+                    std::to_string(self.ef_training()) +
+                    ", \"window_size\":" +
+                    std::to_string(self.window_size()) +
+                    ", \"ef_groundtruth\":" +
+                    std::to_string(self.ef_groundtruth()) +
                     ", \"quantize_type\":" +
                     quantize_type_to_string(self.quantize_type()) + "}";
            })
@@ -649,15 +683,17 @@ Examples:
             return py::make_tuple(self.metric_type(), self.m(),
                                   self.ef_construction(), self.quantize_type(),
                                   self.min_vector_threshold(), self.model_dir(),
-                                  self.num_training_queries());
+                                  self.num_training_queries(), self.ef_training(),
+                                  self.window_size(), self.ef_groundtruth());
           },
           [](py::tuple t) {
-            if (t.size() != 7)
+            if (t.size() != 10)
               throw std::runtime_error("Invalid state for OmegaIndexParams");
             return std::make_shared<OmegaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
-                t[5].cast<std::string>(), t[6].cast<size_t>());
+                t[5].cast<std::string>(), t[6].cast<size_t>(), t[7].cast<int>(),
+                t[8].cast<int>(), t[9].cast<int>());
           }));
 }
 

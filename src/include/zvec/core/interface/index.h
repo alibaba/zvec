@@ -348,6 +348,8 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
   void SetCurrentQueryId(int query_id) override;
   std::vector<TrainingRecord> GetTrainingRecords() const override;
   void ClearTrainingRecords() override;
+  void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
+                               int k_train = 1) override;
 
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;

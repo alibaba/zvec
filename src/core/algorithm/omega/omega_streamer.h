@@ -43,6 +43,11 @@ class OmegaStreamer : public HnswStreamer {
   // Training mode support
   void EnableTrainingMode(bool enable) { training_mode_enabled_ = enable; }
   void SetCurrentQueryId(int query_id) { current_query_id_ = query_id; }
+  void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
+                               int k_train = 1) {
+    training_ground_truth_ = ground_truth;
+    training_k_train_ = k_train;
+  }
 
  protected:
   /**
@@ -72,6 +77,8 @@ class OmegaStreamer : public HnswStreamer {
   // Training mode state (for future implementation)
   bool training_mode_enabled_{false};
   int current_query_id_{0};
+  std::vector<std::vector<uint64_t>> training_ground_truth_;  // [query_id][rank] = node_id
+  int training_k_train_{1};  // Number of GT nodes to check for label
   // Note: training records are now stored per-context in OmegaContext, not here
 };
 

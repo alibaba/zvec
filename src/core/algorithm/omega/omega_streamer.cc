@@ -68,8 +68,21 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   // Enable training mode (CRITICAL: must be before search)
-  omega_search_enable_training(omega_search, query_id);
-  LOG_DEBUG("Training mode enabled for query_id=%d", query_id);
+  // Get ground truth for this query if available
+  std::vector<int> gt_for_query;
+  if (query_id >= 0 &&
+      static_cast<size_t>(query_id) < training_ground_truth_.size()) {
+    const auto& gt = training_ground_truth_[query_id];
+    gt_for_query.reserve(gt.size());
+    for (uint64_t node_id : gt) {
+      gt_for_query.push_back(static_cast<int>(node_id));
+    }
+  }
+  omega_search_enable_training(omega_search, query_id,
+                                gt_for_query.data(), gt_for_query.size(),
+                                training_k_train_);
+  LOG_DEBUG("Training mode enabled for query_id=%d with %zu GT nodes",
+            query_id, gt_for_query.size());
 
   // Cast context to HnswContext to access HNSW-specific features
   auto *hnsw_ctx = dynamic_cast<HnswContext*>(context.get());
@@ -274,12 +287,8 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                  omega_record.traversal_window_stats.size());
       }
 
-      // Copy collected_node_ids (convert int to node_id_t)
-      record.collected_node_ids.assign(
-          omega_record.collected_node_ids.begin(),
-          omega_record.collected_node_ids.end());
-
-      record.label = omega_record.label;  // Default 0
+      // Label is already computed in real-time during search
+      record.label = omega_record.label;
 
       omega_ctx->add_training_record(std::move(record));
     }

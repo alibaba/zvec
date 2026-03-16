@@ -38,6 +38,10 @@ struct TrainingDataCollectorOptions {
   // ef parameter for training searches (large value for recall ≈ 1)
   int ef_training = 1000;
 
+  // ef parameter for ground truth computation (0 = brute force, >0 = HNSW with this ef)
+  // Using HNSW with large ef is much faster than brute force while maintaining high accuracy
+  int ef_groundtruth = 0;
+
   // Top-K results to retrieve per query
   size_t topk = 100;
 
@@ -107,7 +111,7 @@ class TrainingDataCollector {
 
  private:
   /**
-   * @brief Compute ground truth using brute force search
+   * @brief Compute ground truth using brute force or HNSW search
    *
    * @param segment The segment to search
    * @param field_name Vector field name
@@ -115,6 +119,9 @@ class TrainingDataCollector {
    * @param topk Number of top results to retrieve
    * @param num_threads Number of threads (0 = hardware_concurrency)
    * @param query_doc_ids Optional doc_ids of query vectors (for self-exclusion in held-out mode)
+   * @param ef_groundtruth ef value for HNSW search (0 = brute force, >0 = HNSW)
+   * @param metric_type Distance metric type (L2, IP, COSINE)
+   * @param indexers Optional pre-opened indexers (for HNSW GT, avoids using stale indexers from segment)
    * @return Ground truth doc IDs for each query
    */
   static std::vector<std::vector<uint64_t>> ComputeGroundTruth(
@@ -123,7 +130,10 @@ class TrainingDataCollector {
       const std::vector<std::vector<float>>& queries,
       size_t topk,
       size_t num_threads,
-      const std::vector<uint64_t>& query_doc_ids = {});
+      const std::vector<uint64_t>& query_doc_ids = {},
+      int ef_groundtruth = 0,
+      MetricType metric_type = MetricType::IP,
+      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
 
   /**
    * @brief Fill labels in training records based on ground truth

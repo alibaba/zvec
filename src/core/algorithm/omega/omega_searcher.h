@@ -81,6 +81,18 @@ class OmegaSearcher : public HnswSearcher {
   void ClearTrainingRecords();
 
   /**
+   * @brief Set ground truth for training queries.
+   *
+   * Ground truth is used for real-time label computation during training.
+   * Labels are computed as: label=1 iff top k_train GT nodes are in current topk.
+   *
+   * @param ground_truth 2D vector: ground_truth[query_id][rank] = node_id
+   * @param k_train Number of GT nodes to check for label (typically 1)
+   */
+  void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
+                               int k_train = 1);
+
+  /**
    * @brief Public search method for OmegaStreamer to call
    *
    * This allows OmegaStreamer to delegate search to OmegaSearcher
@@ -183,12 +195,15 @@ class OmegaSearcher : public HnswSearcher {
   uint32_t min_vector_threshold_;
   size_t current_vector_count_;
   std::string model_dir_;
+  int window_size_;
 
   // Training mode support
   bool training_mode_enabled_;
   int current_query_id_;
   mutable std::mutex training_mutex_;
   mutable std::vector<core_interface::TrainingRecord> collected_records_;
+  std::vector<std::vector<uint64_t>> training_ground_truth_;  // [query_id][rank] = node_id
+  int training_k_train_;  // Number of GT nodes to check for label
 };
 
 }  // namespace core

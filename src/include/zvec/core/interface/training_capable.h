@@ -81,6 +81,18 @@ class ITrainingCapable {
    * starting a fresh training data collection session.
    */
   virtual void ClearTrainingRecords() = 0;
+
+  /**
+   * @brief Set ground truth for training queries.
+   *
+   * Ground truth is used for real-time label computation during training.
+   * Labels are computed as: label=1 iff top k_train GT nodes are in current topk.
+   *
+   * @param ground_truth 2D vector: ground_truth[query_id][rank] = node_id
+   * @param k_train Number of GT nodes to check for label (typically 1)
+   */
+  virtual void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
+                                       int k_train = 1) = 0;
 };
 
 }  // namespace core_interface

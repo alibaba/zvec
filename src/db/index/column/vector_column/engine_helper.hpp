@@ -353,8 +353,6 @@ class ProximaEngineHelper {
       }
 
       case IndexType::OMEGA: {
-        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: OMEGA case entered!\n");
-        fflush(stderr);
         // OMEGA uses its own index type at core_interface level
         auto index_param_builder_result =
             _build_common_index_param<OmegaIndexParams,
@@ -375,15 +373,7 @@ class ProximaEngineHelper {
 
         // Override index_type to kOMEGA
         auto hnsw_param = index_param_builder->Build();
-        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: Before override, index_type=%d\n",
-                static_cast<int>(hnsw_param->index_type));
-        fflush(stderr);
         hnsw_param->index_type = core_interface::IndexType::kOMEGA;
-        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: After override, index_type=%d\n",
-                static_cast<int>(hnsw_param->index_type));
-        fprintf(stderr, "[DEBUG] convert_to_engine_index_param: kOMEGA enum value=%d\n",
-                static_cast<int>(core_interface::IndexType::kOMEGA));
-        fflush(stderr);
 
         // Store OMEGA-specific params in the params field
         // These will be used by OmegaSearcher::init()
@@ -392,6 +382,8 @@ class ProximaEngineHelper {
                                   db_index_params->min_vector_threshold());
         hnsw_param->params.insert("omega.model_dir",
                                   db_index_params->model_dir());
+        hnsw_param->params.insert("omega.window_size",
+                                  db_index_params->window_size());
 
         return hnsw_param;
       }

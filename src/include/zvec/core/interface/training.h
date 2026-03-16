@@ -34,9 +34,8 @@ namespace zvec::core_interface {
  * - dist_start: Distance to the starting node
  * - traversal_window_stats: 7 statistical features of the traversal window
  *   (avg, var, min, max, median, percentile25, percentile75)
- * - collected_node_ids: Node IDs collected in topk at this search state
  * - label: Binary label (1 if collected enough GT results, 0 otherwise)
- *          Filled by training pipeline based on collected_node_ids vs ground truth
+ *          Computed in real-time during search (memory optimized)
  */
 struct TrainingRecord {
   int query_id;
@@ -45,8 +44,7 @@ struct TrainingRecord {
   float dist_1st;
   float dist_start;
   std::array<float, 7> traversal_window_stats;
-  std::vector<uint64_t> collected_node_ids;  // Node IDs in topk at this state
-  int label;  // 0 by default, to be filled by FillLabels()
+  int label;  // Computed in real-time during search
 
   TrainingRecord()
       : query_id(0),
@@ -55,7 +53,6 @@ struct TrainingRecord {
         dist_1st(0.0f),
         dist_start(0.0f),
         traversal_window_stats{},
-        collected_node_ids{},
         label(0) {}
 };
 

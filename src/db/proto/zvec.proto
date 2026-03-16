@@ -106,6 +106,10 @@ message OmegaIndexParams {
   int32 ef_construction = 3;
   uint32 min_vector_threshold = 4;
   string model_dir = 5;
+  uint32 num_training_queries = 6;
+  int32 ef_training = 7;
+  int32 window_size = 8;
+  int32 ef_groundtruth = 9;  // 0 = brute force, >0 = HNSW with this ef
 }
 
 message IndexParams {

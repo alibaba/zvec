@@ -137,6 +137,18 @@ class VectorColumnIndexer {
    */
   void ClearTrainingRecords();
 
+  /**
+   * @brief Set ground truth for training queries.
+   *
+   * Ground truth is used for real-time label computation during training.
+   * Labels are computed as: label=1 iff top k_train GT nodes are in current topk.
+   *
+   * @param ground_truth 2D vector: ground_truth[query_id][rank] = node_id
+   * @param k_train Number of GT nodes to check for label (typically 1)
+   */
+  void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
+                               int k_train = 1);
+
  public:
   std::string index_file_path() const {
     return index_file_path_;
@@ -147,6 +159,17 @@ class VectorColumnIndexer {
       return -1;
     }
     return index->GetDocCount();
+  }
+
+  MetricType metric_type() const {
+    auto index_params = field_schema_.index_params();
+    if (index_params) {
+      auto vector_params = std::dynamic_pointer_cast<VectorIndexParams>(index_params);
+      if (vector_params) {
+        return vector_params->metric_type();
+      }
+    }
+    return MetricType::IP;  // default
   }
 
   // for ut

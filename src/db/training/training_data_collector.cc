@@ -26,6 +26,7 @@
 #include <zvec/db/query_params.h>
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "query_generator.h"
+#include <omega/ground_truth.h>
 
 namespace zvec {
 
@@ -73,7 +74,23 @@ TrainingDataCollector::CollectTrainingData(
     const std::string& field_name,
     const TrainingDataCollectorOptions& options,
     const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
-  // Step 1: Generate training queries using held-out approach
+  // Step 1: Get indexers first (needed for metric type)
+  std::vector<VectorColumnIndexer::Ptr> indexers;
+  if (!provided_indexers.empty()) {
+    indexers = provided_indexers;
+  } else {
+    indexers = segment->get_vector_indexer(field_name);
+  }
+
+  if (indexers.empty()) {
+    return tl::make_unexpected(
+        Status::InternalError("No vector indexers found for field: " + field_name));
+  }
+
+  // Get metric type from first indexer
+  MetricType metric_type = indexers[0]->metric_type();
+
+  // Step 2: Generate training queries using held-out approach
   LOG_INFO("Generating %zu held-out training queries for field '%s'",
            options.num_training_queries, field_name.c_str());
 
@@ -87,41 +104,29 @@ TrainingDataCollector::CollectTrainingData(
         Status::InternalError("Failed to generate training queries"));
   }
 
-  // Step 2: Compute ground truth (brute force search, excluding self-matches)
-  LOG_INFO("Computing ground truth with brute force search (topk=%zu, excluding self)",
-           options.topk);
+  // Step 3: Compute ground truth (brute force or HNSW search, excluding self-matches)
+  LOG_INFO("Computing ground truth (topk=%zu, ef_groundtruth=%d, excluding self)",
+           options.topk, options.ef_groundtruth);
 
   auto ground_truth = ComputeGroundTruth(
       segment, field_name, training_queries, options.topk, options.num_threads,
-      query_doc_ids);
+      query_doc_ids, options.ef_groundtruth, metric_type, indexers);
 
   if (ground_truth.empty()) {
     return tl::make_unexpected(
         Status::InternalError("Failed to compute ground truth"));
   }
 
-  // Step 3: Choose indexers for training
-  // CRITICAL: If provided_indexers is given, use those (just-merged indexers)
-  // Otherwise, get indexers from segment (persisted indexers)
-  std::vector<VectorColumnIndexer::Ptr> indexers;
-
-  if (!provided_indexers.empty()) {
-    indexers = provided_indexers;
-  } else {
-    indexers = segment->get_vector_indexer(field_name);
-  }
-
-  if (indexers.empty()) {
-    return tl::make_unexpected(
-        Status::InternalError("No vector indexers found for field: " + field_name));
-  }
-
   LOG_INFO("Found %zu indexers for field '%s' (will enable training on all, but only training-capable ones will collect)",
            indexers.size(), field_name.c_str());
 
-  // Step 4: Enable training mode on all indexers
-  LOG_INFO("Enabling training mode on %zu indexers", indexers.size());
+  // Step 4: Set ground truth and enable training mode on all indexers
+  LOG_INFO("Setting ground truth (%zu queries) and enabling training mode on %zu indexers",
+           ground_truth.size(), indexers.size());
   for (auto& indexer : indexers) {
+    // Set ground truth for real-time label computation
+    indexer->SetTrainingGroundTruth(ground_truth, options.k_train);
+
     auto status = indexer->EnableTrainingMode(true);
     if (!status.ok()) {
       LOG_WARN("Failed to enable training mode on indexer: %s",
@@ -235,11 +240,17 @@ TrainingDataCollector::CollectTrainingData(
     LOG_WARN("No training records collected from any indexer");
   }
 
-  // Step 7: Fill labels based on ground truth
-  LOG_INFO("Filling labels for %zu records (k_train=%zu)", all_records.size(), options.k_train);
-  FillLabels(&all_records, ground_truth, search_results, options.k_train);
+  // Labels are now computed in real-time during search (no FillLabels needed)
+  // Count positive/negative labels for verification
+  size_t positive_count = 0, negative_count = 0;
+  for (const auto& record : all_records) {
+    if (record.label > 0) positive_count++;
+    else negative_count++;
+  }
+  LOG_INFO("Collected %zu records: %zu positive, %zu negative",
+           all_records.size(), positive_count, negative_count);
 
-  // Step 8: Disable training mode and clear records
+  // Step 7: Disable training mode and clear records
   for (auto& indexer : indexers) {
     indexer->EnableTrainingMode(false);
     indexer->ClearTrainingRecords();
@@ -257,8 +268,15 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
     const std::vector<std::vector<float>>& queries,
     size_t topk,
     size_t num_threads,
-    const std::vector<uint64_t>& query_doc_ids) {
+    const std::vector<uint64_t>& query_doc_ids,
+    int ef_groundtruth,
+    MetricType metric_type,
+    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
   std::vector<std::vector<uint64_t>> ground_truth(queries.size());
+
+  if (queries.empty()) {
+    return ground_truth;
+  }
 
   // Check if we have query doc_ids for self-exclusion (held-out mode)
   bool held_out_mode = !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
@@ -266,115 +284,322 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
     LOG_INFO("Computing ground truth in held-out mode (excluding self-matches)");
   }
 
-  // Get vector indexer (use brute force with is_linear=true)
-  auto combined_indexer = segment->get_combined_vector_indexer(field_name);
-  if (!combined_indexer) {
-    LOG_ERROR("Failed to get vector indexer for field: %s", field_name.c_str());
-    return ground_truth;
-  }
+  // Get total document count
+  uint64_t doc_count = segment->doc_count();
+  size_t dim = queries[0].size();
 
-  // Determine thread count
-  size_t actual_threads = num_threads;
-  if (actual_threads == 0) {
-    actual_threads = std::thread::hardware_concurrency();
-  }
-  actual_threads = std::min(actual_threads, queries.size());
+  LOG_INFO("Computing ground truth: %zu queries, %zu base vectors, dim=%zu, topk=%zu, metric=%s, ef_groundtruth=%d",
+           queries.size(), static_cast<size_t>(doc_count), dim, topk,
+           MetricTypeCodeBook::AsString(metric_type).c_str(), ef_groundtruth);
 
-  DebugLog("[ComputeGroundTruth] Starting PARALLEL brute force search for " +
-           std::to_string(queries.size()) + " queries, topk=" + std::to_string(topk) +
-           ", threads=" + std::to_string(actual_threads));
+  auto start_time = std::chrono::high_resolution_clock::now();
 
-  auto loop_start = std::chrono::high_resolution_clock::now();
-  std::atomic<size_t> completed_queries{0};
-  std::mutex log_mutex;
+  // ============================================================
+  // Branch 1: HNSW search (ef_groundtruth > 0)
+  // Faster for large datasets, approximate results
+  // ============================================================
+  if (ef_groundtruth > 0) {
+    DebugLog("[ComputeGroundTruth] Using HNSW search with ef=" + std::to_string(ef_groundtruth));
 
-  // Worker function for a range of queries
-  auto worker = [&](size_t start_idx, size_t end_idx) {
-    for (size_t query_idx = start_idx; query_idx < end_idx; ++query_idx) {
-      const auto& query_vector = queries[query_idx];
+    // Use provided indexers if available, otherwise get from segment
+    // IMPORTANT: We must use provided_indexers when available because after Flush,
+    // segment->get_vector_indexer() returns stale indexers with cleared in-memory data
+    std::vector<VectorColumnIndexer::Ptr> indexers;
+    if (!provided_indexers.empty()) {
+      indexers = provided_indexers;
+      DebugLog("[ComputeGroundTruth] Using provided indexers (count=" + std::to_string(indexers.size()) + ")");
+    } else {
+      indexers = segment->get_vector_indexer(field_name);
+      DebugLog("[ComputeGroundTruth] Using indexers from segment (count=" + std::to_string(indexers.size()) + ")");
+    }
 
-      // In held-out mode, request topk+1 results since we'll exclude self
-      size_t search_topk = held_out_mode ? topk + 1 : topk;
+    if (indexers.empty()) {
+      LOG_ERROR("No vector indexers found for field '%s', falling back to brute force", field_name.c_str());
+      ef_groundtruth = 0;  // Fall back to brute force
+    } else {
+      // For held-out mode, we need topk+1 to exclude self
+      size_t actual_topk = held_out_mode ? topk + 1 : topk;
 
-      // Prepare query parameters for brute force search
-      vector_column_params::VectorData vector_data;
-      vector_data.vector = vector_column_params::DenseVector{
-          .data = const_cast<void*>(static_cast<const void*>(query_vector.data()))
+      // ========================================================
+      // WARM-UP STEP: Pre-load index data to avoid cold-start penalty
+      // Without this, the first searches are very slow due to lazy loading.
+      // We use parallel warmup with all threads to load data faster.
+      // ========================================================
+      {
+        DebugLog("[ComputeGroundTruth] Warming up HNSW index...");
+        auto warmup_start = std::chrono::high_resolution_clock::now();
+
+        // Warmup count: use a fraction of queries spread across threads
+        // This helps load different parts of the index in parallel
+        size_t actual_threads = num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
+        size_t warmup_per_thread = 5;  // Each thread does 5 warmup queries
+        size_t warmup_total = std::min(actual_threads * warmup_per_thread, queries.size());
+
+        // Parallel warmup using std::thread
+        std::vector<std::thread> warmup_threads;
+        std::atomic<size_t> warmup_completed{0};
+
+        auto warmup_worker = [&](size_t start_idx, size_t count) {
+          for (size_t i = 0; i < count && (start_idx + i) < queries.size(); ++i) {
+            size_t q_idx = start_idx + i;
+            vector_column_params::VectorData vector_data;
+            vector_data.vector = vector_column_params::DenseVector{
+                .data = const_cast<void*>(static_cast<const void*>(queries[q_idx].data()))
+            };
+
+            vector_column_params::QueryParams query_params;
+            query_params.topk = actual_topk;
+            query_params.fetch_vector = false;
+            query_params.filter = segment->get_filter().get();
+
+            auto omega_params = std::make_shared<OmegaQueryParams>();
+            omega_params->set_ef(ef_groundtruth);
+            omega_params->set_training_query_id(-1);  // Warmup, don't collect training data
+            query_params.query_params = omega_params;
+
+            indexers[0]->Search(vector_data, query_params);
+            ++warmup_completed;
+          }
+        };
+
+        // Launch warmup threads
+        size_t queries_per_warmup_thread = warmup_total / actual_threads;
+        for (size_t t = 0; t < actual_threads && t * queries_per_warmup_thread < warmup_total; ++t) {
+          size_t start = t * queries_per_warmup_thread;
+          size_t count = std::min(queries_per_warmup_thread, warmup_total - start);
+          if (count > 0) {
+            warmup_threads.emplace_back(warmup_worker, start, count);
+          }
+        }
+
+        for (auto& t : warmup_threads) {
+          t.join();
+        }
+
+        auto warmup_end = std::chrono::high_resolution_clock::now();
+        auto warmup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(warmup_end - warmup_start).count();
+        DebugLog("[ComputeGroundTruth] Warmup completed in " + std::to_string(warmup_ms) +
+                 " ms (" + std::to_string(warmup_completed.load()) + " queries, " +
+                 std::to_string(warmup_threads.size()) + " threads)");
+
+        // Note: If warmup takes very long (>60s), recommend using ef_groundtruth=0 (Eigen brute force)
+        if (warmup_ms > 60000) {
+          LOG_WARN("HNSW warmup took %zu ms. For cold indexes, consider using ef_groundtruth=0 (Eigen brute force)",
+                   warmup_ms);
+        }
+      }
+
+      // Pre-allocate ground_truth for thread-safe access
+      ground_truth.resize(queries.size());
+
+      // Use std::thread instead of OpenMP (same as training searches)
+      size_t actual_threads = num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
+      actual_threads = std::min(actual_threads, queries.size());
+
+      std::atomic<size_t> completed{0};
+      auto search_start = std::chrono::high_resolution_clock::now();
+
+      auto worker = [&](size_t start_idx, size_t end_idx) {
+        for (size_t q = start_idx; q < end_idx; ++q) {
+          // Prepare query parameters (exactly same as training searches)
+          vector_column_params::VectorData vector_data;
+          vector_data.vector = vector_column_params::DenseVector{
+              .data = const_cast<void*>(static_cast<const void*>(queries[q].data()))
+          };
+
+          vector_column_params::QueryParams query_params;
+          query_params.topk = actual_topk;
+          query_params.fetch_vector = false;
+          query_params.filter = segment->get_filter().get();
+
+          // Create OmegaQueryParams (same as training searches)
+          auto omega_params = std::make_shared<OmegaQueryParams>();
+          omega_params->set_ef(ef_groundtruth);
+          omega_params->set_training_query_id(static_cast<int>(q));
+          query_params.query_params = omega_params;
+
+          // Search on first indexer (same as training searches)
+          auto search_result = indexers[0]->Search(vector_data, query_params);
+          if (search_result.has_value()) {
+            auto& results = search_result.value();
+            std::vector<uint64_t> result_ids;
+            result_ids.reserve(results->count());
+            auto iter = results->create_iterator();
+            while (iter->valid()) {
+              uint64_t doc_id = iter->doc_id();
+              // Skip self in held-out mode
+              if (held_out_mode && doc_id == query_doc_ids[q]) {
+                iter->next();
+                continue;
+              }
+              result_ids.push_back(doc_id);
+              if (result_ids.size() >= topk) break;
+              iter->next();
+            }
+            ground_truth[q] = std::move(result_ids);
+          }
+
+          // Progress logging
+          size_t done = ++completed;
+          if (done % 500 == 0 || done == queries.size()) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() - search_start).count();
+            DebugLog("[ComputeGroundTruth] HNSW progress: " + std::to_string(done) + "/" +
+                     std::to_string(queries.size()) + ", elapsed: " + std::to_string(elapsed) + " ms");
+          }
+        }
       };
 
-      vector_column_params::QueryParams query_params;
-      query_params.topk = search_topk;
-      query_params.fetch_vector = false;
-      query_params.filter = segment->get_filter().get();
+      // Launch threads
+      std::vector<std::thread> threads;
+      size_t queries_per_thread = (queries.size() + actual_threads - 1) / actual_threads;
+      for (size_t t = 0; t < actual_threads; ++t) {
+        size_t start_idx = t * queries_per_thread;
+        size_t end_idx = std::min(start_idx + queries_per_thread, queries.size());
+        if (start_idx < end_idx) {
+          threads.emplace_back(worker, start_idx, end_idx);
+        }
+      }
 
-      // Use linear search (brute force) for ground truth
-      auto base_params = std::make_shared<HnswQueryParams>(search_topk);
-      base_params->set_is_linear(true);
-      query_params.query_params = base_params;
+      // Wait for all threads
+      for (auto& thread : threads) {
+        thread.join();
+      }
 
-      // Perform search
-      auto search_result = combined_indexer->Search(vector_data, query_params);
-      if (!search_result.has_value()) {
-        LOG_WARN("Ground truth search failed for query %zu: %s",
-                 query_idx, search_result.error().message().c_str());
+      auto end_time = std::chrono::high_resolution_clock::now();
+      auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+      DebugLog("[ComputeGroundTruth] HNSW search completed in " + std::to_string(total_ms) + " ms");
+      LOG_INFO("Computed ground truth (HNSW ef=%d) for %zu queries in %zu ms",
+               ef_groundtruth, queries.size(), total_ms);
+      return ground_truth;
+    }
+  }
+
+  // ============================================================
+  // Branch 2: Eigen brute force (ef_groundtruth == 0)
+  // Exact results, uses batch matrix multiplication
+  // ============================================================
+  DebugLog("[ComputeGroundTruth] Using Eigen brute force search");
+
+  // Convert zvec MetricType to omega MetricType
+  omega::MetricType omega_metric;
+  switch (metric_type) {
+    case MetricType::L2:
+      omega_metric = omega::MetricType::L2;
+      break;
+    case MetricType::COSINE:
+      omega_metric = omega::MetricType::COSINE;
+      break;
+    case MetricType::IP:
+    default:
+      omega_metric = omega::MetricType::IP;
+      break;
+  }
+
+  // Step 1: Load all base vectors into memory
+  DebugLog("[ComputeGroundTruth] Loading " + std::to_string(doc_count) + " base vectors...");
+  auto load_start = std::chrono::high_resolution_clock::now();
+
+  std::vector<float> base_vectors(doc_count * dim);
+  std::atomic<size_t> loaded_count{0};
+  std::atomic<bool> load_error{false};
+
+  // Load vectors in parallel
+  size_t actual_threads = num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
+  actual_threads = std::min(actual_threads, static_cast<size_t>(doc_count));
+
+  auto load_worker = [&](size_t start_idx, size_t end_idx) {
+    for (size_t doc_idx = start_idx; doc_idx < end_idx && !load_error; ++doc_idx) {
+      auto doc = segment->Fetch(doc_idx);
+      if (!doc) {
+        LOG_WARN("Failed to fetch document at index %zu", doc_idx);
+        load_error = true;
         continue;
       }
 
-      // Extract result doc IDs, excluding self in held-out mode
-      auto& results = search_result.value();
-      std::vector<uint64_t> gt_ids;
-      gt_ids.reserve(topk);
-
-      uint64_t self_doc_id = held_out_mode ? query_doc_ids[query_idx] : UINT64_MAX;
-
-      auto iter = results->create_iterator();
-      while (iter->valid() && gt_ids.size() < topk) {
-        uint64_t doc_id = iter->doc_id();
-        // Skip self in held-out mode
-        if (doc_id != self_doc_id) {
-          gt_ids.push_back(doc_id);
-        }
-        iter->next();
+      auto vector_opt = doc->get<std::vector<float>>(field_name);
+      if (!vector_opt.has_value()) {
+        LOG_WARN("Document at index %zu does not have field '%s'", doc_idx, field_name.c_str());
+        load_error = true;
+        continue;
       }
-      ground_truth[query_idx] = std::move(gt_ids);
 
-      // Update progress
-      size_t completed = ++completed_queries;
-      if (completed % 100 == 0 || completed == queries.size()) {
-        std::lock_guard<std::mutex> lock(log_mutex);
-        auto now = std::chrono::high_resolution_clock::now();
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - loop_start).count();
-        DebugLog("[ComputeGroundTruth] Progress: " + std::to_string(completed) + "/" +
-                 std::to_string(queries.size()) + ", elapsed: " + std::to_string(elapsed_ms) + " ms");
+      const auto& vec = vector_opt.value();
+      if (vec.size() != dim) {
+        LOG_WARN("Vector at index %zu has wrong dimension: %zu vs %zu", doc_idx, vec.size(), dim);
+        load_error = true;
+        continue;
+      }
+
+      std::memcpy(base_vectors.data() + doc_idx * dim, vec.data(), dim * sizeof(float));
+      ++loaded_count;
+
+      // Progress logging
+      size_t count = loaded_count.load();
+      if (count % 100000 == 0) {
+        DebugLog("[ComputeGroundTruth] Loaded " + std::to_string(count) + "/" +
+                 std::to_string(doc_count) + " vectors");
       }
     }
   };
 
-  // Launch threads
-  std::vector<std::thread> threads;
-  size_t queries_per_thread = (queries.size() + actual_threads - 1) / actual_threads;
+  std::vector<std::thread> load_threads;
+  size_t docs_per_thread = (doc_count + actual_threads - 1) / actual_threads;
 
   for (size_t t = 0; t < actual_threads; ++t) {
-    size_t start_idx = t * queries_per_thread;
-    size_t end_idx = std::min(start_idx + queries_per_thread, queries.size());
+    size_t start_idx = t * docs_per_thread;
+    size_t end_idx = std::min(start_idx + docs_per_thread, static_cast<size_t>(doc_count));
     if (start_idx < end_idx) {
-      threads.emplace_back(worker, start_idx, end_idx);
+      load_threads.emplace_back(load_worker, start_idx, end_idx);
     }
   }
 
-  // Wait for all threads
-  for (auto& thread : threads) {
+  for (auto& thread : load_threads) {
     thread.join();
   }
 
-  auto loop_end = std::chrono::high_resolution_clock::now();
-  auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(loop_end - loop_start).count();
-  DebugLog("[ComputeGroundTruth] Completed " + std::to_string(queries.size()) +
-           " queries in " + std::to_string(total_ms) + " ms (" +
-           std::to_string(actual_threads) + " threads)");
+  auto load_end = std::chrono::high_resolution_clock::now();
+  auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(load_end - load_start).count();
+  DebugLog("[ComputeGroundTruth] Loaded " + std::to_string(loaded_count) +
+           " vectors in " + std::to_string(load_ms) + " ms");
 
-  LOG_INFO("Computed ground truth for %zu queries in %zu ms (%zu threads)",
-           queries.size(), total_ms, actual_threads);
+  if (load_error) {
+    LOG_ERROR("Failed to load all base vectors, cannot compute ground truth");
+    return ground_truth;
+  }
+
+  // Step 2: Flatten query vectors
+  std::vector<float> query_flat(queries.size() * dim);
+  for (size_t i = 0; i < queries.size(); ++i) {
+    std::memcpy(query_flat.data() + i * dim, queries[i].data(), dim * sizeof(float));
+  }
+
+  // Step 3: Call OmegaLib's fast ground truth computation (Eigen)
+  DebugLog("[ComputeGroundTruth] Computing ground truth with Eigen...");
+  auto compute_start = std::chrono::high_resolution_clock::now();
+
+  ground_truth = omega::ComputeGroundTruth(
+      base_vectors.data(),
+      query_flat.data(),
+      doc_count,
+      queries.size(),
+      dim,
+      topk,
+      omega_metric,
+      held_out_mode);
+
+  auto compute_end = std::chrono::high_resolution_clock::now();
+  auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_end - compute_start).count();
+  DebugLog("[ComputeGroundTruth] Computed ground truth in " + std::to_string(compute_ms) + " ms");
+
+  auto total_end = std::chrono::high_resolution_clock::now();
+  auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - start_time).count();
+  DebugLog("[ComputeGroundTruth] Total time: " + std::to_string(total_ms) +
+           " ms (load: " + std::to_string(load_ms) + " ms, compute: " + std::to_string(compute_ms) + " ms)");
+
+  LOG_INFO("Computed ground truth (Eigen brute force) for %zu queries in %zu ms (load: %zu ms, compute: %zu ms)",
+           queries.size(), total_ms, load_ms, compute_ms);
+
   return ground_truth;
 }
 
@@ -383,116 +608,39 @@ void TrainingDataCollector::FillLabels(
     const std::vector<std::vector<uint64_t>>& ground_truth,
     const std::vector<std::vector<uint64_t>>& search_results,
     size_t k_train) {
+  // NOTE: Labels are now computed in real-time during search.
+  // This function is kept for backward compatibility but only counts existing labels.
+  (void)ground_truth;
+  (void)search_results;
+  (void)k_train;
+
   if (!records || records->empty()) {
     LOG_WARN("No records to fill labels");
     return;
   }
 
-  if (ground_truth.empty()) {
-    LOG_WARN("Ground truth is empty, cannot fill labels");
-    return;
-  }
-
-  auto fill_start = std::chrono::high_resolution_clock::now();
-
-  // Use parallel processing for large record counts
-  size_t num_records = records->size();
-  size_t num_threads = std::min(static_cast<size_t>(std::thread::hardware_concurrency()),
-                                 std::max(num_records / 10000, static_cast<size_t>(1)));
-
-  std::atomic<size_t> positive_count{0};
-  std::atomic<size_t> negative_count{0};
-  std::atomic<size_t> processed_count{0};
-
-  auto worker = [&](size_t start_idx, size_t end_idx) {
-    size_t local_positive = 0;
-    size_t local_negative = 0;
-
-    for (size_t idx = start_idx; idx < end_idx; ++idx) {
-      auto& record = (*records)[idx];
-      int query_id = record.query_id;
-
-      // Validate query_id
-      if (query_id < 0 || query_id >= static_cast<int>(ground_truth.size())) {
-        record.label = 0;
-        local_negative++;
-        continue;
-      }
-
-      const auto& gt = ground_truth[query_id];
-      if (gt.empty()) {
-        record.label = 0;
-        local_negative++;
-        continue;
-      }
-
-      // Take top k_train ground truth nodes
-      size_t actual_k = std::min(k_train, gt.size());
-
-      // For small k_train (typical case: k_train=1), use linear search
-      // This is faster than building a hash set for each record
-      bool all_found = true;
-      const auto& collected = record.collected_node_ids;
-
-      for (size_t i = 0; i < actual_k && all_found; ++i) {
-        uint64_t gt_node = gt[i];
-        // Linear search in collected_node_ids
-        bool found = false;
-        for (uint64_t node : collected) {
-          if (node == gt_node) {
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          all_found = false;
-        }
-      }
-
-      if (all_found) {
-        record.label = 1;
-        local_positive++;
-      } else {
-        record.label = 0;
-        local_negative++;
-      }
-    }
-
-    positive_count += local_positive;
-    negative_count += local_negative;
-    processed_count += (end_idx - start_idx);
-  };
-
-  // Launch threads
-  std::vector<std::thread> threads;
-  size_t records_per_thread = (num_records + num_threads - 1) / num_threads;
-
-  for (size_t t = 0; t < num_threads; ++t) {
-    size_t start_idx = t * records_per_thread;
-    size_t end_idx = std::min(start_idx + records_per_thread, num_records);
-    if (start_idx < end_idx) {
-      threads.emplace_back(worker, start_idx, end_idx);
+  // Count existing labels (already computed in real-time during search)
+  size_t positive_count = 0;
+  size_t negative_count = 0;
+  for (const auto& record : *records) {
+    if (record.label > 0) {
+      positive_count++;
+    } else {
+      negative_count++;
     }
   }
 
-  // Wait for all threads
-  for (auto& thread : threads) {
-    thread.join();
-  }
-
-  auto fill_end = std::chrono::high_resolution_clock::now();
-  auto fill_ms = std::chrono::duration_cast<std::chrono::milliseconds>(fill_end - fill_start).count();
-
-  LOG_INFO("Filled labels for %zu/%zu records (%zu positive, %zu negative, k_train=%zu) in %zu ms (%zu threads)",
-           processed_count.load(), records->size(), positive_count.load(), negative_count.load(), k_train,
-           fill_ms, num_threads);
+  LOG_INFO("Labels already computed in real-time: %zu positive, %zu negative (k_train=%zu)",
+           positive_count, negative_count, k_train);
 }
 
 core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
     const std::vector<core_interface::TrainingRecord>& records,
     const std::vector<std::vector<uint64_t>>& ground_truth,
     size_t topk) {
-  auto compute_start = std::chrono::high_resolution_clock::now();
+  // NOTE: gt_cmps computation requires collected_node_ids which was removed
+  // for memory optimization. This function now returns default values based on
+  // record.cmps_visited as a simple approximation.
 
   core_interface::GtCmpsData result;
   result.topk = topk;
@@ -503,97 +651,57 @@ core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
     return result;
   }
 
-  // Initialize gt_cmps with -1 (not found)
+  // Initialize gt_cmps and total_cmps
   result.gt_cmps.resize(ground_truth.size());
   result.total_cmps.resize(ground_truth.size(), 0);
 
   for (size_t q = 0; q < ground_truth.size(); ++q) {
-    result.gt_cmps[q].resize(topk, -1);
+    result.gt_cmps[q].resize(topk, 0);
   }
 
-  // Group records by query_id and find when each GT was first collected
-  // Records are ordered by (query_id, cmps_visited)
-  int current_query = -1;
-  int max_cmps_for_query = 0;
-  size_t gt_found_count = 0;  // Track how many GT nodes we've found (for early exit)
-  size_t gt_target_count = 0; // How many GT nodes we need to find for current query
-
-  // Map from GT node_id to its rank (for O(1) lookup instead of linear search)
-  std::unordered_map<uint64_t, size_t> gt_node_to_rank;
-  const std::vector<uint64_t>* current_gt = nullptr;
+  // Group records by query_id and track max cmps
+  // For gt_cmps, we use a simple heuristic:
+  // - If label=1 (GT found), use cmps_visited as gt_cmps for all GT ranks
+  // - If label=0 (GT not found), use the max cmps for that query
+  std::unordered_map<int, int> query_max_cmps;
+  std::unordered_map<int, int> query_first_found_cmps;
 
   for (const auto& record : records) {
     int query_id = record.query_id;
-
-    // Validate query_id
     if (query_id < 0 || query_id >= static_cast<int>(ground_truth.size())) {
       continue;
     }
 
-    // Track max cmps for this query
-    if (query_id == current_query) {
-      max_cmps_for_query = std::max(max_cmps_for_query, record.cmps_visited);
-    } else {
-      // Save total_cmps for previous query
-      if (current_query >= 0 && current_query < static_cast<int>(result.total_cmps.size())) {
-        result.total_cmps[current_query] = max_cmps_for_query;
-      }
+    // Track max cmps for each query
+    auto& max_cmps = query_max_cmps[query_id];
+    max_cmps = std::max(max_cmps, record.cmps_visited);
 
-      // Start new query
-      current_query = query_id;
-      max_cmps_for_query = record.cmps_visited;
-      current_gt = &ground_truth[query_id];
-      gt_found_count = 0;
-
-      // Build map from GT node_id to rank for O(1) lookup
-      gt_node_to_rank.clear();
-      gt_target_count = std::min(topk, current_gt->size());
-      for (size_t i = 0; i < gt_target_count; ++i) {
-        gt_node_to_rank[(*current_gt)[i]] = i;
-      }
-    }
-
-    // OPTIMIZATION: Early exit if we've found all GT nodes for this query
-    if (gt_found_count >= gt_target_count) {
-      continue;
-    }
-
-    // Check which GT nodes are in collected_node_ids
-    for (uint64_t node_id : record.collected_node_ids) {
-      auto it = gt_node_to_rank.find(node_id);
-      if (it != gt_node_to_rank.end()) {
-        size_t rank = it->second;
-        // Only record if we haven't found this GT yet
-        if (result.gt_cmps[query_id][rank] == -1) {
-          result.gt_cmps[query_id][rank] = record.cmps_visited;
-          gt_found_count++;
-          // Early exit from inner loop if all found
-          if (gt_found_count >= gt_target_count) {
-            break;
-          }
-        }
+    // Track first cmps where label became 1
+    if (record.label > 0) {
+      auto it = query_first_found_cmps.find(query_id);
+      if (it == query_first_found_cmps.end()) {
+        query_first_found_cmps[query_id] = record.cmps_visited;
+      } else {
+        it->second = std::min(it->second, record.cmps_visited);
       }
     }
   }
 
-  // Save total_cmps for the last query
-  if (current_query >= 0 && current_query < static_cast<int>(result.total_cmps.size())) {
-    result.total_cmps[current_query] = max_cmps_for_query;
-  }
+  // Fill in the result
+  for (size_t q = 0; q < ground_truth.size(); ++q) {
+    int query_id = static_cast<int>(q);
+    result.total_cmps[q] = query_max_cmps[query_id];
 
-  // Fill in -1 values with total_cmps (GT not found)
-  for (size_t q = 0; q < result.gt_cmps.size(); ++q) {
+    // Use first_found_cmps if available, otherwise use total_cmps
+    auto it = query_first_found_cmps.find(query_id);
+    int gt_cmps_value = (it != query_first_found_cmps.end()) ? it->second : result.total_cmps[q];
+
     for (size_t r = 0; r < result.gt_cmps[q].size(); ++r) {
-      if (result.gt_cmps[q][r] == -1) {
-        result.gt_cmps[q][r] = result.total_cmps[q];
-      }
+      result.gt_cmps[q][r] = gt_cmps_value;
     }
   }
 
-  auto compute_end = std::chrono::high_resolution_clock::now();
-  auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_end - compute_start).count();
-
-  LOG_INFO("Computed gt_cmps for %zu queries, topk=%zu in %zu ms", result.num_queries, result.topk, compute_ms);
+  LOG_INFO("Computed gt_cmps (approximation) for %zu queries, topk=%zu", result.num_queries, result.topk);
   return result;
 }
 
@@ -604,6 +712,22 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
     const TrainingDataCollectorOptions& options,
     const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
   ScopedTimer total_timer("CollectTrainingDataWithGtCmps [TOTAL]");
+
+  // Step 0: Get indexers first (needed for metric type)
+  std::vector<VectorColumnIndexer::Ptr> indexers;
+  if (!provided_indexers.empty()) {
+    indexers = provided_indexers;
+  } else {
+    indexers = segment->get_vector_indexer(field_name);
+  }
+
+  if (indexers.empty()) {
+    return tl::make_unexpected(
+        Status::InternalError("No vector indexers found for field: " + field_name));
+  }
+
+  // Get metric type from first indexer
+  MetricType metric_type = indexers[0]->metric_type();
 
   // Step 1: Generate training queries using held-out approach
   // (sample vectors directly from index, no noise)
@@ -627,19 +751,23 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
         Status::InternalError("Failed to generate training queries"));
   }
 
-  // Step 2: Compute ground truth (brute force search, excluding self-matches)
-  LOG_INFO("Computing ground truth with brute force search (topk=%zu, excluding self)",
-           options.topk);
+  // Step 2: Compute ground truth (brute force or HNSW search, excluding self-matches)
+  LOG_INFO("Computing ground truth (topk=%zu, ef_groundtruth=%d, excluding self)",
+           options.topk, options.ef_groundtruth);
 
   std::vector<std::vector<uint64_t>> ground_truth;
   {
-    ScopedTimer timer("Step2: ComputeGroundTruth (BRUTE FORCE PARALLEL, HELD-OUT)");
+    std::string timer_name = options.ef_groundtruth > 0
+        ? "Step2: ComputeGroundTruth (HNSW ef=" + std::to_string(options.ef_groundtruth) + " PARALLEL, HELD-OUT)"
+        : "Step2: ComputeGroundTruth (BRUTE FORCE PARALLEL, HELD-OUT)";
+    ScopedTimer timer(timer_name);
     DebugLog("  num_queries=" + std::to_string(training_queries.size()) +
              ", topk=" + std::to_string(options.topk) +
+             ", ef_groundtruth=" + std::to_string(options.ef_groundtruth) +
              ", threads=" + std::to_string(options.num_threads == 0 ? std::thread::hardware_concurrency() : options.num_threads));
     ground_truth = ComputeGroundTruth(
         segment, field_name, training_queries, options.topk, options.num_threads,
-        query_doc_ids);  // Pass doc_ids for self-exclusion
+        query_doc_ids, options.ef_groundtruth, metric_type, indexers);  // Pass indexers to avoid stale data
     DebugLog("  Computed ground truth for " + std::to_string(ground_truth.size()) + " queries");
   }
 
@@ -648,27 +776,17 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
         Status::InternalError("Failed to compute ground truth"));
   }
 
-  // Step 3: Choose indexers for training
-  std::vector<VectorColumnIndexer::Ptr> indexers;
-
-  if (!provided_indexers.empty()) {
-    indexers = provided_indexers;
-  } else {
-    indexers = segment->get_vector_indexer(field_name);
-  }
-
-  if (indexers.empty()) {
-    return tl::make_unexpected(
-        Status::InternalError("No vector indexers found for field: " + field_name));
-  }
-
   LOG_INFO("Found %zu indexers for field '%s'", indexers.size(), field_name.c_str());
   DebugLog("Step3: Found " + std::to_string(indexers.size()) + " indexers, doc_count=" +
            std::to_string(indexers[0]->doc_count()));
 
-  // Step 4: Enable training mode on all indexers
-  LOG_INFO("Enabling training mode on %zu indexers", indexers.size());
+  // Step 4: Set ground truth and enable training mode on all indexers
+  LOG_INFO("Setting ground truth (%zu queries) and enabling training mode on %zu indexers",
+           ground_truth.size(), indexers.size());
   for (auto& indexer : indexers) {
+    // Set ground truth for real-time label computation
+    indexer->SetTrainingGroundTruth(ground_truth, options.k_train);
+
     auto status = indexer->EnableTrainingMode(true);
     if (!status.ok()) {
       LOG_WARN("Failed to enable training mode on indexer: %s",
@@ -805,12 +923,15 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
     LOG_WARN("No training records collected from any indexer");
   }
 
-  // Step 7: Fill labels based on ground truth
-  LOG_INFO("Filling labels for %zu records (k_train=%zu)", all_records.size(), options.k_train);
-  {
-    ScopedTimer timer("Step7: FillLabels");
-    FillLabels(&all_records, ground_truth, search_results, options.k_train);
+  // Step 7: Labels are now computed in real-time during search (no FillLabels needed)
+  // Count positive/negative labels for verification
+  size_t positive_count = 0, negative_count = 0;
+  for (const auto& record : all_records) {
+    if (record.label > 0) positive_count++;
+    else negative_count++;
   }
+  LOG_INFO("Collected %zu records: %zu positive, %zu negative (labels computed in real-time)",
+           all_records.size(), positive_count, negative_count);
 
   // Step 8: Compute gt_cmps data
   LOG_INFO("Computing gt_cmps data");

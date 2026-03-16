@@ -108,6 +108,17 @@ void OmegaIndex::ClearTrainingRecords() {
   // no shared state to clear here.
 }
 
+void OmegaIndex::SetTrainingGroundTruth(
+    const std::vector<std::vector<uint64_t>>& ground_truth, int k_train) {
+  // Delegate to OmegaStreamer if available
+  if (streamer_) {
+    auto* omega_streamer = dynamic_cast<core::OmegaStreamer*>(streamer_.get());
+    if (omega_streamer) {
+      omega_streamer->SetTrainingGroundTruth(ground_truth, k_train);
+    }
+  }
+}
+
 int OmegaIndex::_prepare_for_search(
     const VectorData &vector_data,
     const BaseIndexQueryParam::Pointer &search_param,

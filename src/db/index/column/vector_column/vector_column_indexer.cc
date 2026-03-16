@@ -261,6 +261,16 @@ void VectorColumnIndexer::ClearTrainingRecords() {
   }
 }
 
+void VectorColumnIndexer::SetTrainingGroundTruth(
+    const std::vector<std::vector<uint64_t>>& ground_truth, int k_train) {
+  // Propagate to underlying index if it exists and supports training
+  if (index != nullptr) {
+    if (auto* training_capable = index->GetTrainingCapability()) {
+      training_capable->SetTrainingGroundTruth(ground_truth, k_train);
+    }
+  }
+}
+
 core_interface::ITrainingCapable* VectorColumnIndexer::GetTrainingCapability() const {
   if (index != nullptr) {
     return index->GetTrainingCapability();

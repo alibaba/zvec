@@ -34,8 +34,7 @@ omega::TrainingRecord ConvertRecord(const core_interface::TrainingRecord& src) {
   // Convert std::array<float, 7> to std::vector<float>
   dst.traversal_window_stats.assign(src.traversal_window_stats.begin(),
                                      src.traversal_window_stats.end());
-  dst.label = src.label;
-  dst.collected_node_ids = src.collected_node_ids;
+  dst.label = src.label;  // Already computed in real-time during search
   return dst;
 }
 

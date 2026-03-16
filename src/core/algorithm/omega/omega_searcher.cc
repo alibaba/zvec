@@ -35,6 +35,7 @@ OmegaSearcher::OmegaSearcher(void)
       target_recall_(0.95f),
       min_vector_threshold_(100000),
       current_vector_count_(0),
+      window_size_(100),
       training_mode_enabled_(false),
       current_query_id_(0) {}
 
@@ -48,6 +49,7 @@ int OmegaSearcher::init(const ailego::Params &params) {
   target_recall_ = params.has("omega.target_recall") ? params.get_as_float("omega.target_recall") : 0.95f;
   min_vector_threshold_ = params.has("omega.min_vector_threshold") ? params.get_as_uint32("omega.min_vector_threshold") : 100000;
   model_dir_ = params.has("omega.model_dir") ? params.get_as_string("omega.model_dir") : "";
+  window_size_ = params.has("omega.window_size") ? params.get_as_int32("omega.window_size") : 100;
 
   // Call parent class init
   int ret = HnswSearcher::init(params);
@@ -57,8 +59,8 @@ int OmegaSearcher::init(const ailego::Params &params) {
   }
 
   LOG_INFO("OmegaSearcher initialized (omega_enabled=%d, target_recall=%.2f, "
-           "min_threshold=%u)",
-           omega_enabled_, target_recall_, min_vector_threshold_);
+           "min_threshold=%u, window_size=%d)",
+           omega_enabled_, target_recall_, min_vector_threshold_, window_size_);
   return 0;
 }
 
@@ -207,6 +209,14 @@ void OmegaSearcher::ClearTrainingRecords() {
   LOG_INFO("Cleared %zu training records", collected_records_.size());
 }
 
+void OmegaSearcher::SetTrainingGroundTruth(
+    const std::vector<std::vector<uint64_t>>& ground_truth, int k_train) {
+  training_ground_truth_ = ground_truth;
+  training_k_train_ = k_train;
+  LOG_INFO("Set training ground truth for %zu queries, k_train=%d",
+           ground_truth.size(), k_train);
+}
+
 int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmeta,
                                    uint32_t count,
                                    ContextPointer &context) const {
@@ -228,7 +238,7 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   }
 
   OmegaSearchHandle omega_search = omega_search_create_with_params(
-      model_to_use, target_recall, count, 100);  // window_size=100
+      model_to_use, target_recall, count, window_size_);
 
   if (omega_search == nullptr) {
     LOG_WARN("Failed to create OMEGA search context, falling back to HNSW");
@@ -237,8 +247,21 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
 
   // Enable training mode if active (CRITICAL: must be before search)
   if (training_mode_enabled_) {
-    omega_search_enable_training(omega_search, current_query_id_);
-    LOG_DEBUG("Training mode enabled for query_id=%d", current_query_id_);
+    // Get ground truth for this query if available
+    std::vector<int> gt_for_query;
+    if (current_query_id_ >= 0 &&
+        static_cast<size_t>(current_query_id_) < training_ground_truth_.size()) {
+      const auto& gt = training_ground_truth_[current_query_id_];
+      gt_for_query.reserve(gt.size());
+      for (uint64_t node_id : gt) {
+        gt_for_query.push_back(static_cast<int>(node_id));
+      }
+    }
+    omega_search_enable_training(omega_search, current_query_id_,
+                                  gt_for_query.data(), gt_for_query.size(),
+                                  training_k_train_);
+    LOG_DEBUG("Training mode enabled for query_id=%d with %zu GT nodes",
+              current_query_id_, gt_for_query.size());
   }
 
   // OmegaContext extends HnswContext, so we can use it directly
@@ -432,13 +455,8 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
                    omega_records[i].traversal_window_stats.size());
         }
 
-        // Copy collected node IDs (convert from int to uint64_t)
-        record.collected_node_ids.reserve(omega_records[i].collected_node_ids.size());
-        for (int node_id : omega_records[i].collected_node_ids) {
-          record.collected_node_ids.push_back(static_cast<uint64_t>(node_id));
-        }
-
-        record.label = omega_records[i].label;  // Default 0
+        // Label is already computed in real-time during search
+        record.label = omega_records[i].label;
 
         collected_records_.push_back(std::move(record));
       }
