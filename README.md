@@ -11,7 +11,7 @@
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
   <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
   <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/pyversions/zvec.svg" alt="Python Versions"/></a>
-  <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec" alt="npm Release"/></a>
+  <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec.svg" alt="npm Release"/></a>
 </p>
 
 <p align="center">
