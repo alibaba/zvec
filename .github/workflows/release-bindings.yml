@@ -47,6 +47,9 @@ jobs:
       - name: Test C# bindings
         run: cd src/binding/dagger && cargo run -- test-csharp
 
+      - name: Test Swift bindings
+        run: cd src/binding/dagger && cargo run -- test-swift
+
   publish:
     name: Publish Bindings
     needs: test

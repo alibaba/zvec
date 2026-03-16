@@ -25,6 +25,7 @@ const NODE_IMAGE: &str = "node:22-bookworm-slim";
 const DOTNET_IMAGE: &str = "mcr.microsoft.com/dotnet/sdk:9.0-bookworm-slim";
 const PYTHON_IMAGE: &str = "python:3.12-bookworm";
 const GO_IMAGE: &str = "golang:1.23-bookworm";
+const SWIFT_IMAGE: &str = "swift:5.10-jammy";
 
 /// Shell command fragment to link all zvec static archives into a shared library.
 /// The caller must prepend the output path: `g++ -shared -o <path>/libzvec_c.so` + this.
@@ -228,6 +229,43 @@ async fn test_csharp(client: &Query) -> Result<String> {
         .stdout()
         .await
         .wrap_err("C# test failed")
+}
+
+/// Test Swift bindings against statically-linked zvec.
+async fn test_swift(client: &Query) -> Result<String> {
+    let libs = build_libs(client);
+    let lib_dir = libs.directory("/build/lib");
+    let ext_lib_dir = libs.directory("/build/external/usr/local/lib");
+    let arrow_lib_dir = libs.directory("/build/thirdparty/arrow/arrow/src/ARROW.BUILD-build/release");
+    let src = binding_dir(client, "src/binding/swift", vec![".build"]);
+    // Swift also needs the C headers to compile CZVec
+    let c_include = client.host().directory("src/binding/c/include");
+
+    client
+        .container()
+        .from(SWIFT_IMAGE)
+        .with_exec(vec!["apt-get", "update", "-qq"])
+        .with_exec(vec![
+            "apt-get", "install", "-y", "-qq", "--no-install-recommends",
+            "build-essential", "libz-dev", "liblz4-dev",
+            "libgflags-dev", "libgoogle-glog-dev",
+        ])
+        .with_directory("/binding", src)
+        .with_directory("/build/lib", lib_dir)
+        .with_directory("/build/external/usr/local/lib", ext_lib_dir)
+        .with_directory("/build/thirdparty/arrow/arrow/src/ARROW.BUILD-build/release", arrow_lib_dir)
+        .with_directory("/binding/Sources/CZVec/include", c_include)
+        .with_workdir("/binding")
+        .with_env_variable("ZVEC_LIB_DIR", "/build/lib")
+        .with_env_variable("ZVEC_EXT_LIB_DIR", "/build/external/usr/local/lib")
+        .with_env_variable("ZVEC_ARROW_LIB_DIR", "/build/thirdparty/arrow/arrow/src/ARROW.BUILD-build/release")
+        .with_env_variable("ZVEC_ARROW_DEPS_DIR", "/build/thirdparty/arrow/arrow/src/ARROW.BUILD-build/re2_ep-prefix/src/re2_ep-build")
+        .with_env_variable("ZVEC_ARROW_UTF8_DIR", "/build/thirdparty/arrow/arrow/src/ARROW.BUILD-build/utf8proc_ep-prefix/src/utf8proc_ep-build")
+        .with_exec(vec!["swift", "build"])
+        .with_exec(vec!["swift", "test"])
+        .stdout()
+        .await
+        .wrap_err("Swift test failed")
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -596,6 +634,10 @@ async fn release_all(client: &Query) -> Result<()> {
     test_csharp(client).await?;
     println!("✅ C# tests passed");
 
+    println!("🧪 Testing Swift bindings...");
+    test_swift(client).await?;
+    println!("✅ Swift tests passed");
+
     println!("📦 Multi-platform dry-run publishes...");
     let _ = publish_rust(client, "", true).await;
     let _ = publish_npm_multiplatform(client, "", true).await;
@@ -622,6 +664,7 @@ Commands:
   test-rust               Test Rust bindings (statically linked)
   test-go                 Test Go bindings (statically linked)
   test-csharp             Test C# bindings
+  test-swift              Test Swift bindings
   publish-rust [token]    Publish Rust crates with vendored libs
   publish-npm  [token]    Publish npm with pre-built .node addon (x64)
   publish-nuget [key]     Publish NuGet with native libs (x64 + arm64)
@@ -669,6 +712,10 @@ async fn main() -> Result<()> {
             }
             "test-csharp" => {
                 let out = test_csharp(&client).await?;
+                println!("{out}");
+            }
+            "test-swift" => {
+                let out = test_swift(&client).await?;
                 println!("{out}");
             }
             "publish-rust" => {
