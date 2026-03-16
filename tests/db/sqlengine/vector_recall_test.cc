@@ -213,7 +213,7 @@ TEST_F(VectorRecallTest, Sparse) {
 }
 
 TEST_F(VectorRecallTest, DeleteFilter) {
-  // This test uses only one segment and thus we only operate on the first
+  // This test uses only one segment and thus we only operate on the first one
   for (int i = 0; i < 4000; i++) {
     segments_[0]->Delete("pk_" + std::to_string(i));
   }

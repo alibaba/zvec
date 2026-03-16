@@ -50,7 +50,7 @@ class CombinedVectorColumnIndexer {
    *
    * This is used when multiple blocks with different ID offsets are stored.
    * Each block has its own local ID space, and this filter translates
-   * segment-level IDs to block-level IDs.
+   * block-level IDs to segment-level IDs before checking the inner filter.
    */
   class BlockOffsetFilter : public IndexFilter {
    public:
