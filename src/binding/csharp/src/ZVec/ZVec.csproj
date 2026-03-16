@@ -3,5 +3,29 @@
     <TargetFramework>net10.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>ZVec</RootNamespace>
+
+    <!-- NuGet publish metadata -->
+    <PackageId>ZVec</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>The zvec project</Authors>
+    <Description>C# bindings for zvec — an in-process vector database for similarity search</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/alibaba/zvec</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>vector;database;similarity-search;embedding;ann</PackageTags>
+    <PackageProjectUrl>https://zvec.org</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <!-- Bundle pre-built native libraries for each platform.
+       The Dagger pipeline places the shared lib at runtimes/{rid}/native/
+       before running `dotnet pack`. -->
+  <ItemGroup>
+    <Content Include="runtimes/**/native/*" Pack="true" PackagePath="runtimes/" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

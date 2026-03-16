@@ -3,6 +3,22 @@ name = "zvec-sys"
 version = "0.1.0"
 authors = ["The zvec project"]
 edition = "2021"
+description = "Raw FFI bindings to the zvec in-process vector database C API"
+license = "Apache-2.0"
+repository = "https://github.com/alibaba/zvec"
+homepage = "https://zvec.org"
+readme = "../README.md"
+categories = ["database", "external-ffi-bindings"]
+keywords = ["vector", "database", "similarity-search", "ffi", "proxima"]
+links = "zvec"
+build = "build.rs"
+include = [
+    "src/**",
+    "build.rs",
+    "vendor/**",
+    "Cargo.toml",
+    "README.md",
+]
 
 [dependencies]
 # No external dependencies for -sys crate

@@ -3,6 +3,13 @@ name = "zvec"
 version = "0.1.0"
 authors = ["The zvec project"]
 edition = "2021"
+description = "Safe Rust bindings for zvec — an in-process vector database for similarity search"
+license = "Apache-2.0"
+repository = "https://github.com/alibaba/zvec"
+homepage = "https://zvec.org"
+readme = "../README.md"
+categories = ["database", "science"]
+keywords = ["vector", "database", "similarity-search", "embedding", "ann"]
 
 [dependencies]
 zvec-sys = { path = "../zvec-sys" }

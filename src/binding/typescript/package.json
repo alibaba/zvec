@@ -1,13 +1,46 @@
 {
-  "name": "zvec",
+  "name": "@zvec/zvec",
   "version": "0.1.0",
-  "description": "Node.js bindings for zvec in-process vector database",
+  "description": "Node.js native bindings for zvec — in-process vector database for similarity search",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "scripts": {
-    "install": "node-gyp rebuild",
+    "install": "node scripts/install.js || node-gyp rebuild",
     "build": "node-gyp build && tsc",
     "test": "node --test test/zvec.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alibaba/zvec.git",
+    "directory": "src/binding/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/alibaba/zvec/issues"
+  },
+  "homepage": "https://zvec.org",
+  "keywords": [
+    "vector",
+    "database",
+    "similarity-search",
+    "embedding",
+    "ann",
+    "native",
+    "addon"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "lib/",
+    "src/",
+    "scripts/",
+    "prebuilds/",
+    "binding.gyp",
+    "tsconfig.json",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "node-addon-api": "^8.0.0"

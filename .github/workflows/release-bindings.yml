@@ -1,0 +1,72 @@
+# Dagger-powered release pipeline for zvec language bindings.
+# Builds the C++ library, tests all bindings, and publishes
+# self-contained packages to crates.io, npm, NuGet, and PyPI.
+#
+# Triggered by version tags (v*) or manual dispatch.
+
+name: Release Bindings
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run mode (no actual publish)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: dagger/dagger-for-github@v7
+        with:
+          version: "latest"
+
+      - name: Build zvec C++ libraries
+        run: cd src/binding/dagger && cargo run -- build-libs
+
+      - name: Test Rust bindings
+        run: cd src/binding/dagger && cargo run -- test-rust
+
+      - name: Test Go bindings
+        run: cd src/binding/dagger && cargo run -- test-go
+
+      - name: Test C# bindings
+        run: cd src/binding/dagger && cargo run -- test-csharp
+
+  publish:
+    name: Publish Bindings
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.dry_run == 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: dagger/dagger-for-github@v7
+        with:
+          version: "latest"
+
+      - name: Publish Rust crates
+        run: cd src/binding/dagger && cargo run -- publish-rust "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+
+      - name: Publish npm package
+        run: cd src/binding/dagger && cargo run -- publish-npm "${{ secrets.NPM_TOKEN }}"
+
+      - name: Publish NuGet package
+        run: cd src/binding/dagger && cargo run -- publish-nuget "${{ secrets.NUGET_KEY }}"
+
+      - name: Publish PyPI package
+        run: cd src/binding/dagger && cargo run -- publish-pypi "${{ secrets.TWINE_PASSWORD }}"

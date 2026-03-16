@@ -1,0 +1,11 @@
+[package]
+name = "zvec-dagger"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Dagger CI/CD pipeline for building, testing, and publishing zvec language bindings"
+
+[dependencies]
+dagger-sdk = "0.20.1"
+tokio = { version = "1", features = ["full"] }
+eyre = "0.6"
