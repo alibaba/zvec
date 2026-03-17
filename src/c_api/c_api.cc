@@ -798,6 +798,73 @@ static char *copy_string(const std::string &str) {
   return copy;
 }
 
+// Helper function: free write results returned by detailed DML APIs.
+static void free_write_results_internal(ZVecWriteResult *results,
+                                        size_t result_count) {
+  if (!results) {
+    return;
+  }
+  for (size_t i = 0; i < result_count; ++i) {
+    if (results[i].pk) {
+      free((void *)results[i].pk);
+      results[i].pk = nullptr;
+    }
+    if (results[i].message) {
+      free((void *)results[i].message);
+      results[i].message = nullptr;
+    }
+  }
+  free(results);
+}
+
+// Helper function: convert per-doc statuses to C API write result array.
+static ZVecErrorCode build_write_results(
+    const std::vector<zvec::Status> &statuses,
+    const std::vector<std::string> &pks, ZVecWriteResult **results,
+    size_t *result_count) {
+  if (!results || !result_count) {
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  *result_count = statuses.size();
+  if (*result_count == 0) {
+    *results = nullptr;
+    return ZVEC_OK;
+  }
+
+  *results = static_cast<ZVecWriteResult *>(
+      calloc(*result_count, sizeof(ZVecWriteResult)));
+  if (!*results) {
+    set_last_error("Failed to allocate memory for write results");
+    return ZVEC_ERROR_INTERNAL_ERROR;
+  }
+
+  for (size_t i = 0; i < *result_count; ++i) {
+    const std::string pk = i < pks.size() ? pks[i] : std::string();
+    const std::string message = statuses[i].message();
+    (*results)[i].pk = copy_string(pk);
+    (*results)[i].message = copy_string(message);
+    (*results)[i].code = status_to_error_code(statuses[i]);
+  }
+
+  return ZVEC_OK;
+}
+
+static std::vector<std::string> collect_doc_pks(const ZVecDoc **docs,
+                                                size_t doc_count) {
+  std::vector<std::string> pks;
+  pks.reserve(doc_count);
+  for (size_t i = 0; i < doc_count; ++i) {
+    if (!docs[i]) {
+      pks.emplace_back("");
+      continue;
+    }
+    auto doc_ptr = reinterpret_cast<const std::shared_ptr<zvec::Doc> *>(docs[i]);
+    pks.emplace_back((*doc_ptr)->pk_ref());
+  }
+  return pks;
+}
+
 static zvec::DataType convert_data_type(ZVecDataType zvec_type) {
   if (zvec_type < ZVEC_DATA_TYPE_UNDEFINED ||
       zvec_type > ZVEC_DATA_TYPE_ARRAY_DOUBLE) {
@@ -1041,6 +1108,12 @@ ZVecErrorCode zvec_get_last_error(char **error_msg) {
 void zvec_free_uint8_array(uint8_t *array) {
   if (array) {
     free(array);
+  }
+}
+
+void zvec_free_ptr(void *ptr) {
+  if (ptr) {
+    free(ptr);
   }
 }
 
@@ -2139,6 +2212,10 @@ void zvec_docs_free(ZVecDoc **docs, size_t count) {
   free(docs);
 }
 
+void zvec_write_results_free(ZVecWriteResult *results, size_t result_count) {
+  free_write_results_internal(results, result_count);
+}
+
 void zvec_doc_set_pk(ZVecDoc *doc, const char *pk) {
   if (!doc || !pk) return;
 
@@ -2173,6 +2250,18 @@ void zvec_doc_set_operator(ZVecDoc *doc, ZVecDocOperator op) {
   auto doc_ptr = reinterpret_cast<std::shared_ptr<zvec::Doc> *>(doc);
   (*doc_ptr)->set_operator(static_cast<zvec::Operator>(op));
   ZVEC_CATCH_END_VOID
+}
+
+ZVecErrorCode zvec_doc_set_field_null(ZVecDoc *doc, const char *field_name) {
+  if (!doc || !field_name) {
+    set_last_error("Invalid arguments: null pointer");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to set null field",
+      auto doc_ptr = reinterpret_cast<std::shared_ptr<zvec::Doc> *>(doc);
+      (*doc_ptr)->set_null(std::string(field_name)); return ZVEC_OK;)
 }
 
 // =============================================================================
@@ -5124,6 +5213,38 @@ default: {
         return error_code;)
   }
 
+  ZVecErrorCode zvec_collection_insert_with_results(
+      ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
+      ZVecWriteResult **results, size_t *result_count) {
+    if (!collection || !docs || doc_count == 0 || !results || !result_count) {
+      set_last_error(
+          "Invalid arguments: collection, docs, doc_count, results and "
+          "result_count cannot be null/zero");
+      return ZVEC_ERROR_INVALID_ARGUMENT;
+    }
+
+    *results = nullptr;
+    *result_count = 0;
+
+    ZVEC_TRY_RETURN_ERROR(
+        "Exception in zvec_collection_insert_with_results",
+        auto coll_ptr =
+            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+        std::vector<zvec::Doc> internal_docs =
+            convert_zvec_docs_to_internal(docs, doc_count);
+        std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+
+        auto result = (*coll_ptr)->Insert(internal_docs);
+        ZVecErrorCode error_code = handle_expected_result(result);
+
+        if (error_code != ZVEC_OK) {
+          return error_code;
+        }
+
+        return build_write_results(result.value(), pks, results, result_count);)
+  }
+
   ZVecErrorCode zvec_collection_update(ZVecCollection *collection,
                                        const ZVecDoc **docs, size_t doc_count,
                                        size_t *success_count,
@@ -5162,6 +5283,38 @@ default: {
         return error_code;)
   }
 
+  ZVecErrorCode zvec_collection_update_with_results(
+      ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
+      ZVecWriteResult **results, size_t *result_count) {
+    if (!collection || !docs || doc_count == 0 || !results || !result_count) {
+      set_last_error(
+          "Invalid arguments: collection, docs, doc_count, results and "
+          "result_count cannot be null/zero");
+      return ZVEC_ERROR_INVALID_ARGUMENT;
+    }
+
+    *results = nullptr;
+    *result_count = 0;
+
+    ZVEC_TRY_RETURN_ERROR(
+        "Exception in zvec_collection_update_with_results",
+        auto coll_ptr =
+            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+        std::vector<zvec::Doc> internal_docs =
+            convert_zvec_docs_to_internal(docs, doc_count);
+        std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+
+        auto result = (*coll_ptr)->Update(internal_docs);
+        ZVecErrorCode error_code = handle_expected_result(result);
+
+        if (error_code != ZVEC_OK) {
+          return error_code;
+        }
+
+        return build_write_results(result.value(), pks, results, result_count);)
+  }
+
   ZVecErrorCode zvec_collection_upsert(ZVecCollection *collection,
                                        const ZVecDoc **docs, size_t doc_count,
                                        size_t *success_count,
@@ -5198,6 +5351,38 @@ default: {
         }
 
         return error_code;)
+  }
+
+  ZVecErrorCode zvec_collection_upsert_with_results(
+      ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
+      ZVecWriteResult **results, size_t *result_count) {
+    if (!collection || !docs || doc_count == 0 || !results || !result_count) {
+      set_last_error(
+          "Invalid arguments: collection, docs, doc_count, results and "
+          "result_count cannot be null/zero");
+      return ZVEC_ERROR_INVALID_ARGUMENT;
+    }
+
+    *results = nullptr;
+    *result_count = 0;
+
+    ZVEC_TRY_RETURN_ERROR(
+        "Exception in zvec_collection_upsert_with_results",
+        auto coll_ptr =
+            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+        std::vector<zvec::Doc> internal_docs =
+            convert_zvec_docs_to_internal(docs, doc_count);
+        std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+
+        auto result = (*coll_ptr)->Upsert(internal_docs);
+        ZVecErrorCode error_code = handle_expected_result(result);
+
+        if (error_code != ZVEC_OK) {
+          return error_code;
+        }
+
+        return build_write_results(result.value(), pks, results, result_count);)
   }
 
   ZVecErrorCode zvec_collection_delete(ZVecCollection *collection,
@@ -5240,6 +5425,44 @@ default: {
         }
 
         return error_code;)
+  }
+
+  ZVecErrorCode zvec_collection_delete_with_results(
+      ZVecCollection *collection, const char *const *pks, size_t pk_count,
+      ZVecWriteResult **results, size_t *result_count) {
+    if (!collection || !pks || pk_count == 0 || !results || !result_count) {
+      set_last_error(
+          "Invalid arguments: collection, pks, pk_count, results and "
+          "result_count cannot be null/zero");
+      return ZVEC_ERROR_INVALID_ARGUMENT;
+    }
+
+    *results = nullptr;
+    *result_count = 0;
+
+    ZVEC_TRY_RETURN_ERROR(
+        "Exception in zvec_collection_delete_with_results",
+        auto coll_ptr =
+            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+        std::vector<std::string> primary_keys; primary_keys.reserve(pk_count);
+        for (size_t i = 0; i < pk_count; ++i) {
+          if (pks[i]) {
+            primary_keys.emplace_back(pks[i]);
+          } else {
+            primary_keys.emplace_back("");
+          }
+        }
+
+        auto result = (*coll_ptr)->Delete(primary_keys);
+        ZVecErrorCode error_code = handle_expected_result(result);
+
+        if (error_code != ZVEC_OK) {
+          return error_code;
+        }
+
+        return build_write_results(result.value(), primary_keys, results,
+                                   result_count);)
   }
 
   ZVecErrorCode zvec_collection_delete_by_filter(ZVecCollection *collection,
@@ -5556,6 +5779,34 @@ default: {
   }
 
   // Helper function to convert fetched document results to C API format
+  static void normalize_nullable_fields_for_fetch(
+      const zvec::CollectionSchema &schema, zvec::DocPtrMap &doc_map) {
+    std::vector<std::string> nullable_fields;
+    nullable_fields.reserve(schema.fields().size());
+
+    for (const auto &field : schema.fields()) {
+      if (field && field->nullable()) {
+        nullable_fields.push_back(field->name());
+      }
+    }
+
+    if (nullable_fields.empty()) {
+      return;
+    }
+
+    for (auto &[_, doc_ptr] : doc_map) {
+      if (!doc_ptr) {
+        continue;
+      }
+
+      for (const auto &field_name : nullable_fields) {
+        if (!doc_ptr->has(field_name)) {
+          doc_ptr->set_null(field_name);
+        }
+      }
+    }
+  }
+
   ZVecErrorCode convert_fetched_document_results(const zvec::DocPtrMap &doc_map,
                                                  ZVecDoc ***results,
                                                  size_t *doc_count) {
@@ -5730,6 +5981,10 @@ default: {
           return ZVEC_ERROR_INTERNAL_ERROR;
         }
 
-        const auto &doc_map = result.value();
+        auto doc_map = result.value();
+        auto schema_result = (*coll_ptr)->Schema();
+        if (schema_result.has_value()) {
+          normalize_nullable_fields_for_fetch(schema_result.value(), doc_map);
+        }
         return convert_fetched_document_results(doc_map, results, doc_count);)
   }

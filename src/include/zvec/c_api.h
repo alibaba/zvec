@@ -383,6 +383,16 @@ ZVEC_EXPORT void ZVEC_CALL zvec_int64_array_destroy(ZVecInt64Array *array);
  */
 ZVEC_EXPORT void ZVEC_CALL zvec_free_uint8_array(uint8_t *array);
 
+/**
+ * @brief Free heap memory allocated by zvec C API.
+ *
+ * Use this helper for pointer-returning APIs that document malloc-allocated
+ * buffers. This avoids allocator mismatch across DLL boundaries.
+ *
+ * @param ptr Memory pointer returned by zvec C API
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_free_ptr(void *ptr);
+
 
 // =============================================================================
 // Configuration and Options Structures
@@ -1618,6 +1628,15 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_alter_column(
  */
 typedef struct ZVecDoc ZVecDoc;
 
+/**
+ * @brief Per-document status returned by detailed DML APIs.
+ */
+typedef struct {
+  const char *pk;      /**< Primary key (allocated by API) */
+  ZVecErrorCode code;  /**< Per-document status code */
+  const char *message; /**< Per-document status message (allocated by API) */
+} ZVecWriteResult;
+
 // =============================================================================
 // Data Manipulation Interface (DML)
 // =============================================================================
@@ -1636,6 +1655,21 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_insert(
     size_t *success_count, size_t *error_count);
 
 /**
+ * @brief Insert documents and return per-document statuses.
+ *
+ * @param collection Collection handle
+ * @param docs Document array
+ * @param doc_count Document count
+ * @param[out] results Per-document result array (free with
+ * zvec_write_results_free)
+ * @param[out] result_count Number of result entries
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_insert_with_results(
+    ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
+    ZVecWriteResult **results, size_t *result_count);
+
+/**
  * @brief Update documents in collection
  * @param collection Collection handle
  * @param docs Document array
@@ -1647,6 +1681,21 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_insert(
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_update(
     ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
     size_t *success_count, size_t *error_count);
+
+/**
+ * @brief Update documents and return per-document statuses.
+ *
+ * @param collection Collection handle
+ * @param docs Document array
+ * @param doc_count Document count
+ * @param[out] results Per-document result array (free with
+ * zvec_write_results_free)
+ * @param[out] result_count Number of result entries
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_update_with_results(
+    ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
+    ZVecWriteResult **results, size_t *result_count);
 
 /**
  * @brief Insert or update documents in collection (upsert operation)
@@ -1662,6 +1711,21 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_upsert(
     size_t *success_count, size_t *error_count);
 
 /**
+ * @brief Upsert documents and return per-document statuses.
+ *
+ * @param collection Collection handle
+ * @param docs Document array
+ * @param doc_count Document count
+ * @param[out] results Per-document result array (free with
+ * zvec_write_results_free)
+ * @param[out] result_count Number of result entries
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_upsert_with_results(
+    ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
+    ZVecWriteResult **results, size_t *result_count);
+
+/**
  * @brief Delete documents from collection
  * @param collection Collection handle
  * @param pks Primary key array
@@ -1673,6 +1737,30 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_upsert(
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_delete(
     ZVecCollection *collection, const char *const *pks, size_t pk_count,
     size_t *success_count, size_t *error_count);
+
+/**
+ * @brief Delete documents by PK and return per-document statuses.
+ *
+ * @param collection Collection handle
+ * @param pks Primary key array
+ * @param pk_count Primary key count
+ * @param[out] results Per-document result array (free with
+ * zvec_write_results_free)
+ * @param[out] result_count Number of result entries
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_delete_with_results(
+    ZVecCollection *collection, const char *const *pks, size_t pk_count,
+    ZVecWriteResult **results, size_t *result_count);
+
+/**
+ * @brief Free result arrays returned by detailed DML APIs.
+ *
+ * @param results Result array pointer
+ * @param result_count Number of entries in result array
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_write_results_free(ZVecWriteResult *results, size_t result_count);
 
 /**
  * @brief Delete documents by filter condition
@@ -1871,6 +1959,16 @@ ZVEC_EXPORT void ZVEC_CALL zvec_doc_set_score(ZVecDoc *doc, float score);
  */
 ZVEC_EXPORT void ZVEC_CALL zvec_doc_set_operator(ZVecDoc *doc,
                                                  ZVecDocOperator op);
+
+/**
+ * @brief Explicitly mark a document field as null.
+ *
+ * @param doc Document structure pointer
+ * @param field_name Field name
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_doc_set_field_null(ZVecDoc *doc, const char *field_name);
 
 /**
  * @brief Get document ID
