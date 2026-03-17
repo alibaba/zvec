@@ -4224,6 +4224,64 @@ TEST_F(CollectionTest, CornerCase_CreateAndOpen) {
   }
 }
 
+TEST_F(CollectionTest, Bug227_VectorSearchAfterReopen) {
+  // Regression test for GitHub issue #227:
+  // "load from file, using vector to search failed"
+  //
+  // This test verifies that vector search works correctly after closing
+  // and reopening a collection. The bug was that memory vector indexers
+  // were not initialized when loading from disk, causing search to return
+  // empty results.
+
+  FileHelper::RemoveDirectory(col_path);
+
+  // Create schema with vector fields
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  // Create collection and insert documents
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, 10, false);
+  ASSERT_NE(collection, nullptr);
+
+  // Verify documents are searchable before closing
+  VectorQuery query;
+  query.field_name_ = "dense_fp32";
+  query.query_vector_ = std::vector<float>{0.1f, 0.2f, 0.3f, 0.4f, 0.5f,
+                                           0.6f, 0.7f, 0.8f, 0.9f, 1.0f,
+                                           1.1f, 1.2f, 1.3f, 1.4f, 1.5f,
+                                           1.6f, 1.7f, 1.8f, 1.9f, 2.0f};
+  query.topk_ = 5;
+
+  auto result_before = collection->Query(query);
+  ASSERT_TRUE(result_before.has_value())
+      << "Query failed before close: " << result_before.error().message();
+  ASSERT_EQ(result_before.value().size(), 5)
+      << "Expected 5 results before close";
+
+  // Close collection
+  collection.reset();
+
+  // Reopen collection from disk
+  auto reopen_result = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopen_result.has_value())
+      << "Failed to reopen collection: " << reopen_result.error().message();
+  collection = std::move(reopen_result.value());
+
+  // Verify documents are still searchable after reopening
+  // This was failing before the fix - it would return 0 results
+  auto result_after = collection->Query(query);
+  ASSERT_TRUE(result_after.has_value())
+      << "Query failed after reopen: " << result_after.error().message();
+  ASSERT_EQ(result_after.value().size(), 5)
+      << "Expected 5 results after reopen, got " << result_after.value().size()
+      << ". This indicates the vector index was not properly loaded.";
+
+  // Verify stats are consistent
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, 10) << "Document count mismatch after reopen";
+}
+
 TEST_F(CollectionTest, CornerCase_CreateIndex) {
   auto schema = TestHelper::CreateNormalSchema();
   auto options = CollectionOptions{false, true, 64 * 1024 * 1024};

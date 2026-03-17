@@ -456,6 +456,14 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
     // recover writing block
     s = recover();
     CHECK_RETURN_STATUS(s);
+
+    // If memory components are not initialized (e.g., after flush when WAL is
+    // deleted), we need to initialize them for the writing block to support
+    // vector search on data that hasn't been persisted to index blocks yet.
+    if (!memory_store_) {
+      s = init_memory_components();
+      CHECK_RETURN_STATUS(s);
+    }
   } else {
     // Update block_id_allocator_
     BlockID max_block_id{0};
