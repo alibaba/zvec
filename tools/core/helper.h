@@ -221,6 +221,11 @@ int load_taglists(const std::string &path,
     return IndexError_ReadData;
   }
 
+  if (!data_ptr) {
+    LOG_ERROR("Invalid data pointer for tag list header");
+    return IndexError_ReadData;
+  }
+
   memcpy(&taglist_header, data_ptr, sizeof(TagListHeader));
 
   auto segment_taglist_key = storage->get(TAGLIST_KEY_SEGMENT_NAME);
@@ -235,6 +240,11 @@ int load_taglists(const std::string &path,
     if (segment_taglist_key->read(offset, (const void **)(&data_ptr),
                                   sizeof(uint64_t)) != sizeof(uint64_t)) {
       LOG_ERROR("Read tag list key failed");
+      return IndexError_ReadData;
+    }
+
+    if (!data_ptr) {
+      LOG_ERROR("Invalid data pointer for tag list key");
       return IndexError_ReadData;
     }
 
@@ -260,6 +270,11 @@ int load_taglists(const std::string &path,
       return IndexError_ReadData;
     }
 
+    if (!data_ptr) {
+      LOG_ERROR("Invalid data pointer for tag list offset");
+      return IndexError_ReadData;
+    }
+
     uint64_t tag_offset = *reinterpret_cast<const uint64_t *>(data_ptr);
     taglist_offsets.push_back(tag_offset);
 
@@ -274,6 +289,11 @@ int load_taglists(const std::string &path,
       return IndexError_ReadData;
     }
     offset += sizeof(uint64_t);
+
+    if (!data_ptr) {
+      LOG_ERROR("Invalid data pointer for tag count");
+      return IndexError_ReadData;
+    }
 
     uint64_t tag_count = *reinterpret_cast<const uint64_t *>(data_ptr);
 
