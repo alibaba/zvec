@@ -106,6 +106,11 @@ struct SearchResult {
   std::vector<std::string> reverted_sparse_values_list_{};
   // Training records collected during search (for OMEGA training mode)
   std::vector<TrainingRecord> training_records_{};
+  // GT cmps data: cmps value when each GT rank was found (for OMEGA training)
+  // gt_cmps_per_rank_[rank] = cmps when GT[rank] first entered topk (-1 if not found)
+  std::vector<int> gt_cmps_per_rank_{};
+  int total_cmps_{0};  // Total comparisons in this search
+  int training_query_id_{-1};  // Query ID for this search (-1 if not training)
 };
 
 class Index {

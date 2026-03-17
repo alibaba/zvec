@@ -48,7 +48,6 @@ int OmegaSearcher::init(const ailego::Params &params) {
   omega_enabled_ = params.has("omega.enabled") ? params.get_as_bool("omega.enabled") : false;
   target_recall_ = params.has("omega.target_recall") ? params.get_as_float("omega.target_recall") : 0.95f;
   min_vector_threshold_ = params.has("omega.min_vector_threshold") ? params.get_as_uint32("omega.min_vector_threshold") : 100000;
-  model_dir_ = params.has("omega.model_dir") ? params.get_as_string("omega.model_dir") : "";
   window_size_ = params.has("omega.window_size") ? params.get_as_int32("omega.window_size") : 100;
 
   // Call parent class init
@@ -90,22 +89,35 @@ int OmegaSearcher::load(IndexStorage::Pointer container,
   // Try to load OMEGA model if enabled and threshold met
   use_omega_mode_ = false;
   if (omega_enabled_ && current_vector_count_ >= min_vector_threshold_) {
-    if (!model_dir_.empty()) {
+    // Load the model colocated with the persisted index file.
+    std::string effective_model_dir;
+    if (container) {
+      std::string index_path = container->file_path();
+      if (!index_path.empty()) {
+        size_t last_slash = index_path.rfind('/');
+        if (last_slash != std::string::npos) {
+          effective_model_dir =
+              index_path.substr(0, last_slash) + "/omega_model";
+        }
+      }
+    }
+
+    if (!effective_model_dir.empty()) {
       omega_model_ = omega_model_create();
       if (omega_model_ != nullptr) {
-        ret = omega_model_load(omega_model_, model_dir_.c_str());
+        ret = omega_model_load(omega_model_, effective_model_dir.c_str());
         if (ret == 0 && omega_model_is_loaded(omega_model_)) {
           use_omega_mode_ = true;
-          LOG_INFO("OMEGA model loaded successfully from %s", model_dir_.c_str());
+          LOG_INFO("OMEGA model loaded successfully from %s", effective_model_dir.c_str());
         } else {
           LOG_WARN("Failed to load OMEGA model from %s, falling back to HNSW",
-                   model_dir_.c_str());
+                   effective_model_dir.c_str());
           omega_model_destroy(omega_model_);
           omega_model_ = nullptr;
         }
       }
     } else {
-      LOG_WARN("OMEGA enabled but model_dir not specified, falling back to HNSW");
+      LOG_WARN("OMEGA enabled but cannot derive omega_model path from index storage, falling back to HNSW");
     }
   } else {
     if (omega_enabled_) {
@@ -230,7 +242,13 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   // Read target_recall from context (per-query parameter)
   float target_recall = omega_ctx->target_recall();
 
-  // Create OMEGA search context with parameters (stateful interface)
+  // Create OMEGA search context with parameters (stateful interface).
+  // OMEGA's k is the requested top-k, not the batch/query count.
+  int omega_topk = static_cast<int>(omega_ctx->topk());
+  if (omega_topk <= 0) {
+    omega_topk = static_cast<int>(count);
+  }
+
   // In training mode, pass NULL if model is not loaded
   OmegaModelHandle model_to_use = omega_model_;
   if (training_mode_enabled_ && (omega_model_ == nullptr || !omega_model_is_loaded(omega_model_))) {
@@ -238,7 +256,7 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   }
 
   OmegaSearchHandle omega_search = omega_search_create_with_params(
-      model_to_use, target_recall, count, window_size_);
+      model_to_use, target_recall, omega_topk, window_size_);
 
   if (omega_search == nullptr) {
     LOG_WARN("Failed to create OMEGA search context, falling back to HNSW");
@@ -325,39 +343,26 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   candidates.emplace(entry_point, dist);
 
   // Report initial visit to OMEGA
-  omega_search_report_visit(omega_search, entry_point, dist, 1);  // is_in_topk=1
+  omega_search_report_visit_candidate(omega_search, entry_point, dist, 1);
 
   dist_t lowerBound = dist;
 
   // Main search loop with OMEGA predictions
+  bool early_stop_hit = false;
   while (!candidates.empty()) {
     auto top = candidates.begin();
     node_id_t current_node = top->first;
     dist_t candidate_dist = top->second;
+
+    // Reference semantics: count the hop before the stop-condition check.
+    omega_search_report_hop(omega_search);
 
     // Standard HNSW stopping condition
     if (candidate_dist > lowerBound && topk_heap.size() >= ef) {
       break;
     }
 
-    // OMEGA early stopping check (CRITICAL: disabled in training mode)
-    // Training mode requires full search to collect complete feature data
-    if (!training_mode_enabled_) {
-      if (omega_search_should_predict(omega_search)) {
-        if (omega_search_should_stop(omega_search)) {
-          int hops, cmps, collected_gt;
-          omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
-          LOG_DEBUG("OMEGA early stop: cmps=%d, hops=%d, collected_gt=%d",
-                    cmps, hops, collected_gt);
-          break;
-        }
-      }
-    }
-
     candidates.pop();
-
-    // Report hop to OMEGA
-    omega_search_report_hop(omega_search);
 
     // Get neighbors of current node
     const Neighbors neighbors = entity.get_neighbors(0, current_node);
@@ -388,14 +393,24 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
       const void *neighbor_vec = neighbor_vec_blocks[i].data();
       dist_t neighbor_dist = dc.dist(neighbor_vec);
 
-      // Check if this node will be in topk
-      bool is_in_topk = (topk_heap.size() < ef || neighbor_dist < lowerBound);
+      bool should_consider_candidate =
+          (topk_heap.size() < ef || neighbor_dist < lowerBound);
+      omega_search_report_visit_candidate(omega_search, neighbor, neighbor_dist,
+                                          should_consider_candidate ? 1 : 0);
 
-      // Report visit to OMEGA
-      omega_search_report_visit(omega_search, neighbor, neighbor_dist, is_in_topk ? 1 : 0);
+      if (!training_mode_enabled_ && omega_search_should_predict(omega_search)) {
+        if (omega_search_should_stop(omega_search)) {
+          int hops, cmps, collected_gt;
+          omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
+          LOG_DEBUG("OMEGA early stop: cmps=%d, hops=%d, collected_gt=%d",
+                    cmps, hops, collected_gt);
+          early_stop_hit = true;
+          break;
+        }
+      }
 
       // Consider this candidate
-      if (is_in_topk) {
+      if (should_consider_candidate) {
         candidates.emplace(neighbor, neighbor_dist);
         topk_heap.emplace(neighbor, neighbor_dist);
 
@@ -414,6 +429,10 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
           lowerBound = topk_heap[0].second;  // Max heap, so [0] is the worst
         }
       }
+    }
+
+    if (early_stop_hit) {
+      break;
     }
   }
 

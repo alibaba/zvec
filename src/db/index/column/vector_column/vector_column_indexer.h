@@ -16,6 +16,7 @@
 #include <utility>
 #include <variant>
 #include <mutex>
+#include <map>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
@@ -149,6 +150,16 @@ class VectorColumnIndexer {
   void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
                                int k_train = 1);
 
+  /**
+   * @brief Get collected gt_cmps data for all queries.
+   *
+   * Returns the gt_cmps data collected during training searches.
+   * The data is indexed by query_id.
+   *
+   * @return GtCmpsData structure with per-query gt_cmps values
+   */
+  core_interface::GtCmpsData GetGtCmpsData() const;
+
  public:
   std::string index_file_path() const {
     return index_file_path_;
@@ -201,6 +212,8 @@ class VectorColumnIndexer {
   int current_query_id_{0};
   mutable std::mutex training_mutex_;
   mutable std::vector<core_interface::TrainingRecord> collected_records_;
+  // GT cmps data: gt_cmps_map_[query_id] = {gt_cmps_per_rank, total_cmps}
+  mutable std::map<int, std::pair<std::vector<int>, int>> gt_cmps_map_;
 };
 
 

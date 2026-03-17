@@ -324,7 +324,6 @@ class OmegaIndexParams : public VectorIndexParams {
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
       uint32_t min_vector_threshold = 100000,
-      const std::string& model_dir = "./omega_models",
       size_t num_training_queries = 1000,
       int ef_training = 1000,
       int window_size = 100,
@@ -333,7 +332,6 @@ class OmegaIndexParams : public VectorIndexParams {
         m_(m),
         ef_construction_(ef_construction),
         min_vector_threshold_(min_vector_threshold),
-        model_dir_(model_dir),
         num_training_queries_(num_training_queries),
         ef_training_(ef_training),
         window_size_(window_size),
@@ -345,8 +343,8 @@ class OmegaIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<OmegaIndexParams>(metric_type_, m_, ef_construction_,
                                              quantize_type_, min_vector_threshold_,
-                                             model_dir_, num_training_queries_,
-                                             ef_training_, window_size_, ef_groundtruth_);
+                                             num_training_queries_, ef_training_,
+                                             window_size_, ef_groundtruth_);
   }
 
   std::string to_string() const override {
@@ -355,7 +353,6 @@ class OmegaIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
         << ",min_vector_threshold:" << min_vector_threshold_
-        << ",model_dir:" << model_dir_
         << ",num_training_queries:" << num_training_queries_
         << ",ef_training:" << ef_training_
         << ",window_size:" << window_size_
@@ -372,8 +369,6 @@ class OmegaIndexParams : public VectorIndexParams {
                static_cast<const OmegaIndexParams &>(other).ef_construction_ &&
            min_vector_threshold_ ==
                static_cast<const OmegaIndexParams &>(other).min_vector_threshold_ &&
-           model_dir_ ==
-               static_cast<const OmegaIndexParams &>(other).model_dir_ &&
            num_training_queries_ ==
                static_cast<const OmegaIndexParams &>(other).num_training_queries_ &&
            ef_training_ ==
@@ -404,12 +399,6 @@ class OmegaIndexParams : public VectorIndexParams {
   uint32_t min_vector_threshold() const {
     return min_vector_threshold_;
   }
-  void set_model_dir(const std::string& model_dir) {
-    model_dir_ = model_dir;
-  }
-  const std::string& model_dir() const {
-    return model_dir_;
-  }
   void set_num_training_queries(size_t num_training_queries) {
     num_training_queries_ = num_training_queries;
   }
@@ -439,7 +428,6 @@ class OmegaIndexParams : public VectorIndexParams {
   int m_;
   int ef_construction_;
   uint32_t min_vector_threshold_;
-  std::string model_dir_;
   size_t num_training_queries_;
   int ef_training_;
   int window_size_;

@@ -569,8 +569,6 @@ Attributes:
     min_vector_threshold (int): Minimum number of vectors required to enable
         OMEGA optimization. Below this threshold, standard HNSW is used.
         Default is 100000.
-    model_dir (str): Directory path for storing/loading OMEGA models.
-        Default is "./omega_models".
     num_training_queries (int): Number of training queries to generate for
         OMEGA model training. Default is 1000.
     ef_training (int): Size of the candidate list (ef) used during training
@@ -591,7 +589,6 @@ Examples:
     ...     m=16,
     ...     ef_construction=200,
     ...     min_vector_threshold=50000,
-    ...     model_dir="./my_omega_models",
     ...     num_training_queries=500,
     ...     ef_training=800,
     ...     window_size=100,
@@ -601,14 +598,13 @@ Examples:
     2000
 )pbdoc");
   omega_params
-      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, std::string, size_t, int, int, int>(),
+      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, size_t, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
                core_interface::kDefaultHnswEfConstruction,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("min_vector_threshold") = 100000,
-           py::arg("model_dir") = "./omega_models",
            py::arg("num_training_queries") = 1000,
            py::arg("ef_training") = 1000,
            py::arg("window_size") = 100,
@@ -622,9 +618,6 @@ Examples:
       .def_property_readonly(
           "min_vector_threshold", &OmegaIndexParams::min_vector_threshold,
           "int: Minimum vectors required to enable OMEGA optimization.")
-      .def_property_readonly(
-          "model_dir", &OmegaIndexParams::model_dir,
-          "str: Directory path for OMEGA models.")
       .def_property_readonly(
           "num_training_queries", &OmegaIndexParams::num_training_queries,
           "int: Number of training queries for OMEGA model training.")
@@ -646,7 +639,6 @@ Examples:
             dict["m"] = self.m();
             dict["ef_construction"] = self.ef_construction();
             dict["min_vector_threshold"] = self.min_vector_threshold();
-            dict["model_dir"] = self.model_dir();
             dict["num_training_queries"] = self.num_training_queries();
             dict["ef_training"] = self.ef_training();
             dict["window_size"] = self.window_size();
@@ -666,7 +658,6 @@ Examples:
                     std::to_string(self.ef_construction()) +
                     ", \"min_vector_threshold\":" +
                     std::to_string(self.min_vector_threshold()) +
-                    ", \"model_dir\":\"" + self.model_dir() + "\"" +
                     ", \"num_training_queries\":" +
                     std::to_string(self.num_training_queries()) +
                     ", \"ef_training\":" +
@@ -682,18 +673,26 @@ Examples:
           [](const OmegaIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.m(),
                                   self.ef_construction(), self.quantize_type(),
-                                  self.min_vector_threshold(), self.model_dir(),
-                                  self.num_training_queries(), self.ef_training(),
-                                  self.window_size(), self.ef_groundtruth());
+                                  self.min_vector_threshold(),
+                                  self.num_training_queries(),
+                                  self.ef_training(), self.window_size(),
+                                  self.ef_groundtruth());
           },
           [](py::tuple t) {
-            if (t.size() != 10)
+            if (t.size() == 10) {
+              return std::make_shared<OmegaIndexParams>(
+                  t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                  t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
+                  t[6].cast<size_t>(), t[7].cast<int>(), t[8].cast<int>(),
+                  t[9].cast<int>());
+            }
+            if (t.size() != 9)
               throw std::runtime_error("Invalid state for OmegaIndexParams");
             return std::make_shared<OmegaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
-                t[5].cast<std::string>(), t[6].cast<size_t>(), t[7].cast<int>(),
-                t[8].cast<int>(), t[9].cast<int>());
+                t[5].cast<size_t>(), t[6].cast<int>(), t[7].cast<int>(),
+                t[8].cast<int>());
           }));
 }
 

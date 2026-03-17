@@ -16,6 +16,7 @@
 
 #include "omega_model_trainer.h"
 #include <omega/omega_trainer.h>
+#include <algorithm>
 #include <chrono>
 #include <zvec/ailego/logger/logger.h>
 
@@ -81,6 +82,20 @@ Status OmegaModelTrainer::TrainModelWithGtCmps(
   for (const auto& r : training_records) {
     omega_records.push_back(ConvertRecord(r));
   }
+  std::sort(omega_records.begin(), omega_records.end(),
+            [](const omega::TrainingRecord& lhs,
+               const omega::TrainingRecord& rhs) {
+              if (lhs.query_id != rhs.query_id) {
+                return lhs.query_id < rhs.query_id;
+              }
+              if (lhs.cmps_visited != rhs.cmps_visited) {
+                return lhs.cmps_visited < rhs.cmps_visited;
+              }
+              if (lhs.hops_visited != rhs.hops_visited) {
+                return lhs.hops_visited < rhs.hops_visited;
+              }
+              return lhs.label < rhs.label;
+            });
 
   // Convert gt_cmps data
   omega::GtCmpsData omega_gt_cmps = ConvertGtCmpsData(gt_cmps_data);

@@ -71,6 +71,39 @@ class OmegaContext : public HnswContext {
   //! Called before each search when context is reused from pool
   void clear_training_records() override {
     training_records_.clear();
+    gt_cmps_per_rank_.clear();
+    total_cmps_ = 0;
+  }
+
+  //! Set gt_cmps data for this query
+  void set_gt_cmps(const std::vector<int>& gt_cmps, int total_cmps) {
+    gt_cmps_per_rank_ = gt_cmps;
+    total_cmps_ = total_cmps;
+  }
+
+  //! Get gt_cmps per rank
+  const std::vector<int>& gt_cmps_per_rank() const {
+    return gt_cmps_per_rank_;
+  }
+
+  //! Get total cmps for this search
+  int total_cmps() const {
+    return total_cmps_;
+  }
+
+  //! Take gt_cmps data (override base class virtual method)
+  std::vector<int> take_gt_cmps() override {
+    return std::move(gt_cmps_per_rank_);
+  }
+
+  //! Get total comparisons (override base class virtual method)
+  int get_total_cmps() const override {
+    return total_cmps_;
+  }
+
+  //! Get training query ID (override base class virtual method)
+  int get_training_query_id() const override {
+    return training_query_id_;
   }
 
   //! Update context parameters (overrides HnswContext::update)
@@ -96,6 +129,8 @@ class OmegaContext : public HnswContext {
   float target_recall_;  // Per-query target recall
   int training_query_id_;  // Per-query training query ID for parallel training
   std::vector<core_interface::TrainingRecord> training_records_;  // Per-query training records
+  std::vector<int> gt_cmps_per_rank_;  // cmps value when each GT rank was found
+  int total_cmps_ = 0;  // Total cmps for this search
 };
 
 }  // namespace core

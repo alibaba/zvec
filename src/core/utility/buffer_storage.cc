@@ -325,6 +325,11 @@ class BufferStorage : public IndexStorage {
     return header_.magic;
   }
 
+  //! Retrieve file path of storage
+  std::string file_path(void) const override {
+    return file_name_;
+  }
+
   uint32_t get_context_offset() {
     return header_.content_offset;
   }

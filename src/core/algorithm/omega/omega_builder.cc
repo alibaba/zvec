@@ -28,9 +28,10 @@ int OmegaBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     return IndexError_Duplicate;
   }
 
-  // TODO: Fix design - cannot call protected init method of HnswBuilder
-  // For now, return NotImplemented error
-  LOG_ERROR("OmegaBuilder is not yet fully implemented - wrapper design needs fixing");
+  // NOTE: OmegaBuilder is intentionally not implemented.
+  // OMEGA index building uses OmegaStreamer (which extends HnswStreamer) instead.
+  // This class exists for potential future use but is not currently needed.
+  LOG_ERROR("OmegaBuilder is not implemented - use OmegaStreamer for index building");
   return IndexError_NotImplemented;
 
   /*
@@ -132,5 +133,6 @@ int OmegaBuilder::dump(const IndexDumper::Pointer &dumper) {
 }  // namespace core
 }  // namespace zvec
 
-// TODO: Fix OmegaBuilder design - it tries to call protected methods of HnswBuilder
+// NOTE: OmegaBuilder is not registered because OMEGA index building uses
+// OmegaStreamer (which extends HnswStreamer) instead.
 // INDEX_FACTORY_REGISTER_BUILDER(zvec::core::OmegaBuilder);

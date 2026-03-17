@@ -172,6 +172,7 @@ class MMapFileStorage : public IndexStorage {
 
   //! Open storage
   int open(const std::string &path, bool create) override {
+    file_path_ = path;  // Store the file path for later retrieval
     if (!ailego::File::IsExist(path) && create) {
       size_t last_slash = path.rfind('/');
       if (last_slash != std::string::npos) {
@@ -229,6 +230,11 @@ class MMapFileStorage : public IndexStorage {
   //! Retrieve magic number of index
   uint32_t magic(void) const override {
     return mapping_.magic();
+  }
+
+  //! Retrieve file path of storage
+  std::string file_path(void) const override {
+    return file_path_;
   }
 
  protected:
@@ -328,6 +334,7 @@ class MMapFileStorage : public IndexStorage {
   }
 
  private:
+  std::string file_path_{};  // Store the file path for retrieval
   uint32_t segment_meta_capacity_{1024 * 1024};
   bool copy_on_write_{false};
   bool force_flush_{false};

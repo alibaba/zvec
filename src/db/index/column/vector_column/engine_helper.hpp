@@ -380,8 +380,6 @@ class ProximaEngineHelper {
         hnsw_param->params.insert("omega.enabled", true);
         hnsw_param->params.insert("omega.min_vector_threshold",
                                   db_index_params->min_vector_threshold());
-        hnsw_param->params.insert("omega.model_dir",
-                                  db_index_params->model_dir());
         hnsw_param->params.insert("omega.window_size",
                                   db_index_params->window_size());
 

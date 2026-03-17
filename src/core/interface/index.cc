@@ -661,6 +661,11 @@ int Index::_dense_search(const VectorData &vector_data,
   // Extract training records from context (for OMEGA training mode)
   result->training_records_ = context->take_training_records();
 
+  // Extract gt_cmps data from context (for OMEGA training mode)
+  result->gt_cmps_per_rank_ = context->take_gt_cmps();
+  result->total_cmps_ = context->get_total_cmps();
+  result->training_query_id_ = context->get_training_query_id();
+
   return 0;
 }
 

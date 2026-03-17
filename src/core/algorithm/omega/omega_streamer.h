@@ -16,6 +16,8 @@
 #include "../hnsw/hnsw_streamer.h"
 #include "omega_context.h"
 #include <zvec/core/interface/training.h>
+#include <omega/omega_api.h>
+#include <atomic>
 #include <mutex>
 #include <memory>
 
@@ -29,13 +31,18 @@ namespace core {
  * as the searcher type, ensuring that disk-persisted indices will use
  * OmegaSearcher (with training support) when loaded.
  *
- * For in-memory indices, currently delegates to parent HNSW search.
- * Future: Implement adaptive search with OMEGA C API directly.
+ * Supports both training mode (feature collection) and inference mode
+ * (adaptive search with learned early stopping).
  */
 class OmegaStreamer : public HnswStreamer {
  public:
-  OmegaStreamer(void) : HnswStreamer() {}
-  virtual ~OmegaStreamer(void) {}
+  OmegaStreamer(void) : HnswStreamer(), omega_model_(nullptr) {}
+  virtual ~OmegaStreamer(void) {
+    if (omega_model_ != nullptr) {
+      omega_model_destroy(omega_model_);
+      omega_model_ = nullptr;
+    }
+  }
 
   OmegaStreamer(const OmegaStreamer &streamer) = delete;
   OmegaStreamer &operator=(const OmegaStreamer &streamer) = delete;
@@ -49,12 +56,18 @@ class OmegaStreamer : public HnswStreamer {
     training_k_train_ = k_train;
   }
 
+  // Inference mode support
+  bool LoadModel(const std::string& model_dir);
+  bool IsModelLoaded() const;
+  void SetTargetRecall(float target_recall) { target_recall_ = target_recall; }
+  void SetWindowSize(int window_size) { window_size_ = window_size; }
+
  protected:
   /**
-   * @brief Override search to potentially use OMEGA adaptive search
+   * @brief Override search to use OMEGA adaptive search
    *
-   * Currently delegates to parent HNSW search.
-   * Future: Implement OMEGA adaptive search with learned early stopping.
+   * In training mode: collects features without early stopping
+   * In inference mode: uses OMEGA model for adaptive early stopping
    */
   virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
                           Context::Pointer &context) const override;
@@ -62,6 +75,11 @@ class OmegaStreamer : public HnswStreamer {
   virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
                           uint32_t count,
                           Context::Pointer &context) const override;
+
+  /**
+   * @brief Override open to auto-load omega_model from the index directory.
+   */
+  virtual int open(IndexStorage::Pointer stg) override;
 
   /**
    * @brief Override create_context to return OmegaContext
@@ -74,12 +92,23 @@ class OmegaStreamer : public HnswStreamer {
   virtual int dump(const IndexDumper::Pointer &dumper) override;
 
  private:
-  // Training mode state (for future implementation)
-  bool training_mode_enabled_{false};
-  int current_query_id_{0};
-  std::vector<std::vector<uint64_t>> training_ground_truth_;  // [query_id][rank] = node_id
-  int training_k_train_{1};  // Number of GT nodes to check for label
-  // Note: training records are now stored per-context in OmegaContext, not here
+  // Perform OMEGA adaptive search (shared between training and inference mode)
+  int omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
+                        uint32_t count, Context::Pointer &context,
+                        bool enable_early_stopping) const;
+
+  // Training mode state
+  mutable bool training_mode_enabled_{false};
+  mutable int current_query_id_{0};
+  std::vector<std::vector<uint64_t>> training_ground_truth_;
+  int training_k_train_{1};
+
+  // Inference mode state
+  mutable OmegaModelHandle omega_model_{nullptr};
+  mutable std::mutex model_mutex_;
+  mutable std::atomic<bool> debug_stats_logged_{false};
+  float target_recall_{0.95f};
+  int window_size_{100};
 };
 
 }  // namespace core

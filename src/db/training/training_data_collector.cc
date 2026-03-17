@@ -586,7 +586,8 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       dim,
       topk,
       omega_metric,
-      held_out_mode);
+      held_out_mode,
+      query_doc_ids);  // Pass query-to-base mapping for correct self-exclusion
 
   auto compute_end = std::chrono::high_resolution_clock::now();
   auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_end - compute_start).count();
@@ -638,9 +639,12 @@ core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
     const std::vector<core_interface::TrainingRecord>& records,
     const std::vector<std::vector<uint64_t>>& ground_truth,
     size_t topk) {
-  // NOTE: gt_cmps computation requires collected_node_ids which was removed
-  // for memory optimization. This function now returns default values based on
-  // record.cmps_visited as a simple approximation.
+  // NOTE: This is a FALLBACK approximation method.
+  // The preferred method is to collect actual gt_cmps during search via
+  // VectorColumnIndexer::GetGtCmpsData(), which tracks the exact cmps value
+  // when each GT rank first enters the topk during HNSW traversal.
+  //
+  // This approximation uses record.cmps_visited as a simple heuristic.
 
   core_interface::GtCmpsData result;
   result.topk = topk;
@@ -933,12 +937,23 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
   LOG_INFO("Collected %zu records: %zu positive, %zu negative (labels computed in real-time)",
            all_records.size(), positive_count, negative_count);
 
-  // Step 8: Compute gt_cmps data
-  LOG_INFO("Computing gt_cmps data");
+  // Step 8: Get gt_cmps data directly from indexers (collected during search)
+  LOG_INFO("Collecting gt_cmps data from indexers");
   core_interface::GtCmpsData gt_cmps_data;
   {
-    ScopedTimer timer("Step8: ComputeGtCmps");
-    gt_cmps_data = ComputeGtCmps(all_records, ground_truth, options.topk);
+    ScopedTimer timer("Step8: GetGtCmpsData");
+    // Get gt_cmps from first indexer (all indexers should have the same data)
+    if (!indexers.empty()) {
+      gt_cmps_data = indexers[0]->GetGtCmpsData();
+      if (gt_cmps_data.gt_cmps.empty()) {
+        // Fallback to approximation if actual data not available
+        LOG_WARN("No actual gt_cmps data collected, falling back to approximation");
+        gt_cmps_data = ComputeGtCmps(all_records, ground_truth, options.topk);
+      } else {
+        LOG_INFO("Got actual gt_cmps data for %zu queries, topk=%zu",
+                 gt_cmps_data.num_queries, gt_cmps_data.topk);
+      }
+    }
   }
 
   // Step 9: Disable training mode and clear records

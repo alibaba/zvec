@@ -266,6 +266,11 @@ class IndexStorage : public IndexModule {
   virtual bool isHugePage(void) const {
     return false;
   }
+
+  //! Retrieve file path of storage (for OMEGA model loading)
+  virtual std::string file_path(void) const {
+    return "";  // Default: empty (not all storages have file paths)
+  }
 };
 
 }  // namespace core

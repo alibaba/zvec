@@ -209,6 +209,16 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
                              std::make_move_iterator(search_result.training_records_.end()));
   }
 
+  // Collect gt_cmps data from search result (for OMEGA training)
+  if (training_mode_enabled_ && !search_result.gt_cmps_per_rank_.empty() &&
+      search_result.training_query_id_ >= 0) {
+    std::lock_guard<std::mutex> lock(training_mutex_);
+    gt_cmps_map_[search_result.training_query_id_] = {
+        std::move(search_result.gt_cmps_per_rank_),
+        search_result.total_cmps_
+    };
+  }
+
   auto result = std::make_shared<VectorIndexResults>(
       is_sparse_, std::move(search_result.doc_list_),
       std::move(search_result.reverted_vector_list_),
@@ -252,6 +262,7 @@ std::vector<core_interface::TrainingRecord> VectorColumnIndexer::GetTrainingReco
 void VectorColumnIndexer::ClearTrainingRecords() {
   std::lock_guard<std::mutex> lock(training_mutex_);
   collected_records_.clear();
+  gt_cmps_map_.clear();
 
   // Propagate to underlying index if it exists and supports training
   if (index != nullptr) {
@@ -269,6 +280,51 @@ void VectorColumnIndexer::SetTrainingGroundTruth(
       training_capable->SetTrainingGroundTruth(ground_truth, k_train);
     }
   }
+}
+
+core_interface::GtCmpsData VectorColumnIndexer::GetGtCmpsData() const {
+  std::lock_guard<std::mutex> lock(training_mutex_);
+
+  core_interface::GtCmpsData result;
+  if (gt_cmps_map_.empty()) {
+    return result;
+  }
+
+  // Find max query_id to determine array size
+  int max_query_id = gt_cmps_map_.rbegin()->first;
+  result.num_queries = max_query_id + 1;
+
+  // Determine topk from first non-empty entry
+  for (const auto& entry : gt_cmps_map_) {
+    if (!entry.second.first.empty()) {
+      result.topk = entry.second.first.size();
+      break;
+    }
+  }
+
+  // Initialize arrays
+  result.gt_cmps.resize(result.num_queries);
+  result.total_cmps.resize(result.num_queries, 0);
+
+  for (size_t q = 0; q < result.num_queries; ++q) {
+    result.gt_cmps[q].resize(result.topk, 0);
+  }
+
+  // Fill in collected data
+  for (const auto& entry : gt_cmps_map_) {
+    int query_id = entry.first;
+    const auto& gt_cmps_vec = entry.second.first;
+    int total = entry.second.second;
+
+    if (query_id >= 0 && query_id < static_cast<int>(result.num_queries)) {
+      result.total_cmps[query_id] = total;
+      for (size_t r = 0; r < gt_cmps_vec.size() && r < result.topk; ++r) {
+        result.gt_cmps[query_id][r] = gt_cmps_vec[r];
+      }
+    }
+  }
+
+  return result;
 }
 
 core_interface::ITrainingCapable* VectorColumnIndexer::GetTrainingCapability() const {

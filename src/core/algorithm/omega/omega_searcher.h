@@ -131,7 +131,9 @@ class OmegaSearcher : public HnswSearcher {
   //! Create a searcher context (creates OmegaContext instead of HnswContext)
   virtual ContextPointer create_context() const override;
 
-  // TODO: These methods call protected methods of HnswSearcher and need to be fixed
+  // NOTE: The commented-out delegation methods below are intentionally not used.
+  // OmegaSearcher inherits from HnswSearcher and overrides only the necessary methods.
+  // The base class implementations are sufficient for the remaining functionality.
   /*
   //! Fetch vector by key (delegate to HNSW)
   virtual const void *get_vector(uint64_t key) const override {
@@ -194,7 +196,6 @@ class OmegaSearcher : public HnswSearcher {
   float target_recall_;
   uint32_t min_vector_threshold_;
   size_t current_vector_count_;
-  std::string model_dir_;
   int window_size_;
 
   // Training mode support
