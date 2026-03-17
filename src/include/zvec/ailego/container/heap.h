@@ -91,6 +91,9 @@ class Heap : public TBase {
 
   //! Pop the front element
   void pop(void) {
+    if (TBase::empty()) {
+      return;
+    }
     if (TBase::size() > 1) {
       auto last = TBase::end() - 1;
       this->replace_heap(TBase::begin(), last, std::move(*last));
