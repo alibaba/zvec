@@ -1647,6 +1647,7 @@ Status CollectionImpl::recovery() {
   version_manager_ = version_manager.value();
   const auto v = version_manager_->get_current_version();
   schema_ = std::make_shared<CollectionSchema>(v.schema());
+  prepare_schema();  // Ensure vector fields have default index params
   options_.enable_mmap_ = v.enable_mmap();
   s = recover_idmap_and_delete_store();
   CHECK_RETURN_STATUS(s);
