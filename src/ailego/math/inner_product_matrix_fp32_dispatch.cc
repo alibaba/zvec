@@ -50,7 +50,7 @@ float MinusInnerProductFp32Scalar(const float *lhs, const float *rhs,
 void InnerProductMatrix<float, 1, 1>::Compute(const float *m, const float *q,
                                               size_t dim, float *out) {
 #if defined(__ARM_NEON)
-  *out = InnerProductNEONFp32(m, q, dim);
+  *out = InnerProductFp32NEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -81,7 +81,7 @@ void MinusInnerProductMatrix<float, 1, 1>::Compute(const float *m,
                                                    const float *q, size_t dim,
                                                    float *out) {
 #if defined(__ARM_NEON)
-  *out = MinusInnerProductNEON(m, q, dim);
+  *out = MinusInnerProductFp32NEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {

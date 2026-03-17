@@ -55,17 +55,20 @@ void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = SquaredEuclideanDistanceFp32AVX512(m, q, dim);
+    return;
   }
 #endif  // __AVX512F__
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     *out = SquaredEuclideanDistanceFp32AVX(m, q, dim);
+    return;
   }
 #endif  // __AVX__
 
 #if defined(__SSE__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE) {
     *out = SquaredEuclideanDistanceFp32SSE(m, q, dim);
+    return;
   }
 #endif  // __SSE__
   *out = SquaredEuclideanDistanceFp32Scalar(m, q, dim);

@@ -91,7 +91,7 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 #else
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
-    *out = -InnerProductFp16AVX512FP16(m, q, dim);
+    *out = MinusInnerProductFp16AVX512FP16(m, q, dim);
     return;
   }
 #endif  //__AVX512FP16__
@@ -103,7 +103,7 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 #endif  //__AVX512F__
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
-    *out = InnerProductFp16AVX(m, q, dim);
+    *out = MinusInnerProductFp16AVX(m, q, dim);
     return;
   }
 #endif  //__AVX__

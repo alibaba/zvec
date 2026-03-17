@@ -64,7 +64,7 @@ void SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
-    *out = SquaredEuclideanDistanceFp16AVX512(m, q, dim);
+    *out = SquaredEuclideanDistanceFp16AVX(m, q, dim);
     return;
   }
 #endif

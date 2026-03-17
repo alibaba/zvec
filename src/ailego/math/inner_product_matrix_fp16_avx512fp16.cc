@@ -73,6 +73,10 @@ float InnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
   return HorizontalAdd_FP16_V512(zmm_sum_0);
 }
 
+float MinusInnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
+                                      size_t size) {
+  return -1 * InnerProductFp16AVX512FP16(lhs, rhs, size);
+}
 #endif
 
 // sparse
