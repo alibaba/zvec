@@ -9,7 +9,6 @@ option(ENABLE_HASWELL "Enable Intel Haswell CPU microarchitecture" OFF)
 option(ENABLE_BROADWELL "Enable Intel Broadwell CPU microarchitecture" OFF)
 option(ENABLE_SKYLAKE "Enable Intel Skylake CPU microarchitecture" OFF)
 option(ENABLE_SKYLAKE_AVX512 "Enable Intel Skylake Server CPU microarchitecture" OFF)
-option(ENABLE_ICELAKE "Enable Intel Icelake CPU microarchitecture" OFF)
 option(ENABLE_SAPPHIRERAPIDS "Enable Intel Sapphire Rapids Server CPU microarchitecture" OFF)
 option(ENABLE_EMERALDRAPIDS "Enable Intel Emerald Rapids Server CPU microarchitecture" OFF)
 option(ENABLE_GRANITERAPIDS "Enable Intel Granite Rapids Server CPU microarchitecture" OFF)
@@ -35,8 +34,8 @@ option(ENABLE_OPENMP "Enable OpenMP support" OFF)
 
 set(ARCH_OPTIONS
   ENABLE_NEHALEM ENABLE_SANDYBRIDGE ENABLE_HASWELL ENABLE_BROADWELL ENABLE_SKYLAKE
-  ENABLE_SKYLAKE_AVX512 ENABLE_ICELAKE ENABLE_SAPPHIRERAPIDS ENABLE_EMERALDRAPIDS
-  ENABLE_GRANITERAPIDS ENABLE_ZEN1 ENABLE_ZEN2 ENABLE_ZEN3
+  ENABLE_SKYLAKE_AVX512 ENABLE_SAPPHIRERAPIDS ENABLE_EMERALDRAPIDS ENABLE_GRANITERAPIDS
+  ENABLE_ZEN1 ENABLE_ZEN2 ENABLE_ZEN3
   ENABLE_ARMV8A ENABLE_ARMV8.1A ENABLE_ARMV8.2A ENABLE_ARMV8.3A ENABLE_ARMV8.4A
   ENABLE_ARMV8.5A ENABLE_ARMV8.6A
   ENABLE_NATIVE
@@ -103,76 +102,28 @@ function(_setup_x86_march)
   endif()
 endfunction()
 
-function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX VAR_NAME_AVX2 VAR_NAME_AVX512 VAR_NAME_AVX512FP16)
+function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512)
   #sse
-  #set(${VAR_NAME_SSE} "-march=corei7" PARENT_SCOPE)
-  set(SSE_FLAG "")
-  set(_sse_flags "-mmmx" "-msse" "-msse2" "-msse3" "-msse4.1" "-msse4.2" "-mpopcnt" "-mcx16" "-msahf" "-mfxsr")
-  foreach(_flag IN LISTS _sse_flags)
-    check_c_compiler_flag(${_flag} COMPILER_FLAG_SUPPORT)
-    if(${COMPILER_FLAG_SUPPORT})
-      set(SSE_FLAG "${SSE_FLAG} ${_flag}")
-    else() 
-      message(WARNING "Flag not supported in SSE: " ${_flag})
-    endif()
-  endforeach()
-  set(${VAR_NAME_SSE} ${SSE_FLAG} PARENT_SCOPE)
-
-  #avx
-  #set(${VAR_NAME_AVX} "-march=corei7-avx" PARENT_SCOPE)
-  set(AVX_FLAG ${SSE_FLAG})
-  set(_avx_flags "-mavx" "-mxsave" "-mpclmul" "-mf16c")
-  foreach(_flag IN LISTS _avx_flags)
-    check_c_compiler_flag(${_flag} COMPILER_FLAG_SUPPORT)
-    if(${COMPILER_FLAG_SUPPORT})
-      set(AVX_FLAG "${AVX_FLAG} ${_flag}")
-    else() 
-      message(WARNING "Flag not supported in AVX: " ${_flag})
-    endif()
-  endforeach()
-  set(${VAR_NAME_AVX} ${AVX_FLAG} PARENT_SCOPE)
+  set(${VAR_NAME_SSE} "-march=corei7" PARENT_SCOPE)
 
   #avx 2
-  #set(${VAR_NAME_AVX2} "-march=core-avx2" PARENT_SCOPE)
-  set(AVX2_FLAG ${AVX_FLAG})
-  set(_avx2_flags "-mavx2" "-mbmi" "-mbmi2" "-mlzcnt" "-mfma")
-  foreach(_flag IN LISTS _avx2_flags)
-    check_c_compiler_flag(${_flag} COMPILER_FLAG_SUPPORT)
-    if(${COMPILER_FLAG_SUPPORT})
-      set(AVX2_FLAG "${AVX2_FLAG} ${_flag}")
-    else() 
-      message(WARNING "Flag not supported in AVX2: " ${_flag})
-    endif()
-  endforeach()
-  set(${VAR_NAME_AVX2} ${AVX2_FLAG} PARENT_SCOPE)
+  set(${VAR_NAME_AVX2} "-march=core-avx2" PARENT_SCOPE)
 
   #avx512
-  #set(${VAR_NAME_AVX512} "skylake-avx512")
-  set(AVX512_FLAG ${AVX2_FLAG})
-  set(_avx512_flags "-mavx512f" "-mavx512vl" "-mavx512bw" "-mavx512dq" "-mavx512cd")
-  foreach(_flag IN LISTS _avx512_flags)
-    check_c_compiler_flag(${_flag} COMPILER_FLAG_SUPPORT)
-    if(${COMPILER_FLAG_SUPPORT})
-      set(AVX512_FLAG "${AVX512_FLAG} ${_flag}")
-    else() 
-      message(WARNING "Flag not supported in AVX512: " ${_flag})
+  set(_x86_flags
+    "graniterapids" "emeraldrapids" "sapphirerapids" "skylake-avx512" 
+  )
+  foreach(_arch IN LISTS _x86_flags)
+    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
+    if(_COMP_SUPP_${_arch})
+      set(${VAR_NAME_AVX512} "-march=${_arch}" PARENT_SCOPE)
+      return()
     endif()
   endforeach()
-  set(${VAR_NAME_AVX512} ${AVX512_FLAG} PARENT_SCOPE)
 
-  #avx512fp16
-  #set(${VAR_NAME_AVX512FP16} "graniterapids")
-  set(AVX512FP16_FLAG ${AVX512_FLAG})
-  set(_avx512fp16_flags "-mavx512vbmi" "-mavx512vnni" "-mavx512vbmi2" "-mavx512bitalg" "-mavx512vpopcntdq" "-mavx512fp16")
-  foreach(_flag IN LISTS _avx512fp16_flags)
-    check_c_compiler_flag(${_flag} COMPILER_FLAG_SUPPORT)
-    if(${COMPILER_FLAG_SUPPORT})
-      set(AVX512FP16_FLAG "${AVX512FP16_FLAG} ${_flag}")
-    else() 
-      message(WARNING "Flag not supported in AVX512FP16: " ${_flag})
-    endif()
-  endforeach()
-  set(${VAR_NAME_AVX512FP16} ${AVX512FP16_FLAG} PARENT_SCOPE)
+
+  set(${VAR_NAME_AVX512} "-march=core-avx2" PARENT_SCOPE)
+  message(WARNING "No known avx512 microarchitecture flag found. Set up as core-avx2")
 
 endfunction()
 
@@ -217,10 +168,6 @@ if(NOT AUTO_DETECT_ARCH)
 
   if(ENABLE_SAPPHIRERAPIDS)
     add_arch_flag("-march=sapphirerapids" SAPPHIRERAPIDS ENABLE_SAPPHIRERAPIDS)
-  endif()
-
-  if(ENABLE_ICELAKE)
-    add_arch_flag("-march=icelake-server" ICELAKE ENABLE_ICELAKE)
   endif()
 
   if(ENABLE_SKYLAKE_AVX512)
