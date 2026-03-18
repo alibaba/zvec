@@ -163,17 +163,17 @@ float MinusInnerProductSparseMatrix<Float16>::
         m_sparse_count, m_sparse_index, m_sparse_value, q_sparse_count,
         q_sparse_index, q_sparse_value);
   }
-#elif defined(__AVX__)
+#endif
+#if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     return InnerProductSparseInSegmentFp16AVX(m_sparse_count, m_sparse_index,
                                               m_sparse_value, q_sparse_count,
                                               q_sparse_index, q_sparse_value);
   }
-#else
+#endif
   return InnerProductSparseInSegmentFp16Scalar(m_sparse_count, m_sparse_index,
                                                m_sparse_value, q_sparse_count,
                                                q_sparse_index, q_sparse_value);
-#endif
 }
 
 }  // namespace ailego
