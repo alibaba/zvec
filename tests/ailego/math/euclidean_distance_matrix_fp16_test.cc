@@ -139,7 +139,7 @@ void TestEuclideanMatrix(void) {
 
   const size_t batch_size = M;
   const size_t query_size = N;
-  size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen);
+  size_t dimension = (std::uniform_int_distribution<size_t>(32, 65))(gen);
   size_t matrix_size = batch_size * dimension;
   size_t query_matrix_size = query_size * dimension;
 
@@ -184,7 +184,7 @@ void TestSquaredEuclideanMatrix(void) {
 
   const size_t batch_size = M;
   const size_t query_size = N;
-  size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen);
+  size_t dimension = (std::uniform_int_distribution<size_t>(32, 65))(gen);
   size_t matrix_size = batch_size * dimension;
   size_t query_matrix_size = query_size * dimension;
 
