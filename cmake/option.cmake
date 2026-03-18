@@ -110,22 +110,24 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
   set(${VAR_NAME_AVX2} "-march=core-avx2" PARENT_SCOPE)
 
   #avx512
-  set(_x86_flags "skylake-avx512" "core-avx2" "x86-64")
-  foreach(_arch IN LISTS _x86_flags)
-    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
-    if(_COMP_SUPP_${_arch})
-      set(${VAR_NAME_AVX512} "-march=${_arch}" PARENT_SCOPE)
+  set(_x86_flags_avx512 "skylake-avx512" "core-avx2" "x86-64")
+  foreach(_arch_avx512 IN LISTS _x86_flags_avx512)
+    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch_avx512})
+    if(_COMP_SUPP_${_arch_avx512})
+      set(${VAR_NAME_AVX512} "-march=${_arch_avx512}" PARENT_SCOPE)
+      break()
     endif()
   endforeach()
 
   #avx512fp16
-  set(_x86_flags
+  set(_x86_flags_avx512fp16
     "sapphirerapids" "icelake-server" "skylake-avx512" "core-avx2" "x86-64"
   )
-  foreach(_arch IN LISTS _x86_flags)
-    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
-    if(_COMP_SUPP_${_arch})
-      set(${VAR_NAME_AVX512FP16} "-march=${_arch}" PARENT_SCOPE)
+  foreach(_arch_avx512fp16 IN LISTS _x86_flags_avx512fp16)
+    check_c_compiler_flag("-march=${_arch_avx512fp16}" _COMP_SUPP_${_arch_avx512fp16})
+    if(_COMP_SUPP_${_arch_avx512fp16})
+      set(${VAR_NAME_AVX512FP16} "-march=${_arch_avx512fp16}" PARENT_SCOPE)
+      break()
     endif()
   endforeach()
 endfunction()
