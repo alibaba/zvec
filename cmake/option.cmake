@@ -110,9 +110,9 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
   set(${VAR_NAME_AVX2} "-march=core-avx2" PARENT_SCOPE)
 
   #avx512
-  set(_x86_flags_avx512 "skylake-avx512" "core-avx2" "x86-64")
+  set(_x86_flags_avx512 "icelake-server" "skylake-avx512" "core-avx2" "x86-64")
   foreach(_arch_avx512 IN LISTS _x86_flags_avx512)
-    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch_avx512})
+    check_cxx_compiler_flag("-march=${_arch_avx512}" _COMP_SUPP_${_arch_avx512})
     if(_COMP_SUPP_${_arch_avx512})
       set(${VAR_NAME_AVX512} "-march=${_arch_avx512}" PARENT_SCOPE)
       break()
