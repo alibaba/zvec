@@ -102,7 +102,7 @@ function(_setup_x86_march)
   endif()
 endfunction()
 
-function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512)
+function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512 VAR_NAME_AVX512FP16)
   #sse
   set(${VAR_NAME_SSE} "-march=corei7" PARENT_SCOPE)
 
@@ -110,21 +110,24 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
   set(${VAR_NAME_AVX2} "-march=core-avx2" PARENT_SCOPE)
 
   #avx512
-  set(_x86_flags
-    "graniterapids" "emeraldrapids" "sapphirerapids" "skylake-avx512" 
-  )
+  set(_x86_flags "skylake-avx512" "core-avx2" "x86-64")
   foreach(_arch IN LISTS _x86_flags)
     check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
     if(_COMP_SUPP_${_arch})
       set(${VAR_NAME_AVX512} "-march=${_arch}" PARENT_SCOPE)
-      return()
     endif()
   endforeach()
 
-
-  set(${VAR_NAME_AVX512} "-march=core-avx2" PARENT_SCOPE)
-  message(WARNING "No known avx512 microarchitecture flag found. Set up as core-avx2")
-
+  #avx512fp16
+  set(_x86_flags
+    "sapphirerapids" "icelake-server" "skylake-avx512" "core-avx2" "x86-64"
+  )
+  foreach(_arch IN LISTS _x86_flags)
+    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
+    if(_COMP_SUPP_${_arch})
+      set(${VAR_NAME_AVX512FP16} "-march=${_arch}" PARENT_SCOPE)
+    endif()
+  endforeach()
 endfunction()
 
 if(MSVC)
