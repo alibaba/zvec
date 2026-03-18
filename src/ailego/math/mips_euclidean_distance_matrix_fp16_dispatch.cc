@@ -56,7 +56,11 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     return;
   }
 #endif
-  *out = MipsEuclideanDistanceSphericalInjectionFp16AVX(p, q, dim, e2);
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = MipsEuclideanDistanceSphericalInjectionFp16AVX(p, q, dim, e2);
+    return;
+  }
 #endif  //__ARM_NEON
 }
 
@@ -75,8 +79,13 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     return;
   }
 #endif
-  *out =
-      MipsEuclideanDistanceRepeatedQuadraticInjectionFp16AVX(p, q, dim, m, e2);
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = MipsEuclideanDistanceRepeatedQuadraticInjectionFp16AVX(p, q, dim, m,
+                                                                  e2);
+    return;
+  }
+#endif
 #endif  //__ARM_NEON
 }
 
