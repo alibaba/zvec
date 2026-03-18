@@ -82,9 +82,8 @@ static inline float Squared(uint8_t v) {
 }
 
 // Compute the distance between matrix and query by SphericalInjection
-float MipsDistanceRepeatedQuadraticInjectionInt4Scalar(const uint8_t *p,
-                                                       const uint8_t *q,
-                                                       size_t dim, float e2) {
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt4Scalar(
+    const uint8_t *p, const uint8_t *q, size_t dim, float e2) {
   ailego_assert(p && q && dim && !(dim & 1));
 
   float sum = 0.0;
@@ -103,10 +102,8 @@ float MipsDistanceRepeatedQuadraticInjectionInt4Scalar(const uint8_t *p,
 }
 
 // Compute the distance between matrix and query by RepeatedQuadraticInjection
-float MipsDistanceRepeatedQuadraticInjectionInt4Scalar(const uint8_t *p,
-                                                       const uint8_t *q,
-                                                       size_t dim, size_t m,
-                                                       float e2) {
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt4Scalar(
+    const uint8_t *p, const uint8_t *q, size_t dim, size_t m, float e2) {
   ailego_assert(p && q && dim && !(dim & 1));
 
   float sum = 0.0;
