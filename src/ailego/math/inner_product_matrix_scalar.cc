@@ -107,6 +107,20 @@ float MinusInnerProductFp32Scalar(const float *m, const float *q, size_t dim) {
 //--------------------------------------------------
 // Sparse
 //--------------------------------------------------
+float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
+                                             const uint16_t *m_sparse_index,
+                                             const float *m_sparse_value,
+                                             uint32_t q_sparse_count,
+                                             const uint16_t *q_sparse_index,
+                                             const float *q_sparse_value);
+
+float ComputeInnerProductSparseInSegmentFp16(uint32_t m_sparse_count,
+                                             const uint16_t *m_sparse_index,
+                                             const Float16 *m_sparse_value,
+                                             uint32_t q_sparse_count,
+                                             const uint16_t *q_sparse_index,
+                                             const Float16 *q_sparse_value);
+
 template <typename T>
 float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
                                          const uint16_t *m_sparse_index,
@@ -121,18 +135,28 @@ float ComputeInnerProductSparseInSegment<float>(uint32_t m_sparse_count,
                                                 const float *m_sparse_value,
                                                 uint32_t q_sparse_count,
                                                 const uint16_t *q_sparse_index,
-                                                const float *q_sparse_value);
+                                                const float *q_sparse_value) {
+  return ComputeInnerProductSparseInSegmentFp32(m_sparse_count, m_sparse_index,
+                                                m_sparse_value, q_sparse_count,
+                                                q_sparse_index, q_sparse_value);
+}
 
 template <>
 float ComputeInnerProductSparseInSegment<Float16>(
     uint32_t m_sparse_count, const uint16_t *m_sparse_index,
     const Float16 *m_sparse_value, uint32_t q_sparse_count,
-    const uint16_t *q_sparse_index, const Float16 *q_sparse_value);
+    const uint16_t *q_sparse_index, const Float16 *q_sparse_value) {
+  return ComputeInnerProductSparseInSegmentFp16(m_sparse_count, m_sparse_index,
+                                                m_sparse_value, q_sparse_count,
+                                                q_sparse_index, q_sparse_value);
+}
 
 template <typename T>
 float ComputeSegments(const void *m_sparse_data_in,
                       const void *q_sparse_data_in) {
-  ailego_assert(m_sparse_data_in && q_sparse_data_in && out);
+  ailego_assert(m_sparse_data_in && q_sparse_data_in);
+
+  float sum{0.0f};
 
   const uint8_t *m_sparse_data =
       reinterpret_cast<const uint8_t *>(m_sparse_data_in);
@@ -145,9 +169,7 @@ float ComputeSegments(const void *m_sparse_data_in,
       *reinterpret_cast<const uint32_t *>(q_sparse_data);
 
   if (m_sparse_count == 0 || q_sparse_count == 0) {
-    *out = 0;
-
-    return;
+    return 0.0f;
   }
 
   const uint32_t m_seg_count =
@@ -179,8 +201,6 @@ float ComputeSegments(const void *m_sparse_data_in,
       q_sparse_data + 2 * sizeof(uint32_t) +
       q_seg_count * 2 * sizeof(uint32_t) + q_sparse_count * sizeof(uint16_t));
 
-  float sum = 0.0f;
-
   size_t m_s = 0;
   size_t q_s = 0;
 
@@ -210,7 +230,7 @@ float ComputeSegments(const void *m_sparse_data_in,
     }
   }
 
-  *out = -sum;
+  return -sum;
 }
 
 float MinusInnerProductSparseFp16Scalar(const void *m_sparse_data_in,
@@ -249,12 +269,12 @@ float InnerProductSparseInSegmentFp16Scalar(uint32_t m_sparse_count,
   return sum;
 }
 
-float InnerProductSparseInSegment32Scalar(uint32_t m_sparse_count,
-                                          const uint16_t *m_sparse_index,
-                                          const float *m_sparse_value,
-                                          uint32_t q_sparse_count,
-                                          const uint16_t *q_sparse_index,
-                                          const float *q_sparse_value) {
+float InnerProductSparseInSegmentFp32Scalar(uint32_t m_sparse_count,
+                                            const uint16_t *m_sparse_index,
+                                            const float *m_sparse_value,
+                                            uint32_t q_sparse_count,
+                                            const uint16_t *q_sparse_index,
+                                            const float *q_sparse_value) {
   float sum = 0.0f;
 
   size_t m_i = 0;

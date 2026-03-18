@@ -83,12 +83,12 @@ float MinusInnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
 #if defined(__AVX512FP16__)
 constexpr uint32_t MAX_SPARSE_BUFFER_LENGTH = 65536;
 
-float InnerProductSparseInSegmentAVX512FP16(uint32_t m_sparse_count,
-                                            const uint16_t *m_sparse_index,
-                                            const Float16 *m_sparse_value,
-                                            uint32_t q_sparse_count,
-                                            const uint16_t *q_sparse_index,
-                                            const Float16 *q_sparse_value) {
+float InnerProductSparseInSegmentFp16AVX512FP16(uint32_t m_sparse_count,
+                                                const uint16_t *m_sparse_index,
+                                                const Float16 *m_sparse_value,
+                                                uint32_t q_sparse_count,
+                                                const uint16_t *q_sparse_index,
+                                                const Float16 *q_sparse_value) {
   const static __m128i SHUFFLE_MASK256[256] = {
       _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
                    -127, -127, -127, -127, -127, -127),

@@ -761,41 +761,39 @@ struct MinusInnerProductMatrix<uint8_t, M, 1,
 //--------------------------------------------------
 // Sparse
 //--------------------------------------------------
+struct SparseSegmentInfo {
+ public:
+  uint32_t seg_id_{-1U};
+  uint32_t vec_cnt_{0};
+
+ public:
+  SparseSegmentInfo() : seg_id_{-1U}, vec_cnt_{0} {}
+
+  SparseSegmentInfo(uint32_t seg_id, uint32_t vec_cnt)
+      : seg_id_{seg_id}, vec_cnt_{vec_cnt} {}
+};
+
+constexpr static uint32_t SEGMENT_ID_BITS = 16;
+constexpr static uint32_t SEGMENT_ID_MASK = 0xFFFF;
+
 template <typename T>
 struct MinusInnerProductSparseMatrix {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
-  static constexpr uint32_t SEGMENT_ID_BITS = 16;
-  static constexpr uint32_t SEGMENT_ID_MASK = 0xFFFF;
-
-  struct SparseSegmentInfo {
-   public:
-    uint32_t seg_id_{-1U};
-    uint32_t vec_cnt_{0};
-
-   public:
-    SparseSegmentInfo() : seg_id_{-1U}, vec_cnt_{0} {}
-
-    SparseSegmentInfo(uint32_t seg_id, uint32_t vec_cnt)
-        : seg_id_{seg_id}, vec_cnt_{vec_cnt} {}
-  };
-
-  float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
-                                           const uint16_t *m_sparse_index,
-                                           const ValueType *m_sparse_value,
-                                           uint32_t q_sparse_count,
-                                           const uint16_t *q_sparse_index,
-                                           const ValueType *q_sparse_value);
-
-  static void transform_sparse_format(uint32_t sparse_count,
-                                      const uint32_t *sparse_index,
-                                      const void *sparse_value,
-                                      std::string &buffer);
+  static inline float ComputeInnerProductSparseInSegment(
+      uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+      const ValueType *m_sparse_value, uint32_t q_sparse_count,
+      const uint16_t *q_sparse_index, const ValueType *q_sparse_value);
 
   //! Compute the distance between matrix and query
   static inline void Compute(const void *m_sparse_data_in,
                              const void *q_sparse_data_in, float *out);
+
+  static inline void transform_sparse_format(uint32_t sparse_count,
+                                             const uint32_t *sparse_index,
+                                             const void *sparse_value,
+                                             std::string &buffer);
 };
 
 template <>
@@ -803,16 +801,96 @@ struct MinusInnerProductSparseMatrix<Float16> {
   //! Type of value
   using ValueType = Float16;
 
-  float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
-                                           const uint16_t *m_sparse_index,
-                                           const Float16 *m_sparse_value,
-                                           uint32_t q_sparse_count,
-                                           const uint16_t *q_sparse_index,
-                                           const Float16 *q_sparse_value);
+  static float ComputeInnerProductSparseInSegment(
+      uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+      const Float16 *m_sparse_value, uint32_t q_sparse_count,
+      const uint16_t *q_sparse_index, const Float16 *q_sparse_value);
 
   //! Compute the distance between matrix and query
   static void Compute(const void *m_sparse_data_in,
                       const void *q_sparse_data_in, float *out);
+
+  static void transform_sparse_format(uint32_t sparse_count,
+                                      const uint32_t *sparse_index,
+                                      const void *sparse_value,
+                                      std::string &buffer) {
+    uint32_t unit_size = sizeof(ValueType);
+
+    uint32_t seg_count = 0;
+    if (sparse_count == 0) {
+      buffer.reserve(sizeof(uint32_t) + sizeof(uint32_t));
+
+      buffer.append(reinterpret_cast<const char *>(&sparse_count),
+                    sizeof(uint32_t));
+
+      buffer.append(reinterpret_cast<const char *>(&seg_count),
+                    sizeof(uint32_t));
+
+      return;
+    }
+
+    std::vector<SparseSegmentInfo> seg_infos;
+
+    uint32_t cur_seg_id = -1U;
+    uint32_t cur_vec_cnt = 0;
+
+    for (size_t i = 0; i < sparse_count; ++i) {
+      uint32_t seg_id = sparse_index[i] >> SEGMENT_ID_BITS;
+      if (cur_seg_id == -1U) {
+        cur_seg_id = seg_id;
+        cur_vec_cnt++;
+      } else {
+        if (seg_id == cur_seg_id) {
+          cur_vec_cnt++;
+        } else if (seg_id > cur_seg_id) {
+          seg_infos.emplace_back(cur_seg_id, cur_vec_cnt);
+
+          cur_seg_id = seg_id;
+          cur_vec_cnt = 1;
+        } else {
+          // std::abort();
+        }
+      }
+    }
+
+    if (cur_vec_cnt > 0) {
+      seg_infos.emplace_back(cur_seg_id, cur_vec_cnt);
+    }
+
+    uint32_t buffer_len = 2 * sizeof(uint32_t) +
+                          seg_infos.size() * 2 * sizeof(uint32_t) +
+                          sparse_count * (sizeof(uint16_t) + sizeof(ValueType));
+
+    buffer.reserve(buffer_len);
+
+    buffer.append(reinterpret_cast<const char *>(&sparse_count),
+                  sizeof(uint32_t));
+
+    seg_count = seg_infos.size();
+    buffer.append(reinterpret_cast<const char *>(&seg_count), sizeof(uint32_t));
+
+    for (size_t i = 0; i < seg_count; ++i) {
+      uint32_t seg_id = seg_infos[i].seg_id_;
+      buffer.append(reinterpret_cast<const char *>(&seg_id), sizeof(uint32_t));
+    }
+
+    for (size_t i = 0; i < seg_count; ++i) {
+      uint32_t vec_cnt = seg_infos[i].vec_cnt_;
+      buffer.append(reinterpret_cast<const char *>(&vec_cnt), sizeof(uint32_t));
+    }
+
+    for (size_t i = 0; i < sparse_count; ++i) {
+      uint16_t temp_dim = sparse_index[i] & SEGMENT_ID_MASK;
+      buffer.append(reinterpret_cast<const char *>(&temp_dim),
+                    sizeof(uint16_t));
+    }
+
+    const char *sparse_value_ptr = reinterpret_cast<const char *>(sparse_value);
+    for (size_t i = 0; i < sparse_count; ++i) {
+      buffer.append(sparse_value_ptr, unit_size);
+      sparse_value_ptr += unit_size;
+    }
+  }
 };
 
 template <>
@@ -820,97 +898,98 @@ struct MinusInnerProductSparseMatrix<float> {
   //! Type of value
   using ValueType = float;
 
-  float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
-                                           const uint16_t *m_sparse_index,
-                                           const float *m_sparse_value,
-                                           uint32_t q_sparse_count,
-                                           const uint16_t *q_sparse_index,
-                                           const float *q_sparse_value);
+  static float ComputeInnerProductSparseInSegment(
+      uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+      const float *m_sparse_value, uint32_t q_sparse_count,
+      const uint16_t *q_sparse_index, const float *q_sparse_value);
 
   //! Compute the distance between matrix and query
   static void Compute(const void *m_sparse_data_in,
                       const void *q_sparse_data_in, float *out);
-};
 
-template <typename T>
-void MinusInnerProductSparseMatrix<T>::transform_sparse_format(
-    uint32_t sparse_count, const uint32_t *sparse_index,
-    const void *sparse_value, std::string &buffer) {
-  uint32_t unit_size = sizeof(T);
+  static void transform_sparse_format(uint32_t sparse_count,
+                                      const uint32_t *sparse_index,
+                                      const void *sparse_value,
+                                      std::string &buffer) {
+    uint32_t unit_size = sizeof(ValueType);
 
-  uint32_t seg_count = 0;
-  if (sparse_count == 0) {
-    buffer.reserve(sizeof(uint32_t) + sizeof(uint32_t));
+    uint32_t seg_count = 0;
+    if (sparse_count == 0) {
+      buffer.reserve(sizeof(uint32_t) + sizeof(uint32_t));
+
+      buffer.append(reinterpret_cast<const char *>(&sparse_count),
+                    sizeof(uint32_t));
+
+      buffer.append(reinterpret_cast<const char *>(&seg_count),
+                    sizeof(uint32_t));
+
+      return;
+    }
+
+    std::vector<SparseSegmentInfo> seg_infos;
+
+    uint32_t cur_seg_id = -1U;
+    uint32_t cur_vec_cnt = 0;
+
+    for (size_t i = 0; i < sparse_count; ++i) {
+      uint32_t seg_id = sparse_index[i] >> SEGMENT_ID_BITS;
+      if (cur_seg_id == -1U) {
+        cur_seg_id = seg_id;
+        cur_vec_cnt++;
+      } else {
+        if (seg_id == cur_seg_id) {
+          cur_vec_cnt++;
+        } else if (seg_id > cur_seg_id) {
+          seg_infos.emplace_back(cur_seg_id, cur_vec_cnt);
+
+          cur_seg_id = seg_id;
+          cur_vec_cnt = 1;
+        } else {
+          // std::abort();
+        }
+      }
+    }
+
+    if (cur_vec_cnt > 0) {
+      seg_infos.emplace_back(cur_seg_id, cur_vec_cnt);
+    }
+
+    uint32_t buffer_len = 2 * sizeof(uint32_t) +
+                          seg_infos.size() * 2 * sizeof(uint32_t) +
+                          sparse_count * (sizeof(uint16_t) + sizeof(ValueType));
+
+    buffer.reserve(buffer_len);
 
     buffer.append(reinterpret_cast<const char *>(&sparse_count),
                   sizeof(uint32_t));
 
+    seg_count = seg_infos.size();
     buffer.append(reinterpret_cast<const char *>(&seg_count), sizeof(uint32_t));
 
-    return;
-  }
+    for (size_t i = 0; i < seg_count; ++i) {
+      uint32_t seg_id = seg_infos[i].seg_id_;
+      buffer.append(reinterpret_cast<const char *>(&seg_id), sizeof(uint32_t));
+    }
 
-  std::vector<SparseSegmentInfo> seg_infos;
+    for (size_t i = 0; i < seg_count; ++i) {
+      uint32_t vec_cnt = seg_infos[i].vec_cnt_;
+      buffer.append(reinterpret_cast<const char *>(&vec_cnt), sizeof(uint32_t));
+    }
 
-  uint32_t cur_seg_id = -1U;
-  uint32_t cur_vec_cnt = 0;
+    for (size_t i = 0; i < sparse_count; ++i) {
+      uint16_t temp_dim = sparse_index[i] & SEGMENT_ID_MASK;
+      buffer.append(reinterpret_cast<const char *>(&temp_dim),
+                    sizeof(uint16_t));
+    }
 
-  for (size_t i = 0; i < sparse_count; ++i) {
-    uint32_t seg_id = sparse_index[i] >> SEGMENT_ID_BITS;
-    if (cur_seg_id == -1U) {
-      cur_seg_id = seg_id;
-      cur_vec_cnt++;
-    } else {
-      if (seg_id == cur_seg_id) {
-        cur_vec_cnt++;
-      } else if (seg_id > cur_seg_id) {
-        seg_infos.emplace_back(cur_seg_id, cur_vec_cnt);
-
-        cur_seg_id = seg_id;
-        cur_vec_cnt = 1;
-      } else {
-        // std::abort();
-      }
+    const char *sparse_value_ptr = reinterpret_cast<const char *>(sparse_value);
+    for (size_t i = 0; i < sparse_count; ++i) {
+      buffer.append(sparse_value_ptr, unit_size);
+      sparse_value_ptr += unit_size;
     }
   }
+};
 
-  if (cur_vec_cnt > 0) {
-    seg_infos.emplace_back(cur_seg_id, cur_vec_cnt);
-  }
-
-  uint32_t buffer_len = 2 * sizeof(uint32_t) +
-                        seg_infos.size() * 2 * sizeof(uint32_t) +
-                        sparse_count * (sizeof(uint16_t) + sizeof(T));
-
-  buffer.reserve(buffer_len);
-
-  buffer.append(reinterpret_cast<const char *>(&sparse_count),
-                sizeof(uint32_t));
-
-  seg_count = seg_infos.size();
-  buffer.append(reinterpret_cast<const char *>(&seg_count), sizeof(uint32_t));
-
-  for (size_t i = 0; i < seg_count; ++i) {
-    uint32_t seg_id = seg_infos[i].seg_id_;
-    buffer.append(reinterpret_cast<const char *>(&seg_id), sizeof(uint32_t));
-  }
-
-  for (size_t i = 0; i < seg_count; ++i) {
-    uint32_t vec_cnt = seg_infos[i].vec_cnt_;
-    buffer.append(reinterpret_cast<const char *>(&vec_cnt), sizeof(uint32_t));
-  }
-
-  for (size_t i = 0; i < sparse_count; ++i) {
-    uint16_t temp_dim = sparse_index[i] & SEGMENT_ID_MASK;
-    buffer.append(reinterpret_cast<const char *>(&temp_dim), sizeof(uint16_t));
-  }
-
-  const char *sparse_value_ptr = reinterpret_cast<const char *>(sparse_value);
-  for (size_t i = 0; i < sparse_count; ++i) {
-    buffer.append(sparse_value_ptr, unit_size);
-    sparse_value_ptr += unit_size;
-  }
-}
 
 }  // namespace ailego
 }  // namespace zvec

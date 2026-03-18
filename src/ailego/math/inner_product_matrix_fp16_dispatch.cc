@@ -117,21 +117,21 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 // Sparse
 //--------------------------------------------------
 #if defined(__AVX512FP16__)
-float InnerProductSparseInSegmentAVX512FP16(uint32_t m_sparse_count,
-                                            const uint16_t *m_sparse_index,
-                                            const Float16 *m_sparse_value,
-                                            uint32_t q_sparse_count,
-                                            const uint16_t *q_sparse_index,
-                                            const Float16 *q_sparse_value);
+float InnerProductSparseInSegmentFp16AVX512FP16(uint32_t m_sparse_count,
+                                                const uint16_t *m_sparse_index,
+                                                const Float16 *m_sparse_value,
+                                                uint32_t q_sparse_count,
+                                                const uint16_t *q_sparse_index,
+                                                const Float16 *q_sparse_value);
 #endif  //__AVX512FP16__
 
 #if defined(__AVX__)
-float InnerProductSparseInSegmentAVX(uint32_t m_sparse_count,
-                                     const uint16_t *m_sparse_index,
-                                     const Float16 *m_sparse_value,
-                                     uint32_t q_sparse_count,
-                                     const uint16_t *q_sparse_index,
-                                     const Float16 *q_sparse_value);
+float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const Float16 *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const Float16 *q_sparse_value);
 #endif  //__AVX__
 
 float InnerProductSparseInSegmentFp16Scalar(uint32_t m_sparse_count,
@@ -150,16 +150,15 @@ void MinusInnerProductSparseMatrix<Float16>::Compute(
   *out = MinusInnerProductSparseFp16Scalar(m_sparse_data_in, q_sparse_data_in);
 }
 
-float MinusInnerProductSparseMatrix<Float16>::
-    ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
-                                       const uint16_t *m_sparse_index,
-                                       const Float16 *m_sparse_value,
-                                       uint32_t q_sparse_count,
-                                       const uint16_t *q_sparse_index,
-                                       const Float16 *q_sparse_value) {
+float ComputeInnerProductSparseInSegmentFp16(uint32_t m_sparse_count,
+                                             const uint16_t *m_sparse_index,
+                                             const Float16 *m_sparse_value,
+                                             uint32_t q_sparse_count,
+                                             const uint16_t *q_sparse_index,
+                                             const Float16 *q_sparse_value) {
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
-    return InnerProductSparseInSegmentAVX512FP16(
+    return InnerProductSparseInSegmentFp16AVX512FP16(
         m_sparse_count, m_sparse_index, m_sparse_value, q_sparse_count,
         q_sparse_index, q_sparse_value);
   }

@@ -128,15 +128,18 @@ float InnerProductSparseInSegmentFp32Scalar(uint32_t m_sparse_count,
 float MinusInnerProductSparseFp32Scalar(const void *m_sparse_data_in,
                                         const void *q_sparse_data_in);
 
-void MinusInnerProductSparseMatrix<Float16>::Compute(
-    const void *m_sparse_data_in, const void *q_sparse_data_in, float *out) {
+void MinusInnerProductSparseMatrix<float>::Compute(const void *m_sparse_data_in,
+                                                   const void *q_sparse_data_in,
+                                                   float *out) {
   *out = MinusInnerProductSparseFp32Scalar(m_sparse_data_in, q_sparse_data_in);
 }
 
-float MinusInnerProductSparseMatrix<float>::ComputeInnerProductSparseInSegment(
-    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
-    const float *m_sparse_value, uint32_t q_sparse_count,
-    const uint16_t *q_sparse_index, const float *q_sparse_value) {
+float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
+                                             const uint16_t *m_sparse_index,
+                                             const float *m_sparse_value,
+                                             uint32_t q_sparse_count,
+                                             const uint16_t *q_sparse_index,
+                                             const float *q_sparse_value) {
 #if defined(__SSE4_1__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
     return InnerProductSparseInSegmentFp32SSE(m_sparse_count, m_sparse_index,

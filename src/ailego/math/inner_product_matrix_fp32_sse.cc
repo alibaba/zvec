@@ -127,12 +127,12 @@ const static __m128i SHUFFLE_MASK16[16] = {
 
 constexpr uint32_t MAX_SPARSE_BUFFER_LENGTH = 65536;
 
-float InnerProductSparseInSegmentSSE(uint32_t m_sparse_count,
-                                     const uint16_t *m_sparse_index,
-                                     const float *m_sparse_value,
-                                     uint32_t q_sparse_count,
-                                     const uint16_t *q_sparse_index,
-                                     const float *q_sparse_value) {
+float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const float *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const float *q_sparse_value) {
   float sum = 0.0f;
 
   // handle if the first dim is zero
