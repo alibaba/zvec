@@ -77,9 +77,12 @@ void LPMap::init(size_t entry_num) {
   cache_.init(entry_num * 4);
 }
 
-char *LPMap::acquire_block(block_id_t block_id) {
+char *LPMap::acquire_block(block_id_t block_id, bool lru_mode) {
   assert(block_id < entry_num_);
   Entry &entry = entries_[block_id];
+  if (!lru_mode) {
+    return entry.buffer;
+  }
   while (true) {
     int current_count = entry.ref_count.load(std::memory_order_acquire);
     if (current_count < 0) {
@@ -219,12 +222,12 @@ VecBufferPoolHandle VecBufferPool::get_handle() {
 
 char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
                                     size_t size, int retry) {
-  char *buffer = lp_map_.acquire_block(block_id);
+  char *buffer = lp_map_.acquire_block(block_id, !no_lru_mode());
   if (buffer) {
     return buffer;
   }
   std::lock_guard<std::mutex> lock(*mutex_vec_[block_id]);
-  buffer = lp_map_.acquire_block(block_id);
+  buffer = lp_map_.acquire_block(block_id, !no_lru_mode());
   if (buffer) {
     return buffer;
   }
@@ -281,7 +284,7 @@ void VecBufferPoolHandle::release_one(block_id_t block_id) {
 
 void VecBufferPoolHandle::acquire_one(block_id_t block_id) {
   if (!pool_.no_lru_mode()) {
-    pool_.lp_map_.acquire_block(block_id);
+    pool_.lp_map_.acquire_block(block_id, true);
   }
 }
 
