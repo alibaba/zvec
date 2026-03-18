@@ -15,7 +15,7 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 cc_library(
     NAME zvec_core STATIC STRICT PACKED
     SRCS ${ALL_CORE_SRCS}
-    LIBS zvec_ailego sparsehash magic_enum
+    LIBS zvec_ailego zvec_turbo sparsehash magic_enum
     INCS . ${PROJECT_ROOT_DIR}/src/core
     VERSION "${GIT_SRCS_VER}"
 )
