@@ -20,6 +20,7 @@
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include "algorithm/flat/flat_utility.h"
+#include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_streamer.h"
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
@@ -999,6 +1000,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   std::vector<std::string> id_map_param_list = {
       PARAM_HNSW_STREAMER_USE_ID_MAP,
       PARAM_FLAT_USE_ID_MAP,
+      PARAM_HNSW_RABITQ_STREAMER_USE_ID_MAP,
   };
   for (auto &param : id_map_param_list) {
     params.set(param, !g_disable_id_map);
