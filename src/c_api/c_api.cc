@@ -859,7 +859,8 @@ static std::vector<std::string> collect_doc_pks(const ZVecDoc **docs,
       pks.emplace_back("");
       continue;
     }
-    auto doc_ptr = reinterpret_cast<const std::shared_ptr<zvec::Doc> *>(docs[i]);
+    auto doc_ptr =
+        reinterpret_cast<const std::shared_ptr<zvec::Doc> *>(docs[i]);
     pks.emplace_back((*doc_ptr)->pk_ref());
   }
   return pks;
@@ -5213,9 +5214,11 @@ default: {
         return error_code;)
   }
 
-  ZVecErrorCode zvec_collection_insert_with_results(
-      ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
-      ZVecWriteResult **results, size_t *result_count) {
+  ZVecErrorCode zvec_collection_insert_with_results(ZVecCollection *collection,
+                                                    const ZVecDoc **docs,
+                                                    size_t doc_count,
+                                                    ZVecWriteResult **results,
+                                                    size_t *result_count) {
     if (!collection || !docs || doc_count == 0 || !results || !result_count) {
       set_last_error(
           "Invalid arguments: collection, docs, doc_count, results and "
@@ -5238,9 +5241,7 @@ default: {
         auto result = (*coll_ptr)->Insert(internal_docs);
         ZVecErrorCode error_code = handle_expected_result(result);
 
-        if (error_code != ZVEC_OK) {
-          return error_code;
-        }
+        if (error_code != ZVEC_OK) { return error_code; }
 
         return build_write_results(result.value(), pks, results, result_count);)
   }
@@ -5283,9 +5284,11 @@ default: {
         return error_code;)
   }
 
-  ZVecErrorCode zvec_collection_update_with_results(
-      ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
-      ZVecWriteResult **results, size_t *result_count) {
+  ZVecErrorCode zvec_collection_update_with_results(ZVecCollection *collection,
+                                                    const ZVecDoc **docs,
+                                                    size_t doc_count,
+                                                    ZVecWriteResult **results,
+                                                    size_t *result_count) {
     if (!collection || !docs || doc_count == 0 || !results || !result_count) {
       set_last_error(
           "Invalid arguments: collection, docs, doc_count, results and "
@@ -5308,9 +5311,7 @@ default: {
         auto result = (*coll_ptr)->Update(internal_docs);
         ZVecErrorCode error_code = handle_expected_result(result);
 
-        if (error_code != ZVEC_OK) {
-          return error_code;
-        }
+        if (error_code != ZVEC_OK) { return error_code; }
 
         return build_write_results(result.value(), pks, results, result_count);)
   }
@@ -5353,9 +5354,11 @@ default: {
         return error_code;)
   }
 
-  ZVecErrorCode zvec_collection_upsert_with_results(
-      ZVecCollection *collection, const ZVecDoc **docs, size_t doc_count,
-      ZVecWriteResult **results, size_t *result_count) {
+  ZVecErrorCode zvec_collection_upsert_with_results(ZVecCollection *collection,
+                                                    const ZVecDoc **docs,
+                                                    size_t doc_count,
+                                                    ZVecWriteResult **results,
+                                                    size_t *result_count) {
     if (!collection || !docs || doc_count == 0 || !results || !result_count) {
       set_last_error(
           "Invalid arguments: collection, docs, doc_count, results and "
@@ -5378,9 +5381,7 @@ default: {
         auto result = (*coll_ptr)->Upsert(internal_docs);
         ZVecErrorCode error_code = handle_expected_result(result);
 
-        if (error_code != ZVEC_OK) {
-          return error_code;
-        }
+        if (error_code != ZVEC_OK) { return error_code; }
 
         return build_write_results(result.value(), pks, results, result_count);)
   }
@@ -5427,9 +5428,11 @@ default: {
         return error_code;)
   }
 
-  ZVecErrorCode zvec_collection_delete_with_results(
-      ZVecCollection *collection, const char *const *pks, size_t pk_count,
-      ZVecWriteResult **results, size_t *result_count) {
+  ZVecErrorCode zvec_collection_delete_with_results(ZVecCollection *collection,
+                                                    const char *const *pks,
+                                                    size_t pk_count,
+                                                    ZVecWriteResult **results,
+                                                    size_t *result_count) {
     if (!collection || !pks || pk_count == 0 || !results || !result_count) {
       set_last_error(
           "Invalid arguments: collection, pks, pk_count, results and "
@@ -5457,9 +5460,7 @@ default: {
         auto result = (*coll_ptr)->Delete(primary_keys);
         ZVecErrorCode error_code = handle_expected_result(result);
 
-        if (error_code != ZVEC_OK) {
-          return error_code;
-        }
+        if (error_code != ZVEC_OK) { return error_code; }
 
         return build_write_results(result.value(), primary_keys, results,
                                    result_count);)
@@ -5985,6 +5986,5 @@ default: {
         auto schema_result = (*coll_ptr)->Schema();
         if (schema_result.has_value()) {
           normalize_nullable_fields_for_fetch(schema_result.value(), doc_map);
-        }
-        return convert_fetched_document_results(doc_map, results, doc_count);)
+        } return convert_fetched_document_results(doc_map, results, doc_count);)
   }

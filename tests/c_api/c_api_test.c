@@ -3427,9 +3427,9 @@ void test_collection_dml_functions(void) {
         ZVecWriteResult *results = NULL;
         size_t result_count = 0;
 
-        err = zvec_collection_upsert_with_results(
-            collection, (const ZVecDoc **)result_docs, 1, &results,
-            &result_count);
+        err = zvec_collection_upsert_with_results(collection,
+                                                  (const ZVecDoc **)result_docs,
+                                                  1, &results, &result_count);
         TEST_ASSERT(err == ZVEC_OK);
         TEST_ASSERT(result_count == 1);
         if (results && result_count == 1) {
@@ -3516,8 +3516,8 @@ void test_collection_nullable_roundtrip(void) {
       for (size_t i = 0; i < 128; ++i) {
         dense[i] = (float)i / 128.0f;
       }
-      err = zvec_doc_add_field_by_value(doc, "dense", ZVEC_DATA_TYPE_VECTOR_FP32,
-                                        dense, sizeof(dense));
+      err = zvec_doc_add_field_by_value(
+          doc, "dense", ZVEC_DATA_TYPE_VECTOR_FP32, dense, sizeof(dense));
       TEST_ASSERT(err == ZVEC_OK);
 
       uint32_t nnz = 3;
@@ -3526,12 +3526,13 @@ void test_collection_nullable_roundtrip(void) {
       char sparse_buffer[sizeof(nnz) + sizeof(sparse_indices) +
                          sizeof(sparse_values)];
       memcpy(sparse_buffer, &nnz, sizeof(nnz));
-      memcpy(sparse_buffer + sizeof(nnz), sparse_indices, sizeof(sparse_indices));
-      memcpy(sparse_buffer + sizeof(nnz) + sizeof(sparse_indices), sparse_values,
-             sizeof(sparse_values));
-      err = zvec_doc_add_field_by_value(
-          doc, "sparse", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32, sparse_buffer,
-          sizeof(sparse_buffer));
+      memcpy(sparse_buffer + sizeof(nnz), sparse_indices,
+             sizeof(sparse_indices));
+      memcpy(sparse_buffer + sizeof(nnz) + sizeof(sparse_indices),
+             sparse_values, sizeof(sparse_values));
+      err = zvec_doc_add_field_by_value(doc, "sparse",
+                                        ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32,
+                                        sparse_buffer, sizeof(sparse_buffer));
       TEST_ASSERT(err == ZVEC_OK);
 
       ZVecDoc *docs[] = {doc};

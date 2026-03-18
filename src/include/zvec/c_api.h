@@ -1759,8 +1759,8 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_delete_with_results(
  * @param results Result array pointer
  * @param result_count Number of entries in result array
  */
-ZVEC_EXPORT void ZVEC_CALL
-zvec_write_results_free(ZVecWriteResult *results, size_t result_count);
+ZVEC_EXPORT void ZVEC_CALL zvec_write_results_free(ZVecWriteResult *results,
+                                                   size_t result_count);
 
 /**
  * @brief Delete documents by filter condition
