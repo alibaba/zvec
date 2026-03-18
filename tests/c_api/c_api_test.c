@@ -1625,6 +1625,7 @@ void test_doc_add_field_by_struct(void) {
 }
 
 void test_doc_basic_operations(void);
+void test_doc_null_field_api(void);
 void test_doc_get_field_value_basic(void);
 void test_doc_get_field_value_copy(void);
 void test_doc_get_field_value_pointer(void);
@@ -1636,6 +1637,7 @@ void test_doc_add_field_by_struct(void);
 
 void test_doc_functions(void) {
   test_doc_basic_operations();
+  test_doc_null_field_api();
   test_doc_get_field_value_basic();
   test_doc_get_field_value_copy();
   test_doc_get_field_value_pointer();
@@ -1673,6 +1675,31 @@ void test_doc_basic_operations(void) {
 
   zvec_doc_destroy(doc);
 
+  TEST_END();
+}
+
+void test_doc_null_field_api(void) {
+  TEST_START();
+
+  ZVecDoc *doc = zvec_doc_create();
+  TEST_ASSERT(doc != NULL);
+  if (!doc) {
+    TEST_END();
+    return;
+  }
+
+  ZVecErrorCode err = zvec_doc_set_field_null(doc, "nullable_field");
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_doc_has_field(doc, "nullable_field") == true);
+  TEST_ASSERT(zvec_doc_has_field_value(doc, "nullable_field") == false);
+  TEST_ASSERT(zvec_doc_is_field_null(doc, "nullable_field") == true);
+
+  err = zvec_doc_set_field_null(NULL, "nullable_field");
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_doc_set_field_null(doc, NULL);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_doc_destroy(doc);
   TEST_END();
 }
 
@@ -3178,6 +3205,10 @@ void test_memory_management_functions(void) {
   TEST_ASSERT(str != NULL);
   zvec_free_string(str);
 
+  void *buffer = malloc(64);
+  TEST_ASSERT(buffer != NULL);
+  zvec_free_ptr(buffer);
+
   TEST_END();
 }
 
@@ -3388,6 +3419,46 @@ void test_collection_dml_functions(void) {
       err = zvec_collection_delete_by_filter(collection, NULL);
       TEST_ASSERT(err != ZVEC_OK);
 
+      // Test detailed DML result APIs
+      ZVecDoc *result_doc = zvec_test_create_doc(101, schema, NULL);
+      TEST_ASSERT(result_doc != NULL);
+      if (result_doc) {
+        ZVecDoc *result_docs[] = {result_doc};
+        ZVecWriteResult *results = NULL;
+        size_t result_count = 0;
+
+        err = zvec_collection_upsert_with_results(
+            collection, (const ZVecDoc **)result_docs, 1, &results,
+            &result_count);
+        TEST_ASSERT(err == ZVEC_OK);
+        TEST_ASSERT(result_count == 1);
+        if (results && result_count == 1) {
+          TEST_ASSERT(results[0].pk != NULL);
+          if (results[0].pk) {
+            TEST_ASSERT(strcmp(results[0].pk, "pk_101") == 0);
+          }
+          TEST_ASSERT(results[0].code == ZVEC_OK);
+          zvec_write_results_free(results, result_count);
+        }
+
+        const char *delete_pks[] = {"pk_101"};
+        results = NULL;
+        result_count = 0;
+        err = zvec_collection_delete_with_results(collection, delete_pks, 1,
+                                                  &results, &result_count);
+        TEST_ASSERT(err == ZVEC_OK);
+        TEST_ASSERT(result_count == 1);
+        if (results && result_count == 1) {
+          TEST_ASSERT(results[0].pk != NULL);
+          if (results[0].pk) {
+            TEST_ASSERT(strcmp(results[0].pk, "pk_101") == 0);
+          }
+          zvec_write_results_free(results, result_count);
+        }
+
+        zvec_doc_destroy(result_doc);
+      }
+
       zvec_collection_destroy(collection);
     }
 
@@ -3398,6 +3469,100 @@ void test_collection_dml_functions(void) {
   char cmd[256];
   snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
   system(cmd);
+
+  TEST_END();
+}
+
+void test_collection_nullable_roundtrip(void) {
+  TEST_START();
+
+  char temp_dir[] = "/tmp/zvec_test_collection_nullable_roundtrip";
+  zvec_test_delete_dir(temp_dir);
+
+  ZVecCollectionSchema *schema = zvec_test_create_temp_schema();
+  TEST_ASSERT(schema != NULL);
+  if (!schema) {
+    TEST_END();
+    return;
+  }
+
+  ZVecCollection *collection = NULL;
+  ZVecErrorCode err =
+      zvec_collection_create_and_open(temp_dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+
+  if (collection) {
+    ZVecDoc *doc = zvec_doc_create();
+    TEST_ASSERT(doc != NULL);
+    if (doc) {
+      zvec_doc_set_pk(doc, "pk_nullable");
+
+      int64_t id = 77;
+      err = zvec_doc_add_field_by_value(doc, "id", ZVEC_DATA_TYPE_INT64, &id,
+                                        sizeof(id));
+      TEST_ASSERT(err == ZVEC_OK);
+
+      const char *name = "nullable";
+      err = zvec_doc_add_field_by_value(doc, "name", ZVEC_DATA_TYPE_STRING,
+                                        name, strlen(name));
+      TEST_ASSERT(err == ZVEC_OK);
+
+      // "weight" in temp schema is nullable.
+      err = zvec_doc_set_field_null(doc, "weight");
+      TEST_ASSERT(err == ZVEC_OK);
+
+      float dense[128];
+      for (size_t i = 0; i < 128; ++i) {
+        dense[i] = (float)i / 128.0f;
+      }
+      err = zvec_doc_add_field_by_value(doc, "dense", ZVEC_DATA_TYPE_VECTOR_FP32,
+                                        dense, sizeof(dense));
+      TEST_ASSERT(err == ZVEC_OK);
+
+      uint32_t nnz = 3;
+      uint32_t sparse_indices[] = {1, 5, 9};
+      float sparse_values[] = {0.2f, 0.5f, 0.9f};
+      char sparse_buffer[sizeof(nnz) + sizeof(sparse_indices) +
+                         sizeof(sparse_values)];
+      memcpy(sparse_buffer, &nnz, sizeof(nnz));
+      memcpy(sparse_buffer + sizeof(nnz), sparse_indices, sizeof(sparse_indices));
+      memcpy(sparse_buffer + sizeof(nnz) + sizeof(sparse_indices), sparse_values,
+             sizeof(sparse_values));
+      err = zvec_doc_add_field_by_value(
+          doc, "sparse", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32, sparse_buffer,
+          sizeof(sparse_buffer));
+      TEST_ASSERT(err == ZVEC_OK);
+
+      ZVecDoc *docs[] = {doc};
+      size_t success_count = 0;
+      size_t error_count = 0;
+      err = zvec_collection_upsert(collection, (const ZVecDoc **)docs, 1,
+                                   &success_count, &error_count);
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(success_count == 1);
+      TEST_ASSERT(error_count == 0);
+
+      const char *pks[] = {"pk_nullable"};
+      ZVecDoc **fetched = NULL;
+      size_t fetched_count = 0;
+      err = zvec_collection_fetch(collection, pks, 1, &fetched, &fetched_count);
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(fetched_count == 1);
+      if (fetched && fetched_count == 1) {
+        TEST_ASSERT(zvec_doc_has_field(fetched[0], "weight") == true);
+        TEST_ASSERT(zvec_doc_has_field_value(fetched[0], "weight") == false);
+        TEST_ASSERT(zvec_doc_is_field_null(fetched[0], "weight") == true);
+      }
+      zvec_docs_free(fetched, fetched_count);
+      zvec_doc_destroy(doc);
+    }
+
+    zvec_collection_destroy(collection);
+  }
+
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(temp_dir);
 
   TEST_END();
 }
@@ -4348,12 +4513,14 @@ int main(void) {
   test_collection_stats();
   test_collection_stats_functions();
   test_collection_dml_functions();
+  test_collection_nullable_roundtrip();
   test_collection_ddl_operations();
 
   // Doc-related tests
   test_doc_creation();
   test_doc_primary_key();
   test_doc_basic_operations();
+  test_doc_null_field_api();
   test_doc_get_field_value_basic();
   test_doc_get_field_value_copy();
   test_doc_get_field_value_pointer();
