@@ -179,6 +179,11 @@ void HnswRabitqQueryAlgorithm::search_neighbors(
         } else {
           continue;
         }
+      } else {
+        // ex_bits_ == 0: est_dist is already the best estimate
+        if (topk.full() && candest.est_dist >= topk[0].second.est_dist) {
+          continue;
+        }
       }
       candidates.emplace(node, ResultRecord(candest));
       // update entry_point for next level scan

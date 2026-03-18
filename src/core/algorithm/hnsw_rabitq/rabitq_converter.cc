@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "rabitq_converter.h"
-#include <strings.h>
+#include <cstring>
 #include <memory>
 #include <rabitqlib/utils/rotator.hpp>
 #include <zvec/ailego/container/params.h>
@@ -30,6 +30,10 @@
 #include "zvec/core/framework/index_meta.h"
 #include "rabitq_params.h"
 #include "rabitq_utils.h"
+
+#ifdef _MSC_VER
+#define strncasecmp _strnicmp
+#endif
 
 namespace zvec {
 namespace core {
