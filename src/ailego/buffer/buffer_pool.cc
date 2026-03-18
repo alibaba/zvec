@@ -177,7 +177,6 @@ VecBufferPool::VecBufferPool(const std::string &filename) {
     throw std::runtime_error("Failed to stat file: " + filename);
   }
   file_size_ = st.st_size;
-  posix_fadvise(fd_, 0, 0, POSIX_FADV_RANDOM);
 }
 
 int VecBufferPool::init(size_t pool_capacity, size_t block_size,
