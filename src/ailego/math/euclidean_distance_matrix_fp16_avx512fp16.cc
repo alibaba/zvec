@@ -21,8 +21,8 @@ namespace ailego {
 
 #if defined(__AVX512FP16__)
 //! Squared Euclidean Distance
-float SquaredEuclideanDistanceAVX512FP16(const Float16 *lhs, const Float16 *rhs,
-                                         size_t size) {
+float SquaredEuclideanDistanceFp16AVX512FP16(const Float16 *lhs,
+                                             const Float16 *rhs, size_t size) {
   const Float16 *last = lhs + size;
   const Float16 *last_aligned = lhs + ((size >> 6) << 6);
 
