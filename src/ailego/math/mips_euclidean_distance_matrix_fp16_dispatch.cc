@@ -61,6 +61,7 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     *out = MipsEuclideanDistanceSphericalInjectionFp16AVX(p, q, dim, e2);
     return;
   }
+#endif  //__AVX__
 #endif  //__ARM_NEON
 }
 
@@ -85,7 +86,7 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
                                                                   e2);
     return;
   }
-#endif
+#endif  //__AVX__
 #endif  //__ARM_NEON
 }
 
