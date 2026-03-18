@@ -44,8 +44,6 @@ if(NOT ANDROID)
         file(GLOB_RECURSE MATH_FILES_AVX512
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx512.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx512.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.c
             ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx512.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx512.c
         )
