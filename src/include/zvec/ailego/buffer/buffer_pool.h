@@ -137,7 +137,7 @@ class VecBufferPool {
   LPMap lp_map_;
 
  private:
-  std::mutex mutex_;
+  std::vector<std::unique_ptr<std::mutex>> mutex_vec_;
   moodycamel::ConcurrentQueue<char *> free_buffers_;
 };
 

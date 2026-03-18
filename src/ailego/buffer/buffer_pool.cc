@@ -174,6 +174,7 @@ VecBufferPool::VecBufferPool(const std::string &filename) {
     throw std::runtime_error("Failed to stat file: " + filename);
   }
   file_size_ = st.st_size;
+  posix_fadvise(fd_, 0, 0, POSIX_FADV_RANDOM);
 }
 
 int VecBufferPool::init(size_t pool_capacity, size_t block_size,
@@ -186,6 +187,10 @@ int VecBufferPool::init(size_t pool_capacity, size_t block_size,
   size_t buffer_num = pool_capacity_ / block_size + 10;
   size_t block_num = segment_count + 10;
   lp_map_.init(block_num);
+  mutex_vec_.reserve(block_num);
+  for (int i = 0; i < block_num; i++) {
+    mutex_vec_.emplace_back(std::make_unique<std::mutex>());
+  }
   for (size_t i = 0; i < buffer_num; i++) {
     char *buffer = (char *)ailego_malloc(block_size);
     if (buffer != nullptr) {
@@ -218,6 +223,11 @@ char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
   if (buffer) {
     return buffer;
   }
+  std::lock_guard<std::mutex> lock(*mutex_vec_[block_id]);
+  buffer = lp_map_.acquire_block(block_id);
+  if (buffer) {
+    return buffer;
+  }
   {
     bool found = free_buffers_.try_dequeue(buffer);
     if (!found && !no_lru_mode_) {
@@ -241,16 +251,7 @@ char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
     free_buffers_.enqueue(buffer);
     return nullptr;
   }
-  char *placed_buffer = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    placed_buffer = lp_map_.set_block_acquired(block_id, buffer);
-  }
-  if (placed_buffer != buffer) {
-    // another thread has set the block
-    free_buffers_.enqueue(buffer);
-  }
-  return placed_buffer;
+  return lp_map_.set_block_acquired(block_id, buffer);
 }
 
 int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
