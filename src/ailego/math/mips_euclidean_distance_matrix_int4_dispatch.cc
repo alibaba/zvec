@@ -53,7 +53,7 @@ void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
 #endif
 
 #if defined(__SSE4_1__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4 .1) {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
     *out = MipsEuclideanDistanceSphericalInjectionInt4SSE(p, q, dim, e2);
     return;
   }
@@ -75,7 +75,7 @@ void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
 #endif
 
 #if defined(__SSE4_1__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4 .1) {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
     *out = MipsEuclideanDistanceRepeatedQuadraticInjectionInt4SSE(p, q, dim, m,
                                                                   e2);
     return;

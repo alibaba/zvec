@@ -150,14 +150,17 @@ float MinusInnerProductSparseMatrix<Float16>::
                                        const uint16_t *q_sparse_index,
                                        const ValueType *q_sparse_value) {
 #if defined(__AVX512FP16__)
-  return InnerProductSparseInSegmentAVX512FP16(m_sparse_count, m_sparse_index,
-                                               m_sparse_value, q_sparse_count,
-                                               q_sparse_index, q_sparse_value);
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    return InnerProductSparseInSegmentAVX512FP16(
+        m_sparse_count, m_sparse_index, m_sparse_value, q_sparse_count,
+        q_sparse_index, q_sparse_value);
+  }
 #elif defined(__AVX__)
-  return InnerProductSparseInSegmentAVX(m_sparse_count, m_sparse_index,
-                                        m_sparse_value, q_sparse_count,
-                                        q_sparse_index, q_sparse_value);
-
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512) {
+    return InnerProductSparseInSegmentAVX(m_sparse_count, m_sparse_index,
+                                          m_sparse_value, q_sparse_count,
+                                          q_sparse_index, q_sparse_value);
+  }
 #else
   return InnerProductSparseInSegment(m_sparse_count, m_sparse_index,
                                      m_sparse_value, q_sparse_count,
