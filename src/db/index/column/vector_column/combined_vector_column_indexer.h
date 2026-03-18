@@ -15,9 +15,9 @@
 
 #include <memory>
 #include <vector>
+#include "db/index/common/index_filter.h"
 #include "vector_column_indexer.h"
 #include "vector_column_params.h"
-#include "vector_index_results.h"
 
 namespace zvec {
 
@@ -42,8 +42,31 @@ class CombinedVectorColumnIndexer {
   virtual Result<vector_column_params::VectorDataBuffer> Fetch(
       uint32_t segment_doc_id) const;
 
-  // for ut
+
  protected:
+  /**
+   * A filter wrapper that applies an offset to document IDs before
+   * delegating to an inner filter.
+   *
+   * This is used when multiple blocks with different ID offsets are stored.
+   * Each block has its own local ID space, and this filter translates
+   * block-level IDs to segment-level IDs before checking the inner filter.
+   */
+  class BlockOffsetFilter : public IndexFilter {
+   public:
+    BlockOffsetFilter(const IndexFilter *inner_filter, uint64_t offset)
+        : inner_filter_(inner_filter), offset_(offset) {}
+
+    bool is_filtered(uint64_t id) const override {
+      return inner_filter_->is_filtered(id + offset_);
+    }
+
+   private:
+    const IndexFilter *inner_filter_;
+    uint64_t offset_;
+  };
+
+  // for ut
   CombinedVectorColumnIndexer() = default;
 
 

@@ -1722,7 +1722,7 @@ Status CollectionImpl::create() {
   }
   if (ailego::FileHelper::IsExist(path_.c_str())) {
     return Status::InvalidArgument("path validate failed: path[", path_,
-                                   "] is existed");
+                                   "] exists");
   }
 
   // check schema

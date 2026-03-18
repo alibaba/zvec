@@ -69,6 +69,10 @@ float InnerProductAVX512(const float *lhs, const float *rhs, size_t size) {
   return HorizontalAdd_FP32_V512(zmm_sum_0);
 }
 
+float MinusInnerProductAVX512(const float *lhs, const float *rhs, size_t size) {
+  return -1 * InnerProductAVX512(lhs, rhs, size);
+}
+
 #endif
 
 }  // namespace ailego

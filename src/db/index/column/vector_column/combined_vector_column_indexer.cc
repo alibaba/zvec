@@ -104,11 +104,22 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
       need_refine = true;
     }
 
+    const IndexFilter *filter{nullptr};
+    auto per_block_filter =
+        BlockOffsetFilter{query_params.filter, block_offsets_[i]};
+    if (query_params.filter) {
+      if (block_offsets_[i] > 0) {
+        filter = &per_block_filter;
+      } else {
+        filter = query_params.filter;
+      }
+    }
+
     vector_column_params::QueryParams modified_query_params{
         query_params.data_type,
         query_params.dimension,
         query_params.topk,
-        query_params.filter,
+        filter,
         query_params.fetch_vector,
         query_params.query_params,
         query_params.group_by

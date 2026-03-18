@@ -153,6 +153,40 @@ float InnerProductAndSquaredNormAVX2(const int8_t *lhs, const int8_t *rhs,
   *sqr = norm2;
   return result;
 }
+
+float MipsEucldeanDistanceSphericalInjectionAVX2(const int8_t *lhs,
+                                                 const int8_t *rhs, size_t size,
+                                                 float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  sum = InnerProductAndSquaredNormAVX2(lhs, rhs, size, &u2, &v2);
+
+  return ComputeSphericalInjection(sum, u2, v2, e2);
+}
+
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX2(const int8_t *lhs,
+                                                         const int8_t *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  sum = InnerProductAndSquaredNormAVX2(lhs, rhs, size, &u2, &v2);
+
+  sum = e2 * (u2 + v2 - 2 * sum);
+  u2 *= e2;
+  v2 *= e2;
+  for (size_t i = 0; i < m; ++i) {
+    sum += (u2 - v2) * (u2 - v2);
+    u2 = u2 * u2;
+    v2 = v2 * v2;
+  }
+
+  return sum;
+}
 #endif  // __AVX2__
 
 }  // namespace ailego

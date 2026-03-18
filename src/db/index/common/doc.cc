@@ -866,6 +866,12 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
                 "doc validate failed: field[", field_name,
                 "]'s sparse vector indices and values size not match");
           }
+          if (sparse_indices.size() > kSparseMaxDimSize) {
+            return Status::InvalidArgument(
+                "doc validate failed: vector[", field_name,
+                "], the number of sparse indices exceeds the maximum limit ",
+                kSparseMaxDimSize);
+          }
         }
         break;
       }
@@ -880,6 +886,12 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
             return Status::InvalidArgument(
                 "doc validate failed: field[", field_name,
                 "]'s sparse vector indices and values size not match");
+          }
+          if (sparse_indices.size() > kSparseMaxDimSize) {
+            return Status::InvalidArgument(
+                "doc validate failed: vector[", field_name,
+                "], the number of sparse indices exceeds the maximum limit ",
+                kSparseMaxDimSize);
           }
         }
         break;
@@ -1251,9 +1263,11 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
     }
   } else if (schema->is_sparse_vector()) {
     // validate sparse indices size
-    if (query_sparse_indices_.size() >= kSparseMaxDimSize * sizeof(uint32_t)) {
+    if (query_sparse_indices_.size() > kSparseMaxDimSize * sizeof(uint32_t)) {
       return Status::InvalidArgument(
-          "query validate failed: sparse indices size is too large");
+          "query validate failed: the number of sparse indices exceeds the "
+          "maximum limit ",
+          kSparseMaxDimSize);
     }
   } else {
     return Status::InvalidArgument(

@@ -24,18 +24,33 @@ float InnerProductAndSquaredNormNEON(const float *lhs, const float *rhs,
 #endif
 
 #if defined(__AVX512F__)
-float InnerProductAndSquaredNormAVX512(const float *lhs, const float *rhs,
-                                       size_t size, float *sql, float *sqr);
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(const float *lhs,
+                                                           const float *rhs,
+                                                           size_t size,
+                                                           size_t m, float e2);
+float MipsEucldeanDistanceSphericalInjectionAVX512(const float *lhs,
+                                                   const float *rhs,
+                                                   size_t size, float e2);
 #endif
 
 #if defined(__AVX__)
-float InnerProductAndSquaredNormAVX(const float *lhs, const float *rhs,
-                                    size_t size, float *sql, float *sqr);
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const float *lhs,
+                                                        const float *rhs,
+                                                        size_t size, size_t m,
+                                                        float e2);
+float MipsEucldeanDistanceSphericalInjectionAVX(const float *lhs,
+                                                const float *rhs, size_t size,
+                                                float e2);
 #endif
 
 #if defined(__SSE__)
-float InnerProductAndSquaredNormSSE(const float *lhs, const float *rhs,
-                                    size_t size, float *sql, float *sqr);
+float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const float *lhs,
+                                                        const float *rhs,
+                                                        size_t size, size_t m,
+                                                        float e2);
+float MipsEucldeanDistanceSphericalInjectionSSE(const float *lhs,
+                                                const float *rhs, size_t size,
+                                                float e2);
 #endif
 
 #if defined(__SSE4_1__)
@@ -58,58 +73,39 @@ float MipsInnerProductSparseInSegment(uint32_t m_sparse_count,
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
-  float u2{0.0f};
-  float v2{0.0f};
-  float sum{0.0f};
-
 #if defined(__AVX512F__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F && dim > 15) {
-    sum = InnerProductAndSquaredNormAVX512(p, q, dim, &u2, &v2);
-  } else
-#endif  // __AVX512F__
-#if defined(__AVX__)
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX && dim > 7) {
-    sum = InnerProductAndSquaredNormAVX(p, q, dim, &u2, &v2);
-  } else
-#endif  // __AVX__
-  {
-    sum = InnerProductAndSquaredNormSSE(p, q, dim, &u2, &v2);
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    *out = MipsEucldeanDistanceSphericalInjectionAVX512(p, q, dim, e2);
+    return;
   }
-
-  *out = ComputeSphericalInjection(sum, u2, v2, e2);
+#endif  //__AVX512F__
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = MipsEucldeanDistanceSphericalInjectionAVX(p, q, dim, e2);
+    return;
+  }
+#endif  // __AVX__
+  *out = MipsEucldeanDistanceSphericalInjectionSSE(p, q, dim, e2);
 }
 
 //! Compute the distance between matrix and query by RepeatedQuadraticInjection
 void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
     float *out) {
-  float u2{0.0f};
-  float v2{0.0f};
-  float sum{0.0f};
-
 #if defined(__AVX512F__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F && dim > 15) {
-    sum = InnerProductAndSquaredNormAVX512(p, q, dim, &u2, &v2);
-  } else
-#endif  // __AVX512F__
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    *out =
+        MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(p, q, dim, m, e2);
+    return;
+  }
+#endif  //__AVX512F__
 #if defined(__AVX__)
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX && dim > 7) {
-    sum = InnerProductAndSquaredNormAVX(p, q, dim, &u2, &v2);
-  } else
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(p, q, dim, m, e2);
+    return;
+  }
 #endif  // __AVX__
-  {
-    sum = InnerProductAndSquaredNormSSE(p, q, dim, &u2, &v2);
-  }
-
-  sum = e2 * (u2 + v2 - 2 * sum);
-  u2 *= e2;
-  v2 *= e2;
-  for (size_t i = 0; i < m; ++i) {
-    sum += (u2 - v2) * (u2 - v2);
-    u2 = u2 * u2;
-    v2 = v2 * v2;
-  }
-  *out = sum;
+  *out = MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, m, e2);
 }
 #endif  // __SSE__
 
@@ -131,6 +127,37 @@ float MipsSquaredEuclideanSparseDistanceMatrix<float>::
                                          q_sparse_index, q_sparse_value);
 #endif
 }
+
+#if defined(__ARM_NEON)
+//! Compute the distance between matrix and query by SphericalInjection
+void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
+    const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum = InnerProductAndSquaredNormNEON(p, q, dim, &u2, &v2);
+
+  *out = ComputeSphericalInjection(sum, u2, v2, e2);
+}
+
+//! Compute the distance between matrix and query by RepeatedQuadraticInjection
+void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
+    const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
+    float *out) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum = InnerProductAndSquaredNormNEON(p, q, dim, &u2, &v2);
+
+  sum = e2 * (u2 + v2 - 2 * sum);
+  u2 *= e2;
+  v2 *= e2;
+  for (size_t i = 0; i < m; ++i) {
+    sum += (u2 - v2) * (u2 - v2);
+    u2 = u2 * u2;
+    v2 = v2 * v2;
+  }
+  *out = sum;
+}
+#endif  //__ARM_NEON
 
 }  // namespace ailego
 }  // namespace zvec

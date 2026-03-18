@@ -19,6 +19,16 @@
 namespace zvec {
 namespace ailego {
 
+#if defined(__SSE__)
+float InnerProductAndSquaredNormSSE(const float *lhs, const float *rhs,
+                                    size_t size, float *sql, float *sqr);
+#endif
+
+#if defined(__AVX__)
+float InnerProductAndSquaredNormAVX(const float *lhs, const float *rhs,
+                                    size_t size, float *sql, float *sqr);
+#endif
+
 #if defined(__AVX512F__)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
 float InnerProductAndSquaredNormAVX512(const float *lhs, const float *rhs,
@@ -93,6 +103,52 @@ float InnerProductAndSquaredNormAVX512(const float *lhs, const float *rhs,
   *sql = HorizontalAdd_FP32_V512(zmm_sum_norm1);
   *sqr = HorizontalAdd_FP32_V512(zmm_sum_norm2);
   return HorizontalAdd_FP32_V512(zmm_sum_0);
+}
+
+float MipsEucldeanDistanceSphericalInjectionAVX512(const float *lhs,
+                                                   const float *rhs,
+                                                   size_t size, float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  if (size > 15) {
+    sum = InnerProductAndSquaredNormAVX512(lhs, rhs, size, &u2, &v2);
+  } else if (size > 7) {
+    sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
+  } else {
+    sum = InnerProductAndSquaredNormSSE(lhs, rhs, size, &u2, &v2);
+  }
+
+  return ComputeSphericalInjection(sum, u2, v2, e2);
+}
+
+float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(const float *lhs,
+                                                           const float *rhs,
+                                                           size_t size,
+                                                           size_t m, float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  if (size > 15) {
+    sum = InnerProductAndSquaredNormAVX512(lhs, rhs, size, &u2, &v2);
+  } else if (size > 7) {
+    sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
+  } else {
+    sum = InnerProductAndSquaredNormSSE(lhs, rhs, size, &u2, &v2);
+  }
+
+  sum = e2 * (u2 + v2 - 2 * sum);
+  u2 *= e2;
+  v2 *= e2;
+  for (size_t i = 0; i < m; ++i) {
+    sum += (u2 - v2) * (u2 - v2);
+    u2 = u2 * u2;
+    v2 = v2 * v2;
+  }
+
+  return sum;
 }
 #endif  // __AVX512F__
 

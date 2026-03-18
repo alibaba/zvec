@@ -119,7 +119,42 @@ float InnerProductAndSquaredNormNEON(const Float16 *lhs, const Float16 *rhs,
   *sqr = norm2;
   return result;
 }
+
 #endif  // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
+
+float MipsEucldeanDistanceSphericalInjectionNEON(const Float16 *lhs,
+                                                 const Float16 *rhs,
+                                                 size_t size, float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  sum = InnerProductAndSquaredNormNEON(lhs, rhs, size, &u2, &v2);
+
+  return ComputeSphericalInjection(sum, u2, v2, e2);
+}
+
+float MipsEucldeanDistanceRepeatedQuadraticInjectionNEON(const Float16 *lhs,
+                                                         const Float16 *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2) {
+  float u2{0.0f};
+  float v2{0.0f};
+  float sum{0.0f};
+
+  sum = InnerProductAndSquaredNormNEON(lhs, rhs, size, &u2, &v2);
+
+  sum = e2 * (u2 + v2 - 2 * sum);
+  u2 *= e2;
+  v2 *= e2;
+  for (size_t i = 0; i < m; ++i) {
+    sum += (u2 - v2) * (u2 - v2);
+    u2 = u2 * u2;
+    v2 = v2 * v2;
+  }
+
+  return sum;
+}
 #endif  // __ARM_NEON && __aarch64__
 
 }  // namespace ailego

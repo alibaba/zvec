@@ -32,7 +32,7 @@ const std::string GLOBAL_DOC_ID = "_zvec_g_doc_id_";
 
 const std::string USER_ID = "_zvec_uid_";
 
-const int kSparseMaxDimSize = 4096;
+const int kSparseMaxDimSize = 16384;
 
 const int64_t kMaxRecordBatchNumRows = 4096;
 
