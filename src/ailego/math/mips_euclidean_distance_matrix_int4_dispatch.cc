@@ -21,26 +21,27 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__AVX2__)
-float MipsEuclideanDistanceRepeatedQuadraticInjectionAVX2(const uint8_t *lhs,
-                                                          const uint8_t *rhs,
-                                                          size_t size, size_t m,
-                                                          float e2);
-float MipsEuclideanDistanceSphericalInjectionAVX2(const uint8_t *lhs,
-                                                  const uint8_t *rhs,
-                                                  size_t size, float e2);
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt4AVX2(
+    const uint8_t *lhs, const uint8_t *rhs, size_t size, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionInt4AVX2(const uint8_t *lhs,
+                                                      const uint8_t *rhs,
+                                                      size_t size, float e2);
 #endif
 
 #if defined(__SSE4_1__)
-float MipsEuclideanDistanceRepeatedQuadraticInjectionSSE(const uint8_t *lhs,
-                                                         const uint8_t *rhs,
-                                                         size_t size, size_t m,
-                                                         float e2);
-float MipsEuclideanDistanceSphericalInjectionSSE(const uint8_t *lhs,
-                                                 const uint8_t *rhs,
-                                                 size_t size, float e2);
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt4SSE(
+    const uint8_t *lhs, const uint8_t *rhs, size_t size, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionInt4SSE(const uint8_t *lhs,
+                                                     const uint8_t *rhs,
+                                                     size_t size, float e2);
 #endif
 
-#if defined(__SSE4_1__)
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt4Scalar(
+    const int8_t *lhs, const int8_t *rhs, size_t size, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionInt4Scalar(const int8_t *lhs,
+                                                        const int8_t *rhs,
+                                                        size_t size, float e2);
+
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
@@ -50,7 +51,15 @@ void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
     return;
   }
 #endif
-  *out = MipsEuclideanDistanceSphericalInjectionSSE(p, q, dim, e2);
+
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4 .1) {
+    *out = MipsEuclideanDistanceSphericalInjectionSSE(p, q, dim, e2);
+    return;
+  }
+#endif
+
+  *out = MipsEuclideanDistanceSphericalInjectionScalar(p, q, dim, e2);
 }
 
 //! Compute the distance between matrix and query by RepeatedQuadraticInjection
@@ -64,9 +73,17 @@ void MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
     return;
   }
 #endif
-  *out = MipsEuclideanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, m, e2);
-}
+
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4 .1) {
+    *out = MipsEuclideanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, m, e2);
+    return;
+  }
 #endif
+
+  *out =
+      MipsEuclideanDistanceRepeatedQuadraticInjectionScalar(p, q, dim, m, e2);
+}
 
 }  // namespace ailego
 }  // namespace zvec

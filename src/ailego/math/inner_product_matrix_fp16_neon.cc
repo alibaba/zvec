@@ -20,7 +20,8 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__ARM_NEON)
-float InnerProductNEON(const Float16 *lhs, const Float16 *rhs, size_t size) {
+float InnerProductFp16NEON(const Float16 *lhs, const Float16 *rhs,
+                           size_t size) {
   float score;
 
   ACCUM_FP16_1X1_NEON(lhs, rhs, size, &score, 0ull, )
@@ -28,8 +29,8 @@ float InnerProductNEON(const Float16 *lhs, const Float16 *rhs, size_t size) {
   return score;
 }
 
-float MinusInnerProductNEON(const Float16 *lhs, const Float16 *rhs,
-                            size_t size) {
+float MinusInnerProductFp16NEON(const Float16 *lhs, const Float16 *rhs,
+                                size_t size) {
   float score;
 
   ACCUM_FP16_1X1_NEON(lhs, rhs, size, &score, 0ull, NEGATE_FP32_GENERAL)

@@ -33,13 +33,13 @@ float MipsEuclideanDistanceSphericalInjectionInt8SSE(const int8_t *lhs,
                                                      const int8_t *rhs,
                                                      size_t size, float e2);
 #endif
+
 float MipsEuclideanDistanceRepeatedQuadraticInjectionInt8Scalar(
     const int8_t *lhs, const int8_t *rhs, size_t size, size_t m, float e2);
 float MipsEuclideanDistanceSphericalInjectionInt8Scalar(const int8_t *lhs,
                                                         const int8_t *rhs,
                                                         size_t size, float e2);
 
-#if defined(__SSE4_1__)
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
@@ -82,7 +82,6 @@ void MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(
   *out = MipsEuclideanDistanceRepeatedQuadraticInjectionInt8Scalar(p, q, dim, m,
                                                                    e2);
 }
-#endif  // __SSE4_1__
 
 }  // namespace ailego
 }  // namespace zvec
