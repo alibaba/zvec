@@ -932,13 +932,16 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   cout << "Prepare data done!" << endl;
 
   ailego::Params params;
-  if (g_disable_id_map) {
-    params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, false);
-    params.set(PARAM_FLAT_USE_ID_MAP, false);
-  }
   if (!prepare_params(config_root["BuilderParams"], params)) {
     LOG_ERROR("Failed to prepare params");
     return -1;
+  }
+  std::vector<std::string> id_map_param_list = {
+      PARAM_HNSW_STREAMER_USE_ID_MAP,
+      PARAM_FLAT_USE_ID_MAP,
+  };
+  for (auto &param : id_map_param_list) {
+    params.set(param, !g_disable_id_map);
   }
 
   // INIT

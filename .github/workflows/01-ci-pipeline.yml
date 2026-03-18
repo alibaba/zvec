@@ -1,0 +1,55 @@
+name: Main
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  merge_group:
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Code quality checks (fast, run first)
+  lint:
+    uses: ./.github/workflows/02-lint-check.yml
+
+  # Main build and test matrix
+  build-and-test-macos-arm64:
+    name: Build & Test (macos-arm64)
+    needs: lint
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: macos-arm64
+      os: macos-15
+
+  build-and-test-linux-arm64:
+    name: Build & Test (linux-arm64)
+    needs: lint
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: linux-arm64
+      os: ubuntu-24.04-arm
+
+  build-and-test-linux-x64:
+    name: Build & Test (linux-x64)
+    needs: lint
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: linux-x64
+      os: ubuntu-24.04
+
+  build-android:
+    name: Build & Test (android)
+    needs: lint
+    uses: ./.github/workflows/04-android-build.yml
