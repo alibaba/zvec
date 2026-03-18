@@ -75,7 +75,7 @@ void MinusInnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m,
   }
 #endif  //__SSE4_1__
 
-  MinusInnerProductInt8Scalar(m, q, dim);
+  *out = MinusInnerProductInt8Scalar(m, q, dim);
 }
 
 }  // namespace ailego
