@@ -64,7 +64,7 @@ class LPMap {
 
   void init(size_t entry_num);
 
-  char *acquire_block(block_id_t block_id);
+  char *acquire_block(block_id_t block_id, bool lru_mode);
 
   void release_block(block_id_t block_id);
 
