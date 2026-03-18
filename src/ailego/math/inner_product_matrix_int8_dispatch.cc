@@ -62,7 +62,7 @@ void MinusInnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m,
                                                     const int8_t *q, size_t dim,
                                                     float *out) {
 #if defined(__AVX2__)
-  if (dim > 31) {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
     *out = MinusInnerProductInt8AVX2(m, q, dim);
     return;
   }

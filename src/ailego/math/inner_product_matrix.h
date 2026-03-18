@@ -781,99 +781,55 @@ struct MinusInnerProductSparseMatrix {
         : seg_id_{seg_id}, vec_cnt_{vec_cnt} {}
   };
 
+  float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
+                                           const uint16_t *m_sparse_index,
+                                           const ValueType *m_sparse_value,
+                                           uint32_t q_sparse_count,
+                                           const uint16_t *q_sparse_index,
+                                           const ValueType *q_sparse_value);
+
   static void transform_sparse_format(uint32_t sparse_count,
                                       const uint32_t *sparse_index,
                                       const void *sparse_value,
                                       std::string &buffer);
 
-  static float ComputeInnerProductSparseInSegment(
-      uint32_t m_sparse_count, const uint16_t *m_sparse_index,
-      const ValueType *m_sparse_value, uint32_t q_sparse_count,
-      const uint16_t *q_sparse_index, const ValueType *q_sparse_value);
-
   //! Compute the distance between matrix and query
   static inline void Compute(const void *m_sparse_data_in,
-                             const void *q_sparse_data_in, float *out) {
-    ailego_assert(m_sparse_data_in && q_sparse_data_in && out);
+                             const void *q_sparse_data_in, float *out);
+};
 
-    const uint8_t *m_sparse_data =
-        reinterpret_cast<const uint8_t *>(m_sparse_data_in);
-    const uint8_t *q_sparse_data =
-        reinterpret_cast<const uint8_t *>(q_sparse_data_in);
+template <>
+struct MinusInnerProductSparseMatrix<Float16> {
+  //! Type of value
+  using ValueType = Float16;
 
-    const uint32_t m_sparse_count =
-        *reinterpret_cast<const uint32_t *>(m_sparse_data);
-    const uint32_t q_sparse_count =
-        *reinterpret_cast<const uint32_t *>(q_sparse_data);
+  float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
+                                           const uint16_t *m_sparse_index,
+                                           const Float16 *m_sparse_value,
+                                           uint32_t q_sparse_count,
+                                           const uint16_t *q_sparse_index,
+                                           const Float16 *q_sparse_value);
 
-    if (m_sparse_count == 0 || q_sparse_count == 0) {
-      *out = 0;
+  //! Compute the distance between matrix and query
+  static void Compute(const void *m_sparse_data_in,
+                      const void *q_sparse_data_in, float *out);
+};
 
-      return;
-    }
+template <>
+struct MinusInnerProductSparseMatrix<float> {
+  //! Type of value
+  using ValueType = float;
 
-    const uint32_t m_seg_count =
-        *reinterpret_cast<const uint32_t *>(m_sparse_data + sizeof(uint32_t));
-    const uint32_t q_seg_count =
-        *reinterpret_cast<const uint32_t *>(q_sparse_data + sizeof(uint32_t));
+  float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
+                                           const uint16_t *m_sparse_index,
+                                           const float *m_sparse_value,
+                                           uint32_t q_sparse_count,
+                                           const uint16_t *q_sparse_index,
+                                           const float *q_sparse_value);
 
-    const uint32_t *m_seg_id = reinterpret_cast<const uint32_t *>(
-        m_sparse_data + 2 * sizeof(uint32_t));
-    const uint32_t *q_seg_id = reinterpret_cast<const uint32_t *>(
-        q_sparse_data + 2 * sizeof(uint32_t));
-
-    const uint32_t *m_seg_vec_cnt = reinterpret_cast<const uint32_t *>(
-        m_sparse_data + 2 * sizeof(uint32_t) + m_seg_count * sizeof(uint32_t));
-    const uint32_t *q_seg_vec_cnt = reinterpret_cast<const uint32_t *>(
-        q_sparse_data + 2 * sizeof(uint32_t) + q_seg_count * sizeof(uint32_t));
-
-    const uint16_t *m_sparse_index = reinterpret_cast<const uint16_t *>(
-        m_sparse_data + 2 * sizeof(uint32_t) +
-        m_seg_count * 2 * sizeof(uint32_t));
-    const uint16_t *q_sparse_index = reinterpret_cast<const uint16_t *>(
-        q_sparse_data + 2 * sizeof(uint32_t) +
-        q_seg_count * 2 * sizeof(uint32_t));
-
-    const ValueType *m_sparse_value = reinterpret_cast<const ValueType *>(
-        m_sparse_data + 2 * sizeof(uint32_t) +
-        m_seg_count * 2 * sizeof(uint32_t) + m_sparse_count * sizeof(uint16_t));
-    const ValueType *q_sparse_value = reinterpret_cast<const ValueType *>(
-        q_sparse_data + 2 * sizeof(uint32_t) +
-        q_seg_count * 2 * sizeof(uint32_t) + q_sparse_count * sizeof(uint16_t));
-
-    float sum = 0.0f;
-
-    size_t m_s = 0;
-    size_t q_s = 0;
-
-    size_t m_count = 0;
-    size_t q_count = 0;
-
-    while (m_s < m_seg_count && q_s < q_seg_count) {
-      if (m_seg_id[m_s] == q_seg_id[q_s]) {
-        sum += ComputeInnerProductSparseInSegment(
-            m_seg_vec_cnt[m_s], m_sparse_index + m_count,
-            m_sparse_value + m_count, q_seg_vec_cnt[q_s],
-            q_sparse_index + q_count, q_sparse_value + q_count);
-
-        m_count += m_seg_vec_cnt[m_s];
-        q_count += q_seg_vec_cnt[q_s];
-
-        ++m_s;
-        ++q_s;
-      } else if (m_seg_id[m_s] < q_seg_id[q_s]) {
-        m_count += m_seg_vec_cnt[m_s];
-
-        ++m_s;
-      } else {
-        q_count += q_seg_vec_cnt[q_s];
-
-        ++q_s;
-      }
-    }
-
-    *out = -sum;
-  }
+  //! Compute the distance between matrix and query
+  static void Compute(const void *m_sparse_data_in,
+                      const void *q_sparse_data_in, float *out);
 };
 
 template <typename T>

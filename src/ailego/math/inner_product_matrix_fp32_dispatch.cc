@@ -111,35 +111,42 @@ void MinusInnerProductMatrix<float, 1, 1>::Compute(const float *m,
 // Sparse
 //--------------------------------------------------
 #if defined(__SSE4_1__)
-float InnerProductSparseInSegmentSSE(uint32_t m_sparse_count,
-                                     const uint16_t *m_sparse_index,
-                                     const float *m_sparse_value,
-                                     uint32_t q_sparse_count,
-                                     const uint16_t *q_sparse_index,
-                                     const float *q_sparse_value);
+float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const float *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const float *q_sparse_value);
 #endif
-float InnerProductSparseInSegment(uint32_t m_sparse_count,
-                                  const uint16_t *m_sparse_index,
-                                  const float *m_sparse_value,
-                                  uint32_t q_sparse_count,
-                                  const uint16_t *q_sparse_index,
-                                  const float *q_sparse_value);
+float InnerProductSparseInSegmentFp32Scalar(uint32_t m_sparse_count,
+                                            const uint16_t *m_sparse_index,
+                                            const float *m_sparse_value,
+                                            uint32_t q_sparse_count,
+                                            const uint16_t *q_sparse_index,
+                                            const float *q_sparse_value);
 
-template <>
+float MinusInnerProductSparseFp32Scalar(const void *m_sparse_data_in,
+                                        const void *q_sparse_data_in);
+
+void MinusInnerProductSparseMatrix<Float16>::Compute(
+    const void *m_sparse_data_in, const void *q_sparse_data_in, float *out) {
+  *out = MinusInnerProductSparseFp32Scalar(m_sparse_data_in, q_sparse_data_in);
+}
+
 float MinusInnerProductSparseMatrix<float>::ComputeInnerProductSparseInSegment(
     uint32_t m_sparse_count, const uint16_t *m_sparse_index,
-    const ValueType *m_sparse_value, uint32_t q_sparse_count,
-    const uint16_t *q_sparse_index, const ValueType *q_sparse_value) {
+    const float *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const float *q_sparse_value) {
 #if defined(__SSE4_1__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
-    return InnerProductSparseInSegmentSSE(m_sparse_count, m_sparse_index,
-                                          m_sparse_value, q_sparse_count,
-                                          q_sparse_index, q_sparse_value);
+    return InnerProductSparseInSegmentFp32SSE(m_sparse_count, m_sparse_index,
+                                              m_sparse_value, q_sparse_count,
+                                              q_sparse_index, q_sparse_value);
   }
 #endif
-  return InnerProductSparseInSegment(m_sparse_count, m_sparse_index,
-                                     m_sparse_value, q_sparse_count,
-                                     q_sparse_index, q_sparse_value);
+  return InnerProductSparseInSegmentFp32Scalar(m_sparse_count, m_sparse_index,
+                                               m_sparse_value, q_sparse_count,
+                                               q_sparse_index, q_sparse_value);
 }
 }  // namespace ailego
 }  // namespace zvec
