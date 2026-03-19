@@ -110,10 +110,10 @@ Doc create_doc(const uint64_t doc_id, const CollectionSchema &schema,
             std::vector<double>(field->dimension(), double(doc_id + 0.1)));
         break;
       case DataType::VECTOR_FP16:
-        new_doc.set<std::vector<float16_t>>(
-            field->name(), std::vector<float16_t>(
-                               field->dimension(),
-                               static_cast<float16_t>(float(doc_id + 0.1))));
+        new_doc.set<std::vector<zvec::float16_t>>(
+            field->name(), std::vector<zvec::float16_t>(
+                               field->dimension(), static_cast<zvec::float16_t>(
+                                                       float(doc_id + 0.1))));
         break;
       case DataType::VECTOR_INT8:
         new_doc.set<std::vector<int8_t>>(
@@ -127,16 +127,17 @@ Doc create_doc(const uint64_t doc_id, const CollectionSchema &schema,
         break;
       case DataType::SPARSE_VECTOR_FP16: {
         std::vector<uint32_t> indices;
-        std::vector<float16_t> values;
+        std::vector<zvec::float16_t> values;
         for (uint32_t i = 0; i < 100; i++) {
           indices.push_back(i);
-          values.push_back(float16_t(float(doc_id + 0.1)));
+          values.push_back(zvec::float16_t(float(doc_id + 0.1)));
         }
-        std::pair<std::vector<uint32_t>, std::vector<float16_t>>
+        std::pair<std::vector<uint32_t>, std::vector<zvec::float16_t>>
             sparse_float_vec;
         sparse_float_vec.first = indices;
         sparse_float_vec.second = values;
-        new_doc.set<std::pair<std::vector<uint32_t>, std::vector<float16_t>>>(
+        new_doc.set<
+            std::pair<std::vector<uint32_t>, std::vector<zvec::float16_t>>>(
             field->name(), sparse_float_vec);
         break;
       }

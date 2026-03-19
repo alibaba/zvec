@@ -16,6 +16,8 @@ __all__: list[str] = [
     "FlatIndexParam",
     "HnswIndexParam",
     "HnswQueryParam",
+    "HnswRabitqIndexParam",
+    "HnswRabitqQueryParam",
     "IVFIndexParam",
     "IVFQueryParam",
     "IndexOption",
@@ -269,6 +271,135 @@ class HnswQueryParam(QueryParam):
     ) -> None:
         """
         Constructs an HnswQueryParam instance.
+
+        Args:
+            ef (int, optional): Search-time candidate list size.
+                Higher values improve accuracy. Defaults to 300.
+            radius (float, optional): Search radius for range queries. Default is 0.0.
+            is_linear (bool, optional): Force linear search. Default is False.
+            is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+        """
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def ef(self) -> int:
+        """
+        int: Size of the dynamic candidate list during HNSW search.
+        """
+
+class HnswRabitqIndexParam(VectorIndexParam):
+    """
+
+    Parameters for configuring an HNSW (Hierarchical Navigable Small World) index with RabitQ quantization.
+
+    HNSW is a graph-based approximate nearest neighbor search index. RabitQ is a
+    quantization method that provides high compression with minimal accuracy loss.
+
+    Attributes:
+        metric_type (MetricType): Distance metric used for similarity computation.
+            Default is ``MetricType.IP`` (inner product).
+        total_bits (int): Total bits for RabitQ quantization. Default is 7.
+        num_clusters (int): Number of clusters for RabitQ. Default is 16.
+        m (int): Number of bi-directional links created for every new element
+            during construction. Higher values improve accuracy but increase
+            memory usage and construction time. Default is 50.
+        ef_construction (int): Size of the dynamic candidate list for nearest
+            neighbors during index construction. Larger values yield better
+            graph quality at the cost of slower build time. Default is 500.
+        sample_count (int): Sample count for RabitQ training. Default is 0.
+
+    Examples:
+        >>> from zvec.typing import MetricType
+        >>> params = HnswRabitqIndexParam(
+        ...     metric_type=MetricType.COSINE,
+        ...     total_bits=8,
+        ...     num_clusters=256,
+        ...     m=16,
+        ...     ef_construction=200,
+        ...     sample_count=10000
+        ... )
+        >>> print(params)
+        {'metric_type': 'COSINE', 'total_bits': 8, 'num_clusters': 256, 'm': 16, 'ef_construction': 200, 'sample_count': 10000}
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: _zvec.typing.MetricType = ...,
+        total_bits: typing.SupportsInt = 7,
+        num_clusters: typing.SupportsInt = 16,
+        m: typing.SupportsInt = 50,
+        ef_construction: typing.SupportsInt = 500,
+        sample_count: typing.SupportsInt = 0,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def ef_construction(self) -> int:
+        """
+        int: Candidate list size during index construction.
+        """
+
+    @property
+    def m(self) -> int:
+        """
+        int: Maximum number of neighbors per node.
+        """
+
+    @property
+    def total_bits(self) -> int:
+        """
+        int: Total bits for RabitQ quantization.
+        """
+
+    @property
+    def num_clusters(self) -> int:
+        """
+        int: Number of clusters for RabitQ.
+        """
+
+    @property
+    def sample_count(self) -> int:
+        """
+        int: Sample count for RabitQ training.
+        """
+
+class HnswRabitqQueryParam(QueryParam):
+    """
+
+    Query parameters for HNSW index with RabitQ quantization.
+
+    Controls the trade-off between search speed and accuracy via the `ef` parameter.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.HNSW_RABITQ``.
+        ef (int): Size of the dynamic candidate list during search.
+            Larger values improve recall but slow down search.
+            Default is 300.
+        radius (float): Search radius for range queries. Default is 0.0.
+        is_linear (bool): Force linear search. Default is False.
+        is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+
+    Examples:
+        >>> params = HnswRabitqQueryParam(ef=300)
+        >>> print(params.ef)
+        300
+    """
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        ef: typing.SupportsInt = 300,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+    ) -> None:
+        """
+        Constructs an HnswRabitqQueryParam instance.
 
         Args:
             ef (int, optional): Search-time candidate list size.

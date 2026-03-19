@@ -18,6 +18,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_stats.h>
+#include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
 namespace core {
@@ -219,6 +220,11 @@ class IndexConverter : public IndexModule {
   static int TrainTransformAndDump(const IndexConverter::Pointer &converter,
                                    IndexHolder::Pointer holder,
                                    const IndexDumper::Pointer &dumper);
+
+  //! Convert to reformer
+  virtual int to_reformer(IndexReformer::Pointer *) {
+    return IndexError_NotImplemented;
+  }
 };
 
 }  // namespace core

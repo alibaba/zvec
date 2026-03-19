@@ -15,16 +15,23 @@
 #include <libgen.h>
 #include <signal.h>
 #include <iostream>
+#include <memory>
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include "algorithm/flat/flat_utility.h"
+#include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
+#if RABITQ_SUPPORTED
+#include "algorithm/hnsw_rabitq/hnsw_rabitq_streamer.h"
+#include "algorithm/hnsw_rabitq/rabitq_converter.h"
+#endif
 #include "algorithm/hnsw/hnsw_params.h"
 #include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_logger.h"
 #include "zvec/core/framework/index_plugin.h"
+#include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"
 #include "zvec/core/framework/index_streamer.h"
 #include "index_meta_helper.h"
@@ -111,6 +118,57 @@ bool prepare_params(YAML::Node &&config_params, ailego::Params &params) {
     }
   }
   return true;
+}
+
+int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
+                               const IndexMeta &meta, YAML::Node &config_root,
+                               const std::string &converter_name,
+                               IndexHolder::Pointer *build_holder) {
+#if RABITQ_SUPPORTED
+  RabitqConverter rabitq_converter;
+  ailego::Params rabitq_converter_params;
+  if (config_root["RabitqConverterParams"]) {
+    auto rabitq_params_node = config_root["RabitqConverterParams"];
+    if (!prepare_params(std::move(rabitq_params_node),
+                        rabitq_converter_params)) {
+      cerr << "Failed to prepare rabitq converter params" << endl;
+      return -1;
+    }
+  }
+  if (rabitq_converter.init(meta, rabitq_converter_params) != 0) {
+    cerr << "rabitq converter init failed" << std::endl;
+    return -1;
+  }
+  if (rabitq_converter.train(*build_holder) != 0) {
+    cerr << "rabitq converter train failed" << std::endl;
+    return -1;
+  }
+  IndexReformer::Pointer rabitq_reformer;
+  rabitq_converter.to_reformer(&rabitq_reformer);
+  HnswRabitqStreamer *hnsw_rabitq_streamer =
+      dynamic_cast<HnswRabitqStreamer *>(streamer.get());
+  hnsw_rabitq_streamer->set_reformer(std::move(rabitq_reformer));
+  IndexProvider::Pointer provider;
+  if (converter_name.empty()) {
+    // build_holder is VecsIndexHolder
+    provider = std::dynamic_pointer_cast<IndexProvider>(*build_holder);
+  } else {
+    // build_holder is ordinary IndexHolder, need to convert
+    provider = convert_holder_to_provider(*build_holder);
+    // reuse provider to release memory
+    *build_holder = provider;
+  }
+
+  if (!provider) {
+    cerr << "Failed to cast build holder to provider" << endl;
+    return -1;
+  }
+  hnsw_rabitq_streamer->set_provider(provider);
+  return 0;
+#else
+  cerr << "HNSW RaBitQ is not supported on this platform" << endl;
+  return -1;
+#endif
 }
 
 bool check_config(YAML::Node &config_root) {
@@ -465,7 +523,8 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
       uint64_t key = holder->get_key(id);
       if (retrieval_mode == RM_DENSE) {
         if (reformer) {
-          ret = reformer->convert(holder->get_vector(id), qmeta, &ovec, &ometa);
+          ret = reformer->convert(holder->get_vector_by_index(id), qmeta, &ovec,
+                                  &ometa);
           if (ret != 0) {
             LOG_ERROR("Failed to convert vector for %s", IndexError::What(ret));
             errcode = ret;
@@ -473,7 +532,8 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
           }
           ret = add_to_streamer(key, ovec.data(), ometa, ctx);
         } else {
-          ret = add_to_streamer(key, holder->get_vector(id), qmeta, ctx);
+          ret =
+              add_to_streamer(key, holder->get_vector_by_index(id), qmeta, ctx);
         }
       } else {
         LOG_ERROR("Retrieval mode not supported");
@@ -874,6 +934,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     build_holder->set_metric(metric_name, metric_params);
     meta.set_metric(metric_name, 0, metric_params);
   }
+  IndexMeta input_meta = meta;
   string converter_name;
   ailego::Params converter_params;
   if (config_common["ConverterName"] &&
@@ -939,6 +1000,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   std::vector<std::string> id_map_param_list = {
       PARAM_HNSW_STREAMER_USE_ID_MAP,
       PARAM_FLAT_USE_ID_MAP,
+      PARAM_HNSW_RABITQ_STREAMER_USE_ID_MAP,
   };
   for (auto &param : id_map_param_list) {
     params.set(param, !g_disable_id_map);
@@ -1087,6 +1149,15 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     cout << "Train finished, consume " << train_time << "ms." << endl;
   } else {
     cout << "Skip train procedure" << endl;
+  }
+
+  if (builder_class == "HnswRabitqStreamer") {
+    if (setup_hnsw_rabitq_streamer(streamer, input_meta, config_root,
+                                   converter_name, &cv_build_holder) != 0) {
+      return -1;
+    }
+  } else if (builder_class == "HnswRabitqBuilder" && !converter_name.empty()) {
+    cv_build_holder = convert_holder_to_provider(cv_build_holder);
   }
 
   // BUILD
