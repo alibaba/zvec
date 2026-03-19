@@ -57,9 +57,8 @@ ZVecCollectionSchema *zvec_test_create_scalar_schema(void);
  * @return ZVecCollectionSchema* Created schema pointer
  */
 ZVecCollectionSchema *zvec_test_create_normal_schema(
-    bool nullable, const char *name,
-    const ZVecInvertIndexParams *scalar_index_params,
-    const ZVecHnswIndexParams *vector_index_params, uint64_t max_doc_count);
+    bool nullable, const char *name, const ZVecIndexParams *scalar_index_params,
+    const ZVecIndexParams *vector_index_params, uint64_t max_doc_count);
 
 /**
  * @brief Create schema with scalar index
@@ -83,7 +82,7 @@ ZVecCollectionSchema *zvec_test_create_schema_with_scalar_index(
  */
 ZVecCollectionSchema *zvec_test_create_schema_with_vector_index(
     bool nullable, const char *name,
-    const ZVecHnswIndexParams *vector_index_params);
+    const ZVecIndexParams *vector_index_params);
 
 /**
  * @brief Create schema with specified maximum document count
@@ -157,28 +156,24 @@ ZVecDoc *zvec_test_create_doc_with_fields(uint64_t doc_id,
 /**
  * @brief Create default HNSW index parameters
  *
- * @return ZVecHnswIndexParams* Created parameter pointer, needs to be released
- * by calling free()
+ * @return ZVecIndexParams* Created parameter pointer
  */
-ZVecHnswIndexParams *zvec_test_create_default_hnsw_params(void);
+ZVecIndexParams *zvec_test_create_default_hnsw_params(void);
 
 /**
  * @brief Create default Flat index parameters
  *
- * @return ZVecFlatIndexParams* Created parameter pointer, needs to be released
- * by calling free()
+ * @return ZVecIndexParams* Created parameter pointer
  */
-ZVecFlatIndexParams *zvec_test_create_default_flat_params(void);
+ZVecIndexParams *zvec_test_create_default_flat_params(void);
 
 /**
  * @brief Create default scalar index parameters
  *
  * @param enable_optimize Whether to enable optimization
- * @return ZVecInvertIndexParams* Created parameter pointer, needs to be
- * released by calling free()
+ * @return ZVecIndexParams* Created parameter pointer
  */
-ZVecInvertIndexParams *zvec_test_create_default_invert_params(
-    bool enable_optimize);
+ZVecIndexParams *zvec_test_create_default_invert_params(bool enable_optimize);
 
 // =============================================================================
 // Field Schema Creation Helper Functions
@@ -196,7 +191,7 @@ ZVecInvertIndexParams *zvec_test_create_default_invert_params(
  */
 ZVecFieldSchema *zvec_test_create_scalar_field(
     const char *name, ZVecDataType data_type, bool nullable,
-    const ZVecInvertIndexParams *invert_params);
+    const ZVecIndexParams *invert_params);
 
 /**
  * @brief Create vector field schema
@@ -210,7 +205,7 @@ ZVecFieldSchema *zvec_test_create_scalar_field(
  */
 ZVecFieldSchema *zvec_test_create_vector_field(
     const char *name, ZVecDataType data_type, uint32_t dimension, bool nullable,
-    const ZVecHnswIndexParams *vector_index_params);
+    const ZVecIndexParams *vector_index_params);
 
 /**
  * @brief Create sparse vector field schema
@@ -223,7 +218,7 @@ ZVecFieldSchema *zvec_test_create_vector_field(
  */
 ZVecFieldSchema *zvec_test_create_sparse_vector_field(
     const char *name, ZVecDataType data_type, bool nullable,
-    const ZVecHnswIndexParams *vector_index_params);
+    const ZVecIndexParams *vector_index_params);
 
 // =============================================================================
 // Memory Management Helper Functions

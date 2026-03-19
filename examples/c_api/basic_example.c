@@ -45,11 +45,14 @@ static ZVecErrorCode create_simple_test_collection(
 
   ZVecErrorCode error = ZVEC_OK;
 
-  // Create index parameters
-  ZVecInvertIndexParams *invert_params =
-      zvec_index_params_invert_create(true, false);
-  ZVecHnswIndexParams *hnsw_params = zvec_index_params_hnsw_create(
-      ZVEC_METRIC_TYPE_COSINE, ZVEC_QUANTIZE_TYPE_UNDEFINED, 16, 200, 50);
+  // Create index parameters using new macros
+  // clang-format off
+  ZVecIndexParams invert_params_val = ZVEC_INVERT_PARAMS(true, false);
+  ZVecIndexParams hnsw_params_val = ZVEC_HNSW_PARAMS(
+      ZVEC_METRIC_TYPE_COSINE, 16, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // clang-format on
+  ZVecIndexParams *invert_params = &invert_params_val;
+  ZVecIndexParams *hnsw_params = &hnsw_params_val;
 
   // Create and add ID field (primary key)
   ZVecFieldSchema *id_field =
@@ -58,8 +61,6 @@ static ZVecErrorCode create_simple_test_collection(
   error = zvec_collection_schema_add_field(schema, id_field);
   if (error != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return error;
   }
 
@@ -70,8 +71,6 @@ static ZVecErrorCode create_simple_test_collection(
   error = zvec_collection_schema_add_field(schema, text_field);
   if (error != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return error;
   }
 
@@ -82,8 +81,6 @@ static ZVecErrorCode create_simple_test_collection(
   error = zvec_collection_schema_add_field(schema, embedding_field);
   if (error != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return error;
   }
 
@@ -96,8 +93,6 @@ static ZVecErrorCode create_simple_test_collection(
 
   // Cleanup resources
   zvec_collection_schema_destroy(schema);
-  zvec_index_params_invert_destroy(invert_params);
-  zvec_index_params_hnsw_destroy(hnsw_params);
 
   return error;
 }

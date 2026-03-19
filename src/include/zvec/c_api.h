@@ -651,70 +651,46 @@ typedef struct ZVecCollection ZVecCollection;
 // =============================================================================
 
 /**
- * @brief Base index parameters structure
+ * @brief Flattened index parameters structure
+ *
+ * Uses a union to store specific parameters for different index types,
+ * avoiding C++-style inheritance nesting. Supports stack allocation,
+ * reducing malloc/free overhead.
  */
 typedef struct {
-  ZVecIndexType index_type; /**< Index type */
-} ZVecBaseIndexParams;
+  ZVecIndexType index_type;   /**< Index type */
+  ZVecMetricType metric_type; /**< Distance metric type (for vector indexes) */
+  ZVecQuantizeType quantize_type; /**< Quantization type (for vector indexes) */
 
-/**
- * @brief Scalar index parameters structure
- */
-typedef struct {
-  ZVecBaseIndexParams base;       /**< Inherit base parameters */
-  bool enable_range_optimization; /**< Whether to enable range optimization */
-  bool enable_extended_wildcard;  /**< Whether to enable extended wildcard */
-} ZVecInvertIndexParams;
-
-/**
- * @brief Vector index base parameters structure
- */
-typedef struct {
-  ZVecBaseIndexParams base;       /**< Inherit base parameters */
-  ZVecMetricType metric_type;     /**< Distance metric type */
-  ZVecQuantizeType quantize_type; /**< Quantization type */
-} ZVecVectorIndexParams;
-
-/**
- * @brief HNSW index parameters structure
- */
-typedef struct {
-  ZVecVectorIndexParams base; /**< Inherit vector index parameters */
-  int m;                      /**< Graph connectivity parameter */
-  int ef_construction;        /**< Exploration factor during construction */
-  int ef_search;              /**< Exploration factor during search */
-} ZVecHnswIndexParams;
-
-/**
- * @brief Flat index parameters structure
- */
-typedef struct {
-  ZVecVectorIndexParams base; /**< Inherit vector index parameters */
-                              // Flat index has no additional parameters
-} ZVecFlatIndexParams;
-
-/**
- * @brief IVF index parameters structure
- */
-typedef struct {
-  ZVecVectorIndexParams base; /**< Inherit vector index parameters */
-  int n_list;                 /**< Number of cluster centers */
-  int n_iters;                /**< Number of iterations */
-  bool use_soar;              /**< Whether to use SOAR algorithm */
-  int n_probe;                /**< Number of clusters to probe during search */
-} ZVecIVFIndexParams;
-
-/**
- * @brief Generic index parameters union
- */
-typedef struct {
-  ZVecIndexType index_type; /**< Index type */
   union {
-    ZVecInvertIndexParams invert_params; /**< Scalar index parameters */
-    ZVecHnswIndexParams hnsw_params;     /**< HNSW index parameters */
-    ZVecFlatIndexParams flat_params;     /**< Flat index parameters */
-    ZVecIVFIndexParams ivf_params;       /**< IVF index parameters */
-  } params;
+    /** @brief Inverted index specific parameters */
+    struct {
+      bool enable_range_optimization; /**< Whether to enable range optimization
+                                       */
+      bool enable_extended_wildcard; /**< Whether to enable extended wildcard */
+    } invert;
+
+    /** @brief HNSW index specific parameters */
+    struct {
+      int m;               /**< Graph connectivity parameter */
+      int ef_construction; /**< Exploration factor during construction */
+      int ef_search;       /**< Exploration factor during search */
+    } hnsw;
+
+    /** @brief IVF index specific parameters */
+    struct {
+      int n_list;    /**< Number of cluster centers */
+      int n_iters;   /**< Number of iterations */
+      bool use_soar; /**< Whether to use SOAR algorithm */
+      int n_probe;   /**< Number of clusters to probe during search */
+    } ivf;
+
+    /** @brief Flat index has no additional parameters,
+     * reserved for alignment */
+    struct {
+      int _reserved;
+    } flat;
+  };
 } ZVecIndexParams;
 
 // =============================================================================
@@ -729,189 +705,59 @@ typedef struct {
   ZVecDataType data_type; /**< Data type */
   bool nullable;          /**< Whether nullable */
   uint32_t dimension;     /**< Vector dimension (only used for vector fields) */
-  ZVecIndexParams *index_params; /**< Index parameters, NULL means no index */
+  ZVecIndexParams index_params; /**< Index parameters (embedded, not pointer) */
+  bool has_index;               /**< Whether this field has an index */
 } ZVecFieldSchema;
 
 
 // =============================================================================
-// Index Parameters Creation and Destruction Interface
+// Index Parameters Interface
 // =============================================================================
 
 /**
- * @brief Initialize base index parameters
- * @param params Base index parameters structure pointer
+ * @brief Initialize index parameters with default values based on index type
+ * @param params Index parameters structure pointer
  * @param index_type Index type
+ * @param metric_type Metric type (for vector indexes)
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_base_init(
-    ZVecBaseIndexParams *params, ZVecIndexType index_type);
+ZVEC_EXPORT void ZVEC_CALL zvec_index_params_init(ZVecIndexParams *params,
+                                                  ZVecIndexType index_type,
+                                                  ZVecMetricType metric_type);
 
 /**
- * @brief Initialize scalar index parameters
- * @param params Scalar index parameters structure pointer
- * @param enable_range_opt Whether to enable range optimization
- * @param enable_wildcard Whether to enable wildcard expansion
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_invert_init(
-    ZVecInvertIndexParams *params, bool enable_range_opt, bool enable_wildcard);
-
-/**
- * @brief Initialize vector index parameters
- * @param params Vector index parameters structure pointer
- * @param index_type Index type
- * @param metric_type Metric type
- * @param quantize_type Quantization type
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_vector_init(
-    ZVecVectorIndexParams *params, ZVecIndexType index_type,
-    ZVecMetricType metric_type, ZVecQuantizeType quantize_type);
-
-/**
- * @brief Initialize HNSW index parameters
- * @param params HNSW index parameters structure pointer
- * @param metric_type Metric type
- * @param m Connectivity parameter
+ * @brief Set HNSW specific parameters
+ * @param params Index parameters structure pointer (must be HNSW type)
+ * @param m Graph connectivity parameter
  * @param ef_construction Construction exploration factor
  * @param ef_search Search exploration factor
- * @param quantize_type Quantization type
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_hnsw_init(
-    ZVecHnswIndexParams *params, ZVecMetricType metric_type, int m,
-    int ef_construction, int ef_search, ZVecQuantizeType quantize_type);
+ZVEC_EXPORT void ZVEC_CALL zvec_index_params_set_hnsw(ZVecIndexParams *params,
+                                                      int m,
+                                                      int ef_construction,
+                                                      int ef_search);
 
 /**
- * @brief Initialize Flat index parameters
- * @param params Flat index parameters structure pointer
- * @param metric_type Metric type
- * @param quantize_type Quantization type
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_flat_init(
-    ZVecFlatIndexParams *params, ZVecMetricType metric_type,
-    ZVecQuantizeType quantize_type);
-
-/**
- * @brief Initialize IVF index parameters
- * @param params IVF index parameters structure pointer
- * @param metric_type Metric type
+ * @brief Set IVF specific parameters
+ * @param params Index parameters structure pointer (must be IVF type)
  * @param n_list Number of cluster centers
  * @param n_iters Number of iterations
  * @param use_soar Whether to use SOAR algorithm
  * @param n_probe Search probe count
- * @param quantize_type Quantization type
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_ivf_init(
-    ZVecIVFIndexParams *params, ZVecMetricType metric_type, int n_list,
-    int n_iters, bool use_soar, int n_probe, ZVecQuantizeType quantize_type);
+ZVEC_EXPORT void ZVEC_CALL zvec_index_params_set_ivf(ZVecIndexParams *params,
+                                                     int n_list, int n_iters,
+                                                     bool use_soar,
+                                                     int n_probe);
 
 /**
- * @brief Initialize generic index parameters
- * @param params Generic index parameters structure pointer
- * @param index_type Index type
- * @param metric_type Metric type (only valid for vector indexes)
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_init_default(
-    ZVecIndexParams *params, ZVecIndexType index_type,
-    ZVecMetricType metric_type);
-
-/**
- * @brief Destroy index parameters (free internal dynamically allocated memory)
- * @param params Index parameters structure pointer
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_destroy(ZVecIndexParams *params);
-
-
-/**
- * @brief Create inverted index parameters
+ * @brief Set invert index specific parameters
+ * @param params Index parameters structure pointer (must be INVERT type)
  * @param enable_range_opt Whether to enable range optimization
  * @param enable_wildcard Whether to enable extended wildcard
- * @return ZVecInvertIndexParams* Pointer to the newly created index parameters
  */
-ZVEC_EXPORT ZVecInvertIndexParams *ZVEC_CALL
-zvec_index_params_invert_create(bool enable_range_opt, bool enable_wildcard);
-
-/**
- * @brief Create vector index base parameters
- * @param index_type Index type
- * @param metric_type Metric type
- * @param quantize_type Quantization type
- * @return ZVecVectorIndexParams* Pointer to the newly created index parameters
- */
-ZVEC_EXPORT ZVecVectorIndexParams *ZVEC_CALL zvec_index_params_vector_create(
-    ZVecIndexType index_type, ZVecMetricType metric_type,
-    ZVecQuantizeType quantize_type);
-
-/**
- * @brief Create HNSW index parameters
- * @param metric_type Metric type
- * @param quantize_type Quantization type
- * @param m Graph degree parameter
- * @param ef_construction Exploration factor during construction
- * @param ef_search Exploration factor during search
-
- * @return ZVecHnswIndexParams* Pointer to the newly created index parameters
- */
-ZVEC_EXPORT ZVecHnswIndexParams *ZVEC_CALL zvec_index_params_hnsw_create(
-    ZVecMetricType metric_type, ZVecQuantizeType quantize_type, int m,
-    int ef_construction, int ef_search);
-
-/**
- * @brief Create Flat index parameters
- * @param metric_type Metric type
- * @param quantize_type Quantization type
- * @return ZVecFlatIndexParams* Pointer to the newly created index parameters
- */
-ZVEC_EXPORT ZVecFlatIndexParams *ZVEC_CALL zvec_index_params_flat_create(
-    ZVecMetricType metric_type, ZVecQuantizeType quantize_type);
-
-/**
- * @brief Create IVF index parameters
- * @param metric_type Metric type
- * @param n_list Number of cluster centers
- * @param n_iters Number of iterations
- * @param use_soar Whether to use SOAR algorithm
- * @param n_probe Number of clusters to probe during search
- * @param quantize_type Quantization type
- * @return ZVecIVFIndexParams* Pointer to the newly created index parameters
- */
-ZVEC_EXPORT ZVecIVFIndexParams *ZVEC_CALL zvec_index_params_ivf_create(
-    ZVecMetricType metric_type, ZVecQuantizeType quantize_type, int n_list,
-    int n_iters, bool use_soar, int n_probe);
-
-
-/**
- * @brief Destroy inverted index parameters
- * @param params Index parameters pointer
- */
-ZVEC_EXPORT void ZVEC_CALL
-zvec_index_params_invert_destroy(ZVecInvertIndexParams *params);
-
-/**
- * @brief Destroy vector index parameters
- * @param params Index parameters pointer
- */
-ZVEC_EXPORT void ZVEC_CALL
-zvec_index_params_vector_destroy(ZVecVectorIndexParams *params);
-
-/**
- * @brief Destroy HNSW index parameters
- * @param params Index parameters pointer
- */
-ZVEC_EXPORT void ZVEC_CALL
-zvec_index_params_hnsw_destroy(ZVecHnswIndexParams *params);
-
-/**
- * @brief Destroy Flat index parameters
- * @param params Index parameters pointer
- */
-ZVEC_EXPORT void ZVEC_CALL
-zvec_index_params_flat_destroy(ZVecFlatIndexParams *params);
-
-/**
- * @brief Destroy IVF index parameters
- * @param params Index parameters pointer
- */
-ZVEC_EXPORT void ZVEC_CALL
-zvec_index_params_ivf_destroy(ZVecIVFIndexParams *params);
-
+ZVEC_EXPORT void ZVEC_CALL zvec_index_params_set_invert(ZVecIndexParams *params,
+                                                        bool enable_range_opt,
+                                                        bool enable_wildcard);
 
 // =============================================================================
 // Query Parameters Structures
@@ -1223,7 +1069,7 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_field_schema_set_index_params(
  * @param invert_params Inverted index parameters pointer
  */
 ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_invert_index(
-    ZVecFieldSchema *field_schema, const ZVecInvertIndexParams *invert_params);
+    ZVecFieldSchema *field_schema, const ZVecIndexParams *invert_params);
 
 /**
  * @brief Set HNSW index parameters for field schema
@@ -1231,7 +1077,7 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_invert_index(
  * @param hnsw_params HNSW index parameters pointer
  */
 ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_hnsw_index(
-    ZVecFieldSchema *field_schema, const ZVecHnswIndexParams *hnsw_params);
+    ZVecFieldSchema *field_schema, const ZVecIndexParams *hnsw_params);
 
 /**
  * @brief Set Flat index parameters for field schema
@@ -1239,7 +1085,7 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_hnsw_index(
  * @param flat_params Flat index parameters pointer
  */
 ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_flat_index(
-    ZVecFieldSchema *field_schema, const ZVecFlatIndexParams *flat_params);
+    ZVecFieldSchema *field_schema, const ZVecIndexParams *flat_params);
 
 /**
  * @brief Set IVF index parameters for field schema
@@ -1247,7 +1093,7 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_flat_index(
  * @param ivf_params IVF index parameters pointer
  */
 ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_ivf_index(
-    ZVecFieldSchema *field_schema, const ZVecIVFIndexParams *ivf_params);
+    ZVecFieldSchema *field_schema, const ZVecIndexParams *ivf_params);
 
 
 // =============================================================================
@@ -1510,19 +1356,6 @@ zvec_collection_create_index(ZVecCollection *collection, const char *field_name,
                              const ZVecIndexParams *index_params);
 
 /**
- * @brief Create index for collection field (using specific type parameters)
- * @param collection Collection handle
- * @param field_name Field name
- * @param index_params Index parameters (select appropriate structure based on
- * index type)
- * @return Error code
- */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_index_with_params(
-    ZVecCollection *collection, const char *field_name,
-    const void
-        *index_params);  // Determine specific type based on index_type field
-
-/**
  * @brief Create HNSW index for collection field
  * @param collection Collection handle
  * @param field_name Field name
@@ -1531,7 +1364,7 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_index_with_params(
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_hnsw_index(
     ZVecCollection *collection, const char *field_name,
-    const ZVecHnswIndexParams *hnsw_params);
+    const ZVecIndexParams *hnsw_params);
 
 /**
  * @brief Create Flat index for collection field
@@ -1542,7 +1375,7 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_hnsw_index(
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_flat_index(
     ZVecCollection *collection, const char *field_name,
-    const ZVecFlatIndexParams *flat_params);
+    const ZVecIndexParams *flat_params);
 
 /**
  * @brief Create IVF index for collection field
@@ -1553,7 +1386,7 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_flat_index(
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_ivf_index(
     ZVecCollection *collection, const char *field_name,
-    const ZVecIVFIndexParams *ivf_params);
+    const ZVecIndexParams *ivf_params);
 
 /**
  * @brief Create scalar index for collection field
@@ -1564,7 +1397,7 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_ivf_index(
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_invert_index(
     ZVecCollection *collection, const char *field_name,
-    const ZVecInvertIndexParams *invert_params);
+    const ZVecIndexParams *invert_params);
 
 /**
  * @brief Drop index
@@ -2265,22 +2098,28 @@ const char *zvec_metric_type_to_string(ZVecMetricType metric_type);
 
 /**
  * @brief Simplified HNSW index parameters initialization macro
- * @param metric Distance metric type
- * @param m_ Connectivity parameter
- * @param ef_construction Exploration factor during construction
- * @param ef_search Exploration factor during search
- * @param quant Quantization type
+ * @param _metric Distance metric type
+ * @param _m Connectivity parameter
+ * @param _ef_construction Exploration factor during construction
+ * @param _ef_search Exploration factor during search
+ * @param _quant Quantization type
  *
  * Usage example:
- * ZVecHnswIndexParams params = ZVEC_HNSW_PARAMS(ZVEC_METRIC_TYPE_COSINE, 16,
- * 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+ * @code
+ * ZVecIndexParams params = ZVEC_HNSW_PARAMS(
+ *     ZVEC_METRIC_TYPE_COSINE, 16, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+ * @endcode
  */
-#define ZVEC_HNSW_PARAMS(metric, m_, ef_construction, ef_search, quant)       \
-  (ZVecHnswIndexParams) {                                                     \
-    .base.base.index_type = ZVEC_INDEX_TYPE_HNSW, .base.metric_type = metric, \
-    .base.quantize_type = quant, .m = m_, .ef_construction = ef_construction, \
-    .ef_search = ef_search                                                    \
-  }
+// clang-format off
+#define ZVEC_HNSW_PARAMS(_metric, _m, _ef_construction, _ef_search, _quant) \
+  ((ZVecIndexParams){                                                       \
+    .index_type = ZVEC_INDEX_TYPE_HNSW,                                     \
+    .metric_type = (_metric),                                               \
+    .quantize_type = (_quant),                                              \
+    .hnsw.m = (_m),                                                         \
+    .hnsw.ef_construction = (_ef_construction),                             \
+    .hnsw.ef_search = (_ef_search) })
+// clang-format on
 
 /**
  * @brief Simplified inverted index parameters initialization macro
@@ -2288,25 +2127,28 @@ const char *zvec_metric_type_to_string(ZVecMetricType metric_type);
  * @param wildcard Whether to enable wildcard expansion
  *
  * Usage example:
- * ZVecInvertIndexParams params = ZVEC_INVERT_PARAMS(true, false);
+ * ZVecIndexParams params = ZVEC_INVERT_PARAMS(true, false);
  */
-#define ZVEC_INVERT_PARAMS(range_opt, wildcard) \
-  (ZVecInvertIndexParams) {                     \
-    .base.index_type = ZVEC_INDEX_TYPE_INVERT,  \
-    .enable_range_optimization = range_opt,     \
-    .enable_extended_wildcard = wildcard        \
-  }
+// clang-format off
+#define ZVEC_INVERT_PARAMS(_range_opt, _wildcard) \
+  ((ZVecIndexParams){                               \
+    .index_type = ZVEC_INDEX_TYPE_INVERT,           \
+    .invert.enable_range_optimization = (_range_opt), \
+    .invert.enable_extended_wildcard = (_wildcard) })
+// clang-format on
 
 /**
  * @brief Simplified Flat index parameters initialization macro
  * @param metric Distance metric type
  * @param quant Quantization type
  */
-#define ZVEC_FLAT_PARAMS(metric, quant)                                  \
-  (ZVecFlatIndexParams) {                                                \
-    .base.index_type = ZVEC_INDEX_TYPE_FLAT, .base.metric_type = metric, \
-    .base.quantize_type = quant                                          \
-  }
+// clang-format off
+#define ZVEC_FLAT_PARAMS(_metric, _quant) \
+  ((ZVecIndexParams){                     \
+    .index_type = ZVEC_INDEX_TYPE_FLAT,   \
+    .metric_type = (_metric),             \
+    .quantize_type = (_quant) })
+// clang-format on
 
 /**
  * @brief Simplified IVF index parameters initialization macro
@@ -2317,12 +2159,17 @@ const char *zvec_metric_type_to_string(ZVecMetricType metric_type);
  * @param nprobe Number of clusters to probe during search
  * @param quant Quantization type
  */
-#define ZVEC_IVF_PARAMS(metric, nlist, niters, soar, nprobe, quant)     \
-  (ZVecIVFIndexParams) {                                                \
-    .base.index_type = ZVEC_INDEX_TYPE_IVF, .base.metric_type = metric, \
-    .base.quantize_type = quant, .n_list = nlist, .n_iters = niters,    \
-    .use_soar = soar, .n_probe = nprobe                                 \
-  }
+// clang-format off
+#define ZVEC_IVF_PARAMS(_metric, _nlist, _niters, _soar, _nprobe, _quant)  \
+  ((ZVecIndexParams){                                                      \
+    .index_type = ZVEC_INDEX_TYPE_IVF,                                     \
+    .metric_type = (_metric),                                              \
+    .quantize_type = (_quant),                                             \
+    .ivf.n_list = (_nlist),                                                \
+    .ivf.n_iters = (_niters),                                              \
+    .ivf.use_soar = (_soar),                                               \
+    .ivf.n_probe = (_nprobe) })
+// clang-format on
 
 /**
  * @brief Simplified string initialization macro

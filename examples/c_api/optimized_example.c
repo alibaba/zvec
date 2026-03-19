@@ -70,12 +70,11 @@ int main() {
   printf("✓ Collection schema created\n");
 
   // 2. Create optimized index parameters
-  ZVecHnswIndexParams *hnsw_params = zvec_index_params_hnsw_create(
-      ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED,
-      32,   // Higher M for better connectivity
-      200,  // Construction ef for quality
-      50    // Search ef for performance
-  );
+  // clang-format off
+  ZVecIndexParams hnsw_params_val = ZVEC_HNSW_PARAMS(
+      ZVEC_METRIC_TYPE_L2, 32, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // clang-format on
+  ZVecIndexParams *hnsw_params = &hnsw_params_val;
 
   if (!hnsw_params) {
     fprintf(stderr, "Failed to create HNSW parameters\n");
@@ -294,7 +293,6 @@ cleanup_fields:
 
 cleanup_params:
   zvec_collection_schema_destroy(schema);
-  zvec_index_params_hnsw_destroy(hnsw_params);
 
   printf("✓ Optimized example completed\n");
 

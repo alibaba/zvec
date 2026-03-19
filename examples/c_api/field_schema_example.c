@@ -49,12 +49,19 @@ int main() {
   printf("✓ Collection schema created successfully\n");
 
   // 2. Create different types of index parameters
-  ZVecInvertIndexParams *invert_params =
-      zvec_index_params_invert_create(true, false);
-  ZVecHnswIndexParams *hnsw_params = zvec_index_params_hnsw_create(
-      ZVEC_METRIC_TYPE_COSINE, ZVEC_QUANTIZE_TYPE_UNDEFINED, 16, 200, 50);
-  ZVecFlatIndexParams *flat_params = zvec_index_params_flat_create(
+  // clang-format off
+  ZVecIndexParams invert_params_val = ZVEC_INVERT_PARAMS(true, false);
+  // clang-format on
+  ZVecIndexParams *invert_params = &invert_params_val;
+  // clang-format off
+  ZVecIndexParams hnsw_params_val = ZVEC_HNSW_PARAMS(ZVEC_METRIC_TYPE_COSINE, 16, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // clang-format on
+  ZVecIndexParams *hnsw_params = &hnsw_params_val;
+  // clang-format off
+  ZVecIndexParams flat_params_val = ZVEC_FLAT_PARAMS(
       ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // clang-format on
+  ZVecIndexParams *flat_params = &flat_params_val;
 
   if (!invert_params || !hnsw_params || !flat_params) {
     fprintf(stderr, "Failed to create index parameters\n");
@@ -154,9 +161,6 @@ int main() {
                                           &options, &collection);
   if (handle_error(error, "creating collection") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
-    zvec_index_params_flat_destroy(flat_params);
     return -1;
   }
   printf("✓ Collection created successfully\n");
@@ -273,9 +277,6 @@ cleanup:
   if (doc2) zvec_doc_destroy(doc2);
   zvec_collection_destroy(collection);
   zvec_collection_schema_destroy(schema);
-  zvec_index_params_invert_destroy(invert_params);
-  zvec_index_params_hnsw_destroy(hnsw_params);
-  zvec_index_params_flat_destroy(flat_params);
 
   printf("✓ Field schema example completed\n");
   return 0;

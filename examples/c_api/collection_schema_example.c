@@ -54,10 +54,14 @@ int main() {
          (unsigned long long)schema->max_doc_count_per_segment);
 
   // 3. Create index parameters
-  ZVecInvertIndexParams *invert_params =
-      zvec_index_params_invert_create(true, false);
-  ZVecHnswIndexParams *hnsw_params = zvec_index_params_hnsw_create(
-      ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED, 16, 200, 50);
+  // clang-format off
+  ZVecIndexParams invert_params_val = ZVEC_INVERT_PARAMS(true, false);
+  // clang-format on
+  ZVecIndexParams *invert_params = &invert_params_val;
+  // clang-format off
+  ZVecIndexParams hnsw_params_val = ZVEC_HNSW_PARAMS(ZVEC_METRIC_TYPE_L2, 16, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // clang-format on
+  ZVecIndexParams *hnsw_params = &hnsw_params_val;
 
   if (!invert_params || !hnsw_params) {
     fprintf(stderr, "Failed to create index parameters\n");
@@ -71,16 +75,12 @@ int main() {
   if (!id_field) {
     fprintf(stderr, "Failed to create ID field\n");
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
 
   error = zvec_collection_schema_add_field(schema, id_field);
   if (handle_error(error, "adding ID field") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
   printf("✓ ID field added successfully\n");
@@ -91,8 +91,6 @@ int main() {
   if (!text_field) {
     fprintf(stderr, "Failed to create text field\n");
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
 
@@ -100,8 +98,6 @@ int main() {
   error = zvec_collection_schema_add_field(schema, text_field);
   if (handle_error(error, "adding text field") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
   printf("✓ Text field with inverted index added successfully\n");
@@ -112,8 +108,6 @@ int main() {
   if (!vector_field) {
     fprintf(stderr, "Failed to create vector field\n");
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
 
@@ -121,8 +115,6 @@ int main() {
   error = zvec_collection_schema_add_field(schema, vector_field);
   if (handle_error(error, "adding vector field") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
   printf("✓ Vector field with HNSW index added successfully\n");
@@ -140,8 +132,6 @@ int main() {
                                           &options, &collection);
   if (handle_error(error, "creating collection with schema") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
   printf("✓ Collection created successfully with schema\n");
@@ -166,8 +156,6 @@ int main() {
       }
       zvec_collection_destroy(collection);
       zvec_collection_schema_destroy(schema);
-      zvec_index_params_invert_destroy(invert_params);
-      zvec_index_params_hnsw_destroy(hnsw_params);
       return 1;
     }
   }
@@ -203,8 +191,6 @@ int main() {
     }
     zvec_collection_destroy(collection);
     zvec_collection_schema_destroy(schema);
-    zvec_index_params_invert_destroy(invert_params);
-    zvec_index_params_hnsw_destroy(hnsw_params);
     return 1;
   }
   printf("✓ Documents inserted - Success: %zu, Failed: %zu\n", success_count,
@@ -245,8 +231,6 @@ int main() {
   // 14. Cleanup resources
   zvec_collection_destroy(collection);
   zvec_collection_schema_destroy(schema);
-  zvec_index_params_invert_destroy(invert_params);
-  zvec_index_params_hnsw_destroy(hnsw_params);
   printf("✓ Schema example completed\n");
 
   return 0;

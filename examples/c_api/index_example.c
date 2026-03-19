@@ -52,24 +52,35 @@ int main() {
   printf("Creating index parameters...\n");
 
   // Inverted index parameters
-  ZVecInvertIndexParams *invert_params_standard =
-      zvec_index_params_invert_create(true, false);
-  ZVecInvertIndexParams *invert_params_extended =
-      zvec_index_params_invert_create(true, true);
+  // clang-format off
+  ZVecIndexParams invert_params_standard_val = ZVEC_INVERT_PARAMS(true, false);
+  ZVecIndexParams invert_params_extended_val = ZVEC_INVERT_PARAMS(true, true);
+  // clang-format on
+  ZVecIndexParams *invert_params_standard = &invert_params_standard_val;
+  ZVecIndexParams *invert_params_extended = &invert_params_extended_val;
 
   // HNSW index parameters with different configurations
-  ZVecHnswIndexParams *hnsw_params_fast = zvec_index_params_hnsw_create(
-      ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED, 16, 100, 50);
-  ZVecHnswIndexParams *hnsw_params_balanced = zvec_index_params_hnsw_create(
-      ZVEC_METRIC_TYPE_COSINE, ZVEC_QUANTIZE_TYPE_UNDEFINED, 32, 200, 100);
-  ZVecHnswIndexParams *hnsw_params_accurate = zvec_index_params_hnsw_create(
-      ZVEC_METRIC_TYPE_IP, ZVEC_QUANTIZE_TYPE_UNDEFINED, 64, 400, 200);
+  // clang-format off
+  ZVecIndexParams hnsw_params_fast_val = ZVEC_HNSW_PARAMS(
+      ZVEC_METRIC_TYPE_L2, 16, 100, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  ZVecIndexParams hnsw_params_balanced_val = ZVEC_HNSW_PARAMS(
+      ZVEC_METRIC_TYPE_COSINE, 32, 200, 100, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  ZVecIndexParams hnsw_params_accurate_val = ZVEC_HNSW_PARAMS(
+      ZVEC_METRIC_TYPE_IP, 64, 400, 200, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // clang-format on
+  ZVecIndexParams *hnsw_params_fast = &hnsw_params_fast_val;
+  ZVecIndexParams *hnsw_params_balanced = &hnsw_params_balanced_val;
+  ZVecIndexParams *hnsw_params_accurate = &hnsw_params_accurate_val;
 
   // Flat index parameters
-  ZVecFlatIndexParams *flat_params_l2 = zvec_index_params_flat_create(
+  // clang-format off
+  ZVecIndexParams flat_params_l2_val = ZVEC_FLAT_PARAMS(
       ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  ZVecFlatIndexParams *flat_params_cosine = zvec_index_params_flat_create(
+  ZVecIndexParams flat_params_cosine_val = ZVEC_FLAT_PARAMS(
       ZVEC_METRIC_TYPE_COSINE, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // clang-format on
+  ZVecIndexParams *flat_params_l2 = &flat_params_l2_val;
+  ZVecIndexParams *flat_params_cosine = &flat_params_cosine_val;
 
   if (!invert_params_standard || !invert_params_extended || !hnsw_params_fast ||
       !hnsw_params_balanced || !hnsw_params_accurate || !flat_params_l2 ||
@@ -154,13 +165,6 @@ int main() {
   if (handle_error(error, "creating collection") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
     // Cleanup index parameters
-    zvec_index_params_invert_destroy(invert_params_standard);
-    zvec_index_params_invert_destroy(invert_params_extended);
-    zvec_index_params_hnsw_destroy(hnsw_params_fast);
-    zvec_index_params_hnsw_destroy(hnsw_params_balanced);
-    zvec_index_params_hnsw_destroy(hnsw_params_accurate);
-    zvec_index_params_flat_destroy(flat_params_l2);
-    zvec_index_params_flat_destroy(flat_params_cosine);
     return -1;
   }
   printf("✓ Collection created successfully\n");
@@ -317,13 +321,6 @@ cleanup:
   zvec_collection_schema_destroy(schema);
 
   // Cleanup index parameters
-  zvec_index_params_invert_destroy(invert_params_standard);
-  zvec_index_params_invert_destroy(invert_params_extended);
-  zvec_index_params_hnsw_destroy(hnsw_params_fast);
-  zvec_index_params_hnsw_destroy(hnsw_params_balanced);
-  zvec_index_params_hnsw_destroy(hnsw_params_accurate);
-  zvec_index_params_flat_destroy(flat_params_l2);
-  zvec_index_params_flat_destroy(flat_params_cosine);
 
   printf("✓ Index example completed\n");
   return 0;
