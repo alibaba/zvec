@@ -42,8 +42,12 @@ float MipsEuclideanDistanceSphericalInjectionFp16AVX(const Float16 *lhs,
                                                      size_t size, float e2);
 #endif
 
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16Scalar(
+    const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionFp16Scalar(
+    const ailego::Float16 *p, const ailego::Float16 *q, size_t dim, float e2);
+
+
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
@@ -62,6 +66,8 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     return;
   }
 #endif  //__AVX__
+  *out = MipsEuclideanDistanceSphericalInjectionFp16Scalar(p, q, dim, e2);
+  return;
 #endif  //__ARM_NEON
 }
 
@@ -87,10 +93,11 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     return;
   }
 #endif  //__AVX__
+  *out = MipsEuclideanDistanceRepeatedQuadraticInjectionFp16Scalar(p, q, dim, m,
+                                                                   e2);
+  return;
 #endif  //__ARM_NEON
 }
-
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
 
 }  // namespace ailego
 }  // namespace zvec
