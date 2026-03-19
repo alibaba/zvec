@@ -23,9 +23,44 @@
 #include "omega_params.h"
 #include <omega/omega_api.h>
 #include <omega/search_context.h>
+#include <chrono>
+#include <cstdlib>
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+bool ShouldLogEveryQueryStats() {
+  const char* value = std::getenv("ZVEC_OMEGA_LOG_QUERY_STATS");
+  if (value == nullptr) {
+    return false;
+  }
+  return std::string(value) != "0";
+}
+
+uint64_t GetQueryStatsLimit() {
+  const char* value = std::getenv("ZVEC_OMEGA_LOG_QUERY_LIMIT");
+  if (value == nullptr || *value == '\0') {
+    return 0;
+  }
+  char* end = nullptr;
+  unsigned long long parsed = std::strtoull(value, &end, 10);
+  if (end == value) {
+    return 0;
+  }
+  return static_cast<uint64_t>(parsed);
+}
+
+bool ShouldLogQueryStats(uint64_t query_seq) {
+  if (!ShouldLogEveryQueryStats()) {
+    return false;
+  }
+  uint64_t limit = GetQueryStatsLimit();
+  return limit == 0 || query_seq < limit;
+}
+
+}  // namespace
 
 bool OmegaStreamer::LoadModel(const std::string& model_dir) {
   std::lock_guard<std::mutex> lock(model_mutex_);
@@ -60,6 +95,7 @@ bool OmegaStreamer::IsModelLoaded() const {
 int OmegaStreamer::open(IndexStorage::Pointer stg) {
   std::string index_path = stg ? stg->file_path() : "";
   debug_stats_logged_.store(false);
+  query_stats_sequence_.store(0);
 
   int ret = HnswStreamer::open(std::move(stg));
   if (ret != 0) {
@@ -129,6 +165,9 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
                                      uint32_t count, Context::Pointer &context,
                                      bool enable_early_stopping) const {
+  auto query_start = std::chrono::steady_clock::now();
+  uint64_t omega_control_time_ns = 0;
+
   // Cast context to OmegaContext to access training_query_id
   auto *omega_ctx = dynamic_cast<OmegaContext*>(context.get());
   int query_id = current_query_id_;  // Default to member variable
@@ -232,9 +271,16 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     }
 
     bool find_closer = false;
+    float dists[neighbors.size()];
+    const void *neighbor_vecs[neighbors.size()];
     for (uint32_t i = 0; i < neighbors.size(); ++i) {
-      const void *neighbor_vec = neighbor_vec_blocks[i].data();
-      dist_t cur_dist = dc.dist(neighbor_vec);
+      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    }
+
+    dc.batch_dist(neighbor_vecs, neighbors.size(), dists);
+
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      dist_t cur_dist = dists[i];
       if (cur_dist < dist) {
         entry_point = neighbors[i];
         dist = cur_dist;
@@ -247,7 +293,14 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   }
 
   // Set dist_start for OMEGA
-  omega_search_set_dist_start(omega_search, dist);
+  {
+    auto control_start = std::chrono::steady_clock::now();
+    omega_search_set_dist_start(omega_search, dist);
+    omega_control_time_ns +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - control_start)
+            .count();
+  }
 
   // Perform HNSW search on layer 0 with OMEGA
   candidates.clear();
@@ -260,7 +313,14 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   candidates.emplace(entry_point, dist);
 
   // Report initial visit to OMEGA
-  omega_search_report_visit_candidate(omega_search, entry_point, dist, 1);
+  {
+    auto control_start = std::chrono::steady_clock::now();
+    omega_search_report_visit_candidate(omega_search, entry_point, dist, 1);
+    omega_control_time_ns +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - control_start)
+            .count();
+  }
 
   dist_t lowerBound = dist;
 
@@ -273,7 +333,14 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
 
     // Reference semantics: count the hop as soon as the current candidate is
     // examined, before stop-condition evaluation.
-    omega_search_report_hop(omega_search);
+    {
+      auto control_start = std::chrono::steady_clock::now();
+      omega_search_report_hop(omega_search);
+      omega_control_time_ns +=
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - control_start)
+              .count();
+    }
 
     // Standard HNSW stopping condition
     if (topk_heap.full() && candidate_dist > lowerBound) {
@@ -307,11 +374,26 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
       break;
     }
 
+    static constexpr node_id_t BATCH_SIZE = 12;
+    static constexpr node_id_t PREFETCH_STEP = 2;
+    for (size_t i = 0;
+         i < std::min(static_cast<size_t>(BATCH_SIZE * PREFETCH_STEP),
+                      unvisited_neighbors.size());
+         ++i) {
+      ailego_prefetch(neighbor_vec_blocks[i].data());
+    }
+
+    float dists[unvisited_neighbors.size()];
+    const void *neighbor_vecs[unvisited_neighbors.size()];
+    for (size_t i = 0; i < unvisited_neighbors.size(); ++i) {
+      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    }
+    dc.batch_dist(neighbor_vecs, unvisited_neighbors.size(), dists);
+
     // Compute distances and update candidates
     for (size_t i = 0; i < unvisited_neighbors.size(); ++i) {
       node_id_t neighbor = unvisited_neighbors[i];
-      const void *neighbor_vec = neighbor_vec_blocks[i].data();
-      dist_t neighbor_dist = dc.dist(neighbor_vec);
+      dist_t neighbor_dist = dists[i];
 
       // Reference semantics:
       // 1. `should_consider_candidate` is driven by the ef-bounded heap
@@ -319,11 +401,33 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
       //    result-set-sized top-k structure, not by ef admission alone.
       bool should_consider_candidate =
           (!topk_heap.full() || neighbor_dist < lowerBound);
-      omega_search_report_visit_candidate(omega_search, neighbor, neighbor_dist,
-                                          should_consider_candidate ? 1 : 0);
+      {
+        auto control_start = std::chrono::steady_clock::now();
+        omega_search_report_visit_candidate(omega_search, neighbor, neighbor_dist,
+                                            should_consider_candidate ? 1 : 0);
+        omega_control_time_ns +=
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - control_start)
+                .count();
+      }
 
-      if (enable_early_stopping && omega_search_should_predict(omega_search)) {
-        if (omega_search_should_stop(omega_search)) {
+      bool should_predict = false;
+      if (enable_early_stopping) {
+        auto control_start = std::chrono::steady_clock::now();
+        should_predict = omega_search_should_predict(omega_search);
+        omega_control_time_ns +=
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - control_start)
+                .count();
+      }
+      if (enable_early_stopping && should_predict) {
+        auto control_start = std::chrono::steady_clock::now();
+        bool should_stop = omega_search_should_stop(omega_search);
+        omega_control_time_ns +=
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - control_start)
+                .count();
+        if (should_stop) {
           int hops, cmps, collected_gt;
           omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
           LOG_DEBUG("OMEGA early stop: cmps=%d, hops=%d, collected_gt=%d",
@@ -372,6 +476,11 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   unsigned long long collected_gt_advance_count = 0;
   unsigned long long should_stop_calls_with_advance = 0;
   unsigned long long max_prediction_calls_per_should_stop = 0;
+  uint64_t query_total_time_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - query_start)
+          .count();
+  uint64_t query_seq = query_stats_sequence_.fetch_add(1);
   omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
   omega_search_get_debug_stats(omega_search, &predicted_recall_avg,
                                &predicted_recall_at_target,
@@ -388,9 +497,16 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu, early_stop=%d",
             cmps, hops, topk_heap.size(), enable_early_stopping);
   if (enable_early_stopping) {
+    size_t scan_cmps = hnsw_ctx->get_scan_num();
+    uint64_t pairwise_dist_cnt = hnsw_ctx->get_pairwise_dist_num();
+    uint64_t pure_search_time_ns =
+        query_total_time_ns > omega_control_time_ns
+            ? (query_total_time_ns - omega_control_time_ns)
+            : 0;
     bool expected = false;
     if (debug_stats_logged_.compare_exchange_strong(expected, true)) {
-      LOG_WARN("OMEGA runtime stats: model_loaded=%d target_recall=%.4f cmps=%d "
+      LOG_INFO("OMEGA runtime stats: model_loaded=%d target_recall=%.4f "
+               "scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d "
                "collected_gt=%d predicted_recall_avg=%.4f "
                "predicted_recall_at_target=%.4f early_stop_hit=%d "
                "should_stop_calls=%llu prediction_calls=%llu "
@@ -398,7 +514,9 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                "max_pred_per_stop=%llu should_stop_ms=%.3f "
                "prediction_eval_ms=%.3f sorted_window_ms=%.3f "
                "avg_recall_eval_ms=%.3f feature_prep_ms=%.3f",
-               IsModelLoaded() ? 1 : 0, target_recall, cmps, collected_gt,
+               IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
+               static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
+               collected_gt,
                predicted_recall_avg, predicted_recall_at_target,
                (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
                should_stop_calls, prediction_calls,
@@ -409,6 +527,34 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                static_cast<double>(sorted_window_time_ns) / 1e6,
                static_cast<double>(average_recall_eval_time_ns) / 1e6,
                static_cast<double>(prediction_feature_prep_time_ns) / 1e6);
+    }
+    if (ShouldLogQueryStats(query_seq)) {
+      LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
+               "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
+               "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
+               "early_stop_hit=%d should_stop_calls=%llu "
+               "prediction_calls=%llu advance_calls=%llu "
+               "collected_gt_advance=%llu max_pred_per_stop=%llu "
+               "should_stop_ms=%.3f prediction_eval_ms=%.3f "
+               "sorted_window_ms=%.3f avg_recall_eval_ms=%.3f "
+               "feature_prep_ms=%.3f omega_control_ms=%.3f pure_search_ms=%.3f total_ms=%.3f",
+               static_cast<unsigned long long>(query_seq),
+               IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
+               static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
+               collected_gt,
+               predicted_recall_avg, predicted_recall_at_target,
+               (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
+               should_stop_calls, prediction_calls,
+               should_stop_calls_with_advance, collected_gt_advance_count,
+               max_prediction_calls_per_should_stop,
+               static_cast<double>(should_stop_time_ns) / 1e6,
+               static_cast<double>(prediction_eval_time_ns) / 1e6,
+               static_cast<double>(sorted_window_time_ns) / 1e6,
+               static_cast<double>(average_recall_eval_time_ns) / 1e6,
+               static_cast<double>(prediction_feature_prep_time_ns) / 1e6,
+               static_cast<double>(omega_control_time_ns) / 1e6,
+               static_cast<double>(pure_search_time_ns) / 1e6,
+               static_cast<double>(query_total_time_ns) / 1e6);
     }
   }
 

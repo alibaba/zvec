@@ -41,7 +41,6 @@ cc_binary(
     LIBS omega
 )
 
-
 cc_binary(
     NAME recall_original
     STRICT PACKED

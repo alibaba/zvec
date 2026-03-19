@@ -74,6 +74,7 @@ class OmegaModelTrainer {
       const std::vector<core_interface::TrainingRecord>& training_records,
       const core_interface::GtCmpsData& gt_cmps_data,
       const OmegaModelTrainerOptions& options);
+
 };
 
 }  // namespace zvec

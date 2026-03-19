@@ -2387,9 +2387,9 @@ Status SegmentImpl::auto_train_omega_index_internal(
   collector_options.topk = 100;
   collector_options.noise_scale = 0.01f;
 
-
-  auto training_records_result = TrainingDataCollector::CollectTrainingDataWithGtCmps(
-      shared_from_this(), field_name, collector_options, indexers);
+  Result<TrainingDataCollectorResult> training_records_result =
+      TrainingDataCollector::CollectTrainingDataWithGtCmps(
+          shared_from_this(), field_name, collector_options, indexers);
 
   if (!training_records_result.has_value()) {
     return Status::InternalError(

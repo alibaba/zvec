@@ -18,6 +18,7 @@
 #include "python_param.h"
 #include "python_schema.h"
 #include "python_type.h"
+#include <pybind11/stl.h>
 
 namespace zvec {
 PYBIND11_MODULE(_zvec, m) {

@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <zvec/core/interface/index.h>
+#include "algorithm/omega/omega_params.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
 
@@ -104,6 +105,18 @@ int HNSWIndex::_prepare_for_search(
   const int real_search_ef =
       std::max(1u, std::min(2048u, hnsw_search_param->ef_search));
   params.set(core::PARAM_HNSW_STREAMER_EF, real_search_ef);
+
+  if (hnsw_search_param->training_query_id >= 0) {
+    params.set(core::PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID,
+               hnsw_search_param->training_query_id);
+  }
+
+  if (const auto& omega_search_param =
+          std::dynamic_pointer_cast<OmegaQueryParam>(search_param)) {
+    params.set(core::PARAM_OMEGA_SEARCHER_TARGET_RECALL,
+               omega_search_param->target_recall);
+  }
+
   context->update(params);
   return 0;
 }

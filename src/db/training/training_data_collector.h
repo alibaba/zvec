@@ -172,6 +172,15 @@ class TrainingDataCollector {
       const std::vector<core_interface::TrainingRecord>& records,
       const std::vector<std::vector<uint64_t>>& ground_truth,
       size_t topk);
+
+  static Result<TrainingDataCollectorResult> CollectTrainingDataFromQueriesImpl(
+      const Segment::Ptr& segment,
+      const std::string& field_name,
+      const std::vector<std::vector<float>>& training_queries,
+      const std::vector<std::vector<uint64_t>>& provided_ground_truth,
+      const TrainingDataCollectorOptions& options,
+      const std::vector<uint64_t>& query_doc_ids,
+      const std::vector<VectorColumnIndexer::Ptr>& provided_indexers);
 };
 
 }  // namespace zvec

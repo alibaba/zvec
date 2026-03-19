@@ -239,6 +239,11 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     return IndexError_InvalidArgument;
   }
 
+  int query_id = current_query_id_;
+  if (omega_ctx->training_query_id() >= 0) {
+    query_id = omega_ctx->training_query_id();
+  }
+
   // Read target_recall from context (per-query parameter)
   float target_recall = omega_ctx->target_recall();
 
@@ -249,11 +254,9 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     omega_topk = static_cast<int>(count);
   }
 
-  // In training mode, pass NULL if model is not loaded
-  OmegaModelHandle model_to_use = omega_model_;
-  if (training_mode_enabled_ && (omega_model_ == nullptr || !omega_model_is_loaded(omega_model_))) {
-    model_to_use = nullptr;  // Training mode without model: collect features only
-  }
+  // Match OmegaStreamer/reference behavior:
+  // training mode collects features only and must not run model inference.
+  OmegaModelHandle model_to_use = training_mode_enabled_ ? nullptr : omega_model_;
 
   OmegaSearchHandle omega_search = omega_search_create_with_params(
       model_to_use, target_recall, omega_topk, window_size_);
@@ -267,19 +270,19 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   if (training_mode_enabled_) {
     // Get ground truth for this query if available
     std::vector<int> gt_for_query;
-    if (current_query_id_ >= 0 &&
-        static_cast<size_t>(current_query_id_) < training_ground_truth_.size()) {
-      const auto& gt = training_ground_truth_[current_query_id_];
+    if (query_id >= 0 &&
+        static_cast<size_t>(query_id) < training_ground_truth_.size()) {
+      const auto& gt = training_ground_truth_[query_id];
       gt_for_query.reserve(gt.size());
       for (uint64_t node_id : gt) {
         gt_for_query.push_back(static_cast<int>(node_id));
       }
     }
-    omega_search_enable_training(omega_search, current_query_id_,
+    omega_search_enable_training(omega_search, query_id,
                                   gt_for_query.data(), gt_for_query.size(),
                                   training_k_train_);
     LOG_DEBUG("Training mode enabled for query_id=%d with %zu GT nodes",
-              current_query_id_, gt_for_query.size());
+              query_id, gt_for_query.size());
   }
 
   // OmegaContext extends HnswContext, so we can use it directly
@@ -450,38 +453,48 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     size_t record_count = omega_search_get_training_records_count(omega_search);
     if (record_count > 0) {
       const void* records_ptr = omega_search_get_training_records(omega_search);
+      const auto* records_vec =
+          static_cast<const std::vector<omega::TrainingRecord>*>(records_ptr);
 
-      // Cast to omega::TrainingRecord array
-      const auto* omega_records = static_cast<const omega::TrainingRecord*>(records_ptr);
-
-      // Convert and store training records
-      std::lock_guard<std::mutex> lock(training_mutex_);
       for (size_t i = 0; i < record_count; ++i) {
+        const auto& omega_record = (*records_vec)[i];
         core_interface::TrainingRecord record;
-        record.query_id = omega_records[i].query_id;
-        record.hops_visited = omega_records[i].hops;
-        record.cmps_visited = omega_records[i].cmps;
-        record.dist_1st = omega_records[i].dist_1st;
-        record.dist_start = omega_records[i].dist_start;
+        record.query_id = omega_record.query_id;
+        record.hops_visited = omega_record.hops;
+        record.cmps_visited = omega_record.cmps;
+        record.dist_1st = omega_record.dist_1st;
+        record.dist_start = omega_record.dist_start;
 
         // Copy 7 traversal window statistics
-        if (omega_records[i].traversal_window_stats.size() == 7) {
-          std::copy(omega_records[i].traversal_window_stats.begin(),
-                    omega_records[i].traversal_window_stats.end(),
+        if (omega_record.traversal_window_stats.size() == 7) {
+          std::copy(omega_record.traversal_window_stats.begin(),
+                    omega_record.traversal_window_stats.end(),
                     record.traversal_window_stats.begin());
         } else {
           LOG_WARN("Unexpected traversal_window_stats size: %zu (expected 7)",
-                   omega_records[i].traversal_window_stats.size());
+                   omega_record.traversal_window_stats.size());
         }
 
         // Label is already computed in real-time during search
-        record.label = omega_records[i].label;
-
-        collected_records_.push_back(std::move(record));
+        record.label = omega_record.label;
+        omega_ctx->add_training_record(std::move(record));
       }
 
       LOG_DEBUG("Collected %zu training records for query_id=%d",
-                record_count, current_query_id_);
+                record_count, query_id);
+    }
+
+    size_t gt_cmps_count = omega_search_get_gt_cmps_count(omega_search);
+    if (gt_cmps_count > 0) {
+      const int* gt_cmps_ptr = omega_search_get_gt_cmps(omega_search);
+      int total_cmps = omega_search_get_total_cmps(omega_search);
+      if (gt_cmps_ptr != nullptr) {
+        std::vector<int> gt_cmps_vec(gt_cmps_ptr, gt_cmps_ptr + gt_cmps_count);
+        for (auto& v : gt_cmps_vec) {
+          if (v < 0) v = total_cmps;
+        }
+        omega_ctx->set_gt_cmps(gt_cmps_vec, total_cmps);
+      }
     }
   }
 

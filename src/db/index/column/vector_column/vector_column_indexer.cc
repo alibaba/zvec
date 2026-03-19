@@ -200,6 +200,13 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
         Status::InternalError("Failed to search vector"));
   }
 
+  if (training_mode_enabled_) {
+    LOG_INFO(
+        "VectorColumnIndexer training search: query_id=%d records=%zu gt_cmps=%zu total_cmps=%d",
+        search_result.training_query_id_, search_result.training_records_.size(),
+        search_result.gt_cmps_per_rank_.size(), search_result.total_cmps_);
+  }
+
   // Collect training records from search result (stored in context during search)
   // This is thread-safe because each search has its own context
   if (training_mode_enabled_ && !search_result.training_records_.empty()) {

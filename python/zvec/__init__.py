@@ -71,7 +71,6 @@ from .typing.enum import LogLevel, LogType
 
 # —— lifecycle ——
 from .zvec import create_and_open, init, open
-
 # ==============================
 # Public interface declaration
 # ==============================

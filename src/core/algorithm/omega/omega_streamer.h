@@ -107,6 +107,7 @@ class OmegaStreamer : public HnswStreamer {
   mutable OmegaModelHandle omega_model_{nullptr};
   mutable std::mutex model_mutex_;
   mutable std::atomic<bool> debug_stats_logged_{false};
+  mutable std::atomic<uint64_t> query_stats_sequence_{0};
   float target_recall_{0.95f};
   int window_size_{100};
 };

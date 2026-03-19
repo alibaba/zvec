@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -43,6 +44,10 @@
 #include "db/index/segment/segment_helper.h"
 #include "db/index/segment/segment_manager.h"
 #include "db/sqlengine/sqlengine.h"
+#ifdef ZVEC_ENABLE_OMEGA
+#include "db/training/omega_model_trainer.h"
+#include "db/training/training_data_collector.h"
+#endif
 
 namespace zvec {
 
