@@ -99,7 +99,7 @@ class QuantizedIntegerMetric : public IndexMetric {
           auto turbo_ret = turbo::get_distance_func(
               turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
               turbo::QuantizeType::kDefault);
-          if (turbo_ret) {
+          if (turbo_ret && m == 1 && n == 1) {
             return turbo_ret;
           }
           return DistanceMatrixCompute<SquaredEuclidean, int8_t>(m, n);
