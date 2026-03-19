@@ -47,14 +47,11 @@ float MipsEuclideanDistanceSphericalInjectionFp32SSE(const float *lhs,
                                                      size_t size, float e2);
 #endif
 
-#if defined(__SSE4_1__)
-float MipsInnerProductSparseInSegmentSSE(uint32_t m_sparse_count,
-                                         const uint16_t *m_sparse_index,
-                                         const float *m_sparse_value,
-                                         uint32_t q_sparse_count,
-                                         const uint16_t *q_sparse_index,
-                                         const float *q_sparse_value);
-#endif
+float MipsEuclideanDistanceRepeatedQuadraticInjectionFp32Scalar(
+    const float *p, const float *q, size_t dim, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionFp32Scalar(const float *p,
+                                                        const float *q,
+                                                        size_t dim, float e2);
 
 float MipsInnerProductSparseInSegment(uint32_t m_sparse_count,
                                       const uint16_t *m_sparse_index,
@@ -63,7 +60,6 @@ float MipsInnerProductSparseInSegment(uint32_t m_sparse_count,
                                       const uint16_t *q_sparse_index,
                                       const float *q_sparse_value);
 
-#if defined(__SSE__)
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
@@ -79,7 +75,15 @@ void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
     return;
   }
 #endif  // __AVX__
-  *out = MipsEuclideanDistanceSphericalInjectionFp32SSE(p, q, dim, e2);
+#if defined(__SSE__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE) {
+    *out = MipsEuclideanDistanceSphericalInjectionFp32SSE(p, q, dim, e2);
+    return;
+  }
+#endif  // __SSE__
+  *out = MipsEuclideanDistanceSphericalInjectionFp32Scalar(p, q, dim, e2);
+
+  return;
 }
 
 //! Compute the distance between matrix and query by RepeatedQuadraticInjection
@@ -100,10 +104,29 @@ void MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
     return;
   }
 #endif  // __AVX__
-  *out =
-      MipsEuclideanDistanceRepeatedQuadraticInjectionFp32SSE(p, q, dim, m, e2);
+
+#if defined(__SSE__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE) {
+    *out = MipsEuclideanDistanceRepeatedQuadraticInjectionFp32SSE(p, q, dim, m,
+                                                                  e2);
+    return;
+  }
+#endif  //__SSE__
+  *out = MipsEuclideanDistanceRepeatedQuadraticInjectionFp32Scalar(p, q, dim, m,
+                                                                   e2);
+
+  return;
 }
-#endif  // __SSE__
+
+// Sparse
+#if defined(__SSE4_1__)
+float MipsInnerProductSparseInSegmentSSE(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const float *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const float *q_sparse_value);
+#endif
 
 template <>
 float MipsSquaredEuclideanSparseDistanceMatrix<float>::
