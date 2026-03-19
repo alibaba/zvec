@@ -9,6 +9,7 @@ option(ENABLE_HASWELL "Enable Intel Haswell CPU microarchitecture" OFF)
 option(ENABLE_BROADWELL "Enable Intel Broadwell CPU microarchitecture" OFF)
 option(ENABLE_SKYLAKE "Enable Intel Skylake CPU microarchitecture" OFF)
 option(ENABLE_SKYLAKE_AVX512 "Enable Intel Skylake Server CPU microarchitecture" OFF)
+option(ENABLE_ICELAKE "Enable Intel Icelake CPU microarchitecture" OFF)
 option(ENABLE_SAPPHIRERAPIDS "Enable Intel Sapphire Rapids Server CPU microarchitecture" OFF)
 option(ENABLE_EMERALDRAPIDS "Enable Intel Emerald Rapids Server CPU microarchitecture" OFF)
 option(ENABLE_GRANITERAPIDS "Enable Intel Granite Rapids Server CPU microarchitecture" OFF)
@@ -34,7 +35,7 @@ option(ENABLE_OPENMP "Enable OpenMP support" OFF)
 
 set(ARCH_OPTIONS
   ENABLE_NEHALEM ENABLE_SANDYBRIDGE ENABLE_HASWELL ENABLE_BROADWELL ENABLE_SKYLAKE
-  ENABLE_SKYLAKE_AVX512 ENABLE_SAPPHIRERAPIDS ENABLE_EMERALDRAPIDS ENABLE_GRANITERAPIDS
+  ENABLE_SKYLAKE_AVX512 ENABLE_ICELAKE ENABLE_SAPPHIRERAPIDS ENABLE_EMERALDRAPIDS ENABLE_GRANITERAPIDS
   ENABLE_ZEN1 ENABLE_ZEN2 ENABLE_ZEN3
   ENABLE_ARMV8A ENABLE_ARMV8.1A ENABLE_ARMV8.2A ENABLE_ARMV8.3A ENABLE_ARMV8.4A
   ENABLE_ARMV8.5A ENABLE_ARMV8.6A
@@ -173,6 +174,10 @@ if(NOT AUTO_DETECT_ARCH)
 
   if(ENABLE_SAPPHIRERAPIDS)
     add_arch_flag("-march=sapphirerapids" SAPPHIRERAPIDS ENABLE_SAPPHIRERAPIDS)
+  endif()
+
+  if(ENABLE_ICELAKE)
+    add_arch_flag("-march=icelake-server" ICELAKE ENABLE_ICELAKE)
   endif()
 
   if(ENABLE_SKYLAKE_AVX512)
