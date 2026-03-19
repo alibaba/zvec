@@ -152,7 +152,6 @@ TEST(IndexInterface, General) {
 }
 
 TEST(IndexInterface, BufferGeneral) {
-  zvec::ailego::BufferManager::Instance().init(100 * 1024 * 1024, 1);
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test.index"};
   char cmd_buf[100];
@@ -213,6 +212,7 @@ TEST(IndexInterface, BufferGeneral) {
             .data.data());
     ASSERT_FLOAT_EQ(1.0f, fetched_vector[1]);
     ASSERT_FLOAT_EQ(2.0f, fetched_vector[2]);
+    result.doc_list_.clear();
     read_index->Close();
     system(cmd_buf);
   };

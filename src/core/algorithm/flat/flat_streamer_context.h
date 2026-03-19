@@ -190,10 +190,18 @@ class FlatStreamerContext : public IndexStreamer::Context {
     group_topk_heaps_.clear();
   }
 
-  void reset() override {}
+  void reset() override {
+    for (auto &it : results_) {
+      it.clear();
+    }
+    for (auto &it : group_results_) {
+      it.clear();
+    }
+  }
 
   //! Reset the context
   void reset(const FlatStreamer<BATCH_SIZE> *owner) {
+    this->reset();
     magic_ = owner->magic();
     feature_size_ = owner->meta().element_size();
 

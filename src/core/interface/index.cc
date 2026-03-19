@@ -370,10 +370,14 @@ int Index::Add(const VectorData &vector_data, const uint32_t doc_id) {
     return core::IndexError_Runtime;
   }
 
+  int ret = 0;
   if (is_sparse_) {
-    return _sparse_add(vector_data, doc_id, context);
+    ret = _sparse_add(vector_data, doc_id, context);
+  } else {
+    ret = _dense_add(vector_data, doc_id, context);
   }
-  return _dense_add(vector_data, doc_id, context);
+  context->reset();
+  return ret;
 }
 
 
@@ -398,25 +402,32 @@ int Index::Search(const VectorData &vector_data,
 
   if (_prepare_for_search(vector_data, search_param, context) != 0) {
     LOG_ERROR("Failed to prepare for search");
+    context->reset();
     return core::IndexError_Runtime;
   }
 
   if (is_sparse_) {
-    return _sparse_search(vector_data, search_param, result, context);
+    int ret = _sparse_search(vector_data, search_param, result, context);
+    context->reset();
+    return ret;
   }
 
   // dense support refiner, but sparse doesn't
+  int ret = 0;
   if (search_param->refiner_param == nullptr) {
-    return _dense_search(vector_data, search_param, result, context);
+    ret = _dense_search(vector_data, search_param, result, context);
+    context->reset();
   } else {
     auto &reference_index = search_param->refiner_param->reference_index;
     if (reference_index == nullptr) {
       LOG_ERROR("Reference index is not set");
+      context->reset();
       return core::IndexError_Runtime;
     }
     // TODO: tackle query_param's type info loss to loosen the constraint
     if (reference_index->param_.index_type != IndexType::kFlat) {
       LOG_ERROR("Reference index is not flat");
+      context->reset();
       return core::IndexError_Runtime;
     }
 
@@ -424,6 +435,7 @@ int Index::Search(const VectorData &vector_data,
     context->set_fetch_vector(false);  // no need to fetch vector
     if (_dense_search(vector_data, search_param, result, context) != 0) {
       LOG_ERROR("Failed to search");
+      context->reset();
       return core::IndexError_Runtime;
     }
 
@@ -441,8 +453,10 @@ int Index::Search(const VectorData &vector_data,
     // TODO: should copy other params?
     flat_search_param->bf_pks = std::make_shared<std::vector<uint64_t>>(keys);
 
-    return reference_index->Search(vector_data, flat_search_param, result);
+    ret = reference_index->Search(vector_data, flat_search_param, result);
   }
+  context->reset();
+  return ret;
 }
 
 
