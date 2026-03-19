@@ -61,6 +61,9 @@ constexpr uint32_t kMaxOutputFieldSize = 1024;
 
 constexpr uint32_t kMaxWriteBatchSize = 1024;
 
+constexpr uint32_t kMinRabitqDimSize = 64;
+constexpr uint32_t kMaxRabitqDimSize = 4095;
+
 // Inverted index
 const std::string INVERT_SUFFIX_TERMS{"$TERMS"};
 

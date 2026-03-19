@@ -18,6 +18,8 @@
 #include <string>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/type.h>
+#include "zvec/core/framework/index_provider.h"
+#include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
 
@@ -44,7 +46,7 @@ class IndexParams {
 
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
-           type_ == IndexType::IVF;
+           type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF;
   }
 
   IndexType type() const {
@@ -200,9 +202,121 @@ class HnswIndexParams : public VectorIndexParams {
     return ef_construction_;
   }
 
- private:
+ protected:
   int m_;
   int ef_construction_;
+};
+
+class HnswRabitqIndexParams : public VectorIndexParams {
+ public:
+  HnswRabitqIndexParams(
+      MetricType metric_type,
+      int total_bits = core_interface::kDefaultRabitqTotalBits,
+      int num_clusters = core_interface::kDefaultRabitqNumClusters,
+      int m = core_interface::kDefaultHnswNeighborCnt,
+      int ef_construction = core_interface::kDefaultHnswEfConstruction,
+      int sample_count = 0)
+      : VectorIndexParams(IndexType::HNSW_RABITQ, metric_type,
+                          QuantizeType::RABITQ),
+        total_bits_(total_bits),
+        num_clusters_(num_clusters),
+        sample_count_(sample_count),
+        m_(m),
+        ef_construction_(ef_construction) {}
+
+  using OPtr = std::shared_ptr<HnswRabitqIndexParams>;
+
+  Ptr clone() const override {
+    auto obj = std::make_shared<HnswRabitqIndexParams>(
+        metric_type_, total_bits_, num_clusters_, m_, ef_construction_,
+        sample_count_);
+    obj->set_rabitq_reformer(rabitq_reformer_);
+    obj->set_raw_vector_provider(raw_vector_provider_);
+    return obj;
+  }
+
+  std::string to_string() const override {
+    auto base_str = vector_index_params_to_string("HnswRabitqIndexParams",
+                                                  metric_type_, quantize_type_);
+    std::ostringstream oss;
+    oss << base_str << ",total_bits:" << total_bits_
+        << ",num_clusters:" << num_clusters_
+        << ",sample_count:" << sample_count_ << ",m:" << m_
+        << ",ef_construction:" << ef_construction_ << "}";
+    return oss.str();
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    if (type() != other.type()) {
+      return false;
+    }
+    auto &other_rabitq = dynamic_cast<const HnswRabitqIndexParams &>(other);
+    return metric_type() == other_rabitq.metric_type() &&
+           quantize_type_ == other_rabitq.quantize_type_ &&
+           total_bits_ == other_rabitq.total_bits_ &&
+           num_clusters_ == other_rabitq.num_clusters_ &&
+           sample_count_ == other_rabitq.sample_count_ &&
+           m_ == other_rabitq.m_ &&
+           ef_construction_ == other_rabitq.ef_construction_;
+  }
+
+  void set_m(int m) {
+    m_ = m;
+  }
+  int m() const {
+    return m_;
+  }
+  void set_ef_construction(int ef_construction) {
+    ef_construction_ = ef_construction;
+  }
+  int ef_construction() const {
+    return ef_construction_;
+  }
+
+  void set_raw_vector_provider(
+      core::IndexProvider::Pointer raw_vector_provider) {
+    raw_vector_provider_ = std::move(raw_vector_provider);
+  }
+
+  void set_rabitq_reformer(core::IndexReformer::Pointer rabitq_reformer) {
+    rabitq_reformer_ = std::move(rabitq_reformer);
+  }
+  core::IndexReformer::Pointer rabitq_reformer() const {
+    return rabitq_reformer_;
+  }
+  core::IndexProvider::Pointer raw_vector_provider() const {
+    return raw_vector_provider_;
+  }
+
+  void set_total_bits(int total_bits) {
+    total_bits_ = total_bits;
+  }
+  int total_bits() const {
+    return total_bits_;
+  }
+
+  void set_num_clusters(int num_clusters) {
+    num_clusters_ = num_clusters;
+  }
+  int num_clusters() const {
+    return num_clusters_;
+  }
+
+  void set_sample_count(int sample_count) {
+    sample_count_ = sample_count;
+  }
+  int sample_count() const {
+    return sample_count_;
+  }
+
+ private:
+  int total_bits_;
+  int num_clusters_;
+  int sample_count_;
+  int m_;
+  int ef_construction_;
+  core::IndexProvider::Pointer raw_vector_provider_;
+  core::IndexReformer::Pointer rabitq_reformer_;
 };
 
 class FlatIndexParams : public VectorIndexParams {

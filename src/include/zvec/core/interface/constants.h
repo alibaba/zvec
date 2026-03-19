@@ -23,5 +23,8 @@ constexpr static uint32_t kDefaultHnswNeighborCnt = 50;
 
 constexpr static uint32_t kDefaultHnswEfSearch = 300;
 
+constexpr const uint32_t kDefaultRabitqTotalBits = 7;
+constexpr const uint32_t kDefaultRabitqNumClusters = 16;
+
 
 }  // namespace zvec::core_interface

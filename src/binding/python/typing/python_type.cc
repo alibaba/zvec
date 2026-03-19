@@ -96,6 +96,7 @@ Examples:
 )pbdoc")
       .value("UNDEFINED", IndexType::UNDEFINED)
       .value("HNSW", IndexType::HNSW)
+      .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
       .value("IVF", IndexType::IVF)
       .value("FLAT", IndexType::FLAT)
       .value("INVERT", IndexType::INVERT);
@@ -131,7 +132,8 @@ Examples:
       .value("UNDEFINED", QuantizeType::UNDEFINED)
       .value("FP16", QuantizeType::FP16)
       .value("INT8", QuantizeType::INT8)
-      .value("INT4", QuantizeType::INT4);
+      .value("INT4", QuantizeType::INT4)
+      .value("RABITQ", QuantizeType::RABITQ);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {

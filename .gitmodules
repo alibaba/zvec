@@ -40,3 +40,6 @@
 	path = thirdparty/magic_enum/magic_enum-0.9.7
 	url = https://github.com/Neargye/magic_enum.git
 	ignore = all
+[submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
+	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
+	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git

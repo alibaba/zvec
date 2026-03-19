@@ -134,6 +134,14 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
             return core::IndexError_Unsupported;
           }
           break;
+        case QuantizerType::kRabitq:
+          if (index_param.data_type == DataType::DT_FP32) {
+            converter_name = "CosineNormalizeConverter";
+          } else {
+            LOG_ERROR("Unsupported data type: ");
+            return core::IndexError_Unsupported;
+          }
+          break;
         case QuantizerType::kFP16:
           converter_name = "CosineFp16Converter";
           break;
@@ -160,6 +168,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kInt4:
           converter_name = "Int4StreamingConverter";
           break;
+        case QuantizerType::kRabitq:
+          // no converter here
+          return 0;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;
@@ -812,6 +823,32 @@ int Index::_get_coarse_search_topk(
     scale_factor = 1;
   }
   return floor(search_param->topk * scale_factor);
+}
+
+std::string Index::get_metric_name(MetricType metric_type, bool is_sparse) {
+  if (is_sparse) {
+    switch (metric_type) {
+      case MetricType::kInnerProduct:
+        return "InnerProductSparse";
+      case MetricType::kMIPSL2sq:
+        return "MipsSquaredEuclideanSparse";
+      default:
+        return "";
+    }
+  } else {
+    switch (metric_type) {
+      case MetricType::kL2sq:
+        return "SquaredEuclidean";
+      case MetricType::kInnerProduct:
+        return "InnerProduct";
+      case MetricType::kCosine:
+        return "Cosine";
+      case MetricType::kMIPSL2sq:
+        return "MipsSquaredEuclidean";
+      default:
+        return "";
+    }
+  }
 }
 
 }  // namespace zvec::core_interface
