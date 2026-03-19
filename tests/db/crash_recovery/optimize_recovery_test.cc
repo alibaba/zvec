@@ -107,7 +107,7 @@ class OptimizeRecoveryTest : public ::testing::Test {
 
 
 TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
-  {
+  {  // Create a collection and insert some documents
     auto schema = CreateTestSchema(collection_name_);
     auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
     ASSERT_TRUE(result.has_value());
@@ -131,30 +131,78 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
 
   RunOptimizerAndCrash(dir_path_, 4);
 
+  {  // Open the collection and verify data integrity
+    auto result = Collection::Open(dir_path_, options_);
+    ASSERT_TRUE(result.has_value())
+        << "Failed to reopen collection after crash. "
+           "Recovery mechanism may be broken.";
+    auto collection = result.value();
+    uint64_t doc_count{collection->Stats().value().doc_count};
+    ASSERT_EQ(doc_count, num_batches * batch_size);
+    for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
+      Doc expected_doc = CreateTestDoc(doc_id, 0);
+      std::vector<std::string> pks{};
+      pks.emplace_back(expected_doc.pk());
+      if (auto res = collection->Fetch(pks); res) {
+        auto map = res.value();
+        if (map.find(expected_doc.pk()) == map.end()) {
+          FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
+                 << "]";
+        }
+        const auto actual_doc = map.at(expected_doc.pk());
+        ASSERT_EQ(*actual_doc, expected_doc)
+            << "Data mismatch for doc[" << expected_doc.pk() << "]";
+      } else {
+        FAIL() << "Failed to fetch doc[" << expected_doc.pk() << "]";
+      }
+    }
+
+    // Insert some more documents
+    for (int batch = num_batches; batch < num_batches + 1000; batch++) {
+      std::vector<Doc> docs;
+      for (int i = 0; i < batch_size; i++) {
+        docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
+      }
+      auto write_result = collection->Insert(docs);
+      ASSERT_TRUE(write_result);
+      for (auto &s : write_result.value()) {
+        ASSERT_TRUE(s.ok());
+      }
+    }
+
+    collection.reset();
+  }
+
+  RunOptimizer(dir_path_);
+
+  // Open the collection and verify data integrity
   auto result = Collection::Open(dir_path_, options_);
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
   uint64_t doc_count{collection->Stats().value().doc_count};
-  ASSERT_EQ(doc_count, num_batches * batch_size);
-
-  for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
-    Doc expected_doc = CreateTestDoc(doc_id, 0);
-    std::vector<std::string> pks{};
-    pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->Fetch(pks); res) {
-      auto map = res.value();
-      if (map.find(expected_doc.pk()) == map.end()) {
-        FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
-               << "]";
-      }
-      const auto actual_doc = map.at(expected_doc.pk());
-      ASSERT_EQ(*actual_doc, expected_doc)
-          << "Data mismatch for doc[" << expected_doc.pk() << "]";
-    } else {
-      FAIL() << "Failed to fetch doc[" << expected_doc.pk() << "]";
+  ASSERT_EQ(doc_count, num_batches * (batch_size + 1000));
+  for (int batch = 0; batch < (num_batches + 1000); batch++) {
+    std::vector<Doc> docs;
+    for (int i = 0; i < batch_size; i++) {
+      docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
+    }
+    auto write_result = collection->Insert(docs);
+    ASSERT_TRUE(write_result);
+    for (auto &s : write_result.value()) {
+      ASSERT_TRUE(s.ok());
     }
   }
+
+  // VectorQuery query;
+  // query.output_fields_ = {"name", "age"};
+  // query.filter_ = "invert_id >= 6000 and id < 6080";
+  // query.topk_ = 100;
+  // std::vector<float> feature(4, 0.0);
+  // query.query_vector_.assign((const char *)feature.data(),
+  //                            feature.size() * sizeof(float));
+  // query.field_name_ = "dense";
+  // collection->Query();
 }
 
 
