@@ -43,7 +43,7 @@ set(zvec_ailego_deps
 )
 
 set(zvec_core_deps
-    # empty
+    zvec_turbo
 )
 
 set(zvec_db_deps

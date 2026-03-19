@@ -42,7 +42,7 @@ endif()
 cc_library(
     NAME zvec_core STATIC STRICT PACKED
     SRCS ${ALL_CORE_SRCS}
-    LIBS zvec_ailego sparsehash magic_enum rabitqlib
+    LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib
     INCS . ${PROJECT_ROOT_DIR}/src/core
     VERSION "${GIT_SRCS_VER}"
 )

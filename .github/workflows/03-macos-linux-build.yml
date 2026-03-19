@@ -1,92 +1,33 @@
-name: Main
+name: MacOS & Linux Build
 
 on:
-  push:
-    branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
-  merge_group:
-  pull_request:
-    branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      platform:
+        description: 'Platform identifier'
+        required: true
+        type: string
+      os:
+        description: 'GitHub Actions runner OS'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  # Code quality checks (fast, run first)
-  lint:
-    name: Code Quality Checks
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
-
-      - name: Install linting tools
-        run: |
-          python -m pip install --upgrade pip \
-            ruff==v0.14.4 \
-            clang-format==18.1.8
-        shell: bash
-
-      - name: Run Ruff Linter
-        run: python -m ruff check .
-        shell: bash
-
-      - name: Run Ruff Formatter Check
-        run: python -m ruff format --check .
-        shell: bash
-
-      - name: Run clang-format Check
-        run: |
-          CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
-            ! -path "./build/*" \
-            ! -path "./tests/*" \
-            ! -path "./scripts/*" \
-            ! -path "./python/*" \
-            ! -path "./thirdparty/*" \
-            ! -path "./.git/*")
-
-          if [ -z "$CPP_FILES" ]; then
-            echo "No C++ files found to check."
-            exit 0
-          fi
-
-          clang-format --dry-run --Werror $CPP_FILES
-        shell: bash
-
   # Build and test matrix (parallel execution)
   build-and-test:
-    name: Build & Test (${{ matrix.platform }})
-    needs: lint
-    runs-on: ${{ matrix.os }}
+    name: Build & Test (${{ inputs.platform }})
+    runs-on: ${{ inputs.os }}
     
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            platform: macos-arm64
-            arch_flag: ""  # ARM64 uses auto-detection
-          - os: ubuntu-24.04-arm
-            platform: linux-arm64
-            arch_flag: ""  # ARM64 uses auto-detection
-          - os: ubuntu-24.04
-            platform: linux-x64
-            arch_flag: ""  # Use native CPU microarchitecture
+          - os: ${{ inputs.os }}
+            platform: ${{ inputs.platform }}
+            arch_flag: ""  # Use appropriate architecture
 
     steps:
       - name: Checkout code
