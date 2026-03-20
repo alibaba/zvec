@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma once
-
 #include <vector>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/utility/math_helper.h>
@@ -28,69 +26,6 @@
   }
 
 namespace zvec::ailego::DistanceBatch {
-
-template <typename ValueType, size_t BatchSize>
-static void compute_one_to_many_squared_euclidean_fallback(
-    const ValueType *query, const ValueType **ptrs,
-    std::array<const ValueType *, BatchSize> &prefetch_ptrs, size_t dim,
-    float *sums) {
-  for (size_t j = 0; j < BatchSize; ++j) {
-    sums[j] = 0.0;
-    SquaredEuclideanDistanceMatrix<ValueType, 1, 1>::Compute(ptrs[j], query,
-                                                             dim, sums + j);
-    ailego_prefetch(&prefetch_ptrs[j]);
-  }
-}
-
-#if defined(__AVX512F__)
-
-template <typename ValueType, size_t dp_batch>
-static std::enable_if_t<std::is_same_v<ValueType, float>, void>
-compute_one_to_many_squared_euclidean_avx512f_fp32(
-    const ValueType *query, const ValueType **ptrs,
-    std::array<const ValueType *, dp_batch> &prefetch_ptrs,
-    size_t dimensionality, float *results) {
-  __m512 accs[dp_batch];
-  for (size_t i = 0; i < dp_batch; ++i) {
-    accs[i] = _mm512_setzero_ps();
-  }
-  size_t dim = 0;
-  for (; dim + 16 <= dimensionality; dim += 16) {
-    __m512 q = _mm512_loadu_ps(query + dim);
-    __m512 data_regs[dp_batch];
-    for (size_t i = 0; i < dp_batch; ++i) {
-      data_regs[i] = _mm512_loadu_ps(ptrs[i] + dim);
-    }
-    if (prefetch_ptrs[0]) {
-      for (size_t i = 0; i < dp_batch; ++i) {
-        ailego_prefetch(prefetch_ptrs[i] + dim);
-      }
-    }
-    for (size_t i = 0; i < dp_batch; ++i) {
-      __m512 diff = _mm512_sub_ps(q, data_regs[i]);
-      accs[i] = _mm512_fmadd_ps(diff, diff, accs[i]);
-    }
-  }
-
-  if (dim < dimensionality) {
-    __mmask32 mask = (__mmask32)((1 << (dimensionality - dim)) - 1);
-
-    for (size_t i = 0; i < dp_batch; ++i) {
-      __m512 zmm_undefined = _mm512_undefined_ps();
-
-      accs[i] = _mm512_mask3_fmadd_ps(
-          _mm512_mask_loadu_ps(zmm_undefined, mask, query + dim),
-          _mm512_mask_loadu_ps(zmm_undefined, mask, ptrs[i] + dim), accs[i],
-          mask);
-    }
-  }
-
-  for (size_t i = 0; i < dp_batch; ++i) {
-    results[i] = HorizontalAdd_FP32_V512(accs[i]);
-  }
-}
-
-#endif
 
 #if defined(__AVX2__)
 
@@ -149,6 +84,23 @@ compute_one_to_many_squared_euclidean_avx2_fp32(
     }
   }
 }
+
+void compute_one_to_many_squared_euclidean_avx2_fp32_1(
+    const ailego::Float16 *query, const ailego::Float16 **ptrs,
+    std::array<const ailego::Float16 *, 1> &prefetch_ptrs, size_t dim,
+    float *sums) {
+  return compute_one_to_many_squared_euclidean_avx2_fp32<ailego::Float16, 1>(
+      query, ptrs, prefetch_ptrs, dim, sums);
+}
+
+void compute_one_to_many_squared_euclidean_avx2_fp32_12(
+    const ailego::Float16 *query, const ailego::Float16 **ptrs,
+    std::array<const ailego::Float16 *, 12> &prefetch_ptrs, size_t dim,
+    float *sums) {
+  return compute_one_to_many_squared_euclidean_avx2_fp32<ailego::Float16, 12>(
+      query, ptrs, prefetch_ptrs, dim, sums);
+}
+
 #endif
 
 
