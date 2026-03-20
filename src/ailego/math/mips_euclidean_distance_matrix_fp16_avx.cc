@@ -21,8 +21,8 @@ namespace ailego {
 
 #if defined(__AVX__) && defined(__F16C__)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
-float InnerProductAndSquaredNormAVX(const Float16 *lhs, const Float16 *rhs,
-                                    size_t size, float *sql, float *sqr) {
+float InnerProductAndSquaredNormFp16AVX(const Float16 *lhs, const Float16 *rhs,
+                                        size_t size, float *sql, float *sqr) {
   __m256 ymm_sum_0 = _mm256_setzero_ps();
   __m256 ymm_sum_1 = _mm256_setzero_ps();
   __m256 ymm_sum_norm1 = _mm256_setzero_ps();
@@ -111,27 +111,25 @@ float InnerProductAndSquaredNormAVX(const Float16 *lhs, const Float16 *rhs,
   return result;
 }
 
-float MipsEucldeanDistanceSphericalInjectionAVX(const Float16 *lhs,
-                                                const Float16 *rhs, size_t size,
-                                                float e2) {
+float MipsEuclideanDistanceSphericalInjectionFp16AVX(const Float16 *lhs,
+                                                     const Float16 *rhs,
+                                                     size_t size, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormFp16AVX(lhs, rhs, size, &u2, &v2);
 
   return ComputeSphericalInjection(sum, u2, v2, e2);
 }
 
-float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX(const Float16 *lhs,
-                                                        const Float16 *rhs,
-                                                        size_t size, size_t m,
-                                                        float e2) {
+float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16AVX(
+    const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormAVX(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormFp16AVX(lhs, rhs, size, &u2, &v2);
 
   sum = e2 * (u2 + v2 - 2 * sum);
   u2 *= e2;

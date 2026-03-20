@@ -31,6 +31,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     core_knn_flat
     core_knn_flat_sparse
     core_knn_hnsw
+    core_knn_hnsw_rabitq
     core_knn_hnsw_sparse
     core_knn_ivf
     core_mix_reducer

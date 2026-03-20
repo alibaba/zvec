@@ -22,6 +22,9 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 /*! Squared Euclidean Distance Matrix
  */
 template <typename T, size_t M, size_t N, typename = void>
@@ -46,6 +49,46 @@ struct SquaredEuclideanDistanceMatrix<
     }
     *out = sum;
   }
+};
+
+template <>
+struct SquaredEuclideanDistanceMatrix<uint8_t, 1, 1> {
+  //! Type of value
+  using ValueType = uint8_t;
+
+  //! Compute the distance between matrix and query
+  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
+                      float *out);
+};
+
+template <>
+struct SquaredEuclideanDistanceMatrix<int8_t, 1, 1> {
+  //! Type of value
+  using ValueType = int8_t;
+
+  //! Compute the distance between matrix and query
+  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
+                      float *out);
+};
+
+template <>
+struct SquaredEuclideanDistanceMatrix<Float16, 1, 1> {
+  //! Type of value
+  using ValueType = Float16;
+
+  //! Compute the distance between matrix and query
+  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
+                      float *out);
+};
+
+template <>
+struct SquaredEuclideanDistanceMatrix<float, 1, 1> {
+  //! Type of value
+  using ValueType = float;
+
+  //! Compute the distance between matrix and query
+  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
+                      float *out);
 };
 
 /*! Squared Euclidean Distance Matrix
@@ -353,32 +396,6 @@ struct SquaredEuclideanDistanceMatrix<uint8_t, M, 1,
   }
 };
 
-#if !defined(__SSE4_1__)
-/*! Squared Euclidean Distance Matrix (INT4, M=1, N=1)
- */
-template <>
-struct SquaredEuclideanDistanceMatrix<uint8_t, 1, 1> {
-  //! Type of value
-  using ValueType = uint8_t;
-
-  //! Compute the distance between matrix and query
-  static inline void Compute(const ValueType *m, const ValueType *q, size_t dim,
-                             float *out) {
-    ailego_assert(m && q && dim && !(dim & 1) && out);
-
-    float sum = 0.0;
-    for (size_t i = 0; i < (dim >> 1); ++i) {
-      uint8_t m_val = m[i];
-      uint8_t q_val = q[i];
-      sum +=
-          Int4SquaredDiffTable[((m_val << 4) & 0xf0) | ((q_val >> 0) & 0xf)] +
-          Int4SquaredDiffTable[((m_val >> 0) & 0xf0) | ((q_val >> 4) & 0xf)];
-    }
-    *out = sum;
-  }
-};
-#endif  // !__SSE4_1__
-
 /*! Euclidean Distance Matrix
  */
 template <typename T, size_t M, size_t N,
@@ -424,102 +441,16 @@ struct EuclideanDistanceMatrix<
   }
 };
 
-#if !defined(__SSE4_1__)
-/*! Euclidean Distance Matrix (INT4, M=1, N=1)
- */
 template <>
 struct EuclideanDistanceMatrix<uint8_t, 1, 1> {
   //! Type of value
   using ValueType = uint8_t;
 
   //! Compute the distance between matrix and query
-  static inline void Compute(const ValueType *m, const ValueType *q, size_t dim,
-                             float *out) {
-    ailego_assert(m && q && dim && !(dim & 1) && out);
-
-    float sum = 0.0;
-    for (size_t i = 0; i < (dim >> 1); ++i) {
-      uint8_t m_val = m[i];
-      uint8_t q_val = q[i];
-      sum +=
-          Int4SquaredDiffTable[((m_val << 4) & 0xf0) | ((q_val >> 0) & 0xf)] +
-          Int4SquaredDiffTable[((m_val >> 0) & 0xf0) | ((q_val >> 4) & 0xf)];
-    }
-    *out = std::sqrt(sum);
-  }
-};
-#endif  // !__SSE4_1__
-
-#if defined(__SSE__) || defined(__ARM_NEON)
-/*! Squared Euclidean Distance Matrix (FP32, M=1, N=1)
- */
-template <>
-struct SquaredEuclideanDistanceMatrix<float, 1, 1> {
-  //! Type of value
-  using ValueType = float;
-
-  //! Compute the distance between matrix and query
-  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
-                      float *out);
-};
-#endif  // __SSE__ || __ARM_NEON
-
-#if defined(__SSE__) || (defined(__ARM_NEON) && (defined(__aarch64__)))
-/*! Euclidean Distance Matrix (FP32, M=1, N=1)
- */
-template <>
-struct EuclideanDistanceMatrix<float, 1, 1> {
-  //! Type of value
-  using ValueType = float;
-
-  //! Compute the distance between matrix and query
-  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
-                      float *out);
-};
-#endif  // __SSE__ || __ARM_NEON  && __aarch64__
-
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
-/*! Squared Euclidean Distance Matrix (FP16, M=1, N=1)
- */
-template <>
-struct SquaredEuclideanDistanceMatrix<Float16, 1, 1> {
-  //! Type of value
-  using ValueType = Float16;
-
-  //! Compute the distance between matrix and query
   static void Compute(const ValueType *m, const ValueType *q, size_t dim,
                       float *out);
 };
 
-/*! Euclidean Distance Matrix (FP16, M=1, N=1)
- */
-template <>
-struct EuclideanDistanceMatrix<Float16, 1, 1> {
-  //! Type of value
-  using ValueType = Float16;
-
-  //! Compute the distance between matrix and query
-  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
-                      float *out);
-};
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
-
-#if defined(__SSE4_1__)
-/*! Squared Euclidean Distance Matrix (INT8, M=1, N=1)
- */
-template <>
-struct SquaredEuclideanDistanceMatrix<int8_t, 1, 1> {
-  //! Type of value
-  using ValueType = int8_t;
-
-  //! Compute the distance between matrix and query
-  static void Compute(const ValueType *m, const ValueType *q, size_t dim,
-                      float *out);
-};
-
-/*! Euclidean Distance Matrix (INT8, M=1, N=1)
- */
 template <>
 struct EuclideanDistanceMatrix<int8_t, 1, 1> {
   //! Type of value
@@ -530,31 +461,30 @@ struct EuclideanDistanceMatrix<int8_t, 1, 1> {
                       float *out);
 };
 
-/*! Squared Euclidean Distance Matrix (INT4, M=1, N=1)
- */
 template <>
-struct SquaredEuclideanDistanceMatrix<uint8_t, 1, 1> {
+struct EuclideanDistanceMatrix<Float16, 1, 1> {
   //! Type of value
-  using ValueType = uint8_t;
+  using ValueType = Float16;
 
   //! Compute the distance between matrix and query
   static void Compute(const ValueType *m, const ValueType *q, size_t dim,
                       float *out);
 };
 
-/*! Euclidean Distance Matrix (INT4, M=1, N=1)
- */
 template <>
-struct EuclideanDistanceMatrix<uint8_t, 1, 1> {
+struct EuclideanDistanceMatrix<float, 1, 1> {
   //! Type of value
-  using ValueType = uint8_t;
+  using ValueType = float;
 
   //! Compute the distance between matrix and query
   static void Compute(const ValueType *m, const ValueType *q, size_t dim,
                       float *out);
 };
-#endif  // __SSE4_1__
 
+
+//--------------------------------------------------
+// Sparse
+//--------------------------------------------------
 /*! Squared Euclidean Distance Sparse Matrix
  */
 template <typename T>

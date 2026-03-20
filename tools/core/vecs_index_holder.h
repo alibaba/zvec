@@ -15,8 +15,12 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <zvec/ailego/container/params.h>
+#include "zvec/core/framework/index_error.h"
 #include "zvec/core/framework/index_holder.h"
+#include "zvec/core/framework/index_provider.h"
+#include "zvec/core/framework/index_storage.h"
 #include "vecs_reader.h"
 
 namespace zvec {
@@ -30,12 +34,16 @@ namespace core {
  *      data = iter->data();
  *  }
  */
-class VecsIndexHolder : public IndexHybridHolder {
+class VecsIndexHolder : public IndexProvider {
  public:
   typedef std::shared_ptr<VecsIndexHolder> Pointer;
 
   bool load(const std::string &file_path) {
-    return vecs_reader_.load(file_path);
+    if (!vecs_reader_.load(file_path)) {
+      return false;
+    }
+    build_key_index_map();
+    return true;
   }
 
   const IndexMeta &index_meta(void) const {
@@ -110,8 +118,7 @@ class VecsIndexHolder : public IndexHybridHolder {
     return iter;
   }
 
-  virtual IndexHybridHolder::Iterator::Pointer create_hybrid_iterator(
-      void) override {
+  virtual IndexHybridHolder::Iterator::Pointer create_hybrid_iterator(void) {
     // make sure iter has value whenn create_iterator finished
     IndexHybridHolder::Iterator::Pointer iter(
         new VecsIndexHolder::Iterator(*this, start_cursor_));
@@ -157,10 +164,6 @@ class VecsIndexHolder : public IndexHybridHolder {
     return vecs_reader_.get_key(idx);
   }
 
-  const void *get_vector(size_t idx) const {
-    return vecs_reader_.get_vector(idx);
-  }
-
   uint32_t get_sparse_count(size_t idx) const {
     return vecs_reader_.get_sparse_count(idx);
   }
@@ -185,7 +188,7 @@ class VecsIndexHolder : public IndexHybridHolder {
     return start_cursor_;
   }
 
-  size_t total_sparse_count(void) const override {
+  size_t total_sparse_count(void) const {
     return vecs_reader_.get_total_sparse_count();
   }
 
@@ -209,11 +212,53 @@ class VecsIndexHolder : public IndexHybridHolder {
     return vecs_reader_.key_base();
   }
 
+  const void *get_vector_by_index(size_t idx) const {
+    return vecs_reader_.get_vector(idx);
+  }
+
+ public:  // IndexProvider interface implementation
+  //! Retrieve a vector using a primary key
+  const void *get_vector(const uint64_t key) const override {
+    auto it = key_to_index_map_.find(key);
+    if (it == key_to_index_map_.end()) {
+      return nullptr;
+    }
+    return vecs_reader_.get_vector(it->second);
+  }
+
+  //! Retrieve a vector using a primary key
+  virtual int get_vector(const uint64_t key,
+                         IndexStorage::MemoryBlock &block) const override {
+    const void *vector = get_vector(key);
+    if (vector == nullptr) {
+      return IndexError_NoExist;
+    }
+    block.reset((void *)vector);
+    return 0;
+  }
+
+  //! Retrieve the owner class
+  virtual const std::string &owner_class(void) const override {
+    static std::string owner_class_name = "VecsIndexHolder";
+    return owner_class_name;
+  }
+
  private:
+  //! Build key to index mapping
+  void build_key_index_map() {
+    key_to_index_map_.clear();
+    size_t num_vecs = vecs_reader_.num_vecs();
+    for (size_t i = 0; i < num_vecs; ++i) {
+      uint64_t key = vecs_reader_.get_key(i);
+      key_to_index_map_[key] = i;
+    }
+  }
+
   bool stop_{false};
   uint32_t start_cursor_{0};
   VecsReader vecs_reader_;
   size_t max_doc_count_{0};
+  std::unordered_map<uint64_t, size_t> key_to_index_map_;
 };
 
 

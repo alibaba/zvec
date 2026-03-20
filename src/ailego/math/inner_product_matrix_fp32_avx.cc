@@ -19,9 +19,16 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__AVX__)
+float InnerProductFp32SSEInternal(const float *lhs, const float *rhs,
+                                  size_t size);
+
 //! Inner Product
-float InnerProductAVX(const float *lhs, const float *rhs, size_t size) {
+float InnerProductFp32AVXInternal(const float *lhs, const float *rhs,
+                                  size_t size) {
   const float *last = lhs + size;
   const float *last_aligned = lhs + ((size >> 4) << 4);
 
@@ -88,8 +95,17 @@ float InnerProductAVX(const float *lhs, const float *rhs, size_t size) {
   return result;
 }
 
-float MinusInnerProductAVX(const float *lhs, const float *rhs, size_t size) {
-  return -1 * InnerProductAVX(lhs, rhs, size);
+float InnerProductFp32AVX(const float *lhs, const float *rhs, size_t size) {
+  if (size > 7) {
+    return InnerProductFp32AVXInternal(lhs, rhs, size);
+  }
+
+  return InnerProductFp32SSEInternal(lhs, rhs, size);
+}
+
+float MinusInnerProductFp32AVX(const float *lhs, const float *rhs,
+                               size_t size) {
+  return -1 * InnerProductFp32AVX(lhs, rhs, size);
 }
 
 #endif  // __AVX__

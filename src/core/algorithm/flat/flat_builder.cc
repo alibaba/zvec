@@ -127,7 +127,6 @@ int FlatBuilder<BATCH_SIZE>::dump(const IndexDumper::Pointer &dumper) {
     return error_code;
   }
 
-  holder_ = nullptr;
   stats_.set_dumped_count(keys.size());
   stats_.set_dumped_costtime(stamp.milli_seconds());
   return 0;

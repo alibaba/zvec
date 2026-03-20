@@ -32,7 +32,7 @@ const std::string GLOBAL_DOC_ID = "_zvec_g_doc_id_";
 
 const std::string USER_ID = "_zvec_uid_";
 
-const int kSparseMaxDimSize = 4096;
+const int kSparseMaxDimSize = 16384;
 
 const int64_t kMaxRecordBatchNumRows = 4096;
 
@@ -60,6 +60,9 @@ constexpr uint32_t kMaxQueryTopk = 1024;
 constexpr uint32_t kMaxOutputFieldSize = 1024;
 
 constexpr uint32_t kMaxWriteBatchSize = 1024;
+
+constexpr uint32_t kMinRabitqDimSize = 64;
+constexpr uint32_t kMaxRabitqDimSize = 4095;
 
 // Inverted index
 const std::string INVERT_SUFFIX_TERMS{"$TERMS"};

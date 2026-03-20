@@ -1,20 +1,7 @@
-name: android-cross-build
+name: Android Cross Build
 
 on:
-  push:
-    branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
-  merge_group:
-  pull_request:
-    branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
-  cancel-in-progress: true
+  workflow_call:
 
 permissions:
   contents: read

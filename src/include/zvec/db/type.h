@@ -23,8 +23,9 @@ namespace zvec {
 enum class IndexType : uint32_t {
   UNDEFINED = 0,
   HNSW = 1,
-  IVF = 3,
-  FLAT = 4,
+  IVF = 2,
+  FLAT = 3,
+  HNSW_RABITQ = 4,
   INVERT = 10,
 };
 
@@ -72,6 +73,7 @@ enum class QuantizeType : uint32_t {
   FP16 = 1,
   INT8 = 2,
   INT4 = 3,
+  RABITQ = 4,
 };
 
 enum class MetricType : uint32_t {

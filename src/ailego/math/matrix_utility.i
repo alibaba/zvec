@@ -150,14 +150,12 @@ static inline float HorizontalAdd_FP32_V256(__m256 v) {
 #endif // __AVX__
 
 #if defined(__AVX2__)
-static const __m256i POPCNT_MASK1_INT8_AVX = _mm256_set1_epi8(0x0f);
-static const __m256i POPCNT_MASK1_INT16_AVX = _mm256_set1_epi16(1);
-static const __m256i POPCNT_MASK2_INT16_AVX = _mm256_set1_epi16(0xff);
-static const __m256i POPCNT_MASK1_INT32_AVX = _mm256_set1_epi32(0xff);
-static const __m256i POPCNT_ZERO_AVX = _mm256_setzero_si256();
-static const __m256i POPCNT_LOOKUP_AVX =
-    _mm256_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2,
-                     1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
+#define POPCNT_MASK1_INT8_AVX _mm256_set1_epi8(0x0f)
+#define POPCNT_MASK1_INT16_AVX  _mm256_set1_epi16(1)
+#define POPCNT_MASK2_INT16_AVX _mm256_set1_epi16(0xff)
+#define POPCNT_MASK1_INT32_AVX _mm256_set1_epi32(0xff)
+#define POPCNT_ZERO_AVX _mm256_setzero_si256()
+#define POPCNT_LOOKUP_AVX _mm256_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4)
 
 static inline __m256i VerticalPopCount_INT8_V256(__m256i v) {
 #if defined(__AVX512VL__) && defined(__AVX512BITALG__)

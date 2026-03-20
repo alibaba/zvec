@@ -20,60 +20,6 @@
 
 namespace zvec::ailego::DistanceBatch {
 
-#if defined(__AVX512FP16__)
-template <typename ValueType, size_t dp_batch>
-static std::enable_if_t<std::is_same_v<ValueType, ailego::Float16>, void>
-compute_one_to_many_inner_product_avx512fp16_fp16(
-    const ailego::Float16 *query, const ailego::Float16 **ptrs,
-    std::array<const ailego::Float16 *, dp_batch> &prefetch_ptrs,
-    size_t dimensionality, float *results) {
-  __m512h accs[dp_batch];
-  for (size_t i = 0; i < dp_batch; ++i) {
-    accs[i] = _mm512_setzero_ph();
-  }
-
-  size_t dim = 0;
-  for (; dim + 32 <= dimensionality; dim += 32) {
-    __m512h q = _mm512_loadu_ph(query + dim);
-
-    __m512h data_regs[dp_batch];
-    for (size_t i = 0; i < dp_batch; ++i) {
-      data_regs[i] = _mm512_loadu_ph(ptrs[i] + dim);
-    }
-
-    if (prefetch_ptrs[0]) {
-      for (size_t i = 0; i < dp_batch; ++i) {
-        ailego_prefetch(prefetch_ptrs[i] + dim);
-      }
-    }
-
-    for (size_t i = 0; i < dp_batch; ++i) {
-      accs[i] = _mm512_fmadd_ph(data_regs[i], q, accs[i]);
-    }
-  }
-
-  if (dim < dimensionality) {
-    __mmask32 mask = (__mmask32)((1 << (dimensionality - dim)) - 1);
-
-    for (size_t i = 0; i < dp_batch; ++i) {
-      __m512i zmm_undefined = _mm512_undefined_epi32();
-
-      accs[i] =
-          _mm512_mask3_fmadd_ph(_mm512_castsi512_ph(_mm512_mask_loadu_epi16(
-                                    zmm_undefined, mask, query + dim)),
-                                _mm512_castsi512_ph(_mm512_mask_loadu_epi16(
-                                    zmm_undefined, mask, ptrs[i] + dim)),
-                                accs[i], mask);
-    }
-  }
-
-  for (size_t i = 0; i < dp_batch; ++i) {
-    results[i] = HorizontalAdd_FP16_V512(accs[i]);
-  }
-}
-
-#endif
-
 #if defined(__AVX512F__)
 
 template <typename ValueType, size_t dp_batch>
@@ -162,27 +108,6 @@ compute_one_to_many_inner_product_avx512f_fp16(
   }
 }
 
-#endif
-
-#if defined(__AVX512FP16__)
-void compute_one_to_many_inner_product_avx512fp16_fp16_1(
-    const ailego::Float16 *query, const ailego::Float16 **ptrs,
-    std::array<const ailego::Float16 *, 1> &prefetch_ptrs, size_t dim,
-    float *sums) {
-  return compute_one_to_many_inner_product_avx512fp16_fp16<ailego::Float16, 1>(
-      query, ptrs, prefetch_ptrs, dim, sums);
-}
-
-void compute_one_to_many_inner_product_avx512fp16_fp16_12(
-    const ailego::Float16 *query, const ailego::Float16 **ptrs,
-    std::array<const ailego::Float16 *, 12> &prefetch_ptrs, size_t dim,
-    float *sums) {
-  return compute_one_to_many_inner_product_avx512fp16_fp16<ailego::Float16, 12>(
-      query, ptrs, prefetch_ptrs, dim, sums);
-}
-#endif
-
-#if defined(__AVX512F__)
 void compute_one_to_many_inner_product_avx512f_fp16_1(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, 1> &prefetch_ptrs, size_t dim,

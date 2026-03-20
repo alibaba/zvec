@@ -19,57 +19,57 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__ARM_NEON)
-void SquaredEuclideanDistanceNEON(const Float16 *lhs, const Float16 *rhs,
-                                  size_t size, float *out);
-void EuclideanDistanceNEON(const Float16 *lhs, const Float16 *rhs, size_t size,
-                           float *out);
+float SquaredEuclideanDistanceFp16NEON(const Float16 *lhs, const Float16 *rhs,
+                                       size_t size);
 #endif
 
 #if defined(__AVX512FP16__)
-float SquaredEuclideanDistanceAVX512FP16(const Float16 *lhs, const Float16 *rhs,
-                                         size_t size);
+float SquaredEuclideanDistanceFp16AVX512FP16(const Float16 *lhs,
+                                             const Float16 *rhs, size_t size);
 #endif
 
 #if defined(__AVX512F__)
-void SquaredEuclideanDistanceAVX512(const Float16 *lhs, const Float16 *rhs,
-                                    size_t size, float *out);
-
-void EuclideanDistanceAVX512(const Float16 *lhs, const Float16 *rhs,
-                             size_t size, float *out);
+float SquaredEuclideanDistanceFp16AVX512(const Float16 *lhs, const Float16 *rhs,
+                                         size_t size);
 #endif
 
 #if defined(__AVX__)
-void SquaredEuclideanDistanceAVX(const Float16 *lhs, const Float16 *rhs,
-                                 size_t size, float *out);
-void EuclideanDistanceAVX(const Float16 *lhs, const Float16 *rhs, size_t size,
-                          float *out);
+float SquaredEuclideanDistanceFp16AVX(const Float16 *lhs, const Float16 *rhs,
+                                      size_t size);
 #endif
 
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+float SquaredEuclideanDistanceFp16Scalar(const Float16 *lhs, const Float16 *rhs,
+                                         size_t size);
+
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
 void SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                             const ValueType *q,
                                                             size_t dim,
                                                             float *out) {
 #if defined(__ARM_NEON)
-  SquaredEuclideanDistanceNEON(m, q, dim, out);
+  *out = SquaredEuclideanDistanceFp16NEON(m, q, dim);
 #else
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
-    *out = SquaredEuclideanDistanceAVX512FP16(m, q, dim);
+    *out = SquaredEuclideanDistanceFp16AVX512FP16(m, q, dim);
     return;
   }
 #endif
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
-    SquaredEuclideanDistanceAVX512(m, q, dim, out);
-    // ACCUM_FP16_1X1_AVX512(m, q, dim, out, 0ull, )
+    *out = SquaredEuclideanDistanceFp16AVX512(m, q, dim);
     return;
   }
 #endif
-  SquaredEuclideanDistanceAVX(m, q, dim, out);
-  // ACCUM_FP16_1X1_AVX(m, q, dim, out, 0ull, )
+
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = SquaredEuclideanDistanceFp16AVX(m, q, dim);
+    return;
+  }
+#endif
+  *out = SquaredEuclideanDistanceFp16Scalar(m, q, dim);
+
 #endif  //__ARM_NEON
 }
 
@@ -80,8 +80,6 @@ void EuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
   SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(m, q, dim, out);
   *out = std::sqrt(*out);
 }
-
-#endif
 
 }  // namespace ailego
 }  // namespace zvec

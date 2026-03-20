@@ -18,10 +18,16 @@
 
 namespace zvec {
 namespace ailego {
-
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__AVX2__)
+float InnerProductInt4SSEInternal(const uint8_t *lhs, const uint8_t *rhs,
+                                  size_t size);
+
 //! Inner Product
-float InnerProductAVX2(const uint8_t *lhs, const uint8_t *rhs, size_t size) {
+float InnerProductInt4AVX2Internal(const uint8_t *lhs, const uint8_t *rhs,
+                                   size_t size) {
   const uint8_t *last = lhs + size;
   const uint8_t *last_aligned = lhs + ((size >> 5) << 5);
   __m256i ymm_sum = _mm256_setzero_si256();
@@ -112,9 +118,18 @@ float InnerProductAVX2(const uint8_t *lhs, const uint8_t *rhs, size_t size) {
   return result;
 }
 
-float MinusInnerProductAVX2(const uint8_t *lhs, const uint8_t *rhs,
-                            size_t size) {
-  return -InnerProductAVX2(lhs, rhs, size);
+float InnerProductInt4AVX2(const uint8_t *lhs, const uint8_t *rhs,
+                           size_t size) {
+  if (size > 63) {
+    return InnerProductInt4AVX2Internal(lhs, rhs, size >> 1);
+  }
+
+  return InnerProductInt4SSEInternal(lhs, rhs, size >> 1);
+}
+
+float MinusInnerProductInt4AVX2(const uint8_t *lhs, const uint8_t *rhs,
+                                size_t size) {
+  return -InnerProductInt4AVX2(lhs, rhs, size);
 }
 
 #endif  // __AVX2__

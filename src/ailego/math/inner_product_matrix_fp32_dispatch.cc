@@ -17,82 +17,139 @@
 
 namespace zvec {
 namespace ailego {
-
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__ARM_NEON)
-float InnerProductNEON(const float *lhs, const float *rhs, size_t size);
-float MinusInnerProductNEON(const float *lhs, const float *rhs, size_t size);
+float InnerProductFp32NEON(const float *lhs, const float *rhs, size_t size);
+float MinusInnerProductFp32NEON(const float *lhs, const float *rhs,
+                                size_t size);
 #endif
 
 #if defined(__AVX512F__)
-float InnerProductAVX512(const float *lhs, const float *rhs, size_t size);
-float MinusInnerProductAVX512(const float *lhs, const float *rhs, size_t size);
+float InnerProductFp32AVX512(const float *lhs, const float *rhs, size_t size);
+float MinusInnerProductFp32AVX512(const float *lhs, const float *rhs,
+                                  size_t size);
 #endif
 
 #if defined(__AVX__)
-float InnerProductAVX(const float *lhs, const float *rhs, size_t size);
-float MinusInnerProductAVX(const float *lhs, const float *rhs, size_t size);
+float InnerProductFp32AVX(const float *lhs, const float *rhs, size_t size);
+float MinusInnerProductFp32AVX(const float *lhs, const float *rhs, size_t size);
 #endif
 
 #if defined(__SSE__)
-float InnerProductSSE(const float *lhs, const float *rhs, size_t size);
-float MinusInnerProductSSE(const float *lhs, const float *rhs, size_t size);
+float InnerProductFp32SSE(const float *lhs, const float *rhs, size_t size);
+float MinusInnerProductFp32SSE(const float *lhs, const float *rhs, size_t size);
 #endif
 
-#if defined(__SSE__) || defined(__ARM_NEON)
+float InnerProductFp32Scalar(const float *lhs, const float *rhs, size_t size);
+float MinusInnerProductFp32Scalar(const float *lhs, const float *rhs,
+                                  size_t size);
+
 //! Compute the distance between matrix and query (FP32, M=1, N=1)
-void InnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
-                                              const ValueType *q, size_t dim,
-                                              float *out) {
+void InnerProductMatrix<float, 1, 1>::Compute(const float *m, const float *q,
+                                              size_t dim, float *out) {
 #if defined(__ARM_NEON)
-  *out = InnerProductNEON(m, q, dim);
+  *out = InnerProductFp32NEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
-    if (dim > 15) {
-      *out = InnerProductAVX512(m, q, dim);
-      return;
-    }
+    *out = InnerProductFp32AVX512(m, q, dim);
+    return;
   }
 #endif  // __AVX512F__
+
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
-    if (dim > 7) {
-      *out = InnerProductAVX(m, q, dim);
-      return;
-    }
+    *out = InnerProductFp32AVX(m, q, dim);
+    return;
   }
 #endif  // __AVX__
-  *out = InnerProductSSE(m, q, dim);
+
+#if defined(__SSE__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE) {
+    *out = InnerProductFp32SSE(m, q, dim);
+    return;
+  }
+#endif  // __SSE__
+  *out = InnerProductFp32Scalar(m, q, dim);
 #endif  // __ARM_NEON
 }
 
 //! Compute the distance between matrix and query (FP32, M=1, N=1)
-void MinusInnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
-                                                   const ValueType *q,
-                                                   size_t dim, float *out) {
+void MinusInnerProductMatrix<float, 1, 1>::Compute(const float *m,
+                                                   const float *q, size_t dim,
+                                                   float *out) {
 #if defined(__ARM_NEON)
-  *out = MinusInnerProductNEON(m, q, dim);
+  *out = MinusInnerProductFp32NEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
-    if (dim > 15) {
-      *out = MinusInnerProductAVX512(m, q, dim);
-      return;
-    }
+    *out = MinusInnerProductFp32AVX512(m, q, dim);
+    return;
   }
 #endif  // __AVX512F__
+
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
-    if (dim > 7) {
-      *out = MinusInnerProductAVX(m, q, dim);
-      return;
-    }
+    *out = MinusInnerProductFp32AVX(m, q, dim);
+    return;
   }
 #endif  // __AVX__
-  *out = MinusInnerProductSSE(m, q, dim);
+
+#if defined(__SSE__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE) {
+    *out = MinusInnerProductFp32SSE(m, q, dim);
+    return;
+  }
+#endif  // __SSE__
+  *out = MinusInnerProductFp32Scalar(m, q, dim);
 #endif  // __ARM_NEON
 }
 
+//--------------------------------------------------
+// Sparse
+//--------------------------------------------------
+#if defined(__SSE4_1__)
+float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const float *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const float *q_sparse_value);
 #endif
+float InnerProductSparseInSegmentFp32Scalar(uint32_t m_sparse_count,
+                                            const uint16_t *m_sparse_index,
+                                            const float *m_sparse_value,
+                                            uint32_t q_sparse_count,
+                                            const uint16_t *q_sparse_index,
+                                            const float *q_sparse_value);
+
+float MinusInnerProductSparseFp32Scalar(const void *m_sparse_data_in,
+                                        const void *q_sparse_data_in);
+
+void MinusInnerProductSparseMatrix<float>::Compute(const void *m_sparse_data_in,
+                                                   const void *q_sparse_data_in,
+                                                   float *out) {
+  *out = MinusInnerProductSparseFp32Scalar(m_sparse_data_in, q_sparse_data_in);
+}
+
+float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
+                                             const uint16_t *m_sparse_index,
+                                             const float *m_sparse_value,
+                                             uint32_t q_sparse_count,
+                                             const uint16_t *q_sparse_index,
+                                             const float *q_sparse_value) {
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
+    return InnerProductSparseInSegmentFp32SSE(m_sparse_count, m_sparse_index,
+                                              m_sparse_value, q_sparse_count,
+                                              q_sparse_index, q_sparse_value);
+  }
+#endif
+  return InnerProductSparseInSegmentFp32Scalar(m_sparse_count, m_sparse_index,
+                                               m_sparse_value, q_sparse_count,
+                                               q_sparse_index, q_sparse_value);
+}
 }  // namespace ailego
 }  // namespace zvec

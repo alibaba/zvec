@@ -19,9 +19,13 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__SSE4_1__)
 //! Inner Product
-float InnerProductSSE(const int8_t *lhs, const int8_t *rhs, size_t size) {
+float InnerProductInt8SSEInternal(const int8_t *lhs, const int8_t *rhs,
+                                  size_t size) {
   const int8_t *last = lhs + size;
   const int8_t *last_aligned = lhs + ((size >> 5) << 5);
 
@@ -147,8 +151,13 @@ float InnerProductSSE(const int8_t *lhs, const int8_t *rhs, size_t size) {
   return result;
 }
 
-float MinusInnerProductSSE(const int8_t *lhs, const int8_t *rhs, size_t size) {
-  return -InnerProductSSE(lhs, rhs, size);
+float InnerProductInt8SSE(const int8_t *lhs, const int8_t *rhs, size_t size) {
+  return InnerProductInt8SSEInternal(lhs, rhs, size);
+}
+
+float MinusInnerProductInt8SSE(const int8_t *lhs, const int8_t *rhs,
+                               size_t size) {
+  return -InnerProductInt8SSEInternal(lhs, rhs, size);
 }
 
 #endif  // __SSE4_1__

@@ -51,7 +51,7 @@ test = [
     "pytest >=8.0",
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
-    "cibuildwheel == 2.17.0",
+    "cibuildwheel == 3.4.0",
 ]
 docs = [
     "mkdocs >=1.5",
@@ -70,7 +70,7 @@ dev = [
     "pytest >=8.0",
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
-    "cibuildwheel == 2.17.0",
+    "cibuildwheel == 3.4.0",
     # Inherit docs deps
     "mkdocs >=1.5",
     "mkdocs-material >=9.5",
@@ -130,6 +130,7 @@ BUILD_PYTHON_BINDINGS = "ON"
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
 version_scheme = "guess-next-dev"
+fallback_version = "0.2.1b1"
 ######################################################################################################
 # TESTING & QUALITY
 ######################################################################################################
@@ -169,11 +170,12 @@ build = [
 ]
 build-frontend = "build"
 test-requires = ["pytest", "numpy"]
+test-command = "cd {project} && pytest python/tests -v --tb=short"
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
 archs = ["auto"]
-test-command = "cd {project} && pytest python/tests -v --tb=short"
+environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16" }
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 # Skip 32-bit builds and musllinux
@@ -181,7 +183,9 @@ skip = ["*-manylinux_i686", "*-musllinux*"]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+# Inherits CMAKE_GENERATOR and CMAKE_BUILD_PARALLEL_LEVEL from [tool.cibuildwheel] won't work;
+# platform-level environment overrides the top-level entirely, so all vars must be listed here
+environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16", MACOSX_DEPLOYMENT_TARGET = "11.0" }
 ######################################################################################################
 # CODE QUALITY & FORMATTING (Ruff)
 ######################################################################################################

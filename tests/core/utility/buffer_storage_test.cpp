@@ -22,7 +22,6 @@ using namespace zvec;
 using namespace zvec::core;
 
 TEST(BufferStorage, General) {
-  ailego::BufferManager::Instance().init(10 * 1024 * 1024, 1);
   std::string file_path = "buffer_storage_test_file";
   ailego::File::Delete(file_path);
 

@@ -35,8 +35,8 @@ option(ENABLE_OPENMP "Enable OpenMP support" OFF)
 
 set(ARCH_OPTIONS
   ENABLE_NEHALEM ENABLE_SANDYBRIDGE ENABLE_HASWELL ENABLE_BROADWELL ENABLE_SKYLAKE
-  ENABLE_SKYLAKE_AVX512 ENABLE_ICELAKE ENABLE_SAPPHIRERAPIDS ENABLE_EMERALDRAPIDS
-  ENABLE_GRANITERAPIDS ENABLE_ZEN1 ENABLE_ZEN2 ENABLE_ZEN3
+  ENABLE_SKYLAKE_AVX512 ENABLE_ICELAKE ENABLE_SAPPHIRERAPIDS ENABLE_EMERALDRAPIDS ENABLE_GRANITERAPIDS
+  ENABLE_ZEN1 ENABLE_ZEN2 ENABLE_ZEN3
   ENABLE_ARMV8A ENABLE_ARMV8.1A ENABLE_ARMV8.2A ENABLE_ARMV8.3A ENABLE_ARMV8.4A
   ENABLE_ARMV8.5A ENABLE_ARMV8.6A
   ENABLE_NATIVE
@@ -103,7 +103,7 @@ function(_setup_x86_march)
   endif()
 endfunction()
 
-function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512)
+function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512 VAR_NAME_AVX512FP16)
   #sse
   set(${VAR_NAME_SSE} "-march=corei7" PARENT_SCOPE)
 
@@ -111,22 +111,26 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
   set(${VAR_NAME_AVX2} "-march=core-avx2" PARENT_SCOPE)
 
   #avx512
-  set(_x86_flags
-    "graniterapids" "emeraldrapids" "sapphirerapids"
-    "icelake-server" "skylake-avx512"
-  )
-  foreach(_arch IN LISTS _x86_flags)
-    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
-    if(_COMP_SUPP_${_arch})
-      set(${VAR_NAME_AVX512} "-march=${_arch}" PARENT_SCOPE)
-      return()
+  set(_x86_flags_avx512 "icelake-server" "skylake-avx512" "core-avx2" "x86-64")
+  foreach(_arch_avx512 IN LISTS _x86_flags_avx512)
+    check_c_compiler_flag("-march=${_arch_avx512}" _COMP_SUPP_${_arch_avx512})
+    if(_COMP_SUPP_${_arch_avx512})
+      set(${VAR_NAME_AVX512} "-march=${_arch_avx512}" PARENT_SCOPE)
+      break()
     endif()
   endforeach()
 
-
-  set(${VAR_NAME_AVX512} "-march=core-avx2" PARENT_SCOPE)
-  message(WARNING "No known avx512 microarchitecture flag found. Set up as core-avx2")
-
+  #avx512fp16
+  set(_x86_flags_avx512fp16
+    "sapphirerapids" "icelake-server" "skylake-avx512" "core-avx2" "x86-64"
+  )
+  foreach(_arch_avx512fp16 IN LISTS _x86_flags_avx512fp16)
+    check_c_compiler_flag("-march=${_arch_avx512fp16}" _COMP_SUPP_${_arch_avx512fp16})
+    if(_COMP_SUPP_${_arch_avx512fp16})
+      set(${VAR_NAME_AVX512FP16} "-march=${_arch_avx512fp16}" PARENT_SCOPE)
+      break()
+    endif()
+  endforeach()
 endfunction()
 
 if(MSVC)

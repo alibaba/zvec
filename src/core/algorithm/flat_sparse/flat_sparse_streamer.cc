@@ -195,8 +195,10 @@ int FlatSparseStreamer::add_impl(uint64_t pkey, const uint32_t sparse_count,
   }
 
   if (ailego_unlikely(sparse_count > PARAM_FLAT_SPARSE_MAX_DIM_SIZE)) {
-    LOG_ERROR("Add vector failed, dim size too larg, dim_size=%u, key=%zu",
-              sparse_count, (size_t)pkey);
+    LOG_ERROR(
+        "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
+        "maximum allowed (%u), key=%zu",
+        sparse_count, PARAM_FLAT_SPARSE_MAX_DIM_SIZE, (size_t)pkey);
     (*stats_.mutable_discarded_count())++;
     return IndexError_InvalidValue;
   }
@@ -252,8 +254,10 @@ int FlatSparseStreamer::add_with_id_impl(uint32_t pkey,
   }
 
   if (ailego_unlikely(sparse_count > PARAM_FLAT_SPARSE_MAX_DIM_SIZE)) {
-    LOG_ERROR("Add vector failed, dim size too larg, dim_size=%u, key=%zu",
-              sparse_count, (size_t)pkey);
+    LOG_ERROR(
+        "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
+        "maximum allowed (%u), key=%zu",
+        sparse_count, PARAM_FLAT_SPARSE_MAX_DIM_SIZE, (size_t)pkey);
     (*stats_.mutable_discarded_count())++;
     return IndexError_InvalidValue;
   }

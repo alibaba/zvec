@@ -18,65 +18,67 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__ARM_NEON)
-float InnerProductNEON(const Float16 *lhs, const Float16 *rhs, size_t size);
-float MinusInnerProductNEON(const Float16 *lhs, const Float16 *rhs,
-                            size_t size);
+float InnerProductFp16NEON(const Float16 *lhs, const Float16 *rhs, size_t size);
+float MinusInnerProductFp16NEON(const Float16 *lhs, const Float16 *rhs,
+                                size_t size);
 #endif
 
 #if defined(__AVX__)
-void InnerProductAVX(const Float16 *lhs, const Float16 *rhs, size_t size,
-                     float *out);
-void MinusInnerProductAVX(const Float16 *lhs, const Float16 *rhs, size_t size,
-                          float *out);
-float InnerProductSparseInSegmentAVX(uint32_t m_sparse_count,
-                                     const uint16_t *m_sparse_index,
-                                     const Float16 *m_sparse_value,
-                                     uint32_t q_sparse_count,
-                                     const uint16_t *q_sparse_index,
-                                     const Float16 *q_sparse_value);
+float InnerProductFp16AVX(const Float16 *lhs, const Float16 *rhs, size_t size);
+float MinusInnerProductFp16AVX(const Float16 *lhs, const Float16 *rhs,
+                               size_t size);
 #endif
 
 #if defined(__AVX512F__)
-void InnerProductAVX512(const Float16 *lhs, const Float16 *rhs, size_t size,
-                        float *out);
-void MinusInnerProductAVX512(const Float16 *lhs, const Float16 *rhs,
-                             size_t size, float *out);
+float InnerProductFp16AVX512(const Float16 *lhs, const Float16 *rhs,
+                             size_t size);
+float MinusInnerProductFp16AVX512(const Float16 *lhs, const Float16 *rhs,
+                                  size_t size);
 #endif
 
 #if defined(__AVX512FP16__)
-float InnerProductAVX512FP16(const Float16 *lhs, const Float16 *rhs,
-                             size_t size);
-float InnerProductSparseInSegmentAVX512FP16(uint32_t m_sparse_count,
-                                            const uint16_t *m_sparse_index,
-                                            const Float16 *m_sparse_value,
-                                            uint32_t q_sparse_count,
-                                            const uint16_t *q_sparse_index,
-                                            const Float16 *q_sparse_value);
+float InnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
+                                 size_t size);
+float MinusInnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
+                                      size_t size);
 #endif
 
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+float InnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
+                             size_t size);
+float MinusInnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
+                                  size_t size);
+
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
 void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                 const ValueType *q, size_t dim,
                                                 float *out) {
 #if defined(__ARM_NEON)
-  *out = InnerProductNEON(m, q, dim);
+  *out = InnerProductFp16NEON(m, q, dim);
 #else
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
-    *out = InnerProductAVX512FP16(m, q, dim);
+    *out = InnerProductFp16AVX512FP16(m, q, dim);
     return;
   }
 #endif  //__AVX512FP16__
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
-    InnerProductAVX512(m, q, dim, out);
+    *out = InnerProductFp16AVX512(m, q, dim);
     return;
   }
 #endif  //__AVX512F__
-  InnerProductAVX(m, q, dim, out);
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = InnerProductFp16AVX(m, q, dim);
+    return;
+  }
+#endif  //__AVX__
+  *out = InnerProductFp16Scalar(m, q, dim);
+
 #endif  //__ARM_NEON
 }
 
@@ -85,77 +87,92 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                      const ValueType *q,
                                                      size_t dim, float *out) {
 #if defined(__ARM_NEON)
-  *out = MinusInnerProductNEON(m, q, dim);
+  *out = MinusInnerProductFp16NEON(m, q, dim);
 #else
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
-    *out = -InnerProductAVX512FP16(m, q, dim);
+    *out = MinusInnerProductFp16AVX512FP16(m, q, dim);
     return;
   }
 #endif  //__AVX512FP16__
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
-    MinusInnerProductAVX512(m, q, dim, out);
+    *out = MinusInnerProductFp16AVX512(m, q, dim);
     return;
   }
 #endif  //__AVX512F__
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    *out = MinusInnerProductFp16AVX(m, q, dim);
+    return;
+  }
+#endif  //__AVX__
 
-  MinusInnerProductAVX(m, q, dim, out);
+  *out = MinusInnerProductFp16Scalar(m, q, dim);
 
 #endif  //__ARM_NEON
 }
 
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+//--------------------------------------------------
+// Sparse
+//--------------------------------------------------
+#if defined(__AVX512FP16__)
+float InnerProductSparseInSegmentFp16AVX512FP16(uint32_t m_sparse_count,
+                                                const uint16_t *m_sparse_index,
+                                                const Float16 *m_sparse_value,
+                                                uint32_t q_sparse_count,
+                                                const uint16_t *q_sparse_index,
+                                                const Float16 *q_sparse_value);
+#endif  //__AVX512FP16__
 
-// sparse
-float InnerProductSparseInSegment(uint32_t m_sparse_count,
-                                  const uint16_t *m_sparse_index,
-                                  const Float16 *m_sparse_value,
-                                  uint32_t q_sparse_count,
-                                  const uint16_t *q_sparse_index,
-                                  const Float16 *q_sparse_value) {
-  float sum = 0.0f;
+#if defined(__AVX__)
+float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const Float16 *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const Float16 *q_sparse_value);
+#endif  //__AVX__
 
-  size_t m_i = 0;
-  size_t q_i = 0;
-  while (m_i < m_sparse_count && q_i < q_sparse_count) {
-    if (m_sparse_index[m_i] == q_sparse_index[q_i]) {
-      sum += m_sparse_value[m_i] * q_sparse_value[q_i];
+float InnerProductSparseInSegmentFp16Scalar(uint32_t m_sparse_count,
+                                            const uint16_t *m_sparse_index,
+                                            const Float16 *m_sparse_value,
+                                            uint32_t q_sparse_count,
+                                            const uint16_t *q_sparse_index,
+                                            const Float16 *q_sparse_value);
 
-      ++m_i;
-      ++q_i;
-    } else if (m_sparse_index[m_i] < q_sparse_index[q_i]) {
-      ++m_i;
-    } else {
-      ++q_i;
-    }
-  }
+float MinusInnerProductSparseFp16Scalar(const void *m_sparse_data_in,
+                                        const void *q_sparse_data_in);
 
-  return sum;
+//! Compute the distance between matrix and query
+void MinusInnerProductSparseMatrix<Float16>::Compute(
+    const void *m_sparse_data_in, const void *q_sparse_data_in, float *out) {
+  *out = MinusInnerProductSparseFp16Scalar(m_sparse_data_in, q_sparse_data_in);
 }
 
-template <>
-float MinusInnerProductSparseMatrix<Float16>::
-    ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
-                                       const uint16_t *m_sparse_index,
-                                       const ValueType *m_sparse_value,
-                                       uint32_t q_sparse_count,
-                                       const uint16_t *q_sparse_index,
-                                       const ValueType *q_sparse_value) {
+float ComputeInnerProductSparseInSegmentFp16(uint32_t m_sparse_count,
+                                             const uint16_t *m_sparse_index,
+                                             const Float16 *m_sparse_value,
+                                             uint32_t q_sparse_count,
+                                             const uint16_t *q_sparse_index,
+                                             const Float16 *q_sparse_value) {
 #if defined(__AVX512FP16__)
-  return InnerProductSparseInSegmentAVX512FP16(m_sparse_count, m_sparse_index,
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    return InnerProductSparseInSegmentFp16AVX512FP16(
+        m_sparse_count, m_sparse_index, m_sparse_value, q_sparse_count,
+        q_sparse_index, q_sparse_value);
+  }
+#endif
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    return InnerProductSparseInSegmentFp16AVX(m_sparse_count, m_sparse_index,
+                                              m_sparse_value, q_sparse_count,
+                                              q_sparse_index, q_sparse_value);
+  }
+#endif
+  return InnerProductSparseInSegmentFp16Scalar(m_sparse_count, m_sparse_index,
                                                m_sparse_value, q_sparse_count,
                                                q_sparse_index, q_sparse_value);
-#elif defined(__AVX__)
-  return InnerProductSparseInSegmentAVX(m_sparse_count, m_sparse_index,
-                                        m_sparse_value, q_sparse_count,
-                                        q_sparse_index, q_sparse_value);
-
-#else
-  return InnerProductSparseInSegment(m_sparse_count, m_sparse_index,
-                                     m_sparse_value, q_sparse_count,
-                                     q_sparse_index, q_sparse_value);
-#endif
 }
 
 }  // namespace ailego

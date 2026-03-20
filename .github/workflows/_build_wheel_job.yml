@@ -1,0 +1,102 @@
+name: "(Reusable) Build, Publish and Smoke-test a Wheel"
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "GitHub Actions runner label"
+        required: true
+        type: string
+      pypi_repository_url:
+        description: "PyPI repository URL (empty string means official PyPI)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      PYPI_API_TOKEN:
+        required: true
+
+jobs:
+  build_publish_test:
+    name: Build / publish / smoke-test on ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Python (for cibuildwheel controller)
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install cibuildwheel
+        run: |
+          pip install --upgrade pip
+          pip install cibuildwheel==3.4.0
+
+      - name: Build wheels using cibuildwheel
+        run: |
+          python -m cibuildwheel --output-dir wheelhouse
+          # Save list of built wheels for publishing
+          ls wheelhouse/*.whl | tee $GITHUB_STEP_SUMMARY
+          echo "wheels=$(ls wheelhouse/*.whl | tr '\n' ' ')" >> $GITHUB_ENV
+
+      - name: Publish to PyPI
+        if: success() && github.event_name == 'workflow_dispatch'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          TWINE_REPOSITORY_URL: ${{ inputs.pypi_repository_url }}
+        run: |
+          pip install twine
+          twine upload --skip-existing --verbose wheelhouse/*.whl
+
+      - name: Smoke test from PyPI
+        if: success() && github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          PYPI_REPOSITORY_URL: ${{ inputs.pypi_repository_url }}
+        run: |
+          # Extract version from wheel filename (e.g. zvec-0.2.1.dev24-cp311-...whl -> 0.2.1.dev24)
+          WHEEL_FILE=$(ls wheelhouse/zvec-*.whl | head -1)
+          ZVEC_VERSION=$(basename "$WHEEL_FILE" | sed 's/zvec-\([^-]*\)-.*/\1/')
+
+          # Build index-url flags: use TestPyPI when repository URL is set, otherwise official PyPI
+          if [ -n "$PYPI_REPOSITORY_URL" ]; then
+            INDEX_FLAGS="--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/"
+            echo "Waiting for zvec==$ZVEC_VERSION to become available on TestPyPI..."
+          else
+            INDEX_FLAGS=""
+            echo "Waiting for zvec==$ZVEC_VERSION to become available on PyPI..."
+          fi
+          # Poll until the version is available (max 5 minutes)
+          FOUND=0
+          for i in $(seq 1 30); do
+            if pip install $INDEX_FLAGS --dry-run "zvec==$ZVEC_VERSION" > /dev/null 2>&1; then
+              echo "Version $ZVEC_VERSION is available."
+              FOUND=1
+              break
+            fi
+            echo "Attempt $i/30: not yet available, retrying in 10s..."
+            sleep 10
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: Timed out (5 min) waiting for zvec==$ZVEC_VERSION on PyPI. Aborting smoke test."
+            exit 1
+          fi
+
+          # Create a clean venv and install
+          python -m venv test_env
+          source test_env/bin/activate
+          pip install --upgrade pip
+          pip install $INDEX_FLAGS "zvec==$ZVEC_VERSION"
+          pip install --upgrade pip
+          pip install $INDEX_FLAGS "zvec==$ZVEC_VERSION"
+          # Run a simple smoke test
+          python -c "import zvec; print('Import OK:', zvec.__version__)"

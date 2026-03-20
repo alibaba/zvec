@@ -24,6 +24,9 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 /*! Compute the Mips SphericalInjection Squared Euclidean Distance with the two
  *  vectors's InnerProduct and each squared l2-normlized value, and the e2 is
  *  1.0 / max_squared_l2_norm
@@ -91,6 +94,62 @@ struct MipsSquaredEuclideanDistanceMatrix<T, 1, 1> {
     }
     *out = sum;
   }
+};
+
+template <>
+struct MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1> {
+  //! Type of value
+  using ValueType = uint8_t;
+
+  // Compute the distance between matrix and query by SphericalInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      float e2, float *out);
+
+  // Compute the distance between matrix and query by RepeatedQuadraticInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      size_t m, float e2, float *out);
+};
+
+template <>
+struct MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1> {
+  //! Type of value
+  using ValueType = int8_t;
+
+  // Compute the distance between matrix and query by SphericalInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      float e2, float *out);
+
+  // Compute the distance between matrix and query by RepeatedQuadraticInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      size_t m, float e2, float *out);
+};
+
+template <>
+struct MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1> {
+  //! Type of value
+  using ValueType = Float16;
+
+  // Compute the distance between matrix and query by SphericalInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      float e2, float *out);
+
+  // Compute the distance between matrix and query by RepeatedQuadraticInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      size_t m, float e2, float *out);
+};
+
+template <>
+struct MipsSquaredEuclideanDistanceMatrix<float, 1, 1> {
+  //! Type of value
+  using ValueType = float;
+
+  // Compute the distance between matrix and query by SphericalInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      float e2, float *out);
+
+  // Compute the distance between matrix and query by RepeatedQuadraticInjection
+  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
+                      size_t m, float e2, float *out);
 };
 
 /*! Mips Squared Euclidean Distance Matrix (M >= 2, N >= 2)
@@ -773,71 +832,6 @@ struct MipsSquaredEuclideanDistanceMatrix<
   }
 };
 
-#if !defined(__SSE4_1__)
-/*! Mips Squared Euclidean Distance Matrix (INT4, M=1, N=1)
- */
-template <>
-struct MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1> {
-  //! Type of value
-  using ValueType = uint8_t;
-
-  // Compute the distance between matrix and query by SphericalInjection
-  static inline void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                             float e2, float *out) {
-    ailego_assert(p && q && dim && !(dim & 1) && out);
-
-    float sum = 0.0;
-    float u2 = 0.0;
-    float v2 = 0.0;
-    for (size_t i = 0; i < (dim >> 1); ++i) {
-      const uint8_t p_val = p[i];
-      const uint8_t q_val = q[i];
-      u2 += Squared(p_val);
-      v2 += Squared(q_val);
-      sum += Int4MulTable[((p_val << 4) & 0xf0) | ((q_val >> 0) & 0xf)] +
-             Int4MulTable[((p_val >> 0) & 0xf0) | ((q_val >> 4) & 0xf)];
-    }
-    *out = ComputeSphericalInjection(sum, u2, v2, e2);
-  }
-
-  // Compute the distance between matrix and query by RepeatedQuadraticInjection
-  static inline void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                             size_t m, float e2, float *out) {
-    ailego_assert(p && q && dim && !(dim & 1) && out);
-
-    float sum = 0.0;
-    float u2 = 0.0;
-    float v2 = 0.0;
-    for (size_t i = 0; i < (dim >> 1); ++i) {
-      const uint8_t p_val = p[i];
-      const uint8_t q_val = q[i];
-      u2 += Squared(p_val);
-      v2 += Squared(q_val);
-      sum +=
-          Int4SquaredDiffTable[((p_val << 4) & 0xf0) | ((q_val >> 0) & 0xf)] +
-          Int4SquaredDiffTable[((p_val >> 0) & 0xf0) | ((q_val >> 4) & 0xf)];
-    }
-    sum *= e2;
-    u2 *= e2;
-    v2 *= e2;
-    for (size_t i = 0; i < m; ++i) {
-      sum += (u2 - v2) * (u2 - v2);
-      u2 = u2 * u2;
-      v2 = v2 * v2;
-    }
-    *out = sum;
-  }
-
- protected:
-  //! Calculate sum of squared values
-  static inline float Squared(uint8_t v) {
-    return static_cast<float>(
-        ((int8_t)(v << 4) >> 4) * ((int8_t)(v << 4) >> 4) +
-        ((int8_t)(v & 0xf0) >> 4) * ((int8_t)(v & 0xf0) >> 4));
-  }
-};
-#endif  // !__SSE4_1__
-
 /*! Mips Squared Euclidean Distance Matrix (INT4, N=1)
  */
 template <size_t M>
@@ -968,77 +962,9 @@ struct MipsSquaredEuclideanDistanceMatrix<
   }
 };
 
-#if defined(__SSE__) || defined(__ARM_NEON)
-/*! Mips Squared Euclidean Distance Matrix (FP32, M=1, N=1)
- */
-template <>
-struct MipsSquaredEuclideanDistanceMatrix<float, 1, 1> {
-  //! Type of value
-  using ValueType = float;
-
-  // Compute the distance between matrix and query by SphericalInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      float e2, float *out);
-
-  // Compute the distance between matrix and query by RepeatedQuadraticInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      size_t m, float e2, float *out);
-};
-#endif  // __SSE__ || __ARM_NEON
-
-#if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
-/*! Mips Squared Euclidean Distance Matrix (FP16, M=1, N=1)
- */
-template <>
-struct MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1> {
-  //! Type of value
-  using ValueType = Float16;
-
-  // Compute the distance between matrix and query by SphericalInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      float e2, float *out);
-
-  // Compute the distance between matrix and query by RepeatedQuadraticInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      size_t m, float e2, float *out);
-};
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
-
-#if defined(__SSE4_1__)
-/*! Mips Squared Euclidean Distance Matrix (INT8, M=1, N=1)
- */
-template <>
-struct MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1> {
-  //! Type of value
-  using ValueType = int8_t;
-
-  // Compute the distance between matrix and query by SphericalInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      float e2, float *out);
-
-  // Compute the distance between matrix and query by RepeatedQuadraticInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      size_t m, float e2, float *out);
-};
-
-/*! Mips Squared Euclidean Distance Matrix (INT4, M=1, N=1)
- */
-template <>
-struct MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1> {
-  //! Type of value
-  using ValueType = uint8_t;
-
-  // Compute the distance between matrix and query by SphericalInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      float e2, float *out);
-
-  // Compute the distance between matrix and query by RepeatedQuadraticInjection
-  static void Compute(const ValueType *p, const ValueType *q, size_t dim,
-                      size_t m, float e2, float *out);
-};
-#endif
-
+//--------------------------------------------------
+// Sparse
+//--------------------------------------------------
 /*! Mips Squared Euclidean Sparse Distance Matrix
  */
 template <typename T>
@@ -1176,7 +1102,6 @@ float MipsSquaredEuclideanSparseDistanceMatrix<
   return sum;
 }
 
-#if defined(__SSE4_1__)
 template <>
 float MipsSquaredEuclideanSparseDistanceMatrix<
     float>::ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
@@ -1185,8 +1110,6 @@ float MipsSquaredEuclideanSparseDistanceMatrix<
                                                uint32_t q_sparse_count,
                                                const uint16_t *q_sparse_index,
                                                const ValueType *q_sparse_value);
-
-#endif
 
 }  // namespace ailego
 }  // namespace zvec
