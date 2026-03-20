@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <ailego/internal/cpu_features.h>
-#include <ailego/math/squared_euclidean_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/math_batch/utils.h>
@@ -46,14 +45,14 @@ void compute_one_to_many_squared_euclidean_avx512f_fp16_12(
     size_t dimensionality, float *results);
 
 void compute_one_to_many_squared_euclidean_avx512f_fp32_1(
-    const ailego::Float16 *query, const ailego::Float16 **ptrs,
-    std::array<const ailego::Float16 *, 1> &prefetch_ptrs,
-    size_t dimensionality, float *results);
+    const float *query, const float **ptrs,
+    std::array<const float *, 1> &prefetch_ptrs, size_t dimensionality,
+    float *results);
 
 void compute_one_to_many_squared_euclidean_avx512f_fp32_12(
-    const ailego::Float16 *query, const ailego::Float16 **ptrs,
-    std::array<const ailego::Float16 *, 12> &prefetch_ptrs,
-    size_t dimensionality, float *results);
+    const float *query, const float **ptrs,
+    std::array<const float *, 12> &prefetch_ptrs, size_t dimensionality,
+    float *results);
 #endif  //__AVX512F__
 
 #if defined(__AVX2__)
@@ -97,8 +96,8 @@ void SquaredEuclideanDistanceBatchImpl<float, 1>::compute_one_to_many(
         query, ptrs, prefetch_ptrs, dim, sums);
   }
 #endif
-  return compute_one_to_many_squared_euclidean_fallback(query, ptrs, prefetch_ptrs,
-                                                    dim, sums);
+  return compute_one_to_many_squared_euclidean_fallback(
+      query, ptrs, prefetch_ptrs, dim, sums);
 }
 
 void SquaredEuclideanDistanceBatchImpl<ailego::Float16, 1>::compute_one_to_many(
@@ -123,13 +122,13 @@ void SquaredEuclideanDistanceBatchImpl<ailego::Float16, 1>::compute_one_to_many(
         query, ptrs, prefetch_ptrs, dim, sums);
   }
 #endif
-  return compute_one_to_many_squared_euclidean_fallback(query, ptrs, prefetch_ptrs,
-                                                    dim, sums);
+  return compute_one_to_many_squared_euclidean_fallback(
+      query, ptrs, prefetch_ptrs, dim, sums);
 }
 
 void SquaredEuclideanDistanceBatchImpl<float, 12>::compute_one_to_many(
-    const ValueType *query, const ValueType **ptrs,
-    std::array<const ValueType *, 12> &prefetch_ptrs, size_t dim, float *sums) {
+    const float *query, const float **ptrs,
+    std::array<const float *, 12> &prefetch_ptrs, size_t dim, float *sums) {
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     return compute_one_to_many_squared_euclidean_avx512f_fp32_12(
@@ -143,14 +142,15 @@ void SquaredEuclideanDistanceBatchImpl<float, 12>::compute_one_to_many(
         query, ptrs, prefetch_ptrs, dim, sums);
   }
 #endif
-  return compute_one_to_many_squared_euclidean_fallback(query, ptrs, prefetch_ptrs,
-                                                    dim, sums);
+  return compute_one_to_many_squared_euclidean_fallback(
+      query, ptrs, prefetch_ptrs, dim, sums);
 }
 
-void SquaredEuclideanDistanceBatchImpl<ailego::Float16, 12>::compute_one_to_many(
-    const ailego::Float16 *query, const ailego::Float16 **ptrs,
-    std::array<const ailego::Float16 *, 12> &prefetch_ptrs, size_t dim,
-    float *sums) {
+void SquaredEuclideanDistanceBatchImpl<ailego::Float16, 12>::
+    compute_one_to_many(const ailego::Float16 *query,
+                        const ailego::Float16 **ptrs,
+                        std::array<const ailego::Float16 *, 12> &prefetch_ptrs,
+                        size_t dim, float *sums) {
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
     return compute_one_to_many_squared_euclidean_avx512fp16_fp16_12(
@@ -169,8 +169,8 @@ void SquaredEuclideanDistanceBatchImpl<ailego::Float16, 12>::compute_one_to_many
         query, ptrs, prefetch_ptrs, dim, sums);
   }
 #endif
-  return compute_one_to_many_squared_euclidean_fallback(query, ptrs, prefetch_ptrs,
-                                                    dim, sums);
+  return compute_one_to_many_squared_euclidean_fallback(
+      query, ptrs, prefetch_ptrs, dim, sums);
 }
 
 // void SquaredEuclideanDistanceBatchImpl<int8_t, 12>::compute_one_to_many(
@@ -183,7 +183,8 @@ void SquaredEuclideanDistanceBatchImpl<ailego::Float16, 12>::compute_one_to_many
 //         query, ptrs, prefetch_ptrs, dim, sums);
 //   }
 // #endif
-//   return compute_one_to_many_squared_euclidean_fallback(query, ptrs, prefetch_ptrs,
+//   return compute_one_to_many_squared_euclidean_fallback(query, ptrs,
+//   prefetch_ptrs,
 //                                                     dim, sums);
 // }
 

@@ -15,7 +15,7 @@
 #pragma once
 
 #include <vector>
-#include <ailego/internal/cpu_features.h>
+#include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/math_batch/utils.h>
@@ -53,26 +53,6 @@ struct SquaredEuclideanDistanceBatchImpl {
         query, ptrs, prefetch_ptrs, dim, sums);
   }
 };
-
-template <size_t BatchSize>
-struct SquaredEuclideanDistanceBatchImpl<int8_t, BatchSize> {
-  using ValueType = int8_t;
-  static void compute_one_to_many(
-      const int8_t *query, const int8_t **ptrs,
-      std::array<const int8_t *, BatchSize> &prefetch_ptrs, size_t dim,
-      float *sums) {
-#if defined(__AVX2__)
-    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-      return compute_one_to_many_squared_euclidean_avx2_int8<ValueType,
-                                                             BatchSize>(
-          query, ptrs, prefetch_ptrs, dim, sums);
-    }
-#endif
-    return compute_one_to_many_squared_euclidean_fallback(
-        query, ptrs, prefetch_ptrs, dim, sums);
-  }
-};
-
 
 template <typename T, size_t BatchSize, size_t PrefetchStep, typename>
 struct SquaredEuclideanDistanceBatch {
@@ -142,18 +122,8 @@ struct SquaredEuclideanDistanceBatchImpl<float, 1> {
                                   size_t dim, float *sums);
 };
 
-// template <>
-// struct SquaredEuclideanDistanceBatchImpl<int8_t, 1> {
-//   using ValueType = int8_t;
-//   static void compute_one_to_many(const int8_t *query, const int8_t **ptrs,
-//                                   std::array<const int8_t *, 1> &prefetch_ptrs,
-//                                   size_t dim, float *sums);
-
-//   static DistanceBatchQueryPreprocessFunc GetQueryPreprocessFunc();
-// };
-
 template <>
-struct InnerProductDistanceBatchImpl<ailego::Float16, 12> {
+struct SquaredEuclideanDistanceBatchImpl<ailego::Float16, 12> {
   using ValueType = ailego::Float16;
   static void compute_one_to_many(
       const ailego::Float16 *query, const ailego::Float16 **ptrs,
@@ -162,19 +132,11 @@ struct InnerProductDistanceBatchImpl<ailego::Float16, 12> {
 };
 
 template <>
-struct InnerProductDistanceBatchImpl<float, 12> {
+struct SquaredEuclideanDistanceBatchImpl<float, 12> {
   using ValueType = float;
   static void compute_one_to_many(const float *query, const float **ptrs,
                                   std::array<const float *, 12> &prefetch_ptrs,
                                   size_t dim, float *sums);
 };
-
-// template <>
-// struct SquaredEuclideanDistanceBatchImpl<int8_t, 12> {
-//   using ValueType = int8_t;
-//   static void compute_one_to_many(const int8_t *query, const int8_t **ptrs,
-//                                   std::array<const int8_t *, 12> &prefetch_ptrs,
-//                                   size_t dim, float *sums);
-// };
 
 }  // namespace zvec::ailego::DistanceBatch
