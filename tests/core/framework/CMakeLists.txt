@@ -1,4 +1,4 @@
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
 file(GLOB_RECURSE ALL_TEST_SRCS *_test.cc)
 

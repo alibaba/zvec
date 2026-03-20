@@ -97,7 +97,6 @@ void HnswSparseStreamerTest::TearDown(void) {
 }
 
 TEST_F(HnswSparseStreamerTest, TestGeneral) {
-  BufferManager::Instance().init(10 * 1024 * 1024, 1);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswSparseStreamer");
   ASSERT_TRUE(write_streamer != nullptr);

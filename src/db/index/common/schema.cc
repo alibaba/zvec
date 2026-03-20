@@ -20,6 +20,7 @@
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include "ailego/internal/cpu_features.h"
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
 #include "db/common/utils.h"
@@ -27,9 +28,16 @@
 
 namespace zvec {
 
+#if defined(RABITQ_COMPILED_AVX512)
+constexpr const int kRabitqCompiledAvx512 = RABITQ_COMPILED_AVX512;
+#else
+constexpr const int kRabitqCompiledAvx512 = 0;
+#endif
+
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
-     {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8}},
+     {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
+      QuantizeType::RABITQ}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -46,7 +54,7 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 };
 
 std::unordered_set<IndexType> support_dense_vector_index = {
-    IndexType::FLAT, IndexType::HNSW, IndexType::IVF};
+    IndexType::FLAT, IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::IVF};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
@@ -126,6 +134,42 @@ Status FieldSchema::validate() const {
         }
       }
 
+      if (index_params_->type() == IndexType::HNSW_RABITQ) {
+        if (dimension_ < kMinRabitqDimSize || dimension_ > kMaxRabitqDimSize) {
+          return Status::InvalidArgument(
+              "schema validate failed: HNSW_RABITQ index only support "
+              "dimension in [",
+              kMinRabitqDimSize, ", ", kMaxRabitqDimSize, "]");
+        }
+        if (data_type_ != DataType::VECTOR_FP32) {
+          return Status::InvalidArgument(
+              "schema validate failed: HNSW_RABITQ index only support FP32 "
+              "data types");
+        }
+        auto metric_type = vector_index_params->metric_type();
+        if (metric_type != MetricType::L2 && metric_type != MetricType::IP &&
+            metric_type != MetricType::COSINE) {
+          return Status::InvalidArgument(
+              "schema validate failed: HNSW_RABITQ index only support "
+              "L2/IP/COSINE metric");
+        }
+#if !RABITQ_SUPPORTED
+        return Status::NotSupported(
+            "RabitQ is not supported on this platform (Linux x86_64 only)");
+#endif
+        auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
+        if (!flags.AVX2 && !flags.AVX512F) {
+          return Status::NotSupported(
+              "RabitQ requires AVX2/AVX512F to be supported");
+        }
+
+        if (kRabitqCompiledAvx512 && !flags.AVX512F) {
+          return Status::NotSupported(
+              "RabitQ compiled with AVX512F while runtime does not support");
+        }
+      }
+
+
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         auto iter = quantize_type_map.find(data_type_);
         if (iter == quantize_type_map.end()) {
@@ -158,6 +202,16 @@ Status FieldSchema::validate() const {
           return Status::InvalidArgument(
               "schema validate failed: IVF index only support FP32/FP16 data "
               "types according to the IP metric");
+        }
+      }
+      if (vector_index_params->metric_type() == MetricType::COSINE) {
+        if (data_type_ != DataType::VECTOR_FP16 &&
+            data_type_ != DataType::VECTOR_FP32) {
+          return Status::InvalidArgument(
+              "schema validate failed: cosine metric only supports FP32/FP16 "
+              "data types, but field[",
+              name_, "]'s data type is ",
+              DataTypeCodeBook::AsString(data_type_));
         }
       }
     }

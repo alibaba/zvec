@@ -27,8 +27,27 @@ if TYPE_CHECKING:
 
 from . import model as model
 
-# —— Extensions & typing ——
-from .extension import DenseEmbeddingFunction, ReRanker, RrfReRanker, WeightedReRanker
+# —— Extensions ——
+from .extension import (
+    BM25EmbeddingFunction,
+    DefaultLocalDenseEmbedding,
+    DefaultLocalReRanker,
+    DefaultLocalSparseEmbedding,
+    DenseEmbeddingFunction,
+    OpenAIDenseEmbedding,
+    OpenAIFunctionBase,
+    QwenDenseEmbedding,
+    QwenFunctionBase,
+    QwenReRanker,
+    QwenSparseEmbedding,
+    ReRanker,
+    RrfReRanker,
+    SentenceTransformerFunctionBase,
+    SparseEmbeddingFunction,
+    WeightedReRanker,
+)
+
+# —— Typing ——
 from .model import param as param
 from .model import schema as schema
 
@@ -44,6 +63,8 @@ from .model.param import (
     FlatIndexParam,
     HnswIndexParam,
     HnswQueryParam,
+    HnswRabitqIndexParam,
+    HnswRabitqQueryParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
@@ -90,6 +111,8 @@ __all__ = [
     "VectorQuery",
     "InvertIndexParam",
     "HnswIndexParam",
+    "HnswRabitqIndexParam",
+    "HnswRabitqQueryParam",
     "FlatIndexParam",
     "IVFIndexParam",
     "CollectionOption",
@@ -100,10 +123,22 @@ __all__ = [
     "HnswQueryParam",
     "IVFQueryParam",
     # Extensions
-    "ReRanker",
     "DenseEmbeddingFunction",
+    "SparseEmbeddingFunction",
+    "QwenFunctionBase",
+    "OpenAIFunctionBase",
+    "SentenceTransformerFunctionBase",
+    "ReRanker",
+    "DefaultLocalDenseEmbedding",
+    "DefaultLocalSparseEmbedding",
+    "BM25EmbeddingFunction",
+    "OpenAIDenseEmbedding",
+    "QwenDenseEmbedding",
+    "QwenSparseEmbedding",
     "RrfReRanker",
     "WeightedReRanker",
+    "DefaultLocalReRanker",
+    "QwenReRanker",
     # Typing
     "DataType",
     "MetricType",

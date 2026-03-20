@@ -37,6 +37,32 @@ proto::HnswIndexParams ProtoConverter::ToPb(const HnswIndexParams *params) {
   return params_pb;
 }
 
+// HnswRabitqIndexParams
+HnswRabitqIndexParams::OPtr ProtoConverter::FromPb(
+    const proto::HnswRabitqIndexParams &params_pb) {
+  auto params = std::make_shared<HnswRabitqIndexParams>(
+      MetricTypeCodeBook::Get(params_pb.base().metric_type()),
+      params_pb.total_bits(), params_pb.num_clusters(), params_pb.m(),
+      params_pb.ef_construction(), params_pb.sample_count());
+
+  return params;
+}
+
+proto::HnswRabitqIndexParams ProtoConverter::ToPb(
+    const HnswRabitqIndexParams *params) {
+  proto::HnswRabitqIndexParams params_pb;
+  params_pb.mutable_base()->set_metric_type(
+      MetricTypeCodeBook::Get(params->metric_type()));
+  params_pb.mutable_base()->set_quantize_type(
+      QuantizeTypeCodeBook::Get(params->quantize_type()));
+  params_pb.set_m(params->m());
+  params_pb.set_ef_construction(params->ef_construction());
+  params_pb.set_total_bits(params->total_bits());
+  params_pb.set_num_clusters(params->num_clusters());
+  params_pb.set_sample_count(params->sample_count());
+  return params_pb;
+}
+
 // FlatIndexParams
 FlatIndexParams::OPtr ProtoConverter::FromPb(
     const proto::FlatIndexParams &params_pb) {
@@ -157,6 +183,8 @@ IndexParams::Ptr ProtoConverter::FromPb(const proto::IndexParams &params_pb) {
     return ProtoConverter::FromPb(params_pb.ivf());
   } else if (params_pb.has_flat()) {
     return ProtoConverter::FromPb(params_pb.flat());
+  } else if (params_pb.has_hnsw_rabitq()) {
+    return ProtoConverter::FromPb(params_pb.hnsw_rabitq());
   }
 
   return nullptr;
@@ -210,6 +238,14 @@ proto::IndexParams ProtoConverter::ToPb(const IndexParams *params) {
         params_pb.mutable_flat()->CopyFrom(ProtoConverter::ToPb(flat_params));
       }
       break;
+    }
+    case IndexType::HNSW_RABITQ: {
+      auto hnsw_rabitq_params =
+          dynamic_cast<const HnswRabitqIndexParams *>(params);
+      if (hnsw_rabitq_params) {
+        params_pb.mutable_hnsw_rabitq()->CopyFrom(
+            ProtoConverter::ToPb(hnsw_rabitq_params));
+      }
     }
     default:
       break;

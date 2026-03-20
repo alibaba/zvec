@@ -37,11 +37,15 @@
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#if RABITQ_SUPPORTED
+#include "core/algorithm/hnsw_rabitq/rabitq_params.h"
+#endif
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
 #include "db/common/typedef.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
+#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "db/index/common/index_filter.h"
@@ -53,6 +57,11 @@
 #include "db/index/storage/mmap_forward_store.h"
 #include "db/index/storage/store_helper.h"
 #include "db/index/storage/wal/wal_file.h"
+#include "zvec/ailego/container/params.h"
+#include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_meta.h"
+#include "zvec/core/framework/index_provider.h"
+#include "zvec/core/framework/index_reformer.h"
 #include "column_merging_reader.h"
 #include "sql_expr_parser.h"
 
@@ -302,14 +311,14 @@ class SegmentImpl : public Segment,
   void fresh_persist_chunked_array();
 
  private:
-  // scalar forward
+  // scalar forward (uses segment-local doc ID)
   MemForwardStore::Ptr memory_store_;
   std::vector<BaseForwardStore::Ptr> persist_stores_;
 
-  // scalar index
+  // scalar index (uses segment-local doc ID)
   InvertedIndexer::Ptr invert_indexers_;
 
-  // vector index
+  // vector index (uses block-local doc ID, each indexer starts from 0)
   std::unordered_map<std::string, VectorColumnIndexer::Ptr>
       memory_vector_indexers_;
 
@@ -339,7 +348,7 @@ class SegmentImpl : public Segment,
   IDMap::Ptr id_map_;
   DeleteStore::Ptr delete_store_;
 
-  // local_id(index) -> global_doc_id(value)
+  // Maps segment-local doc ID (array index) to global doc ID (stored value)
   std::vector<uint64_t> doc_ids_;
 
   std::array<std::variant<std::vector<int>,
@@ -1646,6 +1655,8 @@ Status SegmentImpl::create_vector_index(
     auto original_index_params =
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
 
+    core::IndexProvider::Pointer raw_vector_provider;
+
     if (!(vector_index_params->metric_type() ==
               original_index_params->metric_type() &&
           vector_indexers_[column].size() == 1)) {
@@ -1674,31 +1685,112 @@ Status SegmentImpl::create_vector_index(
       block.set_max_doc_id(meta()->max_doc_id());
       block.set_doc_count(meta()->doc_count());
       new_segment_meta->add_persisted_block(block);
+      if (vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+        raw_vector_provider = vector_indexer.value()->create_index_provider();
+      }
+    } else {
+      raw_vector_provider =
+          vector_indexers_[column][0]->create_index_provider();
     }
 
-    auto quant_block_id = allocate_block_id();
-    auto field_with_new_index_params = std::make_shared<FieldSchema>(*field);
-    field_with_new_index_params->set_index_params(index_params);
+    if (vector_index_params->quantize_type() != QuantizeType::RABITQ) {
+      auto quant_block_id = allocate_block_id();
+      auto field_with_new_index_params = std::make_shared<FieldSchema>(*field);
+      field_with_new_index_params->set_index_params(index_params);
 
-    std::string index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
-        path_, column, segment_meta_->id(), quant_block_id);
-    auto vector_indexer = merge_vector_indexer(
-        index_file_path, column, *field_with_new_index_params, concurrency);
-    if (!vector_indexer.has_value()) {
-      return vector_indexer.error();
+      std::string index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
+          path_, column, segment_meta_->id(), quant_block_id);
+      auto vector_indexer = merge_vector_indexer(
+          index_file_path, column, *field_with_new_index_params, concurrency);
+      if (!vector_indexer.has_value()) {
+        return vector_indexer.error();
+      }
+
+      quant_vector_indexers->insert({column, vector_indexer.value()});
+
+      new_segment_meta->remove_vector_persisted_block(column, true);
+      BlockMeta block;
+      block.set_id(quant_block_id);
+      block.set_type(BlockType::VECTOR_INDEX_QUANTIZE);
+      block.set_columns({column});
+      block.set_min_doc_id(meta()->min_doc_id());
+      block.set_max_doc_id(meta()->max_doc_id());
+      block.set_doc_count(meta()->doc_count());
+      new_segment_meta->add_persisted_block(block);
+    } else {
+#if !RABITQ_SUPPORTED
+      return Status::NotSupported(
+          "RabitQ is not supported on this platform (Linux x86_64 only)");
+#else
+      // rabitq
+      auto rabitq_params = std::dynamic_pointer_cast<HnswRabitqIndexParams>(
+          vector_index_params->clone());
+      if (!rabitq_params) {
+        return Status::InternalError("Expect HnswRabitqIndexParams");
+      }
+      // train rabitq converter
+      auto converter = core::IndexFactory::CreateConverter("RabitqConverter");
+      if (!converter) {
+        return Status::NotSupported("RabitqConverter not found");
+      }
+      core::IndexMeta index_meta;
+      index_meta.set_meta(
+          ProximaEngineHelper::convert_to_engine_data_type(field->data_type())
+              .value(),
+          // use field dimension
+          field->dimension());
+      index_meta.set_metric(
+          core_interface::Index::get_metric_name(
+              ProximaEngineHelper::convert_to_engine_metric_type(
+                  vector_index_params->metric_type())
+                  .value(),
+              false),
+          0, ailego::Params{});
+      ailego::Params converter_params;
+      converter_params.set(core::PARAM_RABITQ_TOTAL_BITS,
+                           rabitq_params->total_bits());
+      converter_params.set(core::PARAM_RABITQ_NUM_CLUSTERS,
+                           rabitq_params->num_clusters());
+      converter_params.set(core::PARAM_RABITQ_SAMPLE_COUNT,
+                           rabitq_params->sample_count());
+      if (int ret = converter->init(index_meta, converter_params); ret != 0) {
+        return Status::InternalError("Failed to init rabitq converter:", ret);
+      }
+      if (int ret = converter->train(raw_vector_provider); ret != 0) {
+        return Status::InternalError("Failed to train rabitq converter:", ret);
+      }
+      core::IndexReformer::Pointer reformer;
+      if (int ret = converter->to_reformer(&reformer); ret != 0) {
+        return Status::InternalError("Failed to to get rabitq reformer:", ret);
+      }
+      rabitq_params->set_rabitq_reformer(reformer);
+      rabitq_params->set_raw_vector_provider(raw_vector_provider);
+
+      auto quant_block_id = allocate_block_id();
+      auto field_with_new_index_params = std::make_shared<FieldSchema>(*field);
+      field_with_new_index_params->set_index_params(rabitq_params);
+
+      std::string index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
+          path_, column, segment_meta_->id(), quant_block_id);
+      auto vector_indexer = merge_vector_indexer(
+          index_file_path, column, *field_with_new_index_params, concurrency);
+      if (!vector_indexer.has_value()) {
+        return vector_indexer.error();
+      }
+
+      quant_vector_indexers->insert({column, vector_indexer.value()});
+
+      new_segment_meta->remove_vector_persisted_block(column, true);
+      BlockMeta block;
+      block.set_id(quant_block_id);
+      block.set_type(BlockType::VECTOR_INDEX_QUANTIZE);
+      block.set_columns({column});
+      block.set_min_doc_id(meta()->min_doc_id());
+      block.set_max_doc_id(meta()->max_doc_id());
+      block.set_doc_count(meta()->doc_count());
+      new_segment_meta->add_persisted_block(block);
+#endif
     }
-
-    quant_vector_indexers->insert({column, vector_indexer.value()});
-
-    new_segment_meta->remove_vector_persisted_block(column, true);
-    BlockMeta block;
-    block.set_id(quant_block_id);
-    block.set_type(BlockType::VECTOR_INDEX_QUANTIZE);
-    block.set_columns({column});
-    block.set_min_doc_id(meta()->min_doc_id());
-    block.set_max_doc_id(meta()->max_doc_id());
-    block.set_doc_count(meta()->doc_count());
-    new_segment_meta->add_persisted_block(block);
 
     *segment_meta = new_segment_meta;
   }
@@ -3939,6 +4031,14 @@ VectorColumnIndexer::Ptr SegmentImpl::create_vector_indexer(
     memory_vector_block_ids_[field_name] = block_id;
   }
 
+  if (FileHelper::FileExists(index_file_path)) {
+    LOG_WARN(
+        "Index file[%s] already exists (possible crash residue); cleaning and "
+        "overwriting.",
+        index_file_path.c_str());
+    FileHelper::RemoveFile(index_file_path);
+  }
+
   auto vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
   vector_column_params::ReadOptions options{true, true};
@@ -3958,6 +4058,13 @@ Status SegmentImpl::init_memory_components() {
   // create and open memory forward block
   auto mem_path = FileHelper::MakeForwardBlockPath(seg_path_, mem_block.id_,
                                                    !options_.enable_mmap_);
+  if (FileHelper::FileExists(mem_path)) {
+    LOG_WARN(
+        "ForwardBlock file[%s] already exists (possible crash residue); "
+        "cleaning and overwriting.",
+        mem_path.c_str());
+    FileHelper::RemoveFile(mem_path);
+  }
   memory_store_ = std::make_shared<MemForwardStore>(
       collection_schema_, mem_path,
       options_.enable_mmap_ ? FileFormat::IPC : FileFormat::PARQUET,
@@ -4104,18 +4211,17 @@ Status SegmentImpl::recover() {
   }
 
   const auto added_docs = recovered_doc_count[0] +  // INSERT
-                          recovered_doc_count[1] +  // UPDATE
-                          recovered_doc_count[2];   // UPSERT
+                          recovered_doc_count[1] +  // UPSERT
+                          recovered_doc_count[2];   // UPDATE
   mem_block.max_doc_id_ += added_docs;
 
   LOG_INFO(
-      "Recover from wal finished. total_recovered_doc_count[%zu] "
-      "insert[%zu] update[%zu] upsert[%zu] "
-      "delete[%zu] path[%s]",
+      "Recover from wal finished. total_recovered_doc_count[%zu] insert[%zu] "
+      "upsert[%zu] update[%zu] delete[%zu] path[%s]",
       (size_t)total_recovered_doc_count,
       (size_t)recovered_doc_count[0],  // INSERT
-      (size_t)recovered_doc_count[1],  // UPDATE
-      (size_t)recovered_doc_count[2],  // UPSERT
+      (size_t)recovered_doc_count[1],  // UPSERT
+      (size_t)recovered_doc_count[2],  // UPDATE
       (size_t)recovered_doc_count[3],  // DELETE
       wal_file_path.c_str());
 

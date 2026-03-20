@@ -294,6 +294,8 @@ class Doc {
 
   static void read_from_buffer(const uint8_t *&data, void *dest, size_t size);
 
+  struct ValueEqual;
+
  private:
   std::string pk_;
   float score_{0.0f};

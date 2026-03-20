@@ -64,8 +64,8 @@ class CosineConverterHolder : public IndexHolder {
 
     //! Retrieve pointer of data
     const void *data(void) const override {
-      return type_ == IndexMeta::DataType::DT_FP32 ? normalize_buffer_.data()
-                                                   : buffer_.data();
+      return type_ == original_type_ ? normalize_buffer_.data()
+                                     : buffer_.data();
     }
 
     //! Test if the iterator is valid
@@ -206,7 +206,7 @@ class CosineConverterHolder : public IndexHolder {
     if (type == IndexMeta::DataType::DT_INT4)
       return 40;  // 5 * sizeof(float) / sizeof(FT_INT4)
     else if (type == IndexMeta::DataType::DT_INT8)
-      return 20;  // 5 * sizeof(float) / sizeof(FT_INT8)
+      return 24;  // (5 * sizeof(float) + sizeof(int)) / sizeof(FT_INT8)
     else if (type == IndexMeta::DataType::DT_FP16)
       return 2;  // 2* sizeof(float) / sizeof(FT_FP16)
     else if (type == IndexMeta::DataType::DT_FP32) {
@@ -325,7 +325,7 @@ class CosineConverter : public IndexConverter {
 
   //! Transform the data
   int transform(IndexHolder::Pointer holder) override {
-    if (holder->data_type() != IndexMeta::DataType::DT_FP32 ||
+    if (holder->data_type() != original_type_ ||
         holder->dimension() != meta_.dimension() - ExtraDimension(dst_type_)) {
       return IndexError_Mismatch;
     }
@@ -362,7 +362,7 @@ class CosineConverter : public IndexConverter {
     if (type == IndexMeta::DataType::DT_INT4)
       return 40;  // 5 * sizeof(float) / sizeof(FT_INT4)
     else if (type == IndexMeta::DataType::DT_INT8)
-      return 20;  // 5 * sizeof(float) / sizeof(FT_INT8)
+      return 24;  // (5 * sizeof(float) + sizeof(int)) / sizeof(FT_INT8)
     else if (type == IndexMeta::DataType::DT_FP16)
       return 2;  // sizeof(float) / sizeof(FT_FP16)
     else if (type == IndexMeta::DataType::DT_FP32) {

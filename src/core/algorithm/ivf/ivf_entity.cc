@@ -595,7 +595,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
   const void *data = nullptr;
   const size_t block_vecs = header_.block_vector_count;
-  float distances[block_vecs];
+  std::vector<float> distances(block_vecs);
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
@@ -639,7 +639,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
       const void *block_data = static_cast<const char *>(data) + b * block_size;
       calculator_->query_features_distance(query, block_data, vecs_count,
-                                           distances);
+                                           distances.data());
 
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
 
@@ -669,7 +669,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
   const void *data = nullptr;
   const size_t block_vecs = header_.block_vector_count;
-  float distances[block_vecs];
+  std::vector<float> distances(block_vecs);
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
@@ -700,7 +700,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       auto block_keys = keys + b * block_vecs;
       const void *block_data = static_cast<const char *>(data) + b * block_size;
       calculator_->query_features_distance(query, block_data, vecs_count,
-                                           distances);
+                                           distances.data());
       for (size_t k = 0; k < vecs_count; ++k) {
         if (block_keys[k] != kInvalidKey) {
           uint32_t id = list_meta->id_offset + (i + b) * block_vecs + k;

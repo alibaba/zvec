@@ -5,7 +5,6 @@ build*
 bin/*
 lib/*
 var/*
-thirdparty
 venv*
 tests/integration/conf/*
 tests/de_integration/conf/*
@@ -48,3 +47,5 @@ yarn-debug.log*
 yarn-error.log*
 
 allure-*
+
+!build_android.sh

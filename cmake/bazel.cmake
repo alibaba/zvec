@@ -365,11 +365,24 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
+if(APPLE OR ANDROID)
+    option(CLANG_USE_LIBCXX "Use libc++ instead of libstdc++" ON)
+else()
+    option(CLANG_USE_LIBCXX "Use libc++ instead of libstdc++" OFF)
+endif()
+
+set(CLANG_STDLIB_OPTION "")
+if(CLANG_USE_LIBCXX)
+    set(CLANG_STDLIB_OPTION "-stdlib=libc++")
+else()
+    set(CLANG_STDLIB_OPTION "-stdlib=libstdc++")
+endif()
+
 if(NOT MSVC)
   # Use color in diagnostics
   set(
       _COMPILER_FLAGS
-      "$<$<C_COMPILER_ID:Clang>:-fcolor-diagnostics;-stdlib=libc++>"
+      "$<$<C_COMPILER_ID:Clang>:-fcolor-diagnostics;${CLANG_STDLIB_OPTION}>"
       "$<$<C_COMPILER_ID:AppleClang>:-fcolor-diagnostics>"
       "$<$<C_COMPILER_ID:GNU>:-fdiagnostics-color=always>"
     )
@@ -460,7 +473,7 @@ endif()
 # C/C++ strict link flags
 set(
     BAZEL_CC_STRICT_LINK_FLAGS
-    "$<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>"
+    "$<$<CXX_COMPILER_ID:Clang>:${CLANG_STDLIB_OPTION}>"
     ${BAZEL_CC_ASAN_COMPILE_FLAGS}
     ${BAZEL_CC_COVERAGE_COMPILE_FLAGS}
   )
@@ -479,7 +492,7 @@ set(
 # C/C++ unstrict link flags
 set(
     BAZEL_CC_UNSTRICT_LINK_FLAGS
-    "$<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>"
+    "$<$<CXX_COMPILER_ID:Clang>:${CLANG_STDLIB_OPTION}>"
     ${BAZEL_CC_ASAN_COMPILE_FLAGS}
     ${BAZEL_CC_COVERAGE_COMPILE_FLAGS}
   )
@@ -572,7 +585,7 @@ function(_targets_link_dependencies _NAME)
     if(TARGET ${LIB})
       list(APPEND LIBS_DEPS ${LIB})
       list(
-          APPEND LIBS_INCS 
+          APPEND LIBS_INCS
           "$<TARGET_PROPERTY:${LIB},INTERFACE_INCLUDE_DIRECTORIES>"
         )
     endif()
@@ -590,45 +603,45 @@ function(_target_link_libraries _NAME)
     if(NOT _COLLECT_ALWAYS_LINK_VISITED)
       set(_COLLECT_ALWAYS_LINK_VISITED "" PARENT_SCOPE)
     endif()
-    
+
     set(LOCAL_RESULT "")
     foreach(LIB ${LIB_LIST})
       if(NOT TARGET ${LIB})
         continue()
       endif()
-      
+
       list(FIND _COLLECT_ALWAYS_LINK_VISITED ${LIB} ALREADY_VISITED)
       if(NOT ALREADY_VISITED EQUAL -1)
         continue()
       endif()
-      
+
       list(APPEND _COLLECT_ALWAYS_LINK_VISITED ${LIB})
       set(_COLLECT_ALWAYS_LINK_VISITED "${_COLLECT_ALWAYS_LINK_VISITED}" PARENT_SCOPE)
-      
+
       get_target_property(ALWAYS_LINK ${LIB} ALWAYS_LINK)
       if(ALWAYS_LINK)
         list(APPEND LOCAL_RESULT ${LIB})
       endif()
-      
+
       get_target_property(DEP_LIBS ${LIB} INTERFACE_LINK_LIBRARIES)
       if(DEP_LIBS)
         _collect_always_link_libs("${DEP_LIBS}" DEP_ALWAYS_LINK_LIBS)
         list(APPEND LOCAL_RESULT ${DEP_ALWAYS_LINK_LIBS})
       endif()
-      
+
       get_target_property(LINK_LIBS ${LIB} LINK_LIBRARIES)
       if(LINK_LIBS)
         _collect_always_link_libs("${LINK_LIBS}" LINK_ALWAYS_LINK_LIBS)
         list(APPEND LOCAL_RESULT ${LINK_ALWAYS_LINK_LIBS})
       endif()
     endforeach()
-    
+
     list(REMOVE_DUPLICATES LOCAL_RESULT)
     set(${RESULT_VAR} "${LOCAL_RESULT}" PARENT_SCOPE)
   endfunction()
-  
+
   _collect_always_link_libs("${ARGN}" ALL_ALWAYS_LINK_LIBS)
-  
+
   set(ALL_LIBS_TO_PROCESS ${ARGN})
   foreach(ALWAYS_LIB ${ALL_ALWAYS_LINK_LIBS})
     list(FIND ARGN ${ALWAYS_LIB} FOUND_INDEX)
@@ -636,9 +649,9 @@ function(_target_link_libraries _NAME)
       list(APPEND ALL_LIBS_TO_PROCESS ${ALWAYS_LIB})
     endif()
   endforeach()
-  
+
   list(REMOVE_DUPLICATES ALL_LIBS_TO_PROCESS)
-  
+
   foreach(LIB ${ALL_LIBS_TO_PROCESS})
     if(NOT TARGET ${LIB})
       list(APPEND LINK_LIBS ${LIB})
@@ -1313,6 +1326,9 @@ function(cc_proto_library)
 
   _find_protobuf("${CC_ARGS_PROTOBUF_VERSION}")
   set(CC_PROTOBUF_PROTOC ${CC_PROTOBUF_PROTOC_${CC_ARGS_PROTOBUF_VERSION}})
+  if(DEFINED GLOBAL_CC_PROTOBUF_PROTOC)
+    set(CC_PROTOBUF_PROTOC ${GLOBAL_CC_PROTOBUF_PROTOC})
+  endif()
   set(CC_PROTOBUF_INCS ${CC_PROTOBUF_INCS_${CC_ARGS_PROTOBUF_VERSION}})
   set(CC_PROTOBUF_LIBS ${CC_PROTOBUF_LIBS_${CC_ARGS_PROTOBUF_VERSION}})
 

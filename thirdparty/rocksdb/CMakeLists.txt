@@ -1,3 +1,9 @@
+set(ROCKSDB_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb-8.1.1)
+if (ANDROID)
+    set(ROCKSDB_ANDROID_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb.android.patch)
+    apply_patch_once("rocksdb_android_fix" "${ROCKSDB_SRC_DIR}" "${ROCKSDB_ANDROID_PATCH}")
+endif()
+
 set(ROCKSDB_BUILD_SHARED OFF CACHE BOOL "Disable install in rocksdb" FORCE)
 
 set(WITH_TESTS OFF CACHE BOOL "Disable testing in rocksdb" FORCE)
@@ -8,6 +14,7 @@ set(WITH_TOOLS OFF CACHE BOOL "build with tools" FORCE)
 set(WITH_LZ4 ON CACHE BOOL "build with lz4" FORCE)
 set(USE_RTTI ON CACHE BOOL "build with RTTI" FORCE)
 set(FAIL_ON_WARNINGS OFF CACHE BOOL "build with no Werror" FORCE)
+set(PORTABLE ON CACHE BOOL "build a portable lib" FORCE)
 
 set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})

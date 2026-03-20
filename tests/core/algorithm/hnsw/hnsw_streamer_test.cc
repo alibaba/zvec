@@ -576,7 +576,7 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
       float *data = (float *)iter->data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur += 2;
@@ -592,24 +592,24 @@ TEST_F(HnswStreamerTest, TestOpenClose) {
     ASSERT_EQ(0, streamer->open(storage1));
     auto ctx = streamer->create_context();
     ASSERT_TRUE(!!ctx);
-    float vec1[dim];
+    std::vector<float> vec1(dim);
     for (size_t d = 0; d < dim; ++d) {
       vec1[d] = v1;
     }
-    ASSERT_EQ(0, streamer->add_impl(i, vec1, qmeta, ctx));
+    ASSERT_EQ(0, streamer->add_impl(i, vec1.data(), qmeta, ctx));
     checkIter(0, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
 
     float v2 = (float)(i + 1);
-    float vec2[dim];
+    std::vector<float> vec2(dim);
     for (size_t d = 0; d < dim; ++d) {
       vec2[d] = v2;
     }
     ASSERT_EQ(0, streamer->open(storage2));
     ctx = streamer->create_context();
     ASSERT_TRUE(!!ctx);
-    ASSERT_EQ(0, streamer->add_impl(i + 1, vec2, qmeta, ctx));
+    ASSERT_EQ(0, streamer->add_impl(i + 1, vec2.data(), qmeta, ctx));
     checkIter(1, i / 2 + 1, streamer);
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
@@ -657,7 +657,7 @@ TEST_F(HnswStreamerTest, TestCreateIterator) {
       float *data = (float *)iter->data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur++;
@@ -689,7 +689,7 @@ TEST_F(HnswStreamerTest, TestCreateIterator) {
     const float *data = (const float *)provider->get_vector(i);
     ASSERT_NE(data, nullptr);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(i, data[j]);
+      ASSERT_FLOAT_EQ(i, data[j]);
     }
   }
 }
@@ -730,7 +730,7 @@ TEST_F(HnswStreamerTest, TestForceFlush) {
       float *data = (float *)iter->data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < dim; ++d) {
-        ASSERT_EQ((float)cur, data[d]);
+        ASSERT_FLOAT_EQ((float)cur, data[d]);
       }
       iter->next();
       cur++;
@@ -768,7 +768,7 @@ TEST_F(HnswStreamerTest, TestForceFlush) {
     const float *data = (const float *)provider->get_vector(i);
     ASSERT_NE(data, nullptr);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(i, data[j]);
+      ASSERT_FLOAT_EQ(i, data[j]);
     }
   }
 }
@@ -830,7 +830,7 @@ TEST_F(HnswStreamerTest, TestKnnMultiThread) {
   while (iter->is_valid()) {
     float *data = (float *)iter->data();
     for (size_t d = 0; d < dim; ++d) {
-      ASSERT_EQ((float)iter->key(), data[d]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[d]);
     }
     total++;
     min = std::min(min, iter->key());
@@ -1008,7 +1008,7 @@ TEST_F(HnswStreamerTest, TestKnnConcurrentAddAndSearch) {
   while (iter->is_valid()) {
     float *data = (float *)iter->data();
     for (size_t d = 0; d < dim; ++d) {
-      ASSERT_EQ((float)iter->key(), data[d]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[d]);
     }
     total++;
     min = std::min(min, iter->key());
@@ -1584,7 +1584,7 @@ TEST_F(HnswStreamerTest, TestCheckDuplicateAndGetVector) {
     const float *data = (const float *)provider->get_vector(i);
     ASSERT_NE(data, nullptr);
     for (size_t j = 0; j < dim; ++j) {
-      ASSERT_EQ(i, data[j]);
+      ASSERT_FLOAT_EQ(i, data[j]);
     }
   }
 
@@ -1949,11 +1949,11 @@ TEST_F(HnswStreamerTest, TestMipsEuclideanMetric) {
                              "proxima.mips_euclidean.metric.max_l2_norm"));
     auto ctx = streamer->create_context();
     for (size_t i = COUNT; i < 2 * COUNT; i++) {
-      float vec[dim];
+      std::vector<float> vec(dim);
       for (size_t d = 0; d < dim; ++d) {
         vec[d] = i;
       }
-      ASSERT_EQ(0, streamer->add_impl(i, vec, qmeta, ctx));
+      ASSERT_EQ(0, streamer->add_impl(i, vec.data(), qmeta, ctx));
     }
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
@@ -1970,19 +1970,19 @@ TEST_F(HnswStreamerTest, TestMipsEuclideanMetric) {
       metric_params.get_as_float("proxima.mips_euclidean.metric.max_l2_norm"));
   auto ctx = streamer->create_context();
   for (size_t i = 0; i < COUNT; i++) {
-    float vec[dim];
+    std::vector<float> vec(dim);
     for (size_t d = 0; d < dim; ++d) {
       vec[d] = i;
     }
-    ASSERT_EQ(0, streamer->add_impl(i, vec, qmeta, ctx));
+    ASSERT_EQ(0, streamer->add_impl(i, vec.data(), qmeta, ctx));
   }
-  float vec[dim];
+  std::vector<float> vec(dim);
   for (size_t d = 0; d < dim; ++d) {
     vec[d] = 1.0;
   }
 
   ctx->set_topk(10);
-  ASSERT_EQ(0, streamer->search_impl(vec, qmeta, ctx));
+  ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
   const auto &results = ctx->result();
   EXPECT_EQ(results.size(), 10);
   EXPECT_NEAR((uint64_t)(2 * COUNT - 1), results[0].key(), 10);
@@ -2275,7 +2275,7 @@ TEST_F(HnswStreamerTest, TestFetchVector) {
     ASSERT_NE(vector, nullptr);
 
     float vector_value = *(float *)(vector);
-    ASSERT_EQ(vector_value, i);
+    ASSERT_FLOAT_EQ(vector_value, i);
   }
 
   auto linearCtx = streamer->create_context();
@@ -2310,7 +2310,7 @@ TEST_F(HnswStreamerTest, TestFetchVector) {
 
     ASSERT_NE(knnResult[0].vector(), nullptr);
     float vector_value = *((float *)(knnResult[0].vector()));
-    ASSERT_EQ(vector_value, i);
+    ASSERT_FLOAT_EQ(vector_value, i);
   }
   std::cout << "knnTotalTime: " << knnTotalTime << std::endl;
   std::cout << "linearTotalTime: " << linearTotalTime << std::endl;

@@ -335,6 +335,7 @@ class HnswContext : public IndexContext {
 
   //! Reset context
   void reset(void) override {
+    this->clear();
     set_filter(nullptr);
     reset_threshold();
     set_fetch_vector(false);
@@ -420,6 +421,9 @@ class HnswContext : public IndexContext {
     }
     // do not clear results_ for the next query will need it
     for (auto &it : results_) {
+      it.clear();
+    }
+    for (auto &it : group_results_) {
       it.clear();
     }
   }

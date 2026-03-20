@@ -514,7 +514,7 @@ TEST(OptKmeansCluster, IN4Correctness) {
   EXPECT_EQ(centroids1.size(), centroids2.size());
   for (size_t i = 0; i < centroids1.size(); ++i) {
     EXPECT_EQ(centroids1[i].follows(), centroids2[i].follows());
-    EXPECT_EQ(centroids1[i].score(), centroids2[i].score());
+    EXPECT_DOUBLE_EQ(centroids1[i].score(), centroids2[i].score());
   }
 }
 

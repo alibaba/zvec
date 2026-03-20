@@ -282,7 +282,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -297,7 +297,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)32 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -312,10 +312,101 @@ TEST_F(IVFSearcherTest, TestSimple) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
+  ret = searcher.unload();
+  EXPECT_EQ(0, ret);
+}
+
+TEST_F(IVFSearcherTest, TestSimpleCosine) {
+  IVFBuilder builder;
+  //    index_meta_.set_major_order(IndexMeta::MO_ROW);
+  params_.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "1");
+  params_.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+
+  Params converter_params;
+  auto converter = IndexFactory::CreateConverter("CosineNormalizeConverter");
+  ASSERT_TRUE(converter != nullptr);
+  auto original_index_meta = index_meta_;
+  original_index_meta.set_metric("Cosine", 0, Params());
+  EXPECT_EQ(0, converter->init(original_index_meta, converter_params));
+  IndexMeta index_meta = converter->meta();
+  auto reformer = IndexFactory::CreateReformer(index_meta.reformer_name());
+  ASSERT_TRUE(reformer != nullptr);
+  ASSERT_EQ(0, reformer->init(index_meta.reformer_params()));
+
+  int ret = builder.init(index_meta, params_);
+  EXPECT_EQ(0, ret);
+  prepare_index_holder(0, 33);
+  converter->transform(holder_);
+  auto holder = converter->result();
+
+  EXPECT_EQ(0, builder.train(threads_, holder));
+  EXPECT_EQ(0, builder.build(threads_, holder));
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  EXPECT_EQ(0, dumper->create(index_path_));
+
+  ret = builder.dump(dumper);
+  EXPECT_EQ((size_t)33, builder.stats().built_count());
+  EXPECT_EQ((size_t)33, builder.stats().dumped_count());
+  EXPECT_EQ((size_t)0, builder.stats().discarded_count());
+  EXPECT_EQ(0, dumper->close());
+
+  IVFSearcher searcher;
+  Params params;
+  params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+  params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+
+  ret = searcher.init(params);
+  EXPECT_EQ(0, ret);
+
+  IndexStorage::Pointer container =
+      IndexFactory::CreateStorage("MMapFileReadStorage");
+  EXPECT_TRUE(!!container);
+
+  Params container_params;
+  container_params.set("proxima.mmap_file.container.memory_warmup", true);
+  container->init(container_params);
+  ret = container->open(index_path_, false);
+  EXPECT_EQ(0, ret);
+
+  ret = searcher.load(container, IndexMetric::Pointer());
+  EXPECT_EQ(0, ret);
+
+  std::vector<float> query;
+  for (size_t i = 0; i < dimension_; ++i) {
+    query.push_back(32.0f + i);
+  }
+
+  size_t qnum = 33;
+  std::vector<float> query1;
+  for (size_t i = 0; i < dimension_ * qnum; ++i) {
+    query1.push_back(i / dimension_);
+  }
+  auto context = searcher.create_context();
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+
+  // single bf search
+  {
+    size_t topk = 33;
+    context->set_topk(topk);
+    
+    std::string new_vec;
+    IndexQueryMeta new_meta;
+    ASSERT_EQ(0, reformer->convert(query.data(), qmeta, &new_vec, &new_meta));
+
+    ret = searcher.search_bf_impl(new_vec.data(), new_meta, context);
+    EXPECT_EQ(0, ret);
+
+    const IndexDocumentList &result = context->result(0);
+    EXPECT_EQ((size_t)topk, result.size());
+    for (size_t i = 0; i < 1; ++i) {
+      // ASSERT_EQ(29, result[i].key());
+      EXPECT_NEAR(0, result[i].score(), 1e-2);
+    }
+  }
   ret = searcher.unload();
   EXPECT_EQ(0, ret);
 }
@@ -389,7 +480,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       ASSERT_EQ((uint64_t)(total - 1) - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -404,7 +495,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -419,7 +510,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -434,7 +525,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -513,7 +604,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFilter) {
     EXPECT_EQ((size_t)1, result.size());
     for (size_t i = 0; i < 1; ++i) {
       EXPECT_EQ((uint64_t)0, result[i].key());
-      EXPECT_EQ((float)999 * 999 * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)999 * 999 * dimension_, result[i].score());
     }
   }
 
@@ -528,7 +619,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFilter) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)1, result.size());
       EXPECT_EQ((uint64_t)0, result[0].key());
-      EXPECT_EQ((float)q * q * dimension_, result[0].score());
+      EXPECT_FLOAT_EQ((float)q * q * dimension_, result[0].score());
     }
   }
 
@@ -543,7 +634,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFilter) {
     EXPECT_EQ((size_t)1, result.size());
     for (size_t i = 0; i < 1; ++i) {
       EXPECT_EQ((uint64_t)0, result[i].key());
-      EXPECT_EQ((float)999 * 999 * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)999 * 999 * dimension_, result[i].score());
     }
   }
 
@@ -558,7 +649,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFilter) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)1, result.size());
       EXPECT_EQ((uint64_t)0, result[0].key());
-      EXPECT_EQ((float)q * q * dimension_, result[0].score());
+      EXPECT_FLOAT_EQ((float)q * q * dimension_, result[0].score());
     }
   }
 
@@ -634,7 +725,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -649,7 +740,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -664,7 +755,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -679,7 +770,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -759,7 +850,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithFilter) {
     EXPECT_EQ((size_t)1, result.size());
     for (size_t i = 0; i < 1; ++i) {
       EXPECT_EQ((uint64_t)0, result[i].key());
-      EXPECT_EQ((float)999 * 999 * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)999 * 999 * dimension_, result[i].score());
     }
   }
 
@@ -774,7 +865,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithFilter) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)1, result.size());
       EXPECT_EQ((uint64_t)0, result[0].key());
-      EXPECT_EQ((float)q * q * dimension_, result[0].score());
+      EXPECT_FLOAT_EQ((float)q * q * dimension_, result[0].score());
     }
   }
 
@@ -789,7 +880,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithFilter) {
     EXPECT_EQ((size_t)1, result.size());
     for (size_t i = 0; i < 1; ++i) {
       EXPECT_EQ((uint64_t)0, result[i].key());
-      EXPECT_EQ((float)999 * 999 * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)999 * 999 * dimension_, result[i].score());
     }
   }
 
@@ -804,7 +895,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWithFilter) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)1, result.size());
       EXPECT_EQ((uint64_t)0, result[0].key());
-      EXPECT_EQ((float)q * q * dimension_, result[0].score());
+      EXPECT_FLOAT_EQ((float)q * q * dimension_, result[0].score());
     }
   }
 
@@ -886,7 +977,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWith1LevelAndBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -901,7 +992,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWith1LevelAndBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -916,7 +1007,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWith1LevelAndBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -931,7 +1022,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFloatWith1LevelAndBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1013,7 +1104,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWith1LevelAndBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -1028,7 +1119,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWith1LevelAndBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1043,7 +1134,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWith1LevelAndBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -1058,7 +1149,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWith1LevelAndBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1137,7 +1228,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorInt8WithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)127 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -1152,7 +1243,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorInt8WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1167,7 +1258,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorInt8WithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)127 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -1182,7 +1273,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorInt8WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1261,7 +1352,7 @@ TEST_F(IVFSearcherTest, TestRowMajorInt8WithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)127 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -1276,7 +1367,7 @@ TEST_F(IVFSearcherTest, TestRowMajorInt8WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1291,7 +1382,7 @@ TEST_F(IVFSearcherTest, TestRowMajorInt8WithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)127 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -1306,7 +1397,7 @@ TEST_F(IVFSearcherTest, TestRowMajorInt8WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1387,7 +1478,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorBinaryWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)256 - i, result[i].key());
-      EXPECT_EQ((float)i, result[i].score());
+      EXPECT_FLOAT_EQ((float)i, result[i].score());
     }
   }
 
@@ -1402,7 +1493,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorBinaryWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1417,7 +1508,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorBinaryWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)256 - i, result[i].key());
-      EXPECT_EQ((float)i, result[i].score());
+      EXPECT_FLOAT_EQ((float)i, result[i].score());
     }
   }
 
@@ -1432,7 +1523,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorBinaryWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1513,7 +1604,7 @@ TEST_F(IVFSearcherTest, TestRowMajorBinaryWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)256 - i, result[i].key());
-      EXPECT_EQ((float)i, result[i].score());
+      EXPECT_FLOAT_EQ((float)i, result[i].score());
     }
   }
 
@@ -1528,7 +1619,7 @@ TEST_F(IVFSearcherTest, TestRowMajorBinaryWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1543,7 +1634,7 @@ TEST_F(IVFSearcherTest, TestRowMajorBinaryWithBuildMemory) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)256 - i, result[i].key());
-      EXPECT_EQ((float)i, result[i].score());
+      EXPECT_FLOAT_EQ((float)i, result[i].score());
     }
   }
 
@@ -1558,7 +1649,7 @@ TEST_F(IVFSearcherTest, TestRowMajorBinaryWithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1770,7 +1861,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFp16WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1802,7 +1893,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFp16WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1909,7 +2000,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -1941,7 +2032,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2019,7 +2110,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithHnswGraphType) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)(total - 1) - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -2034,7 +2125,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithHnswGraphType) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2049,7 +2140,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithHnswGraphType) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -2064,7 +2155,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithHnswGraphType) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2143,7 +2234,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithSsgGraphType) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)(total - 1) - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -2158,7 +2249,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithSsgGraphType) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2173,7 +2264,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithSsgGraphType) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -2188,7 +2279,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithSsgGraphType) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2265,7 +2356,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithInt8Converter) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)(total - 1) - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -2280,7 +2371,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithInt8Converter) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2295,7 +2386,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithInt8Converter) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -2310,7 +2401,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithInt8Converter) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2406,7 +2497,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFloat16Quantizer) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2438,7 +2529,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFloat16Quantizer) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2535,7 +2626,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithConverterAndQuantizer) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       ASSERT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2567,7 +2658,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithConverterAndQuantizer) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2664,7 +2755,7 @@ TEST_F(IVFSearcherTest, TestQuantizedPerCentroid) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       ASSERT_NEAR((uint64_t)(total - 1) - q, result[0].key(), 100);
-      // EXPECT_EQ((float)0, result[0].score());
+      // EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -2679,7 +2770,7 @@ TEST_F(IVFSearcherTest, TestQuantizedPerCentroid) {
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_NEAR((uint64_t)total - i - 1, result[i].key(), 100);
-      // EXPECT_EQ((float)i * i * dimension_, result[i].score());
+      // EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
     }
   }
 
@@ -2694,7 +2785,7 @@ TEST_F(IVFSearcherTest, TestQuantizedPerCentroid) {
       const IndexDocumentList &result = context->result(q);
       EXPECT_EQ((size_t)topk, result.size());
       ASSERT_NEAR((uint64_t)(total - 1) - q, result[0].key(), 100);
-      // EXPECT_EQ((float)0, result[0].score());
+      // EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -3383,7 +3474,7 @@ TEST_F(IVFSearcherTest, TestSameValue) {
 
     for (size_t q = 0; q < qnum; ++q) {
       const IndexDocumentList &result = context->result(q);
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
@@ -3397,7 +3488,7 @@ TEST_F(IVFSearcherTest, TestSameValue) {
     const IndexDocumentList &result = context->result(0);
     EXPECT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
-      EXPECT_EQ((float)0, result[i].score());
+      EXPECT_FLOAT_EQ((float)0, result[i].score());
     }
   }
 
@@ -3410,7 +3501,7 @@ TEST_F(IVFSearcherTest, TestSameValue) {
 
     for (size_t q = 0; q < qnum; ++q) {
       const IndexDocumentList &result = context->result(q);
-      EXPECT_EQ((float)0, result[0].score());
+      EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 

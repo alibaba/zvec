@@ -387,7 +387,7 @@ TEST_F(FlatSparseStreamerTest, TestCreateIterator) {
       float *sparse_data = (float *)iter->sparse_data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < sparse_dim_count; ++d) {
-        ASSERT_EQ((float)cur, sparse_data[d]);
+        ASSERT_FLOAT_EQ((float)cur, sparse_data[d]);
       }
       iter->next();
       cur++;
@@ -487,7 +487,7 @@ TEST_F(FlatSparseStreamerTest, TestOpenAndClose) {
       float *sparse_data = (float *)iter->sparse_data();
       ASSERT_EQ(cur, iter->key());
       for (size_t d = 0; d < sparse_dim_count; ++d) {
-        ASSERT_EQ((float)cur, sparse_data[d]);
+        ASSERT_FLOAT_EQ((float)cur, sparse_data[d]);
       }
       iter->next();
       cur += 2;
@@ -589,7 +589,7 @@ TEST_F(FlatSparseStreamerTest, TestForceFlush) {
 
       const float *data = reinterpret_cast<const float *>(iter->sparse_data());
       for (size_t j = 0; j < sparse_dim_count; ++j) {
-        ASSERT_EQ((float)cur, data[j]);
+        ASSERT_FLOAT_EQ((float)cur, data[j]);
       }
 
       iter->next();
@@ -710,7 +710,7 @@ TEST_F(FlatSparseStreamerTest, TestMultiThread) {
 
     const float *data = reinterpret_cast<const float *>(iter->sparse_data());
     for (size_t j = 0; j < sparse_dim_count; ++j) {
-      ASSERT_EQ((float)iter->key(), data[j]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[j]);
     }
     total++;
     min = std::min(min, iter->key());
@@ -915,7 +915,7 @@ TEST_F(FlatSparseStreamerTest, TestConcurrentAddAndSearch) {
 
     const float *data = reinterpret_cast<const float *>(iter->sparse_data());
     for (size_t j = 0; j < sparse_dim_count; ++j) {
-      ASSERT_EQ((float)iter->key(), data[j]);
+      ASSERT_FLOAT_EQ((float)iter->key(), data[j]);
     }
     total++;
     min = std::min(min, iter->key());

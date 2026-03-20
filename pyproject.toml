@@ -27,6 +27,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -49,7 +51,7 @@ test = [
     "pytest >=8.0",
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
-    "cibuildwheel == 2.17.0",
+    "cibuildwheel == 3.4.0",
 ]
 docs = [
     "mkdocs >=1.5",
@@ -68,7 +70,7 @@ dev = [
     "pytest >=8.0",
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
-    "cibuildwheel == 2.17.0",
+    "cibuildwheel == 3.4.0",
     # Inherit docs deps
     "mkdocs >=1.5",
     "mkdocs-material >=9.5",
@@ -80,7 +82,13 @@ dev = [
 # BUILD SYSTEM CONFIGURATION (scikit-build-core)
 ######################################################################################################
 [build-system]
-requires = ["scikit-build-core >=0.11", "pybind11 >=3.0", "setuptools_scm>=8.0"]
+requires = [
+    "scikit-build-core >=0.11",
+    "pybind11 >=3.0",
+    "setuptools_scm>=8.0",
+    "cmake>=3.26,<4.0",
+    "ninja>=1.11",
+]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
@@ -89,7 +97,7 @@ minimum-version = "0.11"
 metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
 
 # CMake configuration
-cmake.version = ">=3.15,<4.0"
+cmake.version = ">=3.26,<4.0"
 ninja.version = ">=1.11"
 cmake.build-type = "Release"
 install.strip = true  # Strip symbols in release builds to reduce wheel size
@@ -116,11 +124,13 @@ sdist.include = [
 [tool.scikit-build.cmake.define]
 BUILD_TOOLS = "OFF"
 BUILD_PYTHON_BINDINGS = "ON"
+#CMAKE_VERBOSE_MAKEFILE = "ON"
 
 # Setuptools config for test pypi
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
 version_scheme = "guess-next-dev"
+fallback_version = "0.2.1b1"
 ######################################################################################################
 # TESTING & QUALITY
 ######################################################################################################
@@ -155,20 +165,27 @@ build = [
     "cp310-*",
     "cp311-*",
     "cp312-*",
+    "cp313-*",
+    "cp314-*",
 ]
 build-frontend = "build"
 test-requires = ["pytest", "numpy"]
+test-command = "cd {project} && pytest python/tests -v --tb=short"
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
-archs = ["x86_64"]
-test-command = "cd {project} && pytest python/tests -v --tb=short"
+archs = ["auto"]
+environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16" }
 manylinux-x86_64-image = "manylinux_2_28"
-skip = "*musllinux*"
+manylinux-aarch64-image = "manylinux_2_28"
+# Skip 32-bit builds and musllinux
+skip = ["*-manylinux_i686", "*-musllinux*"]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+# Inherits CMAKE_GENERATOR and CMAKE_BUILD_PARALLEL_LEVEL from [tool.cibuildwheel] won't work;
+# platform-level environment overrides the top-level entirely, so all vars must be listed here
+environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16", MACOSX_DEPLOYMENT_TARGET = "11.0" }
 ######################################################################################################
 # CODE QUALITY & FORMATTING (Ruff)
 ######################################################################################################
@@ -181,6 +198,7 @@ exclude = [
     ".git/",
     ".venv/",
     "venv/",
+    "thirdparty",
 ]
 
 [tool.ruff.lint]
@@ -216,9 +234,20 @@ ignore = [
     "E731",     # Lambda assignment (used in callbacks)
     "B019",     # `functools.lru_cache` on methods (handled manually)
     "PLR0912",  # Too many branches
+    "PLC0105",  # Ignore contravariant
+    "RUF002",   # Ignore Unicode
 ]
 fixable = ["ALL"]
 unfixable = []
+
+# Ignore all errors in docstrings
+[tool.ruff.lint.pydocstyle]
+convention = "google"  # or "numpy", "pep257"
+ignore-decorators = ["typing.overload"]
+
+[tool.ruff.lint.flake8-type-checking]
+# Don't check code examples in docstrings
+quote-annotations = true
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
@@ -235,6 +264,9 @@ known-first-party = ["zvec"]
 ]
 "python/zvec/model/doc.py" = [
     "RUF023",   # Unused sort (for __slot__)
+]
+"python/zvec/extension/**" = [
+    "PLC0415",  # Import outside top-level (dynamic imports in _get_model)
 ]
 
 [tool.ruff.format]

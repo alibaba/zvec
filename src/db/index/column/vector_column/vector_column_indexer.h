@@ -26,6 +26,7 @@
 #include "db/common/typedef.h"
 #include "db/index/column/common/index_results.h"
 #include "db/index/common/meta.h"
+#include "zvec/core/framework/index_provider.h"
 #include "vector_column_params.h"
 #include "vector_index_results.h"
 
@@ -88,6 +89,9 @@ class VectorColumnIndexer {
   // Result<VectorDataset> BatchFetch(const std::vector<uint32_t> &doc_ids)
   // const;
 
+  core::IndexProvider::Pointer create_index_provider() const {
+    return index->create_index_provider();
+  }
 
  public:
   std::string index_file_path() const {

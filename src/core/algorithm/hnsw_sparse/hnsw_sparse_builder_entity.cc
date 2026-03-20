@@ -88,9 +88,11 @@ int HnswSparseBuilderEntity::add_vector(level_t level, key_t key,
                                         const uint32_t sparse_count,
                                         const uint32_t *sparse_indices,
                                         const void *sparse_vec, node_id_t *id) {
-  if (ailego_unlikely(sparse_count >= HnswSparseEntity::kSparseMaxDimSize)) {
-    LOG_WARN("Add vector failed, dim size too larg, dim_size=%u, key=%zu",
-             sparse_count, (size_t)key);
+  if (ailego_unlikely(sparse_count > HnswSparseEntity::kSparseMaxDimSize)) {
+    LOG_WARN(
+        "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
+        "maximum allowed (%u), key=%zu",
+        sparse_count, HnswSparseEntity::kSparseMaxDimSize, (size_t)key);
     return IndexError_InvalidValue;
   }
 

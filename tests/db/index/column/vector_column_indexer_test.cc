@@ -2160,7 +2160,6 @@ TEST(VectorColumnIndexerTest, Failure) {
     ASSERT_TRUE(indexer->Flush().ok());
     ASSERT_TRUE(indexer->Close().ok());
     {
-      ailego::BufferManager::Instance().init(10 * 1024 * 1024, 1);
       auto indexer = std::make_shared<VectorColumnIndexer>(
           index_file_path,
           FieldSchema("test", DataType::VECTOR_FP32, 3, false,

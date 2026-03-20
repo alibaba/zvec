@@ -172,8 +172,8 @@ int64_t HnswEntity::dump_vectors(
 
   size_t padding_size = AlignSize(vector_dump_size) - vector_dump_size;
 
-  char padding[padding_size];
-  memset(padding, 0, sizeof(padding));
+  std::vector<char> padding(padding_size);
+  memset(padding.data(), 0, sizeof(char) * padding_size);
   const void *data = nullptr;
   uint32_t crc = 0U;
   size_t vecs_size = 0UL;
@@ -198,12 +198,12 @@ int64_t HnswEntity::dump_vectors(
       continue;
     }
 
-    len = dumper->write(padding, padding_size);
+    len = dumper->write(padding.data(), padding_size);
     if (len != padding_size) {
       LOG_ERROR("Dump vectors failed, write=%zu expect=%zu", len, padding_size);
       return IndexError_WriteData;
     }
-    crc = ailego::Crc32c::Hash(padding, padding_size, crc);
+    crc = ailego::Crc32c::Hash(padding.data(), padding_size, crc);
     vecs_size += padding_size;
   }
 
@@ -224,7 +224,7 @@ int64_t HnswEntity::dump_graph_neighbors(
   graph_meta.reserve(doc_cnt());
   size_t offset = 0;
   uint32_t crc = 0;
-  node_id_t mapping[l0_neighbor_cnt()];
+  std::vector<node_id_t> mapping(l0_neighbor_cnt());
 
   uint32_t min_neighbor_count = 10000;
   uint32_t max_neighbor_count = 0;
@@ -253,7 +253,7 @@ int64_t HnswEntity::dump_graph_neighbors(
       for (node_id_t i = 0; i < neighbors.size(); ++i) {
         mapping[i] = neighbor_mapping[neighbors[i]];
       }
-      data = mapping;
+      data = mapping.data();
     }
     if (dumper->write(data, size) != size) {
       LOG_ERROR("Dump graph neighbor id=%u failed, size %lu", id, size);
@@ -303,7 +303,7 @@ int64_t HnswEntity::dump_upper_neighbors(
   hnsw_meta.reserve(doc_cnt());
   size_t offset = 0;
   uint32_t crc = 0;
-  node_id_t buffer[upper_neighbor_cnt() + 1];
+  std::vector<node_id_t> buffer(upper_neighbor_cnt() + 1);
   for (node_id_t id = 0; id < doc_cnt(); ++id) {
     node_id_t new_id = reorder_mapping.empty() ? id : reorder_mapping[id];
     auto level = get_level(new_id);
@@ -318,7 +318,7 @@ int64_t HnswEntity::dump_upper_neighbors(
       ailego_assert_with(!!neighbors.data, "invalid neighbors");
       ailego_assert_with(neighbors.size() <= neighbor_cnt(cur_level),
                          "invalid neighbors");
-      memset(buffer, 0, sizeof(buffer));
+      memset(buffer.data(), 0, sizeof(node_id_t) * buffer.size());
       buffer[0] = neighbors.size();
       if (neighbor_mapping.empty()) {
         memcpy(&buffer[1], &neighbors[0], neighbors.size() * sizeof(node_id_t));
@@ -327,13 +327,15 @@ int64_t HnswEntity::dump_upper_neighbors(
           buffer[i + 1] = neighbor_mapping[neighbors[i]];
         }
       }
-      if (dumper->write(buffer, sizeof(buffer)) != sizeof(buffer)) {
+      if (dumper->write(buffer.data(), sizeof(node_id_t) * buffer.size()) !=
+          sizeof(node_id_t) * buffer.size()) {
         LOG_ERROR("Dump graph neighbor id=%u failed, size %lu", id,
-                  sizeof(buffer));
+                  sizeof(node_id_t) * buffer.size());
         return IndexError_WriteData;
       }
-      crc = ailego::Crc32c::Hash(buffer, sizeof(buffer), crc);
-      offset += sizeof(buffer);
+      crc = ailego::Crc32c::Hash(buffer.data(),
+                                 sizeof(node_id_t) * buffer.size(), crc);
+      offset += sizeof(node_id_t) * buffer.size();
     }
   }
   size_t padding_size = 0;

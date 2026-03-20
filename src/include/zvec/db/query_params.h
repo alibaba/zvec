@@ -125,6 +125,31 @@ class IVFQueryParams : public QueryParams {
   float scale_factor_{10};
 };
 
+class HnswRabitqQueryParams : public QueryParams {
+ public:
+  HnswRabitqQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
+                        float radius = 0.0f, bool is_linear = false,
+                        bool is_using_refiner = false)
+      : QueryParams(IndexType::HNSW_RABITQ), ef_(ef) {
+    set_radius(radius);
+    set_is_linear(is_linear);
+    set_is_using_refiner(is_using_refiner);
+  }
+
+  virtual ~HnswRabitqQueryParams() = default;
+
+  int ef() const {
+    return ef_;
+  }
+
+  void set_ef(int ef) {
+    ef_ = ef;
+  }
+
+ private:
+  int ef_;
+};
+
 class FlatQueryParams : public QueryParams {
  public:
   FlatQueryParams(bool is_using_refiner = false, float scale_factor = 10)

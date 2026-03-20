@@ -24,6 +24,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             $<TARGET_FILE:core_knn_flat_static>
             $<TARGET_FILE:core_knn_flat_sparse_static>
             $<TARGET_FILE:core_knn_hnsw_static>
+            $<TARGET_FILE:core_knn_hnsw_rabitq_static>
             $<TARGET_FILE:core_knn_hnsw_sparse_static>
             $<TARGET_FILE:core_knn_ivf_static>
             $<TARGET_FILE:core_knn_cluster_static>
@@ -42,6 +43,7 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_sparse_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_static>
+            -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_rabitq_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_sparse_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_ivf_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_cluster_static>
@@ -56,4 +58,4 @@ elseif (APPLE)
     )
 endif ()
 
-target_include_directories(_zvec PRIVATE ${PYBIND11_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/binding/python/include)
+target_include_directories(_zvec PRIVATE ${PYBIND11_INCLUDE_DIR} ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/binding/python/include)

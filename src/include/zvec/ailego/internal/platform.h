@@ -476,11 +476,11 @@ static inline void ailego_assert_report(const char *file, const char *func,
 // is undefined (on arm, result will be zero), it's necessary to convert it
 // to signed integer firstly
 static inline uint8_t static_cast_from_float_to_uint8(float data) {
-  return static_cast<uint8_t>(static_cast<int8_t>(data));
+  return static_cast<uint8_t>(static_cast<int32_t>(data));
 }
 
 static inline uint16_t static_cast_from_float_to_uint16(float data) {
-  return static_cast<uint16_t>(static_cast<int16_t>(data));
+  return static_cast<uint16_t>(static_cast<int32_t>(data));
 }
 
 #ifdef __cplusplus

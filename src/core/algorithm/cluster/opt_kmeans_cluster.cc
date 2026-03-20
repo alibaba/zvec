@@ -1250,7 +1250,7 @@ int OptKmeansCluster::init(const IndexMeta &meta,
                            const ailego::Params &params) {
   auto type_ = meta.data_type();
 
-  if (meta.metric_name() == "InnerProduct") {
+  if (meta.metric_name() == "InnerProduct" || meta.metric_name() == "Cosine") {
     switch (type_) {
       case IndexMeta::DataType::DT_FP16: {
         algorithm_.reset(

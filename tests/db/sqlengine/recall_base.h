@@ -253,6 +253,7 @@ inline Segment::Ptr RecallTest::create_segment() {
   SegmentOptions options;
   options.read_only_ = false;
   options.enable_mmap_ = true;
+  options.max_buffer_size_ = 256 * 1024;
 
   auto result =
       Segment::CreateAndOpen(GetPath(), *collection_schema_, 0, 0, id_map,
