@@ -62,25 +62,25 @@ compute_one_to_many_squared_euclidean_avx2_fp32(
 
     switch (dimensionality - dim) {
       case 7:
-        SSD_FP32_GENERAL(query[6], ptrs[i][6], results[i]);
+        SSD_FP32_GENERAL(query[dim+6], ptrs[i][dim+6], results[i]);
         /* FALLTHRU */
       case 6:
-        SSD_FP32_GENERAL(query[5], ptrs[i][5], results[i]);
+        SSD_FP32_GENERAL(query[dim+5], ptrs[i][dim+5], results[i]);
         /* FALLTHRU */
       case 5:
-        SSD_FP32_GENERAL(query[4], ptrs[i][4], results[i]);
+        SSD_FP32_GENERAL(query[dim+4], ptrs[i][dim+4], results[i]);
         /* FALLTHRU */
       case 4:
-        SSD_FP32_GENERAL(query[3], ptrs[i][3], results[i]);
+        SSD_FP32_GENERAL(query[dim+3], ptrs[i]dim+[3], results[i]);
         /* FALLTHRU */
       case 3:
-        SSD_FP32_GENERAL(query[2], ptrs[i][2], results[i]);
+        SSD_FP32_GENERAL(query[dim+2], ptrs[i][dim+2], results[i]);
         /* FALLTHRU */
       case 2:
-        SSD_FP32_GENERAL(query[1], ptrs[i][1], results[i]);
+        SSD_FP32_GENERAL(query[dim+1], ptrs[i][dim+1], results[i]);
         /* FALLTHRU */
       case 1:
-        SSD_FP32_GENERAL(query[0], ptrs[i][0], results[i]);
+        SSD_FP32_GENERAL(query[dim+0], ptrs[i][dim+0], results[i]);
     }
   }
 }
