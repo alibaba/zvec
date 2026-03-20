@@ -112,5 +112,4 @@ void compute_one_to_many_squared_euclidean_avx2_fp16_12(
 }
 #endif
 
-
 }  // namespace zvec::ailego::DistanceBatch
