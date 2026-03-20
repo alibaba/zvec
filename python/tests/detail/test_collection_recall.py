@@ -286,13 +286,166 @@ def calculate_recall_at_k(
     return recall_stats
 
 
+def calculate_recall_at_k_multi_rrf(
+    collection: Collection,
+    test_docs,
+    query_vectors_list,
+    schema,
+    top_k=1,
+    expected_doc_ids_scores_map=None,
+    tolerance=0.01,
+):
+    result_doc_ids_scores_map = []
+
+    for doc_vectors in query_vectors_list:
+        multi_query_vectors = []
+        for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
+            multi_query_vectors.append(VectorQuery(field_name=v, vector=doc_vectors[v]))
+
+        rrf_reranker = RrfReRanker(topn=10)
+        multi_query_result = collection.query(
+            vectors=multi_query_vectors,
+            reranker=rrf_reranker,
+        )
+        result_dict = {}
+
+        for doc in multi_query_result[:top_k]:
+            result_dict[doc.id] = doc.score
+        result_doc_ids_scores_map.append(result_dict)
+
+    recall_stats = {
+        "relevant_retrieved_count": 0,
+        "total_relevant_count": 0,
+        "retrieved_count": 0,
+        "recall_at_k": 0.0,
+    }
+    print("result_doc_ids_scores_map:\n")
+    print(result_doc_ids_scores_map)
+
+    for result_dict in result_doc_ids_scores_map:
+        recall_stats["retrieved_count"] = recall_stats["retrieved_count"] + len(
+            result_dict
+        )
+
+    for expected_dict in result_doc_ids_scores_map:
+        recall_stats["total_relevant_count"] = recall_stats[
+            "total_relevant_count"
+        ] + len(expected_dict)
+
+    for i in range(0, len(result_doc_ids_scores_map)):
+        relevant_found_count = 0
+        for k, v in result_doc_ids_scores_map[i].items():
+            for k1, v1 in expected_doc_ids_scores_map[i].items():
+                if k == k1:
+                    relevant_found_count += 1
+                    break
+                elif k != k1 and abs(v - v1) <= tolerance:
+                    print("IDs are not equal, but the error is small, tolerance")
+                    print(k, k1, v, v1, tolerance)
+                    relevant_found_count += 1
+                    break
+                else:
+                    continue
+
+        recall_stats["relevant_retrieved_count"] += relevant_found_count
+
+        # Calculate Recall@K
+        if recall_stats["total_relevant_count"] > 0:
+            recall_stats["recall_at_k"] = (
+                recall_stats["relevant_retrieved_count"]
+                / recall_stats["total_relevant_count"]
+            )
+
+    return recall_stats
+
+
+def calculate_recall_at_k_multi_weight(
+    collection: Collection,
+    test_docs,
+    query_vectors_list,
+    schema,
+    weights,
+    metric_type,
+    top_k=1,
+    expected_doc_ids_scores_map=None,
+    tolerance=0.01,
+):
+    result_doc_ids_scores_map = []
+
+    for doc_vectors in query_vectors_list:
+        weighted_reranker = WeightedReRanker(
+            topn=10, weights=weights, metric=metric_type
+        )
+
+        multi_query_vectors = []
+        for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
+            multi_query_vectors.append(VectorQuery(field_name=v, vector=doc_vectors[v]))
+
+        multi_query_result = collection.query(
+            vectors=multi_query_vectors,
+            reranker=weighted_reranker,
+        )
+
+        result_dict = {}
+
+        for doc in multi_query_result[:top_k]:
+            result_dict[doc.id] = doc.score
+        result_doc_ids_scores_map.append(result_dict)
+
+    recall_stats = {
+        "relevant_retrieved_count": 0,
+        "total_relevant_count": 0,
+        "retrieved_count": 0,
+        "recall_at_k": 0.0,
+    }
+
+    for result_dict in result_doc_ids_scores_map:
+        recall_stats["retrieved_count"] = recall_stats["retrieved_count"] + len(
+            result_dict
+        )
+
+    for expected_dict in result_doc_ids_scores_map:
+        recall_stats["total_relevant_count"] = recall_stats[
+            "total_relevant_count"
+        ] + len(expected_dict)
+
+    for i in range(0, len(result_doc_ids_scores_map)):
+        relevant_found_count = 0
+        for k, v in result_doc_ids_scores_map[i].items():
+            for k1, v1 in expected_doc_ids_scores_map[i].items():
+                if k == k1:
+                    relevant_found_count += 1
+                    break
+                elif k != k1 and abs(v - v1) <= tolerance:
+                    print("IDs are not equal, but the error is small, tolerance")
+                    print(k, k1, v, v1, tolerance)
+                    relevant_found_count += 1
+                    break
+                else:
+                    continue
+
+        recall_stats["relevant_retrieved_count"] += relevant_found_count
+
+        # Calculate Recall@K
+        if recall_stats["total_relevant_count"] > 0:
+            recall_stats["recall_at_k"] = (
+                recall_stats["relevant_retrieved_count"]
+                / recall_stats["total_relevant_count"]
+            )
+
+    print("result_doc_ids_scores_map:\n")
+    print(result_doc_ids_scores_map)
+
+    return recall_stats
+
+
 class TestRecall:
     @pytest.mark.parametrize(
         "full_schema_new",
         [
             (True, True, HnswIndexParam()),
             (False, True, IVFIndexParam()),
-            (False, True, FlatIndexParam()),  # ——ok
+            (False, True, FlatIndexParam()),
             (
                 True,
                 True,
@@ -674,3 +827,386 @@ class TestRecall:
             print(f"    Recall@{top_k}: {stats['recall_at_k']:.4f}")
         for k, v in recall_at_k_stats.items():
             assert v["recall_at_k"] == 1.0
+
+    @pytest.mark.parametrize(
+        "full_schema_new",
+        [
+            (True, True, HnswIndexParam()),
+            (False, True, IVFIndexParam()),
+            (False, True, FlatIndexParam()),
+            (
+                True,
+                True,
+                HnswIndexParam(
+                    metric_type=MetricType.IP,
+                    m=16,
+                    ef_construction=100,
+                ),
+            ),
+            (
+                True,
+                True,
+                HnswIndexParam(
+                    metric_type=MetricType.COSINE,
+                    m=24,
+                    ef_construction=150,
+                ),
+            ),
+            (
+                True,
+                True,
+                HnswIndexParam(
+                    metric_type=MetricType.L2,
+                    m=32,
+                    ef_construction=200,
+                ),
+            ),
+            (
+                False,
+                True,
+                FlatIndexParam(
+                    metric_type=MetricType.IP,
+                ),
+            ),
+            (
+                True,
+                True,
+                FlatIndexParam(
+                    metric_type=MetricType.COSINE,
+                ),
+            ),
+            (
+                True,
+                True,
+                FlatIndexParam(
+                    metric_type=MetricType.L2,
+                ),
+            ),
+            (
+                True,
+                True,
+                IVFIndexParam(
+                    metric_type=MetricType.IP,
+                    n_list=100,
+                    n_iters=10,
+                    use_soar=False,
+                ),
+            ),
+            (
+                True,
+                True,
+                IVFIndexParam(
+                    metric_type=MetricType.L2,
+                    n_list=200,
+                    n_iters=20,
+                    use_soar=True,
+                ),
+            ),
+            (
+                True,
+                True,
+                IVFIndexParam(
+                    metric_type=MetricType.COSINE,
+                    n_list=150,
+                    n_iters=15,
+                    use_soar=False,
+                ),
+            ),
+        ],
+        indirect=True,
+    )
+    @pytest.mark.parametrize("doc_num", [500])
+    @pytest.mark.parametrize("query_num", [10])
+    @pytest.mark.parametrize("top_k", [1])
+    def test_recall_with_multi_vector_rrf(
+        self,
+        full_collection_new: Collection,
+        doc_num,
+        query_num,
+        top_k,
+        full_schema_new,
+        request,
+    ):
+        full_schema_params = request.getfixturevalue("full_schema_new")
+
+        for vector_para in full_schema_params.vectors:
+            if vector_para.name == "vector_fp32_field":
+                metric_type = vector_para.index_param.metric_type
+                break
+
+        multiple_docs = [
+            generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
+        ]
+
+        for i in range(10):
+            batchdoc_and_check(
+                full_collection_new,
+                multiple_docs[i * 1000 : 1000 * (i + 1)],
+                operator="insert",
+            )
+
+        stats = full_collection_new.stats
+        assert stats.doc_count == len(multiple_docs)
+
+        full_collection_new.optimize(option=OptimizeOption())
+
+        time.sleep(2)
+
+        query_vectors_list = [multiple_docs[i].vectors for i in range(query_num)]
+
+        "查询向量列表如下："
+        print("query_vectors_list:\n")
+        print(query_vectors_list)
+        ground_truth_map = []
+
+        expected_result_map = []
+
+        for doc_vectors in query_vectors_list:
+            # print("开始第一次查询：")
+            single_query_results = {}
+            for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
+                single_query_results[v] = full_collection_new.query(
+                    VectorQuery(field_name=v, vector=doc_vectors[v])
+                )
+            # "获取期望"
+            expected_rrf_scores_dict = calculate_multi_vector_rrf_scores(
+                single_query_results
+            )
+            """print ("expected_rrf_scores_dict:\n")
+            print (expected_rrf_scores_dict)"""
+            # 按值降序排序
+            sorted_dict_desc = dict(
+                sorted(
+                    expected_rrf_scores_dict.items(), key=lambda x: x[1], reverse=True
+                )[:top_k]
+            )
+
+            expected_result_map.append(sorted_dict_desc)
+
+        # Calculate Recall@K using ground truth
+        recall_at_k_stats = calculate_recall_at_k_multi_rrf(
+            full_collection_new,
+            multiple_docs,
+            query_vectors_list,
+            full_schema_new,
+            top_k=top_k,
+            expected_doc_ids_scores_map=expected_result_map,
+            tolerance=0.01,
+        )
+
+        print("expected_result_map:\n")
+        print(expected_result_map)
+
+        print("(recall_at_k_stats:\n")
+        print(recall_at_k_stats)
+
+        print("metric_type:")
+        print(metric_type)
+
+        # Print Recall@K statistics
+        print(f"Recall@{top_k} using Ground Truth:")
+
+        print(
+            f"Relevant Retrieved: {recall_at_k_stats['relevant_retrieved_count']}/{recall_at_k_stats['total_relevant_count']}"
+        )
+        print(f" Recall@{top_k}: {recall_at_k_stats['recall_at_k']:.4f}")
+        assert recall_at_k_stats["recall_at_k"] == 1.0
+
+    @pytest.mark.parametrize(
+        "weights",
+        [
+            {
+                "vector_fp32_field": 0.49,
+                "vector_fp16_field": 0.01,
+                "vector_int8_field": 0.3,
+                "sparse_vector_fp32_field": 0.1,
+                "sparse_vector_fp16_field": 0.1,
+            }
+        ],
+    )
+    @pytest.mark.parametrize(
+        "metrictype",
+        [MetricType.COSINE, MetricType.IP, MetricType.L2],
+    )
+    @pytest.mark.parametrize(
+        "full_schema_new",
+        [
+            (True, True, HnswIndexParam()),
+            (False, True, IVFIndexParam()),
+            (False, True, FlatIndexParam()),
+            (
+                True,
+                True,
+                HnswIndexParam(
+                    metric_type=MetricType.IP,
+                    m=16,
+                    ef_construction=100,
+                ),
+            ),
+            (
+                True,
+                True,
+                HnswIndexParam(
+                    metric_type=MetricType.COSINE,
+                    m=24,
+                    ef_construction=150,
+                ),
+            ),
+            (
+                True,
+                True,
+                HnswIndexParam(
+                    metric_type=MetricType.L2,
+                    m=32,
+                    ef_construction=200,
+                ),
+            ),
+            (
+                False,
+                True,
+                FlatIndexParam(
+                    metric_type=MetricType.IP,
+                ),
+            ),
+            (
+                True,
+                True,
+                FlatIndexParam(
+                    metric_type=MetricType.COSINE,
+                ),
+            ),
+            (
+                True,
+                True,
+                FlatIndexParam(
+                    metric_type=MetricType.L2,
+                ),
+            ),
+            (
+                True,
+                True,
+                IVFIndexParam(
+                    metric_type=MetricType.IP,
+                    n_list=100,
+                    n_iters=10,
+                    use_soar=False,
+                ),
+            ),
+            (
+                True,
+                True,
+                IVFIndexParam(
+                    metric_type=MetricType.L2,
+                    n_list=200,
+                    n_iters=20,
+                    use_soar=True,
+                ),
+            ),
+            (
+                True,
+                True,
+                IVFIndexParam(
+                    metric_type=MetricType.COSINE,
+                    n_list=150,
+                    n_iters=15,
+                    use_soar=False,
+                ),
+            ),
+        ],
+        indirect=True,
+    )
+    @pytest.mark.parametrize("doc_num", [500])
+    @pytest.mark.parametrize("query_num", [10])
+    @pytest.mark.parametrize("top_k", [1])
+    def test_recall_with_multi_vector_weight(
+        self,
+        full_collection_new: Collection,
+        doc_num,
+        query_num,
+        top_k,
+        full_schema_new,
+        request,
+        weights,
+        metrictype,
+    ):
+        full_schema_params = request.getfixturevalue("full_schema_new")
+
+        metric_type_dict = {}
+        for vector_para in full_schema_params.vectors:
+            metric_type_dict[vector_para.name] = vector_para.index_param.metric_type
+        print("metric_type_dict:\n")
+        print(metric_type_dict)
+
+        multiple_docs = [
+            generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
+        ]
+
+        for i in range(10):
+            batchdoc_and_check(
+                full_collection_new,
+                multiple_docs[i * 1000 : 1000 * (i + 1)],
+                operator="insert",
+            )
+
+        stats = full_collection_new.stats
+        assert stats.doc_count == len(multiple_docs)
+
+        full_collection_new.optimize(option=OptimizeOption())
+
+        time.sleep(2)
+
+        query_vectors_list = [multiple_docs[i].vectors for i in range(query_num)]
+
+        print("query_vectors_list:\n")
+        print(query_vectors_list)
+
+        expected_result_map = []
+
+        for doc_vectors in query_vectors_list:
+            single_query_results = {}
+            for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
+                single_query_results[v] = full_collection_new.query(
+                    VectorQuery(field_name=v, vector=doc_vectors[v])
+                )
+
+            expected_weighted_scores = calculate_multi_vector_weighted_scores(
+                single_query_results, weights, metrictype
+            )
+
+            sorted_dict_desc = dict(
+                sorted(
+                    expected_weighted_scores.items(), key=lambda x: x[1], reverse=True
+                )[:top_k]
+            )
+
+            expected_result_map.append(sorted_dict_desc)
+
+        # Calculate Recall@K using ground truth
+        recall_at_k_stats = calculate_recall_at_k_multi_weight(
+            full_collection_new,
+            multiple_docs,
+            query_vectors_list,
+            full_schema_new,
+            weights,
+            metrictype,
+            top_k=top_k,
+            expected_doc_ids_scores_map=expected_result_map,
+            tolerance=0.01,
+        )
+
+        print("expected_result_map:\n")
+        print(expected_result_map)
+
+        print("(recall_at_k_stats:\n")
+        print(recall_at_k_stats)
+
+        print("metric_type_dict:\n")
+        print(metric_type_dict)
+        # Print Recall@K statistics
+        print(f"Recall@{top_k} using Ground Truth:")
+
+        print(
+            f"Relevant Retrieved: {recall_at_k_stats['relevant_retrieved_count']}/{recall_at_k_stats['total_relevant_count']}"
+        )
+        print(f" Recall@{top_k}: {recall_at_k_stats['recall_at_k']:.4f}")
+        assert recall_at_k_stats["recall_at_k"] == 1.0
