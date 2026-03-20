@@ -49,6 +49,15 @@ jobs:
       platform: linux-x64
       os: ubuntu-24.04
 
+  build-and-test-linux-x64-clang:
+    name: Build & Test (linux-x64-clang)
+    needs: lint
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: linux-x64-clang
+      os: ubuntu-24.04
+      compiler: clang
+
   build-android:
     name: Build & Test (android)
     needs: lint
