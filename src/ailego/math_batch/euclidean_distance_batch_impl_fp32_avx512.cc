@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <vector>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/matrix_utility.i>
 #include <ailego/utility/math_helper.h>

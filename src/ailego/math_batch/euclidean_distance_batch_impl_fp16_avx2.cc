@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <vector>
 #include <ailego/math/matrix_utility.i>
 #include <ailego/utility/math_helper.h>
 #include <zvec/ailego/internal/platform.h>
