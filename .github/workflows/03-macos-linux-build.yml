@@ -15,7 +15,7 @@ on:
         description: 'C++ compiler to use (gcc or clang)'
         required: false
         type: string
-        default: 'gcc'
+        default: ''
 
 permissions:
   contents: read
@@ -48,7 +48,7 @@ jobs:
           cache-dependency-path: 'pyproject.toml'
 
       - name: Install Clang
-        if: inputs.compiler == 'clang'
+        if: inputs.compiler == 'clang' && runner.os == 'Linux'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y clang libomp-dev
