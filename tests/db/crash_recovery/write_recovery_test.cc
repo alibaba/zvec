@@ -29,7 +29,7 @@ namespace zvec {
 static std::string data_generator_bin_;
 const std::string collection_name_{"write_recovery_test"};
 const std::string dir_path_{"write_recovery_test_db"};
-const zvec::CollectionOptions options_{false, true};
+const zvec::CollectionOptions options_{false, true, 256 * 1024};
 
 
 static std::string LocateDataGenerator() {

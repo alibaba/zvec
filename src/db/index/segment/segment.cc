@@ -213,7 +213,7 @@ class SegmentImpl : public Segment,
                  const std::vector<int> &indices) const override;
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                     int indice) const override;
+                     int index) const override;
 
   RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const override;
@@ -2031,7 +2031,7 @@ Status SegmentImpl::create_scalar_index(const std::vector<std::string> &columns,
     s = SegmentHelper::ReduceScalarIndex(new_scalar_indexer, batch_value,
                                          accu_doc_count);
     if (!s.ok()) {
-      LOG_ERROR("Reduce Scalar Index faield, err: %s", s.message().c_str());
+      LOG_ERROR("Reduce Scalar Index failed, err: %s", s.message().c_str());
     }
     CHECK_RETURN_STATUS(s);
 

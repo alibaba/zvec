@@ -29,7 +29,7 @@ namespace zvec {
 static std::string optimizer_bin_;
 const std::string collection_name_{"optimize_recovery_test"};
 const std::string dir_path_{"optimize_recovery_test_db"};
-const zvec::CollectionOptions options_{false, true};
+const zvec::CollectionOptions options_{false, true, 256 * 1024};
 const int batch_size{50};
 const int num_batches{2000};
 
@@ -181,7 +181,7 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
   uint64_t doc_count{collection->Stats().value().doc_count};
-  ASSERT_EQ(doc_count, num_batches * (batch_size + 1000));
+  ASSERT_EQ(doc_count, (num_batches + 1000) * batch_size);
   for (int batch = 0; batch < (num_batches + 1000); batch++) {
     std::vector<Doc> docs;
     for (int i = 0; i < batch_size; i++) {
