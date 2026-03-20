@@ -71,7 +71,7 @@ compute_one_to_many_squared_euclidean_avx2_fp32(
         SSD_FP32_GENERAL(query[dim + 4], ptrs[i][dim + 4], results[i]);
         /* FALLTHRU */
       case 4:
-        SSD_FP32_GENERAL(query[dim + 3], ptrs[i] dim + [3], results[i]);
+        SSD_FP32_GENERAL(query[dim + 3], ptrs[i][dim + 3], results[i]);
         /* FALLTHRU */
       case 3:
         SSD_FP32_GENERAL(query[dim + 2], ptrs[i][dim + 2], results[i]);
