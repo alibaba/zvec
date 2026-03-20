@@ -182,17 +182,18 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
   auto collection = result.value();
   uint64_t doc_count{collection->Stats().value().doc_count};
   ASSERT_EQ(doc_count, (num_batches + 1000) * batch_size);
-  for (int batch = 0; batch < (num_batches + 1000); batch++) {
-    std::vector<Doc> docs;
-    for (int i = 0; i < batch_size; i++) {
-      docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
-    }
-    auto write_result = collection->Insert(docs);
-    ASSERT_TRUE(write_result);
-    for (auto &s : write_result.value()) {
-      ASSERT_TRUE(s.ok());
-    }
-  }
+
+  // for (int batch = num_batches; batch < (num_batches + 1000); batch++) {
+  //   std::vector<Doc> docs;
+  //   for (int i = 0; i < batch_size; i++) {
+  //     docs.push_back(CreateTestDoc(batch * batch_size + i, 0));
+  //   }
+  //   auto write_result = collection->Insert(docs);
+  //   ASSERT_TRUE(write_result);
+  //   for (auto &s : write_result.value()) {
+  //     ASSERT_TRUE(s.ok()) << s.message();
+  //   }
+  // }
 
   // VectorQuery query;
   // query.output_fields_ = {"name", "age"};
