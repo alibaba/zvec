@@ -22,6 +22,7 @@
 #include <future>
 #include <mutex>
 #include <atomic>
+#include <unordered_map>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/query_params.h>
 #include "db/index/column/vector_column/vector_column_params.h"
@@ -32,6 +33,29 @@ namespace zvec {
 
 // ============ DEBUG TIMING UTILITIES ============
 namespace {
+struct TimingStatsState {
+  std::mutex mu;
+  std::vector<std::pair<std::string, int64_t>> ordered_stats;
+  std::unordered_map<std::string, size_t> index_by_name;
+};
+
+TimingStatsState& GetTimingStatsState() {
+  static TimingStatsState state;
+  return state;
+}
+
+void RecordTimingStat(const std::string& name, int64_t duration_ms) {
+  auto& state = GetTimingStatsState();
+  std::lock_guard<std::mutex> lock(state.mu);
+  auto it = state.index_by_name.find(name);
+  if (it == state.index_by_name.end()) {
+    state.index_by_name[name] = state.ordered_stats.size();
+    state.ordered_stats.emplace_back(name, duration_ms);
+  } else {
+    state.ordered_stats[it->second].second = duration_ms;
+  }
+}
+
 static std::ofstream& GetDebugLog() {
   static std::ofstream log_file("/tmp/omega_training_debug.log", std::ios::app);
   return log_file;
@@ -59,6 +83,7 @@ class ScopedTimer {
   ~ScopedTimer() {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_).count();
+    RecordTimingStat(name_, duration);
     DebugLog("[END]   " + name_ + " | Duration: " + std::to_string(duration) + " ms");
   }
  private:
@@ -66,6 +91,22 @@ class ScopedTimer {
   std::chrono::high_resolution_clock::time_point start_;
 };
 }  // namespace
+
+void TrainingDataCollector::ResetTimingStats() {
+  auto& state = GetTimingStatsState();
+  std::lock_guard<std::mutex> lock(state.mu);
+  state.ordered_stats.clear();
+  state.index_by_name.clear();
+}
+
+TrainingDataCollector::TimingStats TrainingDataCollector::ConsumeTimingStats() {
+  auto& state = GetTimingStatsState();
+  std::lock_guard<std::mutex> lock(state.mu);
+  TimingStats timings = std::move(state.ordered_stats);
+  state.ordered_stats.clear();
+  state.index_by_name.clear();
+  return timings;
+}
 
 Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFromQueriesImpl(
     const Segment::Ptr& segment, const std::string& field_name,
@@ -97,11 +138,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
   if (ground_truth.empty()) {
     LOG_INFO("Computing ground truth (topk=%zu, ef_groundtruth=%d)",
              options.topk, options.ef_groundtruth);
-    std::string timer_name = options.ef_groundtruth > 0
-        ? "ComputeGroundTruth (HNSW ef=" +
-              std::to_string(options.ef_groundtruth) + ")"
-        : "ComputeGroundTruth (BRUTE FORCE)";
-    ScopedTimer timer(timer_name);
+    ScopedTimer timer("Step2: ComputeGroundTruth");
     ground_truth = TrainingDataCollector::ComputeGroundTruth(
         segment, field_name, training_queries, options.topk, options.num_threads,
         query_doc_ids, options.ef_groundtruth, metric_type, indexers);
@@ -117,12 +154,15 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
 
   LOG_INFO("Setting ground truth (%zu queries) and enabling training mode on %zu indexers",
            ground_truth.size(), indexers.size());
-  for (auto& indexer : indexers) {
-    indexer->SetTrainingGroundTruth(ground_truth, options.k_train);
-    auto status = indexer->EnableTrainingMode(true);
-    if (!status.ok()) {
-      LOG_WARN("Failed to enable training mode on indexer: %s",
-               status.message().c_str());
+  {
+    ScopedTimer timer("Step3: EnableTrainingMode");
+    for (auto& indexer : indexers) {
+      indexer->SetTrainingGroundTruth(ground_truth, options.k_train);
+      auto status = indexer->EnableTrainingMode(true);
+      if (!status.ok()) {
+        LOG_WARN("Failed to enable training mode on indexer: %s",
+                 status.message().c_str());
+      }
     }
   }
 
@@ -131,8 +171,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
   search_results.reserve(training_queries.size());
 
   {
-    ScopedTimer timer("External: TrainingSearches (HNSW with ef=" +
-                      std::to_string(options.ef_training) + ") PARALLEL");
+    ScopedTimer timer("Step4: TrainingSearches");
 
     size_t actual_threads = options.num_threads;
     if (actual_threads == 0) {
@@ -202,7 +241,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
           auto elapsed_ms =
               std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start)
                   .count();
-          DebugLog("  External training search progress: " +
+          DebugLog("  Training search progress: " +
                    std::to_string(completed) + "/" +
                    std::to_string(training_queries.size()) + ", elapsed: " +
                    std::to_string(elapsed_ms) + " ms");
@@ -236,7 +275,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
   LOG_INFO("Collecting training records from indexers");
   std::vector<core_interface::TrainingRecord> all_records;
   {
-    ScopedTimer timer("External: CollectTrainingRecords");
+    ScopedTimer timer("Step5: CollectTrainingRecords");
     for (auto& indexer : indexers) {
       auto records = indexer->GetTrainingRecords();
       LOG_INFO("Collected %zu records from indexer", records.size());
@@ -263,7 +302,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
   LOG_INFO("Collecting gt_cmps data from indexers");
   core_interface::GtCmpsData gt_cmps_data;
   {
-    ScopedTimer timer("External: GetGtCmpsData");
+    ScopedTimer timer("Step6: GetGtCmpsData");
     if (!indexers.empty()) {
       gt_cmps_data = indexers[0]->GetGtCmpsData();
       if (gt_cmps_data.gt_cmps.empty()) {
@@ -277,14 +316,19 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
     }
   }
 
-  for (auto& indexer : indexers) {
-    indexer->EnableTrainingMode(false);
-    indexer->ClearTrainingRecords();
+  {
+    ScopedTimer timer("Step7: DisableTrainingMode");
+    for (auto& indexer : indexers) {
+      indexer->EnableTrainingMode(false);
+      indexer->ClearTrainingRecords();
+    }
   }
 
   TrainingDataCollectorResult result;
   result.records = std::move(all_records);
   result.gt_cmps_data = std::move(gt_cmps_data);
+  result.training_queries = training_queries;
+  result.query_doc_ids = query_doc_ids;
   return result;
 }
 // ============ END DEBUG TIMING UTILITIES ============
@@ -936,6 +980,7 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
     const std::string& field_name,
     const TrainingDataCollectorOptions& options,
     const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
+  ResetTimingStats();
   ScopedTimer total_timer("CollectTrainingDataWithGtCmps [TOTAL]");
   LOG_INFO("Generating %zu held-out training queries for field '%s'",
            options.num_training_queries, field_name.c_str());
@@ -952,6 +997,23 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
              " held-out queries (with doc_ids for self-exclusion)");
   }
 
+  return CollectTrainingDataFromQueriesImpl(segment, field_name,
+                                            training_queries, {}, options,
+                                            query_doc_ids, provided_indexers);
+}
+
+Result<TrainingDataCollectorResult>
+TrainingDataCollector::CollectTrainingDataWithGtCmpsFromQueries(
+    const Segment::Ptr& segment,
+    const std::string& field_name,
+    const std::vector<std::vector<float>>& training_queries,
+    const std::vector<uint64_t>& query_doc_ids,
+    const TrainingDataCollectorOptions& options,
+    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
+  ResetTimingStats();
+  ScopedTimer total_timer("CollectTrainingDataWithGtCmps [TOTAL]");
+  LOG_INFO("Reusing %zu cached held-out training queries for field '%s'",
+           training_queries.size(), field_name.c_str());
   return CollectTrainingDataFromQueriesImpl(segment, field_name,
                                             training_queries, {}, options,
                                             query_doc_ids, provided_indexers);

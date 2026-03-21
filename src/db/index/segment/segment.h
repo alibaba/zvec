@@ -175,6 +175,7 @@ class Segment {
   // for others
   virtual Status flush() = 0;
   virtual Status dump() = 0;
+  virtual Status retrain_omega_model() = 0;
 
   // only mark need_destroyed
   virtual Status destroy() = 0;

@@ -16,12 +16,22 @@
 
 #ifdef ZVEC_ENABLE_OMEGA
 
+#include <algorithm>
+#include <thread>
 #include <string>
 #include <vector>
 #include <zvec/core/interface/training.h>
 #include <zvec/db/status.h>
 
 namespace zvec {
+
+inline int DefaultOmegaTrainerThreads() {
+  const unsigned int hc = std::thread::hardware_concurrency();
+  if (hc == 0) {
+    return 8;
+  }
+  return static_cast<int>(std::max(1u, hc / 2));
+}
 
 /**
  * @brief Configuration options for OMEGA model training
@@ -34,7 +44,7 @@ struct OmegaModelTrainerOptions {
   int num_iterations = 100;
   int num_leaves = 31;
   double learning_rate = 0.1;
-  int num_threads = 8;
+  int num_threads = DefaultOmegaTrainerThreads();
 
   // Enable verbose logging during training
   bool verbose = false;

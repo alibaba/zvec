@@ -822,6 +822,16 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     return Status::OK();
   }
 
+  if (options.retrain_only_) {
+    LOG_WARN("Optimize running in OMEGA retrain-only mode on %zu persisted segments",
+             persist_segments.size());
+    for (auto& segment : persist_segments) {
+      auto s = segment->retrain_omega_model();
+      CHECK_RETURN_STATUS(s);
+    }
+    return Status::OK();
+  }
+
   // Step 1: Build vector indexes if not ready
   // This ensures indexes are built even for single segments that won't be compacted
   std::vector<SegmentTask::Ptr> index_build_tasks;

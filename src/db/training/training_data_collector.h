@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/interface/training.h>
@@ -63,6 +64,8 @@ struct TrainingDataCollectorOptions {
 struct TrainingDataCollectorResult {
   std::vector<core_interface::TrainingRecord> records;
   core_interface::GtCmpsData gt_cmps_data;
+  std::vector<std::vector<float>> training_queries;
+  std::vector<uint64_t> query_doc_ids;
 };
 
 /**
@@ -76,6 +79,12 @@ struct TrainingDataCollectorResult {
  */
 class TrainingDataCollector {
  public:
+  using TimingStats = std::vector<std::pair<std::string, int64_t>>;
+
+  static void ResetTimingStats();
+
+  static TimingStats ConsumeTimingStats();
+
   /**
    * @brief Collect training data from a persisted segment
    *
@@ -106,6 +115,14 @@ class TrainingDataCollector {
   static Result<TrainingDataCollectorResult> CollectTrainingDataWithGtCmps(
       const Segment::Ptr& segment,
       const std::string& field_name,
+      const TrainingDataCollectorOptions& options,
+      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
+
+  static Result<TrainingDataCollectorResult> CollectTrainingDataWithGtCmpsFromQueries(
+      const Segment::Ptr& segment,
+      const std::string& field_name,
+      const std::vector<std::vector<float>>& training_queries,
+      const std::vector<uint64_t>& query_doc_ids,
       const TrainingDataCollectorOptions& options,
       const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
 

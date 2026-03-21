@@ -1099,34 +1099,50 @@ Attributes:
     concurrency (int): Number of threads to use during optimization.
         If 0, the system will choose an optimal value automatically.
         Default is 0.
+    retrain_only (bool): Reuse existing indexes and only retrain OMEGA models.
+        This skips index rebuild/merge work and is only meaningful for OMEGA.
+        Default is False.
 
 Examples:
-    >>> opt = OptimizeOption(concurrency=2)
+    >>> opt = OptimizeOption(concurrency=2, retrain_only=True)
     >>> print(opt.concurrency)
     2
 )pbdoc")
-      .def(py::init<int>(), py::arg("concurrency") = 0,
+      .def(py::init([](int concurrency, bool retrain_only) {
+             OptimizeOptions obj{};
+             obj.concurrency_ = concurrency;
+             obj.retrain_only_ = retrain_only;
+             return obj;
+           }),
+           py::arg("concurrency") = 0, py::arg("retrain_only") = false,
            R"pbdoc(
 Constructs an OptimizeOption instance.
 
 Args:
     concurrency (int, optional): Number of concurrent threads.
         0 means auto-detect. Defaults to 0.
+    retrain_only (bool, optional): Reuse existing indexes and only retrain
+        OMEGA models. Defaults to False.
 )pbdoc")
       .def_property_readonly(
           "concurrency",
           [](const OptimizeOptions &self) { return self.concurrency_; },
           "int: Number of threads used for optimization (0 = auto).")
+      .def_property_readonly(
+          "retrain_only",
+          [](const OptimizeOptions &self) { return self.retrain_only_; },
+          "bool: Whether to reuse existing indexes and only retrain OMEGA.")
       .def(py::pickle(
           [](const OptimizeOptions &self) {
-            return py::make_tuple(self.concurrency_);
+            return py::make_tuple(self.concurrency_, self.retrain_only_);
           },
           [](py::tuple t) {
-            if (t.size() != 1)
+            if (t.size() != 2)
               throw std::runtime_error(
                   "Invalid pickle data for OptimizeOptions");
             OptimizeOptions obj{};
             obj.concurrency_ = t[0].cast<int>();
+            obj.retrain_only_ = t[1].cast<bool>();
             return obj;
           }));
 

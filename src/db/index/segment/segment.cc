@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -63,6 +64,104 @@
 #endif
 
 namespace zvec {
+
+namespace {
+
+constexpr uint32_t kOmegaQueryCacheMagic = 0x4F514359;  // OQCY
+constexpr uint32_t kOmegaQueryCacheVersion = 1;
+
+void WriteTimingStatsJson(
+    const std::string& output_path,
+    const std::vector<std::pair<std::string, int64_t>>& stats) {
+  std::ofstream ofs(output_path);
+  if (!ofs.is_open()) {
+    return;
+  }
+  ofs << "{\n";
+  for (size_t i = 0; i < stats.size(); ++i) {
+    ofs << "  \"" << stats[i].first << "\": " << stats[i].second;
+    if (i + 1 < stats.size()) {
+      ofs << ",";
+    }
+    ofs << "\n";
+  }
+  ofs << "}\n";
+}
+
+std::string OmegaQueryCachePath(const std::string& model_output_dir) {
+  return model_output_dir + "/training_queries.bin";
+}
+
+bool SaveOmegaTrainingQueryCache(
+    const std::string& model_output_dir,
+    const std::vector<std::vector<float>>& queries,
+    const std::vector<uint64_t>& query_doc_ids) {
+  if (queries.empty() || queries.size() != query_doc_ids.size()) {
+    return false;
+  }
+  const uint32_t dim = static_cast<uint32_t>(queries[0].size());
+  for (const auto& query : queries) {
+    if (query.size() != dim) {
+      return false;
+    }
+  }
+
+  std::ofstream ofs(OmegaQueryCachePath(model_output_dir), std::ios::binary);
+  if (!ofs.is_open()) {
+    return false;
+  }
+
+  const uint64_t num_queries = queries.size();
+  ofs.write(reinterpret_cast<const char*>(&kOmegaQueryCacheMagic), sizeof(kOmegaQueryCacheMagic));
+  ofs.write(reinterpret_cast<const char*>(&kOmegaQueryCacheVersion), sizeof(kOmegaQueryCacheVersion));
+  ofs.write(reinterpret_cast<const char*>(&num_queries), sizeof(num_queries));
+  ofs.write(reinterpret_cast<const char*>(&dim), sizeof(dim));
+  for (size_t i = 0; i < queries.size(); ++i) {
+    ofs.write(reinterpret_cast<const char*>(&query_doc_ids[i]), sizeof(query_doc_ids[i]));
+    ofs.write(reinterpret_cast<const char*>(queries[i].data()),
+              static_cast<std::streamsize>(dim * sizeof(float)));
+  }
+  return ofs.good();
+}
+
+bool LoadOmegaTrainingQueryCache(
+    const std::string& model_output_dir,
+    std::vector<std::vector<float>>* queries,
+    std::vector<uint64_t>* query_doc_ids) {
+  std::ifstream ifs(OmegaQueryCachePath(model_output_dir), std::ios::binary);
+  if (!ifs.is_open()) {
+    return false;
+  }
+
+  uint32_t magic = 0;
+  uint32_t version = 0;
+  uint64_t num_queries = 0;
+  uint32_t dim = 0;
+  ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
+  ifs.read(reinterpret_cast<char*>(&num_queries), sizeof(num_queries));
+  ifs.read(reinterpret_cast<char*>(&dim), sizeof(dim));
+  if (!ifs.good() || magic != kOmegaQueryCacheMagic || version != kOmegaQueryCacheVersion ||
+      num_queries == 0 || dim == 0) {
+    return false;
+  }
+
+  queries->assign(num_queries, std::vector<float>(dim));
+  query_doc_ids->assign(num_queries, 0);
+  for (size_t i = 0; i < num_queries; ++i) {
+    ifs.read(reinterpret_cast<char*>(&(*query_doc_ids)[i]), sizeof(uint64_t));
+    ifs.read(reinterpret_cast<char*>((*queries)[i].data()),
+             static_cast<std::streamsize>(dim * sizeof(float)));
+    if (!ifs.good()) {
+      queries->clear();
+      query_doc_ids->clear();
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
 
 void global_init() {
   static std::once_flag once;
@@ -203,6 +302,8 @@ class SegmentImpl : public Segment,
   Status dump() override;
 
   Status flush() override;
+
+  Status retrain_omega_model() override;
 
   Status destroy() override;
 
@@ -1693,6 +1794,19 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
 
     if (training_result.has_value()) {
       training_result_opt = std::move(training_result.value());
+      if (!FileHelper::DirectoryExists(model_output_dir)) {
+        FileHelper::CreateDirectory(model_output_dir);
+      }
+      if (!SaveOmegaTrainingQueryCache(
+              model_output_dir,
+              training_result_opt->training_queries,
+              training_result_opt->query_doc_ids)) {
+        LOG_WARN("Failed to persist OMEGA training query cache: %s",
+                 OmegaQueryCachePath(model_output_dir).c_str());
+      }
+      WriteTimingStatsJson(
+          model_output_dir + "/training_collection_timing.json",
+          TrainingDataCollector::ConsumeTimingStats());
       LOG_INFO("Collected %zu training records (before flush)", training_result_opt->records.size());
     } else {
       LOG_WARN("Failed to collect training data: %s", training_result.error().message().c_str());
@@ -2344,7 +2458,7 @@ Status SegmentImpl::cleanup() {
 Status SegmentImpl::auto_train_omega_index_internal(
     const std::string& field_name,
     const std::vector<VectorColumnIndexer::Ptr>& indexers) {
-  LOG_INFO("Starting auto-training for OMEGA index on field '%s' in segment %d",
+  LOG_WARN("Starting auto-training for OMEGA index on field '%s' in segment %d",
            field_name.c_str(), id());
 
   // Get training params from index params
@@ -2380,6 +2494,8 @@ Status SegmentImpl::auto_train_omega_index_internal(
            total_doc_count, min_vector_threshold);
 
   // Step 1: Collect training data using the provided indexers
+  LOG_WARN("OMEGA retrain step 1/2: start collecting training data for field '%s' in segment %d",
+           field_name.c_str(), id());
   TrainingDataCollectorOptions collector_options;
   collector_options.num_training_queries = num_training_queries;
   collector_options.ef_training = ef_training;
@@ -2387,15 +2503,33 @@ Status SegmentImpl::auto_train_omega_index_internal(
   collector_options.topk = 100;
   collector_options.noise_scale = 0.01f;
 
-  Result<TrainingDataCollectorResult> training_records_result =
-      TrainingDataCollector::CollectTrainingDataWithGtCmps(
-          shared_from_this(), field_name, collector_options, indexers);
+  std::vector<std::vector<float>> cached_queries;
+  std::vector<uint64_t> cached_query_doc_ids;
+  const std::string model_output_dir =
+      FileHelper::MakeSegmentPath(path_, id()) + "/omega_model";
+  Result<TrainingDataCollectorResult> training_records_result;
+  if (LoadOmegaTrainingQueryCache(model_output_dir, &cached_queries, &cached_query_doc_ids)) {
+    LOG_WARN("Loaded %zu cached held-out queries for OMEGA retraining from %s",
+             cached_queries.size(), OmegaQueryCachePath(model_output_dir).c_str());
+    training_records_result =
+        TrainingDataCollector::CollectTrainingDataWithGtCmpsFromQueries(
+            shared_from_this(), field_name, cached_queries, cached_query_doc_ids,
+            collector_options, indexers);
+  } else {
+    LOG_WARN("OMEGA retrain query cache not found, falling back to sampling held-out queries from persisted segment");
+    training_records_result =
+        TrainingDataCollector::CollectTrainingDataWithGtCmps(
+            shared_from_this(), field_name, collector_options, indexers);
+  }
 
   if (!training_records_result.has_value()) {
     return Status::InternalError(
         "Failed to collect training data: " +
         training_records_result.error().message());
   }
+
+  LOG_WARN("OMEGA retrain step 1/2: finished collecting training data for field '%s' in segment %d",
+           field_name.c_str(), id());
 
   auto& training_result = training_records_result.value();
   auto& training_records = training_result.records;
@@ -2436,8 +2570,10 @@ Status SegmentImpl::auto_train_omega_index_internal(
 
 #ifdef ZVEC_ENABLE_OMEGA
   // Step 2: Train OMEGA model with gt_cmps data
+  LOG_WARN("OMEGA retrain step 2/2: start model training for field '%s' in segment %d",
+           field_name.c_str(), id());
   OmegaModelTrainerOptions trainer_options;
-  trainer_options.output_dir = FileHelper::MakeSegmentPath(path_, id()) + "/omega_model";
+  trainer_options.output_dir = model_output_dir;
   trainer_options.verbose = true;
 
   // Create output directory if it doesn't exist
@@ -2449,6 +2585,10 @@ Status SegmentImpl::auto_train_omega_index_internal(
     }
   }
 
+  WriteTimingStatsJson(
+      trainer_options.output_dir + "/training_collection_timing.json",
+      TrainingDataCollector::ConsumeTimingStats());
+
   auto train_status = OmegaModelTrainer::TrainModelWithGtCmps(
       training_records, training_result.gt_cmps_data, trainer_options);
   if (!train_status.ok()) {
@@ -2456,7 +2596,7 @@ Status SegmentImpl::auto_train_omega_index_internal(
         "Failed to train OMEGA model: " + train_status.message());
   }
 
-  LOG_INFO("Successfully trained OMEGA model for segment %d, output: %s",
+  LOG_WARN("OMEGA retrain step 2/2: finished model training for segment %d, output: %s",
            id(), trainer_options.output_dir.c_str());
 #else
   LOG_INFO("OMEGA training skipped (ZVEC_ENABLE_OMEGA not defined)");
@@ -2465,6 +2605,33 @@ Status SegmentImpl::auto_train_omega_index_internal(
   // Step 3: Load model into the provided indexers
   // TODO: Implement model loading into VectorColumnIndexer
   // For now, the model will be loaded when the index is reopened
+
+  return Status::OK();
+}
+
+Status SegmentImpl::retrain_omega_model() {
+  for (const auto& field : collection_schema_->vector_fields()) {
+    if (!field->index_params()) {
+      continue;
+    }
+    auto omega_params =
+        std::dynamic_pointer_cast<OmegaIndexParams>(field->index_params());
+    if (!omega_params) {
+      continue;
+    }
+
+    auto indexers = get_vector_indexer(field->name());
+    if (indexers.empty()) {
+      LOG_INFO("Skipping OMEGA retraining for field '%s' in segment %d: no vector indexers loaded",
+               field->name().c_str(), id());
+      continue;
+    }
+
+    LOG_WARN("Retraining OMEGA model for field '%s' in segment %d using existing index",
+             field->name().c_str(), id());
+    auto s = auto_train_omega_index_internal(field->name(), indexers);
+    CHECK_RETURN_STATUS(s);
+  }
 
   return Status::OK();
 }

@@ -58,6 +58,7 @@ struct CreateIndexOptions {
 
 struct OptimizeOptions {
   int concurrency_{0};
+  bool retrain_only_{false};
 };
 
 struct AddColumnOptions {

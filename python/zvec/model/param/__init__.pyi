@@ -660,21 +660,29 @@ class OptimizeOption:
         concurrency (int): Number of threads to use during optimization.
             If 0, the system will choose an optimal value automatically.
             Default is 0.
+        retrain_only (bool): Reuse existing indexes and only retrain OMEGA
+            models. Default is False.
 
     Examples:
-        >>> opt = OptimizeOption(concurrency=2)
+        >>> opt = OptimizeOption(concurrency=2, retrain_only=True)
         >>> print(opt.concurrency)
         2
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, concurrency: typing.SupportsInt = 0) -> None:
+    def __init__(
+        self,
+        concurrency: typing.SupportsInt = 0,
+        retrain_only: bool = False,
+    ) -> None:
         """
         Constructs an OptimizeOption instance.
 
         Args:
             concurrency (int, optional): Number of concurrent threads.
                 0 means auto-detect. Defaults to 0.
+            retrain_only (bool, optional): Reuse existing indexes and only
+                retrain OMEGA models. Defaults to False.
         """
 
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -682,6 +690,11 @@ class OptimizeOption:
     def concurrency(self) -> int:
         """
         int: Number of threads used for optimization (0 = auto).
+        """
+    @property
+    def retrain_only(self) -> bool:
+        """
+        bool: Whether to reuse existing indexes and only retrain OMEGA.
         """
 
 class QueryParam:

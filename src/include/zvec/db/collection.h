@@ -72,7 +72,7 @@ class Collection {
   virtual Status DropIndex(const std::string &column_name) = 0;
 
   virtual Status Optimize(const OptimizeOptions &options = OptimizeOptions{
-                              0}) = 0;
+                              0, false}) = 0;
 
   virtual Status AddColumn(const std::string &column_name,
                            const FieldSchema::Ptr &column_schema,
