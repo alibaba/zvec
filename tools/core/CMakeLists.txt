@@ -37,7 +37,7 @@ cc_binary(
     NAME omega_predict_microbench
     STRICT PACKED
     SRCS omega_predict_microbench.cc
-    INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/thirdparty/omega/include
+    INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/thirdparty/omega/OMEGALib/include
     LIBS omega
 )
 
