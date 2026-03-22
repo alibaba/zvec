@@ -117,16 +117,16 @@ def build_hnsw_profile(metrics: dict, output: str) -> dict:
     query_records = parse_query_records(output, "HNSW query stats:")
     serial_summary = parse_serial_runner_summary(output)
     return {
-        "query_count": len(query_records),
-        "recall": metrics.get("recall"),
-        "qps": metrics.get("qps"),
-        "avg_end2end_latency_ms": avg_metric(query_records, "latency_ms"),
-        "avg_cmps": avg_metric(query_records, "pairwise_dist_cnt"),
-        "avg_scan_cmps": avg_metric(query_records, "cmps"),
-        "serial_avg_latency_s": serial_summary.get("avg_latency"),
-        "serial_p99_s": serial_summary.get("p99"),
-        "serial_p95_s": serial_summary.get("p95"),
-        "serial_avg_recall": serial_summary.get("avg_recall"),
+        "benchmark_recall": metrics.get("recall"),
+        "benchmark_qps": metrics.get("qps"),
+        "profile_query_count": len(query_records),
+        "profile_avg_end2end_latency_ms": avg_metric(query_records, "latency_ms"),
+        "profile_avg_cmps": avg_metric(query_records, "pairwise_dist_cnt"),
+        "profile_avg_scan_cmps": avg_metric(query_records, "cmps"),
+        "profile_serial_avg_latency_s": serial_summary.get("avg_latency"),
+        "profile_serial_p99_s": serial_summary.get("p99"),
+        "profile_serial_p95_s": serial_summary.get("p95"),
+        "profile_serial_avg_recall": serial_summary.get("avg_recall"),
     }
 
 
@@ -151,37 +151,37 @@ def build_omega_profile(metrics: dict, output: str, hnsw_profile: dict | None) -
         avg_saved_cmps = hnsw_profile["avg_cmps"] - avg_pairwise_dist_cnt
 
     return {
-        "query_count": len(query_records),
-        "recall": metrics.get("recall"),
-        "qps": metrics.get("qps"),
-        "avg_end2end_latency_ms": avg_metric(query_records, "total_ms"),
-        "avg_cmps": avg_pairwise_dist_cnt,
-        "avg_scan_cmps": avg_metric(query_records, "scan_cmps"),
-        "avg_omega_cmps": avg_metric(query_records, "omega_cmps"),
-        "avg_prediction_calls": avg_metric(query_records, "prediction_calls"),
-        "avg_should_stop_calls": avg_metric(query_records, "should_stop_calls"),
-        "avg_advance_calls": avg_metric(query_records, "advance_calls"),
-        "avg_model_overhead_ms": avg_omega_control_ms,
-        "avg_should_stop_ms": avg_metric(query_records, "should_stop_ms"),
-        "avg_prediction_eval_ms": avg_metric(query_records, "prediction_eval_ms"),
-        "avg_feature_prep_ms": avg_metric(query_records, "feature_prep_ms"),
-        "avg_pure_search_ms": avg_pure_search_ms,
-        "avg_model_overhead_cmp_equiv": model_overhead_cmp_equiv,
-        "avg_early_stop_saved_cmps": avg_saved_cmps,
-        "avg_early_stop_hit_rate": avg_metric(query_records, "early_stop_hit"),
-        "serial_avg_latency_s": serial_summary.get("avg_latency"),
-        "serial_p99_s": serial_summary.get("p99"),
-        "serial_p95_s": serial_summary.get("p95"),
-        "serial_avg_recall": serial_summary.get("avg_recall"),
+        "benchmark_recall": metrics.get("recall"),
+        "benchmark_qps": metrics.get("qps"),
+        "profile_query_count": len(query_records),
+        "profile_avg_end2end_latency_ms": avg_metric(query_records, "total_ms"),
+        "profile_avg_cmps": avg_pairwise_dist_cnt,
+        "profile_avg_scan_cmps": avg_metric(query_records, "scan_cmps"),
+        "profile_avg_omega_cmps": avg_metric(query_records, "omega_cmps"),
+        "profile_avg_prediction_calls": avg_metric(query_records, "prediction_calls"),
+        "profile_avg_should_stop_calls": avg_metric(query_records, "should_stop_calls"),
+        "profile_avg_advance_calls": avg_metric(query_records, "advance_calls"),
+        "profile_avg_model_overhead_ms": avg_omega_control_ms,
+        "profile_avg_should_stop_ms": avg_metric(query_records, "should_stop_ms"),
+        "profile_avg_prediction_eval_ms": avg_metric(query_records, "prediction_eval_ms"),
+        "profile_avg_feature_prep_ms": avg_metric(query_records, "feature_prep_ms"),
+        "profile_avg_pure_search_ms": avg_pure_search_ms,
+        "profile_avg_model_overhead_cmp_equiv": model_overhead_cmp_equiv,
+        "profile_avg_early_stop_saved_cmps": avg_saved_cmps,
+        "profile_avg_early_stop_hit_rate": avg_metric(query_records, "early_stop_hit"),
+        "profile_serial_avg_latency_s": serial_summary.get("avg_latency"),
+        "profile_serial_p99_s": serial_summary.get("p99"),
+        "profile_serial_p95_s": serial_summary.get("p95"),
+        "profile_serial_avg_recall": serial_summary.get("avg_recall"),
     }
 
 
-def profiling_output_path(benchmark_dir: Path) -> Path:
-    return benchmark_dir / "cohere_1m_profiling_summary.json"
+def profiling_output_path(index_path: Path) -> Path:
+    return index_path / "online_benchmark_summary.json"
 
 
-def write_profiling_summary(benchmark_dir: Path, payload: dict) -> None:
-    with open(profiling_output_path(benchmark_dir), "w") as f:
+def write_profiling_summary(index_path: Path, payload: dict) -> None:
+    with open(profiling_output_path(index_path), "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
@@ -789,8 +789,9 @@ def main():
 
     # ============ Summary ============
     if results:
+        summary_index_path = omega_path if not args.skip_omega else hnsw_path
         write_profiling_summary(
-            benchmark_dir,
+            summary_index_path,
             {
                 "generated_at": datetime.now().isoformat(),
                 "dataset": "cohere_1m",
@@ -829,11 +830,11 @@ def main():
         for r in results:
             profile = r.profiling or {}
             tr = f"{r.target_recall:.2f}" if r.target_recall else "N/A"
-            avg_lat = profile.get("avg_end2end_latency_ms")
-            avg_cmps = profile.get("avg_cmps")
-            avg_pred_calls = profile.get("avg_prediction_calls")
-            avg_model_ms = profile.get("avg_model_overhead_ms")
-            saved_cmps = profile.get("avg_early_stop_saved_cmps")
+            avg_lat = profile.get("profile_avg_end2end_latency_ms")
+            avg_cmps = profile.get("profile_avg_cmps")
+            avg_pred_calls = profile.get("profile_avg_prediction_calls")
+            avg_model_ms = profile.get("profile_avg_model_overhead_ms")
+            saved_cmps = profile.get("profile_avg_early_stop_saved_cmps")
             print(
                 f"{r.type:<10} "
                 f"{tr:<15} "
@@ -844,7 +845,7 @@ def main():
                 f"{(f'{saved_cmps:.1f}' if saved_cmps is not None else 'N/A'):<12}"
             )
         print()
-        print(f"Profiling JSON: {profiling_output_path(benchmark_dir)}")
+        print(f"Profiling JSON: {profiling_output_path(summary_index_path)}")
 
     print()
     print("To view results:")
