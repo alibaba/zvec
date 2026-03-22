@@ -524,7 +524,7 @@ def main():
     M = 15
     EF_SEARCH = 180
     QUANTIZE_TYPE = "int8"
-    NUM_CONCURRENCY = "12,14,16,18,20"
+    NUM_CONCURRENCY = "16"
     CONCURRENCY_DURATION = 30
     K = 100
 
@@ -654,6 +654,7 @@ def main():
                     vectordbbench_root,
                     dry_run=False,
                     extra_env={
+                        "ZVEC_LOG_LEVEL": "INFO",
                         "ZVEC_HNSW_LOG_QUERY_STATS": "1",
                         "ZVEC_HNSW_LOG_QUERY_LIMIT": "2000",
                     },
@@ -800,6 +801,7 @@ def main():
                         vectordbbench_root,
                         dry_run=False,
                         extra_env={
+                            "ZVEC_LOG_LEVEL": "INFO",
                             "ZVEC_OMEGA_LOG_QUERY_STATS": "1",
                             "ZVEC_OMEGA_LOG_QUERY_LIMIT": "2000",
                         },
