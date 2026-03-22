@@ -369,6 +369,29 @@ def run_command(
     vectordbbench_root: Path,
     dry_run: bool = False,
     extra_env: dict[str, str] | None = None,
+) -> int:
+    cmd_str = " \\\n    ".join(cmd)
+    print(f"\n{'=' * 60}")
+    print(f"Command:\n{cmd_str}")
+    print(f"{'=' * 60}\n")
+
+    if dry_run:
+        print("[DRY RUN] Command not executed")
+        return 0
+
+    cwd = vectordbbench_root if vectordbbench_root.exists() else None
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    result = subprocess.run(cmd, cwd=cwd, env=env)
+    return result.returncode
+
+
+def run_command_capture(
+    cmd: list[str],
+    vectordbbench_root: Path,
+    dry_run: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     cmd_str = " \\\n    ".join(cmd)
     print(f"\n{'=' * 60}")
@@ -544,7 +567,7 @@ def main():
                 "--skip-search-serial",
                 "--skip-search-concurrent",
             ]
-            ret, _ = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
+            ret = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
             if ret != 0 and not args.dry_run:
                 print("ERROR: HNSW build failed!")
                 return 1
@@ -562,7 +585,7 @@ def main():
                 "--skip-drop-old",
                 "--skip-load",
             ]
-            ret, _ = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
+            ret = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
             metrics = get_run_result(hnsw_db_label, before_files, results_dir) if not args.dry_run else {}
             load_duration = get_offline_load_duration(hnsw_path)
             hnsw_profile = None
@@ -573,7 +596,7 @@ def main():
                     "--skip-load",
                     "--skip-search-concurrent",
                 ]
-                _, profile_output = run_command(
+                _, profile_output = run_command_capture(
                     profile_cmd,
                     vectordbbench_root,
                     dry_run=False,
@@ -669,7 +692,7 @@ def main():
                     "--skip-load",
                     "--retrain-only",
                 ]
-            ret, _ = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
+            ret = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
             if ret != 0 and not args.dry_run:
                 print("ERROR: OMEGA build failed!")
                 return 1
@@ -698,7 +721,7 @@ def main():
                 ]
                 if args.retrain_only:
                     cmd.append("--retrain-only")
-                ret, _ = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
+                ret = run_command(cmd, vectordbbench_root, dry_run=args.dry_run)
                 metrics = get_run_result(omega_db_label, before_files, results_dir) if not args.dry_run else {}
                 load_duration = get_offline_load_duration(omega_path)
                 omega_profile = None
@@ -713,7 +736,7 @@ def main():
                     ]
                     if args.retrain_only:
                         profile_cmd.append("--retrain-only")
-                    _, profile_output = run_command(
+                    _, profile_output = run_command_capture(
                         profile_cmd,
                         vectordbbench_root,
                         dry_run=False,
