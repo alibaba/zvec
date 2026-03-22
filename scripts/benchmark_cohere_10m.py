@@ -15,6 +15,7 @@ import sys
 import os
 import importlib
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -51,8 +52,11 @@ def resolve_paths(
         if benchmark_dir_arg
         else Path(os.environ.get("ZVEC_BENCHMARK_DIR", zvec_root / "benchmark_results")).resolve()
     )
+    source_results_dir = vectordbbench_root / "vectordb_bench" / "results" / "Zvec"
     if results_dir_arg:
         results_dir = Path(results_dir_arg).resolve()
+    elif source_results_dir.exists():
+        results_dir = source_results_dir
     else:
         results_dir = None
         try:
@@ -145,8 +149,8 @@ def build_omega_profile(metrics: dict, output: str, hnsw_profile: dict | None) -
         model_overhead_cmp_equiv = avg_omega_control_ms / cmp_time_ms
 
     avg_saved_cmps = None
-    if hnsw_profile and hnsw_profile.get("avg_cmps") is not None and avg_pairwise_dist_cnt is not None:
-        avg_saved_cmps = hnsw_profile["avg_cmps"] - avg_pairwise_dist_cnt
+    if hnsw_profile and hnsw_profile.get("profile_avg_cmps") is not None and avg_pairwise_dist_cnt is not None:
+        avg_saved_cmps = hnsw_profile["profile_avg_cmps"] - avg_pairwise_dist_cnt
 
     return {
         "benchmark_recall": metrics.get("recall"),
@@ -181,6 +185,38 @@ def profiling_output_path(index_path: Path) -> Path:
 def write_profiling_summary(index_path: Path, payload: dict) -> None:
     with open(profiling_output_path(index_path), "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def write_grouped_profiling_summaries(dataset: str, results: list[BenchmarkResult]) -> list[Path]:
+    written_paths: list[Path] = []
+    grouped: dict[str, list[BenchmarkResult]] = {}
+    for result in results:
+        grouped.setdefault(result.path, []).append(result)
+
+    for path_str, grouped_results in grouped.items():
+        index_path = Path(path_str)
+        write_profiling_summary(
+            index_path,
+            {
+                "generated_at": datetime.now().isoformat(),
+                "dataset": dataset,
+                "results": [
+                    {
+                        "type": result.type,
+                        "target_recall": result.target_recall,
+                        "path": result.path,
+                        "load_duration_s": result.load_duration,
+                        "qps": result.qps,
+                        "recall": result.recall,
+                        "profiling": result.profiling,
+                    }
+                    for result in grouped_results
+                ],
+            },
+        )
+        written_paths.append(profiling_output_path(index_path))
+
+    return written_paths
 
 
 def get_latest_result(db_label: str, results_dir: Path) -> dict:
@@ -406,22 +442,19 @@ def run_command_capture(
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".log") as tmp:
+        tmp_path = Path(tmp.name)
 
-    process = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    lines: list[str] = []
-    assert process.stdout is not None
-    for line in process.stdout:
-        print(line, end="")
-        lines.append(line)
-    return process.wait(), "".join(lines)
+    try:
+        with tmp_path.open("w+") as tmp:
+            result = subprocess.run(cmd, cwd=cwd, env=env, stdout=tmp, stderr=subprocess.STDOUT, text=True)
+            tmp.flush()
+            tmp.seek(0)
+            output = tmp.read()
+        print(output, end="" if output.endswith("\n") or not output else "\n")
+        return result.returncode, output
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def main():
@@ -765,26 +798,7 @@ def main():
                 )
 
     if results:
-        summary_index_path = omega_path if not args.skip_omega else hnsw_path
-        write_profiling_summary(
-            summary_index_path,
-            {
-                "generated_at": datetime.now().isoformat(),
-                "dataset": "cohere_10m",
-                "results": [
-                    {
-                        "type": result.type,
-                        "target_recall": result.target_recall,
-                        "path": result.path,
-                        "load_duration_s": result.load_duration,
-                        "qps": result.qps,
-                        "recall": result.recall,
-                        "profiling": result.profiling,
-                    }
-                    for result in results
-                ],
-            },
-        )
+        written_summary_paths = write_grouped_profiling_summaries("cohere_10m", results)
         print("\n\n" + "=" * 70)
         print("Benchmark Summary")
         print("=" * 70)
@@ -821,7 +835,8 @@ def main():
                 f"{(f'{saved_cmps:.1f}' if saved_cmps is not None else 'N/A'):<12}"
             )
         print()
-        print(f"Profiling JSON: {profiling_output_path(summary_index_path)}")
+        for path in written_summary_paths:
+            print(f"Profiling JSON: {path}")
 
     print()
     print("To view results:")
