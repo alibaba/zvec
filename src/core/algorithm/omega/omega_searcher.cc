@@ -27,6 +27,38 @@
 namespace zvec {
 namespace core {
 
+namespace {
+
+struct OmegaHookState {
+  omega::SearchContext *search_ctx{nullptr};
+  bool enable_early_stopping{false};
+};
+
+void OnOmegaLevel0Entry(node_id_t id, dist_t dist, bool /*inserted_to_topk*/,
+                        void *user_data) {
+  auto &state = *static_cast<OmegaHookState *>(user_data);
+  state.search_ctx->SetDistStart(dist);
+  state.search_ctx->ReportVisitCandidate(id, dist, true);
+}
+
+void OnOmegaHop(void *user_data) {
+  auto &state = *static_cast<OmegaHookState *>(user_data);
+  state.search_ctx->ReportHop();
+}
+
+bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
+                           bool should_consider_candidate, void *user_data) {
+  auto &state = *static_cast<OmegaHookState *>(user_data);
+  state.search_ctx->ReportVisitCandidate(id, dist, should_consider_candidate);
+  if (!state.enable_early_stopping) {
+    return false;
+  }
+  return state.search_ctx->ShouldPredict() &&
+         state.search_ctx->ShouldStopEarly();
+}
+
+}  // namespace
+
 OmegaSearcher::OmegaSearcher(void)
     : HnswSearcher(),
       omega_model_(nullptr),
@@ -291,168 +323,40 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
               query_id, gt_for_query.size());
   }
 
-  // OmegaContext extends HnswContext, so we can use it directly
-  // Initialize query in distance calculator
-  omega_ctx->reset_query(query);
-
-  // Get entity and distance calculator
-  const auto &entity = omega_ctx->get_entity();
-  auto &dc = omega_ctx->dist_calculator();
-  auto &visit_filter = omega_ctx->visit_filter();
-  auto &candidates = omega_ctx->candidates();
-  auto &topk_heap = omega_ctx->topk_heap();
-
-  // Use ef from parent class (now protected, so accessible)
-  uint32_t ef = ef_;
-  topk_heap.limit(std::max(ef, count));
-
-  // Get entry point
-  auto max_level = entity.cur_max_level();
-  auto entry_point = entity.entry_point();
-
-  if (entry_point == kInvalidNodeId) {
-    omega_search_destroy(omega_search);
-    return 0;
-  }
-
-  // Navigate to layer 0
-  dist_t dist = dc.dist(entry_point);
-  for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
-    const Neighbors neighbors = entity.get_neighbors(cur_level, entry_point);
-    if (neighbors.size() == 0) break;
-
-    std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
-    int ret = entity.get_vector(&neighbors[0], neighbors.size(), neighbor_vec_blocks);
-    if (ret != 0) break;
-
-    bool find_closer = false;
-    for (uint32_t i = 0; i < neighbors.size(); ++i) {
-      const void *neighbor_vec = neighbor_vec_blocks[i].data();
-      dist_t cur_dist = dc.dist(neighbor_vec);
-      if (cur_dist < dist) {
-        entry_point = neighbors[i];
-        dist = cur_dist;
-        find_closer = true;
-      }
-    }
-    if (!find_closer) break;
-  }
-
-  // Set dist_start for OMEGA
-  omega_search_ctx->SetDistStart(dist);
-
-  // Now perform OMEGA-enhanced search on layer 0
-  candidates.clear();
-  visit_filter.clear();
-  topk_heap.clear();
-
-  // Add entry point to search
-  visit_filter.set_visited(entry_point);
-  topk_heap.emplace(entry_point, dist);
-  candidates.emplace(entry_point, dist);
-
-  // Report initial visit to OMEGA
-  omega_search_ctx->ReportVisitCandidate(entry_point, dist, true);
-
-  dist_t lowerBound = dist;
-
-  // Main search loop with OMEGA predictions
+  omega_ctx->clear();
+  omega_ctx->resize_results(count);
   bool early_stop_hit = false;
-  while (!candidates.empty()) {
-    auto top = candidates.begin();
-    node_id_t current_node = top->first;
-    dist_t candidate_dist = top->second;
 
-    // Reference semantics: count the hop before the stop-condition check.
-    omega_search_ctx->ReportHop();
+  for (size_t q = 0; q < count; ++q) {
+    omega_ctx->reset_query(query);
+    OmegaHookState hook_state;
+    hook_state.search_ctx = omega_search_ctx;
+    hook_state.enable_early_stopping = !training_mode_enabled_;
+    HnswAlgorithm::SearchHooks hooks;
+    hooks.user_data = &hook_state;
+    hooks.on_level0_entry = OnOmegaLevel0Entry;
+    hooks.on_hop = OnOmegaHop;
+    hooks.on_visit_candidate = OnOmegaVisitCandidate;
 
-    // Standard HNSW stopping condition
-    if (candidate_dist > lowerBound && topk_heap.size() >= ef) {
-      break;
+    int ret = fast_search_with_hooks(omega_ctx, &hooks, &early_stop_hit);
+    if (ret != 0) {
+      omega_search_destroy(omega_search);
+      LOG_WARN("OMEGA adaptive search failed, falling back to HNSW");
+      return HnswSearcher::search_impl(query, qmeta, count, context);
     }
 
-    candidates.pop();
-
-    // Get neighbors of current node
-    const Neighbors neighbors = entity.get_neighbors(0, current_node);
-    if (neighbors.size() == 0) continue;
-
-    // Prepare to compute distances
-    std::vector<node_id_t> unvisited_neighbors;
-    for (uint32_t i = 0; i < neighbors.size(); ++i) {
-      node_id_t neighbor = neighbors[i];
-      if (!visit_filter.visited(neighbor)) {
-        visit_filter.set_visited(neighbor);
-        unvisited_neighbors.push_back(neighbor);
-      }
-    }
-
-    if (unvisited_neighbors.empty()) continue;
-
-    // Get neighbor vectors
-    std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
-    int ret = entity.get_vector(unvisited_neighbors.data(),
-                                unvisited_neighbors.size(),
-                                neighbor_vec_blocks);
-    if (ret != 0) break;
-
-    // Compute distances and update candidates
-    for (size_t i = 0; i < unvisited_neighbors.size(); ++i) {
-      node_id_t neighbor = unvisited_neighbors[i];
-      const void *neighbor_vec = neighbor_vec_blocks[i].data();
-      dist_t neighbor_dist = dc.dist(neighbor_vec);
-
-      bool should_consider_candidate =
-          (topk_heap.size() < ef || neighbor_dist < lowerBound);
-      omega_search_ctx->ReportVisitCandidate(neighbor, neighbor_dist,
-                                             should_consider_candidate);
-
-      if (!training_mode_enabled_ && omega_search_ctx->ShouldPredict()) {
-        if (omega_search_ctx->ShouldStopEarly()) {
-          int hops, cmps, collected_gt;
-          omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
-          LOG_DEBUG("OMEGA early stop: cmps=%d, hops=%d, collected_gt=%d",
-                    cmps, hops, collected_gt);
-          early_stop_hit = true;
-          break;
-        }
-      }
-
-      // Consider this candidate
-      if (should_consider_candidate) {
-        candidates.emplace(neighbor, neighbor_dist);
-        topk_heap.emplace(neighbor, neighbor_dist);
-
-        // Update lowerBound
-        if (neighbor_dist < lowerBound) {
-          lowerBound = neighbor_dist;
-        }
-
-        // Remove excess from topk_heap
-        while (topk_heap.size() > ef) {
-          topk_heap.pop();
-        }
-
-        // Update lowerBound to the worst distance in topk
-        if (!topk_heap.empty() && topk_heap.size() >= ef) {
-          lowerBound = topk_heap[0].second;  // Max heap, so [0] is the worst
-        }
-      }
-    }
-
+    omega_ctx->topk_to_result(q);
     if (early_stop_hit) {
       break;
     }
+    query = static_cast<const char *>(query) + qmeta.element_size();
   }
-
-  // Convert results to context format
-  omega_ctx->topk_to_result();
 
   // Get final statistics
   int hops, cmps, collected_gt;
   omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
   LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu",
-            cmps, hops, topk_heap.size());
+            cmps, hops, omega_ctx->topk_heap().size());
 
   // Collect training records if in training mode
   if (training_mode_enabled_) {

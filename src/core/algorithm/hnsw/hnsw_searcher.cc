@@ -190,6 +190,12 @@ int HnswSearcher::update_context(HnswContext *ctx) const {
                              entity, magic_);
 }
 
+int HnswSearcher::fast_search_with_hooks(
+    HnswContext *ctx, const HnswAlgorithm::SearchHooks *hooks,
+    bool *stopped_early) const {
+  return alg_->fast_search_with_hooks(ctx, hooks, stopped_early);
+}
+
 int HnswSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
                               uint32_t count, Context::Pointer &context) const {
   if (ailego_unlikely(!query || !context)) {

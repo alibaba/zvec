@@ -14,6 +14,7 @@
 #include "hnsw_algorithm.h"
 #include <chrono>
 #include <iostream>
+#include <utility>
 #include <ailego/internal/cpu_features.h>
 
 namespace zvec {
@@ -81,34 +82,46 @@ int HnswAlgorithm::add_node(node_id_t id, level_t level, HnswContext *ctx) {
 }
 
 int HnswAlgorithm::search(HnswContext *ctx) const {
-  spin_lock_.lock();
-  auto maxLevel = entity_.cur_max_level();
-  auto entry_point = entity_.entry_point();
-  spin_lock_.unlock();
-
-  if (ailego_unlikely(entry_point == kInvalidNodeId)) {
-    return 0;
-  }
-
-  dist_t dist = ctx->dist_calculator().dist(entry_point);
-  for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
-    select_entry_point(cur_level, &entry_point, &dist, ctx);
-  }
-
-  auto &topk_heap = ctx->topk_heap();
-  topk_heap.clear();
-  search_neighbors(0, &entry_point, &dist, topk_heap, ctx);
-
-  if (ctx->group_by_search()) {
-    expand_neighbors_by_group(topk_heap, ctx);
-  }
-
-  return 0;
+  return search_internal(ctx, true, nullptr, nullptr);
 }
 
 int HnswAlgorithm::fast_search(HnswContext *ctx) const {
-  auto max_level = entity_.cur_max_level();
-  auto entry_point = entity_.entry_point();
+  return search_internal(ctx, false, nullptr, nullptr);
+}
+
+int HnswAlgorithm::search_with_hooks(HnswContext *ctx,
+                                     const SearchHooks *hooks,
+                                     bool *stopped_early) const {
+  return search_internal(ctx, true, hooks, stopped_early);
+}
+
+int HnswAlgorithm::fast_search_with_hooks(HnswContext *ctx,
+                                          const SearchHooks *hooks,
+                                          bool *stopped_early) const {
+  return search_internal(ctx, false, hooks, stopped_early);
+}
+
+int HnswAlgorithm::search_internal(HnswContext *ctx, bool use_lock,
+                                   const SearchHooks *hooks,
+                                   bool *stopped_early) const {
+  auto load_entry_point = [&]() {
+    if (use_lock) {
+      spin_lock_.lock();
+      auto max_level = entity_.cur_max_level();
+      auto entry_point = entity_.entry_point();
+      spin_lock_.unlock();
+      return std::make_pair(max_level, entry_point);
+    }
+    return std::make_pair(entity_.cur_max_level(), entity_.entry_point());
+  };
+
+  auto [max_level, entry_point] = load_entry_point();
+  if (ailego_unlikely(entry_point == kInvalidNodeId)) {
+    if (stopped_early != nullptr) {
+      *stopped_early = false;
+    }
+    return 0;
+  }
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
   for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
@@ -117,10 +130,13 @@ int HnswAlgorithm::fast_search(HnswContext *ctx) const {
 
   auto &topk_heap = ctx->topk_heap();
   topk_heap.clear();
+  bool did_stop_early =
+      search_neighbors(0, &entry_point, &dist, topk_heap, ctx, hooks);
+  if (stopped_early != nullptr) {
+    *stopped_early = did_stop_early;
+  }
 
-  search_neighbors(0, &entry_point, &dist, topk_heap, ctx);
-
-  if (ctx->group_by_search()) {
+  if (!did_stop_early && ctx->group_by_search()) {
     expand_neighbors_by_group(topk_heap, ctx);
   }
 
@@ -199,9 +215,10 @@ void HnswAlgorithm::add_neighbors(node_id_t id, level_t level,
   return;
 }
 
-void HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
+bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
                                      dist_t *dist, TopkHeap &topk,
-                                     HnswContext *ctx) const {
+                                     HnswContext *ctx,
+                                     const SearchHooks *hooks) const {
   const auto &entity = ctx->get_entity();
   HnswDistCalculator &dc = ctx->dist_calculator();
   VisitFilter &visit = ctx->visit_filter();
@@ -214,12 +231,21 @@ void HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
   candidates.clear();
   visit.clear();
   visit.set_visited(*entry_point);
-  if (!filter(*entry_point)) {
+  bool entry_inserted_to_topk = !filter(*entry_point);
+  if (entry_inserted_to_topk) {
     topk.emplace(*entry_point, *dist);
   }
 
   candidates.emplace(*entry_point, *dist);
+  if (hooks != nullptr && hooks->on_level0_entry != nullptr) {
+    hooks->on_level0_entry(*entry_point, *dist, entry_inserted_to_topk,
+                           hooks->user_data);
+  }
   while (!candidates.empty() && !ctx->reach_scan_limit()) {
+    if (hooks != nullptr && hooks->on_hop != nullptr) {
+      hooks->on_hop(hooks->user_data);
+    }
+
     auto top = candidates.begin();
     node_id_t main_node = top->first;
     dist_t main_dist = top->second;
@@ -281,8 +307,16 @@ void HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
     for (uint32_t i = 0; i < size; ++i) {
       node_id_t node = neighbor_ids[i];
       dist_t cur_dist = dists[i];
+      bool should_consider_candidate =
+          (!topk.full()) || cur_dist < topk[0].second;
 
-      if ((!topk.full()) || cur_dist < topk[0].second) {
+      if (hooks != nullptr && hooks->on_visit_candidate != nullptr &&
+          hooks->on_visit_candidate(node, cur_dist, should_consider_candidate,
+                                    hooks->user_data)) {
+        return true;
+      }
+
+      if (should_consider_candidate) {
         candidates.emplace(node, cur_dist);
         // update entry_point for next level scan
         if (cur_dist < *dist) {
@@ -296,7 +330,7 @@ void HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
     }  // end for
   }  // while
 
-  return;
+  return false;
 }
 
 void HnswAlgorithm::expand_neighbors_by_group(TopkHeap &topk,

@@ -112,6 +112,10 @@ class HnswSearcher : public IndexSearcher {
   int update_context(HnswContext *ctx) const;
 
  protected:
+  int fast_search_with_hooks(HnswContext *ctx,
+                             const HnswAlgorithm::SearchHooks *hooks,
+                             bool *stopped_early) const;
+
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
 
   uint32_t ef_{HnswEntity::kDefaultEf};
