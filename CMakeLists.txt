@@ -34,12 +34,6 @@ if(ZVEC_ENABLE_OMEGA)
     add_definitions(-DZVEC_ENABLE_OMEGA)
 endif()
 
-option(ZVEC_OMEGA_PROFILE_CONTROL_TIMING "Enable OMEGA control-path profiling timing" OFF)
-message(STATUS "ZVEC_OMEGA_PROFILE_CONTROL_TIMING:${ZVEC_OMEGA_PROFILE_CONTROL_TIMING}")
-if(ZVEC_OMEGA_PROFILE_CONTROL_TIMING)
-    add_definitions(-DZVEC_OMEGA_PROFILE_CONTROL_TIMING)
-endif()
-
 cc_directory(thirdparty)
 cc_directories(src)
 cc_directories(tests)

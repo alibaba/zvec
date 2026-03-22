@@ -807,6 +807,7 @@ def main():
                         dry_run=False,
                         extra_env={
                             "ZVEC_LOG_LEVEL": "INFO",
+                            "ZVEC_OMEGA_PROFILE_CONTROL_TIMING": "1",
                             "ZVEC_OMEGA_LOG_QUERY_STATS": "1",
                             "ZVEC_OMEGA_LOG_QUERY_LIMIT": "2000",
                         },
