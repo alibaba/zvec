@@ -165,7 +165,7 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
                                      uint32_t count, Context::Pointer &context,
                                      bool enable_early_stopping) const {
-  auto query_start = std::chrono::steady_clock::now();
+  auto query_total_start = std::chrono::steady_clock::now();
   uint64_t omega_control_time_ns = 0;
 
   // Cast context to OmegaContext to access training_query_id
@@ -237,6 +237,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   // Initialize context for search
   hnsw_ctx->clear();
   hnsw_ctx->resize_results(count);
+  hnsw_ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  auto query_core_start = std::chrono::steady_clock::now();
   hnsw_ctx->reset_query(query);
 
   // Get entity and distance calculator from context
@@ -351,25 +353,25 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
 
     // Get neighbors of current node
     const Neighbors neighbors = entity.get_neighbors(0, current_node);
+    ailego_prefetch(neighbors.data);
     if (neighbors.size() == 0) continue;
 
     // Prepare to compute distances
-    std::vector<node_id_t> unvisited_neighbors;
+    node_id_t neighbor_ids[neighbors.size()];
+    uint32_t size = 0;
     for (uint32_t i = 0; i < neighbors.size(); ++i) {
       node_id_t neighbor = neighbors[i];
       if (!visit_filter.visited(neighbor)) {
         visit_filter.set_visited(neighbor);
-        unvisited_neighbors.push_back(neighbor);
+        neighbor_ids[size++] = neighbor;
       }
     }
 
-    if (unvisited_neighbors.empty()) continue;
+    if (size == 0) continue;
 
     // Get neighbor vectors
     std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
-    int ret = entity.get_vector(unvisited_neighbors.data(),
-                                unvisited_neighbors.size(),
-                                neighbor_vec_blocks);
+    int ret = entity.get_vector(neighbor_ids, size, neighbor_vec_blocks);
     if (ret != 0) {
       break;
     }
@@ -378,21 +380,21 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     static constexpr node_id_t PREFETCH_STEP = 2;
     for (size_t i = 0;
          i < std::min(static_cast<size_t>(BATCH_SIZE * PREFETCH_STEP),
-                      unvisited_neighbors.size());
+                      static_cast<size_t>(size));
          ++i) {
       ailego_prefetch(neighbor_vec_blocks[i].data());
     }
 
-    float dists[unvisited_neighbors.size()];
-    const void *neighbor_vecs[unvisited_neighbors.size()];
-    for (size_t i = 0; i < unvisited_neighbors.size(); ++i) {
+    float dists[size];
+    const void *neighbor_vecs[size];
+    for (uint32_t i = 0; i < size; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
     }
-    dc.batch_dist(neighbor_vecs, unvisited_neighbors.size(), dists);
+    dc.batch_dist(neighbor_vecs, size, dists);
 
     // Compute distances and update candidates
-    for (size_t i = 0; i < unvisited_neighbors.size(); ++i) {
-      node_id_t neighbor = unvisited_neighbors[i];
+    for (uint32_t i = 0; i < size; ++i) {
+      node_id_t neighbor = neighbor_ids[i];
       dist_t neighbor_dist = dists[i];
 
       // Reference semantics:
@@ -458,8 +460,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     }
   }
 
-  // Convert results to context format
-  hnsw_ctx->topk_to_result();
+  auto query_core_end = std::chrono::steady_clock::now();
 
   // Get final statistics
   int hops, cmps, collected_gt;
@@ -478,7 +479,11 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   unsigned long long max_prediction_calls_per_should_stop = 0;
   uint64_t query_total_time_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - query_start)
+          std::chrono::steady_clock::now() - query_total_start)
+          .count();
+  uint64_t query_core_time_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          query_core_end - query_core_start)
           .count();
   uint64_t query_seq = query_stats_sequence_.fetch_add(1);
   omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
@@ -500,8 +505,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     size_t scan_cmps = hnsw_ctx->get_scan_num();
     uint64_t pairwise_dist_cnt = hnsw_ctx->get_pairwise_dist_num();
     uint64_t pure_search_time_ns =
-        query_total_time_ns > omega_control_time_ns
-            ? (query_total_time_ns - omega_control_time_ns)
+        query_core_time_ns > omega_control_time_ns
+            ? (query_core_time_ns - omega_control_time_ns)
             : 0;
     bool expected = false;
     if (debug_stats_logged_.compare_exchange_strong(expected, true)) {
@@ -557,6 +562,10 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                static_cast<double>(query_total_time_ns) / 1e6);
     }
   }
+
+  // Match HNSW timing semantics: result materialization is outside the
+  // search-core timer and happens after logging.
+  hnsw_ctx->topk_to_result();
 
   // Collect training records (only in training mode)
   if (training_mode_enabled_) {
