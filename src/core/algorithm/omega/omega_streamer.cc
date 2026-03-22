@@ -22,8 +22,8 @@
 #include "omega_context.h"
 #include "omega_params.h"
 #include <omega/omega_api.h>
+#include <omega/profiling_timer.h>
 #include <omega/search_context.h>
-#include <chrono>
 #include <cstdlib>
 
 namespace zvec {
@@ -165,7 +165,7 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
                                      uint32_t count, Context::Pointer &context,
                                      bool enable_early_stopping) const {
-  auto query_total_start = std::chrono::steady_clock::now();
+  auto query_total_start = omega::ProfilingTimer::Now();
   uint64_t omega_control_time_ns = 0;
 
   // Cast context to OmegaContext to access training_query_id
@@ -206,6 +206,12 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     LOG_ERROR("Failed to create OMEGA search context");
     return IndexError_Runtime;
   }
+  omega::SearchContext* omega_search_ctx = omega_search_get_cpp_context(omega_search);
+  if (omega_search_ctx == nullptr) {
+    omega_search_destroy(omega_search);
+    LOG_ERROR("Failed to get OMEGA search context");
+    return IndexError_Runtime;
+  }
 
   // Enable training mode if active (CRITICAL: must be before search)
   if (training_mode_enabled_) {
@@ -238,7 +244,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   hnsw_ctx->clear();
   hnsw_ctx->resize_results(count);
   hnsw_ctx->check_need_adjuct_ctx(entity_.doc_cnt());
-  auto query_core_start = std::chrono::steady_clock::now();
+  auto query_core_start = omega::ProfilingTimer::Now();
   hnsw_ctx->reset_query(query);
 
   // Get entity and distance calculator from context
@@ -295,14 +301,16 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   }
 
   // Set dist_start for OMEGA
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
   {
-    auto control_start = std::chrono::steady_clock::now();
-    omega_search_set_dist_start(omega_search, dist);
-    omega_control_time_ns +=
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - control_start)
-            .count();
+    auto control_start = omega::ProfilingTimer::Now();
+    omega_search_ctx->SetDistStart(dist);
+    omega_control_time_ns += omega::ProfilingTimer::ElapsedNs(
+        control_start, omega::ProfilingTimer::Now());
   }
+#else
+  omega_search_ctx->SetDistStart(dist);
+#endif
 
   // Perform HNSW search on layer 0 with OMEGA
   candidates.clear();
@@ -315,14 +323,16 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   candidates.emplace(entry_point, dist);
 
   // Report initial visit to OMEGA
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
   {
-    auto control_start = std::chrono::steady_clock::now();
-    omega_search_report_visit_candidate(omega_search, entry_point, dist, 1);
-    omega_control_time_ns +=
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - control_start)
-            .count();
+    auto control_start = omega::ProfilingTimer::Now();
+    omega_search_ctx->ReportVisitCandidate(entry_point, dist, true);
+    omega_control_time_ns += omega::ProfilingTimer::ElapsedNs(
+        control_start, omega::ProfilingTimer::Now());
   }
+#else
+  omega_search_ctx->ReportVisitCandidate(entry_point, dist, true);
+#endif
 
   dist_t lowerBound = dist;
 
@@ -335,14 +345,16 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
 
     // Reference semantics: count the hop as soon as the current candidate is
     // examined, before stop-condition evaluation.
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
     {
-      auto control_start = std::chrono::steady_clock::now();
-      omega_search_report_hop(omega_search);
-      omega_control_time_ns +=
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now() - control_start)
-              .count();
+      auto control_start = omega::ProfilingTimer::Now();
+      omega_search_ctx->ReportHop();
+      omega_control_time_ns += omega::ProfilingTimer::ElapsedNs(
+          control_start, omega::ProfilingTimer::Now());
     }
+#else
+    omega_search_ctx->ReportHop();
+#endif
 
     // Standard HNSW stopping condition
     if (topk_heap.full() && candidate_dist > lowerBound) {
@@ -403,35 +415,42 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
       //    result-set-sized top-k structure, not by ef admission alone.
       bool should_consider_candidate =
           (!topk_heap.full() || neighbor_dist < lowerBound);
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
       {
-        auto control_start = std::chrono::steady_clock::now();
-        omega_search_report_visit_candidate(omega_search, neighbor, neighbor_dist,
-                                            should_consider_candidate ? 1 : 0);
-        omega_control_time_ns +=
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - control_start)
-                .count();
+        auto control_start = omega::ProfilingTimer::Now();
+        omega_search_ctx->ReportVisitCandidate(neighbor, neighbor_dist,
+                                               should_consider_candidate);
+        omega_control_time_ns += omega::ProfilingTimer::ElapsedNs(
+            control_start, omega::ProfilingTimer::Now());
       }
+#else
+      omega_search_ctx->ReportVisitCandidate(neighbor, neighbor_dist,
+                                             should_consider_candidate);
+#endif
 
       bool should_predict = false;
       if (enable_early_stopping) {
-        auto control_start = std::chrono::steady_clock::now();
-        should_predict = omega_search_should_predict(omega_search);
-        omega_control_time_ns +=
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - control_start)
-                .count();
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
+        auto control_start = omega::ProfilingTimer::Now();
+        should_predict = omega_search_ctx->ShouldPredict();
+        omega_control_time_ns += omega::ProfilingTimer::ElapsedNs(
+            control_start, omega::ProfilingTimer::Now());
+#else
+        should_predict = omega_search_ctx->ShouldPredict();
+#endif
       }
       if (enable_early_stopping && should_predict) {
-        auto control_start = std::chrono::steady_clock::now();
-        bool should_stop = omega_search_should_stop(omega_search);
-        omega_control_time_ns +=
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - control_start)
-                .count();
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
+        auto control_start = omega::ProfilingTimer::Now();
+        bool should_stop = omega_search_ctx->ShouldStopEarly();
+        omega_control_time_ns += omega::ProfilingTimer::ElapsedNs(
+            control_start, omega::ProfilingTimer::Now());
+#else
+        bool should_stop = omega_search_ctx->ShouldStopEarly();
+#endif
         if (should_stop) {
           int hops, cmps, collected_gt;
-          omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
+          omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
           LOG_DEBUG("OMEGA early stop: cmps=%d, hops=%d, collected_gt=%d",
                     cmps, hops, collected_gt);
           early_stop_hit = true;
@@ -460,7 +479,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     }
   }
 
-  auto query_core_end = std::chrono::steady_clock::now();
+  auto query_core_end = omega::ProfilingTimer::Now();
 
   // Get final statistics
   int hops, cmps, collected_gt;
@@ -478,36 +497,46 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   unsigned long long should_stop_calls_with_advance = 0;
   unsigned long long max_prediction_calls_per_should_stop = 0;
   uint64_t query_total_time_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - query_total_start)
-          .count();
+      omega::ProfilingTimer::ElapsedNs(query_total_start,
+                                       omega::ProfilingTimer::Now());
   uint64_t query_core_time_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          query_core_end - query_core_start)
-          .count();
+      omega::ProfilingTimer::ElapsedNs(query_core_start, query_core_end);
+  uint64_t query_setup_time_ns =
+      query_total_time_ns > query_core_time_ns
+          ? (query_total_time_ns - query_core_time_ns)
+          : 0;
   uint64_t query_seq = query_stats_sequence_.fetch_add(1);
-  omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
-  omega_search_get_debug_stats(omega_search, &predicted_recall_avg,
-                               &predicted_recall_at_target,
-                               &omega_early_stop_hit,
-                               &should_stop_calls, &prediction_calls,
-                               &should_stop_time_ns,
-                               &prediction_eval_time_ns,
-                               &sorted_window_time_ns,
-                               &average_recall_eval_time_ns,
-                               &prediction_feature_prep_time_ns,
-                               &collected_gt_advance_count,
-                               &should_stop_calls_with_advance,
-                               &max_prediction_calls_per_should_stop);
+  omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
+  predicted_recall_avg = omega_search_ctx->GetLastPredictedRecallAvg();
+  predicted_recall_at_target =
+      omega_search_ctx->GetLastPredictedRecallAtTarget();
+  omega_early_stop_hit = omega_search_ctx->EarlyStopHit() ? 1 : 0;
+  should_stop_calls = omega_search_ctx->GetShouldStopCalls();
+  prediction_calls = omega_search_ctx->GetPredictionCalls();
+  should_stop_time_ns = omega_search_ctx->GetShouldStopTimeNs();
+  prediction_eval_time_ns = omega_search_ctx->GetPredictionEvalTimeNs();
+  sorted_window_time_ns = omega_search_ctx->GetSortedWindowTimeNs();
+  average_recall_eval_time_ns = omega_search_ctx->GetAverageRecallEvalTimeNs();
+  prediction_feature_prep_time_ns =
+      omega_search_ctx->GetPredictionFeaturePrepTimeNs();
+  collected_gt_advance_count = omega_search_ctx->GetCollectedGtAdvanceCount();
+  should_stop_calls_with_advance =
+      omega_search_ctx->GetShouldStopCallsWithAdvance();
+  max_prediction_calls_per_should_stop =
+      omega_search_ctx->GetMaxPredictionCallsPerShouldStop();
   LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu, early_stop=%d",
             cmps, hops, topk_heap.size(), enable_early_stopping);
   if (enable_early_stopping) {
     size_t scan_cmps = hnsw_ctx->get_scan_num();
     uint64_t pairwise_dist_cnt = hnsw_ctx->get_pairwise_dist_num();
-    uint64_t pure_search_time_ns =
+    uint64_t pure_search_time_ns = 0;
+    uint64_t core_search_time_ns = query_core_time_ns;
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
+    pure_search_time_ns =
         query_core_time_ns > omega_control_time_ns
             ? (query_core_time_ns - omega_control_time_ns)
             : 0;
+#endif
     bool expected = false;
     if (debug_stats_logged_.compare_exchange_strong(expected, true)) {
       LOG_INFO("OMEGA runtime stats: model_loaded=%d target_recall=%.4f "
@@ -517,8 +546,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                "should_stop_calls=%llu prediction_calls=%llu "
                "advance_calls=%llu collected_gt_advance=%llu "
                "max_pred_per_stop=%llu should_stop_ms=%.3f "
-               "prediction_eval_ms=%.3f sorted_window_ms=%.3f "
-               "avg_recall_eval_ms=%.3f feature_prep_ms=%.3f",
+               "prediction_eval_ms=%.3f",
                IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
                static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
                collected_gt,
@@ -528,12 +556,10 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                should_stop_calls_with_advance, collected_gt_advance_count,
                max_prediction_calls_per_should_stop,
                static_cast<double>(should_stop_time_ns) / 1e6,
-               static_cast<double>(prediction_eval_time_ns) / 1e6,
-               static_cast<double>(sorted_window_time_ns) / 1e6,
-               static_cast<double>(average_recall_eval_time_ns) / 1e6,
-               static_cast<double>(prediction_feature_prep_time_ns) / 1e6);
+               static_cast<double>(prediction_eval_time_ns) / 1e6);
     }
     if (ShouldLogQueryStats(query_seq)) {
+#ifdef ZVEC_OMEGA_PROFILE_CONTROL_TIMING
       LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
                "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
                "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
@@ -541,8 +567,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                "prediction_calls=%llu advance_calls=%llu "
                "collected_gt_advance=%llu max_pred_per_stop=%llu "
                "should_stop_ms=%.3f prediction_eval_ms=%.3f "
-               "sorted_window_ms=%.3f avg_recall_eval_ms=%.3f "
-               "feature_prep_ms=%.3f omega_control_ms=%.3f pure_search_ms=%.3f total_ms=%.3f",
+               "setup_ms=%.3f "
+               "omega_control_ms=%.3f pure_search_ms=%.3f total_ms=%.3f",
                static_cast<unsigned long long>(query_seq),
                IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
                static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
@@ -554,12 +580,34 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                max_prediction_calls_per_should_stop,
                static_cast<double>(should_stop_time_ns) / 1e6,
                static_cast<double>(prediction_eval_time_ns) / 1e6,
-               static_cast<double>(sorted_window_time_ns) / 1e6,
-               static_cast<double>(average_recall_eval_time_ns) / 1e6,
-               static_cast<double>(prediction_feature_prep_time_ns) / 1e6,
+               static_cast<double>(query_setup_time_ns) / 1e6,
                static_cast<double>(omega_control_time_ns) / 1e6,
                static_cast<double>(pure_search_time_ns) / 1e6,
                static_cast<double>(query_total_time_ns) / 1e6);
+#else
+      LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
+               "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
+               "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
+               "early_stop_hit=%d should_stop_calls=%llu "
+               "prediction_calls=%llu advance_calls=%llu "
+               "collected_gt_advance=%llu max_pred_per_stop=%llu "
+               "should_stop_ms=%.3f prediction_eval_ms=%.3f "
+               "setup_ms=%.3f core_search_ms=%.3f total_ms=%.3f",
+               static_cast<unsigned long long>(query_seq),
+               IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
+               static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
+               collected_gt,
+               predicted_recall_avg, predicted_recall_at_target,
+               (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
+               should_stop_calls, prediction_calls,
+               should_stop_calls_with_advance, collected_gt_advance_count,
+               max_prediction_calls_per_should_stop,
+               static_cast<double>(should_stop_time_ns) / 1e6,
+               static_cast<double>(prediction_eval_time_ns) / 1e6,
+               static_cast<double>(query_setup_time_ns) / 1e6,
+               static_cast<double>(core_search_time_ns) / 1e6,
+               static_cast<double>(query_total_time_ns) / 1e6);
+#endif
     }
   }
 

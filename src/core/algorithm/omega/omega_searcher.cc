@@ -265,6 +265,12 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     LOG_WARN("Failed to create OMEGA search context, falling back to HNSW");
     return HnswSearcher::search_impl(query, qmeta, count, context);
   }
+  omega::SearchContext* omega_search_ctx = omega_search_get_cpp_context(omega_search);
+  if (omega_search_ctx == nullptr) {
+    omega_search_destroy(omega_search);
+    LOG_WARN("Failed to get OMEGA search context, falling back to HNSW");
+    return HnswSearcher::search_impl(query, qmeta, count, context);
+  }
 
   // Enable training mode if active (CRITICAL: must be before search)
   if (training_mode_enabled_) {
@@ -333,7 +339,7 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   }
 
   // Set dist_start for OMEGA
-  omega_search_set_dist_start(omega_search, dist);
+  omega_search_ctx->SetDistStart(dist);
 
   // Now perform OMEGA-enhanced search on layer 0
   candidates.clear();
@@ -346,7 +352,7 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   candidates.emplace(entry_point, dist);
 
   // Report initial visit to OMEGA
-  omega_search_report_visit_candidate(omega_search, entry_point, dist, 1);
+  omega_search_ctx->ReportVisitCandidate(entry_point, dist, true);
 
   dist_t lowerBound = dist;
 
@@ -358,7 +364,7 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     dist_t candidate_dist = top->second;
 
     // Reference semantics: count the hop before the stop-condition check.
-    omega_search_report_hop(omega_search);
+    omega_search_ctx->ReportHop();
 
     // Standard HNSW stopping condition
     if (candidate_dist > lowerBound && topk_heap.size() >= ef) {
@@ -398,13 +404,13 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
 
       bool should_consider_candidate =
           (topk_heap.size() < ef || neighbor_dist < lowerBound);
-      omega_search_report_visit_candidate(omega_search, neighbor, neighbor_dist,
-                                          should_consider_candidate ? 1 : 0);
+      omega_search_ctx->ReportVisitCandidate(neighbor, neighbor_dist,
+                                             should_consider_candidate);
 
-      if (!training_mode_enabled_ && omega_search_should_predict(omega_search)) {
-        if (omega_search_should_stop(omega_search)) {
+      if (!training_mode_enabled_ && omega_search_ctx->ShouldPredict()) {
+        if (omega_search_ctx->ShouldStopEarly()) {
           int hops, cmps, collected_gt;
-          omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
+          omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
           LOG_DEBUG("OMEGA early stop: cmps=%d, hops=%d, collected_gt=%d",
                     cmps, hops, collected_gt);
           early_stop_hit = true;
@@ -444,7 +450,7 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
 
   // Get final statistics
   int hops, cmps, collected_gt;
-  omega_search_get_stats(omega_search, &hops, &cmps, &collected_gt);
+  omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
   LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu",
             cmps, hops, topk_heap.size());
 

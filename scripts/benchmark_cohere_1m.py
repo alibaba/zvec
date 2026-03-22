@@ -139,12 +139,16 @@ def build_omega_profile(metrics: dict, output: str, hnsw_profile: dict | None) -
     serial_summary = parse_serial_runner_summary(output)
 
     avg_pairwise_dist_cnt = avg_metric(query_records, "pairwise_dist_cnt")
+    avg_core_search_ms = avg_metric(query_records, "core_search_ms")
     avg_pure_search_ms = avg_metric(query_records, "pure_search_ms")
     avg_omega_control_ms = avg_metric(query_records, "omega_control_ms")
+    avg_search_only_ms = (
+        avg_pure_search_ms if avg_pure_search_ms is not None else avg_core_search_ms
+    )
 
     cmp_time_ms = None
-    if avg_pairwise_dist_cnt and avg_pairwise_dist_cnt > 0 and avg_pure_search_ms is not None:
-        cmp_time_ms = avg_pure_search_ms / avg_pairwise_dist_cnt
+    if avg_pairwise_dist_cnt and avg_pairwise_dist_cnt > 0 and avg_search_only_ms is not None:
+        cmp_time_ms = avg_search_only_ms / avg_pairwise_dist_cnt
 
     model_overhead_cmp_equiv = None
     if cmp_time_ms and cmp_time_ms > 0 and avg_omega_control_ms is not None:
@@ -166,9 +170,10 @@ def build_omega_profile(metrics: dict, output: str, hnsw_profile: dict | None) -
         "profile_avg_should_stop_calls": avg_metric(query_records, "should_stop_calls"),
         "profile_avg_advance_calls": avg_metric(query_records, "advance_calls"),
         "profile_avg_model_overhead_ms": avg_omega_control_ms,
+        "profile_avg_setup_ms": avg_metric(query_records, "setup_ms"),
         "profile_avg_should_stop_ms": avg_metric(query_records, "should_stop_ms"),
         "profile_avg_prediction_eval_ms": avg_metric(query_records, "prediction_eval_ms"),
-        "profile_avg_feature_prep_ms": avg_metric(query_records, "feature_prep_ms"),
+        "profile_avg_core_search_ms": avg_core_search_ms,
         "profile_avg_pure_search_ms": avg_pure_search_ms,
         "profile_avg_model_overhead_cmp_equiv": model_overhead_cmp_equiv,
         "profile_avg_early_stop_saved_cmps": avg_saved_cmps,
