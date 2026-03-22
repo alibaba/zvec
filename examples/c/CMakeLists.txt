@@ -19,7 +19,7 @@ target_include_directories(c_api_basic_example PRIVATE
     ${PROJECT_SOURCE_DIR}/src/include
 )
 set_target_properties(c_api_basic_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c_api
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c
 )
 
 
@@ -30,7 +30,7 @@ target_include_directories(c_api_collection_schema_example PRIVATE
     ${PROJECT_SOURCE_DIR}/src/include
 )
 set_target_properties(c_api_collection_schema_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c_api
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c
 )
 
 # Struct document example
@@ -40,26 +40,26 @@ target_include_directories(c_api_doc_example PRIVATE
     ${PROJECT_SOURCE_DIR}/src/include
 )
 set_target_properties(c_api_doc_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c_api
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c
 )
 
 # Index example
 add_executable(c_api_index_example index_example.c)
 target_link_libraries(c_api_index_example PRIVATE zvec_c_api)
 set_target_properties(c_api_index_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c_api
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c
 )
 
 # Newly added field schema example
 add_executable(c_api_field_schema_example field_schema_example.c)
 target_link_libraries(c_api_field_schema_example PRIVATE zvec_c_api)
 set_target_properties(c_api_field_schema_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c_api
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c
 )
 
 # Optimized example
 add_executable(c_api_optimized_example optimized_example.c)
 target_link_libraries(c_api_optimized_example PRIVATE zvec_c_api)
 set_target_properties(c_api_optimized_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c_api
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c
 )

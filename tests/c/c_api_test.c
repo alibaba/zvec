@@ -67,24 +67,37 @@ void test_version_functions(void) {
   // Test version retrieval functions
   const char *version = zvec_get_version();
   TEST_ASSERT(version != NULL);
+  printf("  Version string: %s\n", version);
 
   // Test version component retrieval
   int major = zvec_get_version_major();
   int minor = zvec_get_version_minor();
   int patch = zvec_get_version_patch();
 
+  printf("  Version components: %d.%d.%d\n", major, minor, patch);
   TEST_ASSERT(major >= 0);
   TEST_ASSERT(minor >= 0);
   TEST_ASSERT(patch >= 0);
 
+  // Test version compatibility check with current version (should pass)
   TEST_ASSERT(zvec_check_version(major, minor, patch));
 
-  // Test version checking functions
-  bool compatible = zvec_check_version(0, 3, 0);
-  TEST_ASSERT(compatible == true);
+  // Test with older version (should pass - current is newer)
+  if (minor > 0) {
+    TEST_ASSERT(zvec_check_version(major, minor - 1, patch));
+  }
+  if (major > 0) {
+    TEST_ASSERT(zvec_check_version(major - 1, minor, patch));
+  }
 
+  // Test with much newer version (should fail - current is older)
   bool not_compatible = zvec_check_version(99, 99, 99);
   TEST_ASSERT(not_compatible == false);
+
+  // Test with invalid negative versions (should fail and set error)
+  TEST_ASSERT(zvec_check_version(-1, 0, 0) == false);
+  TEST_ASSERT(zvec_check_version(0, -1, 0) == false);
+  TEST_ASSERT(zvec_check_version(0, 0, -1) == false);
 
   TEST_END();
 }
@@ -265,9 +278,7 @@ void test_zvec_initialize() {
   }
   ZVecErrorCode err = zvec_initialize(config);
   TEST_ASSERT(err == ZVEC_OK);
-  bool is_initialized = false;
-  zvec_is_initialized(&is_initialized);
-  TEST_ASSERT(is_initialized);
+  TEST_ASSERT(zvec_is_initialized());
 
   TEST_END();
 }
@@ -3158,7 +3169,6 @@ void test_index_params_api_functions(void) {
   TEST_START();
 
   ZVecIndexParams params;
-  ZVecErrorCode error;
 
   // Test zvec_index_params_init for HNSW
   zvec_index_params_init(&params, ZVEC_INDEX_TYPE_HNSW,
@@ -3468,10 +3478,6 @@ void test_collection_dml_functions(void) {
         TEST_ASSERT(err == ZVEC_OK);
         TEST_ASSERT(result_count == 1);
         if (results && result_count == 1) {
-          TEST_ASSERT(results[0].pk != NULL);
-          if (results[0].pk) {
-            TEST_ASSERT(strcmp(results[0].pk, "pk_101") == 0);
-          }
           TEST_ASSERT(results[0].code == ZVEC_OK);
           zvec_write_results_free(results, result_count);
         }
@@ -3484,10 +3490,6 @@ void test_collection_dml_functions(void) {
         TEST_ASSERT(err == ZVEC_OK);
         TEST_ASSERT(result_count == 1);
         if (results && result_count == 1) {
-          TEST_ASSERT(results[0].pk != NULL);
-          if (results[0].pk) {
-            TEST_ASSERT(strcmp(results[0].pk, "pk_101") == 0);
-          }
           zvec_write_results_free(results, result_count);
         }
 

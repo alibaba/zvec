@@ -59,6 +59,9 @@ include_directories(${PROJECT_ROOT_DIR})
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 
+option(BUILD_C_BINDINGS "Build C bindings" ON)
+message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
+
 option(BUILD_TOOLS "Build tools" ON)
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
@@ -97,15 +100,9 @@ if(DEFINED ENV{USE_OSS_MIRROR} AND NOT "$ENV{USE_OSS_MIRROR}" STREQUAL "")
 endif()
 message(STATUS "USE_OSS_MIRROR:${USE_OSS_MIRROR}")
 
-option(BUILD_EXAMPLES "Build examples" ON)
-message(STATUS "BUILD_EXAMPLES:${BUILD_EXAMPLES}")
-
 cc_directory(thirdparty)
 cc_directories(src)
 cc_directories(tests)
-if(BUILD_EXAMPLES)
-    cc_directories(examples)
-endif()
 
 if(BUILD_TOOLS)
     cc_directories(tools)

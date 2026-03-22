@@ -12,4 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_subdirectory(c_api)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+
+file(GLOB_RECURSE ALL_TEST_SRCS *_test.c)
+
+foreach(CC_SRCS ${ALL_TEST_SRCS})
+  get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
+  cc_gtest(
+      NAME ${CC_TARGET}
+      STRICT
+      LIBS zvec_c_api
+      SRCS ${CC_SRCS} utils.c
+      INCS . .. ../../src
+    )
+endforeach()

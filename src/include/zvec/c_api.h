@@ -20,6 +20,13 @@
 #include <stdint.h>
 #include <string.h>
 
+// Include generated version header
+#if defined(__has_include) && __has_include(<zvec_version.h>)
+#include <zvec_version.h>
+#else
+#include "zvec_version.h"
+#endif
+
 // =============================================================================
 // API Export Control
 // =============================================================================
@@ -50,18 +57,6 @@ extern "C" {
 // =============================================================================
 // Version Information
 // =============================================================================
-
-/** @brief Major version number */
-#define ZVEC_VERSION_MAJOR 0
-
-/** @brief Minor version number */
-#define ZVEC_VERSION_MINOR 3
-
-/** @brief Patch version number */
-#define ZVEC_VERSION_PATCH 0
-
-/** @brief Full version string */
-#define ZVEC_VERSION_STRING "0.3.0"
 
 /**
  * @brief Get library version information
@@ -560,10 +555,9 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_shutdown(void);
 
 /**
  * @brief Check if library is initialized
- * @param[out] initialized Whether initialized
- * @return ZVecErrorCode Error code
+ * @return true if initialized, false otherwise
  */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_is_initialized(bool *initialized);
+ZVEC_EXPORT bool ZVEC_CALL zvec_is_initialized(void);
 
 // =============================================================================
 // Data Type Enumerations
@@ -1463,9 +1457,10 @@ typedef struct ZVecDoc ZVecDoc;
 
 /**
  * @brief Per-document status returned by detailed DML APIs.
+ * @note Uses ordered style: result index corresponds to input document index.
+ *       Caller should access pk by index from the original input array.
  */
 typedef struct {
-  const char *pk;      /**< Primary key (allocated by API) */
   ZVecErrorCode code;  /**< Per-document status code */
   const char *message; /**< Per-document status message (allocated by API) */
 } ZVecWriteResult;

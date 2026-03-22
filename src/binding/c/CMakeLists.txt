@@ -16,6 +16,35 @@ include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 include(GNUInstallDirs)
 
+# Retrieve version from git repository and generate version header
+git_version(ZVEC_VERSION ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Debug: print version variables
+message(STATUS "ZVEC_VERSION: ${ZVEC_VERSION}")
+
+# Parse version string to extract major.minor.patch
+# Format: vX.Y.Z-commit-hash or vX.Y.Z
+if(ZVEC_VERSION MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    set(ZVEC_VERSION_MAJOR "${CMAKE_MATCH_1}")
+    set(ZVEC_VERSION_MINOR "${CMAKE_MATCH_2}")
+    set(ZVEC_VERSION_PATCH "${CMAKE_MATCH_3}")
+    set(ZVEC_VERSION_STRING "${ZVEC_VERSION}")
+else()
+    # Default version if parsing fails
+    set(ZVEC_VERSION_MAJOR 0)
+    set(ZVEC_VERSION_MINOR 2)
+    set(ZVEC_VERSION_PATCH 1)
+    set(ZVEC_VERSION_STRING "${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH}")
+endif()
+
+message(STATUS "Parsed version: ${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH} (${ZVEC_VERSION_STRING})")
+
+# Configure version header file
+configure_file(
+    ${PROJECT_SOURCE_DIR}/src/include/zvec/version.h.in
+    ${PROJECT_BINARY_DIR}/src/generated/zvec_version.h
+)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -63,7 +92,7 @@ find_package(Threads REQUIRED)
 # This creates a truly self-contained library with zero external dependencies
 # Users only need to link libzvec_c_api.so without installing any dependencies
 if(APPLE)
-    # Combine all libraries in a single target_link_libraries call
+    # First, link all libraries normally
     target_link_libraries(zvec_c_api
         PRIVATE
             # zvec static libraries
@@ -87,10 +116,9 @@ if(APPLE)
             ${CMAKE_DL_LIBS}
     )
     
-    # Then use target_link_libraries with -force_load on macOS
-    # This ensures all symbols from static libraries are included
-    # Note: sparsehash and magic_enum are header-only, skip them
-    target_link_libraries(zvec_c_api PRIVATE
+    # Then, apply -force_load to ensure all symbols are included
+    # Note: This may cause duplicate library warnings, but they are harmless
+    target_link_options(zvec_c_api PRIVATE
         -Wl,-force_load,$<TARGET_FILE:zvec_db>
         -Wl,-force_load,$<TARGET_FILE:zvec_core>
         -Wl,-force_load,$<TARGET_FILE:zvec_ailego>
