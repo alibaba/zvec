@@ -467,9 +467,9 @@ def main():
 
     MIN_VECTOR_THRESHOLD = 100000
     NUM_TRAINING_QUERIES = 4000
-    EF_TRAINING = 300
+    EF_TRAINING = 500
     WINDOW_SIZE = 100
-    EF_GROUNDTRUTH = 500
+    EF_GROUNDTRUTH = 1000
 
     target_recalls = [float(x) for x in args.target_recalls.split(",")]
 
