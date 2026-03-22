@@ -64,7 +64,7 @@ def resolve_paths(
 
 
 def resolve_vectordbbench_command() -> list[str]:
-    return [sys.executable, "-m", "vectordb_bench"]
+    return [sys.executable, "-m", "vectordb_bench.cli.vectordbbench"]
 
 
 KV_PATTERN = re.compile(r"([A-Za-z_]+)=([^\s,]+)")
