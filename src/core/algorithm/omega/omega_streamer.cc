@@ -68,6 +68,10 @@ bool DisableOmegaModelPrediction() {
   return std::string(value) != "0";
 }
 
+uint64_t OmegaProfilingNowNs() {
+  return omega::ProfilingTimer::Now();
+}
+
 struct OmegaHookState {
   omega::SearchContext *search_ctx{nullptr};
   bool enable_early_stopping{false};
@@ -326,7 +330,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   HnswAlgorithm::SearchHooks hooks;
   hooks.user_data = &hook_state;
   hooks.collect_timing = collect_control_timing;
-  hooks.now_ns = []() { return omega::ProfilingTimer::NowNs(); };
+  hooks.now_ns = &OmegaProfilingNowNs;
   hooks.hook_total_time_ns = &hook_total_time_ns;
   hooks.on_level0_entry = OnOmegaLevel0Entry;
   hooks.on_hop = OnOmegaHop;
