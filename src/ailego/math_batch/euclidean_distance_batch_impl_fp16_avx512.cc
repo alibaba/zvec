@@ -66,15 +66,16 @@ compute_one_to_many_squared_euclidean_avx512f_fp16(
     }
   }
 
-  if (dim + 16 < dimensionality) {
+  if (dim + 16 <= dimensionality) {
     __m512 q = _mm512_cvtph_ps(
         _mm256_loadu_si256(reinterpret_cast<const __m256i *>(query + dim)));
 
-    __m512 data_regs[dp_batch];
     for (size_t i = 0; i < dp_batch; ++i) {
-      data_regs[i] = _mm512_cvtph_ps(
+      __m512 m = _mm512_cvtph_ps(
           _mm256_loadu_si256(reinterpret_cast<const __m256i *>(ptrs[i] + dim)));
-      accs[i] = _mm512_fmadd_ps(q, data_regs[i], accs[i]);
+
+      __m512 diff = _mm512_sub_ps(m, q);
+      accs[i] = _mm512_fmadd_ps(diff, diff, accs[i]);
     }
 
     dim += 16;
