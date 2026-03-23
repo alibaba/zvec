@@ -230,12 +230,13 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
 
   auto run_timed_hook = [&](auto &&fn) {
     if (hooks == nullptr || !hooks->collect_timing || hooks->now_ns == nullptr ||
-        hooks->hook_total_time_ns == nullptr) {
+        hooks->elapsed_ns == nullptr || hooks->hook_total_time_ns == nullptr) {
       return fn();
     }
     uint64_t start_ns = hooks->now_ns();
     auto result = fn();
-    *hooks->hook_total_time_ns += (hooks->now_ns() - start_ns);
+    *hooks->hook_total_time_ns +=
+        hooks->elapsed_ns(start_ns, hooks->now_ns());
     return result;
   };
 

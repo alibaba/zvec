@@ -31,6 +31,7 @@ class HnswAlgorithm {
     void *user_data{nullptr};
     bool collect_timing{false};
     uint64_t (*now_ns)(){nullptr};
+    uint64_t (*elapsed_ns)(uint64_t start, uint64_t end){nullptr};
     uint64_t *hook_total_time_ns{nullptr};
     void (*on_level0_entry)(node_id_t id, dist_t dist, bool inserted_to_topk,
                             void *user_data){nullptr};

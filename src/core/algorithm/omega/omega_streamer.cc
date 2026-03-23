@@ -72,6 +72,10 @@ uint64_t OmegaProfilingNowNs() {
   return omega::ProfilingTimer::Now();
 }
 
+uint64_t OmegaProfilingElapsedNs(uint64_t start, uint64_t end) {
+  return omega::ProfilingTimer::ElapsedNs(start, end);
+}
+
 struct OmegaHookState {
   omega::SearchContext *search_ctx{nullptr};
   bool enable_early_stopping{false};
@@ -331,6 +335,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   hooks.user_data = &hook_state;
   hooks.collect_timing = collect_control_timing;
   hooks.now_ns = &OmegaProfilingNowNs;
+  hooks.elapsed_ns = &OmegaProfilingElapsedNs;
   hooks.hook_total_time_ns = &hook_total_time_ns;
   hooks.on_level0_entry = OnOmegaLevel0Entry;
   hooks.on_hop = OnOmegaHop;
