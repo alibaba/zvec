@@ -14,11 +14,11 @@
 #include "hnsw_streamer.h"
 #include <iostream>
 #include <atomic>
-#include <chrono>
 #include <cstdlib>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
+#include "utility/rdtsc_timer.h"
 #include "utility/sparse_utility.h"
 #include "hnsw_algorithm.h"
 #include "hnsw_context.h"
@@ -660,22 +660,25 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_.doc_cnt());
   for (size_t q = 0; q < count; ++q) {
-    auto query_start = std::chrono::steady_clock::now();
+    auto query_start = RdtscTimer::Now();
     ctx->reset_query(query);
+    auto query_search_start = RdtscTimer::Now();
     ret = alg_->search(ctx);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
     }
-    auto query_latency_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - query_start)
-            .count();
+    auto query_search_end = RdtscTimer::Now();
+    auto query_search_time_ns =
+        RdtscTimer::ElapsedNs(query_search_start, query_search_end);
+    auto query_latency_ns = RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
     uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
     if (ShouldLogHnswQueryStats(query_seq)) {
-      LOG_INFO("HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%zu latency_ms=%.3f",
+      LOG_INFO("HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%zu "
+               "pure_search_ms=%.3f latency_ms=%.3f",
                static_cast<unsigned long long>(query_seq), ctx->get_scan_num(),
                ctx->get_pairwise_dist_num(),
+               static_cast<double>(query_search_time_ns) / 1e6,
                static_cast<double>(query_latency_ns) / 1e6);
     }
     ctx->topk_to_result(q);
@@ -780,7 +783,7 @@ int HnswStreamer::search_bf_impl(
     auto &topk = ctx->topk_heap();
 
     for (size_t q = 0; q < count; ++q) {
-      auto query_start = std::chrono::steady_clock::now();
+      auto query_start = RdtscTimer::Now();
       ctx->reset_query(query);
       topk.clear();
       for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
@@ -793,10 +796,7 @@ int HnswStreamer::search_bf_impl(
           topk.emplace(id, dist);
         }
       }
-      auto query_latency_ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now() - query_start)
-              .count();
+      auto query_latency_ns = RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
       uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
       if (ShouldLogHnswQueryStats(query_seq)) {
         LOG_INFO("HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%zu latency_ms=%.3f",

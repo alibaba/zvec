@@ -17,12 +17,12 @@
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_logger.h>
 #include <zvec/ailego/io/file.h>
+#include "utility/rdtsc_timer.h"
 #include "../hnsw/hnsw_entity.h"
 #include "../hnsw/hnsw_context.h"
 #include "omega_context.h"
 #include "omega_params.h"
 #include <omega/omega_api.h>
-#include <omega/profiling_timer.h>
 #include <omega/search_context.h>
 #include <cstdlib>
 
@@ -68,12 +68,20 @@ bool DisableOmegaModelPrediction() {
   return std::string(value) != "0";
 }
 
+bool IsOmegaControlTimingEnabled() {
+  const char* value = std::getenv("ZVEC_OMEGA_PROFILE_CONTROL_TIMING");
+  if (value == nullptr) {
+    return false;
+  }
+  return value[0] != '\0' && value[0] != '0';
+}
+
 uint64_t OmegaProfilingNowNs() {
-  return omega::ProfilingTimer::Now();
+  return RdtscTimer::Now();
 }
 
 uint64_t OmegaProfilingElapsedNs(uint64_t start, uint64_t end) {
-  return omega::ProfilingTimer::ElapsedNs(start, end);
+  return RdtscTimer::ElapsedNs(start, end);
 }
 
 struct OmegaHookState {
@@ -89,11 +97,11 @@ void RunOmegaControlHook(const OmegaHookState &state, Fn &&fn) {
     fn();
     return;
   }
-  auto control_start = omega::ProfilingTimer::Now();
+  auto control_start = RdtscTimer::Now();
   fn();
   if (state.hook_body_time_ns != nullptr) {
-    *state.hook_body_time_ns += omega::ProfilingTimer::ElapsedNs(
-        control_start, omega::ProfilingTimer::Now());
+    *state.hook_body_time_ns += RdtscTimer::ElapsedNs(
+        control_start, RdtscTimer::Now());
   }
 }
 
@@ -240,8 +248,8 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
                                      uint32_t count, Context::Pointer &context,
                                      bool enable_early_stopping) const {
-  auto query_total_start = omega::ProfilingTimer::Now();
-  const bool collect_control_timing = omega::IsControlTimingEnabled();
+  auto query_total_start = RdtscTimer::Now();
+  const bool collect_control_timing = IsOmegaControlTimingEnabled();
   uint64_t hook_total_time_ns = 0;
   uint64_t hook_body_time_ns = 0;
 
@@ -323,9 +331,9 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                                            search_batch_distance_);
   hnsw_ctx->resize_results(count);
   hnsw_ctx->check_need_adjuct_ctx(entity_.doc_cnt());
-  auto query_reset_start = omega::ProfilingTimer::Now();
+  auto query_reset_start = RdtscTimer::Now();
   hnsw_ctx->reset_query(query);
-  auto query_reset_end = omega::ProfilingTimer::Now();
+  auto query_reset_end = RdtscTimer::Now();
   OmegaHookState hook_state;
   hook_state.search_ctx = omega_search_ctx;
   hook_state.enable_early_stopping = enable_early_stopping;
@@ -341,14 +349,14 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   hooks.on_hop = OnOmegaHop;
   hooks.on_visit_candidate = OnOmegaVisitCandidate;
   bool early_stop_hit = false;
-  auto query_search_start = omega::ProfilingTimer::Now();
+  auto query_search_start = RdtscTimer::Now();
   int ret = alg_->search_with_hooks(hnsw_ctx, &hooks, &early_stop_hit);
   if (ret != 0) {
     omega_search_destroy(omega_search);
     LOG_ERROR("OMEGA search failed");
     return ret;
   }
-  auto query_search_end = omega::ProfilingTimer::Now();
+  auto query_search_end = RdtscTimer::Now();
 
   // Get final statistics
   int hops, cmps, collected_gt;
@@ -366,12 +374,11 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   unsigned long long should_stop_calls_with_advance = 0;
   unsigned long long max_prediction_calls_per_should_stop = 0;
   uint64_t query_total_time_ns =
-      omega::ProfilingTimer::ElapsedNs(query_total_start,
-                                       omega::ProfilingTimer::Now());
+      RdtscTimer::ElapsedNs(query_total_start, RdtscTimer::Now());
   uint64_t query_reset_time_ns =
-      omega::ProfilingTimer::ElapsedNs(query_reset_start, query_reset_end);
+      RdtscTimer::ElapsedNs(query_reset_start, query_reset_end);
   uint64_t query_search_time_ns =
-      omega::ProfilingTimer::ElapsedNs(query_search_start, query_search_end);
+      RdtscTimer::ElapsedNs(query_search_start, query_search_end);
   uint64_t query_setup_time_ns = 0;
   if (query_total_time_ns > (query_reset_time_ns + query_search_time_ns)) {
     query_setup_time_ns =

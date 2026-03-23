@@ -125,6 +125,7 @@ def build_hnsw_profile(metrics: dict, output: str) -> dict:
         "profile_avg_end2end_latency_ms": avg_metric(query_records, "latency_ms"),
         "profile_avg_cmps": avg_metric(query_records, "pairwise_dist_cnt"),
         "profile_avg_scan_cmps": avg_metric(query_records, "cmps"),
+        "profile_avg_pure_search_ms": avg_metric(query_records, "pure_search_ms"),
         "profile_serial_avg_latency_s": serial_summary.get("avg_latency"),
         "profile_serial_p99_s": serial_summary.get("p99"),
         "profile_serial_p95_s": serial_summary.get("p95"),
