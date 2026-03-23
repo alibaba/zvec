@@ -58,14 +58,14 @@ compute_one_to_many_squared_euclidean_avx512f_fp32(
   }
 
   if (dim < dimensionality) {
-    __mmask32 mask = (__mmask32)((1 << (dimensionality - dim)) - 1);
+    __mmask16 mask = (__mmask16)((1 << (dimensionality - dim)) - 1);
 
     for (size_t i = 0; i < dp_batch; ++i) {
       __m512 zmm_undefined = _mm512_undefined_ps();
 
-      __m512 m = _mm512_mask_loadu_ps(zmm_undefined, mask, query + dim);
-      __m512 q = _mm512_mask_loadu_ps(zmm_undefined, mask, ptrs[i] + dim);
-      __m512 diff = _mm512_mask_sub_ps(zmm_undefined, mask, m, q);
+      __m512 q = _mm512_mask_loadu_ps(zmm_undefined, mask, query + dim);
+      __m512 m = _mm512_mask_loadu_ps(zmm_undefined, mask, ptrs[i] + dim);
+      __m512 diff = _mm512_mask_sub_ps(zmm_undefined, mask, q, m);
 
       accs[i] = _mm512_mask3_fmadd_ps(diff, diff, accs[i], mask);
     }
