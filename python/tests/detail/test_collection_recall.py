@@ -59,9 +59,6 @@ def batchdoc_and_check(collection: Collection, multiple_docs, operator="insert")
 
     stats = collection.stats
     assert stats is not None, "Collection stats should not be None"
-    """assert stats.doc_count == len(multiple_docs), (
-        f"Document count should be {len(multiple_docs)} after insert, but got {stats.doc_count}"
-    )"""
 
     doc_ids = [doc.id for doc in multiple_docs]
     fetched_docs = collection.fetch(doc_ids)
@@ -152,8 +149,7 @@ def get_ground_truth_for_vector_query(
             ]
 
         ground_truth_ids_scores = similarities[:k]
-        print("Get the most similar k document IDs k:,ground_truth_ids_scores")
-        print(k, ground_truth_ids_scores)
+
         return ground_truth_ids_scores
 
     else:
@@ -186,8 +182,6 @@ def get_ground_truth_map(collection, test_docs, query_vectors_map, metric_type, 
             )
             ground_truth_map[field_name][i] = relevant_doc_ids_scores
 
-    print("ground_truth_map:\n")
-    print(ground_truth_map)
     return ground_truth_map
 
 
@@ -226,26 +220,11 @@ def calculate_recall_at_k(
 
             recall_stats[field_name]["retrieved_count"] += retrieved_count
 
-            print("expected_doc_ids_scores_map:\n")
-            print(expected_doc_ids_scores_map)
             if i in (expected_doc_ids_scores_map[field_name]):
                 expected_relevant_ids_scores = expected_doc_ids_scores_map[field_name][
                     i
                 ]
-            print(
-                "field_name,i,expected_relevant_ids_scores, query_result_ids_scores:\n"
-            )
-            print(
-                field_name,
-                i,
-                "\n",
-                expected_relevant_ids_scores,
-                "\n",
-                len(query_result_ids_scores),
-                query_result_ids_scores,
-            )
 
-            # Update total relevant documents count
             recall_stats[field_name]["total_relevant_count"] += len(
                 expected_relevant_ids_scores
             )
@@ -319,8 +298,6 @@ def calculate_recall_at_k_multi_rrf(
         "retrieved_count": 0,
         "recall_at_k": 0.0,
     }
-    print("result_doc_ids_scores_map:\n")
-    print(result_doc_ids_scores_map)
 
     for result_dict in result_doc_ids_scores_map:
         recall_stats["retrieved_count"] = recall_stats["retrieved_count"] + len(
@@ -349,7 +326,6 @@ def calculate_recall_at_k_multi_rrf(
 
         recall_stats["relevant_retrieved_count"] += relevant_found_count
 
-        # Calculate Recall@K
         if recall_stats["total_relevant_count"] > 0:
             recall_stats["recall_at_k"] = (
                 recall_stats["relevant_retrieved_count"]
@@ -426,15 +402,11 @@ def calculate_recall_at_k_multi_weight(
 
         recall_stats["relevant_retrieved_count"] += relevant_found_count
 
-        # Calculate Recall@K
         if recall_stats["total_relevant_count"] > 0:
             recall_stats["recall_at_k"] = (
                 recall_stats["relevant_retrieved_count"]
                 / recall_stats["total_relevant_count"]
             )
-
-    print("result_doc_ids_scores_map:\n")
-    print(result_doc_ids_scores_map)
 
     return recall_stats
 
@@ -549,14 +521,8 @@ class TestRecall:
         multiple_docs = [
             generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
         ]
-        print("len(multiple_docs):\n")
-        print(len(multiple_docs))
-        # print(multiple_docs)
 
         for i in range(10):
-            if i != 0:
-                pass
-                # print(multiple_docs[i * 1000:1000 * (i + 1)])
             batchdoc_and_check(
                 full_collection_new,
                 multiple_docs[i * 1000 : 1000 * (i + 1)],
@@ -565,21 +531,6 @@ class TestRecall:
 
         stats = full_collection_new.stats
         assert stats.doc_count == len(multiple_docs)
-
-        doc_ids = ["0", "1"]
-        fetched_docs = full_collection_new.fetch(doc_ids)
-        print("fetched_docs,multiple_docs")
-        print(
-            fetched_docs[doc_ids[0]].vectors["sparse_vector_fp32_field"],
-            fetched_docs[doc_ids[0]].vectors["sparse_vector_fp16_field"],
-            fetched_docs[doc_ids[1]].vectors["sparse_vector_fp32_field"],
-            fetched_docs[doc_ids[1]].vectors["sparse_vector_fp16_field"],
-            "\n",
-            multiple_docs[0].vectors["sparse_vector_fp32_field"],
-            multiple_docs[0].vectors["sparse_vector_fp32_field"],
-            multiple_docs[1].vectors["sparse_vector_fp32_field"],
-            multiple_docs[1].vectors["sparse_vector_fp16_field"],
-        )
 
         full_collection_new.optimize(option=OptimizeOption())
 
@@ -591,12 +542,10 @@ class TestRecall:
                 multiple_docs[i].vectors[field_name] for i in range(query_num)
             ]
 
-        # Get ground truth mapping
         ground_truth_map = get_ground_truth_map(
             full_collection_new, multiple_docs, query_vectors_map, metric_type, top_k
         )
 
-        # Validate ground truth mapping structure
         for field_name in DEFAULT_VECTOR_FIELD_NAME.values():
             assert field_name in ground_truth_map
             field_gt = ground_truth_map[field_name]
@@ -608,16 +557,6 @@ class TestRecall:
                 assert isinstance(relevant_ids, list)
                 assert len(relevant_ids) <= top_k
 
-        # Print ground truth statistics
-        print(f"Ground Truth for Top-{top_k} Retrieval:")
-        for field_name, field_gt in ground_truth_map.items():
-            print(f"  {field_name}:")
-            for query_idx, relevant_ids in field_gt.items():
-                print(
-                    f" Query {query_idx}: {len(relevant_ids)} relevant docs - {relevant_ids[:5]}{'...' if len(relevant_ids) > 5 else ''}"
-                )
-
-        # Calculate Recall@K using ground truth
         recall_at_k_stats = calculate_recall_at_k(
             full_collection_new,
             multiple_docs,
@@ -627,14 +566,6 @@ class TestRecall:
             expected_doc_ids_scores_map=ground_truth_map,
             tolerance=0.01,
         )
-        print("ground_truth_map:\n")
-        print(ground_truth_map)
-
-        print("(recall_at_k_stats:\n")
-        print(recall_at_k_stats)
-        print("metric_type:")
-        print(metric_type)
-        # Print Recall@K statistics
         print(f"Recall@{top_k} using Ground Truth:")
         for field_name, stats in recall_at_k_stats.items():
             print(f"  {field_name}:")
@@ -732,37 +663,15 @@ class TestRecall:
         multiple_docs = [
             generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
         ]
-        print("len(multiple_docs):\n")
-        print(len(multiple_docs))
-        # print(multiple_docs)
 
         for i in range(10):
-            if i != 0:
-                pass
-                # print(multiple_docs[i * 1000:1000 * (i + 1)])
             batchdoc_and_check(
                 full_collection_new,
                 multiple_docs[i * 1000 : 1000 * (i + 1)],
                 operator="insert",
             )
-
         stats = full_collection_new.stats
         assert stats.doc_count == len(multiple_docs)
-
-        doc_ids = ["0", "1"]
-        fetched_docs = full_collection_new.fetch(doc_ids)
-        print("fetched_docs,multiple_docs")
-        print(
-            fetched_docs[doc_ids[0]].vectors["sparse_vector_fp32_field"],
-            fetched_docs[doc_ids[0]].vectors["sparse_vector_fp16_field"],
-            fetched_docs[doc_ids[1]].vectors["sparse_vector_fp32_field"],
-            fetched_docs[doc_ids[1]].vectors["sparse_vector_fp16_field"],
-            "\n",
-            multiple_docs[0].vectors["sparse_vector_fp32_field"],
-            multiple_docs[0].vectors["sparse_vector_fp32_field"],
-            multiple_docs[1].vectors["sparse_vector_fp32_field"],
-            multiple_docs[1].vectors["sparse_vector_fp16_field"],
-        )
 
         full_collection_new.optimize(option=OptimizeOption())
 
@@ -774,12 +683,10 @@ class TestRecall:
                 multiple_docs[i].vectors[field_name] for i in range(query_num)
             ]
 
-        # Get ground truth mapping
         ground_truth_map = get_ground_truth_map(
             full_collection_new, multiple_docs, query_vectors_map, metric_type, top_k
         )
 
-        # Validate ground truth mapping structure
         for field_name in DEFAULT_VECTOR_FIELD_NAME.values():
             assert field_name in ground_truth_map
             field_gt = ground_truth_map[field_name]
@@ -791,7 +698,6 @@ class TestRecall:
                 assert isinstance(relevant_ids, list)
                 assert len(relevant_ids) <= top_k
 
-        # Print ground truth statistics
         print(f"Ground Truth for Top-{top_k} Retrieval:")
         for field_name, field_gt in ground_truth_map.items():
             print(f"  {field_name}:")
@@ -810,14 +716,7 @@ class TestRecall:
             expected_doc_ids_scores_map=ground_truth_map,
             tolerance=0.01,
         )
-        print("ground_truth_map:\n")
-        print(ground_truth_map)
 
-        print("(recall_at_k_stats:\n")
-        print(recall_at_k_stats)
-        print("metric_type:")
-        print(metric_type)
-        # Print Recall@K statistics
         print(f"Recall@{top_k} using Ground Truth:")
         for field_name, stats in recall_at_k_stats.items():
             print(f"  {field_name}:")
@@ -954,27 +853,18 @@ class TestRecall:
 
         query_vectors_list = [multiple_docs[i].vectors for i in range(query_num)]
 
-        "查询向量列表如下："
-        print("query_vectors_list:\n")
-        print(query_vectors_list)
-        ground_truth_map = []
-
         expected_result_map = []
 
         for doc_vectors in query_vectors_list:
-            # print("开始第一次查询：")
             single_query_results = {}
             for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
                 single_query_results[v] = full_collection_new.query(
                     VectorQuery(field_name=v, vector=doc_vectors[v])
                 )
-            # "获取期望"
             expected_rrf_scores_dict = calculate_multi_vector_rrf_scores(
                 single_query_results
             )
-            """print ("expected_rrf_scores_dict:\n")
-            print (expected_rrf_scores_dict)"""
-            # 按值降序排序
+
             sorted_dict_desc = dict(
                 sorted(
                     expected_rrf_scores_dict.items(), key=lambda x: x[1], reverse=True
@@ -983,7 +873,6 @@ class TestRecall:
 
             expected_result_map.append(sorted_dict_desc)
 
-        # Calculate Recall@K using ground truth
         recall_at_k_stats = calculate_recall_at_k_multi_rrf(
             full_collection_new,
             multiple_docs,
@@ -993,15 +882,6 @@ class TestRecall:
             expected_doc_ids_scores_map=expected_result_map,
             tolerance=0.01,
         )
-
-        print("expected_result_map:\n")
-        print(expected_result_map)
-
-        print("(recall_at_k_stats:\n")
-        print(recall_at_k_stats)
-
-        print("metric_type:")
-        print(metric_type)
 
         # Print Recall@K statistics
         print(f"Recall@{top_k} using Ground Truth:")
@@ -1129,14 +1009,6 @@ class TestRecall:
         weights,
         metrictype,
     ):
-        full_schema_params = request.getfixturevalue("full_schema_new")
-
-        metric_type_dict = {}
-        for vector_para in full_schema_params.vectors:
-            metric_type_dict[vector_para.name] = vector_para.index_param.metric_type
-        print("metric_type_dict:\n")
-        print(metric_type_dict)
-
         multiple_docs = [
             generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
         ]
@@ -1181,7 +1053,6 @@ class TestRecall:
 
             expected_result_map.append(sorted_dict_desc)
 
-        # Calculate Recall@K using ground truth
         recall_at_k_stats = calculate_recall_at_k_multi_weight(
             full_collection_new,
             multiple_docs,
@@ -1193,16 +1064,6 @@ class TestRecall:
             expected_doc_ids_scores_map=expected_result_map,
             tolerance=0.01,
         )
-
-        print("expected_result_map:\n")
-        print(expected_result_map)
-
-        print("(recall_at_k_stats:\n")
-        print(recall_at_k_stats)
-
-        print("metric_type_dict:\n")
-        print(metric_type_dict)
-        # Print Recall@K statistics
         print(f"Recall@{top_k} using Ground Truth:")
 
         print(
