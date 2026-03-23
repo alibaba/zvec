@@ -45,6 +45,8 @@ struct OmegaModelTrainerOptions {
   int num_leaves = 31;
   double learning_rate = 0.1;
   int num_threads = DefaultOmegaTrainerThreads();
+  int seed = 42;
+  bool deterministic = true;
 
   // Enable verbose logging during training
   bool verbose = false;

@@ -107,6 +107,8 @@ Status OmegaModelTrainer::TrainModelWithGtCmps(
   trainer_options.num_leaves = options.num_leaves;
   trainer_options.learning_rate = options.learning_rate;
   trainer_options.num_threads = options.num_threads;
+  trainer_options.seed = options.seed;
+  trainer_options.deterministic = options.deterministic;
   trainer_options.verbose = options.verbose;
   trainer_options.topk = gt_cmps_data.topk > 0 ? gt_cmps_data.topk : 100;
 
