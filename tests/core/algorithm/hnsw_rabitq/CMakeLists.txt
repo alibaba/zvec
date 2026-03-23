@@ -1,5 +1,5 @@
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 if(APPLE)
   set(APPLE_FRAMEWORK_LIBS
@@ -27,7 +27,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       ${CMAKE_THREAD_LIBS_INIT}
       ${CMAKE_DL_LIBS}
       SRCS ${CC_SRCS}
-      INCS . ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/src/core/algorithm/hnsw_rabitq
+      INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm/hnsw_rabitq
       LDFLAGS ${APPLE_FRAMEWORK_LIBS}
     )
   cc_test_suite(hnsw_rabitq ${CC_TARGET})
