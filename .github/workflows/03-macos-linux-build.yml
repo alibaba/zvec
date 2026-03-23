@@ -11,6 +11,11 @@ on:
         description: 'GitHub Actions runner OS'
         required: true
         type: string
+      compiler:
+        description: 'C++ compiler to use (gcc or clang)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -20,7 +25,7 @@ jobs:
   build-and-test:
     name: Build & Test (${{ inputs.platform }})
     runs-on: ${{ inputs.os }}
-    
+
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +47,18 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'pyproject.toml'
 
+      - name: Install Clang
+        if: inputs.compiler == 'clang' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang libomp-dev
+        shell: bash
+
+      - name: Print CPU info
+        if: runner.os == 'Linux'
+        run: lscpu
+        shell: bash
+
       - name: Set up environment variables
         run: |
           # Set number of processors for parallel builds
@@ -52,7 +69,13 @@ jobs:
           fi
           echo "NPROC=$NPROC" >> $GITHUB_ENV
           echo "Using $NPROC parallel jobs for builds"
-          
+
+          # Set compiler when clang is requested
+          if [[ "${{ inputs.compiler }}" == "clang" ]]; then
+            echo "CC=clang" >> $GITHUB_ENV
+            echo "CXX=clang++" >> $GITHUB_ENV
+          fi
+
           # Add Python user base bin to PATH for pip-installed CLI tools
           echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
         shell: bash
@@ -71,7 +94,7 @@ jobs:
       - name: Build from source
         run: |
           cd "$GITHUB_WORKSPACE"
-          
+
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
