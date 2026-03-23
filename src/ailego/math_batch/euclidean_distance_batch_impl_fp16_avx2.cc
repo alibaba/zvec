@@ -66,7 +66,7 @@ compute_one_to_many_squared_euclidean_avx2_fp16(
     }
   }
 
-  if (dim + 8 < dimensionality) {
+  if (dim + 8 <= dimensionality) {
     __m256 q = _mm256_cvtph_ps(
         _mm_loadu_si128(reinterpret_cast<const __m128i *>(query + dim)));
 
