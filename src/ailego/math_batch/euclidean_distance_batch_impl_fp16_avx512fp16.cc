@@ -53,7 +53,7 @@ compute_one_to_many_squared_euclidean_avx512fp16_fp16(
       accs[i] = _mm512_fmadd_ph(diff, diff, accs[i]);
     }
   }
-
+    __mmask32 mask = (__mmask32)(((uint32_t)1 << (dimensionality - dim)) - 1);
   if (dim < dimensionality) {
     __mmask32 mask = (__mmask32)((1 << (dimensionality - dim)) - 1);
 
