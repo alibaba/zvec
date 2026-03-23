@@ -225,14 +225,6 @@ ZVecFieldSchema *zvec_test_create_sparse_vector_field(
 // =============================================================================
 
 /**
- * @brief Free field schema array
- *
- * @param fields Field array pointer
- * @param count Number of fields
- */
-void zvec_test_free_field_schemas(ZVecFieldSchema *fields, size_t count);
-
-/**
  * @brief Free string array
  *
  * @param strings String array pointer

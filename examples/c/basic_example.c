@@ -45,14 +45,23 @@ static ZVecErrorCode create_simple_test_collection(
 
   ZVecErrorCode error = ZVEC_OK;
 
-  // Create index parameters using new macros
-  // clang-format off
-  ZVecIndexParams invert_params_val = ZVEC_INVERT_PARAMS(true, false);
-  ZVecIndexParams hnsw_params_val = ZVEC_HNSW_PARAMS(
-      ZVEC_METRIC_TYPE_COSINE, 16, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  // clang-format on
-  ZVecIndexParams *invert_params = &invert_params_val;
-  ZVecIndexParams *hnsw_params = &hnsw_params_val;
+  // Create index parameters using new API
+  ZVecIndexParams *invert_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+  if (!invert_params) {
+    zvec_collection_schema_destroy(schema);
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+  zvec_index_params_set_invert_params(invert_params, true, false);
+
+  ZVecIndexParams *hnsw_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  if (!hnsw_params) {
+    zvec_index_params_destroy(invert_params);
+    zvec_collection_schema_destroy(schema);
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+  zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_COSINE);
+  zvec_index_params_set_hnsw_params(hnsw_params, 16, 200);
 
   // Create and add ID field (primary key)
   ZVecFieldSchema *id_field =
@@ -60,6 +69,8 @@ static ZVecErrorCode create_simple_test_collection(
   zvec_field_schema_set_invert_index(id_field, invert_params);
   error = zvec_collection_schema_add_field(schema, id_field);
   if (error != ZVEC_OK) {
+    zvec_index_params_destroy(invert_params);
+    zvec_index_params_destroy(hnsw_params);
     zvec_collection_schema_destroy(schema);
     return error;
   }
@@ -70,6 +81,8 @@ static ZVecErrorCode create_simple_test_collection(
   zvec_field_schema_set_invert_index(text_field, invert_params);
   error = zvec_collection_schema_add_field(schema, text_field);
   if (error != ZVEC_OK) {
+    zvec_index_params_destroy(invert_params);
+    zvec_index_params_destroy(hnsw_params);
     zvec_collection_schema_destroy(schema);
     return error;
   }
@@ -80,18 +93,29 @@ static ZVecErrorCode create_simple_test_collection(
   zvec_field_schema_set_hnsw_index(embedding_field, hnsw_params);
   error = zvec_collection_schema_add_field(schema, embedding_field);
   if (error != ZVEC_OK) {
+    zvec_index_params_destroy(invert_params);
+    zvec_index_params_destroy(hnsw_params);
     zvec_collection_schema_destroy(schema);
     return error;
   }
 
+  // Cleanup index parameters (they have been copied to the field schemas)
+  zvec_index_params_destroy(invert_params);
+  zvec_index_params_destroy(hnsw_params);
+
   // Use default options
-  ZVecCollectionOptions options = ZVEC_DEFAULT_OPTIONS();
+  ZVecCollectionOptions *options = zvec_collection_options_create();
+  if (!options) {
+    zvec_collection_schema_destroy(schema);
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
 
   // Create collection using the new API
-  error = zvec_collection_create_and_open("./test_collection", schema, &options,
+  error = zvec_collection_create_and_open("./test_collection", schema, options,
                                           collection);
 
   // Cleanup resources
+  zvec_collection_options_destroy(options);
   zvec_collection_schema_destroy(schema);
 
   return error;
@@ -176,28 +200,31 @@ int main() {
   error = zvec_collection_get_stats(collection, &stats);
   if (handle_error(error, "getting collection stats") == ZVEC_OK) {
     printf("✓ Collection stats - Document count: %llu\n",
-           (unsigned long long)stats->doc_count);
+           (unsigned long long)zvec_collection_stats_get_doc_count(stats));
     // Free statistics memory
     zvec_collection_stats_destroy(stats);
   }
 
   printf("Testing vector query...\n");
   // Query documents
-  ZVecVectorQuery query = {0};
-  query.field_name =
-      (ZVecString){.data = "embedding", .length = strlen("embedding")};
-  query.query_vector =
-      (ZVecByteArray){.data = (uint8_t *)vector1, .length = 3 * sizeof(float)};
-  query.topk = 10;
-  query.filter = (ZVecString){.data = "", .length = 0};
-  query.include_vector = true;
-  query.include_doc_id = true;
-  query.output_fields.strings = NULL;
-  query.output_fields.count = 0;
+  ZVecVectorQuery *query = zvec_vector_query_create();
+  if (!query) {
+    fprintf(stderr, "Failed to create vector query\n");
+    zvec_collection_destroy(collection);
+    return 1;
+  }
+
+  zvec_vector_query_set_field_name(query, "embedding");
+  zvec_vector_query_set_query_vector(query, vector1, 3 * sizeof(float));
+  zvec_vector_query_set_topk(query, 10);
+  zvec_vector_query_set_filter(query, "");
+  zvec_vector_query_set_include_vector(query, true);
+  zvec_vector_query_set_include_doc_id(query, true);
 
   ZVecDoc **results = NULL;
   size_t result_count = 0;
-  error = zvec_collection_query(collection, &query, &results, &result_count);
+  error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
+                                &results, &result_count);
 
   if (error != ZVEC_OK) {
     char *error_msg = NULL;
@@ -205,8 +232,11 @@ int main() {
     printf("[ERROR] Query failed: %s\n",
            error_msg ? error_msg : "Unknown error");
     free(error_msg);
+    zvec_vector_query_destroy(query);
     goto cleanup;
   }
+
+  zvec_vector_query_destroy(query);
 
   printf("✓ Query successful - Returned %zu results\n", result_count);
 

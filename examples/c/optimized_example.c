@@ -70,17 +70,14 @@ int main() {
   printf("✓ Collection schema created\n");
 
   // 2. Create optimized index parameters
-  // clang-format off
-  ZVecIndexParams hnsw_params_val = ZVEC_HNSW_PARAMS(
-      ZVEC_METRIC_TYPE_L2, 32, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  // clang-format on
-  ZVecIndexParams *hnsw_params = &hnsw_params_val;
-
+  ZVecIndexParams *hnsw_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params) {
-    fprintf(stderr, "Failed to create HNSW parameters\n");
+    fprintf(stderr, "Failed to create HNSW index parameters\n");
     zvec_collection_schema_destroy(schema);
     return -1;
   }
+  zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_L2);
+  zvec_index_params_set_hnsw_params(hnsw_params, 32, 200);
 
   // 3. Create fields with optimized configuration
   ZVecFieldSchema *id_field =
@@ -112,12 +109,18 @@ int main() {
   printf("✓ Fields configured with indexes\n");
 
   // 4. Create collection with optimized options
-  ZVecCollectionOptions options = ZVEC_DEFAULT_OPTIONS();
-  options.enable_mmap = true;  // Enable memory mapping for better performance
+  ZVecCollectionOptions *options = zvec_collection_options_create();
+  if (!options) {
+    fprintf(stderr, "Failed to create collection options\n");
+    goto cleanup_fields;
+  }
+  zvec_collection_options_set_enable_mmap(
+      options, true);  // Enable memory mapping for better performance
 
   ZVecCollection *collection = NULL;
   error = zvec_collection_create_and_open("./optimized_example_collection",
-                                          schema, &options, &collection);
+                                          schema, options, &collection);
+  zvec_collection_options_destroy(options);
   if (handle_error(error, "creating collection") != ZVEC_OK) {
     goto cleanup_fields;
   }
@@ -230,17 +233,18 @@ int main() {
     goto cleanup_collection;
   }
 
-  ZVecVectorQuery query = {0};
-  query.field_name =
-      (ZVecString){.data = "embedding", .length = strlen("embedding")};
-  query.query_vector = (ZVecByteArray){.data = (uint8_t *)query_vector,
-                                       .length = 128 * sizeof(float)};
-  query.topk = 10;
-  query.filter = (ZVecString){.data = "", .length = 0};
-  query.include_vector = false;
-  query.include_doc_id = true;
-  query.output_fields.strings = NULL;
-  query.output_fields.count = 0;
+  ZVecVectorQuery *query = zvec_vector_query_create();
+  if (!query) {
+    fprintf(stderr, "Failed to create vector query\n");
+    free(query_vector);
+    goto cleanup_collection;
+  }
+  zvec_vector_query_set_field_name(query, "embedding");
+  zvec_vector_query_set_query_vector(query, query_vector, 128 * sizeof(float));
+  zvec_vector_query_set_topk(query, 10);
+  zvec_vector_query_set_filter(query, "");
+  zvec_vector_query_set_include_vector(query, false);
+  zvec_vector_query_set_include_doc_id(query, true);
 
   const int QUERY_COUNT = 100;
   start_time = clock();
@@ -249,7 +253,8 @@ int main() {
     ZVecDoc **results = NULL;
     size_t result_count = 0;
 
-    error = zvec_collection_query(collection, &query, &results, &result_count);
+    error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
+                                  &results, &result_count);
     if (error != ZVEC_OK) {
       char *error_msg = NULL;
       zvec_get_last_error(&error_msg);
@@ -273,13 +278,15 @@ int main() {
   printf("  Queries per second: %.0f\n", 1000.0 / avg_query_time);
 
   free(query_vector);
+  zvec_vector_query_destroy(query);
 
   // 8. Memory usage information
   ZVecCollectionStats *stats = NULL;
   error = zvec_collection_get_stats(collection, &stats);
   if (error == ZVEC_OK && stats) {
     printf("Collection Statistics:\n");
-    printf("  Document count: %llu\n", (unsigned long long)stats->doc_count);
+    printf("  Document count: %llu\n",
+           (unsigned long long)zvec_collection_stats_get_doc_count(stats));
     zvec_collection_stats_destroy(stats);
   }
 

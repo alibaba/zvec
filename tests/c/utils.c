@@ -39,27 +39,37 @@ static char *strdup_safe(const char *str) {
 ZVecCollectionSchema *zvec_test_create_temp_schema(void) {
   // Create collection schema using C API
   ZVecCollectionSchema *schema = zvec_collection_schema_create("demo");
-  schema->max_doc_count_per_segment = 1000;
+  zvec_collection_schema_set_max_doc_count_per_segment(schema, 1000);
 
-  // Create index parameters using C API (using new flat structure with macros)
-  ZVecIndexParams invert_params = ZVEC_INVERT_PARAMS(true, true);
-  ZVecIndexParams dense_hnsw_params = ZVEC_HNSW_PARAMS(
-      ZVEC_METRIC_TYPE_L2, 16, 100, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  ZVecIndexParams sparse_hnsw_params = ZVEC_HNSW_PARAMS(
-      ZVEC_METRIC_TYPE_IP, 16, 100, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  // Create index parameters using new opaque pointer API
+  ZVecIndexParams *invert_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+  zvec_index_params_set_invert_params(invert_params, true, true);
 
+  ZVecIndexParams *dense_hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  zvec_index_params_set_metric_type(dense_hnsw_params, ZVEC_METRIC_TYPE_L2);
+  zvec_index_params_set_hnsw_params(dense_hnsw_params, 16, 100);
+
+  ZVecIndexParams *sparse_hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  zvec_index_params_set_metric_type(sparse_hnsw_params, ZVEC_METRIC_TYPE_IP);
+  zvec_index_params_set_hnsw_params(sparse_hnsw_params, 16, 100);
+
+  ZVecIndexParams *name_invert_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+  zvec_index_params_set_invert_params(name_invert_params, false, false);
 
   // Create and add fields
   ZVecFieldSchema *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_INT64, false, 0);
-  zvec_field_schema_set_invert_index(id_field, &invert_params);
+  zvec_field_schema_set_invert_index(id_field, invert_params);
   zvec_collection_schema_add_field(schema, id_field);
 
   // Create name field (inverted index without optimization)
-  ZVecIndexParams name_invert_params = ZVEC_INVERT_PARAMS(false, false);
   ZVecFieldSchema *name_field =
       zvec_field_schema_create("name", ZVEC_DATA_TYPE_STRING, false, 0);
-  zvec_field_schema_set_invert_index(name_field, &name_invert_params);
+  zvec_field_schema_set_invert_index(name_field, name_invert_params);
   zvec_collection_schema_add_field(schema, name_field);
 
   // Create weight field (no index)
@@ -70,14 +80,20 @@ ZVecCollectionSchema *zvec_test_create_temp_schema(void) {
   // Create dense field (HNSW index)
   ZVecFieldSchema *dense_field =
       zvec_field_schema_create("dense", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
-  zvec_field_schema_set_hnsw_index(dense_field, &dense_hnsw_params);
+  zvec_field_schema_set_hnsw_index(dense_field, dense_hnsw_params);
   zvec_collection_schema_add_field(schema, dense_field);
 
   // Create sparse field (HNSW index)
   ZVecFieldSchema *sparse_field = zvec_field_schema_create(
       "sparse", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32, false, 0);
-  zvec_field_schema_set_hnsw_index(sparse_field, &sparse_hnsw_params);
+  zvec_field_schema_set_hnsw_index(sparse_field, sparse_hnsw_params);
   zvec_collection_schema_add_field(schema, sparse_field);
+
+  // Cleanup index parameters
+  zvec_index_params_destroy(invert_params);
+  zvec_index_params_destroy(dense_hnsw_params);
+  zvec_index_params_destroy(sparse_hnsw_params);
+  zvec_index_params_destroy(name_invert_params);
 
   return schema;
 }
@@ -104,7 +120,7 @@ ZVecCollectionSchema *zvec_test_create_normal_schema(
   // Create collection schema using C API
   ZVecCollectionSchema *schema =
       zvec_collection_schema_create(name ? name : "demo");
-  schema->max_doc_count_per_segment = max_doc_count;
+  zvec_collection_schema_set_max_doc_count_per_segment(schema, max_doc_count);
 
   // Create scalar fields (8)
   const char *scalar_names[] = {"int32", "string", "uint32", "bool",
@@ -153,16 +169,16 @@ ZVecCollectionSchema *zvec_test_create_normal_schema(
 
   ZVecFieldSchema *dense_fp16 = zvec_field_schema_create(
       "dense_fp16", ZVEC_DATA_TYPE_VECTOR_FP16, false, 128);
-  ZVecIndexParams flat_params1 =
-      ZVEC_FLAT_PARAMS(ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  zvec_field_schema_set_flat_index(dense_fp16, &flat_params1);
+  ZVecIndexParams *flat_params1 = zvec_test_create_default_flat_params();
+  zvec_field_schema_set_flat_index(dense_fp16, flat_params1);
+  zvec_index_params_destroy(flat_params1);
   zvec_collection_schema_add_field(schema, dense_fp16);
 
   ZVecFieldSchema *dense_int8 = zvec_field_schema_create(
       "dense_int8", ZVEC_DATA_TYPE_VECTOR_INT8, false, 128);
-  ZVecIndexParams flat_params2 =
-      ZVEC_FLAT_PARAMS(ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  zvec_field_schema_set_flat_index(dense_int8, &flat_params2);
+  ZVecIndexParams *flat_params2 = zvec_test_create_default_flat_params();
+  zvec_field_schema_set_flat_index(dense_int8, flat_params2);
+  zvec_index_params_destroy(flat_params2);
   zvec_collection_schema_add_field(schema, dense_int8);
 
   // sparse vectors
@@ -175,9 +191,9 @@ ZVecCollectionSchema *zvec_test_create_normal_schema(
 
   ZVecFieldSchema *sparse_fp16 = zvec_field_schema_create(
       "sparse_fp16", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16, false, 0);
-  ZVecIndexParams flat_params3 =
-      ZVEC_FLAT_PARAMS(ZVEC_METRIC_TYPE_L2, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  zvec_field_schema_set_flat_index(sparse_fp16, &flat_params3);
+  ZVecIndexParams *flat_params3 = zvec_test_create_default_flat_params();
+  zvec_field_schema_set_flat_index(sparse_fp16, flat_params3);
+  zvec_index_params_destroy(flat_params3);
   zvec_collection_schema_add_field(schema, sparse_fp16);
 
   return schema;
@@ -249,57 +265,58 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
   }
 
   // Create test data for each field
-  for (size_t i = 0; i < schema->field_count; i++) {
-    // Fix type mismatch issue - remove address operator
-    const ZVecFieldSchema *field = schema->fields[i];
-    // Remove unused variable
-    // ZVecErrorCode err = ZVEC_OK;
+  size_t field_count = zvec_collection_schema_get_field_count(schema);
+  for (size_t i = 0; i < field_count; i++) {
+    const ZVecFieldSchema *field = zvec_collection_schema_get_field(schema, i);
+    const char *field_name = zvec_field_schema_get_name(field);
+    ZVecDataType field_type = zvec_field_schema_get_data_type(field);
+    uint32_t field_dimension = zvec_field_schema_get_dimension(field);
 
-    switch (field->data_type) {
+    switch (field_type) {
       case ZVEC_DATA_TYPE_BINARY: {
         char binary_str[32];
         snprintf(binary_str, sizeof(binary_str), "binary_%llu",
                  (unsigned long long)doc_id);
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    binary_str, strlen(binary_str));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, binary_str,
+                                    strlen(binary_str));
         break;
       }
       case ZVEC_DATA_TYPE_BOOL: {
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
+        zvec_doc_add_field_by_value(doc, field_name, field_type,
                                     &(bool){doc_id % 10 == 0}, sizeof(bool));
         break;
       }
       case ZVEC_DATA_TYPE_INT32: {
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
+        zvec_doc_add_field_by_value(doc, field_name, field_type,
                                     &(int32_t){(int32_t)doc_id},
                                     sizeof(int32_t));
         break;
       }
       case ZVEC_DATA_TYPE_INT64: {
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
+        zvec_doc_add_field_by_value(doc, field_name, field_type,
                                     &(int64_t){(int64_t)doc_id},
                                     sizeof(int64_t));
         break;
       }
       case ZVEC_DATA_TYPE_UINT32: {
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
+        zvec_doc_add_field_by_value(doc, field_name, field_type,
                                     &(uint32_t){(uint32_t)doc_id},
                                     sizeof(uint32_t));
         break;
       }
       case ZVEC_DATA_TYPE_UINT64: {
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
+        zvec_doc_add_field_by_value(doc, field_name, field_type,
                                     &(uint64_t){(uint64_t)doc_id},
                                     sizeof(uint64_t));
         break;
       }
       case ZVEC_DATA_TYPE_FLOAT: {
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
+        zvec_doc_add_field_by_value(doc, field_name, field_type,
                                     &(float){(float)doc_id}, sizeof(float));
         break;
       }
       case ZVEC_DATA_TYPE_DOUBLE: {
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
+        zvec_doc_add_field_by_value(doc, field_name, field_type,
                                     &(double){(double)doc_id}, sizeof(double));
         break;
       }
@@ -307,8 +324,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         char string_val[64];
         snprintf(string_val, sizeof(string_val), "value_%llu",
                  (unsigned long long)doc_id);
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    string_val, strlen(string_val));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, string_val,
+                                    strlen(string_val));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_BOOL: {
@@ -316,8 +333,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         for (int j = 0; j < 10; j++) {
           bool_array[j] = (doc_id + j) % 2 == 0;
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    bool_array, sizeof(bool_array));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, bool_array,
+                                    sizeof(bool_array));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_INT32: {
@@ -325,8 +342,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         for (int j = 0; j < 10; j++) {
           int32_array[j] = (int32_t)doc_id;
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    int32_array, sizeof(int32_array));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, int32_array,
+                                    sizeof(int32_array));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_INT64: {
@@ -334,8 +351,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         for (int j = 0; j < 10; j++) {
           int64_array[j] = (int64_t)doc_id;
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    int64_array, sizeof(int64_array));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, int64_array,
+                                    sizeof(int64_array));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_UINT32: {
@@ -343,8 +360,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         for (int j = 0; j < 10; j++) {
           uint32_array[j] = (uint32_t)doc_id;
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    uint32_array, sizeof(uint32_array));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, uint32_array,
+                                    sizeof(uint32_array));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_UINT64: {
@@ -352,8 +369,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         for (int j = 0; j < 10; j++) {
           uint64_array[j] = (uint64_t)doc_id;
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    uint64_array, sizeof(uint64_array));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, uint64_array,
+                                    sizeof(uint64_array));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_FLOAT: {
@@ -361,8 +378,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         for (int j = 0; j < 10; j++) {
           float_array[j] = (float)doc_id;
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    float_array, sizeof(float_array));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, float_array,
+                                    sizeof(float_array));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_DOUBLE: {
@@ -370,8 +387,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
         for (int j = 0; j < 10; j++) {
           double_array[j] = (double)doc_id;
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    double_array, sizeof(double_array));
+        zvec_doc_add_field_by_value(doc, field_name, field_type, double_array,
+                                    sizeof(double_array));
         break;
       }
       case ZVEC_DATA_TYPE_ARRAY_STRING: {
@@ -388,112 +405,104 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
             offset += len + 1;
           }
         }
-        zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                    string_data, offset);
+        zvec_doc_add_field_by_value(doc, field_name, field_type, string_data,
+                                    offset);
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_BINARY32: {
         uint32_t *vector_data =
-            (uint32_t *)malloc(field->dimension * sizeof(uint32_t));
+            (uint32_t *)malloc(field_dimension * sizeof(uint32_t));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (uint32_t)(doc_id + j);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      vector_data,
-                                      field->dimension * sizeof(uint32_t));
+          zvec_doc_add_field_by_value(doc, field_name, field_type, vector_data,
+                                      field_dimension * sizeof(uint32_t));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_BINARY64: {
         uint64_t *vector_data =
-            (uint64_t *)malloc(field->dimension * sizeof(uint64_t));
+            (uint64_t *)malloc(field_dimension * sizeof(uint64_t));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (uint64_t)(doc_id + j);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      vector_data,
-                                      field->dimension * sizeof(uint64_t));
+          zvec_doc_add_field_by_value(doc, field_name, field_type, vector_data,
+                                      field_dimension * sizeof(uint64_t));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_FP32: {
-        float *vector_data = (float *)malloc(field->dimension * sizeof(float));
+        float *vector_data = (float *)malloc(field_dimension * sizeof(float));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (float)(doc_id + j * 0.1);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      vector_data,
-                                      field->dimension * sizeof(float));
+          zvec_doc_add_field_by_value(doc, field_name, field_type, vector_data,
+                                      field_dimension * sizeof(float));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_FP64: {
         double *vector_data =
-            (double *)malloc(field->dimension * sizeof(double));
+            (double *)malloc(field_dimension * sizeof(double));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (double)(doc_id + j * 0.1);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      vector_data,
-                                      field->dimension * sizeof(double));
+          zvec_doc_add_field_by_value(doc, field_name, field_type, vector_data,
+                                      field_dimension * sizeof(double));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_FP16: {
         // FP16 needs special handling, simplified to FP32 here
-        float *vector_data = (float *)malloc(field->dimension * sizeof(float));
+        float *vector_data = (float *)malloc(field_dimension * sizeof(float));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (float)(doc_id + j * 0.1);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      vector_data,
-                                      field->dimension * sizeof(float));
+          zvec_doc_add_field_by_value(doc, field_name, field_type, vector_data,
+                                      field_dimension * sizeof(float));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_INT8: {
         int8_t *vector_data =
-            (int8_t *)malloc(field->dimension * sizeof(int8_t));
+            (int8_t *)malloc(field_dimension * sizeof(int8_t));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (int8_t)((doc_id + j) % 256);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      vector_data,
-                                      field->dimension * sizeof(int8_t));
+          zvec_doc_add_field_by_value(doc, field_name, field_type, vector_data,
+                                      field_dimension * sizeof(int8_t));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_INT16: {
         int16_t *vector_data =
-            (int16_t *)malloc(field->dimension * sizeof(int16_t));
+            (int16_t *)malloc(field_dimension * sizeof(int16_t));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (int16_t)((doc_id + j) % 65536);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      vector_data,
-                                      field->dimension * sizeof(int16_t));
+          zvec_doc_add_field_by_value(doc, field_name, field_type, vector_data,
+                                      field_dimension * sizeof(int16_t));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32: {
         // Sparse vectors need special handling
-        uint32_t nnz = field->dimension > 0
-                           ? field->dimension / 10
-                           : 10;  // Number of non-zero elements
+        uint32_t nnz = field_dimension > 0 ? field_dimension / 10
+                                           : 10;  // Number of non-zero elements
         size_t sparse_size =
             sizeof(uint32_t) + nnz * (sizeof(uint32_t) + sizeof(float));
         void *sparse_data = malloc(sparse_size);
@@ -506,15 +515,15 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
             indices[j] = j * 10;                    // Index
             values[j] = (float)(doc_id + j * 0.1);  // Value
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      sparse_data, sparse_size);
+          zvec_doc_add_field_by_value(doc, field_name, field_type, sparse_data,
+                                      sparse_size);
           free(sparse_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16: {
         // Sparse FP16 vectors, simplified handling
-        uint32_t nnz = field->dimension > 0 ? field->dimension / 10 : 10;
+        uint32_t nnz = field_dimension > 0 ? field_dimension / 10 : 10;
         size_t sparse_size =
             sizeof(uint32_t) +
             nnz * (sizeof(uint32_t) +
@@ -529,8 +538,8 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
             indices[j] = j * 10;
             values[j] = (float)(doc_id + j * 0.1);
           }
-          zvec_doc_add_field_by_value(doc, field->name->data, field->data_type,
-                                      sparse_data, sparse_size);
+          zvec_doc_add_field_by_value(doc, field_name, field_type, sparse_data,
+                                      sparse_size);
           free(sparse_data);
         }
         break;
@@ -567,85 +576,89 @@ ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
   }
 
   // Only create data for vector fields
-  for (size_t i = 0; i < schema->field_count; i++) {
-    const ZVecFieldSchema *field = schema->fields[i];
+  size_t field_count = zvec_collection_schema_get_field_count(schema);
+  for (size_t i = 0; i < field_count; i++) {
+    const ZVecFieldSchema *field = zvec_collection_schema_get_field(schema, i);
+    const char *field_name = zvec_field_schema_get_name(field);
+    ZVecDataType field_type = zvec_field_schema_get_data_type(field);
+    uint32_t field_dimension = zvec_field_schema_get_dimension(field);
 
     // Only process specific vector type fields
-    if (field->data_type != ZVEC_DATA_TYPE_VECTOR_FP32 &&
-        field->data_type != ZVEC_DATA_TYPE_VECTOR_FP16 &&
-        field->data_type != ZVEC_DATA_TYPE_VECTOR_INT8 &&
-        field->data_type != ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 &&
-        field->data_type != ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16) {
+    if (field_type != ZVEC_DATA_TYPE_VECTOR_FP32 &&
+        field_type != ZVEC_DATA_TYPE_VECTOR_FP16 &&
+        field_type != ZVEC_DATA_TYPE_VECTOR_INT8 &&
+        field_type != ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 &&
+        field_type != ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16) {
       continue;
     }
 
     ZVecErrorCode err = ZVEC_OK;
 
-    switch (field->data_type) {
+    switch (field_type) {
       case ZVEC_DATA_TYPE_VECTOR_FP32: {
-        float *vector_data = (float *)malloc(field->dimension * sizeof(float));
+        float *vector_data = (float *)malloc(field_dimension * sizeof(float));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (float)(doc_id + j * 0.1);
           }
-          err = zvec_doc_add_field_by_value(doc, field->name->data,
-                                            field->data_type, vector_data,
-                                            field->dimension * sizeof(float));
+          err = zvec_doc_add_field_by_value(doc, field_name, field_type,
+                                            vector_data,
+                                            field_dimension * sizeof(float));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_FP64: {
         double *vector_data =
-            (double *)malloc(field->dimension * sizeof(double));
+            (double *)malloc(field_dimension * sizeof(double));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (double)(doc_id + j * 0.1);
           }
-          err = zvec_doc_add_field_by_value(doc, field->name->data,
-                                            field->data_type, vector_data,
-                                            field->dimension * sizeof(double));
+          err = zvec_doc_add_field_by_value(doc, field_name, field_type,
+                                            vector_data,
+                                            field_dimension * sizeof(double));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_FP16: {
-        float *vector_data = (float *)malloc(field->dimension * sizeof(float));
+        float *vector_data = (float *)malloc(field_dimension * sizeof(float));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (float)(doc_id + j * 0.1);
           }
-          err = zvec_doc_add_field_by_value(doc, field->name->data,
-                                            field->data_type, vector_data,
-                                            field->dimension * sizeof(float));
+          err = zvec_doc_add_field_by_value(doc, field_name, field_type,
+                                            vector_data,
+                                            field_dimension * sizeof(float));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_INT8: {
         int8_t *vector_data =
-            (int8_t *)malloc(field->dimension * sizeof(int8_t));
+            (int8_t *)malloc(field_dimension * sizeof(int8_t));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (int8_t)(doc_id % 128);
           }
-          err = zvec_doc_add_field_by_value(doc, field->name->data,
-                                            field->data_type, vector_data,
-                                            field->dimension * sizeof(int8_t));
+          err = zvec_doc_add_field_by_value(doc, field_name, field_type,
+                                            vector_data,
+                                            field_dimension * sizeof(int8_t));
           free(vector_data);
         }
         break;
       }
       case ZVEC_DATA_TYPE_VECTOR_INT16: {
         int16_t *vector_data =
-            (int16_t *)malloc(field->dimension * sizeof(int16_t));
+            (int16_t *)malloc(field_dimension * sizeof(int16_t));
         if (vector_data) {
-          for (uint32_t j = 0; j < field->dimension; j++) {
+          for (uint32_t j = 0; j < field_dimension; j++) {
             vector_data[j] = (int16_t)(doc_id % 32768);
           }
-          err = zvec_doc_add_field_by_value(doc, field->name->data,
-                                            field->data_type, vector_data,
-                                            field->dimension * sizeof(int16_t));
+          err = zvec_doc_add_field_by_value(doc, field_name, field_type,
+                                            vector_data,
+                                            field_dimension * sizeof(int16_t));
           free(vector_data);
         }
         break;
@@ -667,9 +680,8 @@ ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
             *((float *)ptr) = (float)(doc_id + j * 0.1);
             ptr += sizeof(float);
           }
-          err = zvec_doc_add_field_by_value(doc, field->name->data,
-                                            field->data_type, sparse_data,
-                                            sparse_size);
+          err = zvec_doc_add_field_by_value(doc, field_name, field_type,
+                                            sparse_data, sparse_size);
           free(sparse_data);
         }
         break;
@@ -753,29 +765,29 @@ ZVecDoc *zvec_test_create_doc_with_fields(uint64_t doc_id,
 // =============================================================================
 
 ZVecIndexParams *zvec_test_create_default_hnsw_params(void) {
-  ZVecIndexParams *params = (ZVecIndexParams *)malloc(sizeof(ZVecIndexParams));
+  ZVecIndexParams *params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!params) return NULL;
 
-  *params = ZVEC_HNSW_PARAMS(ZVEC_METRIC_TYPE_IP, 16, 100, 50,
-                             ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  zvec_index_params_set_metric_type(params, ZVEC_METRIC_TYPE_IP);
+  zvec_index_params_set_hnsw_params(params, 16, 100);
 
   return params;
 }
 
 ZVecIndexParams *zvec_test_create_default_flat_params(void) {
-  ZVecIndexParams *params = (ZVecIndexParams *)malloc(sizeof(ZVecIndexParams));
+  ZVecIndexParams *params = zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
   if (!params) return NULL;
 
-  *params = ZVEC_FLAT_PARAMS(ZVEC_METRIC_TYPE_IP, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+  zvec_index_params_set_metric_type(params, ZVEC_METRIC_TYPE_IP);
 
   return params;
 }
 
 ZVecIndexParams *zvec_test_create_default_invert_params(bool enable_optimize) {
-  ZVecIndexParams *params = (ZVecIndexParams *)malloc(sizeof(ZVecIndexParams));
+  ZVecIndexParams *params = zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   if (!params) return NULL;
 
-  *params = ZVEC_INVERT_PARAMS(enable_optimize, enable_optimize);
+  zvec_index_params_set_invert_params(params, enable_optimize, enable_optimize);
 
   return params;
 }
@@ -787,23 +799,24 @@ ZVecIndexParams *zvec_test_create_default_invert_params(bool enable_optimize) {
 ZVecFieldSchema *zvec_test_create_scalar_field(
     const char *name, ZVecDataType data_type, bool nullable,
     const ZVecIndexParams *invert_params) {
-  ZVecFieldSchema *field = (ZVecFieldSchema *)malloc(sizeof(ZVecFieldSchema));
+  // Use the public API to create the field
+  ZVecFieldSchema *field =
+      zvec_field_schema_create(name, data_type, nullable, 0);
   if (!field) return NULL;
 
-  field->name = (ZVecString *)malloc(sizeof(ZVecString));
-  if (!field->name) {
-    free(field);
-    return NULL;
-  }
-  field->name->data = name ? strdup(name) : NULL;
-  field->name->length = name ? strlen(name) : 0;
-  field->name->capacity = name ? strlen(name) + 1 : 0;
-  field->data_type = data_type;
-  field->nullable = nullable;
-  field->dimension = 0;
-  field->has_index = (invert_params != NULL);
   if (invert_params) {
-    field->index_params = *invert_params;
+    // Clone the index params using setter API
+    ZVecIndexType type = zvec_index_params_get_type(invert_params);
+    ZVecIndexParams *cloned_params = zvec_index_params_create(type);
+    if (cloned_params) {
+      bool enable_range_opt, enable_wildcard;
+      zvec_index_params_get_invert_params(invert_params, &enable_range_opt,
+                                          &enable_wildcard);
+      zvec_index_params_set_invert_params(cloned_params, enable_range_opt,
+                                          enable_wildcard);
+      zvec_field_schema_set_index_params(field, cloned_params);
+      zvec_index_params_destroy(cloned_params);
+    }
   }
 
   return field;
@@ -812,23 +825,23 @@ ZVecFieldSchema *zvec_test_create_scalar_field(
 ZVecFieldSchema *zvec_test_create_vector_field(
     const char *name, ZVecDataType data_type, uint32_t dimension, bool nullable,
     const ZVecIndexParams *vector_index_params) {
-  ZVecFieldSchema *field = (ZVecFieldSchema *)malloc(sizeof(ZVecFieldSchema));
+  // Use the public API to create the field
+  ZVecFieldSchema *field =
+      zvec_field_schema_create(name, data_type, nullable, dimension);
   if (!field) return NULL;
 
-  field->name = (ZVecString *)malloc(sizeof(ZVecString));
-  if (!field->name) {
-    free(field);
-    return NULL;
-  }
-  field->name->data = name ? strdup(name) : NULL;
-  field->name->length = name ? strlen(name) : 0;
-  field->name->capacity = name ? strlen(name) + 1 : 0;
-  field->data_type = data_type;
-  field->nullable = nullable;
-  field->dimension = dimension;
-  field->has_index = (vector_index_params != NULL);
   if (vector_index_params) {
-    field->index_params = *vector_index_params;
+    // Clone the index params using setter API
+    ZVecIndexType type = zvec_index_params_get_type(vector_index_params);
+    ZVecIndexParams *cloned_params = zvec_index_params_create(type);
+    if (cloned_params) {
+      int m, ef_construction;
+      zvec_index_params_get_hnsw_params(vector_index_params, &m,
+                                        &ef_construction);
+      zvec_index_params_set_hnsw_params(cloned_params, m, ef_construction);
+      zvec_field_schema_set_index_params(field, cloned_params);
+      zvec_index_params_destroy(cloned_params);
+    }
   }
 
   return field;
@@ -837,23 +850,23 @@ ZVecFieldSchema *zvec_test_create_vector_field(
 ZVecFieldSchema *zvec_test_create_sparse_vector_field(
     const char *name, ZVecDataType data_type, bool nullable,
     const ZVecIndexParams *vector_index_params) {
-  ZVecFieldSchema *field = (ZVecFieldSchema *)malloc(sizeof(ZVecFieldSchema));
+  // Use the public API to create the field
+  ZVecFieldSchema *field =
+      zvec_field_schema_create(name, data_type, nullable, 0);
   if (!field) return NULL;
 
-  field->name = (ZVecString *)malloc(sizeof(ZVecString));
-  if (!field->name) {
-    free(field);
-    return NULL;
-  }
-  field->name->data = name ? strdup(name) : NULL;
-  field->name->length = name ? strlen(name) : 0;
-  field->name->capacity = name ? strlen(name) + 1 : 0;
-  field->data_type = data_type;
-  field->nullable = nullable;
-  field->dimension = 0;
-  field->has_index = (vector_index_params != NULL);
   if (vector_index_params) {
-    field->index_params = *vector_index_params;
+    // Clone the index params using setter API
+    ZVecIndexType type = zvec_index_params_get_type(vector_index_params);
+    ZVecIndexParams *cloned_params = zvec_index_params_create(type);
+    if (cloned_params) {
+      int m, ef_construction;
+      zvec_index_params_get_hnsw_params(vector_index_params, &m,
+                                        &ef_construction);
+      zvec_index_params_set_hnsw_params(cloned_params, m, ef_construction);
+      zvec_field_schema_set_index_params(field, cloned_params);
+      zvec_index_params_destroy(cloned_params);
+    }
   }
 
   return field;
@@ -863,21 +876,8 @@ ZVecFieldSchema *zvec_test_create_sparse_vector_field(
 // Memory Management Helper Functions Implementation
 // =============================================================================
 
-void zvec_test_free_field_schemas(ZVecFieldSchema *fields, size_t count) {
-  if (!fields) return;
-
-  for (size_t i = 0; i < count; i++) {
-    if (fields[i].name) {
-      if (fields[i].name->data) {
-        free(fields[i].name->data);
-      }
-      free(fields[i].name);
-    }
-    // Note: index_params is now an embedded value, not a pointer
-    // It will be freed automatically when the struct is freed
-  }
-  free(fields);
-}
+// Note: zvec_test_free_field_schemas is deprecated.
+// Use zvec_field_schema_destroy() to free individual field schemas.
 
 void zvec_test_free_strings(char **strings, size_t count) {
   if (!strings) return;

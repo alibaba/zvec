@@ -70,6 +70,16 @@
     SET_LAST_ERROR(ZVEC_ERROR_UNKNOWN, std::string("Exception: ") + e.what()); \
   }
 
+// For functions returning ZVecErrorCode - complete try-catch wrapper
+#define ZVEC_TRY_BEGIN_CODE ZVEC_TRY_BEGIN_VOID
+#define ZVEC_CATCH_END_CODE(code_on_error)                                     \
+  }                                                                            \
+  catch (const std::exception &e) {                                            \
+    SET_LAST_ERROR(ZVEC_ERROR_UNKNOWN, std::string("Exception: ") + e.what()); \
+    return code_on_error;                                                      \
+  }                                                                            \
+  return ZVEC_OK;
+
 // For functions returning pointer - complete try-catch wrapper
 // Usage: ZVEC_TRY_RETURN_NULL("error msg", code...)
 // Note: Use variadic macro to handle commas in template arguments
@@ -359,6 +369,37 @@ int zvec_string_compare(const ZVecString *str1, const ZVecString *str2) {
 // Configuration-related functions implementation
 // =============================================================================
 
+// Internal structure - Console log configuration
+struct ZVecConsoleLogConfig {
+  ZVecLogLevel level;
+};
+
+// Internal structure - File log configuration
+struct ZVecFileLogConfig {
+  ZVecLogLevel level;
+  ZVecString *dir;
+  ZVecString *basename;
+  uint32_t file_size;
+  uint32_t overdue_days;
+};
+
+// Internal structure - Configuration data
+struct ZVecConfigData {
+  uint64_t memory_limit_bytes;
+
+  // log
+  ZVecLogType log_type;
+  void *log_config;  // ZVecConsoleLogConfig* or ZVecFileLogConfig*
+
+  // query
+  uint32_t query_thread_count;
+  float invert_to_forward_scan_ratio;
+  float brute_force_by_keys_ratio;
+
+  // optimize
+  uint32_t optimize_thread_count;
+};
+
 ZVecConsoleLogConfig *zvec_config_console_log_create(ZVecLogLevel level) {
   ZVecConsoleLogConfig *config =
       static_cast<ZVecConsoleLogConfig *>(malloc(sizeof(ZVecConsoleLogConfig)));
@@ -391,28 +432,156 @@ ZVecFileLogConfig *zvec_config_file_log_create(ZVecLogLevel level,
   }
 
   config->level = level;
-  ZVecString *dir_str = zvec_string_create(dir);
-  ZVecString *basename_str = zvec_string_create(basename);
+  config->dir = zvec_string_create(dir);
+  config->basename = zvec_string_create(basename);
 
-  if (!dir_str || !basename_str) {
-    if (dir_str) zvec_free_string(dir_str);
-    if (basename_str) zvec_free_string(basename_str);
+  if (!config->dir || !config->basename) {
+    if (config->dir) zvec_free_string(config->dir);
+    if (config->basename) zvec_free_string(config->basename);
     free(config);
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
                    "Failed to create strings for file log config");
     return nullptr;
   }
 
-  config->dir = *dir_str;
-  config->basename = *basename_str;
   config->file_size = file_size;
   config->overdue_days = overdue_days;
 
-  // Free the temporary string wrappers (data is copied by value)
-  free(dir_str);
-  free(basename_str);
-
   return config;
+}
+
+void zvec_config_console_log_destroy(ZVecConsoleLogConfig *config) {
+  free(const_cast<ZVecConsoleLogConfig *>(config));
+}
+
+void zvec_config_file_log_destroy(ZVecFileLogConfig *config) {
+  if (config) {
+    if (config->dir) zvec_free_string(config->dir);
+    if (config->basename) zvec_free_string(config->basename);
+    free(const_cast<ZVecFileLogConfig *>(config));
+  }
+}
+
+ZVecLogLevel zvec_config_console_log_get_level(
+    const ZVecConsoleLogConfig *config) {
+  if (!config) {
+    return ZVEC_LOG_LEVEL_WARN;
+  }
+  return config->level;
+}
+
+ZVecErrorCode zvec_config_console_log_set_level(ZVecConsoleLogConfig *config,
+                                                ZVecLogLevel level) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  config->level = level;
+  return ZVEC_OK;
+}
+
+ZVecLogLevel zvec_config_file_log_get_level(const ZVecFileLogConfig *config) {
+  if (!config) {
+    return ZVEC_LOG_LEVEL_WARN;
+  }
+  return config->level;
+}
+
+ZVecErrorCode zvec_config_file_log_set_level(ZVecFileLogConfig *config,
+                                             ZVecLogLevel level) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  config->level = level;
+  return ZVEC_OK;
+}
+
+const char *zvec_config_file_log_get_dir(const ZVecFileLogConfig *config) {
+  if (!config || !config->dir) {
+    return nullptr;
+  }
+  return config->dir->data;
+}
+
+ZVecErrorCode zvec_config_file_log_set_dir(ZVecFileLogConfig *config,
+                                           const char *dir) {
+  if (!config || !dir) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Config or dir pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (config->dir) {
+    zvec_free_string(config->dir);
+  }
+  config->dir = zvec_string_create(dir);
+  if (!config->dir) {
+    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
+                   "Failed to create dir string");
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+  return ZVEC_OK;
+}
+
+const char *zvec_config_file_log_get_basename(const ZVecFileLogConfig *config) {
+  if (!config || !config->basename) {
+    return nullptr;
+  }
+  return config->basename->data;
+}
+
+ZVecErrorCode zvec_config_file_log_set_basename(ZVecFileLogConfig *config,
+                                                const char *basename) {
+  if (!config || !basename) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Config or basename pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (config->basename) {
+    zvec_free_string(config->basename);
+  }
+  config->basename = zvec_string_create(basename);
+  if (!config->basename) {
+    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
+                   "Failed to create basename string");
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+  return ZVEC_OK;
+}
+
+uint32_t zvec_config_file_log_get_file_size(const ZVecFileLogConfig *config) {
+  if (!config) {
+    return 0;
+  }
+  return config->file_size;
+}
+
+ZVecErrorCode zvec_config_file_log_set_file_size(ZVecFileLogConfig *config,
+                                                 uint32_t file_size) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  config->file_size = file_size;
+  return ZVEC_OK;
+}
+
+uint32_t zvec_config_file_log_get_overdue_days(
+    const ZVecFileLogConfig *config) {
+  if (!config) {
+    return 0;
+  }
+  return config->overdue_days;
+}
+
+ZVecErrorCode zvec_config_file_log_set_overdue_days(ZVecFileLogConfig *config,
+                                                    uint32_t days) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  config->overdue_days = days;
+  return ZVEC_OK;
 }
 
 ZVecConfigData *zvec_config_data_create(void) {
@@ -424,6 +593,7 @@ ZVecConfigData *zvec_config_data_create(void) {
     return nullptr;
   }
 
+  // Create default console log config
   ZVecConsoleLogConfig *log_config =
       zvec_config_console_log_create(ZVEC_LOG_LEVEL_WARN);
   if (!log_config) {
@@ -447,55 +617,54 @@ ZVecConfigData *zvec_config_data_create(void) {
   return config;
 }
 
-void zvec_config_console_log_destroy(ZVecConsoleLogConfig *config) {
-  free(config);
-}
-
-void zvec_config_file_log_destroy(ZVecFileLogConfig *config) {
+void zvec_config_data_destroy(ZVecConfigData *config) {
   if (config) {
-    if (config->dir.data) free(config->dir.data);
-    if (config->basename.data) free(config->basename.data);
+    if (config->log_config) {
+      if (config->log_type == ZVEC_LOG_TYPE_CONSOLE) {
+        zvec_config_console_log_destroy(
+            static_cast<ZVecConsoleLogConfig *>(config->log_config));
+      } else {
+        zvec_config_file_log_destroy(
+            static_cast<ZVecFileLogConfig *>(config->log_config));
+      }
+    }
     free(config);
   }
-}
-
-void zvec_config_data_destroy(ZVecConfigData *config) {
-  if (config->log_config) {
-    if (config->log_type == ZVEC_LOG_TYPE_CONSOLE) {
-      zvec_config_console_log_destroy(
-          (ZVecConsoleLogConfig *)config->log_config);
-    } else {
-      zvec_config_file_log_destroy((ZVecFileLogConfig *)config->log_config);
-    }
-  }
-  free(config);
 }
 
 ZVecErrorCode zvec_config_data_set_memory_limit(ZVecConfigData *config,
                                                 uint64_t memory_limit_bytes) {
   if (!config) {
-    set_last_error("Config data pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   config->memory_limit_bytes = memory_limit_bytes;
   return ZVEC_OK;
+}
+
+uint64_t zvec_config_data_get_memory_limit(const ZVecConfigData *config) {
+  if (!config) {
+    return 0;
+  }
+  return config->memory_limit_bytes;
 }
 
 ZVecErrorCode zvec_config_data_set_log_config(ZVecConfigData *config,
                                               ZVecLogType log_type,
                                               void *log_config) {
   if (!config || !log_config) {
-    set_last_error("Config data pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Config or log_config pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
   if (config->log_config) {
     if (config->log_type == ZVEC_LOG_TYPE_CONSOLE) {
       zvec_config_console_log_destroy(
-          (ZVecConsoleLogConfig *)config->log_config);
+          static_cast<ZVecConsoleLogConfig *>(config->log_config));
     } else {
-      zvec_config_file_log_destroy((ZVecFileLogConfig *)config->log_config);
+      zvec_config_file_log_destroy(
+          static_cast<ZVecFileLogConfig *>(config->log_config));
     }
   }
 
@@ -504,26 +673,98 @@ ZVecErrorCode zvec_config_data_set_log_config(ZVecConfigData *config,
   return ZVEC_OK;
 }
 
+ZVecLogType zvec_config_data_get_log_type(const ZVecConfigData *config) {
+  if (!config) {
+    return ZVEC_LOG_TYPE_CONSOLE;
+  }
+  return config->log_type;
+}
+
+ZVecConsoleLogConfig *zvec_config_data_get_console_log_config(
+    const ZVecConfigData *config) {
+  if (!config || config->log_type != ZVEC_LOG_TYPE_CONSOLE) {
+    return nullptr;
+  }
+  return static_cast<ZVecConsoleLogConfig *>(config->log_config);
+}
+
+ZVecFileLogConfig *zvec_config_data_get_file_log_config(
+    const ZVecConfigData *config) {
+  if (!config || config->log_type != ZVEC_LOG_TYPE_FILE) {
+    return nullptr;
+  }
+  return static_cast<ZVecFileLogConfig *>(config->log_config);
+}
+
 ZVecErrorCode zvec_config_data_set_query_thread_count(ZVecConfigData *config,
                                                       uint32_t thread_count) {
   if (!config) {
-    set_last_error("Config data pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   config->query_thread_count = thread_count;
   return ZVEC_OK;
+}
+
+uint32_t zvec_config_data_get_query_thread_count(const ZVecConfigData *config) {
+  if (!config) {
+    return 1;
+  }
+  return config->query_thread_count;
+}
+
+ZVecErrorCode zvec_config_data_set_invert_to_forward_scan_ratio(
+    ZVecConfigData *config, float ratio) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  config->invert_to_forward_scan_ratio = ratio;
+  return ZVEC_OK;
+}
+
+float zvec_config_data_get_invert_to_forward_scan_ratio(
+    const ZVecConfigData *config) {
+  if (!config) {
+    return 0.0f;
+  }
+  return config->invert_to_forward_scan_ratio;
+}
+
+ZVecErrorCode zvec_config_data_set_brute_force_by_keys_ratio(
+    ZVecConfigData *config, float ratio) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  config->brute_force_by_keys_ratio = ratio;
+  return ZVEC_OK;
+}
+
+float zvec_config_data_get_brute_force_by_keys_ratio(
+    const ZVecConfigData *config) {
+  if (!config) {
+    return 0.0f;
+  }
+  return config->brute_force_by_keys_ratio;
 }
 
 ZVecErrorCode zvec_config_data_set_optimize_thread_count(
     ZVecConfigData *config, uint32_t thread_count) {
   if (!config) {
-    set_last_error("Config data pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   config->optimize_thread_count = thread_count;
   return ZVEC_OK;
+}
+
+uint32_t zvec_config_data_get_optimize_thread_count(
+    const ZVecConfigData *config) {
+  if (!config) {
+    return 1;
+  }
+  return config->optimize_thread_count;
 }
 
 
@@ -545,45 +786,56 @@ ZVecErrorCode zvec_initialize(const ZVecConfigData *config) {
       zvec::GlobalConfig::ConfigData cpp_config{};
 
       if (config) {
-        cpp_config.memory_limit_bytes = config->memory_limit_bytes;
-        cpp_config.query_thread_count = config->query_thread_count;
+        cpp_config.memory_limit_bytes =
+            zvec_config_data_get_memory_limit(config);
+        cpp_config.query_thread_count =
+            zvec_config_data_get_query_thread_count(config);
         cpp_config.invert_to_forward_scan_ratio =
-            config->invert_to_forward_scan_ratio;
+            zvec_config_data_get_invert_to_forward_scan_ratio(config);
         cpp_config.brute_force_by_keys_ratio =
-            config->brute_force_by_keys_ratio;
-        cpp_config.optimize_thread_count = config->optimize_thread_count;
+            zvec_config_data_get_brute_force_by_keys_ratio(config);
+        cpp_config.optimize_thread_count =
+            zvec_config_data_get_optimize_thread_count(config);
 
         // Set log configuration
-        if (config->log_config) {
-          std::shared_ptr<zvec::GlobalConfig::LogConfig> log_config;
+        void *log_config = zvec_config_data_get_console_log_config(config);
+        if (!log_config) {
+          log_config = zvec_config_data_get_file_log_config(config);
+        }
 
-          switch (config->log_type) {
+        if (log_config) {
+          std::shared_ptr<zvec::GlobalConfig::LogConfig> cpp_log_config;
+
+          switch (zvec_config_data_get_log_type(config)) {
             case ZVEC_LOG_TYPE_CONSOLE: {
               ZVecConsoleLogConfig *console_config =
-                  (ZVecConsoleLogConfig *)config->log_config;
+                  static_cast<ZVecConsoleLogConfig *>(log_config);
               auto console_level = static_cast<zvec::GlobalConfig::LogLevel>(
-                  console_config->level);
-              log_config =
+                  zvec_config_console_log_get_level(console_config));
+              cpp_log_config =
                   std::make_shared<zvec::GlobalConfig::ConsoleLogConfig>(
                       console_level);
               break;
             }
             case ZVEC_LOG_TYPE_FILE: {
               ZVecFileLogConfig *file_config =
-                  (ZVecFileLogConfig *)config->log_config;
-              auto file_level =
-                  static_cast<zvec::GlobalConfig::LogLevel>(file_config->level);
-              std::string dir(file_config->dir.data, file_config->dir.length);
-              std::string basename(file_config->basename.data,
-                                   file_config->basename.length);
-              log_config = std::make_shared<zvec::GlobalConfig::FileLogConfig>(
-                  file_level, dir, basename);
+                  static_cast<ZVecFileLogConfig *>(log_config);
+              auto file_level = static_cast<zvec::GlobalConfig::LogLevel>(
+                  zvec_config_file_log_get_level(file_config));
+              std::string dir(zvec_config_file_log_get_dir(file_config));
+              std::string basename(
+                  zvec_config_file_log_get_basename(file_config));
+              cpp_log_config =
+                  std::make_shared<zvec::GlobalConfig::FileLogConfig>(
+                      file_level, dir, basename,
+                      zvec_config_file_log_get_file_size(file_config),
+                      zvec_config_file_log_get_overdue_days(file_config));
               break;
             }
             default:
               throw std::runtime_error("Unknown log type");
           }
-          cpp_config.log_config = log_config;
+          cpp_config.log_config = cpp_log_config;
         }
       } else {
         // Initialize with default configuration
@@ -788,50 +1040,42 @@ static zvec::QuantizeType convert_quantize_type(ZVecQuantizeType zvec_type) {
   return static_cast<zvec::QuantizeType>(zvec_type);
 }
 
+// Forward declaration: convert C index params to C++
+static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
+    const ZVecIndexParams *params);
+
 // Helper function: set field index params
 static zvec::Status set_field_index_params(zvec::FieldSchema::Ptr &field_schema,
                                            const ZVecFieldSchema *zvec_field) {
-  if (!zvec_field->has_index) {
+  if (!zvec_field_schema_has_index(zvec_field)) {
     return zvec::Status::OK();
   }
 
-  const ZVecIndexParams *params = &zvec_field->index_params;
+  // Get the index params using getter - we need to access internal struct
+  // For this internal function, we can access the struct members since it's in
+  // the implementation We'll add a friend-like internal getter
+  ZVecIndexParams *index_params = nullptr;
+  // Use a hack to get the index_params - cast to access internal member
+  // This is safe because we're in the implementation file
+  struct InternalFieldSchema {
+    ZVecString *name;
+    ZVecDataType data_type;
+    bool nullable;
+    uint32_t dimension;
+    ZVecIndexParams *index_params;
+    bool has_index;
+  };
+  index_params =
+      reinterpret_cast<const InternalFieldSchema *>(zvec_field)->index_params;
 
-  switch (params->index_type) {
-    case ZVEC_INDEX_TYPE_HNSW: {
-      auto metric = convert_metric_type(params->metric_type);
-      auto quantize = convert_quantize_type(params->quantize_type);
-      auto index_params = std::make_shared<zvec::HnswIndexParams>(
-          metric, params->hnsw.m, params->hnsw.ef_construction, quantize);
-      field_schema->set_index_params(index_params);
-      break;
-    }
-    case ZVEC_INDEX_TYPE_FLAT: {
-      auto metric = convert_metric_type(params->metric_type);
-      auto quantize = convert_quantize_type(params->quantize_type);
-      auto index_params =
-          std::make_shared<zvec::FlatIndexParams>(metric, quantize);
-      field_schema->set_index_params(index_params);
-      break;
-    }
-    case ZVEC_INDEX_TYPE_INVERT: {
-      auto index_params = std::make_shared<zvec::InvertIndexParams>(
-          params->invert.enable_range_optimization,
-          params->invert.enable_extended_wildcard);
-      field_schema->set_index_params(index_params);
-      break;
-    }
-    case ZVEC_INDEX_TYPE_IVF: {
-      auto metric = convert_metric_type(params->metric_type);
-      auto quantize = convert_quantize_type(params->quantize_type);
-      auto index_params = std::make_shared<zvec::IVFIndexParams>(
-          metric, params->ivf.n_list, params->ivf.n_iters, params->ivf.use_soar,
-          quantize);
-      field_schema->set_index_params(index_params);
-      break;
-    }
-    default:
-      break;
+  if (!index_params) {
+    return zvec::Status::OK();
+  }
+
+  // Use the conversion helper function
+  auto cpp_params = convert_c_index_params_to_cpp(index_params);
+  if (cpp_params) {
+    field_schema->set_index_params(cpp_params);
   }
 
   return zvec::Status::OK();
@@ -855,6 +1099,18 @@ ZVecStringArray *zvec_string_array_create(size_t count) {
   array->count = count;
   array->strings = (ZVecString *)malloc(sizeof(ZVecString) * count);
   memset(array->strings, 0, sizeof(ZVecString) * count);
+  return array;
+}
+
+ZVecStringArray *zvec_string_array_create_from_strings(const char **strings,
+                                                       size_t count) {
+  if (!strings || count == 0) {
+    return nullptr;
+  }
+  ZVecStringArray *array = zvec_string_array_create(count);
+  for (size_t i = 0; i < count; ++i) {
+    zvec_string_array_add(array, i, strings[i]);
+  }
   return array;
 }
 
@@ -1006,88 +1262,481 @@ void zvec_free_field_schema(ZVecFieldSchema *field_schema) {
 }
 
 // =============================================================================
-// Index parameters management interface implementation
+// Index parameters management interface implementation (deprecated)
+// These are deprecated in favor of the opaque pointer API
 // =============================================================================
 
+// Deprecated: Use zvec_index_params_create() instead
 void zvec_index_params_init(ZVecIndexParams *params, ZVecIndexType index_type,
                             ZVecMetricType metric_type) {
+  // This function is deprecated and should not be used
+  // Use zvec_index_params_create() instead
+  SET_LAST_ERROR(
+      ZVEC_ERROR_NOT_SUPPORTED,
+      "zvec_index_params_init is deprecated. Use zvec_index_params_create()");
+}
+
+// Deprecated: Use zvec_index_params_set_hnsw_params() instead
+void zvec_index_params_set_hnsw(ZVecIndexParams *params, int m,
+                                int ef_construction, int ef_search) {
+  SET_LAST_ERROR(ZVEC_ERROR_NOT_SUPPORTED,
+                 "zvec_index_params_set_hnsw is deprecated. Use "
+                 "zvec_index_params_set_hnsw_params()");
+}
+
+// Deprecated: Use zvec_index_params_set_ivf_params() instead
+void zvec_index_params_set_ivf(ZVecIndexParams *params, int n_list, int n_iters,
+                               bool use_soar, int n_probe) {
+  SET_LAST_ERROR(ZVEC_ERROR_NOT_SUPPORTED,
+                 "zvec_index_params_set_ivf is deprecated. Use "
+                 "zvec_index_params_set_ivf_params()");
+}
+
+// Deprecated: Use zvec_index_params_set_invert_params() instead
+void zvec_index_params_set_invert(ZVecIndexParams *params,
+                                  bool enable_range_opt, bool enable_wildcard) {
+  SET_LAST_ERROR(ZVEC_ERROR_NOT_SUPPORTED,
+                 "zvec_index_params_set_invert is deprecated. Use "
+                 "zvec_index_params_set_invert_params()");
+}
+
+// =============================================================================
+// ZVecIndexParams opaque pointer implementation
+// =============================================================================
+
+// Internal structure - holds C++ shared_ptr<IndexParams>
+struct ZVecIndexParams {
+  std::shared_ptr<zvec::IndexParams> cpp_params;
+  ZVecIndexType index_type;
+  ZVecMetricType metric_type;
+  ZVecQuantizeType quantize_type;
+
+  // Type-specific storage (only one is active based on index_type)
+  struct {
+    bool enable_range_optimization;
+    bool enable_extended_wildcard;
+  } invert;
+
+  struct {
+    int m;
+    int ef_construction;
+  } hnsw;
+
+  struct {
+    int n_list;
+    int n_iters;
+    bool use_soar;
+  } ivf;
+};
+
+// =============================================================================
+// ZVecFieldSchema opaque pointer implementation
+// =============================================================================
+
+// Internal structure - field schema with private members
+struct ZVecFieldSchema {
+  ZVecString *name;
+  ZVecDataType data_type;
+  bool nullable;
+  uint32_t dimension;
+  ZVecIndexParams *index_params;  // Owned by field schema
+  bool has_index;
+};
+
+// Internal structure - collection schema with private members
+struct ZVecCollectionSchema {
+  ZVecString *name;
+  ZVecFieldSchema **fields;
+  size_t field_count;
+  size_t field_capacity;
+  uint64_t max_doc_count_per_segment;
+};
+
+// =============================================================================
+// Configuration structures opaque pointer implementation
+// =============================================================================
+
+// Internal structure - QueryParams (base)
+struct ZVecQueryParams {
+  ZVecIndexType index_type;
+  float radius;
+  bool is_linear;
+  bool is_using_refiner;
+};
+
+// Internal structure - HnswQueryParams
+struct ZVecHnswQueryParams {
+  ZVecQueryParams base;
+  int ef;
+};
+
+// Internal structure - IVFQueryParams
+struct ZVecIVFQueryParams {
+  ZVecQueryParams base;
+  int nprobe;
+  float scale_factor;
+};
+
+// Internal structure - FlatQueryParams
+struct ZVecFlatQueryParams {
+  ZVecQueryParams base;
+  float scale_factor;
+};
+
+// Internal structure - VectorQuery
+struct ZVecVectorQuery {
+  int topk;
+  ZVecString *field_name;
+  ZVecByteArray query_vector;
+  ZVecByteArray query_sparse_indices;
+  ZVecByteArray query_sparse_values;
+  ZVecString *filter;
+  bool include_vector;
+  bool include_doc_id;
+  ZVecStringArray *output_fields;
+  void *query_params;         // Type-specific params (HnswQueryParams*,
+                              // IVFQueryParams*, etc.)
+  ZVecIndexType params_type;  // To track the type of query_params
+};
+
+// Internal structure - GroupByVectorQuery
+struct ZVecGroupByVectorQuery {
+  ZVecString *field_name;
+  ZVecByteArray query_vector;
+  ZVecByteArray query_sparse_indices;
+  ZVecByteArray query_sparse_values;
+  ZVecString *filter;
+  bool include_vector;
+  ZVecStringArray *output_fields;
+  ZVecString *group_by_field_name;
+  uint32_t group_count;
+  uint32_t group_topk;
+  void *query_params;         // Type-specific params
+  ZVecIndexType params_type;  // To track the type of query_params
+};
+
+// Internal structure - CollectionOptions
+struct ZVecCollectionOptions {
+  bool enable_mmap;
+  size_t max_buffer_size;
+  bool read_only;
+  uint64_t max_doc_count_per_segment;
+};
+
+// Internal structure - CollectionStats
+struct ZVecCollectionStats {
+  uint64_t doc_count;
+  ZVecString **index_names;
+  float *index_completeness;
+  size_t index_count;
+};
+
+ZVecIndexParams *zvec_index_params_create(ZVecIndexType index_type) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create ZVecIndexParams",
+      ZVecIndexParams *params = new ZVecIndexParams();
+      params->index_type = index_type;
+      params->metric_type = ZVEC_METRIC_TYPE_L2;  // Default
+      params->quantize_type = ZVEC_QUANTIZE_TYPE_UNDEFINED;
+
+      // Initialize type-specific params with defaults
+      memset(&params->invert, 0, sizeof(params->invert));
+      memset(&params->hnsw, 0, sizeof(params->hnsw));
+      memset(&params->ivf, 0, sizeof(params->ivf));
+
+      // Set defaults based on index type
+      switch (index_type) {
+        case ZVEC_INDEX_TYPE_INVERT:
+          params->invert.enable_range_optimization = true;
+          params->invert.enable_extended_wildcard = false;
+          break;
+        case ZVEC_INDEX_TYPE_HNSW:
+          params->hnsw.m = 16;
+          params->hnsw.ef_construction = 200;
+          break;
+        case ZVEC_INDEX_TYPE_IVF:
+          params->ivf.n_list = 100;
+          params->ivf.n_iters = 10;
+          params->ivf.use_soar = false;
+          break;
+        case ZVEC_INDEX_TYPE_FLAT:
+        default:
+          break;
+      }
+
+      return params;)
+
+  return nullptr;
+}
+
+void zvec_index_params_destroy(ZVecIndexParams *params) {
+  if (params) {
+    delete params;
+  }
+}
+
+ZVecErrorCode zvec_index_params_set_metric_type(ZVecIndexParams *params,
+                                                ZVecMetricType metric_type) {
   if (!params) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Index params pointer cannot be null");
-    return;
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
-  // Zero-initialize the entire structure
-  memset(params, 0, sizeof(ZVecIndexParams));
-
-  params->index_type = index_type;
   params->metric_type = metric_type;
-  params->quantize_type = ZVEC_QUANTIZE_TYPE_UNDEFINED;
-
-  // Set default values based on index type
-  switch (index_type) {
-    case ZVEC_INDEX_TYPE_INVERT:
-      params->invert.enable_range_optimization = false;
-      params->invert.enable_extended_wildcard = false;
-      break;
-
-    case ZVEC_INDEX_TYPE_HNSW:
-      params->hnsw.m = 16;
-      params->hnsw.ef_construction = 200;
-      params->hnsw.ef_search = 50;
-      break;
-
-    case ZVEC_INDEX_TYPE_FLAT:
-      // No additional parameters for Flat
-      break;
-
-    case ZVEC_INDEX_TYPE_IVF:
-      params->ivf.n_list = 100;
-      params->ivf.n_iters = 10;
-      params->ivf.use_soar = false;
-      params->ivf.n_probe = 10;
-      break;
-
-    default:
-      SET_LAST_ERROR(ZVEC_ERROR_NOT_SUPPORTED, "Unsupported index type");
-      break;
-  }
+  return ZVEC_OK;
 }
 
-void zvec_index_params_set_hnsw(ZVecIndexParams *params, int m,
-                                int ef_construction, int ef_search) {
+ZVecMetricType zvec_index_params_get_metric_type(
+    const ZVecIndexParams *params) {
+  if (!params) {
+    return ZVEC_METRIC_TYPE_L2;  // Default
+  }
+  return params->metric_type;
+}
+
+ZVecErrorCode zvec_index_params_set_quantize_type(
+    ZVecIndexParams *params, ZVecQuantizeType quantize_type) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Index params pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  params->quantize_type = quantize_type;
+  return ZVEC_OK;
+}
+
+ZVecQuantizeType zvec_index_params_get_quantize_type(
+    const ZVecIndexParams *params) {
+  if (!params) {
+    return ZVEC_QUANTIZE_TYPE_UNDEFINED;
+  }
+  return params->quantize_type;
+}
+
+ZVecIndexType zvec_index_params_get_type(const ZVecIndexParams *params) {
+  if (!params) {
+    return ZVEC_INDEX_TYPE_FLAT;  // Default
+  }
+  return params->index_type;
+}
+
+ZVecErrorCode zvec_index_params_set_hnsw_params(ZVecIndexParams *params, int m,
+                                                int ef_construction) {
   if (!params || params->index_type != ZVEC_INDEX_TYPE_HNSW) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Invalid params or not HNSW index type");
-    return;
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   params->hnsw.m = m;
   params->hnsw.ef_construction = ef_construction;
-  params->hnsw.ef_search = ef_search;
+  return ZVEC_OK;
 }
 
-void zvec_index_params_set_ivf(ZVecIndexParams *params, int n_list, int n_iters,
-                               bool use_soar, int n_probe) {
+ZVecErrorCode zvec_index_params_get_hnsw_params(const ZVecIndexParams *params,
+                                                int *out_m,
+                                                int *out_ef_construction) {
+  if (!params || params->index_type != ZVEC_INDEX_TYPE_HNSW) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not HNSW index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (out_m) *out_m = params->hnsw.m;
+  if (out_ef_construction) *out_ef_construction = params->hnsw.ef_construction;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_index_params_set_ivf_params(ZVecIndexParams *params,
+                                               int n_list, int n_iters,
+                                               bool use_soar) {
   if (!params || params->index_type != ZVEC_INDEX_TYPE_IVF) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Invalid params or not IVF index type");
-    return;
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   params->ivf.n_list = n_list;
   params->ivf.n_iters = n_iters;
   params->ivf.use_soar = use_soar;
-  params->ivf.n_probe = n_probe;
+  return ZVEC_OK;
 }
 
-void zvec_index_params_set_invert(ZVecIndexParams *params,
-                                  bool enable_range_opt, bool enable_wildcard) {
+ZVecErrorCode zvec_index_params_get_ivf_params(const ZVecIndexParams *params,
+                                               int *out_n_list,
+                                               int *out_n_iters,
+                                               bool *out_use_soar) {
+  if (!params || params->index_type != ZVEC_INDEX_TYPE_IVF) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not IVF index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (out_n_list) *out_n_list = params->ivf.n_list;
+  if (out_n_iters) *out_n_iters = params->ivf.n_iters;
+  if (out_use_soar) *out_use_soar = params->ivf.use_soar;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_index_params_set_invert_params(ZVecIndexParams *params,
+                                                  bool enable_range_opt,
+                                                  bool enable_wildcard) {
   if (!params || params->index_type != ZVEC_INDEX_TYPE_INVERT) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Invalid params or not INVERT index type");
-    return;
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   params->invert.enable_range_optimization = enable_range_opt;
   params->invert.enable_extended_wildcard = enable_wildcard;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_index_params_get_invert_params(const ZVecIndexParams *params,
+                                                  bool *out_enable_range_opt,
+                                                  bool *out_enable_wildcard) {
+  if (!params || params->index_type != ZVEC_INDEX_TYPE_INVERT) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not INVERT index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (out_enable_range_opt)
+    *out_enable_range_opt = params->invert.enable_range_optimization;
+  if (out_enable_wildcard)
+    *out_enable_wildcard = params->invert.enable_extended_wildcard;
+  return ZVEC_OK;
+}
+
+// Helper function to convert C++ IndexParams to C ZVecIndexParams
+static ZVecIndexParams *convert_cpp_index_params_to_c(
+    const std::shared_ptr<zvec::IndexParams> &cpp_params) {
+  if (!cpp_params) {
+    return nullptr;
+  }
+
+  ZVecIndexType c_type;
+  switch (cpp_params->type()) {
+    case zvec::IndexType::HNSW:
+      c_type = ZVEC_INDEX_TYPE_HNSW;
+      break;
+    case zvec::IndexType::IVF:
+      c_type = ZVEC_INDEX_TYPE_IVF;
+      break;
+    case zvec::IndexType::FLAT:
+      c_type = ZVEC_INDEX_TYPE_FLAT;
+      break;
+    case zvec::IndexType::INVERT:
+      c_type = ZVEC_INDEX_TYPE_INVERT;
+      break;
+    default:
+      c_type = ZVEC_INDEX_TYPE_FLAT;
+      break;
+  }
+
+  ZVecIndexParams *params = zvec_index_params_create(c_type);
+  if (!params) return nullptr;
+
+  params->cpp_params = cpp_params;
+
+  // Extract metric and quantize types from VectorIndexParams if applicable
+  if (cpp_params->is_vector_index_type()) {
+    auto *vec_params =
+        dynamic_cast<const zvec::VectorIndexParams *>(cpp_params.get());
+    if (vec_params) {
+      switch (vec_params->metric_type()) {
+        case zvec::MetricType::L2:
+          params->metric_type = ZVEC_METRIC_TYPE_L2;
+          break;
+        case zvec::MetricType::IP:
+          params->metric_type = ZVEC_METRIC_TYPE_IP;
+          break;
+        case zvec::MetricType::COSINE:
+          params->metric_type = ZVEC_METRIC_TYPE_COSINE;
+          break;
+        default:
+          params->metric_type = ZVEC_METRIC_TYPE_L2;
+          break;
+      }
+      // Note: quantize_type would need similar mapping if used
+    }
+  }
+
+  // Extract type-specific parameters
+  switch (c_type) {
+    case ZVEC_INDEX_TYPE_HNSW: {
+      auto *hnsw =
+          dynamic_cast<const zvec::HnswIndexParams *>(cpp_params.get());
+      if (hnsw) {
+        params->hnsw.m = hnsw->m();
+        params->hnsw.ef_construction = hnsw->ef_construction();
+      }
+      break;
+    }
+    case ZVEC_INDEX_TYPE_IVF: {
+      auto *ivf = dynamic_cast<const zvec::IVFIndexParams *>(cpp_params.get());
+      if (ivf) {
+        params->ivf.n_list = ivf->n_list();
+        params->ivf.n_iters = ivf->n_iters();
+        params->ivf.use_soar = ivf->use_soar();
+      }
+      break;
+    }
+    case ZVEC_INDEX_TYPE_INVERT: {
+      auto *invert =
+          dynamic_cast<const zvec::InvertIndexParams *>(cpp_params.get());
+      if (invert) {
+        params->invert.enable_range_optimization =
+            invert->enable_range_optimization();
+        params->invert.enable_extended_wildcard =
+            invert->enable_extended_wildcard();
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return params;
+}
+
+// Helper function to convert C ZVecIndexParams to C++ IndexParams
+static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
+    const ZVecIndexParams *params) {
+  if (!params) {
+    return nullptr;
+  }
+
+  zvec::MetricType metric = zvec::MetricType::L2;
+  switch (params->metric_type) {
+    case ZVEC_METRIC_TYPE_L2:
+      metric = zvec::MetricType::L2;
+      break;
+    case ZVEC_METRIC_TYPE_IP:
+      metric = zvec::MetricType::IP;
+      break;
+    case ZVEC_METRIC_TYPE_COSINE:
+      metric = zvec::MetricType::COSINE;
+      break;
+    default:
+      metric = zvec::MetricType::L2;
+      break;
+  }
+
+  zvec::QuantizeType quantize = zvec::QuantizeType::UNDEFINED;
+  // Add quantize type mapping if needed
+
+  switch (params->index_type) {
+    case ZVEC_INDEX_TYPE_HNSW:
+      return std::make_shared<zvec::HnswIndexParams>(
+          metric, params->hnsw.m, params->hnsw.ef_construction, quantize);
+    case ZVEC_INDEX_TYPE_IVF:
+      return std::make_shared<zvec::IVFIndexParams>(
+          metric, params->ivf.n_list, params->ivf.n_iters, params->ivf.use_soar,
+          quantize);
+    case ZVEC_INDEX_TYPE_FLAT:
+      return std::make_shared<zvec::FlatIndexParams>(metric, quantize);
+    case ZVEC_INDEX_TYPE_INVERT:
+      return std::make_shared<zvec::InvertIndexParams>(
+          params->invert.enable_range_optimization,
+          params->invert.enable_extended_wildcard);
+    default:
+      return std::make_shared<zvec::FlatIndexParams>(zvec::MetricType::L2);
+  }
 }
 
 // =============================================================================
@@ -1102,8 +1751,7 @@ ZVecFieldSchema *zvec_field_schema_create(const char *name,
     return nullptr;
   }
 
-  ZVecFieldSchema *schema =
-      static_cast<ZVecFieldSchema *>(malloc(sizeof(ZVecFieldSchema)));
+  ZVecFieldSchema *schema = new ZVecFieldSchema();
   if (!schema) {
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
                    "Failed to allocate memory for ZVecFieldSchema");
@@ -1112,7 +1760,7 @@ ZVecFieldSchema *zvec_field_schema_create(const char *name,
 
   schema->name = zvec_string_create(name);
   if (!schema->name) {
-    free(schema);
+    delete schema;
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
                    "Failed to create string for field name");
     return nullptr;
@@ -1121,7 +1769,7 @@ ZVecFieldSchema *zvec_field_schema_create(const char *name,
   schema->data_type = data_type;
   schema->nullable = nullable;
   schema->dimension = dimension;
-  memset(&schema->index_params, 0, sizeof(ZVecIndexParams));
+  schema->index_params = nullptr;
   schema->has_index = false;
 
   return schema;
@@ -1130,9 +1778,239 @@ ZVecFieldSchema *zvec_field_schema_create(const char *name,
 void zvec_field_schema_destroy(ZVecFieldSchema *schema) {
   if (schema) {
     zvec_free_string(schema->name);
-    // index_params is embedded, no need to free
-    free(schema);
+    if (schema->index_params) {
+      zvec_index_params_destroy(schema->index_params);
+    }
+    delete schema;
   }
+}
+
+// Getter functions
+const char *zvec_field_schema_get_name(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return nullptr;
+  }
+  return zvec_string_c_str(schema->name);
+}
+
+ZVecDataType zvec_field_schema_get_data_type(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return ZVEC_DATA_TYPE_UNDEFINED;
+  }
+  return schema->data_type;
+}
+
+bool zvec_field_schema_is_nullable(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return false;
+  }
+  return schema->nullable;
+}
+
+ZVecErrorCode zvec_field_schema_set_nullable(ZVecFieldSchema *schema,
+                                             bool nullable) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  schema->nullable = nullable;
+  return ZVEC_OK;
+}
+
+uint32_t zvec_field_schema_get_dimension(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return 0;
+  }
+  return schema->dimension;
+}
+
+ZVecErrorCode zvec_field_schema_set_dimension(ZVecFieldSchema *schema,
+                                              uint32_t dimension) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  schema->dimension = dimension;
+  return ZVEC_OK;
+}
+
+bool zvec_field_schema_has_index(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return false;
+  }
+  return schema->has_index;
+}
+
+ZVecIndexType zvec_field_schema_get_index_type(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return ZVEC_INDEX_TYPE_UNDEFINED;
+  }
+  if (!schema->index_params) {
+    return ZVEC_INDEX_TYPE_UNDEFINED;
+  }
+  return schema->index_params->index_type;
+}
+
+const ZVecIndexParams *zvec_field_schema_get_index_params(
+    const ZVecFieldSchema *schema) {
+  if (!schema) {
+    return nullptr;
+  }
+  return schema->index_params;
+}
+
+bool zvec_field_schema_is_vector_field(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return false;
+  }
+  ZVecDataType data_type = schema->data_type;
+  return (data_type == ZVEC_DATA_TYPE_VECTOR_FP32 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_FP64 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_FP16 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY32 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY64 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT4 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT8 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT16 ||
+          data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 ||
+          data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16);
+}
+
+bool zvec_field_schema_is_dense_vector(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return false;
+  }
+  ZVecDataType data_type = schema->data_type;
+  return (data_type == ZVEC_DATA_TYPE_VECTOR_FP32 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_FP64 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_FP16 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY32 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY64 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT4 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT8 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT16);
+}
+
+bool zvec_field_schema_is_sparse_vector(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return false;
+  }
+  ZVecDataType data_type = schema->data_type;
+  return (data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 ||
+          data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16);
+}
+
+bool zvec_field_schema_is_array_type(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return false;
+  }
+  ZVecDataType data_type = schema->data_type;
+  return (data_type == ZVEC_DATA_TYPE_ARRAY_BINARY ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_STRING ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_BOOL ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_INT32 ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_INT64 ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_UINT32 ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_UINT64 ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_FLOAT ||
+          data_type == ZVEC_DATA_TYPE_ARRAY_DOUBLE);
+}
+
+ZVecDataType zvec_field_schema_get_element_data_type(
+    const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return ZVEC_DATA_TYPE_UNDEFINED;
+  }
+  ZVecDataType data_type = schema->data_type;
+  switch (data_type) {
+    case ZVEC_DATA_TYPE_ARRAY_BINARY:
+      return ZVEC_DATA_TYPE_BINARY;
+    case ZVEC_DATA_TYPE_ARRAY_STRING:
+      return ZVEC_DATA_TYPE_STRING;
+    case ZVEC_DATA_TYPE_ARRAY_BOOL:
+      return ZVEC_DATA_TYPE_BOOL;
+    case ZVEC_DATA_TYPE_ARRAY_INT32:
+      return ZVEC_DATA_TYPE_INT32;
+    case ZVEC_DATA_TYPE_ARRAY_INT64:
+      return ZVEC_DATA_TYPE_INT64;
+    case ZVEC_DATA_TYPE_ARRAY_UINT32:
+      return ZVEC_DATA_TYPE_UINT32;
+    case ZVEC_DATA_TYPE_ARRAY_UINT64:
+      return ZVEC_DATA_TYPE_UINT64;
+    case ZVEC_DATA_TYPE_ARRAY_FLOAT:
+      return ZVEC_DATA_TYPE_FLOAT;
+    case ZVEC_DATA_TYPE_ARRAY_DOUBLE:
+      return ZVEC_DATA_TYPE_DOUBLE;
+    default:
+      return data_type;
+  }
+}
+
+bool zvec_field_schema_has_invert_index(const ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return false;
+  }
+  // Invert index is for non-vector fields with index
+  if (zvec_field_schema_is_vector_field(schema)) {
+    return false;
+  }
+  return schema->has_index && schema->index_params &&
+         schema->index_params->index_type == ZVEC_INDEX_TYPE_INVERT;
+}
+
+// Helper function to check if a data type is a vector type
+bool zvec_is_vector_data_type(ZVecDataType data_type) {
+  return (data_type == ZVEC_DATA_TYPE_VECTOR_FP32 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_FP64 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_FP16 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY32 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY64 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT4 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT8 ||
+          data_type == ZVEC_DATA_TYPE_VECTOR_INT16 ||
+          data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 ||
+          data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16);
+}
+
+ZVecErrorCode zvec_field_schema_clear_index(ZVecFieldSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Field schema pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  if (schema->index_params) {
+    zvec_index_params_destroy(schema->index_params);
+    schema->index_params = nullptr;
+  }
+  schema->has_index = false;
+  return ZVEC_OK;
 }
 
 ZVecErrorCode zvec_field_schema_set_index_params(
@@ -1144,76 +2022,283 @@ ZVecErrorCode zvec_field_schema_set_index_params(
   }
 
   if (!index_params) {
-    memset(&schema->index_params, 0, sizeof(ZVecIndexParams));
+    if (schema->index_params) {
+      zvec_index_params_destroy(schema->index_params);
+      schema->index_params = nullptr;
+    }
     schema->has_index = false;
     return ZVEC_OK;
   }
 
-  schema->index_params = *index_params;
-  schema->has_index = true;
+  // Clone the index_params (create a new copy)
+  if (schema->index_params) {
+    zvec_index_params_destroy(schema->index_params);
+  }
+  schema->index_params = zvec_index_params_create(index_params->index_type);
+  if (!schema->index_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
+                   "Failed to clone index params");
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
 
+  // Copy all fields using getter/setter API
+  ZVecErrorCode err = ZVEC_OK;
+  err = zvec_index_params_set_metric_type(schema->index_params,
+                                          index_params->metric_type);
+  if (err != ZVEC_OK) return err;
+
+  err = zvec_index_params_set_quantize_type(schema->index_params,
+                                            index_params->quantize_type);
+  if (err != ZVEC_OK) return err;
+
+  // Copy type-specific params
+  switch (index_params->index_type) {
+    case ZVEC_INDEX_TYPE_INVERT:
+      err = zvec_index_params_set_invert_params(
+          schema->index_params, index_params->invert.enable_range_optimization,
+          index_params->invert.enable_extended_wildcard);
+      break;
+    case ZVEC_INDEX_TYPE_HNSW:
+      err = zvec_index_params_set_hnsw_params(
+          schema->index_params, index_params->hnsw.m,
+          index_params->hnsw.ef_construction);
+      break;
+    case ZVEC_INDEX_TYPE_IVF:
+      err = zvec_index_params_set_ivf_params(
+          schema->index_params, index_params->ivf.n_list,
+          index_params->ivf.n_iters, index_params->ivf.use_soar);
+      break;
+    case ZVEC_INDEX_TYPE_FLAT:
+    default:
+      break;
+  }
+
+  if (err != ZVEC_OK) return err;
+
+  schema->has_index = true;
   return ZVEC_OK;
 }
 
 void zvec_field_schema_set_invert_index(ZVecFieldSchema *field_schema,
                                         const ZVecIndexParams *invert_params) {
   if (field_schema && invert_params) {
-    field_schema->index_params = *invert_params;
-    field_schema->index_params.index_type = ZVEC_INDEX_TYPE_INVERT;
-    field_schema->has_index = true;
+    if (field_schema->index_params) {
+      zvec_index_params_destroy(field_schema->index_params);
+    }
+    field_schema->index_params =
+        zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+    if (field_schema->index_params) {
+      field_schema->index_params->index_type = ZVEC_INDEX_TYPE_INVERT;
+      field_schema->index_params->metric_type = invert_params->metric_type;
+      field_schema->index_params->quantize_type = invert_params->quantize_type;
+      field_schema->index_params->invert.enable_range_optimization =
+          invert_params->invert.enable_range_optimization;
+      field_schema->index_params->invert.enable_extended_wildcard =
+          invert_params->invert.enable_extended_wildcard;
+      field_schema->has_index = true;
+    }
   }
 }
 
 void zvec_field_schema_set_hnsw_index(ZVecFieldSchema *field_schema,
                                       const ZVecIndexParams *hnsw_params) {
   if (field_schema && hnsw_params) {
-    field_schema->index_params = *hnsw_params;
-    field_schema->index_params.index_type = ZVEC_INDEX_TYPE_HNSW;
-    field_schema->has_index = true;
+    if (field_schema->index_params) {
+      zvec_index_params_destroy(field_schema->index_params);
+    }
+    field_schema->index_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+    if (field_schema->index_params) {
+      field_schema->index_params->index_type = ZVEC_INDEX_TYPE_HNSW;
+      field_schema->index_params->metric_type = hnsw_params->metric_type;
+      field_schema->index_params->quantize_type = hnsw_params->quantize_type;
+      field_schema->index_params->hnsw.m = hnsw_params->hnsw.m;
+      field_schema->index_params->hnsw.ef_construction =
+          hnsw_params->hnsw.ef_construction;
+      field_schema->has_index = true;
+    }
   }
 }
 
 void zvec_field_schema_set_flat_index(ZVecFieldSchema *field_schema,
                                       const ZVecIndexParams *flat_params) {
   if (field_schema && flat_params) {
-    field_schema->index_params = *flat_params;
-    field_schema->index_params.index_type = ZVEC_INDEX_TYPE_FLAT;
-    field_schema->has_index = true;
+    if (field_schema->index_params) {
+      zvec_index_params_destroy(field_schema->index_params);
+    }
+    field_schema->index_params = zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
+    if (field_schema->index_params) {
+      field_schema->index_params->index_type = ZVEC_INDEX_TYPE_FLAT;
+      field_schema->index_params->metric_type = flat_params->metric_type;
+      field_schema->index_params->quantize_type = flat_params->quantize_type;
+      field_schema->has_index = true;
+    }
   }
 }
 
 void zvec_field_schema_set_ivf_index(ZVecFieldSchema *field_schema,
                                      const ZVecIndexParams *ivf_params) {
   if (field_schema && ivf_params) {
-    field_schema->index_params = *ivf_params;
-    field_schema->index_params.index_type = ZVEC_INDEX_TYPE_IVF;
-    field_schema->has_index = true;
+    if (field_schema->index_params) {
+      zvec_index_params_destroy(field_schema->index_params);
+    }
+    field_schema->index_params = zvec_index_params_create(ZVEC_INDEX_TYPE_IVF);
+    if (field_schema->index_params) {
+      field_schema->index_params->index_type = ZVEC_INDEX_TYPE_IVF;
+      field_schema->index_params->metric_type = ivf_params->metric_type;
+      field_schema->index_params->quantize_type = ivf_params->quantize_type;
+      field_schema->index_params->ivf.n_list = ivf_params->ivf.n_list;
+      field_schema->index_params->ivf.n_iters = ivf_params->ivf.n_iters;
+      field_schema->index_params->ivf.use_soar = ivf_params->ivf.use_soar;
+      field_schema->has_index = true;
+    }
   }
 }
 
 static void zvec_field_schema_cleanup(ZVecFieldSchema *field_schema) {
   if (!field_schema) return;
 
-  // index_params is embedded, no need to free
   zvec_free_string(field_schema->name);
   field_schema->name = nullptr;
+  if (field_schema->index_params) {
+    zvec_index_params_destroy(field_schema->index_params);
+    field_schema->index_params = nullptr;
+  }
 }
 
 // =============================================================================
 // CollectionOptions management interface implementation
 // =============================================================================
 
-void zvec_collection_options_init_default(ZVecCollectionOptions *options) {
+// =============================================================================
+// CollectionOptions functions implementation
+// =============================================================================
+
+ZVecCollectionOptions *zvec_collection_options_create(void) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create ZVecCollectionOptions",
+      ZVecCollectionOptions *options = new ZVecCollectionOptions();
+      options->enable_mmap = true;
+      options->max_buffer_size = zvec::DEFAULT_MAX_BUFFER_SIZE;
+      options->read_only = false;
+      options->max_doc_count_per_segment = zvec::MAX_DOC_COUNT_PER_SEGMENT;
+      return options;)
+  return nullptr;
+}
+
+void zvec_collection_options_destroy(ZVecCollectionOptions *options) {
+  if (options) {
+    delete options;
+  }
+}
+
+ZVecErrorCode zvec_collection_options_set_enable_mmap(
+    ZVecCollectionOptions *options, bool enable) {
   if (!options) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Collection options pointer cannot be null");
-    return;
+                   "Collection options pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
+  options->enable_mmap = enable;
+  return ZVEC_OK;
+}
 
-  options->enable_mmap = true;
-  options->max_buffer_size = zvec::DEFAULT_MAX_BUFFER_SIZE;
-  options->read_only = false;
-  options->max_doc_count_per_segment = zvec::MAX_DOC_COUNT_PER_SEGMENT;
+bool zvec_collection_options_get_enable_mmap(
+    const ZVecCollectionOptions *options) {
+  if (!options) {
+    return true;  // Default
+  }
+  return options->enable_mmap;
+}
+
+ZVecErrorCode zvec_collection_options_set_max_buffer_size(
+    ZVecCollectionOptions *options, size_t size) {
+  if (!options) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection options pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  options->max_buffer_size = size;
+  return ZVEC_OK;
+}
+
+size_t zvec_collection_options_get_max_buffer_size(
+    const ZVecCollectionOptions *options) {
+  if (!options) {
+    return zvec::DEFAULT_MAX_BUFFER_SIZE;  // Default
+  }
+  return options->max_buffer_size;
+}
+
+ZVecErrorCode zvec_collection_options_set_read_only(
+    ZVecCollectionOptions *options, bool read_only) {
+  if (!options) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection options pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  options->read_only = read_only;
+  return ZVEC_OK;
+}
+
+bool zvec_collection_options_get_read_only(
+    const ZVecCollectionOptions *options) {
+  if (!options) {
+    return false;  // Default
+  }
+  return options->read_only;
+}
+
+ZVecErrorCode zvec_collection_options_set_max_doc_count_per_segment(
+    ZVecCollectionOptions *options, uint64_t count) {
+  if (!options) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection options pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  options->max_doc_count_per_segment = count;
+  return ZVEC_OK;
+}
+
+uint64_t zvec_collection_options_get_max_doc_count_per_segment(
+    const ZVecCollectionOptions *options) {
+  if (!options) {
+    return zvec::MAX_DOC_COUNT_PER_SEGMENT;  // Default
+  }
+  return options->max_doc_count_per_segment;
+}
+
+// =============================================================================
+// CollectionStats functions implementation
+// =============================================================================
+
+uint64_t zvec_collection_stats_get_doc_count(const ZVecCollectionStats *stats) {
+  if (!stats) {
+    return 0;
+  }
+  return stats->doc_count;
+}
+
+size_t zvec_collection_stats_get_index_count(const ZVecCollectionStats *stats) {
+  if (!stats) {
+    return 0;
+  }
+  return stats->index_count;
+}
+
+const char *zvec_collection_stats_get_index_name(
+    const ZVecCollectionStats *stats, size_t index) {
+  if (!stats || !stats->index_names || index >= stats->index_count) {
+    return nullptr;
+  }
+  return stats->index_names[index]->data;
+}
+
+float zvec_collection_stats_get_index_completeness(
+    const ZVecCollectionStats *stats, size_t index) {
+  if (!stats || !stats->index_completeness || index >= stats->index_count) {
+    return 0.0f;
+  }
+  return stats->index_completeness[index];
 }
 
 // =============================================================================
@@ -1227,8 +2312,7 @@ ZVecCollectionSchema *zvec_collection_schema_create(const char *name) {
     return nullptr;
   }
 
-  ZVecCollectionSchema *schema =
-      static_cast<ZVecCollectionSchema *>(malloc(sizeof(ZVecCollectionSchema)));
+  ZVecCollectionSchema *schema = new ZVecCollectionSchema();
   if (!schema) {
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
                    "Failed to allocate memory for ZVecCollectionSchema");
@@ -1237,7 +2321,7 @@ ZVecCollectionSchema *zvec_collection_schema_create(const char *name) {
 
   schema->name = zvec_string_create(name);
   if (!schema->name) {
-    free(schema);
+    delete schema;
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
                    "Failed to create string for collection name");
     return nullptr;
@@ -1262,8 +2346,18 @@ void zvec_collection_schema_destroy(ZVecCollectionSchema *schema) {
       free(schema->fields);
     }
 
-    free(schema);
+    delete schema;
   }
+}
+
+const char *zvec_collection_schema_get_name(
+    const ZVecCollectionSchema *schema) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection schema pointer cannot be null");
+    return nullptr;
+  }
+  return zvec_string_c_str(schema->name);
 }
 
 ZVecErrorCode zvec_collection_schema_add_field(ZVecCollectionSchema *schema,
@@ -1274,18 +2368,22 @@ ZVecErrorCode zvec_collection_schema_add_field(ZVecCollectionSchema *schema,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  if (!field || !field->name) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Field or field name cannot be null");
+  if (!field) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Field pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  const char *field_name = zvec_field_schema_get_name(field);
+  if (!field_name) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Field name cannot be null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
   for (size_t i = 0; i < schema->field_count; ++i) {
-    if (schema->fields[i]->name && field->name &&
-        zvec_string_compare(schema->fields[i]->name, field->name) == 0) {
-      SET_LAST_ERROR(
-          ZVEC_ERROR_ALREADY_EXISTS,
-          std::string("Field '") + field->name->data + "' already exists");
+    const char *existing_name = zvec_field_schema_get_name(schema->fields[i]);
+    if (existing_name && strcmp(existing_name, field_name) == 0) {
+      SET_LAST_ERROR(ZVEC_ERROR_ALREADY_EXISTS,
+                     std::string("Field '") + field_name + "' already exists");
       return ZVEC_ERROR_ALREADY_EXISTS;
     }
   }
@@ -1316,9 +2414,9 @@ ZVecErrorCode zvec_collection_schema_add_field(ZVecCollectionSchema *schema,
   return ZVEC_OK;
 }
 
-ZVecErrorCode zvec_collection_schema_add_fields(ZVecCollectionSchema *schema,
-                                                const ZVecFieldSchema *fields,
-                                                size_t field_count) {
+ZVecErrorCode zvec_collection_schema_add_fields(
+    ZVecCollectionSchema *schema, const ZVecFieldSchema *const *fields,
+    size_t field_count) {
   if (!schema) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Collection schema pointer cannot be null");
@@ -1335,9 +2433,16 @@ ZVecErrorCode zvec_collection_schema_add_fields(ZVecCollectionSchema *schema,
     return ZVEC_OK;
   }
 
+  // Validate all fields first
   for (size_t i = 0; i < field_count; ++i) {
-    const ZVecFieldSchema &field = fields[i];
-    if (!field.name || !field.name->data || field.name->length == 0) {
+    if (!fields[i]) {
+      SET_LAST_ERROR(
+          ZVEC_ERROR_INVALID_ARGUMENT,
+          std::string("Field at index ") + std::to_string(i) + " is null");
+      return ZVEC_ERROR_INVALID_ARGUMENT;
+    }
+    const char *field_name = zvec_field_schema_get_name(fields[i]);
+    if (!field_name || strlen(field_name) == 0) {
       SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                      std::string("Field at index ") + std::to_string(i) +
                          " has invalid name");
@@ -1369,30 +2474,47 @@ ZVecErrorCode zvec_collection_schema_add_fields(ZVecCollectionSchema *schema,
     schema->field_capacity = new_capacity;
   }
 
+  // Clone each field and add to schema
   for (size_t i = 0; i < field_count; ++i) {
-    const ZVecFieldSchema &src_field = fields[i];
+    const ZVecFieldSchema *src_field = fields[i];
+    const char *field_name = zvec_field_schema_get_name(src_field);
+    ZVecDataType data_type = zvec_field_schema_get_data_type(src_field);
+    bool nullable = zvec_field_schema_is_nullable(src_field);
+    uint32_t dimension = zvec_field_schema_get_dimension(src_field);
 
+    // Create a new field with the same properties
     ZVecFieldSchema *new_field =
-        static_cast<ZVecFieldSchema *>(malloc(sizeof(ZVecFieldSchema)));
+        zvec_field_schema_create(field_name, data_type, nullable, dimension);
     if (!new_field) {
+      // Clean up previously created fields
+      for (size_t j = 0; j < i; ++j) {
+        zvec_field_schema_destroy(
+            schema->fields[schema->field_count - (i - j)]);
+      }
       SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
-                     "Failed to allocate memory for new field");
+                     "Failed to create new field");
       return ZVEC_ERROR_RESOURCE_EXHAUSTED;
     }
 
-    new_field->name = zvec_string_copy(src_field.name);
-    if (!new_field->name) {
-      free(new_field);
-      SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
-                     "Failed to copy field name");
-      return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+    // Copy index params if present
+    if (zvec_field_schema_has_index(src_field)) {
+      // Internal access: we need to get the index_params pointer
+      // Use the same hack as in set_field_index_params
+      struct InternalFieldSchema {
+        ZVecString *name;
+        ZVecDataType data_type;
+        bool nullable;
+        uint32_t dimension;
+        ZVecIndexParams *index_params;
+        bool has_index;
+      };
+      const ZVecIndexParams *src_index_params =
+          reinterpret_cast<const InternalFieldSchema *>(src_field)
+              ->index_params;
+      if (src_index_params) {
+        zvec_field_schema_set_index_params(new_field, src_index_params);
+      }
     }
-
-    new_field->data_type = src_field.data_type;
-    new_field->nullable = src_field.nullable;
-    new_field->dimension = src_field.dimension;
-    new_field->index_params = src_field.index_params;
-    new_field->has_index = src_field.has_index;
 
     schema->fields[schema->field_count] = new_field;
     schema->field_count++;
@@ -1469,8 +2591,8 @@ ZVecErrorCode zvec_collection_schema_remove_fields(
     bool found = false;
 
     for (size_t i = 0; i < schema->field_count; ++i) {
-      if (schema->fields[i]->name &&
-          strcmp(schema->fields[i]->name->data, target_name.c_str()) == 0) {
+      const char *current_name = zvec_field_schema_get_name(schema->fields[i]);
+      if (current_name && strcmp(current_name, target_name.c_str()) == 0) {
         remove_indices.push_back(i);
         found = true;
         break;
@@ -1518,8 +2640,8 @@ ZVecFieldSchema *zvec_collection_schema_find_field(
   }
 
   for (size_t i = 0; i < schema->field_count; ++i) {
-    if (schema->fields[i]->name &&
-        strcmp(schema->fields[i]->name->data, field_name) == 0) {
+    const char *current_name = zvec_field_schema_get_name(schema->fields[i]);
+    if (current_name && strcmp(current_name, field_name) == 0) {
       return schema->fields[i];
     }
   }
@@ -1611,7 +2733,8 @@ ZVecErrorCode zvec_collection_schema_validate(
       return ZVEC_ERROR_INVALID_ARGUMENT;
     }
 
-    if (!field->name) {
+    const char *field_name = zvec_field_schema_get_name(field);
+    if (!field_name || strlen(field_name) == 0) {
       if (error_msg) {
         *error_msg = zvec_string_create("Field name is required");
       }
@@ -1621,6 +2744,426 @@ ZVecErrorCode zvec_collection_schema_validate(
   }
 
   return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_collection_schema_set_name(ZVecCollectionSchema *schema,
+                                              const char *name) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection schema pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (!name) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Name cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_VOID
+  if (schema->name) {
+    zvec_free_string(schema->name);
+  }
+  schema->name = zvec_string_create(name);
+  ZVEC_CATCH_END_VOID
+
+  return ZVEC_OK;
+}
+
+bool zvec_collection_schema_has_field(const ZVecCollectionSchema *schema,
+                                      const char *field_name) {
+  if (!schema || !field_name) {
+    return false;
+  }
+
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    const char *name = zvec_field_schema_get_name(schema->fields[i]);
+    if (name && strcmp(name, field_name) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+ZVecErrorCode zvec_collection_schema_alter_field(
+    ZVecCollectionSchema *schema, const char *field_name,
+    const ZVecFieldSchema *new_field) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection schema pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (!field_name) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Field name cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (!new_field) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "New field cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_CODE
+  // Find the field
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    const char *name = zvec_field_schema_get_name(schema->fields[i]);
+    if (name && strcmp(name, field_name) == 0) {
+      // Clone the new field
+      ZVecFieldSchema *cloned =
+          zvec_field_schema_create(zvec_field_schema_get_name(new_field),
+                                   zvec_field_schema_get_data_type(new_field),
+                                   zvec_field_schema_is_nullable(new_field),
+                                   zvec_field_schema_get_dimension(new_field));
+
+      if (zvec_field_schema_has_index(new_field)) {
+        ZVecIndexType idx_type = zvec_field_schema_get_index_type(new_field);
+        ZVecIndexParams *cloned_params = zvec_index_params_create(idx_type);
+        const ZVecIndexParams *src_params =
+            zvec_field_schema_get_index_params(new_field);
+
+        // Copy index parameters
+        switch (idx_type) {
+          case ZVEC_INDEX_TYPE_INVERT: {
+            bool enable_opt;
+            bool enable_wildcard;
+            zvec_index_params_get_invert_params(src_params, &enable_opt,
+                                                &enable_wildcard);
+            zvec_index_params_set_invert_params(cloned_params, enable_opt,
+                                                enable_wildcard);
+            break;
+          }
+          case ZVEC_INDEX_TYPE_HNSW: {
+            int m, ef_const;
+            zvec_index_params_get_hnsw_params(src_params, &m, &ef_const);
+            zvec_index_params_set_hnsw_params(cloned_params, m, ef_const);
+            break;
+          }
+          case ZVEC_INDEX_TYPE_IVF: {
+            int n_list, n_iters;
+            bool use_soar;
+            zvec_index_params_get_ivf_params(src_params, &n_list, &n_iters,
+                                             &use_soar);
+            zvec_index_params_set_ivf_params(cloned_params, n_list, n_iters,
+                                             use_soar);
+            break;
+          }
+          default:
+            break;
+        }
+
+        zvec_field_schema_set_index_params(cloned, cloned_params);
+        zvec_index_params_destroy(cloned_params);
+      }
+
+      // Destroy old field and replace with new one
+      zvec_field_schema_destroy(schema->fields[i]);
+      schema->fields[i] = cloned;
+      return ZVEC_OK;
+    }
+  }
+
+  SET_LAST_ERROR(ZVEC_ERROR_NOT_FOUND, "Field not found");
+  return ZVEC_ERROR_NOT_FOUND;
+  ZVEC_CATCH_END_CODE(ZVEC_ERROR_UNKNOWN)
+}
+
+ZVecFieldSchema *zvec_collection_schema_get_forward_field(
+    const ZVecCollectionSchema *schema, const char *field_name) {
+  if (!schema || !field_name) {
+    return nullptr;
+  }
+
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecFieldSchema *field = schema->fields[i];
+    const char *name = zvec_field_schema_get_name(field);
+    if (name && strcmp(name, field_name) == 0) {
+      // Check if it's a scalar field (not vector)
+      ZVecDataType data_type = zvec_field_schema_get_data_type(field);
+      if (!zvec_is_vector_data_type(data_type)) {
+        return field;
+      }
+    }
+  }
+  return nullptr;
+}
+
+ZVecFieldSchema *zvec_collection_schema_get_vector_field(
+    const ZVecCollectionSchema *schema, const char *field_name) {
+  if (!schema || !field_name) {
+    return nullptr;
+  }
+
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecFieldSchema *field = schema->fields[i];
+    const char *name = zvec_field_schema_get_name(field);
+    if (name && strcmp(name, field_name) == 0) {
+      // Check if it's a vector field
+      ZVecDataType data_type = zvec_field_schema_get_data_type(field);
+      if (zvec_is_vector_data_type(data_type)) {
+        return field;
+      }
+    }
+  }
+  return nullptr;
+}
+
+ZVecErrorCode zvec_collection_schema_get_forward_fields(
+    const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
+    size_t *count) {
+  if (!schema || !fields || !count) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Schema, fields, and count cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_VOID
+  // Count scalar fields
+  size_t scalar_count = 0;
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecDataType data_type = zvec_field_schema_get_data_type(schema->fields[i]);
+    if (!zvec_is_vector_data_type(data_type)) {
+      scalar_count++;
+    }
+  }
+
+  *fields =
+      (ZVecFieldSchema **)malloc(scalar_count * sizeof(ZVecFieldSchema *));
+  if (!*fields) {
+    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED, "Failed to allocate memory");
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+
+  // Fill the array
+  size_t idx = 0;
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecDataType data_type = zvec_field_schema_get_data_type(schema->fields[i]);
+    if (!zvec_is_vector_data_type(data_type)) {
+      (*fields)[idx++] = schema->fields[i];
+    }
+  }
+
+  *count = scalar_count;
+  ZVEC_CATCH_END_VOID
+
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_collection_schema_get_forward_fields_with_index(
+    const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
+    size_t *count) {
+  if (!schema || !fields || !count) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Schema, fields, and count cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_VOID
+  // Count scalar fields with index
+  size_t indexed_count = 0;
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecFieldSchema *field = schema->fields[i];
+    ZVecDataType data_type = zvec_field_schema_get_data_type(field);
+    if (!zvec_is_vector_data_type(data_type) &&
+        zvec_field_schema_has_index(field)) {
+      indexed_count++;
+    }
+  }
+
+  *fields =
+      (ZVecFieldSchema **)malloc(indexed_count * sizeof(ZVecFieldSchema *));
+  if (!*fields) {
+    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED, "Failed to allocate memory");
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+
+  // Fill the array
+  size_t idx = 0;
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecFieldSchema *field = schema->fields[i];
+    ZVecDataType data_type = zvec_field_schema_get_data_type(field);
+    if (!zvec_is_vector_data_type(data_type) &&
+        zvec_field_schema_has_index(field)) {
+      (*fields)[idx++] = field;
+    }
+  }
+
+  *count = indexed_count;
+  ZVEC_CATCH_END_VOID
+
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_collection_schema_get_all_field_names(
+    const ZVecCollectionSchema *schema, const char ***names, size_t *count) {
+  if (!schema || !names || !count) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Schema, names, and count cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_VOID
+  *count = schema->field_count;
+  *names = (const char **)malloc(schema->field_count * sizeof(const char *));
+  if (!*names) {
+    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED, "Failed to allocate memory");
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    (*names)[i] = zvec_field_schema_get_name(schema->fields[i]);
+  }
+
+  ZVEC_CATCH_END_VOID
+
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_collection_schema_get_vector_fields(
+    const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
+    size_t *count) {
+  if (!schema || !fields || !count) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Schema, fields, and count cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_VOID
+  // Count vector fields
+  size_t vector_count = 0;
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecDataType data_type = zvec_field_schema_get_data_type(schema->fields[i]);
+    if (zvec_is_vector_data_type(data_type)) {
+      vector_count++;
+    }
+  }
+
+  *fields =
+      (ZVecFieldSchema **)malloc(vector_count * sizeof(ZVecFieldSchema *));
+  if (!*fields) {
+    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED, "Failed to allocate memory");
+    return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+  }
+
+  // Fill the array
+  size_t idx = 0;
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecDataType data_type = zvec_field_schema_get_data_type(schema->fields[i]);
+    if (zvec_is_vector_data_type(data_type)) {
+      (*fields)[idx++] = schema->fields[i];
+    }
+  }
+
+  *count = vector_count;
+  ZVEC_CATCH_END_VOID
+
+  return ZVEC_OK;
+}
+
+bool zvec_collection_schema_has_index(const ZVecCollectionSchema *schema,
+                                      const char *field_name) {
+  if (!schema || !field_name) {
+    return false;
+  }
+
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecFieldSchema *field = schema->fields[i];
+    const char *name = zvec_field_schema_get_name(field);
+    if (name && strcmp(name, field_name) == 0) {
+      return zvec_field_schema_has_index(field);
+    }
+  }
+  return false;
+}
+
+ZVecErrorCode zvec_collection_schema_add_index(
+    ZVecCollectionSchema *schema, const char *field_name,
+    const ZVecIndexParams *index_params) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection schema pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (!field_name) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Field name cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (!index_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Index params cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_CODE
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecFieldSchema *field = schema->fields[i];
+    const char *name = zvec_field_schema_get_name(field);
+    if (name && strcmp(name, field_name) == 0) {
+      // Clone the index params
+      ZVecIndexType idx_type = zvec_index_params_get_type(index_params);
+      ZVecIndexParams *cloned_params = zvec_index_params_create(idx_type);
+
+      // Copy parameters based on type
+      switch (idx_type) {
+        case ZVEC_INDEX_TYPE_INVERT: {
+          bool enable_opt, enable_wildcard;
+          zvec_index_params_get_invert_params(index_params, &enable_opt,
+                                              &enable_wildcard);
+          zvec_index_params_set_invert_params(cloned_params, enable_opt,
+                                              enable_wildcard);
+          break;
+        }
+        case ZVEC_INDEX_TYPE_HNSW: {
+          int m, ef_const;
+          zvec_index_params_get_hnsw_params(index_params, &m, &ef_const);
+          zvec_index_params_set_hnsw_params(cloned_params, m, ef_const);
+          break;
+        }
+        case ZVEC_INDEX_TYPE_IVF: {
+          int n_list, n_iters;
+          bool use_soar;
+          zvec_index_params_get_ivf_params(index_params, &n_list, &n_iters,
+                                           &use_soar);
+          zvec_index_params_set_ivf_params(cloned_params, n_list, n_iters,
+                                           use_soar);
+          break;
+        }
+        default:
+          break;
+      }
+
+      zvec_field_schema_set_index_params(field, cloned_params);
+      zvec_index_params_destroy(cloned_params);
+      return ZVEC_OK;
+    }
+  }
+
+  SET_LAST_ERROR(ZVEC_ERROR_NOT_FOUND, "Field not found");
+  return ZVEC_ERROR_NOT_FOUND;
+  ZVEC_CATCH_END_CODE(ZVEC_ERROR_UNKNOWN)
+}
+
+ZVecErrorCode zvec_collection_schema_drop_index(ZVecCollectionSchema *schema,
+                                                const char *field_name) {
+  if (!schema) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection schema pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (!field_name) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Field name cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_BEGIN_CODE
+  for (size_t i = 0; i < schema->field_count; ++i) {
+    ZVecFieldSchema *field = schema->fields[i];
+    const char *name = zvec_field_schema_get_name(field);
+    if (name && strcmp(name, field_name) == 0) {
+      // Clear the index
+      zvec_field_schema_clear_index(field);
+      return ZVEC_OK;
+    }
+  }
+
+  SET_LAST_ERROR(ZVEC_ERROR_NOT_FOUND, "Field not found");
+  return ZVEC_ERROR_NOT_FOUND;
+  ZVEC_CATCH_END_CODE(ZVEC_ERROR_UNKNOWN)
 }
 
 void zvec_collection_schema_cleanup(ZVecCollectionSchema *schema) {
@@ -1633,9 +3176,9 @@ void zvec_collection_schema_cleanup(ZVecCollectionSchema *schema) {
 
   if (schema->fields) {
     for (size_t i = 0; i < schema->field_count; ++i) {
-      zvec_field_schema_cleanup(schema->fields[i]);
+      zvec_field_schema_destroy(schema->fields[i]);
     }
-    delete[] schema->fields;
+    free(schema->fields);
     schema->fields = nullptr;
     schema->field_count = 0;
   }
@@ -1777,17 +3320,17 @@ const char *zvec_metric_type_to_string(ZVecMetricType metric_type) {
 }
 
 bool check_is_vector_field(const ZVecFieldSchema &zvec_field) {
-  bool is_vector_field =
-      (zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_FP32 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_FP64 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_FP16 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_BINARY32 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_BINARY64 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_INT4 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_INT8 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_VECTOR_INT16 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 ||
-       zvec_field.data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16);
+  ZVecDataType data_type = zvec_field_schema_get_data_type(&zvec_field);
+  bool is_vector_field = (data_type == ZVEC_DATA_TYPE_VECTOR_FP32 ||
+                          data_type == ZVEC_DATA_TYPE_VECTOR_FP64 ||
+                          data_type == ZVEC_DATA_TYPE_VECTOR_FP16 ||
+                          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY32 ||
+                          data_type == ZVEC_DATA_TYPE_VECTOR_BINARY64 ||
+                          data_type == ZVEC_DATA_TYPE_VECTOR_INT4 ||
+                          data_type == ZVEC_DATA_TYPE_VECTOR_INT8 ||
+                          data_type == ZVEC_DATA_TYPE_VECTOR_INT16 ||
+                          data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 ||
+                          data_type == ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16);
   return is_vector_field;
 }
 
@@ -2034,30 +3577,33 @@ static std::vector<zvec::Doc> convert_zvec_docs_to_internal(
 static zvec::Status convert_zvec_collection_schema_to_internal(
     const ZVecCollectionSchema *schema,
     zvec::CollectionSchema::Ptr &collection_schema) {
-  std::string coll_name(schema->name->data, schema->name->length);
+  std::string coll_name(zvec_string_c_str(schema->name),
+                        zvec_string_length(schema->name));
   collection_schema = std::make_shared<zvec::CollectionSchema>(coll_name);
   collection_schema->set_max_doc_count_per_segment(
       schema->max_doc_count_per_segment);
 
   for (size_t i = 0; i < schema->field_count; ++i) {
-    const ZVecFieldSchema &zvec_field = *schema->fields[i];
-    zvec::DataType data_type = convert_data_type(zvec_field.data_type);
-    std::string field_name =
-        std::string(zvec_field.name->data, zvec_field.name->length);
+    const ZVecFieldSchema *zvec_field = schema->fields[i];
+    ZVecDataType field_data_type = zvec_field_schema_get_data_type(zvec_field);
+    zvec::DataType data_type = convert_data_type(field_data_type);
+    std::string field_name = zvec_field_schema_get_name(zvec_field);
+    bool nullable = zvec_field_schema_is_nullable(zvec_field);
+    uint32_t dimension = zvec_field_schema_get_dimension(zvec_field);
     zvec::FieldSchema::Ptr field_schema;
 
-    bool is_vector_field = check_is_vector_field(zvec_field);
+    bool is_vector_field = check_is_vector_field(*zvec_field);
 
     if (is_vector_field) {
-      field_schema = std::make_shared<zvec::FieldSchema>(
-          field_name, data_type, zvec_field.dimension, zvec_field.nullable);
-    } else {
       field_schema = std::make_shared<zvec::FieldSchema>(field_name, data_type,
-                                                         zvec_field.nullable);
+                                                         dimension, nullable);
+    } else {
+      field_schema =
+          std::make_shared<zvec::FieldSchema>(field_name, data_type, nullable);
     }
 
-    if (zvec_field.has_index) {
-      zvec::Status status = set_field_index_params(field_schema, &zvec_field);
+    if (zvec_field_schema_has_index(zvec_field)) {
+      zvec::Status status = set_field_index_params(field_schema, zvec_field);
       if (!status.ok()) {
         return status;
       }
@@ -2073,78 +3619,121 @@ static zvec::Status convert_zvec_collection_schema_to_internal(
 }
 
 static zvec::Status convert_zvec_field_schema_to_internal(
-    const ZVecFieldSchema &zvec_field, zvec::FieldSchema::Ptr &field_schema) {
+    const ZVecFieldSchema *zvec_field, zvec::FieldSchema::Ptr &field_schema) {
   // Validate input
-  if (!zvec_field.name) {
+  if (!zvec_field) {
+    return zvec::Status::InvalidArgument("Field schema cannot be null");
+  }
+
+  const char *field_name_cstr = zvec_field_schema_get_name(zvec_field);
+  if (!field_name_cstr) {
     return zvec::Status::InvalidArgument("Field name cannot be null");
   }
 
-  zvec::DataType data_type = convert_data_type(zvec_field.data_type);
-  if (data_type == zvec::DataType::UNDEFINED) {
+  ZVecDataType data_type = zvec_field_schema_get_data_type(zvec_field);
+  zvec::DataType data_type_internal = convert_data_type(data_type);
+  if (data_type_internal == zvec::DataType::UNDEFINED) {
     return zvec::Status::InvalidArgument("Invalid data type");
   }
 
-  std::string field_name(zvec_field.name->data, zvec_field.name->length);
-  bool is_vector_field = check_is_vector_field(zvec_field);
+  std::string field_name(field_name_cstr);
+  bool nullable = zvec_field_schema_is_nullable(zvec_field);
+  uint32_t dimension = zvec_field_schema_get_dimension(zvec_field);
+  bool is_vector_field = check_is_vector_field(*zvec_field);
 
   if (is_vector_field) {
     field_schema = std::make_shared<zvec::FieldSchema>(
-        field_name, data_type, zvec_field.dimension, zvec_field.nullable);
+        field_name, data_type_internal, dimension, nullable);
 
-    if (zvec_field.has_index) {
-      switch (zvec_field.index_params.index_type) {
-        case ZVEC_INDEX_TYPE_HNSW: {
-          auto metric =
-              convert_metric_type(zvec_field.index_params.metric_type);
-          auto quantize =
-              convert_quantize_type(zvec_field.index_params.quantize_type);
-          auto index_params = std::make_shared<zvec::HnswIndexParams>(
-              metric, zvec_field.index_params.hnsw.m,
-              zvec_field.index_params.hnsw.ef_construction, quantize);
-          field_schema->set_index_params(index_params);
-          break;
+    if (zvec_field_schema_has_index(zvec_field)) {
+      // Internal access to index_params
+      struct InternalFieldSchema {
+        ZVecString *name;
+        ZVecDataType data_type;
+        bool nullable;
+        uint32_t dimension;
+        ZVecIndexParams *index_params;
+        bool has_index;
+      };
+      const ZVecIndexParams *index_params =
+          reinterpret_cast<const InternalFieldSchema *>(zvec_field)
+              ->index_params;
+
+      if (index_params) {
+        ZVecIndexType index_type = zvec_index_params_get_type(index_params);
+        ZVecMetricType metric_type =
+            zvec_index_params_get_metric_type(index_params);
+        ZVecQuantizeType quantize_type =
+            zvec_index_params_get_quantize_type(index_params);
+
+        auto metric = convert_metric_type(metric_type);
+        auto quantize = convert_quantize_type(quantize_type);
+
+        switch (index_type) {
+          case ZVEC_INDEX_TYPE_HNSW: {
+            int m, ef_construction;
+            zvec_index_params_get_hnsw_params(index_params, &m,
+                                              &ef_construction);
+            auto hnsw_params = std::make_shared<zvec::HnswIndexParams>(
+                metric, m, ef_construction, quantize);
+            field_schema->set_index_params(hnsw_params);
+            break;
+          }
+          case ZVEC_INDEX_TYPE_FLAT: {
+            auto flat_params =
+                std::make_shared<zvec::FlatIndexParams>(metric, quantize);
+            field_schema->set_index_params(flat_params);
+            break;
+          }
+          case ZVEC_INDEX_TYPE_IVF: {
+            int n_list, n_iters;
+            bool use_soar;
+            zvec_index_params_get_ivf_params(index_params, &n_list, &n_iters,
+                                             &use_soar);
+            auto ivf_params = std::make_shared<zvec::IVFIndexParams>(
+                metric, n_list, n_iters, use_soar, quantize);
+            field_schema->set_index_params(ivf_params);
+            break;
+          }
+          default:
+            field_schema->set_index_params(
+                std::make_shared<zvec::FlatIndexParams>(zvec::MetricType::L2));
+            break;
         }
-        case ZVEC_INDEX_TYPE_FLAT: {
-          auto metric =
-              convert_metric_type(zvec_field.index_params.metric_type);
-          auto quantize =
-              convert_quantize_type(zvec_field.index_params.quantize_type);
-          auto index_params =
-              std::make_shared<zvec::FlatIndexParams>(metric, quantize);
-          field_schema->set_index_params(index_params);
-          break;
-        }
-        case ZVEC_INDEX_TYPE_IVF: {
-          auto metric =
-              convert_metric_type(zvec_field.index_params.metric_type);
-          auto quantize =
-              convert_quantize_type(zvec_field.index_params.quantize_type);
-          auto index_params = std::make_shared<zvec::IVFIndexParams>(
-              metric, zvec_field.index_params.ivf.n_list,
-              zvec_field.index_params.ivf.n_iters,
-              zvec_field.index_params.ivf.use_soar, quantize);
-          field_schema->set_index_params(index_params);
-          break;
-        }
-        default:
-          field_schema->set_index_params(
-              std::make_shared<zvec::FlatIndexParams>(zvec::MetricType::L2));
-          break;
+      } else {
+        field_schema->set_index_params(
+            std::make_shared<zvec::FlatIndexParams>(zvec::MetricType::L2));
       }
     } else {
       field_schema->set_index_params(
           std::make_shared<zvec::FlatIndexParams>(zvec::MetricType::L2));
     }
   } else {
-    field_schema = std::make_shared<zvec::FieldSchema>(field_name, data_type,
-                                                       zvec_field.nullable);
+    field_schema = std::make_shared<zvec::FieldSchema>(
+        field_name, data_type_internal, nullable);
 
-    if (zvec_field.has_index &&
-        zvec_field.index_params.index_type == ZVEC_INDEX_TYPE_INVERT) {
-      auto index_params = std::make_shared<zvec::InvertIndexParams>(
-          zvec_field.index_params.invert.enable_range_optimization,
-          zvec_field.index_params.invert.enable_extended_wildcard);
-      field_schema->set_index_params(index_params);
+    if (zvec_field_schema_has_index(zvec_field)) {
+      struct InternalFieldSchema {
+        ZVecString *name;
+        ZVecDataType data_type;
+        bool nullable;
+        uint32_t dimension;
+        ZVecIndexParams *index_params;
+        bool has_index;
+      };
+      const ZVecIndexParams *index_params =
+          reinterpret_cast<const InternalFieldSchema *>(zvec_field)
+              ->index_params;
+
+      if (index_params &&
+          zvec_index_params_get_type(index_params) == ZVEC_INDEX_TYPE_INVERT) {
+        bool enable_range_opt, enable_wildcard;
+        zvec_index_params_get_invert_params(index_params, &enable_range_opt,
+                                            &enable_wildcard);
+        auto invert_params = std::make_shared<zvec::InvertIndexParams>(
+            enable_range_opt, enable_wildcard);
+        field_schema->set_index_params(invert_params);
+      }
     }
   }
 
@@ -3961,105 +5550,19 @@ ZVecErrorCode zvec_collection_get_schema(const ZVecCollection *collection,
               // Copy nullable flag
               c_schema->fields[i]->nullable = cpp_field->nullable();
 
-              // Initialize index parameters (embedded, not pointer)
-              memset(&c_schema->fields[i]->index_params, 0,
-                     sizeof(ZVecIndexParams));
+              // Initialize index parameters to nullptr
+              c_schema->fields[i]->index_params = nullptr;
               c_schema->fields[i]->has_index = false;
 
               // Convert index parameters based on the actual type
               auto index_params = cpp_field->index_params();
               if (index_params) {
-                switch (index_params->type()) {
-                  case zvec::IndexType::HNSW: {
-                    auto hnsw_params =
-                        std::dynamic_pointer_cast<zvec::HnswIndexParams>(
-                            index_params);
-                    if (hnsw_params) {
-                      c_schema->fields[i]->index_params.index_type =
-                          ZVEC_INDEX_TYPE_HNSW;
-                      c_schema->fields[i]->index_params.metric_type =
-                          static_cast<ZVecMetricType>(
-                              hnsw_params->metric_type());
-                      c_schema->fields[i]->index_params.quantize_type =
-                          static_cast<ZVecQuantizeType>(
-                              hnsw_params->quantize_type());
-                      c_schema->fields[i]->index_params.hnsw.m =
-                          hnsw_params->m();
-                      c_schema->fields[i]->index_params.hnsw.ef_construction =
-                          hnsw_params->ef_construction();
-                      c_schema->fields[i]->has_index = true;
-                    }
-                    break;
-                  }
-
-                  case zvec::IndexType::IVF: {
-                    auto ivf_params =
-                        std::dynamic_pointer_cast<zvec::IVFIndexParams>(
-                            index_params);
-                    if (ivf_params) {
-                      c_schema->fields[i]->index_params.index_type =
-                          ZVEC_INDEX_TYPE_IVF;
-                      c_schema->fields[i]->index_params.metric_type =
-                          static_cast<ZVecMetricType>(
-                              ivf_params->metric_type());
-                      c_schema->fields[i]->index_params.quantize_type =
-                          static_cast<ZVecQuantizeType>(
-                              ivf_params->quantize_type());
-                      c_schema->fields[i]->index_params.ivf.n_list =
-                          ivf_params->n_list();
-                      c_schema->fields[i]->index_params.ivf.n_iters =
-                          ivf_params->n_iters();
-                      c_schema->fields[i]->index_params.ivf.use_soar =
-                          ivf_params->use_soar();
-                      c_schema->fields[i]->has_index = true;
-                    }
-                    break;
-                  }
-
-                  case zvec::IndexType::FLAT: {
-                    auto flat_params =
-                        std::dynamic_pointer_cast<zvec::FlatIndexParams>(
-                            index_params);
-                    if (flat_params) {
-                      c_schema->fields[i]->index_params.index_type =
-                          ZVEC_INDEX_TYPE_FLAT;
-                      c_schema->fields[i]->index_params.metric_type =
-                          static_cast<ZVecMetricType>(
-                              flat_params->metric_type());
-                      c_schema->fields[i]->index_params.quantize_type =
-                          static_cast<ZVecQuantizeType>(
-                              flat_params->quantize_type());
-                      c_schema->fields[i]->has_index = true;
-                    }
-                    break;
-                  }
-
-                  case zvec::IndexType::INVERT: {
-                    auto invert_params =
-                        std::dynamic_pointer_cast<zvec::InvertIndexParams>(
-                            index_params);
-                    if (invert_params) {
-                      c_schema->fields[i]->index_params.index_type =
-                          ZVEC_INDEX_TYPE_INVERT;
-                      c_schema->fields[i]
-                          ->index_params.invert.enable_range_optimization =
-                          invert_params->enable_range_optimization();
-                      c_schema->fields[i]
-                          ->index_params.invert.enable_extended_wildcard =
-                          invert_params->enable_extended_wildcard();
-                      c_schema->fields[i]->has_index = true;
-                    }
-                    break;
-                  }
-
-                  default:
-                    // For undefined or unsupported index types
-                    c_schema->fields[i]->has_index = false;
-                    break;
+                // Use helper function to convert C++ index params to C
+                c_schema->fields[i]->index_params =
+                    convert_cpp_index_params_to_c(index_params);
+                if (c_schema->fields[i]->index_params) {
+                  c_schema->fields[i]->has_index = true;
                 }
-              } else {
-                // No index parameters
-                c_schema->fields[i]->has_index = false;
               }
             } catch (const std::bad_alloc &) {
               // Clean up already allocated fields
@@ -4105,9 +5608,8 @@ ZVecErrorCode zvec_collection_get_options(const ZVecCollection *collection,
         return ZVEC_ERROR_INTERNAL_ERROR;
       }
 
-          // Create and initialize options structure
-          *options = static_cast<ZVecCollectionOptions *>(
-              malloc(sizeof(ZVecCollectionOptions)));
+          // Create and initialize options using new
+          *options = new ZVecCollectionOptions();
       if (!*options) {
         set_last_error("Failed to allocate memory for options");
         return ZVEC_ERROR_RESOURCE_EXHAUSTED;
@@ -4142,8 +5644,7 @@ ZVecErrorCode zvec_collection_get_stats(const ZVecCollection *collection,
         return ZVEC_ERROR_INTERNAL_ERROR;
       }
 
-          *stats = static_cast<ZVecCollectionStats *>(
-              malloc(sizeof(ZVecCollectionStats)));
+          *stats = new ZVecCollectionStats();
       if (!*stats) {
         set_last_error("Failed to allocate memory for stats");
         return ZVEC_ERROR_RESOURCE_EXHAUSTED;
@@ -4173,19 +5674,6 @@ ZVecErrorCode zvec_collection_get_stats(const ZVecCollection *collection,
       return error_code;)
 }
 
-ZVecCollectionStats *zvec_collection_stats_create(void) {
-  ZVecCollectionStats *stats =
-      static_cast<ZVecCollectionStats *>(malloc(sizeof(ZVecCollectionStats)));
-  if (!stats) {
-    return nullptr;
-  }
-  stats->doc_count = 0;
-  stats->index_count = 0;
-  stats->index_completeness = nullptr;
-  stats->index_names = nullptr;
-  return stats;
-}
-
 void zvec_collection_stats_destroy(ZVecCollectionStats *stats) {
   if (stats) {
     if (stats->index_names) {
@@ -4208,213 +5696,579 @@ void zvec_collection_stats_destroy(ZVecCollectionStats *stats) {
 // =============================================================================
 
 ZVecQueryParams *zvec_query_params_create(ZVecIndexType index_type) {
-  ZVecQueryParams *params =
-      static_cast<ZVecQueryParams *>(malloc(sizeof(ZVecQueryParams)));
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
-                   "Failed to allocate memory for ZVecQueryParams");
-    return nullptr;
-  }
-  params->index_type = index_type;
-  params->radius = 0.0f;
-  params->is_linear = false;
-  params->is_using_refiner = false;
-  return params;
-}
-
-ZVecHnswQueryParams *zvec_query_params_hnsw_create(ZVecIndexType index_type,
-                                                   int ef, float radius,
-                                                   bool is_linear,
-                                                   bool is_using_refiner) {
-  ZVecHnswQueryParams *params =
-      static_cast<ZVecHnswQueryParams *>(malloc(sizeof(ZVecHnswQueryParams)));
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
-                   "Failed to allocate memory for ZVecHnswQueryParams");
-    return nullptr;
-  }
-  params->base.index_type = index_type;
-  params->base.radius = radius;
-  params->base.is_linear = is_linear;
-  params->base.is_using_refiner = is_using_refiner;
-  params->ef = ef;
-  return params;
-}
-
-ZVecIVFQueryParams *zvec_query_params_ivf_create(ZVecIndexType index_type,
-                                                 int nprobe,
-                                                 bool is_using_refiner,
-                                                 float scale_factor) {
-  ZVecIVFQueryParams *params =
-      static_cast<ZVecIVFQueryParams *>(malloc(sizeof(ZVecIVFQueryParams)));
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
-                   "Failed to allocate memory for ZVecIVFQueryParams");
-    return nullptr;
-  }
-  params->base.index_type = index_type;
-  params->base.is_using_refiner = is_using_refiner;
-  params->nprobe = nprobe;
-  params->scale_factor = scale_factor;
-  return params;
-}
-
-ZVecFlatQueryParams *zvec_query_params_flat_create(ZVecIndexType index_type,
-                                                   bool is_using_refiner,
-                                                   float scale_factor) {
-  ZVecFlatQueryParams *params =
-      static_cast<ZVecFlatQueryParams *>(malloc(sizeof(ZVecFlatQueryParams)));
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
-                   "Failed to allocate memory for ZVecFlatQueryParams");
-    return nullptr;
-  }
-  params->base.index_type = index_type;
-  params->base.is_using_refiner = is_using_refiner;
-  params->scale_factor = scale_factor;
-  return params;
-}
-
-ZVecQueryParamsUnion *zvec_query_params_union_create(ZVecIndexType index_type) {
-  ZVecQueryParamsUnion *params =
-      static_cast<ZVecQueryParamsUnion *>(malloc(sizeof(ZVecQueryParamsUnion)));
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
-                   "Failed to allocate memory for ZVecQueryParamsUnion");
-    return nullptr;
-  }
-  params->index_type = index_type;
-
-  switch (index_type) {
-    case ZVEC_INDEX_TYPE_HNSW:
-      params->params.hnsw_params.base.index_type = index_type;
-      params->params.hnsw_params.ef =
-          zvec::core_interface::kDefaultHnswEfSearch;
-      break;
-    case ZVEC_INDEX_TYPE_IVF:
-      params->params.ivf_params.base.index_type = index_type;
-      params->params.ivf_params.nprobe = 10;
-      params->params.ivf_params.scale_factor = 10.0f;
-      break;
-    case ZVEC_INDEX_TYPE_FLAT:
-      params->params.flat_params.base.index_type = index_type;
-      params->params.flat_params.scale_factor = 10.0f;
-      break;
-    default:
-      params->params.base_params.index_type = index_type;
-      break;
-  }
-
-  return params;
+  ZVEC_TRY_RETURN_NULL("Failed to create ZVecQueryParams",
+                       ZVecQueryParams *params = new ZVecQueryParams();
+                       params->index_type = index_type; params->radius = 0.0f;
+                       params->is_linear = false;
+                       params->is_using_refiner = false; return params;)
+  return nullptr;
 }
 
 void zvec_query_params_destroy(ZVecQueryParams *params) {
   if (params) {
-    free(params);
-  }
-}
-
-void zvec_query_params_hnsw_destroy(ZVecHnswQueryParams *params) {
-  if (params) {
-    free(params);
-  }
-}
-
-void zvec_query_params_ivf_destroy(ZVecIVFQueryParams *params) {
-  if (params) {
-    free(params);
-  }
-}
-
-void zvec_query_params_flat_destroy(ZVecFlatQueryParams *params) {
-  if (params) {
-    free(params);
-  }
-}
-
-void zvec_query_params_union_destroy(ZVecQueryParamsUnion *params) {
-  if (params) {
-    free(params);
+    delete params;
   }
 }
 
 ZVecErrorCode zvec_query_params_set_index_type(ZVecQueryParams *params,
                                                ZVecIndexType index_type) {
   if (!params) {
-    set_last_error("Query params pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Query params pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   params->index_type = index_type;
   return ZVEC_OK;
+}
+
+ZVecIndexType zvec_query_params_get_index_type(const ZVecQueryParams *params) {
+  if (!params) {
+    return ZVEC_INDEX_TYPE_UNDEFINED;
+  }
+  return params->index_type;
 }
 
 ZVecErrorCode zvec_query_params_set_radius(ZVecQueryParams *params,
                                            float radius) {
   if (!params) {
-    set_last_error("Query params pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Query params pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   params->radius = radius;
   return ZVEC_OK;
+}
+
+float zvec_query_params_get_radius(const ZVecQueryParams *params) {
+  if (!params) {
+    return 0.0f;
+  }
+  return params->radius;
 }
 
 ZVecErrorCode zvec_query_params_set_is_linear(ZVecQueryParams *params,
                                               bool is_linear) {
   if (!params) {
-    set_last_error("Query params pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Query params pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   params->is_linear = is_linear;
   return ZVEC_OK;
+}
+
+bool zvec_query_params_get_is_linear(const ZVecQueryParams *params) {
+  if (!params) {
+    return false;
+  }
+  return params->is_linear;
 }
 
 ZVecErrorCode zvec_query_params_set_is_using_refiner(ZVecQueryParams *params,
                                                      bool is_using_refiner) {
   if (!params) {
-    set_last_error("Query params pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Query params pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   params->is_using_refiner = is_using_refiner;
   return ZVEC_OK;
+}
+
+bool zvec_query_params_get_is_using_refiner(const ZVecQueryParams *params) {
+  if (!params) {
+    return false;
+  }
+  return params->is_using_refiner;
+}
+
+// =============================================================================
+// HnswQueryParams functions implementation
+// =============================================================================
+
+ZVecHnswQueryParams *zvec_query_params_hnsw_create(int ef, float radius,
+                                                   bool is_linear,
+                                                   bool is_using_refiner) {
+  ZVEC_TRY_RETURN_NULL("Failed to create ZVecHnswQueryParams",
+                       ZVecHnswQueryParams *params = new ZVecHnswQueryParams();
+                       params->base.index_type = ZVEC_INDEX_TYPE_HNSW;
+                       params->base.radius = radius;
+                       params->base.is_linear = is_linear;
+                       params->base.is_using_refiner = is_using_refiner;
+                       params->ef = ef; return params;)
+  return nullptr;
+}
+
+void zvec_query_params_hnsw_destroy(ZVecHnswQueryParams *params) {
+  if (params) {
+    delete params;
+  }
 }
 
 ZVecErrorCode zvec_query_params_hnsw_set_ef(ZVecHnswQueryParams *params,
                                             int ef) {
   if (!params) {
-    set_last_error("HNSW query params pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "HNSW query params pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   params->ef = ef;
   return ZVEC_OK;
+}
+
+int zvec_query_params_hnsw_get_ef(const ZVecHnswQueryParams *params) {
+  if (!params) {
+    return zvec::core_interface::kDefaultHnswEfSearch;
+  }
+  return params->ef;
+}
+
+// =============================================================================
+// IVFQueryParams functions implementation
+// =============================================================================
+
+ZVecIVFQueryParams *zvec_query_params_ivf_create(int nprobe,
+                                                 bool is_using_refiner,
+                                                 float scale_factor) {
+  ZVEC_TRY_RETURN_NULL("Failed to create ZVecIVFQueryParams",
+                       ZVecIVFQueryParams *params = new ZVecIVFQueryParams();
+                       params->base.index_type = ZVEC_INDEX_TYPE_IVF;
+                       params->base.is_using_refiner = is_using_refiner;
+                       params->nprobe = nprobe;
+                       params->scale_factor = scale_factor; return params;)
+  return nullptr;
+}
+
+void zvec_query_params_ivf_destroy(ZVecIVFQueryParams *params) {
+  if (params) {
+    delete params;
+  }
 }
 
 ZVecErrorCode zvec_query_params_ivf_set_nprobe(ZVecIVFQueryParams *params,
                                                int nprobe) {
   if (!params) {
-    set_last_error("IVF query params pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF query params pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   params->nprobe = nprobe;
   return ZVEC_OK;
+}
+
+int zvec_query_params_ivf_get_nprobe(const ZVecIVFQueryParams *params) {
+  if (!params) {
+    return 10;
+  }
+  return params->nprobe;
 }
 
 ZVecErrorCode zvec_query_params_ivf_set_scale_factor(ZVecIVFQueryParams *params,
                                                      float scale_factor) {
   if (!params) {
-    set_last_error("Query params pointer is null");
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF query params pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
   params->scale_factor = scale_factor;
   return ZVEC_OK;
 }
 
+float zvec_query_params_ivf_get_scale_factor(const ZVecIVFQueryParams *params) {
+  if (!params) {
+    return 10.0f;
+  }
+  return params->scale_factor;
+}
+
+// =============================================================================
+// FlatQueryParams functions implementation
+// =============================================================================
+
+ZVecFlatQueryParams *zvec_query_params_flat_create(bool is_using_refiner,
+                                                   float scale_factor) {
+  ZVEC_TRY_RETURN_NULL("Failed to create ZVecFlatQueryParams",
+                       ZVecFlatQueryParams *params = new ZVecFlatQueryParams();
+                       params->base.index_type = ZVEC_INDEX_TYPE_FLAT;
+                       params->base.is_using_refiner = is_using_refiner;
+                       params->scale_factor = scale_factor; return params;)
+  return nullptr;
+}
+
+void zvec_query_params_flat_destroy(ZVecFlatQueryParams *params) {
+  if (params) {
+    delete params;
+  }
+}
+
+ZVecErrorCode zvec_query_params_flat_set_scale_factor(
+    ZVecFlatQueryParams *params, float scale_factor) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Flat query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  params->scale_factor = scale_factor;
+  return ZVEC_OK;
+}
+
+float zvec_query_params_flat_get_scale_factor(
+    const ZVecFlatQueryParams *params) {
+  if (!params) {
+    return 10.0f;
+  }
+  return params->scale_factor;
+}
+
+// =============================================================================
+// VectorQuery and GroupByVectorQuery functions implementation
+// =============================================================================
+
+ZVecVectorQuery *zvec_vector_query_create(void) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create ZVecVectorQuery",
+      ZVecVectorQuery *query = new ZVecVectorQuery();
+      query->topk = 10; query->field_name = nullptr;
+      query->query_vector.data = nullptr; query->query_vector.length = 0;
+      query->query_sparse_indices.data = nullptr;
+      query->query_sparse_indices.length = 0;
+      query->query_sparse_values.data = nullptr;
+      query->query_sparse_values.length = 0; query->filter = nullptr;
+      query->include_vector = false; query->include_doc_id = true;
+      query->output_fields = nullptr; query->query_params = nullptr;
+      query->params_type = ZVEC_INDEX_TYPE_UNDEFINED; return query;)
+  return nullptr;
+}
+
+void zvec_vector_query_destroy(ZVecVectorQuery *query) {
+  if (query) {
+    if (query->field_name) {
+      zvec_free_string(query->field_name);
+    }
+    if (query->filter) {
+      zvec_free_string(query->filter);
+    }
+    if (query->output_fields) {
+      zvec_string_array_destroy(query->output_fields);
+    }
+    if (query->query_params) {
+      // Delete type-specific params based on params_type
+      switch (query->params_type) {
+        case ZVEC_INDEX_TYPE_HNSW:
+          delete static_cast<ZVecHnswQueryParams *>(query->query_params);
+          break;
+        case ZVEC_INDEX_TYPE_IVF:
+          delete static_cast<ZVecIVFQueryParams *>(query->query_params);
+          break;
+        case ZVEC_INDEX_TYPE_FLAT:
+          delete static_cast<ZVecFlatQueryParams *>(query->query_params);
+          break;
+        default:
+          delete static_cast<ZVecQueryParams *>(query->query_params);
+          break;
+      }
+    }
+    delete query;
+  }
+}
+
+ZVecErrorCode zvec_vector_query_set_topk(ZVecVectorQuery *query, int topk) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->topk = topk;
+  return ZVEC_OK;
+}
+
+int zvec_vector_query_get_topk(const ZVecVectorQuery *query) {
+  if (!query) {
+    return 10;
+  }
+  return query->topk;
+}
+
+ZVecErrorCode zvec_vector_query_set_field_name(ZVecVectorQuery *query,
+                                               const char *field_name) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (query->field_name) {
+    zvec_free_string(query->field_name);
+  }
+  query->field_name = zvec_string_create(field_name);
+  return ZVEC_OK;
+}
+
+const char *zvec_vector_query_get_field_name(const ZVecVectorQuery *query) {
+  if (!query || !query->field_name) {
+    return nullptr;
+  }
+  return query->field_name->data;
+}
+
+ZVecErrorCode zvec_vector_query_set_query_vector(ZVecVectorQuery *query,
+                                                 const void *data,
+                                                 size_t size) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->query_vector.data = (const uint8_t *)data;
+  query->query_vector.length = size;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_vector_query_set_filter(ZVecVectorQuery *query,
+                                           const char *filter) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (query->filter) {
+    zvec_free_string(query->filter);
+  }
+  if (filter && strlen(filter) > 0) {
+    query->filter = zvec_string_create(filter);
+  } else {
+    query->filter = nullptr;
+  }
+  return ZVEC_OK;
+}
+
+const char *zvec_vector_query_get_filter(const ZVecVectorQuery *query) {
+  if (!query || !query->filter) {
+    return nullptr;
+  }
+  return query->filter->data;
+}
+
+ZVecErrorCode zvec_vector_query_set_include_vector(ZVecVectorQuery *query,
+                                                   bool include) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->include_vector = include;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_vector_query_set_include_doc_id(ZVecVectorQuery *query,
+                                                   bool include) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->include_doc_id = include;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_vector_query_set_output_fields(ZVecVectorQuery *query,
+                                                  const char **fields,
+                                                  size_t count) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (query->output_fields) {
+    zvec_string_array_destroy(query->output_fields);
+  }
+  if (fields && count > 0) {
+    query->output_fields = zvec_string_array_create_from_strings(fields, count);
+  } else {
+    query->output_fields = nullptr;
+  }
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_vector_query_set_query_params(ZVecVectorQuery *query,
+                                                 void *params) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  // Note: We don't delete old params here, caller should manage lifetime
+  query->query_params = params;
+  // Set params_type based on the type of params (caller should ensure
+  // consistency) For now, we assume params is one of the known types
+  if (params) {
+    // We can't automatically determine the type, so we'll need to trust the
+    // caller to set the correct type via a separate call if needed
+    query->params_type = ZVEC_INDEX_TYPE_UNDEFINED;
+  }
+  return ZVEC_OK;
+}
+
+// GroupByVectorQuery functions
+
+ZVecGroupByVectorQuery *zvec_group_by_vector_query_create(void) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create ZVecGroupByVectorQuery",
+      ZVecGroupByVectorQuery *query = new ZVecGroupByVectorQuery();
+      query->field_name = nullptr; query->query_vector.data = nullptr;
+      query->query_vector.length = 0;
+      query->query_sparse_indices.data = nullptr;
+      query->query_sparse_indices.length = 0;
+      query->query_sparse_values.data = nullptr;
+      query->query_sparse_values.length = 0; query->filter = nullptr;
+      query->include_vector = false; query->output_fields = nullptr;
+      query->group_by_field_name = nullptr; query->group_count = 0;
+      query->group_topk = 0; query->query_params = nullptr;
+      query->params_type = ZVEC_INDEX_TYPE_UNDEFINED; return query;)
+  return nullptr;
+}
+
+void zvec_group_by_vector_query_destroy(ZVecGroupByVectorQuery *query) {
+  if (query) {
+    if (query->field_name) {
+      zvec_free_string(query->field_name);
+    }
+    if (query->filter) {
+      zvec_free_string(query->filter);
+    }
+    if (query->output_fields) {
+      zvec_string_array_destroy(query->output_fields);
+    }
+    if (query->group_by_field_name) {
+      zvec_free_string(query->group_by_field_name);
+    }
+    if (query->query_params) {
+      switch (query->params_type) {
+        case ZVEC_INDEX_TYPE_HNSW:
+          delete static_cast<ZVecHnswQueryParams *>(query->query_params);
+          break;
+        case ZVEC_INDEX_TYPE_IVF:
+          delete static_cast<ZVecIVFQueryParams *>(query->query_params);
+          break;
+        case ZVEC_INDEX_TYPE_FLAT:
+          delete static_cast<ZVecFlatQueryParams *>(query->query_params);
+          break;
+        default:
+          delete static_cast<ZVecQueryParams *>(query->query_params);
+          break;
+      }
+    }
+    delete query;
+  }
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_field_name(
+    ZVecGroupByVectorQuery *query, const char *field_name) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (query->field_name) {
+    zvec_free_string(query->field_name);
+  }
+  query->field_name = zvec_string_create(field_name);
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_group_by_field_name(
+    ZVecGroupByVectorQuery *query, const char *field_name) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (query->group_by_field_name) {
+    zvec_free_string(query->group_by_field_name);
+  }
+  query->group_by_field_name = zvec_string_create(field_name);
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_group_count(
+    ZVecGroupByVectorQuery *query, uint32_t count) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->group_count = count;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_group_topk(
+    ZVecGroupByVectorQuery *query, uint32_t topk) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->group_topk = topk;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_query_vector(
+    ZVecGroupByVectorQuery *query, const void *data, size_t size) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->query_vector.data = (const uint8_t *)data;
+  query->query_vector.length = size;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_filter(
+    ZVecGroupByVectorQuery *query, const char *filter) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (query->filter) {
+    zvec_free_string(query->filter);
+  }
+  if (filter && strlen(filter) > 0) {
+    query->filter = zvec_string_create(filter);
+  } else {
+    query->filter = nullptr;
+  }
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_include_vector(
+    ZVecGroupByVectorQuery *query, bool include) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->include_vector = include;
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_output_fields(
+    ZVecGroupByVectorQuery *query, const char **fields, size_t count) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (query->output_fields) {
+    zvec_string_array_destroy(query->output_fields);
+  }
+  if (fields && count > 0) {
+    query->output_fields = zvec_string_array_create_from_strings(fields, count);
+  } else {
+    query->output_fields = nullptr;
+  }
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_group_by_vector_query_set_query_params(
+    ZVecGroupByVectorQuery *query, void *params) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Group by vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  query->query_params = params;
+  query->params_type = ZVEC_INDEX_TYPE_UNDEFINED;
+  return ZVEC_OK;
+}
 
 // =============================================================================
 // Index Interface Implementation
@@ -4575,23 +6429,25 @@ default: {
         auto coll_ptr =
             reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-        zvec::DataType data_type = convert_data_type(field_schema->data_type);
+        zvec::DataType data_type =
+            convert_data_type(zvec_field_schema_get_data_type(field_schema));
         if (data_type == zvec::DataType::UNDEFINED) {
           set_last_error("Invalid data type");
           return ZVEC_ERROR_INVALID_ARGUMENT;
         }
 
-        std::string field_name(field_schema->name->data,
-                               field_schema->name->length);
+        std::string field_name(zvec_field_schema_get_name(field_schema));
         bool is_vector_field = check_is_vector_field(*field_schema);
         zvec::FieldSchema::Ptr schema;
         if (is_vector_field) {
-          schema = std::make_shared<zvec::FieldSchema>(field_name, data_type,
-                                                       field_schema->dimension,
-                                                       field_schema->nullable);
+          schema = std::make_shared<zvec::FieldSchema>(
+              field_name, data_type,
+              zvec_field_schema_get_dimension(field_schema),
+              zvec_field_schema_is_nullable(field_schema));
         } else {
-          schema = std::make_shared<zvec::FieldSchema>(field_name, data_type,
-                                                       field_schema->nullable);
+          schema = std::make_shared<zvec::FieldSchema>(
+              field_name, data_type,
+              zvec_field_schema_is_nullable(field_schema));
         }
 
         std::string expr = expression ? expression : "";
@@ -4639,7 +6495,7 @@ default: {
         zvec::FieldSchema::Ptr schema = nullptr;
         if (new_schema) {
           auto status =
-              convert_zvec_field_schema_to_internal(*new_schema, schema);
+              convert_zvec_field_schema_to_internal(new_schema, schema);
           if (!status.ok()) {
             set_last_error(status.message());
             return ZVEC_ERROR_INVALID_ARGUMENT;
@@ -4977,9 +6833,12 @@ default: {
                                    const ZVecVectorQuery *query) {
     internal_query.topk_ = query->topk;
     internal_query.field_name_ =
-        std::string(query->field_name.data, query->field_name.length);
+        query->field_name
+            ? std::string(query->field_name->data, query->field_name->length)
+            : "";
     internal_query.filter_ =
-        std::string(query->filter.data, query->filter.length);
+        query->filter ? std::string(query->filter->data, query->filter->length)
+                      : "";
     internal_query.include_vector_ = query->include_vector;
     internal_query.include_doc_id_ = query->include_doc_id;
 
@@ -5006,12 +6865,12 @@ default: {
     }
 
     // Output fields conversion
-    if (query->output_fields.count > 0) {
+    if (query->output_fields && query->output_fields->count > 0) {
       internal_query.output_fields_ = std::vector<std::string>();
-      for (size_t i = 0; i < query->output_fields.count; ++i) {
+      for (size_t i = 0; i < query->output_fields->count; ++i) {
         internal_query.output_fields_->emplace_back(
-            query->output_fields.strings[i].data,
-            query->output_fields.strings[i].length);
+            query->output_fields->strings[i].data,
+            query->output_fields->strings[i].length);
       }
     }
   }
@@ -5023,42 +6882,42 @@ default: {
 
     // QueryParams conversion
     if (query->query_params) {
-      auto query_params = std::make_shared<zvec::QueryParams>(
-          static_cast<zvec::IndexType>(query->query_params->index_type));
-
-      switch (query->query_params->index_type) {
+      switch (query->params_type) {
         case ZVEC_INDEX_TYPE_HNSW: {
-          auto hnsw_params = std::make_shared<zvec::HnswQueryParams>(
-              query->query_params->params.hnsw_params.ef,
-              query->query_params->params.hnsw_params.base.radius,
-              query->query_params->params.hnsw_params.base.is_linear,
-              query->query_params->params.hnsw_params.base.is_using_refiner);
-          internal_query.query_params_ = hnsw_params;
+          auto hnsw_params =
+              static_cast<ZVecHnswQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::HnswQueryParams>(
+              hnsw_params->ef, hnsw_params->base.radius,
+              hnsw_params->base.is_linear, hnsw_params->base.is_using_refiner);
+          internal_query.query_params_ = internal_params;
           break;
         }
         case ZVEC_INDEX_TYPE_IVF: {
-          auto ivf_params = std::make_shared<zvec::IVFQueryParams>(
-              query->query_params->params.ivf_params.nprobe,
-              query->query_params->params.ivf_params.base.is_using_refiner,
-              query->query_params->params.ivf_params.scale_factor);
-          internal_query.query_params_ = ivf_params;
+          auto ivf_params =
+              static_cast<ZVecIVFQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::IVFQueryParams>(
+              ivf_params->nprobe, ivf_params->base.is_using_refiner,
+              ivf_params->scale_factor);
+          internal_query.query_params_ = internal_params;
           break;
         }
         case ZVEC_INDEX_TYPE_FLAT: {
-          auto flat_params = std::make_shared<zvec::FlatQueryParams>(
-              query->query_params->params.flat_params.base.is_using_refiner,
-              query->query_params->params.flat_params.scale_factor);
-          internal_query.query_params_ = flat_params;
+          auto flat_params =
+              static_cast<ZVecFlatQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::FlatQueryParams>(
+              flat_params->base.is_using_refiner, flat_params->scale_factor);
+          internal_query.query_params_ = internal_params;
           break;
         }
         default: {
-          query_params->set_radius(
-              query->query_params->params.base_params.radius);
-          query_params->set_is_linear(
-              query->query_params->params.base_params.is_linear);
-          query_params->set_is_using_refiner(
-              query->query_params->params.base_params.is_using_refiner);
-          internal_query.query_params_ = query_params;
+          auto base_params =
+              static_cast<ZVecQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::QueryParams>(
+              static_cast<zvec::IndexType>(base_params->index_type));
+          internal_params->set_radius(base_params->radius);
+          internal_params->set_is_linear(base_params->is_linear);
+          internal_params->set_is_using_refiner(base_params->is_using_refiner);
+          internal_query.query_params_ = internal_params;
           break;
         }
       }
@@ -5069,12 +6928,18 @@ default: {
   void convert_groupby_query_params(zvec::GroupByVectorQuery &internal_query,
                                     const ZVecGroupByVectorQuery *query) {
     internal_query.field_name_ =
-        std::string(query->field_name.data, query->field_name.length);
+        query->field_name
+            ? std::string(query->field_name->data, query->field_name->length)
+            : "";
     internal_query.filter_ =
-        std::string(query->filter.data, query->filter.length);
+        query->filter ? std::string(query->filter->data, query->filter->length)
+                      : "";
     internal_query.include_vector_ = query->include_vector;
-    internal_query.group_by_field_name_ = std::string(
-        query->group_by_field_name.data, query->group_by_field_name.length);
+    internal_query.group_by_field_name_ =
+        query->group_by_field_name
+            ? std::string(query->group_by_field_name->data,
+                          query->group_by_field_name->length)
+            : "";
     internal_query.group_count_ = query->group_count;
     internal_query.group_topk_ = query->group_topk;
 
@@ -5098,54 +6963,54 @@ default: {
           query->query_sparse_values.length);
     }
 
-    if (query->output_fields.count > 0) {
+    if (query->output_fields && query->output_fields->count > 0) {
       if (!internal_query.output_fields_.has_value()) {
         internal_query.output_fields_ = std::vector<std::string>();
       }
-      for (size_t i = 0; i < query->output_fields.count; ++i) {
+      for (size_t i = 0; i < query->output_fields->count; ++i) {
         internal_query.output_fields_->push_back(
-            std::string(query->output_fields.strings[i].data,
-                        query->output_fields.strings[i].length));
+            std::string(query->output_fields->strings[i].data,
+                        query->output_fields->strings[i].length));
       }
     }
 
     if (query->query_params) {
-      auto query_params = std::make_shared<zvec::QueryParams>(
-          static_cast<zvec::IndexType>(query->query_params->index_type));
-
-      switch (query->query_params->index_type) {
+      switch (query->params_type) {
         case ZVEC_INDEX_TYPE_HNSW: {
-          auto hnsw_params = std::make_shared<zvec::HnswQueryParams>(
-              query->query_params->params.hnsw_params.ef,
-              query->query_params->params.hnsw_params.base.radius,
-              query->query_params->params.hnsw_params.base.is_linear,
-              query->query_params->params.hnsw_params.base.is_using_refiner);
-          internal_query.query_params_ = hnsw_params;
+          auto hnsw_params =
+              static_cast<ZVecHnswQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::HnswQueryParams>(
+              hnsw_params->ef, hnsw_params->base.radius,
+              hnsw_params->base.is_linear, hnsw_params->base.is_using_refiner);
+          internal_query.query_params_ = internal_params;
           break;
         }
         case ZVEC_INDEX_TYPE_IVF: {
-          auto ivf_params = std::make_shared<zvec::IVFQueryParams>(
-              query->query_params->params.ivf_params.nprobe,
-              query->query_params->params.ivf_params.base.is_using_refiner,
-              query->query_params->params.ivf_params.scale_factor);
-          internal_query.query_params_ = ivf_params;
+          auto ivf_params =
+              static_cast<ZVecIVFQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::IVFQueryParams>(
+              ivf_params->nprobe, ivf_params->base.is_using_refiner,
+              ivf_params->scale_factor);
+          internal_query.query_params_ = internal_params;
           break;
         }
         case ZVEC_INDEX_TYPE_FLAT: {
-          auto flat_params = std::make_shared<zvec::FlatQueryParams>(
-              query->query_params->params.flat_params.base.is_using_refiner,
-              query->query_params->params.flat_params.scale_factor);
-          internal_query.query_params_ = flat_params;
+          auto flat_params =
+              static_cast<ZVecFlatQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::FlatQueryParams>(
+              flat_params->base.is_using_refiner, flat_params->scale_factor);
+          internal_query.query_params_ = internal_params;
           break;
         }
         default: {
-          query_params->set_radius(
-              query->query_params->params.base_params.radius);
-          query_params->set_is_linear(
-              query->query_params->params.base_params.is_linear);
-          query_params->set_is_using_refiner(
-              query->query_params->params.base_params.is_using_refiner);
-          internal_query.query_params_ = query_params;
+          auto base_params =
+              static_cast<ZVecQueryParams *>(query->query_params);
+          auto internal_params = std::make_shared<zvec::QueryParams>(
+              static_cast<zvec::IndexType>(base_params->index_type));
+          internal_params->set_radius(base_params->radius);
+          internal_params->set_is_linear(base_params->is_linear);
+          internal_params->set_is_using_refiner(base_params->is_using_refiner);
+          internal_query.query_params_ = internal_params;
           break;
         }
       }

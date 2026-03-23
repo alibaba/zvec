@@ -409,43 +409,37 @@ typedef enum {
  */
 typedef enum { ZVEC_LOG_TYPE_CONSOLE = 0, ZVEC_LOG_TYPE_FILE = 1 } ZVecLogType;
 
-/**
- * @brief Console log configuration structure
- */
-typedef struct {
-  ZVecLogLevel level; /**< Log level */
-} ZVecConsoleLogConfig;
+// =============================================================================
+// Configuration Structures (Opaque Pointer Pattern)
+// =============================================================================
 
 /**
- * @brief File log configuration structure
+ * @brief Console log configuration (opaque pointer)
+ * Corresponds to zvec::GlobalConfig::ConsoleLogConfig
+ * Use zvec_config_console_log_create() to create and
+ * zvec_config_console_log_destroy() to destroy
  */
-typedef struct {
-  ZVecLogLevel level;    /**< Log level */
-  ZVecString dir;        /**< Log directory */
-  ZVecString basename;   /**< Log file base name */
-  uint32_t file_size;    /**< Log file size (MB) */
-  uint32_t overdue_days; /**< Log expiration days */
-} ZVecFileLogConfig;
+typedef struct ZVecConsoleLogConfig ZVecConsoleLogConfig;
 
 /**
- * @brief ZVec configuration data structure (corresponds to zvec::ConfigData)
+ * @brief File log configuration (opaque pointer)
+ * Corresponds to zvec::GlobalConfig::FileLogConfig
+ * Use zvec_config_file_log_create() to create and
+ * zvec_config_file_log_destroy() to destroy
  */
-typedef struct {
-  uint64_t memory_limit_bytes; /**< Memory limit in bytes */
+typedef struct ZVecFileLogConfig ZVecFileLogConfig;
 
-  // log
-  ZVecLogType log_type;
-  void *log_config; /**< Log configuration (ZVecConsoleLogConfig or
-                       ZVecFileLogConfig) */
+/**
+ * @brief Configuration data (opaque pointer)
+ * Corresponds to zvec::GlobalConfig::ConfigData
+ * Use zvec_config_data_create() to create and
+ * zvec_config_data_destroy() to destroy
+ */
+typedef struct ZVecConfigData ZVecConfigData;
 
-  // query
-  uint32_t query_thread_count;        /**< Query thread count */
-  float invert_to_forward_scan_ratio; /**< Inverted to forward scan ratio */
-  float brute_force_by_keys_ratio;    /**< Brute force by keys ratio */
-
-  // optimize
-  uint32_t optimize_thread_count; /**< Optimize thread count */
-} ZVecConfigData;
+// =============================================================================
+// Log Configuration Management Functions
+// =============================================================================
 
 /**
  * @brief Create console log configuration
@@ -484,6 +478,111 @@ zvec_config_console_log_destroy(ZVecConsoleLogConfig *config);
 ZVEC_EXPORT void ZVEC_CALL
 zvec_config_file_log_destroy(ZVecFileLogConfig *config);
 
+/**
+ * @brief Get log level from console log config
+ * @param config Console log configuration pointer
+ * @return ZVecLogLevel Log level
+ */
+ZVEC_EXPORT ZVecLogLevel ZVEC_CALL
+zvec_config_console_log_get_level(const ZVecConsoleLogConfig *config);
+
+/**
+ * @brief Set log level in console log config
+ * @param config Console log configuration pointer
+ * @param level Log level
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_console_log_set_level(
+    ZVecConsoleLogConfig *config, ZVecLogLevel level);
+
+/**
+ * @brief Get log level from file log config
+ * @param config File log configuration pointer
+ * @return ZVecLogLevel Log level
+ */
+ZVEC_EXPORT ZVecLogLevel ZVEC_CALL
+zvec_config_file_log_get_level(const ZVecFileLogConfig *config);
+
+/**
+ * @brief Set log level in file log config
+ * @param config File log configuration pointer
+ * @param level Log level
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_config_file_log_set_level(ZVecFileLogConfig *config, ZVecLogLevel level);
+
+/**
+ * @brief Get log directory from file log config
+ * @param config File log configuration pointer
+ * @return const char* Log directory (owned by config, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_config_file_log_get_dir(const ZVecFileLogConfig *config);
+
+/**
+ * @brief Set log directory in file log config
+ * @param config File log configuration pointer
+ * @param dir Log directory
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_config_file_log_set_dir(ZVecFileLogConfig *config, const char *dir);
+
+/**
+ * @brief Get log file basename from file log config
+ * @param config File log configuration pointer
+ * @return const char* Log file basename (owned by config, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_config_file_log_get_basename(const ZVecFileLogConfig *config);
+
+/**
+ * @brief Set log file basename in file log config
+ * @param config File log configuration pointer
+ * @param basename Log file basename
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_file_log_set_basename(
+    ZVecFileLogConfig *config, const char *basename);
+
+/**
+ * @brief Get log file size from file log config
+ * @param config File log configuration pointer
+ * @return uint32_t Log file size in MB
+ */
+ZVEC_EXPORT uint32_t ZVEC_CALL
+zvec_config_file_log_get_file_size(const ZVecFileLogConfig *config);
+
+/**
+ * @brief Set log file size in file log config
+ * @param config File log configuration pointer
+ * @param file_size Log file size in MB
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_file_log_set_file_size(
+    ZVecFileLogConfig *config, uint32_t file_size);
+
+/**
+ * @brief Get log overdue days from file log config
+ * @param config File log configuration pointer
+ * @return uint32_t Log overdue days
+ */
+ZVEC_EXPORT uint32_t ZVEC_CALL
+zvec_config_file_log_get_overdue_days(const ZVecFileLogConfig *config);
+
+/**
+ * @brief Set log overdue days in file log config
+ * @param config File log configuration pointer
+ * @param days Log overdue days
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_config_file_log_set_overdue_days(ZVecFileLogConfig *config, uint32_t days);
+
+// =============================================================================
+// Configuration Data Management Functions
+// =============================================================================
 
 /**
  * @brief Create configuration data
@@ -507,14 +606,49 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_data_set_memory_limit(
     ZVecConfigData *config, uint64_t memory_limit_bytes);
 
 /**
+ * @brief Get memory limit from configuration data
+ * @param config Configuration data pointer
+ * @return uint64_t Memory limit in bytes
+ */
+ZVEC_EXPORT uint64_t ZVEC_CALL
+zvec_config_data_get_memory_limit(const ZVecConfigData *config);
+
+/**
  * @brief Set log configuration in configuration data
  * @param config Configuration data pointer
+ * @param log_type Log type (console or file)
  * @param log_config Log configuration pointer (ownership is transferred to
  * config, do not free separately)
  * @return ZVecErrorCode Error code
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_data_set_log_config(
     ZVecConfigData *config, ZVecLogType log_type, void *log_config);
+
+/**
+ * @brief Get log type from configuration data
+ * @param config Configuration data pointer
+ * @return ZVecLogType Log type
+ */
+ZVEC_EXPORT ZVecLogType ZVEC_CALL
+zvec_config_data_get_log_type(const ZVecConfigData *config);
+
+/**
+ * @brief Get console log config from configuration data
+ * @param config Configuration data pointer
+ * @return ZVecConsoleLogConfig* Console log configuration (owned by config, do
+ * not destroy)
+ */
+ZVEC_EXPORT ZVecConsoleLogConfig *ZVEC_CALL
+zvec_config_data_get_console_log_config(const ZVecConfigData *config);
+
+/**
+ * @brief Get file log config from configuration data
+ * @param config Configuration data pointer
+ * @return ZVecFileLogConfig* File log configuration (owned by config, do not
+ * destroy)
+ */
+ZVEC_EXPORT ZVecFileLogConfig *ZVEC_CALL
+zvec_config_data_get_file_log_config(const ZVecConfigData *config);
 
 /**
  * @brief Set query thread count in configuration data
@@ -526,6 +660,50 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_data_set_query_thread_count(
     ZVecConfigData *config, uint32_t thread_count);
 
 /**
+ * @brief Get query thread count from configuration data
+ * @param config Configuration data pointer
+ * @return uint32_t Query thread count
+ */
+ZVEC_EXPORT uint32_t ZVEC_CALL
+zvec_config_data_get_query_thread_count(const ZVecConfigData *config);
+
+/**
+ * @brief Set invert to forward scan ratio in configuration data
+ * @param config Configuration data pointer
+ * @param ratio Invert to forward scan ratio
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_config_data_set_invert_to_forward_scan_ratio(ZVecConfigData *config,
+                                                  float ratio);
+
+/**
+ * @brief Get invert to forward scan ratio from configuration data
+ * @param config Configuration data pointer
+ * @return float Invert to forward scan ratio
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_config_data_get_invert_to_forward_scan_ratio(const ZVecConfigData *config);
+
+/**
+ * @brief Set brute force by keys ratio in configuration data
+ * @param config Configuration data pointer
+ * @param ratio Brute force by keys ratio
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_config_data_set_brute_force_by_keys_ratio(ZVecConfigData *config,
+                                               float ratio);
+
+/**
+ * @brief Get brute force by keys ratio from configuration data
+ * @param config Configuration data pointer
+ * @return float Brute force by keys ratio
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_config_data_get_brute_force_by_keys_ratio(const ZVecConfigData *config);
+
+/**
  * @brief Set optimize thread count in configuration data
  * @param config Configuration data pointer
  * @param thread_count Optimize thread count
@@ -533,6 +711,14 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_data_set_query_thread_count(
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_data_set_optimize_thread_count(
     ZVecConfigData *config, uint32_t thread_count);
+
+/**
+ * @brief Get optimize thread count from configuration data
+ * @param config Configuration data pointer
+ * @return uint32_t Optimize thread count
+ */
+ZVEC_EXPORT uint32_t ZVEC_CALL
+zvec_config_data_get_optimize_thread_count(const ZVecConfigData *config);
 
 // =============================================================================
 // Initialization and Cleanup Interface
@@ -641,67 +827,28 @@ typedef enum {
 typedef struct ZVecCollection ZVecCollection;
 
 // =============================================================================
-// Index Parameters Structures
+// Index Parameters Structures (Opaque Pointer Pattern)
 // =============================================================================
 
 /**
- * @brief Flattened index parameters structure
+ * @brief Index parameters (opaque pointer)
  *
- * Uses a union to store specific parameters for different index types,
- * avoiding C++-style inheritance nesting. Supports stack allocation,
- * reducing malloc/free overhead.
+ * Use zvec_index_params_create() to create and zvec_index_params_destroy() to
+ * destroy. Specific parameters are set via type-specific setter functions.
  */
-typedef struct {
-  ZVecIndexType index_type;   /**< Index type */
-  ZVecMetricType metric_type; /**< Distance metric type (for vector indexes) */
-  ZVecQuantizeType quantize_type; /**< Quantization type (for vector indexes) */
-
-  union {
-    /** @brief Inverted index specific parameters */
-    struct {
-      bool enable_range_optimization; /**< Whether to enable range optimization
-                                       */
-      bool enable_extended_wildcard; /**< Whether to enable extended wildcard */
-    } invert;
-
-    /** @brief HNSW index specific parameters */
-    struct {
-      int m;               /**< Graph connectivity parameter */
-      int ef_construction; /**< Exploration factor during construction */
-      int ef_search;       /**< Exploration factor during search */
-    } hnsw;
-
-    /** @brief IVF index specific parameters */
-    struct {
-      int n_list;    /**< Number of cluster centers */
-      int n_iters;   /**< Number of iterations */
-      bool use_soar; /**< Whether to use SOAR algorithm */
-      int n_probe;   /**< Number of clusters to probe during search */
-    } ivf;
-
-    /** @brief Flat index has no additional parameters,
-     * reserved for alignment */
-    struct {
-      int _reserved;
-    } flat;
-  };
-} ZVecIndexParams;
+typedef struct ZVecIndexParams ZVecIndexParams;
 
 // =============================================================================
-// Field Schema Structures
+// Field Schema Structures (Opaque Pointer Pattern)
 // =============================================================================
 
 /**
- * @brief Field schema structure
+ * @brief Field schema (opaque pointer)
+ *
+ * Use zvec_field_schema_create() to create and zvec_field_schema_destroy() to
+ * destroy. Fields are accessed via getter/setter functions.
  */
-typedef struct {
-  ZVecString *name;       /**< Field name */
-  ZVecDataType data_type; /**< Data type */
-  bool nullable;          /**< Whether nullable */
-  uint32_t dimension;     /**< Vector dimension (only used for vector fields) */
-  ZVecIndexParams index_params; /**< Index parameters (embedded, not pointer) */
-  bool has_index;               /**< Whether this field has an index */
-} ZVecFieldSchema;
+typedef struct ZVecFieldSchema ZVecFieldSchema;
 
 
 // =============================================================================
@@ -709,151 +856,205 @@ typedef struct {
 // =============================================================================
 
 /**
- * @brief Initialize index parameters with default values based on index type
- * @param params Index parameters structure pointer
+ * @brief Create index parameters
  * @param index_type Index type
- * @param metric_type Metric type (for vector indexes)
+ * @return Pointer to newly created ZVecIndexParams, or NULL on error
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_init(ZVecIndexParams *params,
-                                                  ZVecIndexType index_type,
-                                                  ZVecMetricType metric_type);
+ZVEC_EXPORT ZVecIndexParams *ZVEC_CALL
+zvec_index_params_create(ZVecIndexType index_type);
+
+/**
+ * @brief Destroy index parameters
+ * @param params Index parameters to destroy
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_index_params_destroy(ZVecIndexParams *params);
+
+/**
+ * @brief Get index type
+ * @param params Index parameters (must not be NULL)
+ * @return Index type
+ */
+ZVEC_EXPORT ZVecIndexType ZVEC_CALL
+zvec_index_params_get_type(const ZVecIndexParams *params);
+
+/**
+ * @brief Set metric type (for vector indexes)
+ * @param params Index parameters (must be vector index type)
+ * @param metric_type Metric type
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_set_metric_type(
+    ZVecIndexParams *params, ZVecMetricType metric_type);
+
+/**
+ * @brief Get metric type
+ * @param params Index parameters (must not be NULL)
+ * @return Metric type
+ */
+ZVEC_EXPORT ZVecMetricType ZVEC_CALL
+zvec_index_params_get_metric_type(const ZVecIndexParams *params);
+
+/**
+ * @brief Set quantize type (for vector indexes)
+ * @param params Index parameters (must be vector index type)
+ * @param quantize_type Quantize type
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_set_quantize_type(
+    ZVecIndexParams *params, ZVecQuantizeType quantize_type);
+
+/**
+ * @brief Get quantize type
+ * @param params Index parameters (must not be NULL)
+ * @return Quantize type
+ */
+ZVEC_EXPORT ZVecQuantizeType ZVEC_CALL
+zvec_index_params_get_quantize_type(const ZVecIndexParams *params);
 
 /**
  * @brief Set HNSW specific parameters
- * @param params Index parameters structure pointer (must be HNSW type)
+ * @param params Index parameters (must be HNSW type)
  * @param m Graph connectivity parameter
  * @param ef_construction Construction exploration factor
- * @param ef_search Search exploration factor
+ * @return ZVEC_OK on success, error code on failure
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_set_hnsw(ZVecIndexParams *params,
-                                                      int m,
-                                                      int ef_construction,
-                                                      int ef_search);
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_set_hnsw_params(
+    ZVecIndexParams *params, int m, int ef_construction);
+
+/**
+ * @brief Get HNSW m parameter
+ * @param params Index parameters (must not be NULL)
+ * @return m parameter
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_index_params_get_hnsw_m(const ZVecIndexParams *params);
+
+/**
+ * @brief Get HNSW ef_construction parameter
+ * @param params Index parameters (must not be NULL)
+ * @return ef_construction parameter
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_index_params_get_hnsw_ef_construction(const ZVecIndexParams *params);
+
+/**
+ * @brief Get HNSW parameters (all at once)
+ * @param params Index parameters (must not be NULL)
+ * @param out_m Output parameter for m
+ * @param out_ef_construction Output parameter for ef_construction
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_get_hnsw_params(
+    const ZVecIndexParams *params, int *out_m, int *out_ef_construction);
 
 /**
  * @brief Set IVF specific parameters
- * @param params Index parameters structure pointer (must be IVF type)
+ * @param params Index parameters (must be IVF type)
  * @param n_list Number of cluster centers
  * @param n_iters Number of iterations
  * @param use_soar Whether to use SOAR algorithm
- * @param n_probe Search probe count
+ * @return ZVEC_OK on success, error code on failure
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_set_ivf(ZVecIndexParams *params,
-                                                     int n_list, int n_iters,
-                                                     bool use_soar,
-                                                     int n_probe);
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_set_ivf_params(
+    ZVecIndexParams *params, int n_list, int n_iters, bool use_soar);
+
+/**
+ * @brief Get IVF parameters (all at once)
+ * @param params Index parameters (must not be NULL)
+ * @param out_n_list Output parameter for n_list
+ * @param out_n_iters Output parameter for n_iters
+ * @param out_use_soar Output parameter for use_soar
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_index_params_get_ivf_params(const ZVecIndexParams *params, int *out_n_list,
+                                 int *out_n_iters, bool *out_use_soar);
+
+/**
+ * @brief Get invert index parameters (all at once)
+ * @param params Index parameters (must not be NULL)
+ * @param out_enable_range_opt Output parameter for enable_range_optimization
+ * @param out_enable_wildcard Output parameter for enable_extended_wildcard
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_get_invert_params(
+    const ZVecIndexParams *params, bool *out_enable_range_opt,
+    bool *out_enable_wildcard);
 
 /**
  * @brief Set invert index specific parameters
- * @param params Index parameters structure pointer (must be INVERT type)
+ * @param params Index parameters (must be INVERT type)
  * @param enable_range_opt Whether to enable range optimization
  * @param enable_wildcard Whether to enable extended wildcard
+ * @return ZVEC_OK on success, error code on failure
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_index_params_set_invert(ZVecIndexParams *params,
-                                                        bool enable_range_opt,
-                                                        bool enable_wildcard);
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_set_invert_params(
+    ZVecIndexParams *params, bool enable_range_opt, bool enable_wildcard);
 
 // =============================================================================
-// Query Parameters Structures
-// =============================================================================
-
-/**
- * @brief Base query parameters structure (corresponds to zvec::QueryParams)
- */
-typedef struct {
-  ZVecIndexType index_type; /**< Index type */
-  float radius;             /**< Search radius */
-  bool is_linear;           /**< Whether linear search */
-  bool is_using_refiner;    /**< Whether using refiner */
-} ZVecQueryParams;
-
-/**
- * @brief HNSW query parameters structure (corresponds to zvec::HnswQueryParams)
- */
-typedef struct {
-  ZVecQueryParams base; /**< Inherit base query parameters */
-  int ef;               /**< Exploration factor during search */
-} ZVecHnswQueryParams;
-
-/**
- * @brief IVF query parameters structure (corresponds to zvec::IVFQueryParams)
- */
-typedef struct {
-  ZVecQueryParams base; /**< Inherit base query parameters */
-  int nprobe;           /**< Number of clusters to probe during search */
-  float scale_factor;   /**< Scale factor */
-} ZVecIVFQueryParams;
-
-/**
- * @brief Flat query parameters structure (corresponds to zvec::FlatQueryParams)
- */
-typedef struct {
-  ZVecQueryParams base; /**< Inherit base query parameters */
-  float scale_factor;   /**< Scale factor */
-} ZVecFlatQueryParams;
-
-/**
- * @brief Query parameters union (supports query parameters for different index
- * types)
- */
-typedef struct {
-  ZVecIndexType index_type; /**< Index type, used to distinguish the parameter
-                               type stored in the union */
-  union {
-    ZVecQueryParams base_params;     /**< Base query parameters */
-    ZVecHnswQueryParams hnsw_params; /**< HNSW query parameters */
-    ZVecIVFQueryParams ivf_params;   /**< IVF query parameters */
-    ZVecFlatQueryParams flat_params; /**< Flat query parameters */
-  } params;
-} ZVecQueryParamsUnion;
-
-// =============================================================================
-// Query Structures (Updated Version, Including QueryParams)
+// Query Parameters Structures (Opaque Pointer Pattern)
 // =============================================================================
 
 /**
- * @brief Vector query structure (aligned with zvec::VectorQuery, includes
- * QueryParams)
+ * @brief Base query parameters (opaque pointer)
+ * Corresponds to zvec::QueryParams
+ * Use zvec_query_params_create() to create and zvec_query_params_destroy() to
+ * destroy
  */
-typedef struct {
-  int topk;                   /**< Number of results to return */
-  ZVecString field_name;      /**< Query field name */
-  ZVecByteArray query_vector; /**< Query vector (binary data) */
-  ZVecByteArray
-      query_sparse_indices;          /**< Sparse vector indices (binary data) */
-  ZVecByteArray query_sparse_values; /**< Sparse vector values (binary data) */
-  ZVecString filter;                 /**< Filter expression */
-  bool include_vector;               /**< Whether to include vector data */
-  bool include_doc_id;               /**< Whether to include document ID */
-  ZVecStringArray output_fields;     /**< Output field list (NULL means all) */
-  ZVecQueryParamsUnion *query_params; /**< Query parameters (optional, NULL
-                                         means using default parameters) */
-} ZVecVectorQuery;
+typedef struct ZVecQueryParams ZVecQueryParams;
 
 /**
- * @brief Grouped vector query structure (aligned with zvec::GroupByVectorQuery,
- * includes QueryParams)
+ * @brief HNSW query parameters (opaque pointer)
+ * Corresponds to zvec::HnswQueryParams
+ * Use zvec_query_params_hnsw_create() to create
  */
-typedef struct {
-  ZVecString field_name;      /**< Query field name */
-  ZVecByteArray query_vector; /**< Query vector (binary data) */
-  ZVecByteArray
-      query_sparse_indices;          /**< Sparse vector indices (binary data) */
-  ZVecByteArray query_sparse_values; /**< Sparse vector values (binary data) */
-  ZVecString filter;                 /**< Filter expression */
-  bool include_vector;               /**< Whether to include vector data */
-  ZVecStringArray output_fields;     /**< Output field list */
-  ZVecString group_by_field_name;    /**< Group by field name */
-  uint32_t group_count;              /**< Number of groups */
-  uint32_t group_topk; /**< Number of results to return per group */
-  ZVecQueryParamsUnion *query_params; /**< Query parameters (optional, NULL
-                                         means using default parameters) */
-} ZVecGroupByVectorQuery;
+typedef struct ZVecHnswQueryParams ZVecHnswQueryParams;
+
+/**
+ * @brief IVF query parameters (opaque pointer)
+ * Corresponds to zvec::IVFQueryParams
+ * Use zvec_query_params_ivf_create() to create
+ */
+typedef struct ZVecIVFQueryParams ZVecIVFQueryParams;
+
+/**
+ * @brief Flat query parameters (opaque pointer)
+ * Corresponds to zvec::FlatQueryParams
+ * Use zvec_query_params_flat_create() to create
+ */
+typedef struct ZVecFlatQueryParams ZVecFlatQueryParams;
+
+// Deprecated: ZVecQueryParamsUnion is no longer needed
+// Use specific query params types directly instead
+
+// =============================================================================
+// Query Structures (Updated to use opaque pointer QueryParams)
+// =============================================================================
+
+/**
+ * @brief Vector query structure (opaque pointer)
+ * Aligned with zvec::VectorQuery
+ * Use zvec_vector_query_create() to create and zvec_vector_query_destroy() to
+ * destroy
+ */
+typedef struct ZVecVectorQuery ZVecVectorQuery;
+
+/**
+ * @brief Grouped vector query structure (opaque pointer)
+ * Aligned with zvec::GroupByVectorQuery
+ * Use zvec_group_by_vector_query_create() to create and
+ * zvec_group_by_vector_query_destroy() to destroy
+ */
+typedef struct ZVecGroupByVectorQuery ZVecGroupByVectorQuery;
 
 
 // =============================================================================
 // Query Parameters Management Functions
 // =============================================================================
+
+// -----------------------------------------------------------------------------
+// ZVecQueryParams (Base Query Parameters)
+// -----------------------------------------------------------------------------
 
 /**
  * @brief Create base query parameters
@@ -864,57 +1065,94 @@ ZVEC_EXPORT ZVecQueryParams *ZVEC_CALL
 zvec_query_params_create(ZVecIndexType index_type);
 
 /**
- * @brief Create HNSW query parameters
- * @param index_type Index type (should be ZVEC_INDEX_TYPE_HNSW)
- * @param ef Exploration factor during search
+ * @brief Destroy base query parameters
+ * @param params Query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_query_params_destroy(ZVecQueryParams *params);
+
+/**
+ * @brief Set index type
+ * @param params Query parameters pointer
+ * @param index_type Index type
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_set_index_type(
+    ZVecQueryParams *params, ZVecIndexType index_type);
+
+/**
+ * @brief Get index type
+ * @param params Query parameters pointer
+ * @return ZVecIndexType Index type
+ */
+ZVEC_EXPORT ZVecIndexType ZVEC_CALL
+zvec_query_params_get_index_type(const ZVecQueryParams *params);
+
+/**
+ * @brief Set search radius
+ * @param params Query parameters pointer
  * @param radius Search radius
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_query_params_set_radius(ZVecQueryParams *params, float radius);
+
+/**
+ * @brief Get search radius
+ * @param params Query parameters pointer
+ * @return float Search radius
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_query_params_get_radius(const ZVecQueryParams *params);
+
+/**
+ * @brief Set linear search mode
+ * @param params Query parameters pointer
  * @param is_linear Whether linear search
- * @param is_using_refiner Whether using refiner
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_query_params_set_is_linear(ZVecQueryParams *params, bool is_linear);
+
+/**
+ * @brief Get linear search mode
+ * @param params Query parameters pointer
+ * @return bool Whether linear search
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_query_params_get_is_linear(const ZVecQueryParams *params);
+
+/**
+ * @brief Set whether to use refiner
+ * @param params Query parameters pointer
+ * @param is_using_refiner Whether to use refiner
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_set_is_using_refiner(
+    ZVecQueryParams *params, bool is_using_refiner);
+
+/**
+ * @brief Get whether to use refiner
+ * @param params Query parameters pointer
+ * @return bool Whether to use refiner
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_query_params_get_is_using_refiner(const ZVecQueryParams *params);
+
+// -----------------------------------------------------------------------------
+// ZVecHnswQueryParams (HNSW Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create HNSW query parameters
+ * @param ef Exploration factor during search (default: 40)
+ * @param radius Search radius (default: 0.0)
+ * @param is_linear Whether linear search (default: false)
+ * @param is_using_refiner Whether using refiner (default: false)
  * @return ZVecHnswQueryParams* Pointer to the newly created HNSW query
  * parameters
  */
-ZVEC_EXPORT ZVecHnswQueryParams *ZVEC_CALL
-zvec_query_params_hnsw_create(ZVecIndexType index_type, int ef, float radius,
-                              bool is_linear, bool is_using_refiner);
-
-/**
- * @brief Create IVF query parameters
- * @param index_type Index type (should be ZVEC_INDEX_TYPE_IVF)
- * @param nprobe Number of clusters to probe during search
- * @param is_using_refiner Whether using refiner
- * @param scale_factor Scale factor
- * @return ZVecIVFQueryParams* Pointer to the newly created IVF query parameters
- */
-ZVEC_EXPORT ZVecIVFQueryParams *ZVEC_CALL
-zvec_query_params_ivf_create(ZVecIndexType index_type, int nprobe,
-                             bool is_using_refiner, float scale_factor);
-
-/**
- * @brief Create Flat query parameters
- * @param index_type Index type (should be ZVEC_INDEX_TYPE_FLAT)
- * @param is_using_refiner Whether using refiner
- * @param scale_factor Scale factor
- * @return ZVecFlatQueryParams* Pointer to the newly created Flat query
- * parameters
- */
-ZVEC_EXPORT ZVecFlatQueryParams *ZVEC_CALL zvec_query_params_flat_create(
-    ZVecIndexType index_type, bool is_using_refiner, float scale_factor);
-
-/**
- * @brief Create query parameters union
- * @param index_type Index type
- * @return ZVecQueryParamsUnion* Pointer to the newly created query parameters
- * union
- */
-ZVEC_EXPORT ZVecQueryParamsUnion *ZVEC_CALL
-zvec_query_params_union_create(ZVecIndexType index_type);
-
-
-/**
- * @brief Destroy base query parameters
- * @param params query parameters pointer
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_query_params_destroy(ZVecQueryParams *params);
+ZVEC_EXPORT ZVecHnswQueryParams *ZVEC_CALL zvec_query_params_hnsw_create(
+    int ef, float radius, bool is_linear, bool is_using_refiner);
 
 /**
  * @brief Destroy HNSW query parameters
@@ -924,11 +1162,90 @@ ZVEC_EXPORT void ZVEC_CALL
 zvec_query_params_hnsw_destroy(ZVecHnswQueryParams *params);
 
 /**
+ * @brief Set exploration factor
+ * @param params HNSW query parameters pointer
+ * @param ef Exploration factor
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_query_params_hnsw_set_ef(ZVecHnswQueryParams *params, int ef);
+
+/**
+ * @brief Get exploration factor
+ * @param params HNSW query parameters pointer
+ * @return int Exploration factor
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_query_params_hnsw_get_ef(const ZVecHnswQueryParams *params);
+
+// -----------------------------------------------------------------------------
+// ZVecIVFQueryParams (IVF Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create IVF query parameters
+ * @param nprobe Number of clusters to probe (default: 10)
+ * @param is_using_refiner Whether using refiner (default: false)
+ * @param scale_factor Scale factor (default: 10.0)
+ * @return ZVecIVFQueryParams* Pointer to the newly created IVF query parameters
+ */
+ZVEC_EXPORT ZVecIVFQueryParams *ZVEC_CALL zvec_query_params_ivf_create(
+    int nprobe, bool is_using_refiner, float scale_factor);
+
+/**
  * @brief Destroy IVF query parameters
  * @param params IVF query parameters pointer
  */
 ZVEC_EXPORT void ZVEC_CALL
 zvec_query_params_ivf_destroy(ZVecIVFQueryParams *params);
+
+/**
+ * @brief Set number of probe clusters
+ * @param params IVF query parameters pointer
+ * @param nprobe Number of probe clusters
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_query_params_ivf_set_nprobe(ZVecIVFQueryParams *params, int nprobe);
+
+/**
+ * @brief Get number of probe clusters
+ * @param params IVF query parameters pointer
+ * @return int Number of probe clusters
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_query_params_ivf_get_nprobe(const ZVecIVFQueryParams *params);
+
+/**
+ * @brief Set scale factor
+ * @param params IVF query parameters pointer
+ * @param scale_factor Scale factor
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_ivf_set_scale_factor(
+    ZVecIVFQueryParams *params, float scale_factor);
+
+/**
+ * @brief Get scale factor
+ * @param params IVF query parameters pointer
+ * @return float Scale factor
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_query_params_ivf_get_scale_factor(const ZVecIVFQueryParams *params);
+
+// -----------------------------------------------------------------------------
+// ZVecFlatQueryParams (Flat Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create Flat query parameters
+ * @param is_using_refiner Whether using refiner (default: false)
+ * @param scale_factor Scale factor (default: 10.0)
+ * @return ZVecFlatQueryParams* Pointer to the newly created Flat query
+ * parameters
+ */
+ZVEC_EXPORT ZVecFlatQueryParams *ZVEC_CALL
+zvec_query_params_flat_create(bool is_using_refiner, float scale_factor);
 
 /**
  * @brief Destroy Flat query parameters
@@ -938,95 +1255,390 @@ ZVEC_EXPORT void ZVEC_CALL
 zvec_query_params_flat_destroy(ZVecFlatQueryParams *params);
 
 /**
- * @brief Destroy query parameters union
- * @param params Query parameters union pointer
+ * @brief Set scale factor
+ * @param params Flat query parameters pointer
+ * @param scale_factor Scale factor
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_flat_set_scale_factor(
+    ZVecFlatQueryParams *params, float scale_factor);
+
+/**
+ * @brief Get scale factor
+ * @param params Flat query parameters pointer
+ * @return float Scale factor
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_query_params_flat_get_scale_factor(const ZVecFlatQueryParams *params);
+
+// -----------------------------------------------------------------------------
+// ZVecVectorQuery (Vector Query)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create vector query
+ * @return ZVecVectorQuery* Pointer to the newly created vector query
+ */
+ZVEC_EXPORT ZVecVectorQuery *ZVEC_CALL zvec_vector_query_create(void);
+
+/**
+ * @brief Destroy vector query
+ * @param query Vector query pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_vector_query_destroy(ZVecVectorQuery *query);
+
+/**
+ * @brief Set topk (number of results to return)
+ * @param query Vector query pointer
+ * @param topk Number of results
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_vector_query_set_topk(ZVecVectorQuery *query, int topk);
+
+/**
+ * @brief Get topk
+ * @param query Vector query pointer
+ * @return int Number of results
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_vector_query_get_topk(const ZVecVectorQuery *query);
+
+/**
+ * @brief Set field name
+ * @param query Vector query pointer
+ * @param field_name Field name
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_vector_query_set_field_name(
+    ZVecVectorQuery *query, const char *field_name);
+
+/**
+ * @brief Get field name
+ * @param query Vector query pointer
+ * @return const char* Field name (owned by query, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_vector_query_get_field_name(const ZVecVectorQuery *query);
+
+/**
+ * @brief Set query vector data
+ * @param query Vector query pointer
+ * @param data Vector data pointer
+ * @param size Data size in bytes
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_vector_query_set_query_vector(
+    ZVecVectorQuery *query, const void *data, size_t size);
+
+/**
+ * @brief Set filter expression
+ * @param query Vector query pointer
+ * @param filter Filter expression string
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_vector_query_set_filter(ZVecVectorQuery *query, const char *filter);
+
+/**
+ * @brief Get filter expression
+ * @param query Vector query pointer
+ * @return const char* Filter expression (owned by query, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_vector_query_get_filter(const ZVecVectorQuery *query);
+
+/**
+ * @brief Set whether to include vector data in results
+ * @param query Vector query pointer
+ * @param include Whether to include vector
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_vector_query_set_include_vector(ZVecVectorQuery *query, bool include);
+
+/**
+ * @brief Set whether to include doc ID in results
+ * @param query Vector query pointer
+ * @param include Whether to include doc ID
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_vector_query_set_include_doc_id(ZVecVectorQuery *query, bool include);
+
+/**
+ * @brief Set output fields
+ * @param query Vector query pointer
+ * @param fields Array of field names
+ * @param count Number of fields
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_vector_query_set_output_fields(
+    ZVecVectorQuery *query, const char **fields, size_t count);
+
+/**
+ * @brief Set query parameters (takes ownership)
+ * @param query Vector query pointer
+ * @param params Query parameters pointer (type-specific: ZVecHnswQueryParams*,
+ * etc.)
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_vector_query_set_query_params(ZVecVectorQuery *query, void *params);
+
+// -----------------------------------------------------------------------------
+// ZVecGroupByVectorQuery (Group By Vector Query)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create group by vector query
+ * @return ZVecGroupByVectorQuery* Pointer to the newly created group by vector
+ * query
+ */
+ZVEC_EXPORT ZVecGroupByVectorQuery *ZVEC_CALL
+zvec_group_by_vector_query_create(void);
+
+/**
+ * @brief Destroy group by vector query
+ * @param query Group by vector query pointer
  */
 ZVEC_EXPORT void ZVEC_CALL
-zvec_query_params_union_destroy(ZVecQueryParamsUnion *params);
+zvec_group_by_vector_query_destroy(ZVecGroupByVectorQuery *query);
 
 /**
- * @brief Set query parameters index type
- * @param params Query parameters pointer
- * @param index_type Index type
+ * @brief Set field name
+ * @param query Group by vector query pointer
+ * @param field_name Field name
  * @return ZVecErrorCode Error code
  */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_set_index_type(
-    ZVecQueryParams *params, ZVecIndexType index_type);
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_group_by_vector_query_set_field_name(
+    ZVecGroupByVectorQuery *query, const char *field_name);
 
 /**
- * @brief Set search radius for query parameters
- * @param params Query parameters pointer
- * @param radius Search radius
- * @return ZVecErrorCode Error code
- */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
-zvec_query_params_set_radius(ZVecQueryParams *params, float radius);
-
-/**
- * @brief Set scale factor for query parameters
- * @param params Query parameters pointer
- * @param scale_factor Scale factor
+ * @brief Set group by field name
+ * @param query Group by vector query pointer
+ * @param field_name Group by field name
  * @return ZVecErrorCode Error code
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
-zvec_query_params_set_is_linear(ZVecQueryParams *params, bool is_linear);
+zvec_group_by_vector_query_set_group_by_field_name(
+    ZVecGroupByVectorQuery *query, const char *field_name);
 
 /**
- * @brief Set whether to use refiner for query parameters
+ * @brief Set group count
+ * @param query Group by vector query pointer
+ * @param count Number of groups
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_group_by_vector_query_set_group_count(
+    ZVecGroupByVectorQuery *query, uint32_t count);
+
+/**
+ * @brief Set group topk
+ * @param query Group by vector query pointer
+ * @param topk Number of results per group
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_group_by_vector_query_set_group_topk(
+    ZVecGroupByVectorQuery *query, uint32_t topk);
+
+/**
+ * @brief Set query vector data
+ * @param query Group by vector query pointer
+ * @param data Vector data pointer
+ * @param size Data size in bytes
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_group_by_vector_query_set_query_vector(
+    ZVecGroupByVectorQuery *query, const void *data, size_t size);
+
+/**
+ * @brief Set filter expression
+ * @param query Group by vector query pointer
+ * @param filter Filter expression string
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_group_by_vector_query_set_filter(
+    ZVecGroupByVectorQuery *query, const char *filter);
+
+/**
+ * @brief Set whether to include vector data in results
+ * @param query Group by vector query pointer
+ * @param include Whether to include vectors
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_group_by_vector_query_set_include_vector(ZVecGroupByVectorQuery *query,
+                                              bool include);
+
+/**
+ * @brief Set output fields
+ * @param query Group by vector query pointer
+ * @param fields Array of field names
+ * @param count Number of fields
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_group_by_vector_query_set_output_fields(ZVecGroupByVectorQuery *query,
+                                             const char **fields, size_t count);
+
+/**
+ * @brief Set query parameters (takes ownership)
+ * @param query Group by vector query pointer
  * @param params Query parameters pointer
- * @param is_using_refiner Whether to use refiner
  * @return ZVecErrorCode Error code
  */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_set_is_using_refiner(
-    ZVecQueryParams *params, bool is_using_refiner);
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_group_by_vector_query_set_query_params(
+    ZVecGroupByVectorQuery *query, void *params);
+
+// Deprecated macros (use create/destroy functions instead)
+// #define ZVEC_VECTOR_QUERY(...) - Deprecated, use zvec_vector_query_create()
+// and setters #define ZVEC_DEFAULT_OPTIONS() - Deprecated, use
+// zvec_collection_options_create() and setters
+
+// =============================================================================
+// Collection Options and Statistics (Opaque Pointer Pattern)
+// =============================================================================
 
 /**
- * @brief Set exploration factor for HNSW query parameters
- * @param params HNSW query parameters pointer
- * @param ef Exploration factor
+ * @brief Collection options (opaque pointer)
+ * Use zvec_collection_options_create() to create and
+ * zvec_collection_options_destroy() to destroy
+ */
+typedef struct ZVecCollectionOptions ZVecCollectionOptions;
+
+/**
+ * @brief Collection statistics (opaque pointer)
+ * Use zvec_collection_stats_get functions to access fields
+ */
+typedef struct ZVecCollectionStats ZVecCollectionStats;
+
+// =============================================================================
+// Collection Options Management Functions
+// =============================================================================
+
+/**
+ * @brief Create collection options
+ * @return ZVecCollectionOptions* Pointer to the newly created collection
+ * options
+ */
+ZVEC_EXPORT ZVecCollectionOptions *ZVEC_CALL
+zvec_collection_options_create(void);
+
+/**
+ * @brief Destroy collection options
+ * @param options Collection options pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_collection_options_destroy(ZVecCollectionOptions *options);
+
+/**
+ * @brief Set whether to enable memory mapping
+ * @param options Collection options pointer
+ * @param enable Whether to enable mmap
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_options_set_enable_mmap(
+    ZVecCollectionOptions *options, bool enable);
+
+/**
+ * @brief Get whether to enable memory mapping
+ * @param options Collection options pointer
+ * @return bool Whether mmap is enabled
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_collection_options_get_enable_mmap(const ZVecCollectionOptions *options);
+
+/**
+ * @brief Set maximum buffer size
+ * @param options Collection options pointer
+ * @param size Maximum buffer size in bytes
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_options_set_max_buffer_size(
+    ZVecCollectionOptions *options, size_t size);
+
+/**
+ * @brief Get maximum buffer size
+ * @param options Collection options pointer
+ * @return size_t Maximum buffer size in bytes
+ */
+ZVEC_EXPORT size_t ZVEC_CALL zvec_collection_options_get_max_buffer_size(
+    const ZVecCollectionOptions *options);
+
+/**
+ * @brief Set whether read-only mode
+ * @param options Collection options pointer
+ * @param read_only Whether read-only
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_options_set_read_only(
+    ZVecCollectionOptions *options, bool read_only);
+
+/**
+ * @brief Get whether read-only mode
+ * @param options Collection options pointer
+ * @return bool Whether read-only mode
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_collection_options_get_read_only(const ZVecCollectionOptions *options);
+
+/**
+ * @brief Set maximum document count per segment
+ * @param options Collection options pointer
+ * @param count Maximum document count
  * @return ZVecErrorCode Error code
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
-zvec_query_params_hnsw_set_ef(ZVecHnswQueryParams *params, int ef);
+zvec_collection_options_set_max_doc_count_per_segment(
+    ZVecCollectionOptions *options, uint64_t count);
 
 /**
- * @brief Set number of probe clusters for IVF query parameters
- * @param params IVF query parameters pointer
- * @param nprobe Number of probe clusters
- * @return ZVecErrorCode Error code
+ * @brief Get maximum document count per segment
+ * @param options Collection options pointer
+ * @return uint64_t Maximum document count per segment
  */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
-zvec_query_params_ivf_set_nprobe(ZVecIVFQueryParams *params, int nprobe);
+ZVEC_EXPORT uint64_t ZVEC_CALL
+zvec_collection_options_get_max_doc_count_per_segment(
+    const ZVecCollectionOptions *options);
+
+// =============================================================================
+// Collection Statistics Management Functions
+// =============================================================================
 
 /**
- * @brief Set scale factor for IVF/Flat query parameters
- * @param params IVF or Flat query parameters pointer
- * @param scale_factor Scale factor
- * @return ZVecErrorCode Error code
+ * @brief Get document count from collection stats
+ * @param stats Collection statistics pointer
+ * @return uint64_t Document count
  */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_ivf_set_scale_factor(
-    ZVecIVFQueryParams *params, float scale_factor);
+ZVEC_EXPORT uint64_t ZVEC_CALL
+zvec_collection_stats_get_doc_count(const ZVecCollectionStats *stats);
 
 /**
- * @brief Collection options structure
+ * @brief Get index count from collection stats
+ * @param stats Collection statistics pointer
+ * @return size_t Number of indexes
  */
-typedef struct {
-  bool enable_mmap;                   /**< Whether to enable memory mapping */
-  size_t max_buffer_size;             /**< Maximum buffer size */
-  bool read_only;                     /**< Whether read-only mode */
-  uint64_t max_doc_count_per_segment; /**< Maximum document count per segment */
-} ZVecCollectionOptions;
-
+ZVEC_EXPORT size_t ZVEC_CALL
+zvec_collection_stats_get_index_count(const ZVecCollectionStats *stats);
 
 /**
- * @brief Collection statistics structure
+ * @brief Get index name at specified index
+ * @param stats Collection statistics pointer
+ * @param index Index of the index name
+ * @return const char* Index name (owned by stats, do not free)
  */
-typedef struct {
-  uint64_t doc_count;        /**< Total document count */
-  ZVecString **index_names;  /**< Index name array */
-  float *index_completeness; /**< Index completeness array */
-  size_t index_count;        /**< Index name count */
-} ZVecCollectionStats;
+ZVEC_EXPORT const char *ZVEC_CALL zvec_collection_stats_get_index_name(
+    const ZVecCollectionStats *stats, size_t index);
+
+/**
+ * @brief Get index completeness at specified index
+ * @param stats Collection statistics pointer
+ * @param index Index of the completeness value
+ * @return float Index completeness
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_collection_stats_get_index_completeness(
+    const ZVecCollectionStats *stats, size_t index);
 
 
 /**
@@ -1048,6 +1660,129 @@ zvec_field_schema_create(const char *name, ZVecDataType data_type,
 ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_destroy(ZVecFieldSchema *schema);
 
 /**
+ * @brief Get field name
+ * @param schema Field schema pointer (must not be NULL)
+ * @return const char* Field name (owned by schema, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_field_schema_get_name(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Get field data type
+ * @param schema Field schema pointer (must not be NULL)
+ * @return ZVecDataType Data type
+ */
+ZVEC_EXPORT ZVecDataType ZVEC_CALL
+zvec_field_schema_get_data_type(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Check if field is nullable
+ * @param schema Field schema pointer (must not be NULL)
+ * @return bool true if nullable, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_field_schema_is_nullable(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Set field nullable
+ * @param schema Field schema pointer
+ * @param nullable Whether nullable
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_field_schema_set_nullable(ZVecFieldSchema *schema, bool nullable);
+
+/**
+ * @brief Get field dimension (for vector fields)
+ * @param schema Field schema pointer (must not be NULL)
+ * @return uint32_t Dimension value
+ */
+ZVEC_EXPORT uint32_t ZVEC_CALL
+zvec_field_schema_get_dimension(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Set field dimension (for vector fields)
+ * @param schema Field schema pointer
+ * @param dimension Dimension value
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_field_schema_set_dimension(ZVecFieldSchema *schema, uint32_t dimension);
+
+/**
+ * @brief Check if field has index
+ * @param schema Field schema pointer (must not be NULL)
+ * @return bool true if has index, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_field_schema_has_index(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Get index type of the field
+ * @param schema Field schema pointer (must not be NULL)
+ * @return ZVecIndexType Index type, ZVEC_INDEX_TYPE_UNDEFINED if no index
+ */
+ZVEC_EXPORT ZVecIndexType ZVEC_CALL
+zvec_field_schema_get_index_type(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Get index params of the field (returns pointer owned by the field
+ * schema, do not destroy)
+ * @param schema Field schema pointer (must not be NULL)
+ * @return ZVecIndexParams* Index params pointer, NULL if no index
+ */
+ZVEC_EXPORT const ZVecIndexParams *ZVEC_CALL
+zvec_field_schema_get_index_params(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Check if field is a vector field (dense or sparse)
+ * @param schema Field schema pointer (must not be NULL)
+ * @return bool true if vector field, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_field_schema_is_vector_field(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Check if field is a dense vector field
+ * @param schema Field schema pointer (must not be NULL)
+ * @return bool true if dense vector field, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_field_schema_is_dense_vector(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Check if field is a sparse vector field
+ * @param schema Field schema pointer (must not be NULL)
+ * @return bool true if sparse vector field, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_field_schema_is_sparse_vector(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Check if field is an array type
+ * @param schema Field schema pointer (must not be NULL)
+ * @return bool true if array type, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_field_schema_is_array_type(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Get element data type for array fields
+ * @param schema Field schema pointer (must not be NULL)
+ * @return ZVecDataType Element data type, or original type if not array
+ */
+ZVEC_EXPORT ZVecDataType ZVEC_CALL
+zvec_field_schema_get_element_data_type(const ZVecFieldSchema *schema);
+
+/**
+ * @brief Check if field has inverted index (for scalar fields)
+ * @param schema Field schema pointer (must not be NULL)
+ * @return bool true if has inverted index, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_field_schema_has_invert_index(const ZVecFieldSchema *schema);
+
+/**
  * @brief Set index parameters for field
  * @param schema Field schema pointer
  * @param index_params Index parameters pointer
@@ -1056,9 +1791,8 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_destroy(ZVecFieldSchema *schema);
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_field_schema_set_index_params(
     ZVecFieldSchema *schema, const ZVecIndexParams *index_params);
 
-
 /**
- * @brief Set inverted index parameters for field schema
+ * @brief Set inverted index parameters for field schema (convenience function)
  * @param field_schema Field schema pointer
  * @param invert_params Inverted index parameters pointer
  */
@@ -1066,7 +1800,7 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_invert_index(
     ZVecFieldSchema *field_schema, const ZVecIndexParams *invert_params);
 
 /**
- * @brief Set HNSW index parameters for field schema
+ * @brief Set HNSW index parameters for field schema (convenience function)
  * @param field_schema Field schema pointer
  * @param hnsw_params HNSW index parameters pointer
  */
@@ -1074,7 +1808,7 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_hnsw_index(
     ZVecFieldSchema *field_schema, const ZVecIndexParams *hnsw_params);
 
 /**
- * @brief Set Flat index parameters for field schema
+ * @brief Set Flat index parameters for field schema (convenience function)
  * @param field_schema Field schema pointer
  * @param flat_params Flat index parameters pointer
  */
@@ -1082,7 +1816,15 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_flat_index(
     ZVecFieldSchema *field_schema, const ZVecIndexParams *flat_params);
 
 /**
- * @brief Set IVF index parameters for field schema
+ * @brief Clear index from field schema
+ * @param schema Field schema pointer
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_field_schema_clear_index(ZVecFieldSchema *schema);
+
+/**
+ * @brief Set IVF index parameters for field schema (convenience function)
  * @param field_schema Field schema pointer
  * @param ivf_params IVF index parameters pointer
  */
@@ -1095,15 +1837,13 @@ ZVEC_EXPORT void ZVEC_CALL zvec_field_schema_set_ivf_index(
 // =============================================================================
 
 /**
- * @brief Collection schema structure
+ * @brief Collection schema (opaque pointer)
+ *
+ * Use zvec_collection_schema_create() to create and
+ * zvec_collection_schema_destroy() to destroy. Fields are accessed via
+ * getter/setter functions.
  */
-typedef struct {
-  ZVecString *name;                   /**< Collection name */
-  ZVecFieldSchema **fields;           /**< Field array */
-  size_t field_count;                 /**< Field count */
-  size_t field_capacity;              /**< Field array capacity */
-  uint64_t max_doc_count_per_segment; /**< Maximum document count per segment */
-} ZVecCollectionSchema;
+typedef struct ZVecCollectionSchema ZVecCollectionSchema;
 
 /**
  * @brief Create collection schema
@@ -1121,6 +1861,14 @@ ZVEC_EXPORT void ZVEC_CALL
 zvec_collection_schema_destroy(ZVecCollectionSchema *schema);
 
 /**
+ * @brief Get collection schema name
+ * @param schema Collection schema pointer (must not be NULL)
+ * @return const char* Collection name (owned by schema, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_collection_schema_get_name(const ZVecCollectionSchema *schema);
+
+/**
  * @brief Add field to collection schema
  * @param schema Collection schema pointer
  * @param field Field schema pointer (function takes ownership)
@@ -1133,12 +1881,12 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_add_field(
  * @brief Add multiple fields to collection schema at once
  *
  * @param schema Collection schema pointer
- * @param fields Array of fields to add
+ * @param fields Array of field pointers to add
  * @param field_count Number of fields to add
  * @return ZVecErrorCode Error code
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_add_fields(
-    ZVecCollectionSchema *schema, const ZVecFieldSchema *fields,
+    ZVecCollectionSchema *schema, const ZVecFieldSchema *const *fields,
     size_t field_count);
 
 /**
@@ -1220,6 +1968,129 @@ ZVEC_EXPORT uint64_t ZVEC_CALL
 zvec_collection_schema_get_max_doc_count_per_segment(
     const ZVecCollectionSchema *schema);
 
+/**
+ * @brief Set collection schema name
+ * @param schema Collection schema pointer
+ * @param name New collection name
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_collection_schema_set_name(ZVecCollectionSchema *schema, const char *name);
+
+/**
+ * @brief Check if field exists in schema
+ * @param schema Collection schema pointer
+ * @param field_name Field name to check
+ * @return true if field exists, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_collection_schema_has_field(
+    const ZVecCollectionSchema *schema, const char *field_name);
+
+/**
+ * @brief Alter field schema
+ * @param schema Collection schema pointer
+ * @param field_name Name of field to alter
+ * @param new_field New field schema with updated properties
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_alter_field(
+    ZVecCollectionSchema *schema, const char *field_name,
+    const ZVecFieldSchema *new_field);
+
+/**
+ * @brief Get forward (scalar) field by name
+ * @param schema Collection schema pointer
+ * @param field_name Field name
+ * @return ZVecFieldSchema* Field schema pointer, NULL if not found or not
+ * scalar
+ */
+ZVEC_EXPORT ZVecFieldSchema *ZVEC_CALL zvec_collection_schema_get_forward_field(
+    const ZVecCollectionSchema *schema, const char *field_name);
+
+/**
+ * @brief Get vector field by name
+ * @param schema Collection schema pointer
+ * @param field_name Field name
+ * @return ZVecFieldSchema* Field schema pointer, NULL if not found or not
+ * vector
+ */
+ZVEC_EXPORT ZVecFieldSchema *ZVEC_CALL zvec_collection_schema_get_vector_field(
+    const ZVecCollectionSchema *schema, const char *field_name);
+
+/**
+ * @brief Get all forward (scalar) fields
+ * @param schema Collection schema pointer
+ * @param[out] fields Output array of field pointers (owned by caller, do not
+ * destroy)
+ * @param[out] count Number of fields
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_forward_fields(
+    const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
+    size_t *count);
+
+/**
+ * @brief Get all forward fields with index
+ * @param schema Collection schema pointer
+ * @param[out] fields Output array of field pointers
+ * @param[out] count Number of fields
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_collection_schema_get_forward_fields_with_index(
+    const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
+    size_t *count);
+
+/**
+ * @brief Get all field names
+ * @param schema Collection schema pointer
+ * @param[out] names Output array of field names (owned by caller, do not free)
+ * @param[out] count Number of field names
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_all_field_names(
+    const ZVecCollectionSchema *schema, const char ***names, size_t *count);
+
+/**
+ * @brief Get all vector fields
+ * @param schema Collection schema pointer
+ * @param[out) fields Output array of field pointers
+ * @param[out] count Number of fields
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_vector_fields(
+    const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
+    size_t *count);
+
+/**
+ * @brief Check if field has index
+ * @param schema Collection schema pointer
+ * @param field_name Field name
+ * @return true if field has index, false otherwise
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_collection_schema_has_index(
+    const ZVecCollectionSchema *schema, const char *field_name);
+
+/**
+ * @brief Add index to field
+ * @param schema Collection schema pointer
+ * @param field_name Field name to add index to
+ * @param index_params Index parameters
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_add_index(
+    ZVecCollectionSchema *schema, const char *field_name,
+    const ZVecIndexParams *index_params);
+
+/**
+ * @brief Drop index from field
+ * @param schema Collection schema pointer
+ * @param field_name Field name to drop index from
+ * @return ZVecErrorCode Error code
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_drop_index(
+    ZVecCollectionSchema *schema, const char *field_name);
+
 
 // =============================================================================
 // Collection Management Functions
@@ -1287,13 +2158,6 @@ zvec_collection_flush(ZVecCollection *collection);
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_get_schema(
     const ZVecCollection *collection, ZVecCollectionSchema **schema);
 
-
-/**
- * @brief Initialize default collection options
- * @param options Collection options structure pointer
- */
-ZVEC_EXPORT void ZVEC_CALL
-zvec_collection_options_init_default(ZVecCollectionOptions *options);
 
 /**
  * @brief Get collection options
@@ -2214,37 +3078,6 @@ const char *zvec_metric_type_to_string(ZVecMetricType metric_type);
 #define ZVEC_INT64_ARRAY(data_ptr, len) \
   (ZVecInt64Array) {                    \
     .data = data_ptr, .length = len     \
-  }
-
-/**
- * @brief Simplified collection options initialization macro (using default
- * values)
- *
- * Usage example:
- * ZVecCollectionOptions opts = ZVEC_DEFAULT_OPTIONS();
- */
-#define ZVEC_DEFAULT_OPTIONS()                                           \
-  (ZVecCollectionOptions) {                                              \
-    .enable_mmap = true, .max_buffer_size = 1048576, .read_only = false, \
-    .max_doc_count_per_segment = 1000000                                 \
-  }
-
-/**
- * @brief Simplified vector query initialization macro
- * @param field_name_str Query field name
- * @param query_vec Query vector array
- * @param top_k Number of results to return
- * @param filter_str Filter condition string
- *
- * Usage example:
- * ZVecVectorQuery query = ZVEC_VECTOR_QUERY("embedding", query_vectors, 10,
- * "");
- */
-#define ZVEC_VECTOR_QUERY(field_name_str, query_vec, top_k, filter_str)    \
-  (ZVecVectorQuery) {                                                      \
-    .field_name = ZVEC_STRING(field_name_str), .query_vector = query_vec,  \
-    .topk = top_k, .filter = ZVEC_STRING(filter_str), .include_vector = 1, \
-    .include_doc_id = 1                                                    \
   }
 
 /**

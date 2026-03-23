@@ -49,25 +49,30 @@ int main() {
   printf("✓ Collection schema created successfully\n");
 
   // 2. Set schema properties
-  schema->max_doc_count_per_segment = 1000000;
+  zvec_collection_schema_set_max_doc_count_per_segment(schema, 1000000);
   printf("✓ Set max documents per segment: %llu\n",
-         (unsigned long long)schema->max_doc_count_per_segment);
+         (unsigned long long)
+             zvec_collection_schema_get_max_doc_count_per_segment(schema));
 
   // 3. Create index parameters
-  // clang-format off
-  ZVecIndexParams invert_params_val = ZVEC_INVERT_PARAMS(true, false);
-  // clang-format on
-  ZVecIndexParams *invert_params = &invert_params_val;
-  // clang-format off
-  ZVecIndexParams hnsw_params_val = ZVEC_HNSW_PARAMS(ZVEC_METRIC_TYPE_L2, 16, 200, 50, ZVEC_QUANTIZE_TYPE_UNDEFINED);
-  // clang-format on
-  ZVecIndexParams *hnsw_params = &hnsw_params_val;
-
-  if (!invert_params || !hnsw_params) {
-    fprintf(stderr, "Failed to create index parameters\n");
+  ZVecIndexParams *invert_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+  if (!invert_params) {
+    fprintf(stderr, "Failed to create invert index parameters\n");
     zvec_collection_schema_destroy(schema);
     return 1;
   }
+  zvec_index_params_set_invert_params(invert_params, true, false);
+
+  ZVecIndexParams *hnsw_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  if (!hnsw_params) {
+    fprintf(stderr, "Failed to create HNSW index parameters\n");
+    zvec_index_params_destroy(invert_params);
+    zvec_collection_schema_destroy(schema);
+    return 1;
+  }
+  zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_L2);
+  zvec_index_params_set_hnsw_params(hnsw_params, 16, 200);
 
   // 4. Create and add ID field (primary key)
   ZVecFieldSchema *id_field =
@@ -125,15 +130,22 @@ int main() {
   // printf("✓ Total field count: %zu\n", field_count);
 
   // 8. Create collection with schema
-  ZVecCollectionOptions options = ZVEC_DEFAULT_OPTIONS();
-  ZVecCollection *collection = NULL;
-
-  error = zvec_collection_create_and_open("./schema_example_collection", schema,
-                                          &options, &collection);
-  if (handle_error(error, "creating collection with schema") != ZVEC_OK) {
+  ZVecCollectionOptions *options = zvec_collection_options_create();
+  if (!options) {
+    fprintf(stderr, "Failed to create collection options\n");
     zvec_collection_schema_destroy(schema);
     return 1;
   }
+  ZVecCollection *collection = NULL;
+
+  error = zvec_collection_create_and_open("./schema_example_collection", schema,
+                                          options, &collection);
+  if (handle_error(error, "creating collection with schema") != ZVEC_OK) {
+    zvec_collection_options_destroy(options);
+    zvec_collection_schema_destroy(schema);
+    return 1;
+  }
+  zvec_collection_options_destroy(options);
   printf("✓ Collection created successfully with schema\n");
 
   // 9. Prepare test data
@@ -208,25 +220,29 @@ int main() {
   }
 
   // 13. Query test
-  ZVecVectorQuery query = {0};
-  query.field_name =
-      (ZVecString){.data = "embedding", .length = strlen("embedding")};
-  query.query_vector = (ZVecByteArray){.data = (uint8_t *)vector1,
-                                       .length = 128 * sizeof(float)};
-  query.topk = 5;
-  query.filter = (ZVecString){.data = "", .length = 0};
-  query.include_vector = true;
-  query.include_doc_id = true;
-  query.output_fields.strings = NULL;
-  query.output_fields.count = 0;
+  ZVecVectorQuery *query = zvec_vector_query_create();
+  if (!query) {
+    fprintf(stderr, "Failed to create vector query\n");
+    zvec_collection_destroy(collection);
+    zvec_collection_schema_destroy(schema);
+    return 1;
+  }
+  zvec_vector_query_set_field_name(query, "embedding");
+  zvec_vector_query_set_query_vector(query, vector1, 128 * sizeof(float));
+  zvec_vector_query_set_topk(query, 5);
+  zvec_vector_query_set_filter(query, "");
+  zvec_vector_query_set_include_vector(query, true);
+  zvec_vector_query_set_include_doc_id(query, true);
 
   ZVecDoc **results = NULL;
   size_t result_count = 0;
-  error = zvec_collection_query(collection, &query, &results, &result_count);
+  error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
+                                &results, &result_count);
   if (error == ZVEC_OK) {
     printf("✓ Vector query successful - Returned %zu results\n", result_count);
     zvec_docs_free(results, result_count);
   }
+  zvec_vector_query_destroy(query);
 
   // 14. Cleanup resources
   zvec_collection_destroy(collection);
