@@ -58,6 +58,14 @@ bool ShouldLogHnswQueryStats(uint64_t query_seq) {
   return query_seq < limit;
 }
 
+bool UseEmptyHnswHooks() {
+  const char* value = std::getenv("ZVEC_HNSW_ENABLE_EMPTY_HOOKS");
+  if (value == nullptr) {
+    return false;
+  }
+  return std::string(value) != "0";
+}
+
 std::atomic<uint64_t>& HnswQueryStatsSequence() {
   static std::atomic<uint64_t> sequence{0};
   return sequence;
@@ -659,11 +667,18 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  const bool use_empty_hooks = UseEmptyHnswHooks();
+  HnswAlgorithm::SearchHooks empty_hooks;
   for (size_t q = 0; q < count; ++q) {
     auto query_start = RdtscTimer::Now();
     ctx->reset_query(query);
     auto query_search_start = RdtscTimer::Now();
-    ret = alg_->search(ctx);
+    if (use_empty_hooks) {
+      bool stopped_early = false;
+      ret = alg_->search_with_hooks(ctx, &empty_hooks, &stopped_early);
+    } else {
+      ret = alg_->search(ctx);
+    }
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
@@ -674,9 +689,10 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     auto query_latency_ns = RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
     uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
     if (ShouldLogHnswQueryStats(query_seq)) {
-      LOG_INFO("HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%zu "
-               "pure_search_ms=%.3f latency_ms=%.3f",
+      LOG_INFO("HNSW query stats: query_seq=%llu hook_mode=%s cmps=%zu "
+               "pairwise_dist_cnt=%zu pure_search_ms=%.3f latency_ms=%.3f",
                static_cast<unsigned long long>(query_seq), ctx->get_scan_num(),
+               use_empty_hooks ? "empty" : "none",
                ctx->get_pairwise_dist_num(),
                static_cast<double>(query_search_time_ns) / 1e6,
                static_cast<double>(query_latency_ns) / 1e6);

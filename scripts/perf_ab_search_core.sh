@@ -198,6 +198,12 @@ HNSW_CMD=(
   "${PYTHON_BIN}" -m vectordb_bench.cli.vectordbbench "${HNSW_ARGS[@]}"
 )
 
+HNSW_EMPTY_HOOKS_CMD=(
+  "${COMMON_ENV[@]}"
+  ZVEC_HNSW_ENABLE_EMPTY_HOOKS=1
+  "${PYTHON_BIN}" -m vectordb_bench.cli.vectordbbench "${HNSW_ARGS[@]}"
+)
+
 OMEGA_HOOKS_CMD=(
   "${COMMON_ENV[@]}"
   ZVEC_OMEGA_DISABLE_MODEL_PREDICTION=1
@@ -221,6 +227,10 @@ case "${MODE}" in
       "${HNSW_CMD[@]}"
 
     run_perf \
+      "HNSW empty-hooks core search perf (${DATASET})" \
+      "${HNSW_EMPTY_HOOKS_CMD[@]}"
+
+    run_perf \
       "OMEGA hooks-only core search perf (${DATASET})" \
       "${OMEGA_HOOKS_CMD[@]}"
     ;;
@@ -229,6 +239,11 @@ case "${MODE}" in
       "HNSW core search hotspots (${DATASET})" \
       "hnsw_core" \
       "${HNSW_CMD[@]}"
+
+    run_record \
+      "HNSW empty-hooks core search hotspots (${DATASET})" \
+      "hnsw_empty_hooks" \
+      "${HNSW_EMPTY_HOOKS_CMD[@]}"
 
     run_record \
       "OMEGA hooks-only core search hotspots (${DATASET})" \
@@ -241,6 +256,10 @@ case "${MODE}" in
       "${HNSW_CMD[@]}"
 
     run_perf \
+      "HNSW empty-hooks core search perf (${DATASET})" \
+      "${HNSW_EMPTY_HOOKS_CMD[@]}"
+
+    run_perf \
       "OMEGA hooks-only core search perf (${DATASET})" \
       "${OMEGA_HOOKS_CMD[@]}"
 
@@ -248,6 +267,11 @@ case "${MODE}" in
       "HNSW core search hotspots (${DATASET})" \
       "hnsw_core" \
       "${HNSW_CMD[@]}"
+
+    run_record \
+      "HNSW empty-hooks core search hotspots (${DATASET})" \
+      "hnsw_empty_hooks" \
+      "${HNSW_EMPTY_HOOKS_CMD[@]}"
 
     run_record \
       "OMEGA hooks-only core search hotspots (${DATASET})" \

@@ -41,6 +41,16 @@ cc_binary(
     LIBS omega
 )
 
+if(ZVEC_ENABLE_OMEGA)
+cc_binary(
+    NAME hnsw_hooks_microbench
+    STRICT PACKED
+    SRCS hnsw_hooks_microbench.cc
+    INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/thirdparty/omega/OMEGALib/include
+    LIBS magic_enum core_framework core_metric core_quantizer core_utility core_knn_hnsw omega core_interface
+)
+endif()
+
 cc_binary(
     NAME recall_original
     STRICT PACKED

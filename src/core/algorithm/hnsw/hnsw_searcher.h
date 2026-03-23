@@ -112,6 +112,8 @@ class HnswSearcher : public IndexSearcher {
   int update_context(HnswContext *ctx) const;
 
  protected:
+  int fast_search(HnswContext *ctx) const;
+
   int fast_search_with_hooks(HnswContext *ctx,
                              const HnswAlgorithm::SearchHooks *hooks,
                              bool *stopped_early) const;

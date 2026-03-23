@@ -190,6 +190,10 @@ int HnswSearcher::update_context(HnswContext *ctx) const {
                              entity, magic_);
 }
 
+int HnswSearcher::fast_search(HnswContext *ctx) const {
+  return alg_->fast_search(ctx);
+}
+
 int HnswSearcher::fast_search_with_hooks(
     HnswContext *ctx, const HnswAlgorithm::SearchHooks *hooks,
     bool *stopped_early) const {
