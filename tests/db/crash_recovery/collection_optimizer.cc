@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
   if (s.ok()) {
     std::cout << "Optimize completed successfully" << std::endl;
     // Print final stats
-    std::cout << "Final stats: " << collection->Stats()->to_string_formatted();
+    std::cout << "Final stats: " << collection->Stats()->to_string_formatted() << std::endl;
     return 0;
   } else {
     std::cout << "Optimize failed: " << s.message() << std::endl;
