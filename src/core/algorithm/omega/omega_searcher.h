@@ -18,7 +18,9 @@
 #include <zvec/db/status.h>
 #include "../hnsw/hnsw_searcher.h"
 #include <omega/omega_api.h>
+#include <cstdlib>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace zvec {
@@ -178,6 +180,10 @@ class OmegaSearcher : public HnswSearcher {
     // 2. OMEGA is enabled and model is loaded
     if (training_mode_enabled_) {
       return true;  // Always use adaptive_search in training mode
+    }
+    if (std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION") != nullptr &&
+        std::string(std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION")) != "0") {
+      return true;
     }
     return omega_enabled_ && use_omega_mode_ &&
            omega_model_ != nullptr &&

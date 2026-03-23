@@ -23,11 +23,20 @@
 #include <limits>
 #include <deque>
 #include <algorithm>
+#include <cstdlib>
 
 namespace zvec {
 namespace core {
 
 namespace {
+
+bool DisableOmegaModelPrediction() {
+  const char* value = std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION");
+  if (value == nullptr) {
+    return false;
+  }
+  return std::string(value) != "0";
+}
 
 struct OmegaHookState {
   omega::SearchContext *search_ctx{nullptr};
@@ -288,7 +297,10 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
 
   // Match OmegaStreamer/reference behavior:
   // training mode collects features only and must not run model inference.
-  OmegaModelHandle model_to_use = training_mode_enabled_ ? nullptr : omega_model_;
+  const bool disable_model_prediction = DisableOmegaModelPrediction();
+  OmegaModelHandle model_to_use =
+      (training_mode_enabled_ || disable_model_prediction) ? nullptr
+                                                           : omega_model_;
 
   OmegaSearchHandle omega_search = omega_search_create_with_params(
       model_to_use, target_recall, omega_topk, window_size_);
@@ -331,7 +343,8 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     omega_ctx->reset_query(query);
     OmegaHookState hook_state;
     hook_state.search_ctx = omega_search_ctx;
-    hook_state.enable_early_stopping = !training_mode_enabled_;
+    hook_state.enable_early_stopping =
+        !training_mode_enabled_ && !disable_model_prediction;
     HnswAlgorithm::SearchHooks hooks;
     hooks.user_data = &hook_state;
     hooks.on_level0_entry = OnOmegaLevel0Entry;

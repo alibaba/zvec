@@ -60,6 +60,14 @@ bool ShouldLogQueryStats(uint64_t query_seq) {
   return limit == 0 || query_seq < limit;
 }
 
+bool DisableOmegaModelPrediction() {
+  const char* value = std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION");
+  if (value == nullptr) {
+    return false;
+  }
+  return std::string(value) != "0";
+}
+
 struct OmegaHookState {
   omega::SearchContext *search_ctx{nullptr};
   bool enable_early_stopping{false};
@@ -206,16 +214,16 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                uint32_t count,
                                Context::Pointer &context) const {
   // Determine mode: training (no early stopping) vs inference (with early stopping)
-  bool enable_early_stopping = !training_mode_enabled_ && IsModelLoaded();
+  bool enable_early_stopping =
+      !training_mode_enabled_ && IsModelLoaded() &&
+      !DisableOmegaModelPrediction();
 
   if (training_mode_enabled_) {
     LOG_DEBUG("OmegaStreamer: training mode, early stopping DISABLED");
   } else if (enable_early_stopping) {
     LOG_DEBUG("OmegaStreamer: inference mode with OMEGA model");
   } else {
-    // No model loaded and not in training mode - use parent HNSW search
-    LOG_DEBUG("OmegaStreamer: no model loaded, using parent HNSW search");
-    return HnswStreamer::search_impl(query, qmeta, count, context);
+    LOG_DEBUG("OmegaStreamer: OMEGA hooks mode without model prediction");
   }
 
   return omega_search_impl(query, qmeta, count, context, enable_early_stopping);
