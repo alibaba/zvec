@@ -72,7 +72,7 @@ struct OmegaHookState {
   omega::SearchContext *search_ctx{nullptr};
   bool enable_early_stopping{false};
   bool collect_control_timing{false};
-  uint64_t *omega_control_time_ns{nullptr};
+  uint64_t *hook_body_time_ns{nullptr};
 };
 
 template <typename Fn>
@@ -83,8 +83,8 @@ void RunOmegaControlHook(const OmegaHookState &state, Fn &&fn) {
   }
   auto control_start = omega::ProfilingTimer::Now();
   fn();
-  if (state.omega_control_time_ns != nullptr) {
-    *state.omega_control_time_ns += omega::ProfilingTimer::ElapsedNs(
+  if (state.hook_body_time_ns != nullptr) {
+    *state.hook_body_time_ns += omega::ProfilingTimer::ElapsedNs(
         control_start, omega::ProfilingTimer::Now());
   }
 }
@@ -234,7 +234,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                                      bool enable_early_stopping) const {
   auto query_total_start = omega::ProfilingTimer::Now();
   const bool collect_control_timing = omega::IsControlTimingEnabled();
-  uint64_t omega_control_time_ns = 0;
+  uint64_t hook_total_time_ns = 0;
+  uint64_t hook_body_time_ns = 0;
 
   // Cast context to OmegaContext to access training_query_id
   auto *omega_ctx = dynamic_cast<OmegaContext*>(context.get());
@@ -314,27 +315,31 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                                            search_batch_distance_);
   hnsw_ctx->resize_results(count);
   hnsw_ctx->check_need_adjuct_ctx(entity_.doc_cnt());
-  auto query_core_start = omega::ProfilingTimer::Now();
+  auto query_reset_start = omega::ProfilingTimer::Now();
   hnsw_ctx->reset_query(query);
+  auto query_reset_end = omega::ProfilingTimer::Now();
   OmegaHookState hook_state;
   hook_state.search_ctx = omega_search_ctx;
   hook_state.enable_early_stopping = enable_early_stopping;
   hook_state.collect_control_timing = collect_control_timing;
-  hook_state.omega_control_time_ns = &omega_control_time_ns;
+  hook_state.hook_body_time_ns = &hook_body_time_ns;
   HnswAlgorithm::SearchHooks hooks;
   hooks.user_data = &hook_state;
+  hooks.collect_timing = collect_control_timing;
+  hooks.now_ns = []() { return omega::ProfilingTimer::NowNs(); };
+  hooks.hook_total_time_ns = &hook_total_time_ns;
   hooks.on_level0_entry = OnOmegaLevel0Entry;
   hooks.on_hop = OnOmegaHop;
   hooks.on_visit_candidate = OnOmegaVisitCandidate;
   bool early_stop_hit = false;
+  auto query_search_start = omega::ProfilingTimer::Now();
   int ret = alg_->search_with_hooks(hnsw_ctx, &hooks, &early_stop_hit);
   if (ret != 0) {
     omega_search_destroy(omega_search);
     LOG_ERROR("OMEGA search failed");
     return ret;
   }
-
-  auto query_core_end = omega::ProfilingTimer::Now();
+  auto query_search_end = omega::ProfilingTimer::Now();
 
   // Get final statistics
   int hops, cmps, collected_gt;
@@ -354,12 +359,15 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   uint64_t query_total_time_ns =
       omega::ProfilingTimer::ElapsedNs(query_total_start,
                                        omega::ProfilingTimer::Now());
-  uint64_t query_core_time_ns =
-      omega::ProfilingTimer::ElapsedNs(query_core_start, query_core_end);
-  uint64_t query_setup_time_ns =
-      query_total_time_ns > query_core_time_ns
-          ? (query_total_time_ns - query_core_time_ns)
-          : 0;
+  uint64_t query_reset_time_ns =
+      omega::ProfilingTimer::ElapsedNs(query_reset_start, query_reset_end);
+  uint64_t query_search_time_ns =
+      omega::ProfilingTimer::ElapsedNs(query_search_start, query_search_end);
+  uint64_t query_setup_time_ns = 0;
+  if (query_total_time_ns > (query_reset_time_ns + query_search_time_ns)) {
+    query_setup_time_ns =
+        query_total_time_ns - query_reset_time_ns - query_search_time_ns;
+  }
   uint64_t query_seq = query_stats_sequence_.fetch_add(1);
   omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
   predicted_recall_avg = omega_search_ctx->GetLastPredictedRecallAvg();
@@ -385,11 +393,15 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     size_t scan_cmps = hnsw_ctx->get_scan_num();
     uint64_t pairwise_dist_cnt = hnsw_ctx->get_pairwise_dist_num();
     uint64_t pure_search_time_ns = 0;
-    uint64_t core_search_time_ns = query_core_time_ns;
+    uint64_t hook_dispatch_time_ns = 0;
     if (collect_control_timing) {
       pure_search_time_ns =
-          query_core_time_ns > omega_control_time_ns
-              ? (query_core_time_ns - omega_control_time_ns)
+          query_search_time_ns > hook_total_time_ns
+              ? (query_search_time_ns - hook_total_time_ns)
+              : 0;
+      hook_dispatch_time_ns =
+          hook_total_time_ns > hook_body_time_ns
+              ? (hook_total_time_ns - hook_body_time_ns)
               : 0;
     }
     bool expected = false;
@@ -422,8 +434,10 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  "prediction_calls=%llu advance_calls=%llu "
                  "collected_gt_advance=%llu max_pred_per_stop=%llu "
                  "should_stop_ms=%.3f prediction_eval_ms=%.3f "
-                 "setup_ms=%.3f "
-                 "omega_control_ms=%.3f pure_search_ms=%.3f total_ms=%.3f",
+                 "setup_ms=%.3f reset_query_ms=%.3f "
+                 "core_search_ms=%.3f omega_control_ms=%.3f "
+                 "hook_total_ms=%.3f hook_body_ms=%.3f "
+                 "hook_dispatch_ms=%.3f pure_search_ms=%.3f total_ms=%.3f",
                  static_cast<unsigned long long>(query_seq),
                  IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
                  static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
@@ -436,7 +450,12 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  static_cast<double>(should_stop_time_ns) / 1e6,
                  static_cast<double>(prediction_eval_time_ns) / 1e6,
                  static_cast<double>(query_setup_time_ns) / 1e6,
-                 static_cast<double>(omega_control_time_ns) / 1e6,
+                 static_cast<double>(query_reset_time_ns) / 1e6,
+                 static_cast<double>(query_search_time_ns) / 1e6,
+                 static_cast<double>(hook_total_time_ns) / 1e6,
+                 static_cast<double>(hook_total_time_ns) / 1e6,
+                 static_cast<double>(hook_body_time_ns) / 1e6,
+                 static_cast<double>(hook_dispatch_time_ns) / 1e6,
                  static_cast<double>(pure_search_time_ns) / 1e6,
                  static_cast<double>(query_total_time_ns) / 1e6);
       } else {
@@ -447,7 +466,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  "prediction_calls=%llu advance_calls=%llu "
                  "collected_gt_advance=%llu max_pred_per_stop=%llu "
                  "should_stop_ms=%.3f prediction_eval_ms=%.3f "
-                 "setup_ms=%.3f core_search_ms=%.3f total_ms=%.3f",
+                 "setup_ms=%.3f reset_query_ms=%.3f "
+                 "core_search_ms=%.3f search_with_hooks_ms=%.3f total_ms=%.3f",
                  static_cast<unsigned long long>(query_seq),
                  IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
                  static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
@@ -460,7 +480,9 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  static_cast<double>(should_stop_time_ns) / 1e6,
                  static_cast<double>(prediction_eval_time_ns) / 1e6,
                  static_cast<double>(query_setup_time_ns) / 1e6,
-                 static_cast<double>(core_search_time_ns) / 1e6,
+                 static_cast<double>(query_reset_time_ns) / 1e6,
+                 static_cast<double>(query_search_time_ns) / 1e6,
+                 static_cast<double>(query_search_time_ns) / 1e6,
                  static_cast<double>(query_total_time_ns) / 1e6);
       }
     }
