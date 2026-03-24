@@ -240,12 +240,21 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
     return result;
   };
 
+  const uint32_t result_topk_limit = ctx->topk();
+  const bool track_hook_result_topk =
+      hooks != nullptr && hooks->on_visit_candidate != nullptr &&
+      result_topk_limit > 0;
+  TopkHeap hook_result_topk(result_topk_limit > 0 ? result_topk_limit : 1U);
+
   candidates.clear();
   visit.clear();
   visit.set_visited(*entry_point);
   bool entry_inserted_to_topk = !filter(*entry_point);
   if (entry_inserted_to_topk) {
     topk.emplace(*entry_point, *dist);
+    if (track_hook_result_topk) {
+      hook_result_topk.emplace(*entry_point, *dist);
+    }
   }
 
   candidates.emplace(*entry_point, *dist);
@@ -327,17 +336,7 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
       dist_t cur_dist = dists[i];
       bool should_consider_candidate =
           (!topk.full()) || cur_dist < topk[0].second;
-
-      if (hooks != nullptr && hooks->on_visit_candidate != nullptr) {
-        bool should_stop = run_timed_hook([&]() {
-          return hooks->on_visit_candidate(node, cur_dist,
-                                           should_consider_candidate,
-                                           hooks->user_data);
-        });
-        if (should_stop) {
-          return true;
-        }
-      }
+      bool inserted_to_topk = false;
 
       if (should_consider_candidate) {
         candidates.emplace(node, cur_dist);
@@ -348,8 +347,25 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
         }
         if (!filter(node)) {
           topk.emplace(node, cur_dist);
+          if (track_hook_result_topk) {
+            inserted_to_topk =
+                !hook_result_topk.full() || cur_dist < hook_result_topk[0].second;
+            if (inserted_to_topk) {
+              hook_result_topk.emplace(node, cur_dist);
+            }
+          }
         }
-      }  // end if
+      }
+
+      if (hooks != nullptr && hooks->on_visit_candidate != nullptr) {
+        bool should_stop = run_timed_hook([&]() {
+          return hooks->on_visit_candidate(node, cur_dist, inserted_to_topk,
+                                           hooks->user_data);
+        });
+        if (should_stop) {
+          return true;
+        }
+      }
     }  // end for
   }  // while
 

@@ -37,7 +37,7 @@ class HnswAlgorithm {
                             void *user_data){nullptr};
     void (*on_hop)(void *user_data){nullptr};
     bool (*on_visit_candidate)(node_id_t id, dist_t dist,
-                               bool should_consider_candidate,
+                               bool inserted_to_topk,
                                void *user_data){nullptr};
   };
 

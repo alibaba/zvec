@@ -120,10 +120,10 @@ void OnOmegaHop(void *user_data) {
 }
 
 bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
-                           bool should_consider_candidate, void *user_data) {
+                           bool inserted_to_topk, void *user_data) {
   auto &state = *static_cast<OmegaHookState *>(user_data);
   RunOmegaControlHook(state, [&]() {
-    state.search_ctx->ReportVisitCandidate(id, dist, should_consider_candidate);
+    state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
   });
 
   if (!state.enable_early_stopping) {
