@@ -1714,6 +1714,13 @@ Status SegmentImpl::create_vector_index(
 
       std::string index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
           path_, column, segment_meta_->id(), quant_block_id);
+      if (FileHelper::FileExists(index_file_path)) {
+        LOG_WARN(
+            "Index file[%s] already exists (possible crash residue); cleaning "
+            "and overwriting.",
+            index_file_path.c_str());
+        FileHelper::RemoveFile(index_file_path);
+      }
       auto vector_indexer = merge_vector_indexer(
           index_file_path, column, *field_with_new_index_params, concurrency);
       if (!vector_indexer.has_value()) {
@@ -1786,6 +1793,13 @@ Status SegmentImpl::create_vector_index(
 
       std::string index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
           path_, column, segment_meta_->id(), quant_block_id);
+      if (FileHelper::FileExists(index_file_path)) {
+        LOG_WARN(
+            "Index file[%s] already exists (possible crash residue); cleaning "
+            "and overwriting.",
+            index_file_path.c_str());
+        FileHelper::RemoveFile(index_file_path);
+      }
       auto vector_indexer = merge_vector_indexer(
           index_file_path, column, *field_with_new_index_params, concurrency);
       if (!vector_indexer.has_value()) {
