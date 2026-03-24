@@ -187,7 +187,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Open storage
-  int open(const std::string &path, bool /*create*/) override {
+  int open(const std::string &path, bool /*create_if_missing*/) override {
     file_name_ = path;
     buffer_pool_ = std::make_shared<ailego::VecBufferPool>(path);
     buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(

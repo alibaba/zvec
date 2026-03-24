@@ -1,0 +1,99 @@
+name: Issue Auto Assign
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  auto-assign:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Parse issue and assign
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const issueBody = issue.body || '';
+            const issueLabels = (issue.labels || []).map(l => l.name);
+
+            // Default assignees per template type (based on labels)
+            const defaultAssignees = {
+              'bug': 'zhourrr',
+              'feature': 'feihongxu0824',
+              'benchmark': 'egolearner',
+              'enhancement': 'feihongxu0824',
+              'integration': 'chinaux',
+              'profile': 'richyreachy'
+            };
+
+            // Global fallback assignee
+            const fallbackAssignee = 'feihongxu0824';
+
+            // Parse user-selected assignee from issue body
+            // The input field renders as: "### Preferred Assignee\n\n<entered_value>"
+            let selectedAssignee = null;
+            const assigneeMatch = issueBody.match(/### Preferred Assignee\s*\n+([^\n#]+)/);
+            if (assigneeMatch) {
+              const selection = assigneeMatch[1].trim();
+              console.log(`Parsed assignee input: "${selection}"`);
+              // If user entered a valid GitHub username (not empty, not placeholder text)
+              if (selection && 
+                  selection !== '_No response_' &&
+                  selection !== 'None' &&
+                  !selection.toLowerCase().includes('leave empty') &&
+                  !selection.startsWith('e.g.,')) {
+                // Clean up the username (remove @ if present)
+                selectedAssignee = selection.replace(/^@/, '').trim();
+              }
+            }
+
+            // Determine final assignee
+            let finalAssignee = selectedAssignee;
+
+            // If no user selection, use default based on label
+            if (!finalAssignee && issueLabels.length > 0) {
+              for (const [label, assignee] of Object.entries(defaultAssignees)) {
+                if (issueLabels.includes(label)) {
+                  finalAssignee = assignee;
+                  console.log(`Matched label "${label}" -> assignee "${assignee}"`);
+                  break;
+                }
+              }
+            }
+
+            // Fallback to default assignee if no match
+            if (!finalAssignee) {
+              finalAssignee = fallbackAssignee;
+              console.log(`No match found, using fallback assignee: ${fallbackAssignee}`);
+            }
+
+            console.log(`Issue #${issue.number}: Labels = [${issueLabels.join(', ')}]`);
+            console.log(`User selected assignee: ${selectedAssignee || 'None (Auto)'}`);
+            console.log(`Final assignee: ${finalAssignee}`);
+
+            // Assign the issue
+            try {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                assignees: [finalAssignee]
+              });
+              console.log(`Successfully assigned issue #${issue.number} to ${finalAssignee}`);
+            } catch (error) {
+              console.error(`Failed to assign issue: ${error.message}`);
+              // If assignment fails (user may not have permission), add a comment
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `⚠️ Auto-assignment to \`${finalAssignee}\` failed. Please assign manually.`
+                });
+              } catch (commentError) {
+                console.error(`Failed to create comment: ${commentError.message}`);
+              }
+            }

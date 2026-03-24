@@ -27,9 +27,9 @@ namespace zvec {
 
 
 static std::string data_generator_bin_;
-const std::string collection_name_{"crash_test"};
-const std::string dir_path_{"crash_test_db"};
-const zvec::CollectionOptions options_{false, true};
+const std::string collection_name_{"write_recovery_test"};
+const std::string dir_path_{"write_recovery_test_db"};
+const zvec::CollectionOptions options_{false, true, 256 * 1024};
 
 
 static std::string LocateDataGenerator() {
@@ -126,12 +126,12 @@ void RunGeneratorAndCrash(const std::string &start, const std::string &end,
 class CrashRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    system("rm -rf ./crash_test_db");
+    system("rm -rf ./write_recovery_test_db");
     ASSERT_NO_THROW(data_generator_bin_ = LocateDataGenerator());
   }
 
   void TearDown() override {
-    system("rm -rf ./crash_test_db");
+    system("rm -rf ./write_recovery_test_db");
   }
 };
 
@@ -140,7 +140,7 @@ TEST_F(CrashRecoveryTest, BasicInsertAndReopen) {
   {
     auto schema = CreateTestSchema(collection_name_);
     auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
   }
@@ -158,7 +158,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringInsertion) {
   {
     auto schema = CreateTestSchema(collection_name_);
     auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
   }
@@ -197,7 +197,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
   {
     auto schema = CreateTestSchema(collection_name_);
     auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
   }
@@ -205,7 +205,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
   RunGenerator("0", "5000", "insert", "0");
   {
     auto result = Collection::Open(dir_path_, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     ASSERT_EQ(collection->Stats().value().doc_count, 5000)
         << "Document count mismatch";
@@ -250,7 +250,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
   {
     auto schema = CreateTestSchema(collection_name_);
     auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
   }
@@ -258,7 +258,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
   RunGenerator("0", "18000", "upsert", "0");
   {
     auto result = Collection::Open(dir_path_, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     ASSERT_EQ(collection->Stats().value().doc_count, 18000)
         << "Document count mismatch";
@@ -302,7 +302,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
   {
     auto schema = CreateTestSchema(collection_name_);
     auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     collection.reset();
   }
@@ -310,7 +310,7 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringDelete) {
   RunGenerator("0", "18000", "insert", "0");
   {
     auto result = Collection::Open(dir_path_, options_);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto collection = result.value();
     ASSERT_EQ(collection->Stats().value().doc_count, 18000)
         << "Document count mismatch";

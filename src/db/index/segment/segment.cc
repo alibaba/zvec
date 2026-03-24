@@ -213,7 +213,7 @@ class SegmentImpl : public Segment,
                  const std::vector<int> &indices) const override;
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                     int indice) const override;
+                     int index) const override;
 
   RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const override;
@@ -1631,6 +1631,13 @@ Status SegmentImpl::create_vector_index(
 
     std::string index_file_path = FileHelper::MakeVectorIndexPath(
         path_, column, segment_meta_->id(), block_id);
+    if (FileHelper::FileExists(index_file_path)) {
+      LOG_WARN(
+          "Index file[%s] already exists (possible crash residue); cleaning "
+          "and overwriting.",
+          index_file_path.c_str());
+      FileHelper::RemoveFile(index_file_path);
+    }
     auto vector_indexer = merge_vector_indexer(
         index_file_path, column, *field_with_new_index_params, concurrency);
     if (!vector_indexer.has_value()) {
@@ -1668,6 +1675,13 @@ Status SegmentImpl::create_vector_index(
 
       std::string index_file_path = FileHelper::MakeVectorIndexPath(
           path_, column, segment_meta_->id(), block_id);
+      if (FileHelper::FileExists(index_file_path)) {
+        LOG_WARN(
+            "Index file[%s] already exists (possible crash residue); cleaning "
+            "and overwriting.",
+            index_file_path.c_str());
+        FileHelper::RemoveFile(index_file_path);
+      }
       auto vector_indexer = merge_vector_indexer(index_file_path, column,
                                                  *field_with_flat, concurrency);
       if (!vector_indexer.has_value()) {
@@ -1700,6 +1714,13 @@ Status SegmentImpl::create_vector_index(
 
       std::string index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
           path_, column, segment_meta_->id(), quant_block_id);
+      if (FileHelper::FileExists(index_file_path)) {
+        LOG_WARN(
+            "Index file[%s] already exists (possible crash residue); cleaning "
+            "and overwriting.",
+            index_file_path.c_str());
+        FileHelper::RemoveFile(index_file_path);
+      }
       auto vector_indexer = merge_vector_indexer(
           index_file_path, column, *field_with_new_index_params, concurrency);
       if (!vector_indexer.has_value()) {
@@ -1772,6 +1793,13 @@ Status SegmentImpl::create_vector_index(
 
       std::string index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
           path_, column, segment_meta_->id(), quant_block_id);
+      if (FileHelper::FileExists(index_file_path)) {
+        LOG_WARN(
+            "Index file[%s] already exists (possible crash residue); cleaning "
+            "and overwriting.",
+            index_file_path.c_str());
+        FileHelper::RemoveFile(index_file_path);
+      }
       auto vector_indexer = merge_vector_indexer(
           index_file_path, column, *field_with_new_index_params, concurrency);
       if (!vector_indexer.has_value()) {
@@ -2031,7 +2059,7 @@ Status SegmentImpl::create_scalar_index(const std::vector<std::string> &columns,
     s = SegmentHelper::ReduceScalarIndex(new_scalar_indexer, batch_value,
                                          accu_doc_count);
     if (!s.ok()) {
-      LOG_ERROR("Reduce Scalar Index faield, err: %s", s.message().c_str());
+      LOG_ERROR("Reduce Scalar Index failed, err: %s", s.message().c_str());
     }
     CHECK_RETURN_STATUS(s);
 

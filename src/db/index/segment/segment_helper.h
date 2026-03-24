@@ -136,7 +136,7 @@ class SegmentTask {
       std::variant<CompactTask, CreateVectorIndexTask, DropVectorIndexTask,
                    CreateScalarIndexTask, DropScalarIndexTask>;
 
-  static Ptr CreateComapctTask(const CompactTask &task) {
+  static Ptr CreateCompactTask(const CompactTask &task) {
     return std::make_shared<SegmentTask>(task);
   }
 

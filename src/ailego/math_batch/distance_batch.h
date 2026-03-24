@@ -17,6 +17,7 @@
 #include <zvec/ailego/math_batch/utils.h>
 #include "ailego/math/distance_matrix.h"
 #include "cosine_distance_batch.h"
+#include "euclidean_distance_batch.h"
 #include "inner_product_distance_batch.h"
 
 namespace zvec::ailego {
@@ -38,6 +39,21 @@ struct BaseDistance {
     if constexpr (std::is_same_v<DistanceType<ValueType, 1, 1>,
                                  CosineDistanceMatrix<ValueType, 1, 1>>) {
       return DistanceBatch::CosineDistanceBatch<
+          ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim,
+                                                            out);
+    }
+
+    if constexpr (std::is_same_v<DistanceType<ValueType, 1, 1>,
+                                 EuclideanDistanceMatrix<ValueType, 1, 1>>) {
+      return DistanceBatch::EuclideanDistanceBatch<
+          ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim,
+                                                            out);
+    }
+
+    if constexpr (std::is_same_v<
+                      DistanceType<ValueType, 1, 1>,
+                      SquaredEuclideanDistanceMatrix<ValueType, 1, 1>>) {
+      return DistanceBatch::SquaredEuclideanDistanceBatch<
           ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim,
                                                             out);
     }
