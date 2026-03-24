@@ -13,6 +13,10 @@
 // limitations under the License.
 
 #include "zvec/c_api.h"
+// Include generated version header for build-time
+#if defined(__has_include) && __has_include(<zvec_version.h>)
+#include <zvec_version.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>

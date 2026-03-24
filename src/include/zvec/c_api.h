@@ -20,13 +20,6 @@
 #include <stdint.h>
 #include <string.h>
 
-// Include generated version header
-#if defined(__has_include) && __has_include(<zvec_version.h>)
-#include <zvec_version.h>
-#else
-#include "zvec_version.h"
-#endif
-
 // =============================================================================
 // API Export Control
 // =============================================================================

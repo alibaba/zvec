@@ -45,6 +45,13 @@ configure_file(
     ${PROJECT_BINARY_DIR}/src/generated/zvec_version.h
 )
 
+# Configure c_api.h with version information embedded
+configure_file(
+    ${PROJECT_SOURCE_DIR}/src/include/zvec/c_api.h
+    ${PROJECT_BINARY_DIR}/src/generated/zvec/c_api.h
+    @ONLY
+)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -166,6 +173,7 @@ endif()
 # Include directories
 target_include_directories(zvec_c_api
     PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/src/generated>
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE

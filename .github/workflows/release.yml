@@ -140,7 +140,7 @@ jobs:
 
       - name: Create tarball
         run: |
-          cp src/include/zvec/c_api.h .
+          cp build/src/generated/zvec/c_api.h .
           cp build/src/c_api/libzvec_c_api.dylib .
           tar -czvf libzvec-capi-macos-universal.tar.gz \
             c_api.h \

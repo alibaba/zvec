@@ -12,54 +12,77 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+cmake_minimum_required(VERSION 3.13)
+cmake_policy(SET CMP0077 NEW)
+project(zvec-example-c)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# Enable compile_commands.json
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# --- Paths to Zvec and dependencies ---
+# Allow custom host build directory, default to "build"
+if(NOT DEFINED HOST_BUILD_DIR)
+    set(HOST_BUILD_DIR "build")
+endif()
+
+set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
+set(ZVEC_GENERATED_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/src/generated)
+set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
+set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
+
+# Add include and library search paths
+include_directories(${ZVEC_INCLUDE_DIR} ${ZVEC_GENERATED_INCLUDE_DIR})
+link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
+
+# Find required packages
+find_package(Threads REQUIRED)
+
 # Basic example
 add_executable(c_api_basic_example basic_example.c)
-target_link_libraries(c_api_basic_example PRIVATE zvec_c_api)
-target_include_directories(c_api_basic_example PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/include
+target_link_libraries(c_api_basic_example PRIVATE
+    -lzvec_c_api
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
-set_target_properties(c_api_basic_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c
-)
-
 
 # Schema example
 add_executable(c_api_collection_schema_example collection_schema_example.c)
-target_link_libraries(c_api_collection_schema_example PRIVATE zvec_c_api)
-target_include_directories(c_api_collection_schema_example PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/include
-)
-set_target_properties(c_api_collection_schema_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c
+target_link_libraries(c_api_collection_schema_example PRIVATE
+    -lzvec_c_api
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
 
 # Struct document example
 add_executable(c_api_doc_example doc_example.c)
-target_link_libraries(c_api_doc_example PRIVATE zvec_c_api)
-target_include_directories(c_api_doc_example PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/include
-)
-set_target_properties(c_api_doc_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/examples/c
+target_link_libraries(c_api_doc_example PRIVATE
+    -lzvec_c_api
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
 
 # Index example
 add_executable(c_api_index_example index_example.c)
-target_link_libraries(c_api_index_example PRIVATE zvec_c_api)
-set_target_properties(c_api_index_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c
+target_link_libraries(c_api_index_example PRIVATE
+    -lzvec_c_api
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
 
-# Newly added field schema example
+# Field schema example
 add_executable(c_api_field_schema_example field_schema_example.c)
-target_link_libraries(c_api_field_schema_example PRIVATE zvec_c_api)
-set_target_properties(c_api_field_schema_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c
+target_link_libraries(c_api_field_schema_example PRIVATE
+    -lzvec_c_api
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
 
 # Optimized example
 add_executable(c_api_optimized_example optimized_example.c)
-target_link_libraries(c_api_optimized_example PRIVATE zvec_c_api)
-set_target_properties(c_api_optimized_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/examples/c
+target_link_libraries(c_api_optimized_example PRIVATE
+    -lzvec_c_api
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
