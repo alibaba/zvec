@@ -1,6 +1,25 @@
 include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/option.cmake)
 
+set(ZVEC_TOOL_CORE_INTERFACE_LIBS
+    core_framework
+    core_metric
+    core_quantizer
+    core_utility
+    core_knn_flat
+    core_knn_flat_sparse
+    core_knn_hnsw
+    core_knn_hnsw_sparse
+    core_knn_cluster
+    core_knn_ivf
+    core_interface
+)
+
+set(ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS core_mix_reducer)
+if(ZVEC_ENABLE_OMEGA)
+  list(APPEND ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS core_knn_omega)
+endif()
+
 cc_binary(
     NAME txt2vecs
     STRICT PACKED
@@ -14,7 +33,7 @@ cc_binary(
     STRICT PACKED
     SRCS local_builder.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_cluster core_knn_ivf core_interface
+    LIBS gflags yaml-cpp magic_enum ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
   )
 
 cc_binary(
@@ -22,7 +41,7 @@ cc_binary(
     STRICT PACKED
     SRCS recall.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_cluster core_knn_ivf roaring core_interface
+    LIBS gflags yaml-cpp magic_enum roaring ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
   )
 
 cc_binary(
@@ -30,7 +49,7 @@ cc_binary(
     STRICT PACKED
     SRCS bench.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_cluster core_knn_ivf roaring core_interface
+    LIBS gflags yaml-cpp magic_enum roaring ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )
 
 cc_binary(
@@ -47,7 +66,7 @@ cc_binary(
     STRICT PACKED
     SRCS hnsw_hooks_microbench.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/thirdparty/omega/OMEGALib/include
-    LIBS magic_enum core_framework core_metric core_quantizer core_utility core_knn_hnsw omega core_interface
+    LIBS magic_enum core_framework core_metric core_quantizer core_utility core_knn_hnsw omega core_interface ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )
 endif()
 
@@ -56,7 +75,7 @@ cc_binary(
     STRICT PACKED
     SRCS recall_original.cc flow.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_cluster core_knn_ivf roaring core_interface
+    LIBS gflags yaml-cpp magic_enum roaring ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )
 
 cc_binary(
@@ -64,7 +83,7 @@ cc_binary(
     STRICT PACKED
     SRCS bench_original.cc flow.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_cluster core_knn_ivf roaring core_interface
+    LIBS gflags yaml-cpp magic_enum roaring ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )
 
 cc_binary(
@@ -72,5 +91,5 @@ cc_binary(
         STRICT PACKED
         SRCS local_builder_original.cc
         INCS ${PROJECT_ROOT_DIR}/src/core/
-        LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_cluster core_knn_ivf core_interface
+        LIBS gflags yaml-cpp magic_enum ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )

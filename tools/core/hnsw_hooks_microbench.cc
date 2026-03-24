@@ -23,7 +23,9 @@
 #include <string>
 #include <vector>
 
+#include "zvec/ailego/container/params.h"
 #include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_helper.h"
 #include "utility/rdtsc_timer.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
@@ -36,6 +38,7 @@ namespace core {
 namespace {
 
 struct Options {
+  std::string mode = "all";
   std::string index_path;
   uint32_t ef_search = 180;
   uint32_t topk = 100;
@@ -51,6 +54,7 @@ void PrintUsage(const char* argv0) {
   std::cerr
       << "Usage: " << argv0 << " --index-path <path> [options]\n"
       << "Options:\n"
+      << "  --mode <name>        all|fast|empty|omega\n"
       << "  --ef-search <n>      HNSW ef_search\n"
       << "  --topk <n>           Search topk\n"
       << "  --query-count <n>    Number of sampled queries\n"
@@ -66,6 +70,8 @@ bool ParseArgs(int argc, char** argv, Options* opts) {
     const char* arg = argv[i];
     if (std::strcmp(arg, "--index-path") == 0 && i + 1 < argc) {
       opts->index_path = argv[++i];
+    } else if (std::strcmp(arg, "--mode") == 0 && i + 1 < argc) {
+      opts->mode = argv[++i];
     } else if (std::strcmp(arg, "--ef-search") == 0 && i + 1 < argc) {
       opts->ef_search = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
     } else if (std::strcmp(arg, "--topk") == 0 && i + 1 < argc) {
@@ -104,18 +110,30 @@ bool ParseArgs(int argc, char** argv, Options* opts) {
   opts->iterations = std::max(1u, opts->iterations);
   opts->topk = std::max(1u, opts->topk);
   opts->window_size = std::max(1, opts->window_size);
+  if (opts->mode != "all" && opts->mode != "fast" &&
+      opts->mode != "empty" && opts->mode != "omega") {
+    std::cerr << "Invalid --mode: " << opts->mode << "\n";
+    PrintUsage(argv[0]);
+    return false;
+  }
   return true;
 }
 
 class ExposedHnswSearcher : public HnswSearcher {
  public:
-  int Init(const ailego::Params& params) { return HnswSearcher::init(params); }
+  int Init(const ailego::Params& params) {
+    return HnswSearcher::init(params);
+  }
 
-  int Load(IndexStorage::Pointer container) {
-    return HnswSearcher::load(std::move(container), nullptr);
+  int Load(IndexStorage::Pointer storage) {
+    return HnswSearcher::load(std::move(storage), nullptr);
   }
 
   ContextPointer CreateContext() const { return HnswSearcher::create_context(); }
+
+  IndexProvider::Pointer CreateProvider() const {
+    return HnswSearcher::create_provider();
+  }
 
   int FastSearch(HnswContext* ctx) const { return fast_search(ctx); }
 
@@ -163,25 +181,34 @@ struct BenchStats {
   double checksum{0.0};
 };
 
-std::vector<const void*> SampleIndexVectors(HnswContext* ctx, const IndexMeta& meta,
+std::vector<const void*> SampleIndexVectors(const IndexProvider::Pointer& provider,
+                                            const IndexMeta& meta,
                                             uint32_t count, uint32_t seed) {
-  const auto& entity = ctx->get_entity();
-  const uint32_t doc_cnt = static_cast<uint32_t>(entity.doc_cnt());
-  std::vector<uint32_t> ids(doc_cnt);
+  const uint32_t doc_cnt = static_cast<uint32_t>(provider->count());
+  std::vector<const void*> all_queries;
+  all_queries.reserve(doc_cnt);
+
+  auto it = provider->create_iterator();
+  for (; it && it->is_valid(); it->next()) {
+    all_queries.push_back(it->data());
+  }
+
+  std::vector<uint32_t> ids(all_queries.size());
   std::iota(ids.begin(), ids.end(), 0u);
   std::mt19937 rng(seed);
   std::shuffle(ids.begin(), ids.end(), rng);
 
-  count = std::min(count, doc_cnt);
+  count = std::min<uint32_t>(count, static_cast<uint32_t>(all_queries.size()));
   std::vector<const void*> queries;
   queries.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
-    queries.push_back(entity.get_vector(ids[i]));
+    queries.push_back(all_queries[ids[i]]);
   }
 
   std::cout << "Using " << queries.size() << " sampled in-index queries"
             << " element_size=" << meta.element_size()
-            << " doc_cnt=" << doc_cnt << "\n";
+            << " doc_cnt=" << doc_cnt
+            << " valid_vectors=" << all_queries.size() << "\n";
   return queries;
 }
 
@@ -244,39 +271,50 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  ailego::Params params;
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  if (!storage || storage->open(opts.index_path, false) != 0) {
+    std::cerr << "Failed to open index storage: " << opts.index_path << "\n";
+    return 2;
+  }
+
+  IndexMeta meta;
+  if (IndexHelper::DeserializeFromStorage(storage.get(), &meta) != 0) {
+    std::cerr << "Failed to deserialize index meta from storage\n";
+    return 3;
+  }
+
+  zvec::ailego::Params params = meta.searcher_params();
   params.set(PARAM_HNSW_SEARCHER_EF, opts.ef_search);
 
   ExposedHnswSearcher searcher;
   if (searcher.Init(params) != 0) {
     std::cerr << "Failed to init HNSW searcher\n";
-    return 2;
+    return 4;
   }
-
-  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
-  if (!storage || storage->open(opts.index_path, false) != 0) {
-    std::cerr << "Failed to open index storage: " << opts.index_path << "\n";
-    return 3;
-  }
-
   if (searcher.Load(storage) != 0) {
     std::cerr << "Failed to load HNSW searcher\n";
-    return 4;
+    return 5;
   }
 
   auto context = searcher.CreateContext();
   auto* ctx = dynamic_cast<HnswContext*>(context.get());
   if (ctx == nullptr) {
     std::cerr << "Failed to create HNSW context\n";
-    return 5;
+    return 6;
   }
   ctx->set_topk(opts.topk);
 
-  auto queries = SampleIndexVectors(ctx, searcher.MetaPublic(), opts.query_count,
-                                    opts.seed);
+  auto provider = searcher.CreateProvider();
+  if (!provider) {
+    std::cerr << "Failed to create HNSW provider\n";
+    return 7;
+  }
+
+  auto queries = SampleIndexVectors(provider, searcher.MetaPublic(),
+                                    opts.query_count, opts.seed);
   if (queries.empty()) {
     std::cerr << "No queries sampled from index\n";
-    return 6;
+    return 8;
   }
 
   HnswAlgorithm::SearchHooks empty_hooks;
@@ -293,24 +331,29 @@ int main(int argc, char** argv) {
   omega_hooks.on_hop = OnOmegaHop;
   omega_hooks.on_visit_candidate = OnOmegaVisitCandidate;
 
-  RunBench("alg_fast_search", ctx, queries, opts.warmup, opts.iterations, [&]() {
-    return searcher.FastSearch(ctx);
-  });
+  if (opts.mode == "all" || opts.mode == "fast") {
+    RunBench("alg_fast_search", ctx, queries, opts.warmup, opts.iterations,
+             [&]() { return searcher.FastSearch(ctx); });
+  }
 
-  RunBench("alg_fast_search_with_empty_hooks", ctx, queries, opts.warmup,
-           opts.iterations, [&]() {
-             bool stopped_early = false;
-             return searcher.FastSearchWithHooks(ctx, &empty_hooks,
-                                                &stopped_early);
-           });
+  if (opts.mode == "all" || opts.mode == "empty") {
+    RunBench("alg_fast_search_with_empty_hooks", ctx, queries, opts.warmup,
+             opts.iterations, [&]() {
+               bool stopped_early = false;
+               return searcher.FastSearchWithHooks(ctx, &empty_hooks,
+                                                  &stopped_early);
+             });
+  }
 
-  RunBench("alg_fast_search_with_omega_hooks_only", ctx, queries, opts.warmup,
-           opts.iterations, [&]() {
-             omega_search_ctx.Reset();
-             bool stopped_early = false;
-             return searcher.FastSearchWithHooks(ctx, &omega_hooks,
-                                                &stopped_early);
-           });
+  if (opts.mode == "all" || opts.mode == "omega") {
+    RunBench("alg_fast_search_with_omega_hooks_only", ctx, queries, opts.warmup,
+             opts.iterations, [&]() {
+               omega_search_ctx.Reset();
+               bool stopped_early = false;
+               return searcher.FastSearchWithHooks(ctx, &omega_hooks,
+                                                  &stopped_early);
+             });
+  }
 
   return 0;
 }
