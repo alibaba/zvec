@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -24,12 +25,13 @@
 #include <vector>
 
 #include "zvec/ailego/container/params.h"
-#include "zvec/core/framework/index_factory.h"
-#include "zvec/core/framework/index_helper.h"
 #include "utility/rdtsc_timer.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
-#include "algorithm/hnsw/hnsw_searcher.h"
+#include "algorithm/hnsw/hnsw_streamer.h"
+#include "db/common/file_helper.h"
+#include "db/index/column/vector_column/vector_column_indexer.h"
+#include "db/index/common/version_manager.h"
 #include "omega/search_context.h"
 
 namespace zvec {
@@ -37,9 +39,14 @@ namespace core {
 
 namespace {
 
+namespace fs = std::filesystem;
+
 struct Options {
   std::string mode = "all";
   std::string index_path;
+  uint32_t dimension = 768;
+  uint32_t m = 15;
+  uint32_t ef_construction = 500;
   uint32_t ef_search = 180;
   uint32_t topk = 100;
   uint32_t query_count = 1000;
@@ -55,6 +62,9 @@ void PrintUsage(const char* argv0) {
       << "Usage: " << argv0 << " --index-path <path> [options]\n"
       << "Options:\n"
       << "  --mode <name>        all|fast|empty|omega\n"
+      << "  --dimension <n>      Vector dimension\n"
+      << "  --m <n>              HNSW max neighbors\n"
+      << "  --ef-construction <n> HNSW ef_construction\n"
       << "  --ef-search <n>      HNSW ef_search\n"
       << "  --topk <n>           Search topk\n"
       << "  --query-count <n>    Number of sampled queries\n"
@@ -62,7 +72,11 @@ void PrintUsage(const char* argv0) {
       << "  --warmup <n>         Number of warmup iterations\n"
       << "  --seed <n>           RNG seed for sampled queries\n"
       << "  --window-size <n>    OMEGA window size for hooks-only mode\n"
-      << "  --target-recall <f>  OMEGA target recall for hooks-only mode\n";
+      << "  --target-recall <f>  OMEGA target recall for hooks-only mode\n"
+      << "\n"
+      << "--index-path accepts either the benchmark index directory\n"
+      << "(for example .../cohere_1m_hnsw) or a file under its segment\n"
+      << "subdirectory such as .../0/dense.qindex.5.proxima.\n";
 }
 
 bool ParseArgs(int argc, char** argv, Options* opts) {
@@ -72,6 +86,14 @@ bool ParseArgs(int argc, char** argv, Options* opts) {
       opts->index_path = argv[++i];
     } else if (std::strcmp(arg, "--mode") == 0 && i + 1 < argc) {
       opts->mode = argv[++i];
+    } else if (std::strcmp(arg, "--dimension") == 0 && i + 1 < argc) {
+      opts->dimension =
+          static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
+    } else if (std::strcmp(arg, "--m") == 0 && i + 1 < argc) {
+      opts->m = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
+    } else if (std::strcmp(arg, "--ef-construction") == 0 && i + 1 < argc) {
+      opts->ef_construction =
+          static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
     } else if (std::strcmp(arg, "--ef-search") == 0 && i + 1 < argc) {
       opts->ef_search = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
     } else if (std::strcmp(arg, "--topk") == 0 && i + 1 < argc) {
@@ -119,33 +141,6 @@ bool ParseArgs(int argc, char** argv, Options* opts) {
   return true;
 }
 
-class ExposedHnswSearcher : public HnswSearcher {
- public:
-  int Init(const ailego::Params& params) {
-    return HnswSearcher::init(params);
-  }
-
-  int Load(IndexStorage::Pointer storage) {
-    return HnswSearcher::load(std::move(storage), nullptr);
-  }
-
-  ContextPointer CreateContext() const { return HnswSearcher::create_context(); }
-
-  IndexProvider::Pointer CreateProvider() const {
-    return HnswSearcher::create_provider();
-  }
-
-  int FastSearch(HnswContext* ctx) const { return fast_search(ctx); }
-
-  int FastSearchWithHooks(HnswContext* ctx,
-                          const HnswAlgorithm::SearchHooks* hooks,
-                          bool* stopped_early) const {
-    return fast_search_with_hooks(ctx, hooks, stopped_early);
-  }
-
-  const IndexMeta& MetaPublic() const { return meta(); }
-};
-
 struct OmegaHookState {
   omega::SearchContext* search_ctx{nullptr};
   bool enable_early_stopping{false};
@@ -181,6 +176,37 @@ struct BenchStats {
   double checksum{0.0};
 };
 
+std::string NormalizeIndexPath(const std::string& input_path) {
+  if (input_path.empty()) {
+    return input_path;
+  }
+
+  fs::path path(input_path);
+  std::error_code ec;
+  if (!fs::exists(path, ec)) {
+    return input_path;
+  }
+
+  if (fs::is_regular_file(path, ec)) {
+    auto segment_dir = path.parent_path();
+    auto index_root = segment_dir.parent_path();
+    if (!segment_dir.empty() && segment_dir.filename() == "0" &&
+        !index_root.empty()) {
+      return index_root.string();
+    }
+    return segment_dir.string();
+  }
+
+  if (fs::is_directory(path, ec) && path.filename() == "0") {
+    auto index_root = path.parent_path();
+    if (!index_root.empty()) {
+      return index_root.string();
+    }
+  }
+
+  return path.string();
+}
+
 std::vector<const void*> SampleIndexVectors(const IndexProvider::Pointer& provider,
                                             const IndexMeta& meta,
                                             uint32_t count, uint32_t seed) {
@@ -210,6 +236,78 @@ std::vector<const void*> SampleIndexVectors(const IndexProvider::Pointer& provid
             << " doc_cnt=" << doc_cnt
             << " valid_vectors=" << all_queries.size() << "\n";
   return queries;
+}
+
+bool OpenBenchmarkVectorIndexer(const std::string& benchmark_root,
+                                VectorColumnIndexer::Ptr* out,
+                                std::string* error) {
+  auto version_manager_result = VersionManager::Recovery(benchmark_root);
+  if (!version_manager_result.has_value()) {
+    *error = version_manager_result.error().message();
+    return false;
+  }
+
+  auto version_manager = version_manager_result.value();
+  const Version version = version_manager->get_current_version();
+  const auto& schema = version.schema();
+  const auto vector_fields = schema.vector_fields();
+  if (vector_fields.empty()) {
+    *error = "No vector field found in benchmark root";
+    return false;
+  }
+
+  const FieldSchema* field = vector_fields.front().get();
+  if (field == nullptr) {
+    *error = "Invalid vector field in benchmark root";
+    return false;
+  }
+
+  std::string index_file_path;
+  uint32_t best_doc_count = 0;
+  bool found_quantized = false;
+
+  for (const auto& segment_meta : version.persisted_segment_metas()) {
+    for (const auto& block : segment_meta->persisted_blocks()) {
+      const bool match_field = block.contain_column(field->name());
+      const bool is_quantized = block.type() == BlockType::VECTOR_INDEX_QUANTIZE;
+      const bool is_plain = block.type() == BlockType::VECTOR_INDEX;
+      if (!match_field || (!is_quantized && !is_plain)) {
+        continue;
+      }
+
+      if (is_quantized && (!found_quantized || block.doc_count() > best_doc_count)) {
+        index_file_path = FileHelper::MakeQuantizeVectorIndexPath(
+            benchmark_root, field->name(), segment_meta->id(), block.id());
+        best_doc_count = block.doc_count();
+        found_quantized = true;
+        continue;
+      }
+
+      if (!found_quantized && block.doc_count() > best_doc_count) {
+        index_file_path = FileHelper::MakeVectorIndexPath(
+            benchmark_root, field->name(), segment_meta->id(), block.id());
+        best_doc_count = block.doc_count();
+      }
+    }
+  }
+
+  if (index_file_path.empty()) {
+    *error = "No HNSW vector index file found under benchmark root";
+    return false;
+  }
+
+  auto indexer = std::make_shared<VectorColumnIndexer>(index_file_path, *field);
+  auto status = indexer->Open({true, false, true});
+  if (!status.ok()) {
+    *error = status.message();
+    return false;
+  }
+
+  std::cout << "Opened benchmark root: " << benchmark_root << "\n"
+            << "Selected vector index file: " << index_file_path << "\n"
+            << "Vector field: " << field->name() << "\n";
+  *out = std::move(indexer);
+  return true;
 }
 
 template <typename Fn>
@@ -265,52 +363,54 @@ BenchStats RunBench(const std::string& name, HnswContext* ctx,
 
 int main(int argc, char** argv) {
   using namespace zvec::core;
+  using namespace zvec;
 
   Options opts;
   if (!ParseArgs(argc, argv, &opts)) {
     return 1;
   }
+  opts.index_path = NormalizeIndexPath(opts.index_path);
 
-  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
-  if (!storage || storage->open(opts.index_path, false) != 0) {
-    std::cerr << "Failed to open index storage: " << opts.index_path << "\n";
+  VectorColumnIndexer::Ptr indexer;
+  std::string open_error;
+  if (!OpenBenchmarkVectorIndexer(opts.index_path, &indexer, &open_error)) {
+    std::cerr << "Failed to open benchmark index: " << open_error << "\n";
     return 2;
   }
-
-  IndexMeta meta;
-  if (IndexHelper::DeserializeFromStorage(storage.get(), &meta) != 0) {
-    std::cerr << "Failed to deserialize index meta from storage\n";
+  auto index = indexer->core_index();
+  if (!index) {
+    std::cerr << "Opened benchmark indexer without underlying core index\n";
     return 3;
   }
 
-  zvec::ailego::Params params = meta.searcher_params();
-  params.set(PARAM_HNSW_SEARCHER_EF, opts.ef_search);
-
-  ExposedHnswSearcher searcher;
-  if (searcher.Init(params) != 0) {
-    std::cerr << "Failed to init HNSW searcher\n";
+  auto streamer_base = index->index_searcher();
+  auto* streamer = dynamic_cast<HnswStreamer*>(streamer_base.get());
+  if (streamer == nullptr) {
+    std::cerr << "Failed to get HnswStreamer from opened index\n";
     return 4;
   }
-  if (searcher.Load(storage) != 0) {
-    std::cerr << "Failed to load HNSW searcher\n";
-    return 5;
-  }
 
-  auto context = searcher.CreateContext();
+  auto context = streamer_base->create_context();
   auto* ctx = dynamic_cast<HnswContext*>(context.get());
   if (ctx == nullptr) {
     std::cerr << "Failed to create HNSW context\n";
+    return 5;
+  }
+  zvec::ailego::Params query_params;
+  query_params.set(PARAM_HNSW_STREAMER_EF, opts.ef_search);
+  if (ctx->update(query_params) != 0) {
+    std::cerr << "Failed to update HNSW query params\n";
     return 6;
   }
   ctx->set_topk(opts.topk);
 
-  auto provider = searcher.CreateProvider();
+  auto provider = streamer_base->create_provider();
   if (!provider) {
     std::cerr << "Failed to create HNSW provider\n";
     return 7;
   }
 
-  auto queries = SampleIndexVectors(provider, searcher.MetaPublic(),
+  auto queries = SampleIndexVectors(provider, streamer_base->meta(),
                                     opts.query_count, opts.seed);
   if (queries.empty()) {
     std::cerr << "No queries sampled from index\n";
@@ -333,15 +433,15 @@ int main(int argc, char** argv) {
 
   if (opts.mode == "all" || opts.mode == "fast") {
     RunBench("alg_fast_search", ctx, queries, opts.warmup, opts.iterations,
-             [&]() { return searcher.FastSearch(ctx); });
+             [&]() { return streamer->FastSearch(ctx); });
   }
 
   if (opts.mode == "all" || opts.mode == "empty") {
     RunBench("alg_fast_search_with_empty_hooks", ctx, queries, opts.warmup,
              opts.iterations, [&]() {
                bool stopped_early = false;
-               return searcher.FastSearchWithHooks(ctx, &empty_hooks,
-                                                  &stopped_early);
+               return streamer->FastSearchWithHooks(ctx, &empty_hooks,
+                                                    &stopped_early);
              });
   }
 
@@ -350,8 +450,8 @@ int main(int argc, char** argv) {
              opts.iterations, [&]() {
                omega_search_ctx.Reset();
                bool stopped_early = false;
-               return searcher.FastSearchWithHooks(ctx, &omega_hooks,
-                                                  &stopped_early);
+               return streamer->FastSearchWithHooks(ctx, &omega_hooks,
+                                                    &stopped_early);
              });
   }
 

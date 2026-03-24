@@ -65,8 +65,8 @@ cc_binary(
     NAME hnsw_hooks_microbench
     STRICT PACKED
     SRCS hnsw_hooks_microbench.cc
-    INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/thirdparty/omega/OMEGALib/include
-    LIBS magic_enum core_framework core_metric core_quantizer core_utility core_knn_hnsw omega core_interface ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
+    INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/src/db/ ${PROJECT_BINARY_DIR}/src/db/ ${PROJECT_ROOT_DIR}/thirdparty/omega/OMEGALib/include
+    LIBS magic_enum core_framework core_metric core_quantizer core_utility core_knn_hnsw omega core_interface zvec_index ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )
 endif()
 

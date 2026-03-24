@@ -31,6 +31,12 @@ class HnswStreamer : public IndexStreamer {
   HnswStreamer(const HnswStreamer &streamer) = delete;
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
 
+  int FastSearch(HnswContext *ctx) const;
+
+  int FastSearchWithHooks(HnswContext *ctx,
+                          const HnswAlgorithm::SearchHooks *hooks,
+                          bool *stopped_early) const;
+
  protected:
   //! Initialize Streamer
   virtual int init(const IndexMeta &imeta,

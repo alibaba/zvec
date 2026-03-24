@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ZVEC_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 BIN="${BIN:-${ZVEC_ROOT}/build/bin/hnsw_hooks_microbench}"
-INDEX_PATH="${INDEX_PATH:-${ZVEC_ROOT}/benchmark_results/cohere_1m_hnsw/0/dense.qindex.5.proxima}"
+DEFAULT_INDEX_DIR="${ZVEC_ROOT}/benchmark_results/cohere_1m_hnsw"
+INDEX_PATH="${INDEX_PATH:-}"
 OUT_DIR="${OUT_DIR:-${ZVEC_ROOT}/perf_results/hnsw_hooks_microbench}"
 
 CPU_CORE="${CPU_CORE:-0}"
@@ -35,25 +36,83 @@ if [[ ! -x "${BIN}" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${INDEX_PATH}" ]]; then
-  echo "index file not found: ${INDEX_PATH}" >&2
-  exit 1
-fi
-
 mkdir -p "${OUT_DIR}"
 
-COMMON_ARGS=(
-  "${BIN}"
-  --index-path "${INDEX_PATH}"
-  --ef-search "${EF_SEARCH}"
-  --topk "${TOPK}"
-  --query-count "${QUERY_COUNT}"
-  --warmup "${WARMUP}"
-  --iterations "${ITERATIONS}"
-  --window-size "${WINDOW_SIZE}"
-  --target-recall "${TARGET_RECALL}"
-  --seed "${SEED}"
-)
+build_common_args() {
+  COMMON_ARGS=(
+    "${BIN}"
+    --index-path "${INDEX_PATH}"
+    --ef-search "${EF_SEARCH}"
+    --topk "${TOPK}"
+    --query-count "${QUERY_COUNT}"
+    --warmup "${WARMUP}"
+    --iterations "${ITERATIONS}"
+    --window-size "${WINDOW_SIZE}"
+    --target-recall "${TARGET_RECALL}"
+    --seed "${SEED}"
+  )
+}
+
+preflight_index() {
+  local candidate="$1"
+  [[ -d "${candidate}" ]] || return 1
+
+  local output
+  if ! output="$("${BIN}" \
+      --index-path "${candidate}" \
+      --ef-search "${EF_SEARCH}" \
+      --topk "${TOPK}" \
+      --query-count 8 \
+      --warmup 2 \
+      --iterations 4 \
+      --window-size "${WINDOW_SIZE}" \
+      --target-recall "${TARGET_RECALL}" \
+      --seed "${SEED}" \
+      --mode fast 2>&1)"; then
+    return 1
+  fi
+
+  if [[ "${output}" != *"doc_cnt="* ]] || [[ "${output}" == *"doc_cnt=0"* ]]; then
+    return 1
+  fi
+
+  echo "${output}"
+  return 0
+}
+
+detect_index_path() {
+  if [[ -n "${INDEX_PATH}" ]]; then
+    if [[ ! -d "${INDEX_PATH}" ]]; then
+      echo "index dir not found: ${INDEX_PATH}" >&2
+      exit 1
+    fi
+    local output
+    if ! output="$(preflight_index "${INDEX_PATH}")"; then
+      echo "preflight failed for INDEX_PATH=${INDEX_PATH}" >&2
+      exit 1
+    fi
+    echo "Using user-provided INDEX_PATH=${INDEX_PATH}"
+    echo "${output}"
+    return
+  fi
+
+  local candidates=(
+    "${DEFAULT_INDEX_DIR}"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    local output
+    if output="$(preflight_index "${candidate}")"; then
+      INDEX_PATH="${candidate}"
+      echo "Auto-detected INDEX_PATH=${INDEX_PATH}"
+      echo "${output}"
+      return
+    fi
+  done
+
+  echo "Failed to auto-detect a valid index file under ${DEFAULT_INDEX_DIR}" >&2
+  exit 1
+}
 
 run_stat() {
   local mode="$1"
@@ -97,6 +156,9 @@ run_mode() {
   run_stat "${mode}"
   run_record "${mode}"
 }
+
+detect_index_path
+build_common_args
 
 case "${MODE_FILTER}" in
   all)

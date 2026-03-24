@@ -81,6 +81,16 @@ HnswStreamer::~HnswStreamer() {
   }
 }
 
+int HnswStreamer::FastSearch(HnswContext *ctx) const {
+  return alg_->fast_search(ctx);
+}
+
+int HnswStreamer::FastSearchWithHooks(
+    HnswContext *ctx, const HnswAlgorithm::SearchHooks *hooks,
+    bool *stopped_early) const {
+  return alg_->fast_search_with_hooks(ctx, hooks, stopped_early);
+}
+
 int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   meta_ = imeta;
   meta_.set_streamer("HnswStreamer", HnswEntity::kRevision, params);

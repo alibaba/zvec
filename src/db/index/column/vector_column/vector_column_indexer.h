@@ -165,6 +165,10 @@ class VectorColumnIndexer {
     return index_file_path_;
   }
 
+  core_interface::Index::Pointer core_index() const {
+    return index;
+  }
+
   size_t doc_count() const {
     if (index == nullptr) {
       return -1;
