@@ -10,7 +10,7 @@
   <a href="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml/badge.svg?branch=main" alt="Main"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
   <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/pyversions/zvec.svg" alt="Python Versions"/></a>
+  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/badge/python-3.10%20~%203.14-blue.svg" alt="Python Versions"/></a>
   <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec.svg" alt="npm Release"/></a>
 </p>
 
@@ -41,7 +41,7 @@
 
 ### [Python](https://pypi.org/project/zvec/)
 
-**Requirements**: Python 3.10 - 3.12
+**Requirements**: Python 3.10 - 3.14
 
 ```bash
 pip install zvec
