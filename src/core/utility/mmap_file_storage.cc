@@ -171,8 +171,8 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Open storage
-  int open(const std::string &path, bool create) override {
-    if (!ailego::File::IsExist(path) && create) {
+  int open(const std::string &path, bool create_if_missing) override {
+    if (!ailego::File::IsExist(path) && create_if_missing) {
       size_t last_slash = path.rfind('/');
       if (last_slash != std::string::npos) {
         ailego::File::MakePath(path.substr(0, last_slash));

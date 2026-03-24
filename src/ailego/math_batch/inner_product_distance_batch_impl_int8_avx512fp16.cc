@@ -168,7 +168,6 @@ void compute_one_to_many_inner_product_avx512_vnni_int8_12(
       query, ptrs, prefetch_ptrs, dim, sums);
 }
 
-
 #endif
 
 }  // namespace zvec::ailego::DistanceBatch
