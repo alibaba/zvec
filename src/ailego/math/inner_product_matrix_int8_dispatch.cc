@@ -18,43 +18,65 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__AVX2__)
-float InnerProductAVX2(const int8_t *lhs, const int8_t *rhs, size_t size);
-float MinusInnerProductAVX2(const int8_t *lhs, const int8_t *rhs, size_t size);
+float InnerProductInt8AVX2(const int8_t *lhs, const int8_t *rhs, size_t size);
+float MinusInnerProductInt8AVX2(const int8_t *lhs, const int8_t *rhs,
+                                size_t size);
 #endif
 
 #if defined(__SSE4_1__)
-float InnerProductSSE(const int8_t *lhs, const int8_t *rhs, size_t size);
-float MinusInnerProductSSE(const int8_t *lhs, const int8_t *rhs, size_t size);
+float InnerProductInt8SSE(const int8_t *lhs, const int8_t *rhs, size_t size);
+float MinusInnerProductInt8SSE(const int8_t *lhs, const int8_t *rhs,
+                               size_t size);
 #endif
 
-#if defined(__SSE4_1__)
+float InnerProductInt8Scalar(const int8_t *m, const int8_t *q, size_t dim);
+float MinusInnerProductInt8Scalar(const int8_t *m, const int8_t *q, size_t dim);
+
 //! Compute the distance between matrix and query (INT8, M=1, N=1)
-void InnerProductMatrix<int8_t, 1, 1>::Compute(const ValueType *m,
-                                               const ValueType *q, size_t dim,
-                                               float *out) {
+void InnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m, const int8_t *q,
+                                               size_t dim, float *out) {
 #if defined(__AVX2__)
-  if (dim > 31) {
-    *out = InnerProductAVX2(m, q, dim);
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    *out = InnerProductInt8AVX2(m, q, dim);
     return;
   }
 #endif  // __AVX2__
-  *out = InnerProductSSE(m, q, dim);
+
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
+    *out = InnerProductInt8SSE(m, q, dim);
+    return;
+  }
+
+#endif  //__SSE4_1__
+
+  *out = InnerProductInt8Scalar(m, q, dim);
 }
 
 //! Compute the distance between matrix and query (INT8, M=1, N=1)
-void MinusInnerProductMatrix<int8_t, 1, 1>::Compute(const ValueType *m,
-                                                    const ValueType *q,
-                                                    size_t dim, float *out) {
+void MinusInnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m,
+                                                    const int8_t *q, size_t dim,
+                                                    float *out) {
 #if defined(__AVX2__)
-  if (dim > 31) {
-    *out = MinusInnerProductAVX2(m, q, dim);
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    *out = MinusInnerProductInt8AVX2(m, q, dim);
     return;
   }
 #endif  // __AVX2__
-  *out = MinusInnerProductSSE(m, q, dim);
+
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
+    *out = MinusInnerProductInt8SSE(m, q, dim);
+    return;
+  }
+#endif  //__SSE4_1__
+
+  *out = MinusInnerProductInt8Scalar(m, q, dim);
 }
-#endif  // __SSE4_1__
 
 }  // namespace ailego
 }  // namespace zvec

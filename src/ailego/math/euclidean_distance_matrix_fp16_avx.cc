@@ -21,15 +21,13 @@ namespace ailego {
 
 #if defined(__AVX__)
 
-void SquaredEuclideanDistanceAVX(const Float16 *lhs, const Float16 *rhs,
-                                 size_t size, float *out) {
-  ACCUM_FP16_1X1_AVX(lhs, rhs, size, out, 0ull, )
-}
+float SquaredEuclideanDistanceFp16AVX(const Float16 *lhs, const Float16 *rhs,
+                                      size_t size) {
+  float score{0.0f};
 
-//! EuclideanDistance
-void EuclideanDistanceAVX(const Float16 *lhs, const Float16 *rhs, size_t size,
-                          float *out) {
-  ACCUM_FP16_1X1_AVX(lhs, rhs, size, out, 0ull, std::sqrt)
+  ACCUM_FP16_1X1_AVX(lhs, rhs, size, &score, 0ull, )
+
+  return score;
 }
 
 #endif  // __AVX__

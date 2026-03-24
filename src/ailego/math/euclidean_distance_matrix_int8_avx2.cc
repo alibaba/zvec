@@ -20,9 +20,11 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__AVX2__)
-//! Squared Euclidean Distance
-float SquaredEuclideanDistanceAVX2(const int8_t *lhs, const int8_t *rhs,
-                                   size_t size) {
+float SquaredEuclideanDistanceInt8SSEInternal(const int8_t *lhs,
+                                              const int8_t *rhs, size_t size);
+
+float SquaredEuclideanDistanceInt8AVX2Internal(const int8_t *lhs,
+                                               const int8_t *rhs, size_t size) {
   const int8_t *last = lhs + size;
   const int8_t *last_aligned = lhs + ((size >> 6) << 6);
   float result = 0.0;
@@ -176,6 +178,14 @@ float SquaredEuclideanDistanceAVX2(const int8_t *lhs, const int8_t *rhs,
   return result;
 }
 
+float SquaredEuclideanDistanceInt8AVX2(const int8_t *lhs, const int8_t *rhs,
+                                       size_t size) {
+  if (size > 31) {
+    return SquaredEuclideanDistanceInt8AVX2Internal(lhs, rhs, size);
+  }
+
+  return SquaredEuclideanDistanceInt8SSEInternal(lhs, rhs, size);
+}
 #endif  // __AVX2__
 
 }  // namespace ailego

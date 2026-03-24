@@ -31,6 +31,8 @@ static std::string index_type_to_string(const IndexType type) {
       return "IVF";
     case IndexType::HNSW:
       return "HNSW";
+    case IndexType::HNSW_RABITQ:
+      return "HNSW_RABITQ";
     default:
       return "UNDEFINED";
   }
@@ -59,6 +61,8 @@ static std::string quantize_type_to_string(const QuantizeType type) {
       return "INT4";
     case QuantizeType::FP16:
       return "FP16";
+    case QuantizeType::RABITQ:
+      return "RABITQ";
     default:
       return "UNDEFINED";
   }
@@ -374,6 +378,105 @@ Examples:
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>());
+          }));
+
+  // binding hnsw rabitq index params
+  py::class_<HnswRabitqIndexParams, VectorIndexParams,
+             std::shared_ptr<HnswRabitqIndexParams>>
+      hnsw_rabitq_params(m, "HnswRabitqIndexParam", R"pbdoc(
+Parameters for configuring an HNSW (Hierarchical Navigable Small World) index with RabitQ quantization.
+
+HNSW is a graph-based approximate nearest neighbor search index. RabitQ is a
+quantization method that provides high compression with minimal accuracy loss.
+
+Attributes:
+    metric_type (MetricType): Distance metric used for similarity computation.
+        Default is ``MetricType.IP`` (inner product).
+    m (int): Number of bi-directional links created for every new element
+        during construction. Higher values improve accuracy but increase
+        memory usage and construction time. Default is 50.
+    ef_construction (int): Size of the dynamic candidate list for nearest
+        neighbors during index construction. Larger values yield better
+        graph quality at the cost of slower build time. Default is 500.
+
+Examples:
+    >>> from zvec.typing import MetricType
+    >>> params = HnswRabitqIndexParam(
+    ...     metric_type=MetricType.COSINE,
+    ...     m=16,
+    ...     ef_construction=200
+    ... )
+    >>> print(params)
+    {'metric_type': 'COSINE', 'm': 16, 'ef_construction': 200}
+)pbdoc");
+  hnsw_rabitq_params
+      .def(py::init<MetricType, int, int, int, int, int>(),
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
+           py::arg("num_clusters") = core_interface::kDefaultRabitqNumClusters,
+           py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
+           py::arg("ef_construction") =
+               core_interface::kDefaultHnswEfConstruction,
+           py::arg("sample_count") = 0)
+      .def_property_readonly("m", &HnswRabitqIndexParams::m,
+                             "int: Maximum number of neighbors per node.")
+      .def_property_readonly(
+          "ef_construction", &HnswRabitqIndexParams::ef_construction,
+          "int: Candidate list size during index construction.")
+      .def_property_readonly("total_bits", &HnswRabitqIndexParams::total_bits,
+                             "int: Total bits for RabitQ quantization.")
+      .def_property_readonly("num_clusters",
+                             &HnswRabitqIndexParams::num_clusters,
+                             "int: Number of clusters for RabitQ.")
+      .def_property_readonly("sample_count",
+                             &HnswRabitqIndexParams::sample_count,
+                             "int: Sample count for RabitQ training.")
+      .def(
+          "to_dict",
+          [](const HnswRabitqIndexParams &self) -> py::dict {
+            py::dict dict;
+            dict["type"] = index_type_to_string(self.type());
+            dict["metric_type"] = metric_type_to_string(self.metric_type());
+            dict["quantize_type"] =
+                quantize_type_to_string(self.quantize_type());
+            dict["total_bits"] = self.total_bits();
+            dict["num_clusters"] = self.num_clusters();
+            dict["sample_count"] = self.sample_count();
+            dict["m"] = self.m();
+            dict["ef_construction"] = self.ef_construction();
+            return dict;
+          },
+          "Convert to dictionary with all fields")
+      .def(
+          "__repr__",
+          [](const HnswRabitqIndexParams &self) -> std::string {
+            return "{"
+                   "\"type\":\"" +
+                   index_type_to_string(self.type()) +
+                   "\", \"metric_type\":\"" +
+                   metric_type_to_string(self.metric_type()) +
+                   "\", \"total_bits\":" + std::to_string(self.total_bits()) +
+                   ", \"num_clusters\":" + std::to_string(self.num_clusters()) +
+                   ", \"sample_count\":" + std::to_string(self.sample_count()) +
+                   ", \"m\":" + std::to_string(self.m()) +
+                   ", \"ef_construction\":" +
+                   std::to_string(self.ef_construction()) +
+                   ", \"quantize_type\":\"" +
+                   quantize_type_to_string(self.quantize_type()) + "\"}";
+          })
+      .def(py::pickle(
+          [](const HnswRabitqIndexParams &self) {
+            return py::make_tuple(self.metric_type(), self.total_bits(),
+                                  self.num_clusters(), self.m(),
+                                  self.ef_construction(), self.sample_count());
+          },
+          [](py::tuple t) {
+            if (t.size() != 6)
+              throw std::runtime_error(
+                  "Invalid state for HnswRabitqIndexParams");
+            return std::make_shared<HnswRabitqIndexParams>(
+                t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<int>(), t[4].cast<int>(), t[5].cast<int>());
           }));
 
   // FlatIndexParams
@@ -709,10 +812,81 @@ Args:
             obj->set_is_linear(t[2].cast<bool>());
             return obj;
           }));
+
+  // binding hnsw rabitq query params
+  py::class_<HnswRabitqQueryParams, QueryParams,
+             std::shared_ptr<HnswRabitqQueryParams>>
+      hnsw_rabitq_query_params(m, "HnswRabitqQueryParam", R"pbdoc(
+Query parameters for HNSW RaBitQ (Hierarchical Navigable Small World with RaBitQ quantization) index.
+
+Controls the trade-off between search speed and accuracy via the `ef` parameter.
+RaBitQ provides efficient quantization while maintaining high search quality.
+
+Attributes:
+    type (IndexType): Always ``IndexType.HNSW_RABITQ``.
+    ef (int): Size of the dynamic candidate list during search.
+        Larger values improve recall but slow down search.
+        Default is 300.
+    radius (float): Search radius for range queries. Default is 0.0.
+    is_linear (bool): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+
+Examples:
+    >>> params = HnswRabitqQueryParam(ef=300)
+    >>> print(params.ef)
+    300
+    >>> print(params.to_dict() if hasattr(params, 'to_dict') else params)
+    {"type":"HNSW_RABITQ", "ef":300}
+)pbdoc");
+  hnsw_rabitq_query_params
+      .def(py::init<int, float, bool, bool>(),
+           py::arg("ef") = core_interface::kDefaultHnswEfSearch,
+           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("is_using_refiner") = false,
+           R"pbdoc(
+Constructs an HnswRabitqQueryParam instance.
+
+Args:
+    ef (int, optional): Search-time candidate list size.
+        Higher values improve accuracy. Defaults to 300.
+    radius (float, optional): Search radius for range queries. Default is 0.0.
+    is_linear (bool, optional): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+)pbdoc")
+      .def_property_readonly(
+          "ef",
+          [](const HnswRabitqQueryParams &self) -> int { return self.ef(); },
+          "int: Size of the dynamic candidate list during HNSW RaBitQ search.")
+      .def("__repr__",
+           [](const HnswRabitqQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"ef\":" + std::to_string(self.ef()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) + "}";
+           })
+      .def(py::pickle(
+          [](const HnswRabitqQueryParams &self) {
+            return py::make_tuple(self.ef(), self.radius(), self.is_linear(),
+                                  self.is_using_refiner());
+          },
+          [](py::tuple t) {
+            if (t.size() != 4)
+              throw std::runtime_error(
+                  "Invalid state for HnswRabitqQueryParams");
+            auto obj =
+                std::make_shared<HnswRabitqQueryParams>(t[0].cast<int>());
+            obj->set_radius(t[1].cast<float>());
+            obj->set_is_linear(t[2].cast<bool>());
+            obj->set_is_using_refiner(t[3].cast<bool>());
+            return obj;
+          }));
 }
 
-void ZVecPyParams::bind_options(py::module_ &m) {
-  // binding collection options
+void ZVecPyParams::bind_options(py::module_ &m) {  // binding collection options
   py::class_<CollectionOptions>(m, "CollectionOption", R"pbdoc(
 Options for opening or creating a collection.
 

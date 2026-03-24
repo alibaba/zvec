@@ -19,31 +19,38 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__AVX2__)
-float SquaredEuclideanDistanceAVX2(const uint8_t *lhs, const uint8_t *rhs,
-                                   size_t size);
-float EuclideanDistanceAVX2(const uint8_t *lhs, const uint8_t *rhs,
-                            size_t size);
+float SquaredEuclideanDistanceInt4AVX2(const uint8_t *lhs, const uint8_t *rhs,
+                                       size_t size);
 #endif
 
 #if defined(__SSE4_1__)
-float SquaredEuclideanDistanceSSE(const uint8_t *lhs, const uint8_t *rhs,
-                                  size_t size);
-float EuclideanDistanceSSE(const uint8_t *lhs, const uint8_t *rhs, size_t size);
+float SquaredEuclideanDistanceInt4SSE(const uint8_t *lhs, const uint8_t *rhs,
+                                      size_t size);
 #endif
 
-#if defined(__SSE4_1__)
+float SquaredEuclideanDistanceInt4Scalar(const uint8_t *lhs, const uint8_t *rhs,
+                                         size_t size);
+
 //! Compute the distance between matrix and query (INT4, M=1, N=1)
 void SquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(const ValueType *m,
                                                             const ValueType *q,
                                                             size_t dim,
                                                             float *out) {
 #if defined(__AVX2__)
-  if (dim > 63) {
-    *out = SquaredEuclideanDistanceAVX2(m, q, dim >> 1);
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    *out = SquaredEuclideanDistanceInt4AVX2(m, q, dim);
     return;
   }
 #endif  // __AVX2__
-  *out = SquaredEuclideanDistanceSSE(m, q, dim >> 1);
+
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
+    *out = SquaredEuclideanDistanceInt4SSE(m, q, dim);
+    return;
+  }
+#endif
+
+  *out = SquaredEuclideanDistanceInt4Scalar(m, q, dim);
 }
 
 //! Compute the distance between matrix and query (INT4, M=1, N=1)
@@ -53,8 +60,6 @@ void EuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(const ValueType *m,
   SquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(m, q, dim, out);
   *out = std::sqrt(*out);
 }
-
-#endif  // __SSE4_1__
 
 }  // namespace ailego
 }  // namespace zvec

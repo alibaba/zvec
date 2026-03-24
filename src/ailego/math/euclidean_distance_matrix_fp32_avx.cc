@@ -20,8 +20,11 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__AVX__)
-float SquaredEuclideanDistanceAVX(const float *lhs, const float *rhs,
-                                  size_t size) {
+float SquaredEuclideanDistanceFp32SSEInternal(const float *lhs,
+                                              const float *rhs, size_t size);
+
+float SquaredEuclideanDistanceFp32AVXInternal(const float *lhs,
+                                              const float *rhs, size_t size) {
   const float *last = lhs + size;
   const float *last_aligned = lhs + ((size >> 4) << 4);
 
@@ -86,6 +89,15 @@ float SquaredEuclideanDistanceAVX(const float *lhs, const float *rhs,
       SSD_FP32_GENERAL(lhs[0], rhs[0], result)
   }
   return result;
+}
+
+float SquaredEuclideanDistanceFp32AVX(const float *lhs, const float *rhs,
+                                      size_t size) {
+  if (size > 7) {
+    return SquaredEuclideanDistanceFp32AVXInternal(lhs, rhs, size);
+  }
+
+  return SquaredEuclideanDistanceFp32SSEInternal(lhs, rhs, size);
 }
 
 #endif  // __AVX__

@@ -21,8 +21,9 @@ namespace ailego {
 
 #if defined(__AVX512F__)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
-float InnerProductAndSquaredNormAVX512(const Float16 *lhs, const Float16 *rhs,
-                                       size_t size, float *sql, float *sqr) {
+float InnerProductAndSquaredNormFp16AVX512(const Float16 *lhs,
+                                           const Float16 *rhs, size_t size,
+                                           float *sql, float *sqr) {
   __m512 zmm_sum_0 = _mm512_setzero_ps();
   __m512 zmm_sum_1 = _mm512_setzero_ps();
   __m512 zmm_sum_norm1 = _mm512_setzero_ps();
@@ -129,27 +130,25 @@ float InnerProductAndSquaredNormAVX512(const Float16 *lhs, const Float16 *rhs,
   return result;
 }
 
-float MipsEucldeanDistanceSphericalInjectionAVX512(const Float16 *lhs,
-                                                   const Float16 *rhs,
-                                                   size_t size, float e2) {
+float MipsEuclideanDistanceSphericalInjectionFp16AVX512(const Float16 *lhs,
+                                                        const Float16 *rhs,
+                                                        size_t size, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormAVX512(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormFp16AVX512(lhs, rhs, size, &u2, &v2);
 
   return ComputeSphericalInjection(sum, u2, v2, e2);
 }
 
-float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX512(const Float16 *lhs,
-                                                           const Float16 *rhs,
-                                                           size_t size,
-                                                           size_t m, float e2) {
+float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16AVX512(
+    const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormAVX512(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormFp16AVX512(lhs, rhs, size, &u2, &v2);
 
   sum = e2 * (u2 + v2 - 2 * sum);
   u2 *= e2;

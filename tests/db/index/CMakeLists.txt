@@ -29,7 +29,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     core_quantizer_static
     core_knn_hnsw core_knn_hnsw_sparse sparsehash
     core_knn_flat core_knn_flat_sparse core_knn_ivf
-    core_mix_reducer
+    core_knn_hnsw_rabitq core_mix_reducer
     Arrow::arrow_dataset
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}

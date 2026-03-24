@@ -19,9 +19,11 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__ARM_NEON)
-//! Inner Product
-float InnerProductNEON(const float *lhs, const float *rhs, size_t size) {
+float InnerProductFp32NEON(const float *lhs, const float *rhs, size_t size) {
   const float *last = lhs + size;
   const float *last_aligned = lhs + ((size >> 3) << 3);
 
@@ -52,8 +54,9 @@ float InnerProductNEON(const float *lhs, const float *rhs, size_t size) {
   return result;
 }
 
-float MinusInnerProductNEON(const float *lhs, const float *rhs, size_t size) {
-  return -1 * InnerProductNEON(lhs, rhs, size);
+float MinusInnerProductFp32NEON(const float *lhs, const float *rhs,
+                                size_t size) {
+  return -1 * InnerProductFp32NEON(lhs, rhs, size);
 }
 
 #endif  // __ARM_NEON

@@ -20,9 +20,15 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__AVX512F__)
-//! Squared Euclidean Distance
-float SquaredEuclideanDistanceAVX512(const float *lhs, const float *rhs,
-                                     size_t size) {
+float SquaredEuclideanDistanceFp32SSEInternal(const float *lhs,
+                                              const float *rhs, size_t size);
+
+float SquaredEuclideanDistanceFp32AVXInternal(const float *lhs,
+                                              const float *rhs, size_t size);
+
+float SquaredEuclideanDistanceFp32AVX512Internal(const float *lhs,
+                                                 const float *rhs,
+                                                 size_t size) {
   const float *last = lhs + size;
   const float *last_aligned = lhs + ((size >> 5) << 5);
 
@@ -73,6 +79,19 @@ float SquaredEuclideanDistanceAVX512(const float *lhs, const float *rhs,
     zmm_sum_0 = _mm512_mask3_fmadd_ps(zmm_d, zmm_d, zmm_sum_0, mask);
   }
   return HorizontalAdd_FP32_V512(zmm_sum_0);
+}
+
+float SquaredEuclideanDistanceFp32AVX512(const float *lhs, const float *rhs,
+                                         size_t size) {
+  if (size > 15) {
+    return SquaredEuclideanDistanceFp32AVX512Internal(lhs, rhs, size);
+  }
+
+  if (size > 7) {
+    return SquaredEuclideanDistanceFp32AVXInternal(lhs, rhs, size);
+  }
+
+  return SquaredEuclideanDistanceFp32SSEInternal(lhs, rhs, size);
 }
 
 #endif

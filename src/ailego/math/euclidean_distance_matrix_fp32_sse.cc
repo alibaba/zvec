@@ -20,8 +20,8 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__SSE__)
-float SquaredEuclideanDistanceSSE(const float *lhs, const float *rhs,
-                                  size_t size) {
+float SquaredEuclideanDistanceFp32SSEInternal(const float *lhs,
+                                              const float *rhs, size_t size) {
   const float *last = lhs + size;
   const float *last_aligned = lhs + ((size >> 3) << 3);
 
@@ -70,6 +70,11 @@ float SquaredEuclideanDistanceSSE(const float *lhs, const float *rhs,
       SSD_FP32_GENERAL(lhs[0], rhs[0], result)
   }
   return result;
+}
+
+float SquaredEuclideanDistanceFp32SSE(const float *lhs, const float *rhs,
+                                      size_t size) {
+  return SquaredEuclideanDistanceFp32SSEInternal(lhs, rhs, size);
 }
 
 #endif  // __SSE__

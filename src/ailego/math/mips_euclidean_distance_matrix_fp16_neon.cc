@@ -22,8 +22,8 @@ namespace ailego {
 #if defined(__ARM_NEON) && defined(__aarch64__)
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
-float InnerProductAndSquaredNormNEON(const Float16 *lhs, const Float16 *rhs,
-                                     size_t size, float *sql, float *sqr) {
+float InnerProductAndSquaredNormFp16NEON(const Float16 *lhs, const Float16 *rhs,
+                                         size_t size, float *sql, float *sqr) {
   const Float16 *last = lhs + size;
   const Float16 *last_aligned = lhs + ((size >> 3) << 3);
   float16x8_t v_sum = vdupq_n_f16(0);
@@ -69,8 +69,8 @@ float InnerProductAndSquaredNormNEON(const Float16 *lhs, const Float16 *rhs,
 }
 #else
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
-float InnerProductAndSquaredNormNEON(const Float16 *lhs, const Float16 *rhs,
-                                     size_t size, float *sql, float *sqr) {
+float InnerProductAndSquaredNormFp16NEON(const Float16 *lhs, const Float16 *rhs,
+                                         size_t size, float *sql, float *sqr) {
   const Float16 *last = lhs + size;
   const Float16 *last_aligned = lhs + ((size >> 3) << 3);
   float32x4_t v_sum_0 = vdupq_n_f32(0);
@@ -122,27 +122,25 @@ float InnerProductAndSquaredNormNEON(const Float16 *lhs, const Float16 *rhs,
 
 #endif  // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
 
-float MipsEucldeanDistanceSphericalInjectionNEON(const Float16 *lhs,
-                                                 const Float16 *rhs,
-                                                 size_t size, float e2) {
+float MipsEuclideanDistanceSphericalInjectionFp16NEON(const Float16 *lhs,
+                                                      const Float16 *rhs,
+                                                      size_t size, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormNEON(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormFp16NEON(lhs, rhs, size, &u2, &v2);
 
   return ComputeSphericalInjection(sum, u2, v2, e2);
 }
 
-float MipsEucldeanDistanceRepeatedQuadraticInjectionNEON(const Float16 *lhs,
-                                                         const Float16 *rhs,
-                                                         size_t size, size_t m,
-                                                         float e2) {
+float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEON(
+    const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormNEON(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormFp16NEON(lhs, rhs, size, &u2, &v2);
 
   sum = e2 * (u2 + v2 - 2 * sum);
   u2 *= e2;

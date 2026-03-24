@@ -127,7 +127,7 @@ const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
     LOG_ERROR("Read neighbor header failed, ret=%zu", size);
     return Neighbors();
   }
-  return Neighbors(std::move(neighbor_block));
+  return Neighbors(neighbor_block);
 }
 
 //! Get vector data by key

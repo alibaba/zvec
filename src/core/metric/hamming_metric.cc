@@ -189,22 +189,6 @@ class HammingMetric : public IndexMetric {
     return nullptr;
   }
 
-  MatrixBatchDistance batch_distance(void) const override {
-#if defined(AILEGO_M64)
-    if (feature_type_ == IndexMeta::DataType::DT_BINARY64) {
-      return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-          ailego::BaseDistance<ailego::HammingDistanceMatrix, uint64_t, 1,
-                               1>::ComputeBatch);
-    }
-#endif
-    if (feature_type_ == IndexMeta::DataType::DT_BINARY32) {
-      return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-          ailego::BaseDistance<ailego::HammingDistanceMatrix, uint32_t, 1,
-                               1>::ComputeBatch);
-    }
-    return nullptr;
-  }
-
   //! Retrieve distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
 #if defined(AILEGO_M64)

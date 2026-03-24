@@ -19,36 +19,45 @@ namespace zvec {
 namespace ailego {
 
 #if defined(__AVX2__)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX2(const int8_t *lhs,
-                                                         const int8_t *rhs,
-                                                         size_t size, size_t m,
-                                                         float e2);
-float MipsEucldeanDistanceSphericalInjectionAVX2(const int8_t *lhs,
-                                                 const int8_t *rhs, size_t size,
-                                                 float e2);
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt8AVX2(
+    const int8_t *lhs, const int8_t *rhs, size_t size, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionInt8AVX2(const int8_t *lhs,
+                                                      const int8_t *rhs,
+                                                      size_t size, float e2);
 #endif
 
 #if defined(__SSE4_1__)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(const int8_t *lhs,
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt8SSE(
+    const int8_t *lhs, const int8_t *rhs, size_t size, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionInt8SSE(const int8_t *lhs,
+                                                     const int8_t *rhs,
+                                                     size_t size, float e2);
+#endif
+
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt8Scalar(
+    const int8_t *lhs, const int8_t *rhs, size_t size, size_t m, float e2);
+float MipsEuclideanDistanceSphericalInjectionInt8Scalar(const int8_t *lhs,
                                                         const int8_t *rhs,
-                                                        size_t size, size_t m,
-                                                        float e2);
-float MipsEucldeanDistanceSphericalInjectionSSE(const int8_t *lhs,
-                                                const int8_t *rhs, size_t size,
-                                                float e2);
-#endif
+                                                        size_t size, float e2);
 
-#if defined(__SSE4_1__)
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-    *out = MipsEucldeanDistanceSphericalInjectionAVX2(p, q, dim, e2);
+    *out = MipsEuclideanDistanceSphericalInjectionInt8AVX2(p, q, dim, e2);
     return;
   }
 #endif
-  *out = MipsEucldeanDistanceSphericalInjectionSSE(p, q, dim, e2);
+
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
+    *out = MipsEuclideanDistanceSphericalInjectionInt8SSE(p, q, dim, e2);
+    return;
+  }
+#endif  //__SSE4_1__
+
+  *out = MipsEuclideanDistanceSphericalInjectionInt8Scalar(p, q, dim, e2);
 }
 
 //! Compute the distance between matrix and query by RepeatedQuadraticInjection
@@ -57,13 +66,22 @@ void MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(
     float *out) {
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-    *out = MipsEucldeanDistanceRepeatedQuadraticInjectionAVX2(p, q, dim, m, e2);
+    *out = MipsEuclideanDistanceRepeatedQuadraticInjectionInt8AVX2(p, q, dim, m,
+                                                                   e2);
     return;
   }
 #endif
-  *out = MipsEucldeanDistanceRepeatedQuadraticInjectionSSE(p, q, dim, m, e2);
+#if defined(__SSE4_1__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
+    *out = MipsEuclideanDistanceRepeatedQuadraticInjectionInt8SSE(p, q, dim, m,
+                                                                  e2);
+    return;
+  }
+#endif  //__SSE4_1__
+
+  *out = MipsEuclideanDistanceRepeatedQuadraticInjectionInt8Scalar(p, q, dim, m,
+                                                                   e2);
 }
-#endif  // __SSE4_1__
 
 }  // namespace ailego
 }  // namespace zvec

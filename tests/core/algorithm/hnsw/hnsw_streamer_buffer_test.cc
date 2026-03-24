@@ -51,7 +51,6 @@ void HnswStreamerTest::TearDown(void) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {
-  BufferManager::Instance().init(10 * 1024 * 1024, 1);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);

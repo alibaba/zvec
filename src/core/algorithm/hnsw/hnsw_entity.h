@@ -147,8 +147,8 @@ struct Neighbors {
   Neighbors(uint32_t cnt_in, const node_id_t *data_in)
       : cnt{cnt_in}, data{data_in} {}
 
-  Neighbors(IndexStorage::MemoryBlock &&mem_block)
-      : neighbor_block{std::move(mem_block)} {
+  Neighbors(const IndexStorage::MemoryBlock &mem_block)
+      : neighbor_block{mem_block} {
     auto hd = reinterpret_cast<const NeighborsHeader *>(neighbor_block.data());
     cnt = hd->neighbor_cnt;
     data = hd->neighbors;

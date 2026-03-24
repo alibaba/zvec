@@ -17,6 +17,10 @@
 #include <iostream>
 #include <unordered_map>
 #include <gtest/gtest.h>
+#if RABITQ_SUPPORTED
+#include "core/algorithm/hnsw_rabitq/rabitq_converter.h"
+#include "zvec/core/framework/index_provider.h"
+#endif
 #include "zvec/ailego/buffer/buffer_manager.h"
 #include "zvec/core/interface/index.h"
 #include "zvec/core/interface/index_factory.h"
@@ -152,7 +156,6 @@ TEST(IndexInterface, General) {
 }
 
 TEST(IndexInterface, BufferGeneral) {
-  zvec::ailego::BufferManager::Instance().init(100 * 1024 * 1024, 1);
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test.index"};
   char cmd_buf[100];
@@ -213,6 +216,7 @@ TEST(IndexInterface, BufferGeneral) {
             .data.data());
     ASSERT_FLOAT_EQ(1.0f, fetched_vector[1]);
     ASSERT_FLOAT_EQ(2.0f, fetched_vector[2]);
+    result.doc_list_.clear();
     read_index->Close();
     system(cmd_buf);
   };
@@ -1344,6 +1348,116 @@ TEST(IndexInterface, Score) {
                   .build(),
               MetricType::kInnerProduct);
 }
+
+#if RABITQ_SUPPORTED
+TEST(IndexInterface, HNSWRabitqGeneral) {
+  constexpr uint32_t kDimension = 64;
+  const std::string index_name{"test_rabitq.index"};
+  char cmd_buf[256];
+  snprintf(cmd_buf, sizeof(cmd_buf), "rm -f %s*", index_name.c_str());
+
+  auto func = [&](const BaseIndexParam::Pointer &param,
+                  const BaseIndexQueryParam::Pointer &query_param) {
+    system(cmd_buf);
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+
+    index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+
+    std::vector<float> vector(kDimension);
+    vector[1] = 1.0f;
+    vector[2] = 2.0f;
+    VectorData vector_data;
+    vector_data.vector = DenseVector{vector.data()};
+    ASSERT_TRUE(0 == index->Add(vector_data, 233));
+    ASSERT_TRUE(0 == index->Train());
+
+    SearchResult result;
+    VectorData query;
+    query.vector = DenseVector{vector.data()};
+    index->Search(query, query_param, &result);
+    ASSERT_EQ(1, result.doc_list_.size());
+    ASSERT_EQ(233, result.doc_list_[0].key());
+
+    // Fetch is meaningless for HNSWRabitq
+    index->Close();
+    system(cmd_buf);
+  };
+
+  using namespace zvec::core;
+  using namespace zvec::ailego;
+  auto holder = std::make_shared<
+      zvec::core::MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(
+      kDimension);
+  size_t doc_cnt = 500UL;
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(kDimension);
+    for (size_t j = 0; j < kDimension; ++j) {
+      vec[j] = static_cast<float>(i);
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+  std::shared_ptr<IndexMeta> index_meta_ptr_;
+  index_meta_ptr_.reset(
+      new (std::nothrow) IndexMeta(IndexMeta::DataType::DT_FP32, kDimension));
+  index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
+
+  RabitqConverter converter;
+  converter.init(*index_meta_ptr_, Params());
+  ASSERT_EQ(converter.train(holder), 0);
+  std::shared_ptr<IndexReformer> index_reformer;
+  ASSERT_EQ(converter.to_reformer(&index_reformer), 0);
+
+  // HNSWRabitq with default total_bits
+  func(HNSWRabitqIndexParamBuilder()
+           .WithMetricType(MetricType::kL2sq)
+           .WithDataType(DataType::DT_FP32)
+           .WithDimension(kDimension)
+           .WithIsSparse(false)
+           .WithEFConstruction(100)
+           .WithProvider(holder)
+           .WithReformer(index_reformer)
+           .Build(),
+       HNSWRabitqQueryParamBuilder()
+           .with_topk(10)
+           .with_fetch_vector(false)
+           .with_ef_search(50)
+           .build());
+
+  // HNSWRabitq with InnerProduct metric
+  func(HNSWRabitqIndexParamBuilder()
+           .WithMetricType(MetricType::kInnerProduct)
+           .WithDataType(DataType::DT_FP32)
+           .WithDimension(kDimension)
+           .WithIsSparse(false)
+           .WithEFConstruction(100)
+           .WithProvider(holder)
+           .WithReformer(index_reformer)
+           .Build(),
+       HNSWRabitqQueryParamBuilder()
+           .with_topk(10)
+           .with_fetch_vector(false)
+           .with_ef_search(50)
+           .build());
+
+  // HNSWRabitq with custom total_bits
+  func(HNSWRabitqIndexParamBuilder()
+           .WithMetricType(MetricType::kL2sq)
+           .WithDataType(DataType::DT_FP32)
+           .WithDimension(kDimension)
+           .WithIsSparse(false)
+           .WithEFConstruction(100)
+           .WithTotalBits(2)
+           .WithProvider(holder)
+           .WithReformer(index_reformer)
+           .Build(),
+       HNSWRabitqQueryParamBuilder()
+           .with_topk(10)
+           .with_fetch_vector(false)
+           .with_ef_search(50)
+           .build());
+}
+#endif
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop

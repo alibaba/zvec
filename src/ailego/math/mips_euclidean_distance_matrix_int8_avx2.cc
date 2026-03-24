@@ -21,8 +21,8 @@ namespace ailego {
 
 #if defined(__AVX2__)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
-float InnerProductAndSquaredNormAVX2(const int8_t *lhs, const int8_t *rhs,
-                                     size_t size, float *sql, float *sqr) {
+float InnerProductAndSquaredNormInt8AVX2(const int8_t *lhs, const int8_t *rhs,
+                                         size_t size, float *sql, float *sqr) {
   const int8_t *last = lhs + size;
   const int8_t *last_aligned = lhs + ((size >> 6) << 6);
 
@@ -154,27 +154,25 @@ float InnerProductAndSquaredNormAVX2(const int8_t *lhs, const int8_t *rhs,
   return result;
 }
 
-float MipsEucldeanDistanceSphericalInjectionAVX2(const int8_t *lhs,
-                                                 const int8_t *rhs, size_t size,
-                                                 float e2) {
+float MipsEuclideanDistanceSphericalInjectionInt8AVX2(const int8_t *lhs,
+                                                      const int8_t *rhs,
+                                                      size_t size, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormAVX2(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormInt8AVX2(lhs, rhs, size, &u2, &v2);
 
   return ComputeSphericalInjection(sum, u2, v2, e2);
 }
 
-float MipsEucldeanDistanceRepeatedQuadraticInjectionAVX2(const int8_t *lhs,
-                                                         const int8_t *rhs,
-                                                         size_t size, size_t m,
-                                                         float e2) {
+float MipsEuclideanDistanceRepeatedQuadraticInjectionInt8AVX2(
+    const int8_t *lhs, const int8_t *rhs, size_t size, size_t m, float e2) {
   float u2{0.0f};
   float v2{0.0f};
   float sum{0.0f};
 
-  sum = InnerProductAndSquaredNormAVX2(lhs, rhs, size, &u2, &v2);
+  sum = InnerProductAndSquaredNormInt8AVX2(lhs, rhs, size, &u2, &v2);
 
   sum = e2 * (u2 + v2 - 2 * sum);
   u2 *= e2;

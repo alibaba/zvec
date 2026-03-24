@@ -19,7 +19,31 @@
 namespace zvec {
 namespace ailego {
 
-// sparse
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
+#if defined(__AVX__)
+float InnerProductFp16AVX(const Float16 *lhs, const Float16 *rhs, size_t size) {
+  float score{0.0f};
+
+  ACCUM_FP16_1X1_AVX(lhs, rhs, size, &score, 0ull, )
+
+  return score;
+}
+
+float MinusInnerProductFp16AVX(const Float16 *lhs, const Float16 *rhs,
+                               size_t size) {
+  float score{0.0f};
+
+  ACCUM_FP16_1X1_AVX(lhs, rhs, size, &score, 0ull, NEGATE_FP32_GENERAL)
+
+  return score;
+}
+#endif
+
+//--------------------------------------------------
+// Sparse
+//--------------------------------------------------
 #if defined(__AVX__)
 const static __m128i SHUFFLE_MASK256[256] = {
     _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
@@ -526,12 +550,12 @@ const static __m128i SHUFFLE_MASK256[256] = {
 
 constexpr uint32_t MAX_SPARSE_BUFFER_LENGTH = 65536;
 
-float InnerProductSparseInSegmentAVX(uint32_t m_sparse_count,
-                                     const uint16_t *m_sparse_index,
-                                     const Float16 *m_sparse_value,
-                                     uint32_t q_sparse_count,
-                                     const uint16_t *q_sparse_index,
-                                     const Float16 *q_sparse_value) {
+float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const Float16 *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const Float16 *q_sparse_value) {
   float sum = 0.0f;
 
   // handle if the first dim is zero
@@ -690,17 +714,5 @@ do_scalar:
 
 #endif  // __AVX__
 
-
-#if defined(__AVX__)
-void InnerProductAVX(const Float16 *lhs, const Float16 *rhs, size_t size,
-                     float *out) {
-  ACCUM_FP16_1X1_AVX(lhs, rhs, size, out, 0ull, )
-}
-
-void MinusInnerProductAVX(const Float16 *lhs, const Float16 *rhs, size_t size,
-                          float *out) {
-  ACCUM_FP16_1X1_AVX(lhs, rhs, size, out, 0ull, NEGATE_FP32_GENERAL)
-}
-#endif
 }  // namespace ailego
 }  // namespace zvec

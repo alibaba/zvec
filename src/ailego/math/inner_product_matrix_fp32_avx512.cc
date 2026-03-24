@@ -19,9 +19,19 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__AVX512F__)
+float InnerProductFp32AVXInternal(const float *lhs, const float *rhs,
+                                  size_t size);
+
+float InnerProductFp32SSEInternal(const float *lhs, const float *rhs,
+                                  size_t size);
+
 //! Inner Product
-float InnerProductAVX512(const float *lhs, const float *rhs, size_t size) {
+float InnerProductFp32AVX512Internal(const float *lhs, const float *rhs,
+                                     size_t size) {
   const float *last = lhs + size;
   const float *last_aligned = lhs + ((size >> 5) << 5);
 
@@ -69,8 +79,21 @@ float InnerProductAVX512(const float *lhs, const float *rhs, size_t size) {
   return HorizontalAdd_FP32_V512(zmm_sum_0);
 }
 
-float MinusInnerProductAVX512(const float *lhs, const float *rhs, size_t size) {
-  return -1 * InnerProductAVX512(lhs, rhs, size);
+float InnerProductFp32AVX512(const float *lhs, const float *rhs, size_t size) {
+  if (size > 15) {
+    return InnerProductFp32AVX512Internal(lhs, rhs, size);
+  }
+
+  if (size > 7) {
+    return InnerProductFp32AVXInternal(lhs, rhs, size);
+  }
+
+  return InnerProductFp32SSEInternal(lhs, rhs, size);
+}
+
+float MinusInnerProductFp32AVX512(const float *lhs, const float *rhs,
+                                  size_t size) {
+  return -1 * InnerProductFp32AVX512(lhs, rhs, size);
 }
 
 #endif

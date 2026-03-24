@@ -49,7 +49,7 @@ inline CollectionSchema::Ptr CreateTestSchema(
       "array_string_field", DataType::ARRAY_STRING, false));
   schema->add_field(std::make_shared<FieldSchema>(
       "dense_fp32_field", DataType::VECTOR_FP32, 128, false,
-      std::make_shared<HnswIndexParams>(MetricType::COSINE)));
+      std::make_shared<HnswIndexParams>(MetricType::L2)));
   schema->add_field(std::make_shared<FieldSchema>(
       "sparse_fp32_field", DataType::SPARSE_VECTOR_FP32, 0, false,
       std::make_shared<HnswIndexParams>(MetricType::IP)));

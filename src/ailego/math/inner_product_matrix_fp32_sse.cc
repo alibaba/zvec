@@ -19,9 +19,12 @@
 namespace zvec {
 namespace ailego {
 
+//--------------------------------------------------
+// Dense
+//--------------------------------------------------
 #if defined(__SSE__)
-//! Inner Product
-float InnerProductSSE(const float *lhs, const float *rhs, size_t size) {
+float InnerProductFp32SSEInternal(const float *lhs, const float *rhs,
+                                  size_t size) {
   const float *last = lhs + size;
   const float *last_aligned = lhs + ((size >> 3) << 3);
 
@@ -74,14 +77,20 @@ float InnerProductSSE(const float *lhs, const float *rhs, size_t size) {
   return result;
 }
 
+float InnerProductFp32SSE(const float *lhs, const float *rhs, size_t size) {
+  return InnerProductFp32SSEInternal(lhs, rhs, size);
+}
 
-float MinusInnerProductSSE(const float *lhs, const float *rhs, size_t size) {
-  return -1 * InnerProductSSE(lhs, rhs, size);
+float MinusInnerProductFp32SSE(const float *lhs, const float *rhs,
+                               size_t size) {
+  return -1 * InnerProductFp32SSE(lhs, rhs, size);
 }
 
 #endif  // __SSE__
 
-// #if 1
+//--------------------------------------------------
+// Sparse
+//--------------------------------------------------
 #if defined(__SSE4_1__)
 const static __m128i SHUFFLE_MASK16[16] = {
     _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
@@ -118,12 +127,12 @@ const static __m128i SHUFFLE_MASK16[16] = {
 
 constexpr uint32_t MAX_SPARSE_BUFFER_LENGTH = 65536;
 
-float InnerProductSparseInSegmentSSE(uint32_t m_sparse_count,
-                                     const uint16_t *m_sparse_index,
-                                     const float *m_sparse_value,
-                                     uint32_t q_sparse_count,
-                                     const uint16_t *q_sparse_index,
-                                     const float *q_sparse_value) {
+float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
+                                         const uint16_t *m_sparse_index,
+                                         const float *m_sparse_value,
+                                         uint32_t q_sparse_count,
+                                         const uint16_t *q_sparse_index,
+                                         const float *q_sparse_value) {
   float sum = 0.0f;
 
   // handle if the first dim is zero
@@ -308,49 +317,7 @@ do_scalar:
 
   return sum;
 }
-#else
-float InnerProductSparseInSegment(uint32_t m_sparse_count,
-                                  const uint16_t *m_sparse_index,
-                                  const float *m_sparse_value,
-                                  uint32_t q_sparse_count,
-                                  const uint16_t *q_sparse_index,
-                                  const float *q_sparse_value) {
-  float sum = 0.0f;
-
-  size_t m_i = 0;
-  size_t q_i = 0;
-  while (m_i < m_sparse_count && q_i < q_sparse_count) {
-    if (m_sparse_index[m_i] == q_sparse_index[q_i]) {
-      sum += m_sparse_value[m_i] * q_sparse_value[q_i];
-
-      ++m_i;
-      ++q_i;
-    } else if (m_sparse_index[m_i] < q_sparse_index[q_i]) {
-      ++m_i;
-    } else {
-      ++q_i;
-    }
-  }
-
-  return sum;
-}
 #endif  // __SSE4_1__
-
-template <>
-float MinusInnerProductSparseMatrix<float>::ComputeInnerProductSparseInSegment(
-    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
-    const ValueType *m_sparse_value, uint32_t q_sparse_count,
-    const uint16_t *q_sparse_index, const ValueType *q_sparse_value) {
-#if defined(__SSE4_1__)
-  return InnerProductSparseInSegmentSSE(m_sparse_count, m_sparse_index,
-                                        m_sparse_value, q_sparse_count,
-                                        q_sparse_index, q_sparse_value);
-#else
-  return InnerProductSparseInSegment(m_sparse_count, m_sparse_index,
-                                     m_sparse_value, q_sparse_count,
-                                     q_sparse_index, q_sparse_value);
-#endif
-}
 
 }  // namespace ailego
 }  // namespace zvec
