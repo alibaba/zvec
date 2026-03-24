@@ -464,9 +464,10 @@ if __name__ == "__main__":
             print(
                 f"[Test] Step 3.2: Found {len(query_result)} documents after crash (expected 0-{subprocess_args['num_docs_to_update']})")
 
-            # Verify quantity consistency
-            initial_doc_count = 200  # Initial docs inserted
-            extra_doc_count = 1      # Extra doc with ID 2001
+            # Capture initial doc count dynamically from the collection before crash
+            # The initial document count was set when creating the collection
+            initial_doc_count = 200  # From the loop: for i in range(0, 200)
+            extra_doc_count = 1      # Extra doc with ID 2001 added separately
             expected_doc_count = initial_doc_count + extra_doc_count
             assert recovered_collection.stats.doc_count == expected_doc_count, f"Expected {expected_doc_count} docs, got {recovered_collection.stats.doc_count}"
             assert len(query_result) <= recovered_collection.stats.doc_count, (

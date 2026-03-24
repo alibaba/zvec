@@ -27,7 +27,7 @@ try:
 except ImportError:
     psutil = None  # If psutil is not installed, set it to None
 from fixture_helper import *
-from doc_helper import generate_doc
+from doc_helper import generate_doc, generate_update_doc
 
 from distance_helper import *
 from fixture_helper import *
@@ -205,12 +205,12 @@ def generate_doc(i: int, schema: zvec.CollectionSchema) -> zvec.Doc:
 def run_zvec_deletedoc_operations(args_json_str):
     args = json.loads(args_json_str)
     collection_path = args["collection_path"]
-    num_docs_to_delete = args.get("num_docs_to_delete", 100)  # Number of documents to insert
+    num_docs_to_delete = args.get("num_docs_to_delete", 100)  # Number of documents to delete
     batch_size = args.get("batch_size", 10)  # Batch size for each deletion
     delay_between_batches = args.get("delay_between_batches", 0.1)  # Delay between batches
 
-    print(f"[Subprocess] Starting Zvec insert document operations on {collection_path} at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"[Subprocess] Will insert {num_docs_to_delete} documents in batches of {batch_size}")
+    print(f"[Subprocess] Starting Zvec delete document operations on {collection_path} at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"[Subprocess] Will delete {num_docs_to_delete} documents in batches of {batch_size}")
 
     try:
         # Open existing collection
@@ -222,28 +222,23 @@ def run_zvec_deletedoc_operations(args_json_str):
             # Calculate the number of documents in the current batch
             current_batch_size = min(batch_size, num_docs_to_delete - i)
 
-            if current_batch_size==batch_size:
+            # Generate document IDs for the current batch - fix the ID range issue
+            doc_ids = [str(j) for j in range(i, i + current_batch_size)]
 
-                doc_ids= [str(j) for j in range(i, i+batch_size)]
-            else:
-                doc_ids= [str(j) for j in range(i, i + current_batch_size)]
-            
             result = collection.delete(doc_ids)
-            
-            # Check return value - insert returns a list of document IDs
+
+            # Check return value - delete returns a list of operation results
             assert len(result) == len(doc_ids)
-            for i in range(len(result)):
-                if i < len(doc_ids):
-                    assert result[i].ok()
+            for idx in range(len(result)):
+                if idx < len(doc_ids):
+                    assert result[idx].ok()
             deleted_count += len(doc_ids)
             print(f"[Subprocess] Batch deletion successful, deleted {len(doc_ids)} documents, total deleted: {deleted_count}")
-
-
 
             # Add small delay to allow interruption opportunity
             time.sleep(delay_between_batches)
 
-        print(f"[Subprocess] Completed inserting {deleted_count} documents.")
+        print(f"[Subprocess] Completed deleting {deleted_count} documents.")
 
         if hasattr(collection, "close"):
             collection.close()
@@ -397,7 +392,7 @@ if __name__ == "__main__":
                         exp_doc =  generate_doc(int(doc.id), recovered_collection.schema)
                         assert len(fetched_docs) == 1
                         assert doc.id in fetched_docs
-                        assert is_doc_equal(fetched_docs["1"], exp_doc, recovered_collection.schema), (f"result doc={fetched_docs},doc_exp={exp_doc}")
+                        assert is_doc_equal(fetched_docs[doc.id], exp_doc, recovered_collection.schema), (f"result doc={fetched_docs},doc_exp={exp_doc}")
 
             #3.4: Check if index is complete and query function works properly
             print(f"[Test] Step 3.4: Verifying index integrity and query function...")
