@@ -301,7 +301,7 @@ int main() {
   ZVecFieldSchema *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_STRING, false, 0);
   if (id_field) {
-    zvec_field_schema_set_invert_index(id_field, invert_params);
+    zvec_field_schema_set_index_params(id_field, invert_params);
     error = zvec_collection_schema_add_field(schema, id_field);
     if (handle_error(error, "adding ID field") == ZVEC_OK) {
       printf("✓ ID field with inverted index added\n");
@@ -336,7 +336,7 @@ int main() {
       "large_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 16);
 
   if (vector_fp32_field) {
-    zvec_field_schema_set_hnsw_index(vector_fp32_field, hnsw_params);
+    zvec_field_schema_set_index_params(vector_fp32_field, hnsw_params);
     error = zvec_collection_schema_add_field(schema, vector_fp32_field);
     if (handle_error(error, "adding vector FP32 field") == ZVEC_OK) {
       printf("✓ Vector FP32 field with HNSW index added\n");
@@ -344,7 +344,7 @@ int main() {
   }
 
   if (large_vector_field) {
-    zvec_field_schema_set_hnsw_index(large_vector_field, hnsw_params);
+    zvec_field_schema_set_index_params(large_vector_field, hnsw_params);
     error = zvec_collection_schema_add_field(schema, large_vector_field);
     if (handle_error(error, "adding large vector field") == ZVEC_OK) {
       printf("✓ Large vector field with HNSW index added\n");

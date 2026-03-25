@@ -94,7 +94,7 @@ int main() {
   ZVecFieldSchema *name_field =
       zvec_field_schema_create("name", ZVEC_DATA_TYPE_STRING, false, 0);
   if (name_field) {
-    zvec_field_schema_set_invert_index(name_field, invert_params);
+    zvec_field_schema_set_index_params(name_field, invert_params);
     error = zvec_collection_schema_add_field(schema, name_field);
     if (handle_error(error, "adding name field") == ZVEC_OK) {
       printf("✓ String field 'name' with inverted index added\n");
@@ -138,7 +138,7 @@ int main() {
   ZVecFieldSchema *small_vector_field = zvec_field_schema_create(
       "small_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 32);
   if (small_vector_field) {
-    zvec_field_schema_set_hnsw_index(small_vector_field, hnsw_params);
+    zvec_field_schema_set_index_params(small_vector_field, hnsw_params);
     error = zvec_collection_schema_add_field(schema, small_vector_field);
     if (handle_error(error, "adding small vector field") == ZVEC_OK) {
       printf(
@@ -150,7 +150,7 @@ int main() {
   ZVecFieldSchema *medium_vector_field = zvec_field_schema_create(
       "medium_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
   if (medium_vector_field) {
-    zvec_field_schema_set_flat_index(medium_vector_field, flat_params);
+    zvec_field_schema_set_index_params(medium_vector_field, flat_params);
     error = zvec_collection_schema_add_field(schema, medium_vector_field);
     if (handle_error(error, "adding medium vector field") == ZVEC_OK) {
       printf(
@@ -163,7 +163,7 @@ int main() {
   ZVecFieldSchema *large_vector_field = zvec_field_schema_create(
       "large_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 512);
   if (large_vector_field) {
-    zvec_field_schema_set_hnsw_index(large_vector_field, hnsw_params);
+    zvec_field_schema_set_index_params(large_vector_field, hnsw_params);
     error = zvec_collection_schema_add_field(schema, large_vector_field);
     if (handle_error(error, "adding large vector field") == ZVEC_OK) {
       printf(

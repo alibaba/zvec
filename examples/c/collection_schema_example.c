@@ -99,7 +99,7 @@ int main() {
     return 1;
   }
 
-  zvec_field_schema_set_invert_index(text_field, invert_params);
+  zvec_field_schema_set_index_params(text_field, invert_params);
   error = zvec_collection_schema_add_field(schema, text_field);
   if (handle_error(error, "adding text field") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);
@@ -116,7 +116,7 @@ int main() {
     return 1;
   }
 
-  zvec_field_schema_set_hnsw_index(vector_field, hnsw_params);
+  zvec_field_schema_set_index_params(vector_field, hnsw_params);
   error = zvec_collection_schema_add_field(schema, vector_field);
   if (handle_error(error, "adding vector field") != ZVEC_OK) {
     zvec_collection_schema_destroy(schema);

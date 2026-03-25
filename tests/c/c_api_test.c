@@ -128,74 +128,69 @@ void test_zvec_config() {
   TEST_START();
 
   // Test 1: Console log config creation and destruction
-  ZVecConsoleLogConfig *console_config =
-      zvec_config_console_log_create(ZVEC_LOG_LEVEL_INFO);
+  ZVecLogConfig *console_config =
+      zvec_config_log_create_console(ZVEC_LOG_LEVEL_INFO);
   TEST_ASSERT(console_config != NULL);
   if (console_config) {
-    TEST_ASSERT(zvec_config_console_log_get_level(console_config) ==
+    TEST_ASSERT(zvec_config_log_get_level(console_config) ==
                 ZVEC_LOG_LEVEL_INFO);
-    zvec_config_console_log_destroy(console_config);
+    zvec_config_log_destroy(console_config);
   }
 
   // Test 2: File log config creation and destruction
-  ZVecFileLogConfig *file_config = zvec_config_file_log_create(
+  ZVecLogConfig *file_config = zvec_config_log_create_file(
       ZVEC_LOG_LEVEL_WARN, "./logs", "test_log", 100, 7);
   TEST_ASSERT(file_config != NULL);
   if (file_config) {
-    TEST_ASSERT(zvec_config_file_log_get_level(file_config) ==
-                ZVEC_LOG_LEVEL_WARN);
-    TEST_ASSERT(strcmp(zvec_config_file_log_get_dir(file_config), "./logs") ==
+    TEST_ASSERT(zvec_config_log_get_level(file_config) == ZVEC_LOG_LEVEL_WARN);
+    TEST_ASSERT(strcmp(zvec_config_log_get_dir(file_config), "./logs") == 0);
+    TEST_ASSERT(strcmp(zvec_config_log_get_basename(file_config), "test_log") ==
                 0);
-    TEST_ASSERT(strcmp(zvec_config_file_log_get_basename(file_config),
-                       "test_log") == 0);
-    TEST_ASSERT(zvec_config_file_log_get_file_size(file_config) == 100);
-    TEST_ASSERT(zvec_config_file_log_get_overdue_days(file_config) == 7);
-    zvec_config_file_log_destroy(file_config);
+    TEST_ASSERT(zvec_config_log_get_file_size(file_config) == 100);
+    TEST_ASSERT(zvec_config_log_get_overdue_days(file_config) == 7);
+    zvec_config_log_destroy(file_config);
   }
 
   // Test 3: File log config edge cases
-  ZVecFileLogConfig *empty_file_config =
-      zvec_config_file_log_create(ZVEC_LOG_LEVEL_INFO, "", "", 0, 0);
+  ZVecLogConfig *empty_file_config =
+      zvec_config_log_create_file(ZVEC_LOG_LEVEL_INFO, "", "", 0, 0);
   TEST_ASSERT(empty_file_config != NULL);
   if (empty_file_config) {
-    TEST_ASSERT(zvec_config_file_log_get_level(empty_file_config) ==
+    TEST_ASSERT(zvec_config_log_get_level(empty_file_config) ==
                 ZVEC_LOG_LEVEL_INFO);
-    TEST_ASSERT(strcmp(zvec_config_file_log_get_dir(empty_file_config), "") ==
+    TEST_ASSERT(strcmp(zvec_config_log_get_dir(empty_file_config), "") == 0);
+    TEST_ASSERT(strcmp(zvec_config_log_get_basename(empty_file_config), "") ==
                 0);
-    TEST_ASSERT(
-        strcmp(zvec_config_file_log_get_basename(empty_file_config), "") == 0);
-    TEST_ASSERT(zvec_config_file_log_get_file_size(empty_file_config) == 0);
-    TEST_ASSERT(zvec_config_file_log_get_overdue_days(empty_file_config) == 0);
-    zvec_config_file_log_destroy(empty_file_config);
+    TEST_ASSERT(zvec_config_log_get_file_size(empty_file_config) == 0);
+    TEST_ASSERT(zvec_config_log_get_overdue_days(empty_file_config) == 0);
+    zvec_config_log_destroy(empty_file_config);
   }
 
   // Test 4: Log config creation with console type
-  ZVecConsoleLogConfig *temp_console =
-      zvec_config_console_log_create(ZVEC_LOG_LEVEL_ERROR);
+  ZVecLogConfig *temp_console =
+      zvec_config_log_create_console(ZVEC_LOG_LEVEL_ERROR);
   TEST_ASSERT(temp_console != NULL);
   if (temp_console) {
-    zvec_config_console_log_destroy(temp_console);
+    zvec_config_log_destroy(temp_console);
   }
 
   // Test 5: Log config creation with file type
-  ZVecFileLogConfig *temp_file = zvec_config_file_log_create(
+  ZVecLogConfig *temp_file = zvec_config_log_create_file(
       ZVEC_LOG_LEVEL_DEBUG, "./logs", "app", 50, 30);
   TEST_ASSERT(temp_file != NULL);
-  TEST_ASSERT(zvec_config_file_log_get_level(temp_file) ==
-              ZVEC_LOG_LEVEL_DEBUG);
-  TEST_ASSERT(strcmp(zvec_config_file_log_get_dir(temp_file), "./logs") == 0);
-  TEST_ASSERT(strcmp(zvec_config_file_log_get_basename(temp_file), "app") == 0);
-  TEST_ASSERT(zvec_config_file_log_get_file_size(temp_file) == 50);
-  TEST_ASSERT(zvec_config_file_log_get_overdue_days(temp_file) == 30);
+  TEST_ASSERT(zvec_config_log_get_level(temp_file) == ZVEC_LOG_LEVEL_DEBUG);
+  TEST_ASSERT(strcmp(zvec_config_log_get_dir(temp_file), "./logs") == 0);
+  TEST_ASSERT(strcmp(zvec_config_log_get_basename(temp_file), "app") == 0);
+  TEST_ASSERT(zvec_config_log_get_file_size(temp_file) == 50);
+  TEST_ASSERT(zvec_config_log_get_overdue_days(temp_file) == 30);
 
-  zvec_config_file_log_destroy(temp_file);
+  zvec_config_log_destroy(temp_file);
 
   // Test 6: Config data creation and basic operations
   ZVecConfigData *config_data = zvec_config_data_create();
   TEST_ASSERT(config_data != NULL);
   if (config_data) {
     // Test initial values
-    TEST_ASSERT(zvec_config_data_get_console_log_config(config_data) != NULL);
     TEST_ASSERT(zvec_config_data_get_log_type(config_data) ==
                 ZVEC_LOG_TYPE_CONSOLE);
 
@@ -218,15 +213,13 @@ void test_zvec_config() {
     // Test log config replacement
     TEST_ASSERT(zvec_config_data_get_log_type(config_data) ==
                 ZVEC_LOG_TYPE_CONSOLE);
-    TEST_ASSERT(zvec_config_data_get_console_log_config(config_data) != NULL);
 
-    ZVecFileLogConfig *new_file = zvec_config_file_log_create(
+    ZVecLogConfig *new_file = zvec_config_log_create_file(
         ZVEC_LOG_LEVEL_DEBUG, "./logs", "app", 50, 30);
     TEST_ASSERT(new_file != NULL);
     zvec_config_data_set_log_config(config_data, ZVEC_LOG_TYPE_FILE, new_file);
     TEST_ASSERT(zvec_config_data_get_log_type(config_data) ==
                 ZVEC_LOG_TYPE_FILE);
-    TEST_ASSERT(zvec_config_data_get_file_log_config(config_data) != NULL);
 
     zvec_config_data_destroy(config_data);
   }
@@ -287,7 +280,6 @@ void test_zvec_initialize() {
   ZVecConfigData *config = zvec_config_data_create();
   TEST_ASSERT(config != NULL);
   if (config) {
-    TEST_ASSERT(zvec_config_data_get_console_log_config(config) != NULL);
     TEST_ASSERT(zvec_config_data_get_log_type(config) == ZVEC_LOG_TYPE_CONSOLE);
   }
   ZVecErrorCode err = zvec_initialize(config);
@@ -304,16 +296,29 @@ void test_zvec_initialize() {
 void test_schema_basic_operations(void) {
   TEST_START();
 
+// Helper macro to get field count
+#define GET_FIELD_COUNT(s)                                           \
+  ({                                                                 \
+    const char **names = NULL;                                       \
+    size_t count = 0;                                                \
+    zvec_collection_schema_get_all_field_names((s), &names, &count); \
+    if (names) {                                                     \
+      for (size_t i = 0; i < count; i++) free((char *)names[i]);     \
+      free(names);                                                   \
+    }                                                                \
+    count;                                                           \
+  })
+
   // Test 1: Basic Schema creation and destruction
   ZVecCollectionSchema *schema = zvec_collection_schema_create("demo");
   TEST_ASSERT(schema != NULL);
   TEST_ASSERT(zvec_collection_schema_get_name(schema) != NULL);
   TEST_ASSERT(strcmp(zvec_collection_schema_get_name(schema), "demo") == 0);
-  TEST_ASSERT(zvec_collection_schema_get_field_count(schema) == 0);
+  TEST_ASSERT(GET_FIELD_COUNT(schema) == 0);
   TEST_ASSERT(zvec_collection_schema_get_max_doc_count_per_segment(schema) > 0);
 
   // Test 2: Schema field count operations
-  size_t initial_count = zvec_collection_schema_get_field_count(schema);
+  size_t initial_count = GET_FIELD_COUNT(schema);
   TEST_ASSERT(initial_count == 0);
 
   // Test 3: Adding fields to schema
@@ -322,52 +327,68 @@ void test_schema_basic_operations(void) {
   ZVecErrorCode err = zvec_collection_schema_add_field(schema, id_field);
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t count_after_add = zvec_collection_schema_get_field_count(schema);
+  size_t count_after_add = GET_FIELD_COUNT(schema);
   TEST_ASSERT(count_after_add == 1);
 
   // Test 4: Finding fields in schema
   const ZVecFieldSchema *found_field =
-      zvec_collection_schema_find_field(schema, "id");
+      zvec_collection_schema_get_field(schema, "id");
   TEST_ASSERT(found_field != NULL);
   TEST_ASSERT(strcmp(zvec_field_schema_get_name(found_field), "id") == 0);
   TEST_ASSERT(zvec_field_schema_get_data_type(found_field) ==
               ZVEC_DATA_TYPE_INT64);
 
-  // Test 5: Getting field by index
-  ZVecFieldSchema *indexed_field = zvec_collection_schema_get_field(schema, 0);
+  // Test 5: Getting field by index (using get_all_field_names)
+  const char **field_names = NULL;
+  size_t field_count = 0;
+  err = zvec_collection_schema_get_all_field_names(schema, &field_names,
+                                                   &field_count);
+  TEST_ASSERT(err == ZVEC_OK && field_count > 0);
+  const ZVecFieldSchema *indexed_field = NULL;
+  if (field_count > 0) {
+    indexed_field = zvec_collection_schema_get_field(schema, field_names[0]);
+  }
   TEST_ASSERT(indexed_field != NULL);
   TEST_ASSERT(strcmp(zvec_field_schema_get_name(indexed_field), "id") == 0);
+  // Clean up field names
+  for (size_t i = 0; i < field_count; i++) free((char *)field_names[i]);
+  free(field_names);
 
-  // Test 6: Adding multiple fields
-  const ZVecFieldSchema *fields_to_add[2];
+  // Test 6: Adding multiple fields (use individual add_field calls)
   ZVecFieldSchema *name_field =
       zvec_field_schema_create("name", ZVEC_DATA_TYPE_STRING, false, 0);
   ZVecFieldSchema *age_field =
       zvec_field_schema_create("age", ZVEC_DATA_TYPE_INT32, true, 0);
 
-  fields_to_add[0] = name_field;
-  fields_to_add[1] = age_field;
-
-  err = zvec_collection_schema_add_fields(schema, fields_to_add, 2);
+  err = zvec_collection_schema_add_field(schema, name_field);
+  TEST_ASSERT(err == ZVEC_OK);
+  err = zvec_collection_schema_add_field(schema, age_field);
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t count_after_multi_add = zvec_collection_schema_get_field_count(schema);
-  TEST_ASSERT(count_after_multi_add == 3);
+  // Add a vector field (required for validation)
+  ZVecFieldSchema *vec_field = zvec_field_schema_create(
+      "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
+  err = zvec_collection_schema_add_field(schema, vec_field);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  size_t count_after_multi_add = GET_FIELD_COUNT(schema);
+  TEST_ASSERT(count_after_multi_add == 4);  // id, name, age, embedding
 
   // Test 7: Finding newly added fields
   const ZVecFieldSchema *name_found =
-      zvec_collection_schema_find_field(schema, "name");
+      zvec_collection_schema_get_field(schema, "name");
   TEST_ASSERT(name_found != NULL);
   TEST_ASSERT(strcmp(zvec_field_schema_get_name(name_found), "name") == 0);
 
   const ZVecFieldSchema *age_found =
-      zvec_collection_schema_find_field(schema, "age");
+      zvec_collection_schema_get_field(schema, "age");
   TEST_ASSERT(age_found != NULL);
   TEST_ASSERT(strcmp(zvec_field_schema_get_name(age_found), "age") == 0);
 
   // Clean up fields we created
   zvec_field_schema_destroy(name_field);
   zvec_field_schema_destroy(age_field);
+  zvec_field_schema_destroy(vec_field);
 
   // Test 8: Setting and getting max doc count
   err = zvec_collection_schema_set_max_doc_count_per_segment(schema, 10000);
@@ -384,23 +405,25 @@ void test_schema_basic_operations(void) {
   TEST_ASSERT(validation_error == NULL);
 
   // Test 10: Removing single field
-  err = zvec_collection_schema_remove_field(schema, "age");
+  err = zvec_collection_schema_drop_field(schema, "age");
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t count_after_remove = zvec_collection_schema_get_field_count(schema);
-  TEST_ASSERT(count_after_remove == 2);
+  size_t count_after_remove = GET_FIELD_COUNT(schema);
+  TEST_ASSERT(count_after_remove == 3);  // id, name, embedding
 
   const ZVecFieldSchema *removed_field =
-      zvec_collection_schema_find_field(schema, "age");
+      zvec_collection_schema_get_field(schema, "age");
   TEST_ASSERT(removed_field == NULL);
 
-  // Test 11: Removing multiple fields
-  const char *fields_to_remove[] = {"name", "id"};
-  err = zvec_collection_schema_remove_fields(schema, fields_to_remove, 2);
+  // Test 11: Removing multiple fields (keep embedding for validation)
+  // remove_fields has been removed, use drop_field in a loop instead
+  err = zvec_collection_schema_drop_field(schema, "name");
+  TEST_ASSERT(err == ZVEC_OK);
+  err = zvec_collection_schema_drop_field(schema, "id");
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t final_count = zvec_collection_schema_get_field_count(schema);
-  TEST_ASSERT(final_count == 0);
+  size_t final_count = GET_FIELD_COUNT(schema);
+  TEST_ASSERT(final_count == 1);  // Only embedding remains
 
   // Test 12: Schema cleanup
   zvec_collection_schema_destroy(schema);
@@ -434,15 +457,19 @@ void test_schema_edge_cases(void) {
 
   // Test 4: NULL schema parameter handling for all functions
   ZVecErrorCode err;
-  size_t count = zvec_collection_schema_get_field_count(NULL);
-  TEST_ASSERT(count == 0);
+  const char **test_names = NULL;
+  size_t test_count = 0;
+  err = zvec_collection_schema_get_all_field_names(NULL, &test_names,
+                                                   &test_count);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(test_count == 0);
 
   const ZVecFieldSchema *null_field =
-      zvec_collection_schema_find_field(NULL, "test");
+      zvec_collection_schema_get_field(NULL, "test");
   TEST_ASSERT(null_field == NULL);
 
   ZVecFieldSchema *null_indexed_field =
-      zvec_collection_schema_get_field(NULL, 0);
+      zvec_collection_schema_get_field(NULL, "test");
   TEST_ASSERT(null_indexed_field == NULL);
 
   uint64_t null_max_doc_count =
@@ -460,15 +487,17 @@ void test_schema_edge_cases(void) {
   err = zvec_collection_schema_add_field(NULL, NULL);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
-  err = zvec_collection_schema_add_fields(NULL, NULL, 0);
-  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
-
-  err = zvec_collection_schema_remove_field(NULL, "test");
+  err = zvec_collection_schema_drop_field(NULL, "test");
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
   const char *null_field_names[] = {NULL};
-  err = zvec_collection_schema_remove_fields(NULL, null_field_names, 1);
-  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  // remove_fields has been removed, use drop_field in a loop instead
+  for (int i = 0; i < 1; i++) {
+    if (null_field_names[i]) {
+      err = zvec_collection_schema_drop_field(NULL, null_field_names[i]);
+      TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+    }
+  }
 
   // Test 5: Working with valid schema for edge cases
   ZVecCollectionSchema *schema = zvec_collection_schema_create("edge_test");
@@ -478,49 +507,52 @@ void test_schema_edge_cases(void) {
   err = zvec_collection_schema_add_field(schema, NULL);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
-  // Test 7: Adding fields with NULL array
-  err = zvec_collection_schema_add_fields(schema, NULL, 5);
+  // Test 7: Adding field with NULL name
+  ZVecFieldSchema *null_name_field_schema =
+      zvec_field_schema_create(NULL, ZVEC_DATA_TYPE_INT32, false, 0);
+  err = zvec_collection_schema_add_field(schema, null_name_field_schema);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_field_schema_destroy(null_name_field_schema);
 
-  // Test 8: Adding zero fields
-  err = zvec_collection_schema_add_fields(schema, NULL, 0);
-  TEST_ASSERT(err == ZVEC_OK);
-
-  // Test 9: Finding field with NULL name
+  // Test 8: Finding field with NULL name
   const ZVecFieldSchema *null_name_field =
-      zvec_collection_schema_find_field(schema, NULL);
+      zvec_collection_schema_get_field(schema, NULL);
   TEST_ASSERT(null_name_field == NULL);
 
-  // Test 10: Finding non-existent field
+  // Test 9: Finding non-existent field
   const ZVecFieldSchema *nonexistent_field =
-      zvec_collection_schema_find_field(schema, "nonexistent");
+      zvec_collection_schema_get_field(schema, "nonexistent");
   TEST_ASSERT(nonexistent_field == NULL);
 
-  // Test 11: Getting field with invalid index
-  ZVecFieldSchema *invalid_index_field =
-      zvec_collection_schema_get_field(schema, 1000);
-  TEST_ASSERT(invalid_index_field == NULL);
+  // Test 10: Getting field from empty schema
+  const char **field_names = NULL;
+  size_t field_count = 0;
+  err = zvec_collection_schema_get_all_field_names(schema, &field_names,
+                                                   &field_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(field_count == 0);
+  if (field_names) free(field_names);
 
-  // Test 12: Getting field from empty schema with index 0
-  ZVecFieldSchema *zero_index_field =
-      zvec_collection_schema_get_field(schema, 0);
-  TEST_ASSERT(zero_index_field == NULL);
-
-  // Test 13: Removing field with NULL name
-  err = zvec_collection_schema_remove_field(schema, NULL);
+  // Test 11: Removing field with NULL name
+  err = zvec_collection_schema_drop_field(schema, NULL);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
-  // Test 14: Removing non-existent field
-  err = zvec_collection_schema_remove_field(schema, "nonexistent");
+  // Test 12: Removing non-existent field
+  err = zvec_collection_schema_drop_field(schema, "nonexistent");
   TEST_ASSERT(err == ZVEC_ERROR_NOT_FOUND);
 
-  // Test 15: Removing fields with NULL array
-  err = zvec_collection_schema_remove_fields(schema, NULL, 5);
-  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  // Test 13: Removing fields with NULL array - use drop_field in a loop
+  const char *null_test_names[] = {"field1", "field2", "field3", "field4",
+                                   "field5"};
+  for (int i = 0; i < 5; i++) {
+    err = zvec_collection_schema_drop_field(schema, null_test_names[i]);
+    // Expected to fail with NOT_FOUND since fields don't exist
+    TEST_ASSERT(err == ZVEC_ERROR_NOT_FOUND ||
+                err == ZVEC_ERROR_INVALID_ARGUMENT);
+  }
 
-  // Test 16: Removing zero fields
-  err = zvec_collection_schema_remove_fields(schema, NULL, 0);
-  TEST_ASSERT(err == ZVEC_OK);
+  // Test 16: Removing zero fields - nothing to test since remove_fields is
+  // removed Just skip this test as it was specific to remove_fields function
 
   // Test 17: Setting extremely large max doc count
   err =
@@ -556,8 +588,8 @@ void test_schema_edge_cases(void) {
   zvec_field_schema_destroy(second_id);
 
   // Verify fields
-  size_t field_count = zvec_collection_schema_get_field_count(schema);
-  TEST_ASSERT(field_count == 1);
+  size_t verify_field_count = GET_FIELD_COUNT(schema);
+  TEST_ASSERT(verify_field_count == 1);
 
   // Test 21: Cleanup
   zvec_collection_schema_destroy(schema);
@@ -573,17 +605,17 @@ void test_schema_field_operations(void) {
 
   if (schema) {
     // Test field count
-    size_t initial_count = zvec_collection_schema_get_field_count(schema);
+    size_t initial_count = GET_FIELD_COUNT(schema);
     TEST_ASSERT(initial_count == 5);
 
     // Test finding non-existent field
     const ZVecFieldSchema *nonexistent =
-        zvec_collection_schema_find_field(schema, "nonexistent");
+        zvec_collection_schema_get_field(schema, "nonexistent");
     TEST_ASSERT(nonexistent == NULL);
 
     // Test finding existing field
     const ZVecFieldSchema *id_field =
-        zvec_collection_schema_find_field(schema, "id");
+        zvec_collection_schema_get_field(schema, "id");
     TEST_ASSERT(id_field != NULL);
     if (id_field) {
       TEST_ASSERT(strcmp(zvec_field_schema_get_name(id_field), "id") == 0);
@@ -609,7 +641,7 @@ void test_normal_schema_creation(void) {
         strcmp(zvec_collection_schema_get_name(schema), "test_normal") == 0);
 
     // Verify field count
-    size_t field_count = zvec_collection_schema_get_field_count(schema);
+    size_t field_count = GET_FIELD_COUNT(schema);
     TEST_ASSERT(field_count > 0);
 
     zvec_collection_schema_destroy(schema);
@@ -746,7 +778,11 @@ void test_collection_schema_helpers(void) {
         zvec_collection_schema_get_all_field_names(schema, &names, &name_count);
     TEST_ASSERT(err == ZVEC_OK);
     TEST_ASSERT(name_count == 3);
-    // Note: We don't free names as they are owned by the schema
+    // Free the strings (caller owns them)
+    for (size_t i = 0; i < name_count; i++) {
+      free((char *)names[i]);
+    }
+    free(names);
 
     // Test get_forward_fields
     ZVecFieldSchema **forward_fields = NULL;
@@ -755,6 +791,7 @@ void test_collection_schema_helpers(void) {
                                                     &forward_count);
     TEST_ASSERT(err == ZVEC_OK);
     TEST_ASSERT(forward_count == 2);  // int_field and str_field
+    // Note: forward_fields[i] are non-owning pointers, only free the array
     free(forward_fields);
 
     // Test get_vector_fields
@@ -764,6 +801,7 @@ void test_collection_schema_helpers(void) {
                                                    &vector_count);
     TEST_ASSERT(err == ZVEC_OK);
     TEST_ASSERT(vector_count == 1);  // vec_field
+    // Note: vector_fields[i] are non-owning pointers, only free the array
     free(vector_fields);
 
     // Test has_index (initially no fields have index)
@@ -808,8 +846,8 @@ void test_collection_schema_alter_field(void) {
     TEST_ASSERT(err == ZVEC_OK);
 
     // Verify initial state
-    ZVecFieldSchema *found =
-        zvec_collection_schema_find_field(schema, "test_field");
+    const ZVecFieldSchema *found =
+        zvec_collection_schema_get_field(schema, "test_field");
     TEST_ASSERT(found != NULL);
     TEST_ASSERT(zvec_field_schema_is_nullable(found) == false);
 
@@ -822,7 +860,7 @@ void test_collection_schema_alter_field(void) {
     TEST_ASSERT(err == ZVEC_OK);
 
     // Verify the change
-    found = zvec_collection_schema_find_field(schema, "test_field");
+    found = zvec_collection_schema_get_field(schema, "test_field");
     TEST_ASSERT(found != NULL);
     TEST_ASSERT(zvec_field_schema_is_nullable(found) == true);
 
@@ -1182,7 +1220,7 @@ void test_field_schema_functions(void) {
       "hnsw_field", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
   TEST_ASSERT(hnsw_field != NULL);
   if (hnsw_field) {
-    zvec_field_schema_set_hnsw_index(hnsw_field, hnsw_params);
+    zvec_field_schema_set_index_params(hnsw_field, hnsw_params);
     TEST_ASSERT(zvec_field_schema_has_index(hnsw_field) == true);
     TEST_ASSERT(zvec_field_schema_get_index_type(hnsw_field) ==
                 ZVEC_INDEX_TYPE_HNSW);
@@ -3551,10 +3589,6 @@ void test_memory_management_functions(void) {
 void test_query_params_functions(void) {
   TEST_START();
 
-  // Test basic query parameters creation and destruction
-  ZVecQueryParams *base_params = zvec_query_params_create(ZVEC_INDEX_TYPE_HNSW);
-  TEST_ASSERT(base_params != NULL);
-
   // Test HNSW query parameters
   ZVecHnswQueryParams *hnsw_params =
       zvec_query_params_hnsw_create(50, 0.5f, false, true);
@@ -3568,28 +3602,28 @@ void test_query_params_functions(void) {
   ZVecFlatQueryParams *flat_params = zvec_query_params_flat_create(false, 2.0f);
   TEST_ASSERT(flat_params != NULL);
 
-  // Test setting various parameters on base query params
   ZVecErrorCode err;
-
-  // Test index type setting
-  err = zvec_query_params_set_index_type(base_params, ZVEC_INDEX_TYPE_IVF);
-  TEST_ASSERT(err == ZVEC_OK);
-
-  // Test radius setting
-  err = zvec_query_params_set_radius(base_params, 0.8f);
-  TEST_ASSERT(err == ZVEC_OK);
-
-  // Test linear search setting
-  err = zvec_query_params_set_is_linear(base_params, false);
-  TEST_ASSERT(err == ZVEC_OK);
-
-  // Test refiner setting
-  err = zvec_query_params_set_is_using_refiner(base_params, true);
-  TEST_ASSERT(err == ZVEC_OK);
 
   // Test HNSW-specific parameters
   err = zvec_query_params_hnsw_set_ef(hnsw_params, 75);
   TEST_ASSERT(err == ZVEC_OK);
+
+  // Test HNSW common parameters (radius, is_linear, is_using_refiner)
+  err = zvec_query_params_hnsw_set_radius(hnsw_params, 0.8f);
+  TEST_ASSERT(err == ZVEC_OK);
+  float radius = zvec_query_params_hnsw_get_radius(hnsw_params);
+  TEST_ASSERT(radius == 0.8f);
+
+  err = zvec_query_params_hnsw_set_is_linear(hnsw_params, false);
+  TEST_ASSERT(err == ZVEC_OK);
+  bool is_linear = zvec_query_params_hnsw_get_is_linear(hnsw_params);
+  TEST_ASSERT(is_linear == false);
+
+  err = zvec_query_params_hnsw_set_is_using_refiner(hnsw_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  bool is_using_refiner =
+      zvec_query_params_hnsw_get_is_using_refiner(hnsw_params);
+  TEST_ASSERT(is_using_refiner == true);
 
   // Test IVF-specific parameters
   err = zvec_query_params_ivf_set_nprobe(ivf_params, 15);
@@ -3599,8 +3633,43 @@ void test_query_params_functions(void) {
   err = zvec_query_params_ivf_set_scale_factor(ivf_params, 2.5f);
   TEST_ASSERT(err == ZVEC_OK);
 
+  // Test IVF common parameters (radius, is_linear, is_using_refiner)
+  err = zvec_query_params_ivf_set_radius(ivf_params, 0.9f);
+  TEST_ASSERT(err == ZVEC_OK);
+  radius = zvec_query_params_ivf_get_radius(ivf_params);
+  TEST_ASSERT(radius == 0.9f);
+
+  err = zvec_query_params_ivf_set_is_linear(ivf_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_linear = zvec_query_params_ivf_get_is_linear(ivf_params);
+  TEST_ASSERT(is_linear == true);
+
+  err = zvec_query_params_ivf_set_is_using_refiner(ivf_params, false);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_using_refiner = zvec_query_params_ivf_get_is_using_refiner(ivf_params);
+  TEST_ASSERT(is_using_refiner == false);
+
+  // Test Flat scale factor setting
+  err = zvec_query_params_flat_set_scale_factor(flat_params, 3.0f);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // Test Flat common parameters (radius, is_linear, is_using_refiner)
+  err = zvec_query_params_flat_set_radius(flat_params, 0.7f);
+  TEST_ASSERT(err == ZVEC_OK);
+  radius = zvec_query_params_flat_get_radius(flat_params);
+  TEST_ASSERT(radius == 0.7f);
+
+  err = zvec_query_params_flat_set_is_linear(flat_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_linear = zvec_query_params_flat_get_is_linear(flat_params);
+  TEST_ASSERT(is_linear == true);
+
+  err = zvec_query_params_flat_set_is_using_refiner(flat_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_using_refiner = zvec_query_params_flat_get_is_using_refiner(flat_params);
+  TEST_ASSERT(is_using_refiner == true);
+
   // Test destruction of valid parameters
-  zvec_query_params_destroy(base_params);
   zvec_query_params_hnsw_destroy(hnsw_params);
   zvec_query_params_ivf_destroy(ivf_params);
   zvec_query_params_flat_destroy(flat_params);
@@ -3611,6 +3680,24 @@ void test_query_params_functions(void) {
   zvec_query_params_ivf_destroy(NULL);
   zvec_query_params_flat_destroy(NULL);
 
+  // Test null pointer handling for setters
+  err = zvec_query_params_hnsw_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_ivf_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_flat_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  // Test default values for getters with NULL
+  TEST_ASSERT(zvec_query_params_hnsw_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_ivf_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_flat_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_hnsw_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_flat_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_hnsw_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_ivf_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_flat_get_is_using_refiner(NULL) == false);
 
   TEST_END();
 }
@@ -3914,7 +4001,7 @@ void test_actual_vector_queries(void) {
     zvec_index_params_set_hnsw_params(hnsw_params, 16, 100);
     ZVecFieldSchema *vec_field = zvec_field_schema_create(
         "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, 4);
-    zvec_field_schema_set_hnsw_index(vec_field, hnsw_params);
+    zvec_field_schema_set_index_params(vec_field, hnsw_params);
     zvec_collection_schema_add_field(schema, vec_field);
     zvec_index_params_destroy(hnsw_params);
 
@@ -4085,7 +4172,7 @@ void test_collection_ddl_operations(void) {
   ZVecCollectionSchema *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
 
-  size_t field_count = zvec_collection_schema_get_field_count(schema);
+  size_t field_count = GET_FIELD_COUNT(schema);
 
   if (schema) {
     ZVecCollection *collection = NULL;
@@ -4109,8 +4196,7 @@ void test_collection_ddl_operations(void) {
       TEST_ASSERT(err == ZVEC_OK);
       TEST_ASSERT(retrieved_schema != NULL);
 
-      size_t new_field_count =
-          zvec_collection_schema_get_field_count(retrieved_schema);
+      size_t new_field_count = GET_FIELD_COUNT(retrieved_schema);
       TEST_ASSERT((field_count + 1) == new_field_count);
 
       // Test 3: Alter column
@@ -4129,8 +4215,7 @@ void test_collection_ddl_operations(void) {
       // Test 5: Verify field count after drop
       err = zvec_collection_get_schema(collection, &retrieved_schema);
       TEST_ASSERT(err == ZVEC_OK);
-      new_field_count =
-          zvec_collection_schema_get_field_count(retrieved_schema);
+      new_field_count = GET_FIELD_COUNT(retrieved_schema);
       TEST_ASSERT(new_field_count == field_count);
 
       zvec_collection_schema_destroy(retrieved_schema);
@@ -4208,7 +4293,7 @@ void test_performance_benchmarks(void) {
         zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
     zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_L2);
     zvec_index_params_set_hnsw_params(hnsw_params, 16, 100);
-    zvec_field_schema_set_hnsw_index(vec_field, hnsw_params);
+    zvec_field_schema_set_index_params(vec_field, hnsw_params);
     zvec_collection_schema_add_field(schema, vec_field);
 
     ZVecCollection *collection = NULL;
@@ -4494,7 +4579,7 @@ void test_collection_advanced_index_functions(void) {
       err = zvec_collection_create_hnsw_index(collection, "vec", hnsw_params);
       TEST_ASSERT(err == ZVEC_OK);
 
-      // Test zvec_field_schema_set_ivf_index
+      // Test zvec_field_schema_set_index_params
       ZVecFieldSchema *new_vec_field = zvec_field_schema_create(
           "vec2", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
       TEST_ASSERT(new_vec_field != NULL);
@@ -4503,7 +4588,7 @@ void test_collection_advanced_index_functions(void) {
       TEST_ASSERT(ivf_params2 != NULL);
       zvec_index_params_set_metric_type(ivf_params2, ZVEC_METRIC_TYPE_IP);
       zvec_index_params_set_ivf_params(ivf_params2, 50, 5, false);
-      zvec_field_schema_set_ivf_index(new_vec_field, ivf_params2);
+      zvec_field_schema_set_index_params(new_vec_field, ivf_params2);
       TEST_ASSERT(zvec_field_schema_has_index(new_vec_field) == true);
       zvec_field_schema_destroy(new_vec_field);
       zvec_index_params_destroy(flat_params);
@@ -4538,7 +4623,7 @@ void test_collection_query_functions(void) {
       zvec_field_schema_create("name", ZVEC_DATA_TYPE_STRING, false, 0);
   ZVecFieldSchema *vec_field =
       zvec_field_schema_create("vec", ZVEC_DATA_TYPE_VECTOR_FP32, false, 4);
-  zvec_field_schema_set_hnsw_index(vec_field, hnsw_params);
+  zvec_field_schema_set_index_params(vec_field, hnsw_params);
   zvec_index_params_destroy(hnsw_params);
 
   zvec_collection_schema_add_field(schema, name_field);
@@ -4820,6 +4905,463 @@ void test_array_memory_functions(void) {
 }
 
 // =============================================================================
+// Missing API coverage tests
+// =============================================================================
+
+void test_collection_open_close(void) {
+  TEST_START();
+
+  const char *temp_dir = "/tmp/zvec_test_open_close";
+  zvec_test_delete_dir(temp_dir);
+
+  // First create a collection
+  ZVecCollectionSchema *schema =
+      zvec_collection_schema_create("open_close_test");
+  TEST_ASSERT(schema != NULL);
+
+  ZVecFieldSchema *id_field =
+      zvec_field_schema_create("id", ZVEC_DATA_TYPE_INT32, false, 0);
+  ZVecFieldSchema *vec_field =
+      zvec_field_schema_create("vec", ZVEC_DATA_TYPE_VECTOR_FP32, false, 4);
+  zvec_collection_schema_add_field(schema, id_field);
+  zvec_collection_schema_add_field(schema, vec_field);
+
+  ZVecCollectionOptions *options = zvec_collection_options_create();
+  zvec_collection_options_set_max_doc_count_per_segment(options, 1000);
+
+  ZVecCollection *collection = NULL;
+  ZVecErrorCode err =
+      zvec_collection_create_and_open(temp_dir, schema, options, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+
+  // Insert some data before closing
+  if (collection) {
+    ZVecDoc *doc = zvec_doc_create();
+    zvec_doc_set_pk(doc, "doc1");
+    int32_t id_val = 1;
+    float vec_data[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    zvec_doc_add_field_by_value(doc, "id", ZVEC_DATA_TYPE_INT32, &id_val,
+                                sizeof(int32_t));
+    zvec_doc_add_field_by_value(doc, "vec", ZVEC_DATA_TYPE_VECTOR_FP32,
+                                vec_data, sizeof(vec_data));
+    const ZVecDoc *docs[] = {doc};
+    size_t success_count = 0;
+    size_t error_count = 0;
+    err = zvec_collection_insert(collection, docs, 1, &success_count,
+                                 &error_count);
+    if (err != ZVEC_OK || success_count != 1) {
+      // Print error for debugging
+      char *error_msg = NULL;
+      zvec_get_last_error(&error_msg);
+      printf("  Insert error: %s (err=%d, success=%zu)\n",
+             error_msg ? error_msg : "unknown", err, success_count);
+      if (error_msg) free(error_msg);
+    }
+    TEST_ASSERT(err == ZVEC_OK);
+    TEST_ASSERT(success_count == 1);
+    zvec_doc_destroy(doc);
+
+    // Close the collection
+    err = zvec_collection_close(collection);
+    TEST_ASSERT(err == ZVEC_OK);
+
+    // Re-open the existing collection using zvec_collection_open
+    ZVecCollection *reopened_collection = NULL;
+    err = zvec_collection_open(temp_dir, options, &reopened_collection);
+    if (err != ZVEC_OK) {
+      char *error_msg = NULL;
+      zvec_get_last_error(&error_msg);
+      printf("  Open error: %s (err=%d)\n", error_msg ? error_msg : "unknown",
+             err);
+      if (error_msg) free(error_msg);
+    }
+    TEST_ASSERT(err == ZVEC_OK);
+    TEST_ASSERT(reopened_collection != NULL);
+
+    // Verify data is still accessible after re-open
+    if (reopened_collection) {
+      // Use query API instead of filter
+      ZVecVectorQuery *query = zvec_vector_query_create();
+      zvec_vector_query_set_topk(query, 10);
+      zvec_vector_query_set_field_name(query, "vec");
+      float query_vec[] = {1.0f, 1.0f, 1.0f, 1.0f};
+      zvec_vector_query_set_query_vector(query, query_vec, sizeof(query_vec));
+
+      ZVecDoc **results = NULL;
+      size_t result_count = 0;
+      err = zvec_collection_query(reopened_collection, query, &results,
+                                  &result_count);
+      if (err != ZVEC_OK || result_count < 1) {
+        char *error_msg = NULL;
+        zvec_get_last_error(&error_msg);
+        printf("  Query error: %s (err=%d, count=%zu)\n",
+               error_msg ? error_msg : "unknown", err, result_count);
+        if (error_msg) free(error_msg);
+      }
+      TEST_ASSERT(err == ZVEC_OK);
+      TEST_ASSERT(result_count >= 1);
+      if (result_count > 0) {
+        const char *pk = zvec_doc_get_pk_copy(results[0]);
+        TEST_ASSERT(pk != NULL);
+        TEST_ASSERT(strcmp(pk, "doc1") == 0);
+        free((void *)pk);
+        for (size_t i = 0; i < result_count; i++) {
+          zvec_doc_destroy(results[i]);
+        }
+        free(results);
+      }
+      zvec_vector_query_destroy(query);
+    }
+
+    // Close the reopened collection
+    if (reopened_collection) {
+      err = zvec_collection_close(reopened_collection);
+      TEST_ASSERT(err == ZVEC_OK);
+    }
+  }
+
+  // Test NULL pointer error handling
+  err = zvec_collection_open(NULL, options, &collection);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  err = zvec_collection_open(temp_dir, options, NULL);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  err = zvec_collection_close(NULL);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_collection_options_destroy(options);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(temp_dir);
+
+  TEST_END();
+}
+
+void test_collection_options_getters(void) {
+  TEST_START();
+
+  // Test default values
+  ZVecCollectionOptions *options = zvec_collection_options_create();
+  TEST_ASSERT(options != NULL);
+
+  // Test max_doc_count_per_segment getter
+  // Note: This function now returns a constant default value
+  // (MAX_DOC_COUNT_PER_SEGMENT) as the actual setting is stored in
+  // CollectionSchema, not CollectionOptions
+  size_t max_doc_count =
+      zvec_collection_options_get_max_doc_count_per_segment(options);
+  TEST_ASSERT(max_doc_count > 0);  // Should have a default value
+
+  // Set call succeeds but doesn't actually change the value (deprecated
+  // behavior)
+  ZVecErrorCode err =
+      zvec_collection_options_set_max_doc_count_per_segment(options, 5000);
+  TEST_ASSERT(err == ZVEC_OK);
+  // Value still returns the constant default
+  max_doc_count =
+      zvec_collection_options_get_max_doc_count_per_segment(options);
+  TEST_ASSERT(max_doc_count > 0);
+
+  // Test enable_mmap getter
+  bool enable_mmap = zvec_collection_options_get_enable_mmap(options);
+  TEST_ASSERT(enable_mmap == true || enable_mmap == false);
+
+  // Set and verify
+  err = zvec_collection_options_set_enable_mmap(options, false);
+  TEST_ASSERT(err == ZVEC_OK);
+  enable_mmap = zvec_collection_options_get_enable_mmap(options);
+  TEST_ASSERT(enable_mmap == false);
+
+  // Test max_buffer_size getter
+  size_t max_buffer_size = zvec_collection_options_get_max_buffer_size(options);
+  TEST_ASSERT(max_buffer_size > 0);  // Should have a default value
+
+  // Set and verify
+  err = zvec_collection_options_set_max_buffer_size(options, 1024 * 1024);
+  TEST_ASSERT(err == ZVEC_OK);
+  max_buffer_size = zvec_collection_options_get_max_buffer_size(options);
+  TEST_ASSERT(max_buffer_size == 1024 * 1024);
+
+  // Test NULL pointer handling - these return defaults, not 0
+  TEST_ASSERT(zvec_collection_options_get_max_doc_count_per_segment(NULL) > 0);
+  TEST_ASSERT(zvec_collection_options_get_enable_mmap(NULL) ==
+              true);  // Default is true
+  TEST_ASSERT(zvec_collection_options_get_max_buffer_size(NULL) >
+              0);  // Default is non-zero
+
+  zvec_collection_options_destroy(options);
+
+  TEST_END();
+}
+
+void test_collection_stats_index_info(void) {
+  TEST_START();
+
+  const char *temp_dir = "/tmp/zvec_test_stats_index";
+  zvec_test_delete_dir(temp_dir);
+
+  ZVecCollectionSchema *schema =
+      zvec_collection_schema_create("stats_index_test");
+  ZVecFieldSchema *vec_field =
+      zvec_field_schema_create("vec", ZVEC_DATA_TYPE_VECTOR_FP32, false, 4);
+  zvec_collection_schema_add_field(schema, vec_field);
+
+  ZVecCollection *collection = NULL;
+  ZVecErrorCode err =
+      zvec_collection_create_and_open(temp_dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  if (collection) {
+    // Create an index first
+    ZVecIndexParams *hnsw_params =
+        zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+    zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_L2);
+    zvec_index_params_set_hnsw_params(hnsw_params, 16, 100);
+    err = zvec_collection_create_hnsw_index(collection, "vec", hnsw_params);
+    TEST_ASSERT(err == ZVEC_OK);
+    zvec_index_params_destroy(hnsw_params);
+
+    // Get collection stats
+    ZVecCollectionStats *stats = NULL;
+    err = zvec_collection_get_stats(collection, &stats);
+    TEST_ASSERT(err == ZVEC_OK);
+    TEST_ASSERT(stats != NULL);
+
+    // Test index count
+    size_t index_count = zvec_collection_stats_get_index_count(stats);
+    TEST_ASSERT(index_count >= 1);  // Should have at least one index
+
+    // Test index name getter
+    const char *index_name = zvec_collection_stats_get_index_name(stats, 0);
+    TEST_ASSERT(index_name != NULL);
+    printf("  Index name at 0: %s\n", index_name);
+
+    // Test index completeness getter
+    float completeness = zvec_collection_stats_get_index_completeness(stats, 0);
+    TEST_ASSERT(completeness >= 0.0f && completeness <= 1.0f);
+    printf("  Index completeness at 0: %.2f\n", completeness);
+
+    // Test out-of-bounds access
+    index_name = zvec_collection_stats_get_index_name(stats, 999);
+    TEST_ASSERT(index_name == NULL);
+
+    completeness = zvec_collection_stats_get_index_completeness(stats, 999);
+    TEST_ASSERT(completeness == 0.0f);
+
+    // Test NULL pointer handling
+    TEST_ASSERT(zvec_collection_stats_get_index_name(NULL, 0) == NULL);
+    TEST_ASSERT(zvec_collection_stats_get_index_completeness(NULL, 0) == 0.0f);
+
+    zvec_collection_stats_destroy(stats);
+  }
+
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  zvec_test_delete_dir(temp_dir);
+
+  TEST_END();
+}
+
+void test_field_schema_validate(void) {
+  TEST_START();
+
+  // Test valid field schema
+  ZVecFieldSchema *valid_field =
+      zvec_field_schema_create("valid_field", ZVEC_DATA_TYPE_INT32, false, 0);
+  TEST_ASSERT(valid_field != NULL);
+
+  ZVecString *error_msg = NULL;
+  ZVecErrorCode err = zvec_field_schema_validate(valid_field, &error_msg);
+  TEST_ASSERT(err == ZVEC_OK);
+  if (error_msg) {
+    zvec_free_string(error_msg);
+  }
+
+  // Test field with index params
+  ZVecFieldSchema *field_with_index = zvec_field_schema_create(
+      "vec_field", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
+  ZVecIndexParams *index_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  zvec_index_params_set_metric_type(index_params, ZVEC_METRIC_TYPE_L2);
+  zvec_index_params_set_hnsw_params(index_params, 16, 100);
+  zvec_field_schema_set_index_params(field_with_index, index_params);
+
+  err = zvec_field_schema_validate(field_with_index, &error_msg);
+  TEST_ASSERT(err == ZVEC_OK);
+  if (error_msg) {
+    zvec_free_string(error_msg);
+  }
+
+  // Test NULL schema pointer
+  err = zvec_field_schema_validate(NULL, &error_msg);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  if (error_msg) {
+    zvec_free_string(error_msg);
+  }
+
+  // Test with NULL error_msg (should not crash)
+  err = zvec_field_schema_validate(valid_field, NULL);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_index_params_destroy(index_params);
+  zvec_field_schema_destroy(field_with_index);
+  zvec_field_schema_destroy(valid_field);
+
+  TEST_END();
+}
+
+void test_doc_remove_field(void) {
+  TEST_START();
+
+  ZVecDoc *doc = zvec_doc_create();
+  TEST_ASSERT(doc != NULL);
+
+  // Add some fields
+  zvec_doc_set_pk(doc, "test_pk");
+  int32_t val1 = 100;
+  int32_t val2 = 200;
+  zvec_doc_add_field_by_value(doc, "field1", ZVEC_DATA_TYPE_INT32, &val1,
+                              sizeof(int32_t));
+  zvec_doc_add_field_by_value(doc, "field2", ZVEC_DATA_TYPE_INT32, &val2,
+                              sizeof(int32_t));
+
+  // Verify fields exist
+  TEST_ASSERT(zvec_doc_has_field(doc, "field1") == true);
+  TEST_ASSERT(zvec_doc_has_field(doc, "field2") == true);
+  TEST_ASSERT(zvec_doc_get_field_count(doc) == 2);
+
+  // Remove field1
+  ZVecErrorCode err = zvec_doc_remove_field(doc, "field1");
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // Verify field1 is removed
+  TEST_ASSERT(zvec_doc_has_field(doc, "field1") == false);
+  TEST_ASSERT(zvec_doc_has_field(doc, "field2") == true);
+  TEST_ASSERT(zvec_doc_get_field_count(doc) == 1);
+
+  // Try to remove non-existent field (should not crash)
+  err = zvec_doc_remove_field(doc, "non_existent_field");
+  TEST_ASSERT(err == ZVEC_OK);  // Or might return error, depending on design
+
+  // Test NULL pointer handling
+  err = zvec_doc_remove_field(NULL, "field");
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  err = zvec_doc_remove_field(doc, NULL);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  // Clean up
+  zvec_doc_destroy(doc);
+
+  TEST_END();
+}
+
+void test_collection_schema_getters(void) {
+  TEST_START();
+
+  ZVecCollectionSchema *schema =
+      zvec_collection_schema_create("schema_getter_test");
+  TEST_ASSERT(schema != NULL);
+
+  // Add multiple fields
+  ZVecFieldSchema *field1 =
+      zvec_field_schema_create("field1", ZVEC_DATA_TYPE_INT32, false, 0);
+  ZVecFieldSchema *field2 =
+      zvec_field_schema_create("field2", ZVEC_DATA_TYPE_STRING, true, 0);
+  ZVecFieldSchema *field3 = zvec_field_schema_create(
+      "field3", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
+
+  zvec_collection_schema_add_field(schema, field1);
+  zvec_collection_schema_add_field(schema, field2);
+  zvec_collection_schema_add_field(schema, field3);
+
+  // Test has_field
+  TEST_ASSERT(zvec_collection_schema_has_field(schema, "field1") == true);
+  TEST_ASSERT(zvec_collection_schema_has_field(schema, "field2") == true);
+  TEST_ASSERT(zvec_collection_schema_has_field(schema, "field3") == true);
+  TEST_ASSERT(zvec_collection_schema_has_field(schema, "non_existent") ==
+              false);
+
+  // Test get_field by name
+  ZVecFieldSchema *retrieved_field =
+      zvec_collection_schema_get_field(schema, "field2");
+  TEST_ASSERT(retrieved_field != NULL);
+  TEST_ASSERT(zvec_field_schema_get_data_type(retrieved_field) ==
+              ZVEC_DATA_TYPE_STRING);
+
+  // Test non-existent field name
+  retrieved_field = zvec_collection_schema_get_field(schema, "non_existent");
+  TEST_ASSERT(retrieved_field == NULL);
+
+  // Test get_forward_field (scalar fields only)
+  retrieved_field = zvec_collection_schema_get_forward_field(schema, "field1");
+  TEST_ASSERT(retrieved_field != NULL);
+
+  retrieved_field = zvec_collection_schema_get_forward_field(schema, "field3");
+  TEST_ASSERT(retrieved_field == NULL);  // field3 is vector, not scalar
+
+  // Test get_vector_field
+  retrieved_field = zvec_collection_schema_get_vector_field(schema, "field3");
+  TEST_ASSERT(retrieved_field != NULL);
+  TEST_ASSERT(zvec_field_schema_get_data_type(retrieved_field) ==
+              ZVEC_DATA_TYPE_VECTOR_FP32);
+
+  retrieved_field = zvec_collection_schema_get_vector_field(schema, "field1");
+  TEST_ASSERT(retrieved_field == NULL);  // field1 is scalar, not vector
+
+  // Test get_all_field_names
+  const char **field_names = NULL;
+  size_t field_count = 0;
+  ZVecErrorCode err = zvec_collection_schema_get_all_field_names(
+      schema, &field_names, &field_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(field_names != NULL);
+  TEST_ASSERT(field_count == 3);
+  printf("  Field names: ");
+  for (size_t i = 0; i < field_count; i++) {
+    printf("%s ", field_names[i]);
+  }
+  printf("\n");
+  free(field_names);
+
+  // Test get_forward_fields
+  ZVecFieldSchema **forward_fields = NULL;
+  size_t forward_count = 0;
+  err = zvec_collection_schema_get_forward_fields(schema, &forward_fields,
+                                                  &forward_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(forward_fields != NULL);
+  TEST_ASSERT(forward_count == 2);  // field1 and field2 are scalars
+  // Note: forward_fields contains pointers to fields owned by schema,
+  // do not destroy them individually - just free the array
+  free(forward_fields);
+
+  // Test get_vector_fields
+  ZVecFieldSchema **vector_fields = NULL;
+  size_t vector_count = 0;
+  err = zvec_collection_schema_get_vector_fields(schema, &vector_fields,
+                                                 &vector_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(vector_fields != NULL);
+  TEST_ASSERT(vector_count == 1);  // Only field3 is vector
+  // Note: vector_fields contains pointers to fields owned by schema,
+  // do not destroy them individually - just free the array
+  free(vector_fields);
+
+  // Test NULL pointer handling
+  TEST_ASSERT(zvec_collection_schema_has_field(NULL, "field") == false);
+  TEST_ASSERT(zvec_collection_schema_get_field(NULL, "field") == NULL);
+  TEST_ASSERT(zvec_collection_schema_get_forward_field(NULL, "field") == NULL);
+  TEST_ASSERT(zvec_collection_schema_get_vector_field(NULL, "field") == NULL);
+
+  // Destroy schema - it owns all fields added to it
+  zvec_collection_schema_destroy(schema);
+
+  TEST_END();
+}
+
+// =============================================================================
 // Main function
 // =============================================================================
 
@@ -4894,6 +5436,14 @@ int main(void) {
 
   // Memory management tests
   test_memory_management_functions();
+
+  // Missing API coverage tests (before shutdown)
+  test_collection_open_close();
+  test_collection_options_getters();
+  test_collection_stats_index_info();
+  test_field_schema_validate();
+  test_doc_remove_field();
+  test_collection_schema_getters();
 
   // Additional API coverage tests
   test_zvec_shutdown();

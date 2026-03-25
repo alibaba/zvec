@@ -66,7 +66,7 @@ static ZVecErrorCode create_simple_test_collection(
   // Create and add ID field (primary key)
   ZVecFieldSchema *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_STRING, false, 0);
-  zvec_field_schema_set_invert_index(id_field, invert_params);
+  zvec_field_schema_set_index_params(id_field, invert_params);
   error = zvec_collection_schema_add_field(schema, id_field);
   if (error != ZVEC_OK) {
     zvec_index_params_destroy(invert_params);
@@ -78,7 +78,7 @@ static ZVecErrorCode create_simple_test_collection(
   // Create text field (inverted index)
   ZVecFieldSchema *text_field =
       zvec_field_schema_create("text", ZVEC_DATA_TYPE_STRING, true, 0);
-  zvec_field_schema_set_invert_index(text_field, invert_params);
+  zvec_field_schema_set_index_params(text_field, invert_params);
   error = zvec_collection_schema_add_field(schema, text_field);
   if (error != ZVEC_OK) {
     zvec_index_params_destroy(invert_params);
@@ -90,7 +90,7 @@ static ZVecErrorCode create_simple_test_collection(
   // Create embedding field (HNSW index)
   ZVecFieldSchema *embedding_field = zvec_field_schema_create(
       "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, 3);
-  zvec_field_schema_set_hnsw_index(embedding_field, hnsw_params);
+  zvec_field_schema_set_index_params(embedding_field, hnsw_params);
   error = zvec_collection_schema_add_field(schema, embedding_field);
   if (error != ZVEC_OK) {
     zvec_index_params_destroy(invert_params);

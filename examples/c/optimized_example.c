@@ -93,7 +93,7 @@ int main() {
   }
 
   // Set indexes
-  zvec_field_schema_set_hnsw_index(embedding_field, hnsw_params);
+  zvec_field_schema_set_index_params(embedding_field, hnsw_params);
 
   // Add fields to schema
   error = zvec_collection_schema_add_field(schema, id_field);

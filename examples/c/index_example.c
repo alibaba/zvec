@@ -150,7 +150,7 @@ int main() {
   ZVecFieldSchema *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_STRING, false, 0);
   if (id_field) {
-    zvec_field_schema_set_invert_index(id_field, invert_params_standard);
+    zvec_field_schema_set_index_params(id_field, invert_params_standard);
     error = zvec_collection_schema_add_field(schema, id_field);
     if (handle_error(error, "adding ID field") == ZVEC_OK) {
       printf("✓ ID field with standard inverted index added\n");
@@ -160,7 +160,7 @@ int main() {
   ZVecFieldSchema *category_field =
       zvec_field_schema_create("category", ZVEC_DATA_TYPE_STRING, true, 0);
   if (category_field) {
-    zvec_field_schema_set_invert_index(category_field, invert_params_extended);
+    zvec_field_schema_set_index_params(category_field, invert_params_extended);
     error = zvec_collection_schema_add_field(schema, category_field);
     if (handle_error(error, "adding category field") == ZVEC_OK) {
       printf("✓ Category field with extended inverted index added\n");
@@ -171,7 +171,7 @@ int main() {
   ZVecFieldSchema *fast_search_field = zvec_field_schema_create(
       "fast_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 64);
   if (fast_search_field) {
-    zvec_field_schema_set_hnsw_index(fast_search_field, hnsw_params_fast);
+    zvec_field_schema_set_index_params(fast_search_field, hnsw_params_fast);
     error = zvec_collection_schema_add_field(schema, fast_search_field);
     if (handle_error(error, "adding fast search field") == ZVEC_OK) {
       printf("✓ Fast search vector field (64D) with HNSW index added\n");
@@ -181,7 +181,7 @@ int main() {
   ZVecFieldSchema *balanced_field = zvec_field_schema_create(
       "balanced_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
   if (balanced_field) {
-    zvec_field_schema_set_hnsw_index(balanced_field, hnsw_params_balanced);
+    zvec_field_schema_set_index_params(balanced_field, hnsw_params_balanced);
     error = zvec_collection_schema_add_field(schema, balanced_field);
     if (handle_error(error, "adding balanced field") == ZVEC_OK) {
       printf("✓ Balanced vector field (128D) with HNSW index added\n");
@@ -191,7 +191,7 @@ int main() {
   ZVecFieldSchema *accurate_field = zvec_field_schema_create(
       "accurate_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 256);
   if (accurate_field) {
-    zvec_field_schema_set_hnsw_index(accurate_field, hnsw_params_accurate);
+    zvec_field_schema_set_index_params(accurate_field, hnsw_params_accurate);
     error = zvec_collection_schema_add_field(schema, accurate_field);
     if (handle_error(error, "adding accurate field") == ZVEC_OK) {
       printf("✓ Accurate vector field (256D) with HNSW index added\n");
@@ -202,7 +202,7 @@ int main() {
   ZVecFieldSchema *exact_field = zvec_field_schema_create(
       "exact_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 32);
   if (exact_field) {
-    zvec_field_schema_set_flat_index(exact_field, flat_params_l2);
+    zvec_field_schema_set_index_params(exact_field, flat_params_l2);
     error = zvec_collection_schema_add_field(schema, exact_field);
     if (handle_error(error, "adding exact field") == ZVEC_OK) {
       printf("✓ Exact search vector field (32D) with Flat index added\n");
