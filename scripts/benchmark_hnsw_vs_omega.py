@@ -213,7 +213,7 @@ def build_omega_profile(
     avg_pairwise_dist_cnt = avg_metric(query_records, "pairwise_dist_cnt")
     avg_core_search_ms = avg_metric(query_records, "core_search_ms")
     avg_pure_search_ms = avg_metric(query_records, "pure_search_ms")
-    avg_omega_control_ms = avg_metric(query_records, "omega_control_ms")
+    avg_hook_total_ms = avg_metric(query_records, "hook_total_ms")
     avg_search_only_ms = (
         avg_pure_search_ms if avg_pure_search_ms is not None else avg_core_search_ms
     )
@@ -223,8 +223,8 @@ def build_omega_profile(
         cmp_time_ms = avg_search_only_ms / avg_pairwise_dist_cnt
 
     model_overhead_cmp_equiv = None
-    if cmp_time_ms and cmp_time_ms > 0 and avg_omega_control_ms is not None:
-        model_overhead_cmp_equiv = avg_omega_control_ms / cmp_time_ms
+    if cmp_time_ms and cmp_time_ms > 0 and avg_hook_total_ms is not None:
+        model_overhead_cmp_equiv = avg_hook_total_ms / cmp_time_ms
 
     avg_saved_cmps = None
     if (
@@ -245,12 +245,20 @@ def build_omega_profile(
         "profile_avg_prediction_calls": avg_metric(query_records, "prediction_calls"),
         "profile_avg_should_stop_calls": avg_metric(query_records, "should_stop_calls"),
         "profile_avg_advance_calls": avg_metric(query_records, "advance_calls"),
-        "profile_avg_model_overhead_ms": avg_omega_control_ms,
+        "profile_avg_model_overhead_ms": avg_hook_total_ms,
         "profile_avg_setup_ms": avg_metric(query_records, "setup_ms"),
         "profile_avg_should_stop_ms": avg_metric(query_records, "should_stop_ms"),
         "profile_avg_prediction_eval_ms": avg_metric(query_records, "prediction_eval_ms"),
         "profile_avg_core_search_ms": avg_core_search_ms,
         "profile_avg_pure_search_ms": avg_pure_search_ms,
+        "profile_avg_hook_total_ms": avg_hook_total_ms,
+        "profile_avg_hook_body_ms": avg_metric(query_records, "hook_body_ms"),
+        "profile_avg_hook_dispatch_ms": avg_metric(query_records, "hook_dispatch_ms"),
+        "profile_avg_report_visit_candidate_ms": avg_metric(query_records, "report_visit_candidate_ms"),
+        "profile_avg_should_predict_ms": avg_metric(query_records, "should_predict_ms"),
+        "profile_avg_report_hop_ms": avg_metric(query_records, "report_hop_ms"),
+        "profile_avg_update_top_candidates_ms": avg_metric(query_records, "update_top_candidates_ms"),
+        "profile_avg_push_traversal_window_ms": avg_metric(query_records, "push_traversal_window_ms"),
         "profile_avg_model_overhead_cmp_equiv": model_overhead_cmp_equiv,
         "profile_avg_early_stop_saved_cmps": avg_saved_cmps,
         "profile_avg_early_stop_hit_rate": avg_metric(query_records, "early_stop_hit"),
