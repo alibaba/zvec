@@ -523,7 +523,7 @@ def main():
     EF_SEARCH = 118
     QUANTIZE_TYPE = "int8"
     USE_REFINER = True
-    NUM_CONCURRENCY = "16"
+    NUM_CONCURRENCY = "12,14,16,18,20"
     CONCURRENCY_DURATION = 30
     K = 100
 

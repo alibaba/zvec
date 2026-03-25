@@ -530,7 +530,7 @@ def main():
     M = 15
     EF_SEARCH = 180
     QUANTIZE_TYPE = "int8"
-    NUM_CONCURRENCY = "16"
+    NUM_CONCURRENCY = "12,14,16,18,20"
     CONCURRENCY_DURATION = 30
     K = 100
 
