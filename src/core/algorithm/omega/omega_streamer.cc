@@ -370,6 +370,11 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   unsigned long long sorted_window_time_ns = 0;
   unsigned long long average_recall_eval_time_ns = 0;
   unsigned long long prediction_feature_prep_time_ns = 0;
+  unsigned long long report_visit_candidate_time_ns = 0;
+  unsigned long long should_predict_time_ns = 0;
+  unsigned long long report_hop_time_ns = 0;
+  unsigned long long update_top_candidates_time_ns = 0;
+  unsigned long long push_traversal_window_time_ns = 0;
   unsigned long long collected_gt_advance_count = 0;
   unsigned long long should_stop_calls_with_advance = 0;
   unsigned long long max_prediction_calls_per_should_stop = 0;
@@ -398,6 +403,14 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   average_recall_eval_time_ns = omega_search_ctx->GetAverageRecallEvalTimeNs();
   prediction_feature_prep_time_ns =
       omega_search_ctx->GetPredictionFeaturePrepTimeNs();
+  report_visit_candidate_time_ns =
+      omega_search_ctx->GetReportVisitCandidateTimeNs();
+  should_predict_time_ns = omega_search_ctx->GetShouldPredictTimeNs();
+  report_hop_time_ns = omega_search_ctx->GetReportHopTimeNs();
+  update_top_candidates_time_ns =
+      omega_search_ctx->GetUpdateTopCandidatesTimeNs();
+  push_traversal_window_time_ns =
+      omega_search_ctx->GetPushTraversalWindowTimeNs();
   collected_gt_advance_count = omega_search_ctx->GetCollectedGtAdvanceCount();
   should_stop_calls_with_advance =
       omega_search_ctx->GetShouldStopCallsWithAdvance();
@@ -451,9 +464,11 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  "collected_gt_advance=%llu max_pred_per_stop=%llu "
                  "should_stop_ms=%.3f prediction_eval_ms=%.3f "
                  "setup_ms=%.3f reset_query_ms=%.3f "
-                 "core_search_ms=%.3f omega_control_ms=%.3f "
-                 "hook_total_ms=%.3f hook_body_ms=%.3f "
-                 "hook_dispatch_ms=%.3f pure_search_ms=%.3f total_ms=%.3f",
+                 "core_search_ms=%.3f hook_total_ms=%.3f hook_body_ms=%.3f "
+                 "hook_dispatch_ms=%.3f pure_search_ms=%.3f "
+                 "report_visit_candidate_ms=%.3f should_predict_ms=%.3f "
+                 "report_hop_ms=%.3f update_top_candidates_ms=%.3f "
+                 "push_traversal_window_ms=%.3f total_ms=%.3f",
                  static_cast<unsigned long long>(query_seq),
                  IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
                  static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
@@ -469,10 +484,14 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  static_cast<double>(query_reset_time_ns) / 1e6,
                  static_cast<double>(query_search_time_ns) / 1e6,
                  static_cast<double>(hook_total_time_ns) / 1e6,
-                 static_cast<double>(hook_total_time_ns) / 1e6,
                  static_cast<double>(hook_body_time_ns) / 1e6,
                  static_cast<double>(hook_dispatch_time_ns) / 1e6,
                  static_cast<double>(pure_search_time_ns) / 1e6,
+                 static_cast<double>(report_visit_candidate_time_ns) / 1e6,
+                 static_cast<double>(should_predict_time_ns) / 1e6,
+                 static_cast<double>(report_hop_time_ns) / 1e6,
+                 static_cast<double>(update_top_candidates_time_ns) / 1e6,
+                 static_cast<double>(push_traversal_window_time_ns) / 1e6,
                  static_cast<double>(query_total_time_ns) / 1e6);
       } else {
         LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
