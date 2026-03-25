@@ -24,7 +24,8 @@
   <a href="https://zvec.org/en/docs/">📚 <strong>Docs</strong> </a> |
   <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>Benchmarks</strong> </a> |
   <a href="https://deepwiki.com/alibaba/zvec">🔎 <strong>DeepWiki</strong> </a> |
-  <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a>
+  <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a> |
+  <a href="https://x.com/ZvecAI">🐦 <strong>X (Twitter)</strong> </a>
 </p>
 
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Built on **Proxima** (Alibaba's battle-tested vector search engine), it delivers production-grade, low-latency, scalable similarity search with minimal setup.
