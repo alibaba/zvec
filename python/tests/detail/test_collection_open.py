@@ -691,6 +691,12 @@ class TestCollectionOpen:
                     nullable=False,
                     index_param=InvertIndexParam(),
                 ),
+                FieldSchema(
+                    "description",
+                    DataType.STRING,
+                    nullable=True,
+                    index_param=InvertIndexParam(),
+                ),
             ],
             vectors=[
                 VectorSchema(
@@ -720,7 +726,7 @@ class TestCollectionOpen:
         # Insert some data
         doc = Doc(
             id="1",
-            fields={"id": 1, "name": "test"},
+            fields={"id": 1, "name": "test", "description": "这是一个中文描述。"},
             vectors={"dense": np.random.random(128).tolist()},
         )
 
@@ -743,6 +749,7 @@ class TestCollectionOpen:
         fetched_doc = fetched_docs["1"]
         assert fetched_doc.id == "1"
         assert fetched_doc.field("name") == "test"
+        assert fetched_doc.field("description") == "这是一个中文描述。"
 
         # Clean up
         if hasattr(coll2, "destroy") and coll2 is not None:
