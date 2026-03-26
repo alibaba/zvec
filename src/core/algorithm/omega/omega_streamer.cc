@@ -466,7 +466,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   int hops, cmps, collected_gt;
   float predicted_recall_avg = 0.0f;
   float predicted_recall_at_target = 0.0f;
-  float true_recall_avg = -1.0f;
   int omega_early_stop_hit = 0;
   unsigned long long should_stop_calls = 0;
   unsigned long long prediction_calls = 0;
@@ -498,7 +497,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   predicted_recall_avg = omega_search_ctx->GetLastPredictedRecallAvg();
   predicted_recall_at_target =
       omega_search_ctx->GetLastPredictedRecallAtTarget();
-  true_recall_avg = omega_search_ctx->GetLastTrueRecallAvg();
   omega_early_stop_hit = omega_search_ctx->EarlyStopHit() ? 1 : 0;
   should_stop_calls = omega_search_ctx->GetShouldStopCalls();
   prediction_calls = omega_search_ctx->GetPredictionCalls();
@@ -542,7 +540,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
       LOG_INFO("OMEGA runtime stats: model_loaded=%d target_recall=%.4f "
                "scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d "
                "collected_gt=%d predicted_recall_avg=%.4f "
-               "predicted_recall_at_target=%.4f true_recall_avg=%.4f early_stop_hit=%d "
+               "predicted_recall_at_target=%.4f early_stop_hit=%d "
                "should_stop_calls=%llu prediction_calls=%llu "
                "advance_calls=%llu collected_gt_advance=%llu "
                "max_pred_per_stop=%llu should_stop_ms=%.3f "
@@ -551,7 +549,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
                collected_gt,
                predicted_recall_avg, predicted_recall_at_target,
-               true_recall_avg,
                (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
                should_stop_calls, prediction_calls,
                should_stop_calls_with_advance, collected_gt_advance_count,
@@ -563,7 +560,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
       if (collect_control_timing) {
         LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
                  "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
-                 "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f true_recall_avg=%.4f "
+                 "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
                  "early_stop_hit=%d should_stop_calls=%llu "
                  "prediction_calls=%llu advance_calls=%llu "
                  "collected_gt_advance=%llu max_pred_per_stop=%llu "
@@ -579,7 +576,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
                  collected_gt,
                  predicted_recall_avg, predicted_recall_at_target,
-                 true_recall_avg,
                  (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
                  should_stop_calls, prediction_calls,
                  should_stop_calls_with_advance, collected_gt_advance_count,
@@ -601,7 +597,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
       } else {
         LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
                  "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
-                 "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f true_recall_avg=%.4f "
+                 "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
                  "early_stop_hit=%d should_stop_calls=%llu "
                  "prediction_calls=%llu advance_calls=%llu "
                  "collected_gt_advance=%llu max_pred_per_stop=%llu "
@@ -613,7 +609,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
                  collected_gt,
                  predicted_recall_avg, predicted_recall_at_target,
-                 true_recall_avg,
                  (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
                  should_stop_calls, prediction_calls,
                  should_stop_calls_with_advance, collected_gt_advance_count,
