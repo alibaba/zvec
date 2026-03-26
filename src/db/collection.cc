@@ -690,13 +690,13 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   }
   new_version.reset_writing_segment_meta(writing_segment_->meta());
 
-  auto persist_semgents = get_all_persist_segments();
+  auto persist_segments = get_all_persist_segments();
 
   std::vector<SegmentTask::Ptr> tasks;
   if (is_vector_field) {
-    tasks = build_drop_vector_index_task(persist_semgents, column_name);
+    tasks = build_drop_vector_index_task(persist_segments, column_name);
   } else {
-    tasks = build_drop_scalar_index_task(persist_semgents, column_name);
+    tasks = build_drop_scalar_index_task(persist_segments, column_name);
   }
 
   if (tasks.empty()) {
