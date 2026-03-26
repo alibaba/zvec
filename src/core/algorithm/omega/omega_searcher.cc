@@ -58,12 +58,11 @@ void OnOmegaHop(void *user_data) {
 bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
                            bool inserted_to_topk, void *user_data) {
   auto &state = *static_cast<OmegaHookState *>(user_data);
-  state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
+  bool should_predict = state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
   if (!state.enable_early_stopping) {
     return false;
   }
-  return state.search_ctx->ShouldPredict() &&
-         state.search_ctx->ShouldStopEarly();
+  return should_predict && state.search_ctx->ShouldStopEarly();
 }
 
 }  // namespace

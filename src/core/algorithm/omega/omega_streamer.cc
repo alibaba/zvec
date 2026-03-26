@@ -122,18 +122,12 @@ void OnOmegaHop(void *user_data) {
 bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
                            bool inserted_to_topk, void *user_data) {
   auto &state = *static_cast<OmegaHookState *>(user_data);
+  bool should_predict = false;
   RunOmegaControlHook(state, [&]() {
-    state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
+    should_predict = state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
   });
 
-  if (!state.enable_early_stopping) {
-    return false;
-  }
-
-  bool should_predict = false;
-  RunOmegaControlHook(state,
-                      [&]() { should_predict = state.search_ctx->ShouldPredict(); });
-  if (!should_predict) {
+  if (!state.enable_early_stopping || !should_predict) {
     return false;
   }
 
