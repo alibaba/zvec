@@ -365,7 +365,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   unsigned long long average_recall_eval_time_ns = 0;
   unsigned long long prediction_feature_prep_time_ns = 0;
   unsigned long long report_visit_candidate_time_ns = 0;
-  unsigned long long should_predict_time_ns = 0;
   unsigned long long report_hop_time_ns = 0;
   unsigned long long update_top_candidates_time_ns = 0;
   unsigned long long push_traversal_window_time_ns = 0;
@@ -399,7 +398,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
       omega_search_ctx->GetPredictionFeaturePrepTimeNs();
   report_visit_candidate_time_ns =
       omega_search_ctx->GetReportVisitCandidateTimeNs();
-  should_predict_time_ns = omega_search_ctx->GetShouldPredictTimeNs();
   report_hop_time_ns = omega_search_ctx->GetReportHopTimeNs();
   update_top_candidates_time_ns =
       omega_search_ctx->GetUpdateTopCandidatesTimeNs();
@@ -460,7 +458,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  "setup_ms=%.3f reset_query_ms=%.3f "
                  "core_search_ms=%.3f hook_total_ms=%.3f hook_body_ms=%.3f "
                  "hook_dispatch_ms=%.3f pure_search_ms=%.3f "
-                 "report_visit_candidate_ms=%.3f should_predict_ms=%.3f "
+                 "report_visit_candidate_ms=%.3f "
                  "report_hop_ms=%.3f update_top_candidates_ms=%.3f "
                  "push_traversal_window_ms=%.3f total_ms=%.3f",
                  static_cast<unsigned long long>(query_seq),
@@ -482,7 +480,6 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
                  static_cast<double>(hook_dispatch_time_ns) / 1e6,
                  static_cast<double>(pure_search_time_ns) / 1e6,
                  static_cast<double>(report_visit_candidate_time_ns) / 1e6,
-                 static_cast<double>(should_predict_time_ns) / 1e6,
                  static_cast<double>(report_hop_time_ns) / 1e6,
                  static_cast<double>(update_top_candidates_time_ns) / 1e6,
                  static_cast<double>(push_traversal_window_time_ns) / 1e6,

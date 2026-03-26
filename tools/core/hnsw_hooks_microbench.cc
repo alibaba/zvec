@@ -161,12 +161,12 @@ void OnOmegaHop(void* user_data) {
 bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
                            bool should_consider_candidate, void* user_data) {
   auto& state = *static_cast<OmegaHookState*>(user_data);
-  state.search_ctx->ReportVisitCandidate(id, dist, should_consider_candidate);
-  if (!state.enable_early_stopping) {
+  bool should_predict =
+      state.search_ctx->ReportVisitCandidate(id, dist, should_consider_candidate);
+  if (!state.enable_early_stopping || !should_predict) {
     return false;
   }
-  return state.search_ctx->ShouldPredict() &&
-         state.search_ctx->ShouldStopEarly();
+  return state.search_ctx->ShouldStopEarly();
 }
 
 struct BenchStats {
