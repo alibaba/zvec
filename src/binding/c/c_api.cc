@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// clang-format off
 #include "zvec/c_api.h"
 // Include generated version header for build-time
 #if defined(__has_include) && __has_include(<zvec_version.h>)
@@ -19,17 +20,13 @@
 #endif
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <map>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>
@@ -91,7 +88,9 @@
 // Note: Use variadic macro to handle commas in template arguments
 #define ZVEC_TRY_RETURN_NULL(msg, ...)                  \
   try {                                                 \
-    { __VA_ARGS__ }                                     \
+    {                                                   \
+      __VA_ARGS__                                       \
+    }                                                   \
   } catch (const std::bad_alloc &e) {                   \
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,       \
                    std::string(msg) + ": " + e.what()); \
@@ -107,7 +106,9 @@
 // Note: Use variadic macro to handle commas in template arguments
 #define ZVEC_TRY_RETURN_ERROR(msg, ...)                 \
   try {                                                 \
-    { __VA_ARGS__ }                                     \
+    {                                                   \
+      __VA_ARGS__                                       \
+    }                                                   \
   } catch (const std::bad_alloc &e) {                   \
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,       \
                    std::string(msg) + ": " + e.what()); \
@@ -123,7 +124,9 @@
 // Note: Use variadic macro to handle commas in template arguments
 #define ZVEC_TRY_RETURN_SCALAR(msg, error_val, ...)     \
   try {                                                 \
-    { __VA_ARGS__ }                                     \
+    {                                                   \
+      __VA_ARGS__                                       \
+    }                                                   \
   } catch (const std::bad_alloc &e) {                   \
     SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,       \
                    std::string(msg) + ": " + e.what()); \
@@ -612,8 +615,7 @@ uint64_t zvec_config_data_get_memory_limit(const ZVecConfigData *config) {
 }
 
 ZVecErrorCode zvec_config_data_set_log_config(ZVecConfigData *config,
-                                              ZVecLogType log_type,
-                                              void *log_config) {
+                                              ZVecLogConfig *log_config) {
   if (!config || !log_config) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Config or log_config pointer is null");
@@ -907,51 +909,29 @@ static std::vector<std::string> collect_doc_pks(const ZVecDoc **docs,
   return pks;
 }
 
+// Helper function: convert data type
+// Since ZVecDataType uses the same values as zvec::DataType, we can use
+// static_cast for zero-overhead conversion.
 static zvec::DataType convert_data_type(ZVecDataType zvec_type) {
-  if (zvec_type < ZVEC_DATA_TYPE_UNDEFINED ||
-      zvec_type > ZVEC_DATA_TYPE_ARRAY_DOUBLE) {
-    return zvec::DataType::UNDEFINED;
-  }
-
   return static_cast<zvec::DataType>(zvec_type);
 }
 
 static ZVecDataType convert_zvec_data_type(zvec::DataType cpp_type) {
-  if (cpp_type < zvec::DataType::UNDEFINED ||
-      cpp_type > zvec::DataType::ARRAY_DOUBLE) {
-    return ZVEC_DATA_TYPE_UNDEFINED;
-  }
-
   return static_cast<ZVecDataType>(cpp_type);
 }
 
 // Helper function: convert metric type
 static zvec::MetricType convert_metric_type(ZVecMetricType metric_type) {
-  if (metric_type < ZVEC_METRIC_TYPE_UNDEFINED ||
-      metric_type > ZVEC_METRIC_TYPE_MIPSL2) {
-    return zvec::MetricType::UNDEFINED;
-  }
-
   return static_cast<zvec::MetricType>(metric_type);
 }
 
-// Helper function: convert ZVecIndexType to internal IndexType
+// Helper function: convert index type
 static zvec::IndexType convert_index_type(ZVecIndexType zvec_type) {
-  if (zvec_type < ZVEC_INDEX_TYPE_UNDEFINED ||
-      zvec_type > ZVEC_INDEX_TYPE_INVERT) {
-    return zvec::IndexType::UNDEFINED;
-  }
-
   return static_cast<zvec::IndexType>(zvec_type);
 }
 
-// Helper function: convert ZVecQuantizeType to internal QuantizeType
+// Helper function: convert quantize type
 static zvec::QuantizeType convert_quantize_type(ZVecQuantizeType zvec_type) {
-  if (zvec_type < ZVEC_QUANTIZE_TYPE_UNDEFINED ||
-      zvec_type > ZVEC_QUANTIZE_TYPE_INT4) {
-    return zvec::QuantizeType::UNDEFINED;
-  }
-
   return static_cast<zvec::QuantizeType>(zvec_type);
 }
 
@@ -1334,11 +1314,14 @@ ZVecIndexParams *zvec_index_params_create(ZVecIndexType index_type) {
       // parameters
       zvec::IndexParams *cpp_params = nullptr;
 
+      printf("[CREATE] index_type param: %d\n", index_type);
+
       switch (index_type) {
         case ZVEC_INDEX_TYPE_INVERT:
           cpp_params =
               new zvec::InvertIndexParams(true,    // enable_range_optimization
                                           false);  // enable_extended_wildcard
+          printf("[CREATE] created InvertIndexParams\n");
           break;
         case ZVEC_INDEX_TYPE_HNSW:
           cpp_params =
@@ -1346,6 +1329,7 @@ ZVecIndexParams *zvec_index_params_create(ZVecIndexType index_type) {
                                         16,                    // m (default)
                                         200,  // ef_construction (default)
                                         zvec::QuantizeType::UNDEFINED);
+          printf("[CREATE] created HnswIndexParams\n");
           break;
         case ZVEC_INDEX_TYPE_IVF:
           cpp_params =
@@ -1354,14 +1338,22 @@ ZVecIndexParams *zvec_index_params_create(ZVecIndexType index_type) {
                                        10,     // n_iters (default)
                                        false,  // use_soar (default)
                                        zvec::QuantizeType::UNDEFINED);
+          printf("[CREATE] created IVFIndexParams\n");
           break;
         case ZVEC_INDEX_TYPE_FLAT:
         default:
           cpp_params =
               new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
                                         zvec::QuantizeType::UNDEFINED);
+          printf("[CREATE] created FlatIndexParams (type=%d, default=%d)\n",
+                 (int)zvec::IndexType::FLAT,
+                 index_type == ZVEC_INDEX_TYPE_FLAT ? 1 : 0);
           break;
       }
+
+      // Debug: check type right after creation
+      printf("[CREATE] cpp_params->type() = %d\n",
+             static_cast<int>(cpp_params->type()));
 
       // Return as opaque pointer (raw pointer)
       return reinterpret_cast<ZVecIndexParams *>(cpp_params);)
@@ -1405,7 +1397,8 @@ ZVecMetricType zvec_index_params_get_metric_type(
     auto *vec_params =
         dynamic_cast<const zvec::VectorIndexParams *>(cpp_params);
     if (vec_params) {
-      return static_cast<ZVecMetricType>(vec_params->metric_type());
+      return static_cast<ZVecMetricType>(
+          static_cast<uint32_t>(vec_params->metric_type()));
     }
   }
   return ZVEC_METRIC_TYPE_L2;
@@ -1442,7 +1435,8 @@ ZVecQuantizeType zvec_index_params_get_quantize_type(
     auto *vec_params =
         dynamic_cast<const zvec::VectorIndexParams *>(cpp_params);
     if (vec_params) {
-      return static_cast<ZVecQuantizeType>(vec_params->quantize_type());
+      return static_cast<ZVecQuantizeType>(
+          static_cast<uint32_t>(vec_params->quantize_type()));
     }
   }
   return ZVEC_QUANTIZE_TYPE_UNDEFINED;
@@ -1453,7 +1447,8 @@ ZVecIndexType zvec_index_params_get_type(const ZVecIndexParams *params) {
     return ZVEC_INDEX_TYPE_FLAT;  // Default
   }
   auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-  return static_cast<ZVecIndexType>(cpp_params->type());
+  return static_cast<ZVecIndexType>(
+      static_cast<uint32_t>(cpp_params->type()));
 }
 
 ZVecErrorCode zvec_index_params_set_hnsw_params(ZVecIndexParams *params, int m,
@@ -1673,7 +1668,8 @@ ZVecDataType zvec_field_schema_get_data_type(const ZVecFieldSchema *schema) {
     return ZVEC_DATA_TYPE_UNDEFINED;
   }
   auto *cpp_schema = reinterpret_cast<const zvec::FieldSchema *>(schema);
-  return static_cast<ZVecDataType>(cpp_schema->data_type());
+  return static_cast<ZVecDataType>(
+      static_cast<uint32_t>(cpp_schema->data_type()));
 }
 
 ZVecErrorCode zvec_field_schema_set_data_type(ZVecFieldSchema *schema,
@@ -1696,7 +1692,8 @@ ZVecDataType zvec_field_schema_get_element_data_type(
     return ZVEC_DATA_TYPE_UNDEFINED;
   }
   auto *cpp_schema = reinterpret_cast<const zvec::FieldSchema *>(schema);
-  return static_cast<ZVecDataType>(cpp_schema->element_data_type());
+  return static_cast<ZVecDataType>(
+      static_cast<uint32_t>(cpp_schema->element_data_type()));
 }
 
 size_t zvec_field_schema_get_element_data_size(const ZVecFieldSchema *schema) {
@@ -1814,7 +1811,8 @@ ZVecIndexType zvec_field_schema_get_index_type(const ZVecFieldSchema *schema) {
   if (!cpp_index_params) {
     return ZVEC_INDEX_TYPE_UNDEFINED;
   }
-  return static_cast<ZVecIndexType>(cpp_index_params->type());
+  return static_cast<ZVecIndexType>(
+      static_cast<uint32_t>(cpp_index_params->type()));
 }
 
 const ZVecIndexParams *zvec_field_schema_get_index_params(
@@ -5349,565 +5347,529 @@ ZVecErrorCode zvec_collection_create_index(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  ZVEC_TRY_RETURN_ERROR("Exception in zvec_collection_create_index",
+  ZVEC_TRY_RETURN_ERROR(
+    "Exception in zvec_collection_create_index",
     auto coll_ptr =
         reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
     std::string field_name_str(column_name);
 
-    switch (zvec_index_params_get_type(index_params)) {
-      case ZVEC_INDEX_TYPE_INVERT: {
-        bool enable_range, enable_wildcard;
-        zvec_index_params_get_invert_params(index_params, &enable_range, &enable_wildcard);
-        auto cpp_params = std::make_shared<zvec::InvertIndexParams>(
-            enable_range, enable_wildcard);
-        auto status = (*coll_ptr)->CreateIndex(field_name_str, cpp_params);
-        return status_to_error_code(status);
+    auto *cpp_params =
+        reinterpret_cast<const zvec::IndexParams *>(index_params);
+    auto index_params_ptr = cpp_params->clone();
+    auto status = (*coll_ptr)->CreateIndex(field_name_str, index_params_ptr);
+    return status_to_error_code(status);)
 }
 
-case ZVEC_INDEX_TYPE_HNSW: {
-  auto metric =
-      convert_metric_type(zvec_index_params_get_metric_type(index_params));
-  auto quantize =
-      convert_quantize_type(zvec_index_params_get_quantize_type(index_params));
-  int m, ef_construction;
-  zvec_index_params_get_hnsw_params(index_params, &m, &ef_construction);
-  auto cpp_params = std::make_shared<zvec::HnswIndexParams>(
-      metric, m, ef_construction, quantize);
-  auto status = (*coll_ptr)->CreateIndex(field_name_str, cpp_params);
-  return status_to_error_code(status);
+ZVecErrorCode zvec_collection_drop_index(ZVecCollection *collection,
+                                          const char *column_name) {
+  if (!collection || !column_name) {
+    set_last_error(
+        "Invalid arguments: collection and column_name cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+      zvec::Status status = (*coll_ptr)->DropIndex(column_name);
+      if (!status.ok()) { set_last_error(status.message()); }
+
+      return status_to_error_code(status);)
 }
 
-case ZVEC_INDEX_TYPE_FLAT: {
-  auto metric =
-      convert_metric_type(zvec_index_params_get_metric_type(index_params));
-  auto quantize =
-      convert_quantize_type(zvec_index_params_get_quantize_type(index_params));
-  auto cpp_params = std::make_shared<zvec::FlatIndexParams>(metric, quantize);
-  auto status = (*coll_ptr)->CreateIndex(field_name_str, cpp_params);
-  return status_to_error_code(status);
+ZVecErrorCode zvec_collection_optimize(ZVecCollection *collection) {
+  if (!collection) {
+    set_last_error("Invalid argument: collection cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+      zvec::Status status = (*coll_ptr)->Optimize();
+      if (!status.ok()) { set_last_error(status.message()); }
+
+      return status_to_error_code(status);)
 }
 
-case ZVEC_INDEX_TYPE_IVF: {
-  auto metric =
-      convert_metric_type(zvec_index_params_get_metric_type(index_params));
-  auto quantize =
-      convert_quantize_type(zvec_index_params_get_quantize_type(index_params));
-  int n_list, n_iters;
-  bool use_soar;
-  zvec_index_params_get_ivf_params(index_params, &n_list, &n_iters, &use_soar);
-  auto cpp_params = std::make_shared<zvec::IVFIndexParams>(
-      metric, n_list, n_iters, use_soar, quantize);
-  auto status = (*coll_ptr)->CreateIndex(field_name_str, cpp_params);
-  return status_to_error_code(status);
+// =============================================================================
+// Column Interface Implementation
+// =============================================================================
+
+ZVecErrorCode zvec_collection_add_column(ZVecCollection *collection,
+                                          const ZVecFieldSchema *field_schema,
+                                          const char *expression) {
+  if (!collection || !field_schema) {
+    set_last_error(
+        "Invalid arguments: collection and field_schema cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      // Deep copy the schema - caller retains ownership
+      auto *cpp_schema =
+          reinterpret_cast<const zvec::FieldSchema *>(field_schema);
+      zvec::FieldSchema::Ptr schema =
+          std::make_shared<zvec::FieldSchema>(*cpp_schema);
+
+      std::string expr = expression ? expression : "";
+      zvec::Status status = (*coll_ptr)->AddColumn(schema, expr);
+
+      if (!status.ok()) { set_last_error(status.message()); }
+
+      return status_to_error_code(status);)
 }
 
-default: {
-  set_last_error("Unsupported index type");
-  return ZVEC_ERROR_INVALID_ARGUMENT;
+ZVecErrorCode zvec_collection_drop_column(ZVecCollection *collection,
+                                          const char *column_name) {
+  if (!collection || !column_name) {
+    set_last_error(
+        "Invalid arguments: collection and column_name cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+      zvec::Status status = (*coll_ptr)->DropColumn(column_name);
+
+      if (!status.ok()) { set_last_error(status.message()); }
+
+      return status_to_error_code(status);)
 }
-  }
-  )
-  }
 
-  // Legacy function - kept for backward compatibility, just calls
-  // zvec_collection_create_index
-  ZVecErrorCode zvec_collection_create_hnsw_index(
-      ZVecCollection *collection, const char *field_name,
-      const ZVecIndexParams *hnsw_params) {
-    if (!hnsw_params) {
-      set_last_error("Invalid HNSW parameters");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-    return zvec_collection_create_index(collection, field_name, hnsw_params);
+ZVecErrorCode zvec_collection_alter_column(
+    ZVecCollection *collection, const char *column_name, const char *new_name,
+    const ZVecFieldSchema *new_schema) {
+  if (!collection || !column_name) {
+    set_last_error(
+        "Invalid arguments: collection and column_name cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  ZVecErrorCode zvec_collection_create_flat_index(
-      ZVecCollection *collection, const char *field_name,
-      const ZVecIndexParams *flat_params) {
-    if (!flat_params) {
-      set_last_error("Invalid Flat parameters");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-    return zvec_collection_create_index(collection, field_name, flat_params);
-  }
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+      std::string rename = new_name ? new_name : "";
 
-  ZVecErrorCode zvec_collection_create_ivf_index(
-      ZVecCollection *collection, const char *field_name,
-      const ZVecIndexParams *ivf_params) {
-    if (!ivf_params) {
-      set_last_error("Invalid IVF parameters");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-    return zvec_collection_create_index(collection, field_name, ivf_params);
-  }
-
-  ZVecErrorCode zvec_collection_create_invert_index(
-      ZVecCollection *collection, const char *field_name,
-      const ZVecIndexParams *invert_params) {
-    if (!invert_params) {
-      set_last_error("Invalid Invert parameters");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-    return zvec_collection_create_index(collection, field_name, invert_params);
-  }
-
-  ZVecErrorCode zvec_collection_drop_index(ZVecCollection *collection,
-                                           const char *column_name) {
-    if (!collection || !column_name) {
-      set_last_error(
-          "Invalid arguments: collection and column_name cannot be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-        zvec::Status status = (*coll_ptr)->DropIndex(column_name);
-        if (!status.ok()) { set_last_error(status.message()); }
-
-        return status_to_error_code(status);)
-  }
-
-  ZVecErrorCode zvec_collection_optimize(ZVecCollection *collection) {
-    if (!collection) {
-      set_last_error("Invalid argument: collection cannot be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-        zvec::Status status = (*coll_ptr)->Optimize();
-        if (!status.ok()) { set_last_error(status.message()); }
-
-        return status_to_error_code(status);)
-  }
-
-
-  // =============================================================================
-  // Column Interface Implementation
-  // =============================================================================
-
-  ZVecErrorCode zvec_collection_add_column(ZVecCollection *collection,
-                                           const ZVecFieldSchema *field_schema,
-                                           const char *expression) {
-    if (!collection || !field_schema) {
-      set_last_error(
-          "Invalid arguments: collection and field_schema cannot be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        // Deep copy the schema - caller retains ownership
+      // Deep copy the schema - caller retains ownership and must call
+      // zvec_field_schema_destroy after the call
+      zvec::FieldSchema::Ptr schema = nullptr;
+      if (new_schema) {
         auto *cpp_schema =
-            reinterpret_cast<const zvec::FieldSchema *>(field_schema);
-        zvec::FieldSchema::Ptr schema =
-            std::make_shared<zvec::FieldSchema>(*cpp_schema);
+            reinterpret_cast<const zvec::FieldSchema *>(new_schema);
+        // Use copy constructor to create a deep copy
+        schema = std::make_shared<zvec::FieldSchema>(*cpp_schema);
+      }
 
-        std::string expr = expression ? expression : "";
-        zvec::Status status = (*coll_ptr)->AddColumn(schema, expr);
+      zvec::Status status =
+          (*coll_ptr)->AlterColumn(column_name, rename, schema);
+      if (!status.ok()) { set_last_error(status.message()); }
 
-        if (!status.ok()) { set_last_error(status.message()); }
+      return status_to_error_code(status);)
+}
 
-        return status_to_error_code(status);)
+// =============================================================================
+// DML Interface Implementation
+// =============================================================================
+
+ZVecErrorCode zvec_collection_insert(ZVecCollection *collection,
+                                      const ZVecDoc **docs, size_t doc_count,
+                                      size_t *success_count,
+                                      size_t *error_count) {
+  if (!collection || !docs || doc_count == 0 || !success_count ||
+      !error_count) {
+    set_last_error(
+        "Invalid arguments: collection, docs, doc_count, success_count and "
+        "error_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  ZVecErrorCode zvec_collection_drop_column(ZVecCollection *collection,
-                                            const char *column_name) {
-    if (!collection || !column_name) {
-      set_last_error(
-          "Invalid arguments: collection and column_name cannot be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_insert_docs",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-        zvec::Status status = (*coll_ptr)->DropColumn(column_name);
+      std::vector<zvec::Doc> internal_docs =
+          convert_zvec_docs_to_internal(docs, doc_count);
 
-        if (!status.ok()) { set_last_error(status.message()); }
+      auto result = (*coll_ptr)->Insert(internal_docs);
+      ZVecErrorCode error_code = handle_expected_result(result);
 
-        return status_to_error_code(status);)
-  }
-
-  ZVecErrorCode zvec_collection_alter_column(
-      ZVecCollection *collection, const char *column_name, const char *new_name,
-      const ZVecFieldSchema *new_schema) {
-    if (!collection || !column_name) {
-      set_last_error(
-          "Invalid arguments: collection and column_name cannot be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-        std::string rename = new_name ? new_name : "";
-
-        // Deep copy the schema - caller retains ownership and must call
-        // zvec_field_schema_destroy after the call
-        zvec::FieldSchema::Ptr schema = nullptr;
-        if (new_schema) {
-          auto *cpp_schema =
-              reinterpret_cast<const zvec::FieldSchema *>(new_schema);
-          // Use copy constructor to create a deep copy
-          schema = std::make_shared<zvec::FieldSchema>(*cpp_schema);
-        }
-
-        zvec::Status status =
-            (*coll_ptr)->AlterColumn(column_name, rename, schema);
-        if (!status.ok()) { set_last_error(status.message()); }
-
-        return status_to_error_code(status);)
-  }
-
-  // =============================================================================
-  // DML Interface Implementation
-  // =============================================================================
-
-  ZVecErrorCode zvec_collection_insert(ZVecCollection *collection,
-                                       const ZVecDoc **docs, size_t doc_count,
-                                       size_t *success_count,
-                                       size_t *error_count) {
-    if (!collection || !docs || doc_count == 0 || !success_count ||
-        !error_count) {
-      set_last_error(
-          "Invalid arguments: collection, docs, doc_count, success_count and "
-          "error_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception in zvec_collection_insert_docs",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<zvec::Doc> internal_docs =
-            convert_zvec_docs_to_internal(docs, doc_count);
-
-        auto result = (*coll_ptr)->Insert(internal_docs);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code == ZVEC_OK) {
-          *success_count = 0;
-          *error_count = 0;
-          for (const auto &status : result.value()) {
-            if (status.ok()) {
-              (*success_count)++;
-            } else {
-              (*error_count)++;
-            }
-          }
-        } else {
-          *success_count = 0;
-          *error_count = doc_count;
-        }
-
-        return error_code;)
-  }
-
-  ZVecErrorCode zvec_collection_insert_with_results(ZVecCollection *collection,
-                                                    const ZVecDoc **docs,
-                                                    size_t doc_count,
-                                                    ZVecWriteResult **results,
-                                                    size_t *result_count) {
-    if (!collection || !docs || doc_count == 0 || !results || !result_count) {
-      set_last_error(
-          "Invalid arguments: collection, docs, doc_count, results and "
-          "result_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    *results = nullptr;
-    *result_count = 0;
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception in zvec_collection_insert_with_results",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<zvec::Doc> internal_docs =
-            convert_zvec_docs_to_internal(docs, doc_count);
-        std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
-
-        auto result = (*coll_ptr)->Insert(internal_docs);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code != ZVEC_OK) { return error_code; }
-
-        return build_write_results(result.value(), pks, results, result_count);)
-  }
-
-  ZVecErrorCode zvec_collection_update(ZVecCollection *collection,
-                                       const ZVecDoc **docs, size_t doc_count,
-                                       size_t *success_count,
-                                       size_t *error_count) {
-    if (!collection || !docs || doc_count == 0 || !success_count ||
-        !error_count) {
-      set_last_error(
-          "Invalid arguments: collection, docs, doc_count, success_count and "
-          "error_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<zvec::Doc> internal_docs =
-            convert_zvec_docs_to_internal(docs, doc_count);
-
-        auto result = (*coll_ptr)->Update(internal_docs);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code == ZVEC_OK) {
-          *success_count = 0;
-          *error_count = 0;
-          for (const auto &status : result.value()) {
-            if (status.ok()) {
-              (*success_count)++;
-            } else {
-              (*error_count)++;
-            }
-          }
-        }
-
-        return error_code;)
-  }
-
-  ZVecErrorCode zvec_collection_update_with_results(ZVecCollection *collection,
-                                                    const ZVecDoc **docs,
-                                                    size_t doc_count,
-                                                    ZVecWriteResult **results,
-                                                    size_t *result_count) {
-    if (!collection || !docs || doc_count == 0 || !results || !result_count) {
-      set_last_error(
-          "Invalid arguments: collection, docs, doc_count, results and "
-          "result_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    *results = nullptr;
-    *result_count = 0;
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception in zvec_collection_update_with_results",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<zvec::Doc> internal_docs =
-            convert_zvec_docs_to_internal(docs, doc_count);
-        std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
-
-        auto result = (*coll_ptr)->Update(internal_docs);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code != ZVEC_OK) { return error_code; }
-
-        return build_write_results(result.value(), pks, results, result_count);)
-  }
-
-  ZVecErrorCode zvec_collection_upsert(ZVecCollection *collection,
-                                       const ZVecDoc **docs, size_t doc_count,
-                                       size_t *success_count,
-                                       size_t *error_count) {
-    if (!collection || !docs || doc_count == 0 || !success_count ||
-        !error_count) {
-      set_last_error(
-          "Invalid arguments: collection, docs, doc_count, success_count and "
-          "error_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<zvec::Doc> internal_docs =
-            convert_zvec_docs_to_internal(docs, doc_count);
-
-        auto result = (*coll_ptr)->Upsert(internal_docs);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code == ZVEC_OK) {
-          *success_count = 0;
-          *error_count = 0;
-          for (const auto &status : result.value()) {
-            if (status.ok()) {
-              (*success_count)++;
-            } else {
-              (*error_count)++;
-            }
-          }
-        }
-
-        return error_code;)
-  }
-
-  ZVecErrorCode zvec_collection_upsert_with_results(ZVecCollection *collection,
-                                                    const ZVecDoc **docs,
-                                                    size_t doc_count,
-                                                    ZVecWriteResult **results,
-                                                    size_t *result_count) {
-    if (!collection || !docs || doc_count == 0 || !results || !result_count) {
-      set_last_error(
-          "Invalid arguments: collection, docs, doc_count, results and "
-          "result_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    *results = nullptr;
-    *result_count = 0;
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception in zvec_collection_upsert_with_results",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<zvec::Doc> internal_docs =
-            convert_zvec_docs_to_internal(docs, doc_count);
-        std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
-
-        auto result = (*coll_ptr)->Upsert(internal_docs);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code != ZVEC_OK) { return error_code; }
-
-        return build_write_results(result.value(), pks, results, result_count);)
-  }
-
-  ZVecErrorCode zvec_collection_delete(ZVecCollection *collection,
-                                       const char *const *pks, size_t pk_count,
-                                       size_t *success_count,
-                                       size_t *error_count) {
-    if (!collection || !pks || pk_count == 0 || !success_count ||
-        !error_count) {
-      set_last_error(
-          "Invalid arguments: collection, pks, pk_count, success_count and "
-          "error_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<std::string> primary_keys; primary_keys.reserve(pk_count);
-        for (size_t i = 0; i < pk_count; ++i) {
-          if (pks[i]) {
-            primary_keys.emplace_back(pks[i]);
-          }
-        }
-
-        auto result = (*coll_ptr)->Delete(primary_keys);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code == ZVEC_OK) {
-          *success_count = 0;
-          *error_count = 0;
-          for (const auto &status : result.value()) {
-            if (status.ok()) {
-              (*success_count)++;
-            } else {
-              (*error_count)++;
-            }
-          }
-        }
-
-        return error_code;)
-  }
-
-  ZVecErrorCode zvec_collection_delete_with_results(ZVecCollection *collection,
-                                                    const char *const *pks,
-                                                    size_t pk_count,
-                                                    ZVecWriteResult **results,
-                                                    size_t *result_count) {
-    if (!collection || !pks || pk_count == 0 || !results || !result_count) {
-      set_last_error(
-          "Invalid arguments: collection, pks, pk_count, results and "
-          "result_count cannot be null/zero");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    *results = nullptr;
-    *result_count = 0;
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception in zvec_collection_delete_with_results",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-
-        std::vector<std::string> primary_keys; primary_keys.reserve(pk_count);
-        for (size_t i = 0; i < pk_count; ++i) {
-          if (pks[i]) {
-            primary_keys.emplace_back(pks[i]);
+      if (error_code == ZVEC_OK) {
+        *success_count = 0;
+        *error_count = 0;
+        for (const auto &status : result.value()) {
+          if (status.ok()) {
+            (*success_count)++;
           } else {
-            primary_keys.emplace_back("");
+            (*error_count)++;
           }
         }
+      } else {
+        *success_count = 0;
+        *error_count = doc_count;
+      }
 
-        auto result = (*coll_ptr)->Delete(primary_keys);
-        ZVecErrorCode error_code = handle_expected_result(result);
+      return error_code;)
+}
 
-        if (error_code != ZVEC_OK) { return error_code; }
-
-        return build_write_results(result.value(), primary_keys, results,
-                                   result_count);)
+ZVecErrorCode zvec_collection_insert_with_results(ZVecCollection *collection,
+                                                  const ZVecDoc **docs,
+                                                  size_t doc_count,
+                                                  ZVecWriteResult **results,
+                                                  size_t *result_count) {
+  if (!collection || !docs || doc_count == 0 || !results || !result_count) {
+    set_last_error(
+        "Invalid arguments: collection, docs, doc_count, results and "
+        "result_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  ZVecErrorCode zvec_collection_delete_by_filter(ZVecCollection *collection,
-                                                 const char *filter) {
-    if (!collection || !filter) {
-      set_last_error("Invalid arguments: collection,filter cannot be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
+  *results = nullptr;
+  *result_count = 0;
 
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_insert_with_results",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-        auto status = (*coll_ptr)->DeleteByFilter(filter); if (!status.ok()) {
-          set_last_error(status.message());
-          return status_to_error_code(status);
-        } return ZVEC_OK;)
+      std::vector<zvec::Doc> internal_docs =
+          convert_zvec_docs_to_internal(docs, doc_count);
+      std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+
+      auto result = (*coll_ptr)->Insert(internal_docs);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code != ZVEC_OK) { return error_code; }
+
+      return build_write_results(result.value(), pks, results, result_count);)
+}
+
+ZVecErrorCode zvec_collection_update(ZVecCollection *collection,
+                                      const ZVecDoc **docs, size_t doc_count,
+                                      size_t *success_count,
+                                      size_t *error_count) {
+  if (!collection || !docs || doc_count == 0 || !success_count ||
+      !error_count) {
+    set_last_error(
+        "Invalid arguments: collection, docs, doc_count, success_count and "
+        "error_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  // =============================================================================
-  // Data query interface implementation
-  // =============================================================================
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
 
-  // Helper function to convert document results to C API format
-  ZVecErrorCode convert_document_results(
-      const std::vector<std::shared_ptr<zvec::Doc>> &query_results,
-      ZVecDoc ***results, size_t *result_count) {
-    *result_count = query_results.size();
-    *results =
-        static_cast<ZVecDoc **>(malloc(*result_count * sizeof(ZVecDoc *)));
+      std::vector<zvec::Doc> internal_docs =
+          convert_zvec_docs_to_internal(docs, doc_count);
 
-    if (!*results) {
-      set_last_error("Failed to allocate memory for query results");
+      auto result = (*coll_ptr)->Update(internal_docs);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code == ZVEC_OK) {
+        *success_count = 0;
+        *error_count = 0;
+        for (const auto &status : result.value()) {
+          if (status.ok()) {
+            (*success_count)++;
+          } else {
+            (*error_count)++;
+          }
+        }
+      }
+
+      return error_code;)
+}
+
+ZVecErrorCode zvec_collection_update_with_results(ZVecCollection *collection,
+                                                  const ZVecDoc **docs,
+                                                  size_t doc_count,
+                                                  ZVecWriteResult **results,
+                                                  size_t *result_count) {
+  if (!collection || !docs || doc_count == 0 || !results || !result_count) {
+    set_last_error(
+        "Invalid arguments: collection, docs, doc_count, results and "
+        "result_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  *results = nullptr;
+  *result_count = 0;
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_update_with_results",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      std::vector<zvec::Doc> internal_docs =
+          convert_zvec_docs_to_internal(docs, doc_count);
+      std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+
+      auto result = (*coll_ptr)->Update(internal_docs);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code != ZVEC_OK) { return error_code; }
+
+      return build_write_results(result.value(), pks, results, result_count);)
+}
+
+ZVecErrorCode zvec_collection_upsert(ZVecCollection *collection,
+                                      const ZVecDoc **docs, size_t doc_count,
+                                      size_t *success_count,
+                                      size_t *error_count) {
+  if (!collection || !docs || doc_count == 0 || !success_count ||
+      !error_count) {
+    set_last_error(
+        "Invalid arguments: collection, docs, doc_count, success_count and "
+        "error_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      std::vector<zvec::Doc> internal_docs =
+          convert_zvec_docs_to_internal(docs, doc_count);
+
+      auto result = (*coll_ptr)->Upsert(internal_docs);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code == ZVEC_OK) {
+        *success_count = 0;
+        *error_count = 0;
+        for (const auto &status : result.value()) {
+          if (status.ok()) {
+            (*success_count)++;
+          } else {
+            (*error_count)++;
+          }
+        }
+      }
+
+      return error_code;)
+}
+
+ZVecErrorCode zvec_collection_upsert_with_results(ZVecCollection *collection,
+                                                  const ZVecDoc **docs,
+                                                  size_t doc_count,
+                                                  ZVecWriteResult **results,
+                                                  size_t *result_count) {
+  if (!collection || !docs || doc_count == 0 || !results || !result_count) {
+    set_last_error(
+        "Invalid arguments: collection, docs, doc_count, results and "
+        "result_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  *results = nullptr;
+  *result_count = 0;
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_upsert_with_results",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      std::vector<zvec::Doc> internal_docs =
+          convert_zvec_docs_to_internal(docs, doc_count);
+      std::vector<std::string> pks = collect_doc_pks(docs, doc_count);
+
+      auto result = (*coll_ptr)->Upsert(internal_docs);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code != ZVEC_OK) { return error_code; }
+
+      return build_write_results(result.value(), pks, results, result_count);)
+}
+
+ZVecErrorCode zvec_collection_delete(ZVecCollection *collection,
+                                      const char *const *pks, size_t pk_count,
+                                      size_t *success_count,
+                                      size_t *error_count) {
+  if (!collection || !pks || pk_count == 0 || !success_count ||
+      !error_count) {
+    set_last_error(
+        "Invalid arguments: collection, pks, pk_count, success_count and "
+        "error_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      std::vector<std::string> primary_keys; primary_keys.reserve(pk_count);
+      for (size_t i = 0; i < pk_count; ++i) {
+        if (pks[i]) {
+          primary_keys.emplace_back(pks[i]);
+        }
+      }
+
+      auto result = (*coll_ptr)->Delete(primary_keys);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code == ZVEC_OK) {
+        *success_count = 0;
+        *error_count = 0;
+        for (const auto &status : result.value()) {
+          if (status.ok()) {
+            (*success_count)++;
+          } else {
+            (*error_count)++;
+          }
+        }
+      }
+
+      return error_code;)
+}
+
+ZVecErrorCode zvec_collection_delete_with_results(ZVecCollection *collection,
+                                                  const char *const *pks,
+                                                  size_t pk_count,
+                                                  ZVecWriteResult **results,
+                                                  size_t *result_count) {
+  if (!collection || !pks || pk_count == 0 || !results || !result_count) {
+    set_last_error(
+        "Invalid arguments: collection, pks, pk_count, results and "
+        "result_count cannot be null/zero");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  *results = nullptr;
+  *result_count = 0;
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_delete_with_results",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      std::vector<std::string> primary_keys; primary_keys.reserve(pk_count);
+      for (size_t i = 0; i < pk_count; ++i) {
+        if (pks[i]) {
+          primary_keys.emplace_back(pks[i]);
+        } else {
+          primary_keys.emplace_back("");
+        }
+      }
+
+      auto result = (*coll_ptr)->Delete(primary_keys);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code != ZVEC_OK) { return error_code; }
+
+      return build_write_results(result.value(), primary_keys, results,
+                                  result_count);)
+}
+
+ZVecErrorCode zvec_collection_delete_by_filter(ZVecCollection *collection,
+                                                const char *filter) {
+  if (!collection || !filter) {
+    set_last_error("Invalid arguments: collection,filter cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      auto status = (*coll_ptr)->DeleteByFilter(filter); if (!status.ok()) {
+        set_last_error(status.message());
+        return status_to_error_code(status);
+      } 
+      return ZVEC_OK;)
+}
+
+// =============================================================================
+// Data query interface implementation
+// =============================================================================
+
+// Helper function to convert document results to C API format
+ZVecErrorCode convert_document_results(
+    const std::vector<std::shared_ptr<zvec::Doc>> &query_results,
+    ZVecDoc ***results, size_t *result_count) {
+  *result_count = query_results.size();
+  *results =
+      static_cast<ZVecDoc **>(malloc(*result_count * sizeof(ZVecDoc *)));
+
+  if (!*results) {
+    set_last_error("Failed to allocate memory for query results");
+    return ZVEC_ERROR_INTERNAL_ERROR;
+  }
+
+  for (size_t i = 0; i < *result_count; ++i) {
+    const auto &internal_doc = query_results[i];
+    // Create new document wrapper
+    ZVecDoc *c_doc = zvec_doc_create();
+    if (!c_doc) {
+      // Clean up previously allocated documents
+      for (size_t j = 0; j < i; ++j) {
+        zvec_doc_destroy((*results)[j]);
+      }
+      free(*results);
+      *results = nullptr;
+      *result_count = 0;
+      set_last_error("Failed to create document wrapper");
       return ZVEC_ERROR_INTERNAL_ERROR;
     }
 
-    for (size_t i = 0; i < *result_count; ++i) {
-      const auto &internal_doc = query_results[i];
+    // Copy the C++ document to our wrapper
+    auto *doc_ptr = reinterpret_cast<zvec::Doc *>(c_doc);
+    *doc_ptr = *internal_doc;  // Copy assignment
+    (*results)[i] = c_doc;     // Store the pointer, not dereference
+  }
+
+  return ZVEC_OK;
+}
+
+// Helper function to convert grouped document results to C API format
+ZVecErrorCode convert_grouped_document_results(
+    const std::vector<zvec::GroupResult> &group_results, ZVecDoc ***results,
+    ZVecString ***group_by_values, size_t *result_count) {
+  // Calculate total document count across all groups
+  size_t total_docs = 0;
+  for (const auto &group_result : group_results) {
+    total_docs += group_result.docs_.size();
+  }
+
+  // Allocate memory for document pointers and group by values
+  *result_count = total_docs;
+  *results =
+      static_cast<ZVecDoc **>(malloc(*result_count * sizeof(ZVecDoc *)));
+  *group_by_values = static_cast<ZVecString **>(
+      malloc(group_results.size() * sizeof(ZVecString *)));
+
+  if (!*results) {
+    set_last_error("Failed to allocate memory for query results");
+    return ZVEC_ERROR_INTERNAL_ERROR;
+  }
+
+  // Convert C++ grouped results to C API format
+  size_t doc_index = 0;
+  for (const auto &group_result : group_results) {
+    for (const auto &internal_doc : group_result.docs_) {
+      if (doc_index >= *result_count) {
+        break;
+      }
+
       // Create new document wrapper
       ZVecDoc *c_doc = zvec_doc_create();
       if (!c_doc) {
         // Clean up previously allocated documents
-        for (size_t j = 0; j < i; ++j) {
+        for (size_t j = 0; j < doc_index; ++j) {
           zvec_doc_destroy((*results)[j]);
         }
         free(*results);
@@ -5919,290 +5881,238 @@ default: {
 
       // Copy the C++ document to our wrapper
       auto *doc_ptr = reinterpret_cast<zvec::Doc *>(c_doc);
-      *doc_ptr = *internal_doc;  // Copy assignment
-      (*results)[i] = c_doc;     // Store the pointer, not dereference
+      *doc_ptr = internal_doc;  // Copy assignment
+
+      ZVecString *c_group_value =
+          zvec_string_create(group_result.group_by_value_.c_str());
+      if (!c_group_value) {
+        for (size_t j = 0; j < doc_index; ++j) {
+          zvec_doc_destroy((*results)[j]);
+          zvec_free_string((*group_by_values)[doc_index]);
+        }
+        free(*results);
+        *results = nullptr;
+        *result_count = 0;
+        set_last_error("Failed to create string wrapper");
+        return ZVEC_ERROR_INTERNAL_ERROR;
+      }
+
+      (*group_by_values)[doc_index] = c_group_value;
+      (*results)[doc_index] = c_doc;
+      ++doc_index;
+    }
+  }
+
+  return ZVEC_OK;
+}
+
+// Helper function to convert fetched document results to C API format
+static void normalize_nullable_fields_for_fetch(
+    const zvec::CollectionSchema &schema, zvec::DocPtrMap &doc_map) {
+  std::vector<std::string> nullable_fields;
+  nullable_fields.reserve(schema.fields().size());
+
+  for (const auto &field : schema.fields()) {
+    if (field && field->nullable()) {
+      nullable_fields.push_back(field->name());
+    }
+  }
+
+  if (nullable_fields.empty()) {
+    return;
+  }
+
+  for (auto &[_, doc_ptr] : doc_map) {
+    if (!doc_ptr) {
+      continue;
     }
 
+    for (const auto &field_name : nullable_fields) {
+      if (!doc_ptr->has(field_name)) {
+        doc_ptr->set_null(field_name);
+      }
+    }
+  }
+}
+
+ZVecErrorCode convert_fetched_document_results(const zvec::DocPtrMap &doc_map,
+                                                ZVecDoc ***results,
+                                                size_t *doc_count) {
+  // Calculate actual document count (some PKs might not exist)
+  size_t actual_count = 0;
+  for (const auto &[pk, doc_ptr] : doc_map) {
+    if (doc_ptr) {
+      actual_count++;
+    }
+  }
+
+  // Allocate memory for document pointers
+  *doc_count = actual_count;
+  if (*doc_count == 0) {
+    *results = nullptr;
     return ZVEC_OK;
   }
 
-  // Helper function to convert grouped document results to C API format
-  ZVecErrorCode convert_grouped_document_results(
-      const std::vector<zvec::GroupResult> &group_results, ZVecDoc ***results,
-      ZVecString ***group_by_values, size_t *result_count) {
-    // Calculate total document count across all groups
-    size_t total_docs = 0;
-    for (const auto &group_result : group_results) {
-      total_docs += group_result.docs_.size();
-    }
+  *results = static_cast<ZVecDoc **>(malloc(*doc_count * sizeof(ZVecDoc *)));
+  if (!*results) {
+    set_last_error("Failed to allocate memory for document pointers");
+    return ZVEC_ERROR_INTERNAL_ERROR;
+  }
 
-    // Allocate memory for document pointers and group by values
-    *result_count = total_docs;
-    *results =
-        static_cast<ZVecDoc **>(malloc(*result_count * sizeof(ZVecDoc *)));
-    *group_by_values = static_cast<ZVecString **>(
-        malloc(group_results.size() * sizeof(ZVecString *)));
-
-    if (!*results) {
-      set_last_error("Failed to allocate memory for query results");
-      return ZVEC_ERROR_INTERNAL_ERROR;
-    }
-
-    // Convert C++ grouped results to C API format
-    size_t doc_index = 0;
-    for (const auto &group_result : group_results) {
-      for (const auto &internal_doc : group_result.docs_) {
-        if (doc_index >= *result_count) {
-          break;
+  // Convert C++ DocPtrMap to C ZVecDoc pointer array
+  size_t index = 0;
+  for (const auto &[pk, doc_ptr] : doc_map) {
+    if (doc_ptr && index < *doc_count) {
+      // Create new document wrapper
+      ZVecDoc *c_doc = zvec_doc_create();
+      if (!c_doc) {
+        // Clean up previously allocated documents
+        for (size_t j = 0; j < index; ++j) {
+          zvec_doc_destroy((*results)[j]);
         }
-
-        // Create new document wrapper
-        ZVecDoc *c_doc = zvec_doc_create();
-        if (!c_doc) {
-          // Clean up previously allocated documents
-          for (size_t j = 0; j < doc_index; ++j) {
-            zvec_doc_destroy((*results)[j]);
-          }
-          free(*results);
-          *results = nullptr;
-          *result_count = 0;
-          set_last_error("Failed to create document wrapper");
-          return ZVEC_ERROR_INTERNAL_ERROR;
-        }
-
-        // Copy the C++ document to our wrapper
-        auto *doc_ptr = reinterpret_cast<zvec::Doc *>(c_doc);
-        *doc_ptr = internal_doc;  // Copy assignment
-
-        ZVecString *c_group_value =
-            zvec_string_create(group_result.group_by_value_.c_str());
-        if (!c_group_value) {
-          for (size_t j = 0; j < doc_index; ++j) {
-            zvec_doc_destroy((*results)[j]);
-            zvec_free_string((*group_by_values)[doc_index]);
-          }
-          free(*results);
-          *results = nullptr;
-          *result_count = 0;
-          set_last_error("Failed to create string wrapper");
-          return ZVEC_ERROR_INTERNAL_ERROR;
-        }
-
-        (*group_by_values)[doc_index] = c_group_value;
-        (*results)[doc_index] = c_doc;
-        ++doc_index;
+        free(*results);
+        *results = nullptr;
+        *doc_count = 0;
+        set_last_error("Failed to create document wrapper");
+        return ZVEC_ERROR_INTERNAL_ERROR;
       }
-    }
 
+      // Copy the C++ document to our wrapper using copy assignment
+      auto *cpp_doc_ptr = reinterpret_cast<zvec::Doc *>(c_doc);
+      *cpp_doc_ptr = *doc_ptr;  // Copy assignment from shared_ptr
+
+      // Set the primary key explicitly
+      zvec_doc_set_pk(c_doc, pk.c_str());
+
+      (*results)[index] = c_doc;
+      ++index;
+    }
+  }
+
+  return ZVEC_OK;
+}
+
+ZVecErrorCode zvec_collection_query(const ZVecCollection *collection,
+                                    const ZVecVectorQuery *query,
+                                    ZVecDoc ***results,
+                                    size_t *result_count) {
+  if (!collection || !query || !results || !result_count) {
+    set_last_error(
+        "Invalid arguments: collection, query, results and result_count "
+        "cannot "
+        "be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
+              collection);
+
+      // Cast ZVecVectorQuery* to zvec::VectorQuery* directly
+      auto *internal_query =
+          reinterpret_cast<const zvec::VectorQuery *>(query);
+
+      auto result = (*coll_ptr)->Query(*internal_query);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code == ZVEC_OK) {
+        const auto &query_results = result.value();
+        error_code =
+            convert_document_results(query_results, results, result_count);
+      } else {
+        *results = nullptr;
+        *result_count = 0;
+      }
+
+      return error_code;)
+}
+
+ZVecErrorCode zvec_collection_query_by_group(
+    const ZVecCollection *collection, const ZVecGroupByVectorQuery *query,
+    ZVecDoc ***results, ZVecString ***group_by_values, size_t *result_count) {
+  if (!collection || !query || !results || !group_by_values ||
+      !result_count) {
+    set_last_error(
+        "Invalid arguments: collection, query, results, group_by_values and "
+        "result_count cannot "
+        "be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
+              collection);
+
+      // Cast ZVecGroupByVectorQuery* to zvec::GroupByVectorQuery* directly
+      auto *internal_query =
+          reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
+
+      auto result = (*coll_ptr)->GroupByQuery(*internal_query);
+      ZVecErrorCode error_code = handle_expected_result(result);
+
+      if (error_code == ZVEC_OK) {
+        const auto &group_results = result.value();
+        error_code = convert_grouped_document_results(
+            group_results, results, group_by_values, result_count);
+      } else {
+        *results = nullptr;
+        *group_by_values = nullptr;
+        *result_count = 0;
+      }
+
+      return error_code;)
+}
+
+ZVecErrorCode zvec_collection_fetch(ZVecCollection *collection,
+                                    const char *const *pks, size_t pk_count,
+                                    ZVecDoc ***results, size_t *doc_count) {
+  if (!collection || !pks || !results || !doc_count) {
+    set_last_error(
+        "Invalid arguments: collection, pks, results and doc_count cannot "
+        "be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  // Handle empty case
+  if (pk_count == 0) {
+    *results = nullptr;
+    *doc_count = 0;
     return ZVEC_OK;
   }
 
-  // Helper function to convert fetched document results to C API format
-  static void normalize_nullable_fields_for_fetch(
-      const zvec::CollectionSchema &schema, zvec::DocPtrMap &doc_map) {
-    std::vector<std::string> nullable_fields;
-    nullable_fields.reserve(schema.fields().size());
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_fetch",
+      auto coll_ptr =
+          reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
+              collection);
 
-    for (const auto &field : schema.fields()) {
-      if (field && field->nullable()) {
-        nullable_fields.push_back(field->name());
-      }
-    }
-
-    if (nullable_fields.empty()) {
-      return;
-    }
-
-    for (auto &[_, doc_ptr] : doc_map) {
-      if (!doc_ptr) {
-        continue;
-      }
-
-      for (const auto &field_name : nullable_fields) {
-        if (!doc_ptr->has(field_name)) {
-          doc_ptr->set_null(field_name);
-        }
-      }
-    }
-  }
-
-  ZVecErrorCode convert_fetched_document_results(const zvec::DocPtrMap &doc_map,
-                                                 ZVecDoc ***results,
-                                                 size_t *doc_count) {
-    // Calculate actual document count (some PKs might not exist)
-    size_t actual_count = 0;
-    for (const auto &[pk, doc_ptr] : doc_map) {
-      if (doc_ptr) {
-        actual_count++;
-      }
-    }
-
-    // Allocate memory for document pointers
-    *doc_count = actual_count;
-    if (*doc_count == 0) {
-      *results = nullptr;
-      return ZVEC_OK;
-    }
-
-    *results = static_cast<ZVecDoc **>(malloc(*doc_count * sizeof(ZVecDoc *)));
-    if (!*results) {
-      set_last_error("Failed to allocate memory for document pointers");
-      return ZVEC_ERROR_INTERNAL_ERROR;
-    }
-
-    // Convert C++ DocPtrMap to C ZVecDoc pointer array
-    size_t index = 0;
-    for (const auto &[pk, doc_ptr] : doc_map) {
-      if (doc_ptr && index < *doc_count) {
-        // Create new document wrapper
-        ZVecDoc *c_doc = zvec_doc_create();
-        if (!c_doc) {
-          // Clean up previously allocated documents
-          for (size_t j = 0; j < index; ++j) {
-            zvec_doc_destroy((*results)[j]);
-          }
-          free(*results);
-          *results = nullptr;
-          *doc_count = 0;
-          set_last_error("Failed to create document wrapper");
-          return ZVEC_ERROR_INTERNAL_ERROR;
-        }
-
-        // Copy the C++ document to our wrapper using copy assignment
-        auto *cpp_doc_ptr = reinterpret_cast<zvec::Doc *>(c_doc);
-        *cpp_doc_ptr = *doc_ptr;  // Copy assignment from shared_ptr
-
-        // Set the primary key explicitly
-        zvec_doc_set_pk(c_doc, pk.c_str());
-
-        (*results)[index] = c_doc;
-        ++index;
-      }
-    }
-
-    return ZVEC_OK;
-  }
-
-  ZVecErrorCode zvec_collection_query(const ZVecCollection *collection,
-                                      const ZVecVectorQuery *query,
-                                      ZVecDoc ***results,
-                                      size_t *result_count) {
-    if (!collection || !query || !results || !result_count) {
-      set_last_error(
-          "Invalid arguments: collection, query, results and result_count "
-          "cannot "
-          "be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
-                collection);
-
-        // Cast ZVecVectorQuery* to zvec::VectorQuery* directly
-        auto *internal_query =
-            reinterpret_cast<const zvec::VectorQuery *>(query);
-
-        auto result = (*coll_ptr)->Query(*internal_query);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code == ZVEC_OK) {
-          const auto &query_results = result.value();
-          error_code =
-              convert_document_results(query_results, results, result_count);
+      // Convert C array to C++ vector
+      std::vector<std::string> pk_vector; pk_vector.reserve(pk_count);
+      for (size_t i = 0; i < pk_count; ++i) {
+        if (pks[i]) {
+          pk_vector.emplace_back(pks[i]);
         } else {
-          *results = nullptr;
-          *result_count = 0;
+          set_last_error("Null primary key at index " + std::to_string(i));
+          return ZVEC_ERROR_INVALID_ARGUMENT;
         }
+      }
 
-        return error_code;)
-  }
+      // Call C++ fetch method
+      auto result = (*coll_ptr)->Fetch(pk_vector);
+      if (!result.has_value()) {
+        set_last_error("Failed to fetch documents: " +
+                        result.error().message());
+        return ZVEC_ERROR_INTERNAL_ERROR;
+      }
 
-  ZVecErrorCode zvec_collection_query_by_group(
-      const ZVecCollection *collection, const ZVecGroupByVectorQuery *query,
-      ZVecDoc ***results, ZVecString ***group_by_values, size_t *result_count) {
-    if (!collection || !query || !results || !group_by_values ||
-        !result_count) {
-      set_last_error(
-          "Invalid arguments: collection, query, results, group_by_values and "
-          "result_count cannot "
-          "be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception occurred",
-        auto coll_ptr =
-            reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
-                collection);
-
-        // Cast ZVecGroupByVectorQuery* to zvec::GroupByVectorQuery* directly
-        auto *internal_query =
-            reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
-
-        auto result = (*coll_ptr)->GroupByQuery(*internal_query);
-        ZVecErrorCode error_code = handle_expected_result(result);
-
-        if (error_code == ZVEC_OK) {
-          const auto &group_results = result.value();
-          error_code = convert_grouped_document_results(
-              group_results, results, group_by_values, result_count);
-        } else {
-          *results = nullptr;
-          *group_by_values = nullptr;
-          *result_count = 0;
-        }
-
-        return error_code;)
-  }
-
-  ZVecErrorCode zvec_collection_fetch(ZVecCollection *collection,
-                                      const char *const *pks, size_t pk_count,
-                                      ZVecDoc ***results, size_t *doc_count) {
-    if (!collection || !pks || !results || !doc_count) {
-      set_last_error(
-          "Invalid arguments: collection, pks, results and doc_count cannot "
-          "be null");
-      return ZVEC_ERROR_INVALID_ARGUMENT;
-    }
-
-    // Handle empty case
-    if (pk_count == 0) {
-      *results = nullptr;
-      *doc_count = 0;
-      return ZVEC_OK;
-    }
-
-    ZVEC_TRY_RETURN_ERROR(
-        "Exception in zvec_collection_fetch",
-        auto coll_ptr =
-            reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
-                collection);
-
-        // Convert C array to C++ vector
-        std::vector<std::string> pk_vector; pk_vector.reserve(pk_count);
-        for (size_t i = 0; i < pk_count; ++i) {
-          if (pks[i]) {
-            pk_vector.emplace_back(pks[i]);
-          } else {
-            set_last_error("Null primary key at index " + std::to_string(i));
-            return ZVEC_ERROR_INVALID_ARGUMENT;
-          }
-        }
-
-        // Call C++ fetch method
-        auto result = (*coll_ptr)->Fetch(pk_vector);
-        if (!result.has_value()) {
-          set_last_error("Failed to fetch documents: " +
-                         result.error().message());
-          return ZVEC_ERROR_INTERNAL_ERROR;
-        }
-
-        auto doc_map = result.value();
-        auto schema_result = (*coll_ptr)->Schema();
-        if (schema_result.has_value()) {
-          normalize_nullable_fields_for_fetch(schema_result.value(), doc_map);
-        } return convert_fetched_document_results(doc_map, results, doc_count);)
-  }
+      auto doc_map = result.value();
+      auto schema_result = (*coll_ptr)->Schema();
+      if (schema_result.has_value()) {
+        normalize_nullable_fields_for_fetch(schema_result.value(), doc_map);
+      } 
+      return convert_fetched_document_results(doc_map, results, doc_count);)
+}

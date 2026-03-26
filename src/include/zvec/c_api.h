@@ -587,13 +587,12 @@ zvec_config_data_get_memory_limit(const ZVecConfigData *config);
 /**
  * @brief Set log configuration in configuration data
  * @param config Configuration data pointer
- * @param log_type Log type (console or file)
  * @param log_config Log configuration pointer (ownership is transferred to
  * config, do not free separately)
  * @return ZVecErrorCode Error code
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_config_data_set_log_config(
-    ZVecConfigData *config, ZVecLogType log_type, void *log_config);
+    ZVecConfigData *config, ZVecLogConfig *log_config);
 
 /**
  * @brief Get log type from configuration data
@@ -703,75 +702,81 @@ ZVEC_EXPORT bool ZVEC_CALL zvec_is_initialized(void);
 // =============================================================================
 
 /**
- * @brief Data type enumeration
+ * @brief Data type codes (must match zvec::DataType in zvec/db/type.h)
+ *
+ * These are defined as uint32_t constants instead of C enums to ensure
+ * consistent binary representation across C and C++ boundaries.
  */
-typedef enum {
-  ZVEC_DATA_TYPE_UNDEFINED = 0,
-
-  ZVEC_DATA_TYPE_BINARY = 1,
-  ZVEC_DATA_TYPE_STRING = 2,
-  ZVEC_DATA_TYPE_BOOL = 3,
-  ZVEC_DATA_TYPE_INT32 = 4,
-  ZVEC_DATA_TYPE_INT64 = 5,
-  ZVEC_DATA_TYPE_UINT32 = 6,
-  ZVEC_DATA_TYPE_UINT64 = 7,
-  ZVEC_DATA_TYPE_FLOAT = 8,
-  ZVEC_DATA_TYPE_DOUBLE = 9,
-
-  ZVEC_DATA_TYPE_VECTOR_BINARY32 = 20,
-  ZVEC_DATA_TYPE_VECTOR_BINARY64 = 21,
-  ZVEC_DATA_TYPE_VECTOR_FP16 = 22,
-  ZVEC_DATA_TYPE_VECTOR_FP32 = 23,
-  ZVEC_DATA_TYPE_VECTOR_FP64 = 24,
-  ZVEC_DATA_TYPE_VECTOR_INT4 = 25,
-  ZVEC_DATA_TYPE_VECTOR_INT8 = 26,
-  ZVEC_DATA_TYPE_VECTOR_INT16 = 27,
-
-  ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16 = 30,
-  ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 = 31,
-
-  ZVEC_DATA_TYPE_ARRAY_BINARY = 40,
-  ZVEC_DATA_TYPE_ARRAY_STRING = 41,
-  ZVEC_DATA_TYPE_ARRAY_BOOL = 42,
-  ZVEC_DATA_TYPE_ARRAY_INT32 = 43,
-  ZVEC_DATA_TYPE_ARRAY_INT64 = 44,
-  ZVEC_DATA_TYPE_ARRAY_UINT32 = 45,
-  ZVEC_DATA_TYPE_ARRAY_UINT64 = 46,
-  ZVEC_DATA_TYPE_ARRAY_FLOAT = 47,
-  ZVEC_DATA_TYPE_ARRAY_DOUBLE = 48
-} ZVecDataType;
+typedef uint32_t ZVecDataType;
+#define ZVEC_DATA_TYPE_UNDEFINED 0
+#define ZVEC_DATA_TYPE_BINARY 1
+#define ZVEC_DATA_TYPE_STRING 2
+#define ZVEC_DATA_TYPE_BOOL 3
+#define ZVEC_DATA_TYPE_INT32 4
+#define ZVEC_DATA_TYPE_INT64 5
+#define ZVEC_DATA_TYPE_UINT32 6
+#define ZVEC_DATA_TYPE_UINT64 7
+#define ZVEC_DATA_TYPE_FLOAT 8
+#define ZVEC_DATA_TYPE_DOUBLE 9
+#define ZVEC_DATA_TYPE_VECTOR_BINARY32 20
+#define ZVEC_DATA_TYPE_VECTOR_BINARY64 21
+#define ZVEC_DATA_TYPE_VECTOR_FP16 22
+#define ZVEC_DATA_TYPE_VECTOR_FP32 23
+#define ZVEC_DATA_TYPE_VECTOR_FP64 24
+#define ZVEC_DATA_TYPE_VECTOR_INT4 25
+#define ZVEC_DATA_TYPE_VECTOR_INT8 26
+#define ZVEC_DATA_TYPE_VECTOR_INT16 27
+#define ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16 30
+#define ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 31
+#define ZVEC_DATA_TYPE_ARRAY_BINARY 40
+#define ZVEC_DATA_TYPE_ARRAY_STRING 41
+#define ZVEC_DATA_TYPE_ARRAY_BOOL 42
+#define ZVEC_DATA_TYPE_ARRAY_INT32 43
+#define ZVEC_DATA_TYPE_ARRAY_INT64 44
+#define ZVEC_DATA_TYPE_ARRAY_UINT32 45
+#define ZVEC_DATA_TYPE_ARRAY_UINT64 46
+#define ZVEC_DATA_TYPE_ARRAY_FLOAT 47
+#define ZVEC_DATA_TYPE_ARRAY_DOUBLE 48
 
 /**
- * @brief Index type enumeration
+ * @brief Index type codes (must match zvec::IndexType in zvec/db/type.h)
+ *
+ * These are defined as uint32_t constants instead of C enums to ensure
+ * consistent binary representation across C and C++ boundaries.
  */
-typedef enum {
-  ZVEC_INDEX_TYPE_UNDEFINED = 0,
-  ZVEC_INDEX_TYPE_HNSW = 1,
-  ZVEC_INDEX_TYPE_IVF = 3,
-  ZVEC_INDEX_TYPE_FLAT = 4,
-  ZVEC_INDEX_TYPE_INVERT = 10
-} ZVecIndexType;
+typedef uint32_t ZVecIndexType;
+#define ZVEC_INDEX_TYPE_UNDEFINED 0
+#define ZVEC_INDEX_TYPE_HNSW 1
+#define ZVEC_INDEX_TYPE_IVF 2
+#define ZVEC_INDEX_TYPE_FLAT 3
+#define ZVEC_INDEX_TYPE_INVERT 10
 
 /**
- * @brief Distance metric type enumeration
+ * @brief Distance metric type codes (must match zvec::MetricType in
+ * zvec/db/type.h)
+ *
+ * These are defined as uint32_t constants instead of C enums to ensure
+ * consistent binary representation across C and C++ boundaries.
  */
-typedef enum {
-  ZVEC_METRIC_TYPE_UNDEFINED = 0,
-  ZVEC_METRIC_TYPE_L2 = 1,
-  ZVEC_METRIC_TYPE_IP = 2,
-  ZVEC_METRIC_TYPE_COSINE = 3,
-  ZVEC_METRIC_TYPE_MIPSL2 = 4
-} ZVecMetricType;
+typedef uint32_t ZVecMetricType;
+#define ZVEC_METRIC_TYPE_UNDEFINED 0
+#define ZVEC_METRIC_TYPE_L2 1
+#define ZVEC_METRIC_TYPE_IP 2
+#define ZVEC_METRIC_TYPE_COSINE 3
+#define ZVEC_METRIC_TYPE_MIPSL2 4
 
 /**
- * @brief Quantization type enumeration
+ * @brief Quantization type codes (must match zvec::QuantizeType in
+ * zvec/db/type.h)
+ *
+ * These are defined as uint32_t constants instead of C enums to ensure
+ * consistent binary representation across C and C++ boundaries.
  */
-typedef enum {
-  ZVEC_QUANTIZE_TYPE_UNDEFINED = 0,
-  ZVEC_QUANTIZE_TYPE_FP16 = 1,
-  ZVEC_QUANTIZE_TYPE_INT8 = 2,
-  ZVEC_QUANTIZE_TYPE_INT4 = 3
-} ZVecQuantizeType;
+typedef uint32_t ZVecQuantizeType;
+#define ZVEC_QUANTIZE_TYPE_UNDEFINED 0
+#define ZVEC_QUANTIZE_TYPE_FP16 1
+#define ZVEC_QUANTIZE_TYPE_INT8 2
+#define ZVEC_QUANTIZE_TYPE_INT4 3
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)
@@ -2348,60 +2353,18 @@ zvec_free_field_schema(ZVecFieldSchema *field_schema);
 // =============================================================================
 
 /**
- * @brief Create index
+ * @brief Create index for a collection field
  *
  * @param collection Collection handle
- * @param field_name Field name
- * @param index_params Index parameters
+ * @param field_name Field name to create index on
+ * @param index_params Index parameters. The function will make an internal copy
+ *                     of the parameters, so the caller retains ownership and
+ *                     should call zvec_index_params_destroy() after the call.
  * @return ZVecErrorCode Error code
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
 zvec_collection_create_index(ZVecCollection *collection, const char *field_name,
                              const ZVecIndexParams *index_params);
-
-/**
- * @brief Create HNSW index for collection field
- * @param collection Collection handle
- * @param field_name Field name
- * @param hnsw_params HNSW index parameters
- * @return Error code
- */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_hnsw_index(
-    ZVecCollection *collection, const char *field_name,
-    const ZVecIndexParams *hnsw_params);
-
-/**
- * @brief Create Flat index for collection field
- * @param collection Collection handle
- * @param field_name Field name
- * @param flat_params Flat index parameters
- * @return Error code
- */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_flat_index(
-    ZVecCollection *collection, const char *field_name,
-    const ZVecIndexParams *flat_params);
-
-/**
- * @brief Create IVF index for collection field
- * @param collection Collection handle
- * @param field_name Field name
- * @param ivf_params IVF index parameters
- * @return Error code
- */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_ivf_index(
-    ZVecCollection *collection, const char *field_name,
-    const ZVecIndexParams *ivf_params);
-
-/**
- * @brief Create scalar index for collection field
- * @param collection Collection handle
- * @param field_name Field name
- * @param invert_params Scalar index parameters
- * @return Error code
- */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_create_invert_index(
-    ZVecCollection *collection, const char *field_name,
-    const ZVecIndexParams *invert_params);
 
 /**
  * @brief Drop index

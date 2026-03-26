@@ -217,7 +217,7 @@ void test_zvec_config() {
     ZVecLogConfig *new_file = zvec_config_log_create_file(
         ZVEC_LOG_LEVEL_DEBUG, "./logs", "app", 50, 30);
     TEST_ASSERT(new_file != NULL);
-    zvec_config_data_set_log_config(config_data, ZVEC_LOG_TYPE_FILE, new_file);
+    zvec_config_data_set_log_config(config_data, new_file);
     TEST_ASSERT(zvec_config_data_get_log_type(config_data) ==
                 ZVEC_LOG_TYPE_FILE);
 
@@ -229,7 +229,7 @@ void test_zvec_config() {
   ZVecErrorCode err = zvec_config_data_set_memory_limit(NULL, 1024);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
-  err = zvec_config_data_set_log_config(NULL, ZVEC_LOG_TYPE_CONSOLE, NULL);
+  err = zvec_config_data_set_log_config(NULL, NULL);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
   err = zvec_config_data_set_query_thread_count(NULL, 1);
@@ -4128,7 +4128,7 @@ void test_index_creation_and_management(void) {
       zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_COSINE);
       zvec_index_params_set_hnsw_params(hnsw_params, 16, 100);
 
-      err = zvec_collection_create_hnsw_index(collection, "dense", hnsw_params);
+      err = zvec_collection_create_index(collection, "dense", hnsw_params);
       TEST_ASSERT(err == ZVEC_OK);
 
       // Test 2: Create scalar index
@@ -4137,8 +4137,7 @@ void test_index_creation_and_management(void) {
       TEST_ASSERT(invert_params != NULL);
       zvec_index_params_set_invert_params(invert_params, true, false);
 
-      err = zvec_collection_create_invert_index(collection, "name",
-                                                invert_params);
+      err = zvec_collection_create_index(collection, "name", invert_params);
       TEST_ASSERT(err == ZVEC_OK);
 
       err = zvec_collection_drop_index(collection, "name");
@@ -4547,15 +4546,15 @@ void test_collection_advanced_index_functions(void) {
     TEST_ASSERT(err == ZVEC_OK);
 
     if (collection) {
-      // Test zvec_collection_create_flat_index
+      // Test zvec_collection_create_index with FLAT type
       ZVecIndexParams *flat_params =
           zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
       TEST_ASSERT(flat_params != NULL);
       zvec_index_params_set_metric_type(flat_params, ZVEC_METRIC_TYPE_L2);
-      err = zvec_collection_create_flat_index(collection, "vec", flat_params);
+      err = zvec_collection_create_index(collection, "vec", flat_params);
       TEST_ASSERT(err == ZVEC_OK);
 
-      // Test zvec_collection_create_ivf_index
+      // Test zvec_collection_create_index with IVF type
       ZVecIndexParams *ivf_params =
           zvec_index_params_create(ZVEC_INDEX_TYPE_IVF);
       TEST_ASSERT(ivf_params != NULL);
@@ -4564,10 +4563,10 @@ void test_collection_advanced_index_functions(void) {
       err = zvec_collection_drop_index(collection,
                                        "vec");  // Drop previous index first
       TEST_ASSERT(err == ZVEC_OK);
-      err = zvec_collection_create_ivf_index(collection, "vec", ivf_params);
+      err = zvec_collection_create_index(collection, "vec", ivf_params);
       TEST_ASSERT(err == ZVEC_OK);
 
-      // Test zvec_collection_create_hnsw_index
+      // Test zvec_collection_create_index with HNSW type
       ZVecIndexParams *hnsw_params =
           zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
       TEST_ASSERT(hnsw_params != NULL);
@@ -4576,7 +4575,7 @@ void test_collection_advanced_index_functions(void) {
       err = zvec_collection_drop_index(collection,
                                        "vec");  // Drop previous index first
       TEST_ASSERT(err == ZVEC_OK);
-      err = zvec_collection_create_hnsw_index(collection, "vec", hnsw_params);
+      err = zvec_collection_create_index(collection, "vec", hnsw_params);
       TEST_ASSERT(err == ZVEC_OK);
 
       // Test zvec_field_schema_set_index_params
@@ -5118,7 +5117,7 @@ void test_collection_stats_index_info(void) {
         zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
     zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_L2);
     zvec_index_params_set_hnsw_params(hnsw_params, 16, 100);
-    err = zvec_collection_create_hnsw_index(collection, "vec", hnsw_params);
+    err = zvec_collection_create_index(collection, "vec", hnsw_params);
     TEST_ASSERT(err == ZVEC_OK);
     zvec_index_params_destroy(hnsw_params);
 
