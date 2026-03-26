@@ -29,6 +29,11 @@ class BenchmarkResult:
     load_duration: float | None = None
     qps: float | None = None
     recall: float | None = None
+    avg_latency_ms: float | None = None
+    p50_latency_ms: float | None = None
+    p90_latency_ms: float | None = None
+    p95_latency_ms: float | None = None
+    p99_latency_ms: float | None = None
     profiling: dict | None = None
 
 
@@ -168,6 +173,22 @@ def avg_metric(records: list[dict[str, Any]], key: str) -> float | None:
     return sum(values) / len(values)
 
 
+def percentile_metric(records: list[dict[str, Any]], key: str, percentile: float) -> float | None:
+    values = sorted(float(record[key]) for record in records if key in record)
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+
+    rank = (len(values) - 1) * percentile / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(values) - 1)
+    if lower == upper:
+        return values[lower]
+    weight = rank - lower
+    return values[lower] * (1.0 - weight) + values[upper] * weight
+
+
 def parse_serial_runner_summary(output: str) -> dict[str, Any]:
     summary = {}
     for line in output.splitlines():
@@ -189,11 +210,20 @@ def parse_query_records(output: str, prefix: str) -> list[dict[str, Any]]:
 def build_hnsw_profile(metrics: dict[str, Any], output: str) -> dict[str, Any]:
     query_records = parse_query_records(output, "HNSW query stats:")
     serial_summary = parse_serial_runner_summary(output)
+    avg_latency_ms = avg_metric(query_records, "latency_ms")
+    p50_latency_ms = percentile_metric(query_records, "latency_ms", 50)
+    p90_latency_ms = percentile_metric(query_records, "latency_ms", 90)
+    p95_latency_ms = percentile_metric(query_records, "latency_ms", 95)
+    p99_latency_ms = percentile_metric(query_records, "latency_ms", 99)
     return {
         "benchmark_recall": metrics.get("recall"),
         "benchmark_qps": metrics.get("qps"),
         "profile_query_count": len(query_records),
-        "profile_avg_end2end_latency_ms": avg_metric(query_records, "latency_ms"),
+        "profile_avg_end2end_latency_ms": avg_latency_ms,
+        "profile_p50_end2end_latency_ms": p50_latency_ms,
+        "profile_p90_end2end_latency_ms": p90_latency_ms,
+        "profile_p95_end2end_latency_ms": p95_latency_ms,
+        "profile_p99_end2end_latency_ms": p99_latency_ms,
         "profile_avg_cmps": avg_metric(query_records, "pairwise_dist_cnt"),
         "profile_avg_scan_cmps": avg_metric(query_records, "cmps"),
         "profile_avg_pure_search_ms": avg_metric(query_records, "pure_search_ms"),
@@ -209,6 +239,11 @@ def build_omega_profile(
 ) -> dict[str, Any]:
     query_records = parse_query_records(output, "OMEGA query stats:")
     serial_summary = parse_serial_runner_summary(output)
+    avg_latency_ms = avg_metric(query_records, "total_ms")
+    p50_latency_ms = percentile_metric(query_records, "total_ms", 50)
+    p90_latency_ms = percentile_metric(query_records, "total_ms", 90)
+    p95_latency_ms = percentile_metric(query_records, "total_ms", 95)
+    p99_latency_ms = percentile_metric(query_records, "total_ms", 99)
 
     avg_pairwise_dist_cnt = avg_metric(query_records, "pairwise_dist_cnt")
     avg_core_search_ms = avg_metric(query_records, "core_search_ms")
@@ -238,7 +273,11 @@ def build_omega_profile(
         "benchmark_recall": metrics.get("recall"),
         "benchmark_qps": metrics.get("qps"),
         "profile_query_count": len(query_records),
-        "profile_avg_end2end_latency_ms": avg_metric(query_records, "total_ms"),
+        "profile_avg_end2end_latency_ms": avg_latency_ms,
+        "profile_p50_end2end_latency_ms": p50_latency_ms,
+        "profile_p90_end2end_latency_ms": p90_latency_ms,
+        "profile_p95_end2end_latency_ms": p95_latency_ms,
+        "profile_p99_end2end_latency_ms": p99_latency_ms,
         "profile_avg_cmps": avg_pairwise_dist_cnt,
         "profile_avg_scan_cmps": avg_metric(query_records, "scan_cmps"),
         "profile_avg_omega_cmps": avg_metric(query_records, "omega_cmps"),
@@ -298,6 +337,11 @@ def write_grouped_profiling_summaries(dataset: str, results: list[BenchmarkResul
                         "path": result.path,
                         "load_duration_s": result.load_duration,
                         "qps": result.qps,
+                        "avg_latency_ms": result.avg_latency_ms,
+                        "p50_latency_ms": result.p50_latency_ms,
+                        "p90_latency_ms": result.p90_latency_ms,
+                        "p95_latency_ms": result.p95_latency_ms,
+                        "p99_latency_ms": result.p99_latency_ms,
                         "recall": result.recall,
                         "profiling": result.profiling,
                     }
@@ -333,11 +377,50 @@ def get_latest_result(db_label: str, results_dir: Path) -> dict[str, Any]:
                         "optimize_duration": metrics.get("optimize_duration"),
                         "load_duration": metrics.get("load_duration"),
                         "qps": metrics.get("qps"),
+                        "avg_latency_ms": metrics.get("serial_latency_avg"),
+                        "p95_latency_ms": metrics.get("serial_latency_p95"),
+                        "p99_latency_ms": metrics.get("serial_latency_p99"),
                         "recall": metrics.get("recall"),
                     }
         except Exception:
             continue
     return {}
+
+
+def latency_summary_from_profile(profile: dict[str, Any] | None) -> dict[str, float | None]:
+    profile = profile or {}
+    return {
+        "avg_latency_ms": profile.get("profile_avg_end2end_latency_ms"),
+        "p50_latency_ms": profile.get("profile_p50_end2end_latency_ms"),
+        "p90_latency_ms": profile.get("profile_p90_end2end_latency_ms"),
+        "p95_latency_ms": profile.get("profile_p95_end2end_latency_ms"),
+        "p99_latency_ms": profile.get("profile_p99_end2end_latency_ms"),
+    }
+
+
+def merge_omega_detailed_profile(
+    summary_profile: dict[str, Any], detailed_profile: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(summary_profile)
+    detailed_keys = [
+        "profile_avg_model_overhead_ms",
+        "profile_avg_should_stop_ms",
+        "profile_avg_prediction_eval_ms",
+        "profile_avg_core_search_ms",
+        "profile_avg_pure_search_ms",
+        "profile_avg_hook_total_ms",
+        "profile_avg_hook_body_ms",
+        "profile_avg_hook_dispatch_ms",
+        "profile_avg_report_visit_candidate_ms",
+        "profile_avg_should_predict_ms",
+        "profile_avg_report_hop_ms",
+        "profile_avg_update_top_candidates_ms",
+        "profile_avg_push_traversal_window_ms",
+        "profile_avg_model_overhead_cmp_equiv",
+    ]
+    for key in detailed_keys:
+        merged[key] = detailed_profile.get(key)
+    return merged
 
 
 def snapshot_result_files(results_dir: Path) -> set[str]:
@@ -738,6 +821,7 @@ def main() -> int:
                 )
                 validate_profile_output("HNSW", profile_ret, profile_output, "HNSW query stats:")
                 hnsw_profile = build_hnsw_profile(metrics, profile_output)
+            latency_summary = latency_summary_from_profile(hnsw_profile)
             results.append(
                 BenchmarkResult(
                     type="HNSW",
@@ -746,6 +830,11 @@ def main() -> int:
                     target_recall=None,
                     load_duration=load_duration if load_duration is not None else metrics.get("load_duration"),
                     qps=metrics.get("qps"),
+                    avg_latency_ms=latency_summary["avg_latency_ms"],
+                    p50_latency_ms=latency_summary["p50_latency_ms"],
+                    p90_latency_ms=latency_summary["p90_latency_ms"],
+                    p95_latency_ms=latency_summary["p95_latency_ms"],
+                    p99_latency_ms=latency_summary["p99_latency_ms"],
                     recall=metrics.get("recall"),
                     profiling=hnsw_profile,
                 )
@@ -812,7 +901,7 @@ def main() -> int:
                 load_duration = get_offline_load_duration(omega_path)
                 omega_profile = None
                 if ret == 0 and not args.dry_run:
-                    print("\n[Profiling] Running OMEGA serial-only profiling pass...")
+                    print("\n[Profiling] Running OMEGA serial-only latency pass...")
                     profile_flags = ["skip-drop-old", "skip-load", "skip-search-concurrent"]
                     if args.retrain_only:
                         profile_flags.append("retrain-only")
@@ -831,8 +920,6 @@ def main() -> int:
                         "ZVEC_OMEGA_LOG_QUERY_STATS": "1",
                         "ZVEC_OMEGA_LOG_QUERY_LIMIT": str(profiling_config.get("omega_query_limit", 2000)),
                     }
-                    if profiling_config.get("omega_profile_control_timing", True):
-                        profile_env["ZVEC_OMEGA_PROFILE_CONTROL_TIMING"] = "1"
                     profile_ret, profile_output = run_command_capture(
                         profile_cmd,
                         vectordbbench_root,
@@ -845,6 +932,26 @@ def main() -> int:
                         None,
                     )
                     omega_profile = build_omega_profile(metrics, profile_output, baseline_profile)
+                    if profiling_config.get("omega_profile_control_timing", True):
+                        print("\n[Profiling] Running OMEGA detailed control-timing pass...")
+                        detailed_env = dict(profile_env)
+                        detailed_env["ZVEC_OMEGA_PROFILE_CONTROL_TIMING"] = "1"
+                        detailed_ret, detailed_output = run_command_capture(
+                            profile_cmd,
+                            vectordbbench_root,
+                            dry_run=False,
+                            extra_env=detailed_env,
+                        )
+                        validate_profile_output(
+                            "OMEGA", detailed_ret, detailed_output, "OMEGA query stats:"
+                        )
+                        detailed_profile = build_omega_profile(
+                            metrics, detailed_output, baseline_profile
+                        )
+                        omega_profile = merge_omega_detailed_profile(
+                            omega_profile, detailed_profile
+                        )
+                latency_summary = latency_summary_from_profile(omega_profile)
                 results.append(
                     BenchmarkResult(
                         type="OMEGA",
@@ -853,6 +960,11 @@ def main() -> int:
                         target_recall=target_recall,
                         load_duration=load_duration if load_duration is not None else metrics.get("load_duration"),
                         qps=metrics.get("qps"),
+                        avg_latency_ms=latency_summary["avg_latency_ms"],
+                        p50_latency_ms=latency_summary["p50_latency_ms"],
+                        p90_latency_ms=latency_summary["p90_latency_ms"],
+                        p95_latency_ms=latency_summary["p95_latency_ms"],
+                        p99_latency_ms=latency_summary["p99_latency_ms"],
                         recall=metrics.get("recall"),
                         profiling=omega_profile,
                     )
@@ -863,15 +975,24 @@ def main() -> int:
         print("\n\n" + "=" * 70)
         print("Benchmark Summary")
         print("=" * 70)
-        print(f"{'Type':<10} {'target_recall':<15} {'load_dur(s)':<12} {'qps':<12} {'recall':<10} {'Status':<10}")
-        print("-" * 75)
+        print(
+            f"{'Type':<10} {'target_recall':<15} {'load_dur(s)':<12} "
+            f"{'qps':<8} {'avg_latency(ms)':<16} {'p95_latency(ms)':<16} "
+            f"{'recall':<10} {'Status':<10}"
+        )
+        print("-" * 100)
         for result in results:
             tr = f"{result.target_recall:.2f}" if result.target_recall is not None else "N/A"
             status = "OK" if result.success else "FAILED"
             ld = f"{result.load_duration:.1f}" if result.load_duration else "N/A"
             qps = f"{result.qps:.1f}" if result.qps else "N/A"
+            avg_latency = f"{result.avg_latency_ms:.3f}" if result.avg_latency_ms is not None else "N/A"
+            p95_latency = f"{result.p95_latency_ms:.3f}" if result.p95_latency_ms is not None else "N/A"
             recall = f"{result.recall:.4f}" if result.recall else "N/A"
-            print(f"{result.type:<10} {tr:<15} {ld:<12} {qps:<12} {recall:<10} {status:<10}")
+            print(
+                f"{result.type:<10} {tr:<15} {ld:<12} {qps:<8} "
+                f"{avg_latency:<16} {p95_latency:<16} {recall:<10} {status:<10}"
+            )
 
         print("\nProfiling Summary")
         print("-" * 75)
