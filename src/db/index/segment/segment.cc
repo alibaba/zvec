@@ -1769,12 +1769,14 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     size_t num_training_queries = 1000;  // default
     int ef_training = 1000;  // default
     int ef_groundtruth = 0;  // default: brute force
+    int k_train = 1;  // default: top-1 label
     if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(field.index_params())) {
       num_training_queries = omega_params->num_training_queries();
       ef_training = omega_params->ef_training();
       ef_groundtruth = omega_params->ef_groundtruth();
-      LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d",
-               num_training_queries, ef_training, ef_groundtruth);
+      k_train = omega_params->k_train();
+      LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d, k_train=%d",
+               num_training_queries, ef_training, ef_groundtruth, k_train);
     }
 
     // Collect training data using the current indexer (in-memory graph still exists)
@@ -1784,7 +1786,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     collector_opts.ef_training = ef_training;
     collector_opts.ef_groundtruth = ef_groundtruth;
     collector_opts.topk = 100;
-    collector_opts.k_train = 1;  // Label=1 when top-1 GT found
+    collector_opts.k_train = k_train;
 
     // Use the current vector_indexer which still has the in-memory graph
     std::vector<VectorColumnIndexer::Ptr> training_indexers = {vector_indexer};
@@ -2466,6 +2468,7 @@ Status SegmentImpl::auto_train_omega_index_internal(
   int ef_training = 1000;  // default
   int ef_groundtruth = 0;  // default: brute force
   uint32_t min_vector_threshold = 100000;  // default
+  int k_train = 1;  // default: top-1 label
   auto field = collection_schema_->get_field(field_name);
   if (field && field->index_params()) {
     if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(field->index_params())) {
@@ -2473,8 +2476,9 @@ Status SegmentImpl::auto_train_omega_index_internal(
       ef_training = omega_params->ef_training();
       ef_groundtruth = omega_params->ef_groundtruth();
       min_vector_threshold = omega_params->min_vector_threshold();
-      LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d, min_vector_threshold=%u",
-               num_training_queries, ef_training, ef_groundtruth, min_vector_threshold);
+      k_train = omega_params->k_train();
+      LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d, min_vector_threshold=%u, k_train=%d",
+               num_training_queries, ef_training, ef_groundtruth, min_vector_threshold, k_train);
     }
   }
 
@@ -2501,6 +2505,7 @@ Status SegmentImpl::auto_train_omega_index_internal(
   collector_options.ef_training = ef_training;
   collector_options.ef_groundtruth = ef_groundtruth;
   collector_options.topk = 100;
+  collector_options.k_train = k_train;
   collector_options.noise_scale = 0.01f;
 
   std::vector<std::vector<float>> cached_queries;

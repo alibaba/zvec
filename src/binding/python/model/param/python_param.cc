@@ -581,6 +581,9 @@ Attributes:
         ground truth for training. If 0, brute force search is used (slower but exact).
         If > 0, HNSW search with this ef is used (faster but approximate).
         Default is 0 (brute force).
+    k_train (int): Number of top ground-truth results that must be present in
+        the current top-k before a training record is labeled positive.
+        Default is 1.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -592,13 +595,14 @@ Examples:
     ...     num_training_queries=500,
     ...     ef_training=800,
     ...     window_size=100,
-    ...     ef_groundtruth=2000  # Use HNSW for faster ground truth computation
+    ...     ef_groundtruth=2000,  # Use HNSW for faster ground truth computation
+    ...     k_train=10
     ... )
-    >>> print(params.ef_groundtruth)
-    2000
+    >>> print(params.k_train)
+    10
 )pbdoc");
   omega_params
-      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, size_t, int, int, int>(),
+      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, size_t, int, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
@@ -608,7 +612,8 @@ Examples:
            py::arg("num_training_queries") = 1000,
            py::arg("ef_training") = 1000,
            py::arg("window_size") = 100,
-           py::arg("ef_groundtruth") = 0)
+           py::arg("ef_groundtruth") = 0,
+           py::arg("k_train") = 1)
       .def_property_readonly(
           "m", &OmegaIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
@@ -630,6 +635,9 @@ Examples:
       .def_property_readonly(
           "ef_groundtruth", &OmegaIndexParams::ef_groundtruth,
           "int: ef for ground truth computation (0=brute force, >0=HNSW).")
+      .def_property_readonly(
+          "k_train", &OmegaIndexParams::k_train,
+          "int: Number of top GT results required for a positive training label.")
       .def(
           "to_dict",
           [](const OmegaIndexParams &self) -> py::dict {
@@ -643,6 +651,7 @@ Examples:
             dict["ef_training"] = self.ef_training();
             dict["window_size"] = self.window_size();
             dict["ef_groundtruth"] = self.ef_groundtruth();
+            dict["k_train"] = self.k_train();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -666,6 +675,8 @@ Examples:
                     std::to_string(self.window_size()) +
                     ", \"ef_groundtruth\":" +
                     std::to_string(self.ef_groundtruth()) +
+                    ", \"k_train\":" +
+                    std::to_string(self.k_train()) +
                     ", \"quantize_type\":" +
                     quantize_type_to_string(self.quantize_type()) + "}";
            })
@@ -676,15 +687,15 @@ Examples:
                                   self.min_vector_threshold(),
                                   self.num_training_queries(),
                                   self.ef_training(), self.window_size(),
-                                  self.ef_groundtruth());
+                                  self.ef_groundtruth(), self.k_train());
           },
           [](py::tuple t) {
             if (t.size() == 10) {
               return std::make_shared<OmegaIndexParams>(
                   t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                   t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
-                  t[6].cast<size_t>(), t[7].cast<int>(), t[8].cast<int>(),
-                  t[9].cast<int>());
+                  t[5].cast<size_t>(), t[6].cast<int>(), t[7].cast<int>(),
+                  t[8].cast<int>(), t[9].cast<int>());
             }
             if (t.size() != 9)
               throw std::runtime_error("Invalid state for OmegaIndexParams");
@@ -692,7 +703,7 @@ Examples:
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
                 t[5].cast<size_t>(), t[6].cast<int>(), t[7].cast<int>(),
-                t[8].cast<int>());
+                t[8].cast<int>(), 1);
           }));
 }
 

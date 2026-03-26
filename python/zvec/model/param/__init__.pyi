@@ -565,6 +565,12 @@ class OmegaIndexParam(VectorIndexParam):
         m: typing.SupportsInt = 100,
         ef_construction: typing.SupportsInt = 500,
         quantize_type: _zvec.typing.QuantizeType = ...,
+        min_vector_threshold: typing.SupportsInt = 100000,
+        num_training_queries: typing.SupportsInt = 1000,
+        ef_training: typing.SupportsInt = 1000,
+        window_size: typing.SupportsInt = 100,
+        ef_groundtruth: typing.SupportsInt = 0,
+        k_train: typing.SupportsInt = 1,
     ) -> None:
         """
         Constructs an OmegaIndexParam instance.
@@ -576,6 +582,14 @@ class OmegaIndexParam(VectorIndexParam):
                 Defaults to 500.
             quantize_type (QuantizeType, optional): Vector quantization type.
                 Defaults to QuantizeType.UNDEFINED.
+            min_vector_threshold (int, optional): Minimum doc count required to
+                enable OMEGA training.
+            num_training_queries (int, optional): Number of sampled queries for training.
+            ef_training (int, optional): Search ef used when collecting training records.
+            window_size (int, optional): Traversal window size.
+            ef_groundtruth (int, optional): ef used to compute training ground truth.
+            k_train (int, optional): Number of top GT results required for a
+                positive training label.
         """
 
     def __repr__(self) -> str: ...
@@ -595,6 +609,42 @@ class OmegaIndexParam(VectorIndexParam):
     def m(self) -> int:
         """
         int: Maximum number of neighbors per node in upper layers.
+        """
+
+    @property
+    def min_vector_threshold(self) -> int:
+        """
+        int: Minimum vectors required to enable OMEGA optimization.
+        """
+
+    @property
+    def num_training_queries(self) -> int:
+        """
+        int: Number of sampled queries used for OMEGA training.
+        """
+
+    @property
+    def ef_training(self) -> int:
+        """
+        int: Search ef used when collecting training records.
+        """
+
+    @property
+    def window_size(self) -> int:
+        """
+        int: Traversal window size used by OMEGA.
+        """
+
+    @property
+    def ef_groundtruth(self) -> int:
+        """
+        int: ef used for ground truth computation (0 means brute force).
+        """
+
+    @property
+    def k_train(self) -> int:
+        """
+        int: Number of top GT results required for a positive training label.
         """
 
 class OmegaQueryParam(HnswQueryParam):

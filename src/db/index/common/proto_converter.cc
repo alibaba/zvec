@@ -86,7 +86,8 @@ OmegaIndexParams::OPtr ProtoConverter::FromPb(
       params_pb.num_training_queries(),
       params_pb.ef_training(),
       params_pb.window_size(),
-      params_pb.ef_groundtruth());
+      params_pb.ef_groundtruth(),
+      params_pb.k_train());
 
   return params;
 }
@@ -104,6 +105,7 @@ proto::OmegaIndexParams ProtoConverter::ToPb(const OmegaIndexParams *params) {
   params_pb.set_ef_training(params->ef_training());
   params_pb.set_window_size(params->window_size());
   params_pb.set_ef_groundtruth(params->ef_groundtruth());
+  params_pb.set_k_train(params->k_train());
   return params_pb;
 }
 

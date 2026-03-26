@@ -110,6 +110,7 @@ message OmegaIndexParams {
   int32 ef_training = 7;
   int32 window_size = 8;
   int32 ef_groundtruth = 9;  // 0 = brute force, >0 = HNSW with this ef
+  int32 k_train = 10;
 }
 
 message IndexParams {
