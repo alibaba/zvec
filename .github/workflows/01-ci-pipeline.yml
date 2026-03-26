@@ -33,6 +33,14 @@ jobs:
       platform: macos-arm64
       os: macos-15
 
+  build-and-test-macos-26-arm64:
+    name: Build & Test (macos-26-arm64)
+    needs: lint
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: macos-arm64
+      os: macos-26
+
   build-and-test-linux-arm64:
     name: Build & Test (linux-arm64)
     needs: lint
@@ -48,6 +56,15 @@ jobs:
     with:
       platform: linux-x64
       os: ubuntu-24.04
+
+  build-and-test-linux-x64-clang:
+    name: Build & Test (linux-x64-clang)
+    needs: lint
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: linux-x64-clang
+      os: ubuntu-24.04
+      compiler: clang
 
   build-android:
     name: Build & Test (android)

@@ -228,7 +228,7 @@ class IndexStorage : public IndexModule {
   virtual int cleanup(void) = 0;
 
   //! Open storage
-  virtual int open(const std::string &path, bool create) = 0;
+  virtual int open(const std::string &path, bool create_if_missing) = 0;
 
   //! Flush storage
   virtual int flush(void) = 0;

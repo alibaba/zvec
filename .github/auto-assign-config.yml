@@ -1,0 +1,24 @@
+# Auto-assign configuration
+# Documentation: https://github.com/kentaro-m/auto-assign-action
+#
+# NOTE: Reviewers are assigned via CODEOWNERS file based on file paths.
+#       This config only handles assignee assignment.
+
+# Automatically add PR author as assignee
+addAssignees: author
+
+# Number of assignees to add (0 = add all from the list)
+numberOfAssignees: 0
+
+# Reviewers are handled by CODEOWNERS, not here
+addReviewers: false
+
+# Skip draft PRs
+skipDraft: true
+
+# Skip keywords in PR title (won't assign if title contains these)
+skipKeywords:
+  - wip
+  - WIP
+  - draft
+  - DRAFT
