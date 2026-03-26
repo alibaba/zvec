@@ -28,9 +28,16 @@ from zvec.executor.query_executor import (
     QueryExecutor,
     QueryExecutorFactory,
     SingleVectorQueryExecutor,
+)
+from zvec import (
+    RrfReRanker,
+    HnswQueryParam,
+    CollectionSchema,
+    VectorSchema,
+    DataType,
+    Query,
     VectorQuery,
 )
-from zvec import RrfReRanker, HnswQueryParam, CollectionSchema, VectorSchema, DataType
 
 
 # ----------------------------
@@ -65,16 +72,16 @@ class MockCollectionSchema(CollectionSchema):
 # ----------------------------
 # VectorQuery Test Case
 # ----------------------------
-class TestVectorQuery:
+class TestQuery:
     def test_init(self):
-        query = VectorQuery(field_name="test_field")
+        query = Query(field_name="test_field")
         assert query.field_name == "test_field"
         assert query.id is None
         assert query.vector is None
         assert query.param is None
 
         param = HnswQueryParam()
-        query = VectorQuery(
+        query = Query(
             field_name="test_field", id="test_id", vector=[1, 2, 3], param=param
         )
         assert query.field_name == "test_field"
@@ -83,20 +90,20 @@ class TestVectorQuery:
         assert query.param == param
 
     def test_has_id(self):
-        query = VectorQuery(field_name="test_field")
+        query = Query(field_name="test_field")
         assert not query.has_id()
 
-        query = VectorQuery(field_name="test_field", id="test_id")
+        query = Query(field_name="test_field", id="test_id")
         assert query.has_id()
 
     def test_has_vector(self):
-        query = VectorQuery(field_name="test_field")
+        query = Query(field_name="test_field")
         assert not query.has_vector()
 
-        query = VectorQuery(field_name="test_field", vector=[])
+        query = Query(field_name="test_field", vector=[])
         assert not query.has_vector()
 
-        query = VectorQuery(field_name="test_field", vector=[1, 2, 3])
+        query = Query(field_name="test_field", vector=[1, 2, 3])
         assert query.has_vector()
 
     def test_validate_dense_fp16_convert(self):
@@ -150,6 +157,26 @@ class TestVectorQuery:
             assert math.isclose(np.float16(vec[k]), ret[k], abs_tol=1e-6)
 
 
+class TestVectorQueryDeprecated:
+    def test_deprecation_warning(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            vq = VectorQuery(field_name="test_field")
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "Query" in str(w[0].message)
+
+    def test_isinstance_compatibility(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            vq = VectorQuery(field_name="test_field")
+        assert isinstance(vq, Query)
+
+
 class TestQueryContext:
     def test_init(self):
         ctx = QueryContext(topk=10)
@@ -162,7 +189,7 @@ class TestQueryContext:
         assert ctx.core_vectors == []
 
     def test_properties(self):
-        queries = [VectorQuery(field_name="test")]
+        queries = [Query(field_name="test")]
         reranker = RrfReRanker()
         output_fields = ["field1", "field2"]
 
@@ -198,7 +225,7 @@ class TestNoVectorQueryExecutor:
     def test_do_validate_with_queries(self):
         schema = MockCollectionSchema()
         executor = NoVectorQueryExecutor(schema)
-        ctx = QueryContext(topk=10, queries=[VectorQuery(field_name="test")])
+        ctx = QueryContext(topk=10, queries=[Query(field_name="test")])
 
         with pytest.raises(
             ValueError, match="Collection does not support query with vector or id"
@@ -232,7 +259,7 @@ class TestSingleVectorQueryExecutor:
     def test_do_validate_multiple_queries(self):
         schema = MockCollectionSchema()
         executor = SingleVectorQueryExecutor(schema)
-        queries = [VectorQuery(field_name="test1"), VectorQuery(field_name="test2")]
+        queries = [Query(field_name="test1"), Query(field_name="test2")]
         ctx = QueryContext(topk=10, queries=queries)
 
         with pytest.raises(
@@ -260,7 +287,7 @@ class TestMultiVectorQueryExecutor:
     def test_do_validate_multiple_queries_without_reranker(self):
         schema = MockCollectionSchema()
         executor = MultiVectorQueryExecutor(schema)
-        queries = [VectorQuery(field_name="test1"), VectorQuery(field_name="test2")]
+        queries = [Query(field_name="test1"), Query(field_name="test2")]
         ctx = QueryContext(topk=10, queries=queries)
 
         with pytest.raises(
@@ -271,7 +298,7 @@ class TestMultiVectorQueryExecutor:
     def test_do_validate_multiple_queries_with_reranker(self):
         schema = MockCollectionSchema()
         executor = MultiVectorQueryExecutor(schema)
-        queries = [VectorQuery(field_name="test1"), VectorQuery(field_name="test2")]
+        queries = [Query(field_name="test1"), Query(field_name="test2")]
         reranker = RrfReRanker()
         ctx = QueryContext(topk=10, queries=queries, reranker=reranker)
 

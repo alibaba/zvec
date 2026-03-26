@@ -15,6 +15,7 @@ from zvec import (
     CollectionSchema,
     Collection,
     Doc,
+    Query,
     VectorQuery,
 )
 

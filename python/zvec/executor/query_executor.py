@@ -25,7 +25,7 @@ from _zvec.param import _VectorQuery
 from ..extension import ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
 from ..model.doc import Doc
-from ..model.param.vector_query import VectorQuery
+from ..model.param.query import Query
 from ..model.schema import CollectionSchema
 from ..typing import DataType
 
@@ -66,7 +66,7 @@ class QueryContext:
         topk: int,
         filter: Optional[str] = None,
         include_vector: bool = False,
-        queries: Optional[list[VectorQuery]] = None,
+        queries: Optional[list[Query]] = None,
         output_fields: Optional[list[str]] = None,
         reranker: Optional[ReRanker] = None,
     ):
@@ -142,7 +142,7 @@ class QueryExecutor(ABC):
         return core_vector
 
     def _do_build_query_with_vector(
-        self, ctx: QueryContext, query: VectorQuery, collection: _Collection
+        self, ctx: QueryContext, query: Query, collection: _Collection
     ) -> _VectorQuery:
         core_vector = self._do_build_query_wo_vector(ctx)
         core_vector.field_name = query.field_name

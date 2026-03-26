@@ -478,7 +478,7 @@ class TestCollectionOpen:
             # Test vector query functionality for dense vectors
             query_vector_dense = [0.1] * 128
             vector_query_result = opened_coll.query(
-                VectorQuery(field_name="dense", vector=query_vector_dense)
+                Query(field_name="dense", vector=query_vector_dense)
             )
             assert len(vector_query_result) > 0, (
                 f"Expected at least 1 vector query result, but got {len(vector_query_result)}"
@@ -529,7 +529,7 @@ class TestCollectionOpen:
             # Test vector query functionality for sparse vectors
             query_vector_sparse = {1: 1.0, 2: 2.0, 3: 3.0}
             sparse_vector_query_result = opened_coll.query(
-                VectorQuery(field_name="sparse", vector=query_vector_sparse)
+                Query(field_name="sparse", vector=query_vector_sparse)
             )
             assert len(sparse_vector_query_result) > 0, (
                 f"Expected at least 1 sparse vector query result, but got {len(sparse_vector_query_result)}"

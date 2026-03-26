@@ -833,7 +833,7 @@ class TestIndexDDL:
                 )
 
             query_result: list[Doc] = coll.query(
-                VectorQuery(field_name=vector_name, vector=query_vector),
+                Query(field_name=vector_name, vector=query_vector),
                 include_vector=False,
                 topk=len(docs),
             )

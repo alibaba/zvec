@@ -184,7 +184,7 @@ class TestCollectionExceptionHandling:
 
     def test_query_missing_vectorquery_field_name(self, test_collection: Collection):
         with pytest.raises(Exception) as exc_info:
-            result = test_collection.query(vectors=[VectorQuery()])
+            result = test_collection.query([VectorQuery()])
         assert exc_info.value is not None, (
             "Expected exception for missing VectorQuery field_name parameter"
         )

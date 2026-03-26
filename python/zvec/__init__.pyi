@@ -25,7 +25,7 @@ from .model.param import (
     IVFQueryParam,
     OptimizeOption,
 )
-from .model.param.vector_query import VectorQuery
+from .model.param.query import Query, VectorQuery
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
 from .tool import require_module
 from .typing import (
@@ -64,6 +64,7 @@ __all__: list = [
     "MetricType",
     "OptimizeOption",
     "QuantizeType",
+    "Query",
     "ReRanker",
     "ReRanker",
     "RrfReRanker",
