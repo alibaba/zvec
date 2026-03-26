@@ -144,13 +144,56 @@ bool ParseArgs(int argc, char** argv, Options* opts) {
 struct OmegaHookState {
   omega::SearchContext* search_ctx{nullptr};
   bool enable_early_stopping{false};
+  bool per_cmp_reporting{false};
+  std::vector<omega::SearchContext::VisitCandidate> pending_candidates;
+  int batch_min_interval{1};
 };
+
+void ResetOmegaHookState(OmegaHookState* state) {
+  state->pending_candidates.clear();
+  if (state->search_ctx != nullptr) {
+    state->batch_min_interval = state->search_ctx->GetPredictionBatchMinInterval();
+  } else {
+    state->batch_min_interval = 1;
+  }
+}
+
+bool FlushOmegaPendingCandidates(OmegaHookState* state, int flush_count) {
+  if (state->search_ctx == nullptr || flush_count <= 0 ||
+      state->pending_candidates.empty()) {
+    return false;
+  }
+
+  flush_count = std::min(flush_count,
+                         static_cast<int>(state->pending_candidates.size()));
+  bool should_predict = state->search_ctx->ReportVisitCandidates(
+      state->pending_candidates.data(), static_cast<size_t>(flush_count));
+  state->pending_candidates.erase(state->pending_candidates.begin(),
+                                  state->pending_candidates.begin() + flush_count);
+  if (!state->enable_early_stopping || !should_predict) {
+    return false;
+  }
+  return state->search_ctx->ShouldStopEarly();
+}
+
+bool MaybeFlushOmegaPendingCandidates(OmegaHookState* state) {
+  if (static_cast<int>(state->pending_candidates.size()) <
+      state->batch_min_interval) {
+    return false;
+  }
+  return FlushOmegaPendingCandidates(state, state->batch_min_interval);
+}
 
 void OnOmegaLevel0Entry(node_id_t id, dist_t dist, bool /*inserted_to_topk*/,
                         void* user_data) {
   auto& state = *static_cast<OmegaHookState*>(user_data);
   state.search_ctx->SetDistStart(dist);
-  state.search_ctx->ReportVisitCandidate(id, dist, true);
+  if (state.per_cmp_reporting) {
+    state.search_ctx->ReportVisitCandidate(id, dist, true);
+    return;
+  }
+  state.pending_candidates.push_back({static_cast<int>(id), dist, true});
+  MaybeFlushOmegaPendingCandidates(&state);
 }
 
 void OnOmegaHop(void* user_data) {
@@ -161,12 +204,17 @@ void OnOmegaHop(void* user_data) {
 bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
                            bool should_consider_candidate, void* user_data) {
   auto& state = *static_cast<OmegaHookState*>(user_data);
-  bool should_predict =
-      state.search_ctx->ReportVisitCandidate(id, dist, should_consider_candidate);
-  if (!state.enable_early_stopping || !should_predict) {
-    return false;
+  if (state.per_cmp_reporting) {
+    bool should_predict =
+        state.search_ctx->ReportVisitCandidate(id, dist, should_consider_candidate);
+    if (!state.enable_early_stopping || !should_predict) {
+      return false;
+    }
+    return state.search_ctx->ShouldStopEarly();
   }
-  return state.search_ctx->ShouldStopEarly();
+  state.pending_candidates.push_back(
+      {static_cast<int>(id), dist, should_consider_candidate});
+  return MaybeFlushOmegaPendingCandidates(&state);
 }
 
 struct BenchStats {
@@ -425,6 +473,7 @@ int main(int argc, char** argv) {
   OmegaHookState omega_hook_state;
   omega_hook_state.search_ctx = &omega_search_ctx;
   omega_hook_state.enable_early_stopping = false;
+  ResetOmegaHookState(&omega_hook_state);
   HnswAlgorithm::SearchHooks omega_hooks;
   omega_hooks.user_data = &omega_hook_state;
   omega_hooks.on_level0_entry = OnOmegaLevel0Entry;
@@ -449,9 +498,12 @@ int main(int argc, char** argv) {
     RunBench("alg_fast_search_with_omega_hooks_only", ctx, queries, opts.warmup,
              opts.iterations, [&]() {
                omega_search_ctx.Reset();
+               ResetOmegaHookState(&omega_hook_state);
                bool stopped_early = false;
-               return streamer->FastSearchWithHooks(ctx, &omega_hooks,
-                                                    &stopped_early);
+               int ret = streamer->FastSearchWithHooks(ctx, &omega_hooks,
+                                                       &stopped_early);
+               MaybeFlushOmegaPendingCandidates(&omega_hook_state);
+               return ret;
              });
   }
 

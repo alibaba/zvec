@@ -89,7 +89,48 @@ struct OmegaHookState {
   bool enable_early_stopping{false};
   bool collect_control_timing{false};
   uint64_t *hook_body_time_ns{nullptr};
+  bool per_cmp_reporting{false};
+  std::vector<omega::SearchContext::VisitCandidate> pending_candidates;
+  int batch_min_interval{1};
 };
+
+void ResetOmegaHookState(OmegaHookState *state) {
+  state->pending_candidates.clear();
+  if (state->search_ctx != nullptr) {
+    state->batch_min_interval = state->search_ctx->GetPredictionBatchMinInterval();
+  } else {
+    state->batch_min_interval = 1;
+  }
+}
+
+template <typename Fn>
+bool FlushOmegaPendingCandidates(const OmegaHookState &state,
+                                 int flush_count, Fn &&run_control_hook) {
+  if (state.search_ctx == nullptr || flush_count <= 0 ||
+      state.pending_candidates.empty()) {
+    return false;
+  }
+
+  auto &mutable_state = const_cast<OmegaHookState &>(state);
+  flush_count = std::min(flush_count,
+                         static_cast<int>(mutable_state.pending_candidates.size()));
+  bool should_predict = false;
+  run_control_hook([&]() {
+    should_predict = state.search_ctx->ReportVisitCandidates(
+        mutable_state.pending_candidates.data(), static_cast<size_t>(flush_count));
+  });
+  mutable_state.pending_candidates.erase(mutable_state.pending_candidates.begin(),
+                                        mutable_state.pending_candidates.begin() +
+                                            flush_count);
+  if (!state.enable_early_stopping || !should_predict) {
+    return false;
+  }
+
+  bool should_stop = false;
+  run_control_hook(
+      [&]() { should_stop = state.search_ctx->ShouldStopEarly(); });
+  return should_stop;
+}
 
 template <typename Fn>
 void RunOmegaControlHook(const OmegaHookState &state, Fn &&fn) {
@@ -105,13 +146,34 @@ void RunOmegaControlHook(const OmegaHookState &state, Fn &&fn) {
   }
 }
 
+bool MaybeFlushOmegaPendingCandidates(const OmegaHookState &state) {
+  auto run_control_hook = [&](auto &&fn) {
+    RunOmegaControlHook(state, std::forward<decltype(fn)>(fn));
+  };
+
+  if (static_cast<int>(state.pending_candidates.size()) <
+      state.batch_min_interval) {
+    return false;
+  }
+  return FlushOmegaPendingCandidates(state, state.batch_min_interval,
+                                     run_control_hook);
+}
+
 void OnOmegaLevel0Entry(node_id_t id, dist_t dist, bool /*inserted_to_topk*/,
                         void *user_data) {
   auto &state = *static_cast<OmegaHookState *>(user_data);
+  if (state.per_cmp_reporting) {
+    RunOmegaControlHook(state, [&]() {
+      state.search_ctx->SetDistStart(dist);
+      state.search_ctx->ReportVisitCandidate(id, dist, true);
+    });
+    return;
+  }
   RunOmegaControlHook(state, [&]() {
     state.search_ctx->SetDistStart(dist);
-    state.search_ctx->ReportVisitCandidate(id, dist, true);
+    state.pending_candidates.push_back({static_cast<int>(id), dist, true});
   });
+  MaybeFlushOmegaPendingCandidates(state);
 }
 
 void OnOmegaHop(void *user_data) {
@@ -122,19 +184,25 @@ void OnOmegaHop(void *user_data) {
 bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
                            bool inserted_to_topk, void *user_data) {
   auto &state = *static_cast<OmegaHookState *>(user_data);
-  bool should_predict = false;
-  RunOmegaControlHook(state, [&]() {
-    should_predict = state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
-  });
-
-  if (!state.enable_early_stopping || !should_predict) {
-    return false;
+  if (state.per_cmp_reporting) {
+    bool should_predict = false;
+    RunOmegaControlHook(state, [&]() {
+      should_predict =
+          state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
+    });
+    if (!state.enable_early_stopping || !should_predict) {
+      return false;
+    }
+    bool should_stop = false;
+    RunOmegaControlHook(
+        state, [&]() { should_stop = state.search_ctx->ShouldStopEarly(); });
+    return should_stop;
   }
-
-  bool should_stop = false;
-  RunOmegaControlHook(
-      state, [&]() { should_stop = state.search_ctx->ShouldStopEarly(); });
-  return should_stop;
+  RunOmegaControlHook(state, [&]() {
+    state.pending_candidates.push_back(
+        {static_cast<int>(id), dist, inserted_to_topk});
+  });
+  return MaybeFlushOmegaPendingCandidates(state);
 }
 
 }  // namespace
@@ -333,6 +401,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   hook_state.enable_early_stopping = enable_early_stopping;
   hook_state.collect_control_timing = collect_control_timing;
   hook_state.hook_body_time_ns = &hook_body_time_ns;
+  hook_state.per_cmp_reporting = training_mode_enabled_;
+  ResetOmegaHookState(&hook_state);
   HnswAlgorithm::SearchHooks hooks;
   hooks.user_data = &hook_state;
   hooks.collect_timing = collect_control_timing;
@@ -350,6 +420,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     LOG_ERROR("OMEGA search failed");
     return ret;
   }
+  MaybeFlushOmegaPendingCandidates(hook_state);
   auto query_search_end = RdtscTimer::Now();
 
   // Get final statistics
