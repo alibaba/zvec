@@ -145,27 +145,38 @@ static std::mutex g_init_mutex;
 static thread_local std::string last_error_message;
 static thread_local ZVecErrorDetails last_error_details;
 
-// Helper function: set error information
-static void set_last_error(const std::string &msg) {
-  last_error_message = msg;
-
-  last_error_details.code = ZVEC_ERROR_UNKNOWN;
-  last_error_details.message = last_error_message.c_str();
-  last_error_details.file = nullptr;
-  last_error_details.line = 0;
-  last_error_details.function = nullptr;
+// Helper function: set error information (noexcept to avoid exceptions in error handling)
+static void set_last_error(const std::string &msg) noexcept {
+  try {
+    last_error_message = msg;
+    last_error_details.code = ZVEC_ERROR_UNKNOWN;
+    last_error_details.message = last_error_message.c_str();
+    last_error_details.file = nullptr;
+    last_error_details.line = 0;
+    last_error_details.function = nullptr;
+  } catch (...) {
+    // If we can't even store the error message, at least set the code
+    last_error_details.code = ZVEC_ERROR_RESOURCE_EXHAUSTED;
+    last_error_details.message = "Out of memory";
+  }
 }
 
-// Error setting function with detailed information
+// Error setting function with detailed information (noexcept to avoid exceptions in error handling)
 static void set_last_error_details(ZVecErrorCode code, const std::string &msg,
                                    const char *file = nullptr, int line = 0,
-                                   const char *function = nullptr) {
-  last_error_message = msg;
-  last_error_details.code = code;
-  last_error_details.message = last_error_message.c_str();
-  last_error_details.file = file;
-  last_error_details.line = line;
-  last_error_details.function = function;
+                                   const char *function = nullptr) noexcept {
+  try {
+    last_error_message = msg;
+    last_error_details.code = code;
+    last_error_details.message = last_error_message.c_str();
+    last_error_details.file = file;
+    last_error_details.line = line;
+    last_error_details.function = function;
+  } catch (...) {
+    // If memory allocation fails, at least set the error code
+    last_error_details.code = ZVEC_ERROR_RESOURCE_EXHAUSTED;
+    last_error_details.message = "Out of memory";
+  }
 }
 
 // =============================================================================
@@ -834,7 +845,12 @@ static ZVecErrorCode handle_expected_result(
   }
 }
 
-// Helper function: copy strings
+/**
+ * @brief Copy a C++ string to C heap-allocated string
+ * @param str String to copy
+ * @return Newly allocated C string, or NULL on failure
+ * @note Caller must free() the returned string
+ */
 static char *copy_string(const std::string &str) {
   if (str.empty()) return nullptr;
   size_t len = str.length();
@@ -845,7 +861,11 @@ static char *copy_string(const std::string &str) {
   return copy;
 }
 
-// Helper function: free write results returned by detailed DML APIs.
+/**
+ * @brief Free write results array returned by DML APIs
+ * @param results Results array to free
+ * @param result_count Number of results
+ */
 static void free_write_results_internal(ZVecWriteResult *results,
                                         size_t result_count) {
   if (!results) {
@@ -909,33 +929,16 @@ static std::vector<std::string> collect_doc_pks(const ZVecDoc **docs,
   return pks;
 }
 
-// Helper function: convert data type
-// Since ZVecDataType uses the same values as zvec::DataType, we can use
-// static_cast for zero-overhead conversion.
-static zvec::DataType convert_data_type(ZVecDataType zvec_type) {
-  return static_cast<zvec::DataType>(zvec_type);
-}
+// =============================================================================
+// Type conversion helpers
+// =============================================================================
 
-static ZVecDataType convert_zvec_data_type(zvec::DataType cpp_type) {
-  return static_cast<ZVecDataType>(cpp_type);
-}
-
-// Helper function: convert metric type
-static zvec::MetricType convert_metric_type(ZVecMetricType metric_type) {
-  return static_cast<zvec::MetricType>(metric_type);
-}
-
-// Helper function: convert index type
-static zvec::IndexType convert_index_type(ZVecIndexType zvec_type) {
-  return static_cast<zvec::IndexType>(zvec_type);
-}
-
-// Helper function: convert quantize type
-static zvec::QuantizeType convert_quantize_type(ZVecQuantizeType zvec_type) {
-  return static_cast<zvec::QuantizeType>(zvec_type);
-}
-
-// Helper function to convert C ZVecIndexParams to C++ IndexParams
+/**
+ * @brief Convert C index params to C++ shared_ptr
+ * @param params C index params handle
+ * @return Shared pointer to C++ IndexParams, or nullptr on failure
+ * @note Uses clone() to create a copy via dynamic dispatch
+ */
 static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
     const ZVecIndexParams *params) {
   if (!params) {
@@ -980,6 +983,10 @@ static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
 // Memory Management interface implementation
 // =============================================================================
 
+/**
+ * @brief Free a ZVecString structure
+ * @param str String structure to free (can be NULL)
+ */
 void zvec_free_string(ZVecString *str) {
   if (str) {
     if (str->data) {
@@ -989,6 +996,11 @@ void zvec_free_string(ZVecString *str) {
   }
 }
 
+/**
+ * @brief Create a string array with given count
+ * @param count Number of strings in the array
+ * @return New string array, or NULL on failure
+ */
 ZVecStringArray *zvec_string_array_create(size_t count) {
   ZVecStringArray *array = (ZVecStringArray *)malloc(sizeof(ZVecStringArray));
   array->count = count;
@@ -997,6 +1009,12 @@ ZVecStringArray *zvec_string_array_create(size_t count) {
   return array;
 }
 
+/**
+ * @brief Create a string array from C-string array
+ * @param strings Array of C-strings
+ * @param count Number of strings
+ * @return New string array, or NULL on failure
+ */
 ZVecStringArray *zvec_string_array_create_from_strings(const char **strings,
                                                        size_t count) {
   if (!strings || count == 0) {
@@ -1009,6 +1027,12 @@ ZVecStringArray *zvec_string_array_create_from_strings(const char **strings,
   return array;
 }
 
+/**
+ * @brief Add a string to string array at specified index
+ * @param array String array to add to
+ * @param idx Index to add at
+ * @param str String to add
+ */
 void zvec_string_array_add(ZVecStringArray *array, size_t idx,
                            const char *str) {
   if (idx >= array->count) return;
@@ -1019,6 +1043,10 @@ void zvec_string_array_add(ZVecStringArray *array, size_t idx,
   array->strings[idx].capacity = len + 1;
 }
 
+/**
+ * @brief Destroy a string array and free all memory
+ * @param array String array to destroy (can be NULL)
+ */
 void zvec_string_array_destroy(ZVecStringArray *array) {
   if (!array) return;
   for (size_t i = 0; i < array->count; i++) {
@@ -1029,6 +1057,11 @@ void zvec_string_array_destroy(ZVecStringArray *array) {
 }
 
 
+/**
+ * @brief Create a mutable byte array with given capacity
+ * @param capacity Initial capacity in bytes
+ * @return New byte array, or NULL on failure
+ */
 // Byte array helper functions
 ZVecMutableByteArray *zvec_byte_array_create(size_t capacity) {
   ZVecMutableByteArray *array =
@@ -1047,6 +1080,10 @@ ZVecMutableByteArray *zvec_byte_array_create(size_t capacity) {
   return array;
 }
 
+/**
+ * @brief Destroy a byte array and free all memory
+ * @param array Byte array to destroy (can be NULL)
+ */
 void zvec_byte_array_destroy(ZVecMutableByteArray *array) {
   if (!array) return;
   if (array->data) {
@@ -1055,6 +1092,11 @@ void zvec_byte_array_destroy(ZVecMutableByteArray *array) {
   free(array);
 }
 
+/**
+ * @brief Create a float array with given count
+ * @param count Number of floats in the array
+ * @return New float array, or NULL on failure
+ */
 // Float array helper functions
 ZVecFloatArray *zvec_float_array_create(size_t count) {
   ZVecFloatArray *array = (ZVecFloatArray *)malloc(sizeof(ZVecFloatArray));
@@ -1071,6 +1113,10 @@ ZVecFloatArray *zvec_float_array_create(size_t count) {
   return array;
 }
 
+/**
+ * @brief Destroy a float array and free all memory
+ * @param array Float array to destroy (can be NULL)
+ */
 void zvec_float_array_destroy(ZVecFloatArray *array) {
   if (!array) return;
   if (array->data) {
@@ -1258,6 +1304,11 @@ uint64_t zvec_collection_options_get_max_doc_count_per_segment(
 // CollectionStats functions implementation
 // =============================================================================
 
+/**
+ * @brief Get document count from collection stats
+ * @param stats Collection stats handle
+ * @return Document count, or 0 if stats is NULL
+ */
 uint64_t zvec_collection_stats_get_doc_count(const ZVecCollectionStats *stats) {
   if (!stats) {
     return 0;
@@ -1266,6 +1317,11 @@ uint64_t zvec_collection_stats_get_doc_count(const ZVecCollectionStats *stats) {
   return ptr->doc_count;
 }
 
+/**
+ * @brief Get index count from collection stats
+ * @param stats Collection stats handle
+ * @return Number of indexes, or 0 if stats is NULL
+ */
 size_t zvec_collection_stats_get_index_count(const ZVecCollectionStats *stats) {
   if (!stats) {
     return 0;
@@ -1274,6 +1330,13 @@ size_t zvec_collection_stats_get_index_count(const ZVecCollectionStats *stats) {
   return ptr->index_completeness.size();
 }
 
+/**
+ * @brief Get index name at specified index
+ * @param stats Collection stats handle
+ * @param index Index position (0-based)
+ * @return Index name C-string, or NULL if invalid
+ * @note Returned string is owned by stats, do not free
+ */
 const char *zvec_collection_stats_get_index_name(
     const ZVecCollectionStats *stats, size_t index) {
   if (!stats) {
@@ -1289,6 +1352,12 @@ const char *zvec_collection_stats_get_index_name(
   return it->first.c_str();
 }
 
+/**
+ * @brief Get index completeness at specified index
+ * @param stats Collection stats handle
+ * @param index Index position (0-based)
+ * @return Completeness value (0.0-1.0), or 0.0 if invalid
+ */
 float zvec_collection_stats_get_index_completeness(
     const ZVecCollectionStats *stats, size_t index) {
   if (!stats) {
@@ -1307,53 +1376,46 @@ float zvec_collection_stats_get_index_completeness(
 // IndexParams functions implementation
 // =============================================================================
 
+/**
+ * @brief Create index parameters of specified type
+ * @param index_type Type of index to create
+ * @return New index params handle, or NULL on failure
+ * @note Caller must call zvec_index_params_destroy() to free
+ */
 ZVecIndexParams *zvec_index_params_create(ZVecIndexType index_type) {
   ZVEC_TRY_RETURN_NULL(
       "Failed to create ZVecIndexParams",
-      // Create appropriate C++ IndexParams based on type with default
-      // parameters
+      // Create appropriate C++ IndexParams based on type with default parameters
       zvec::IndexParams *cpp_params = nullptr;
-
-      printf("[CREATE] index_type param: %d\n", index_type);
 
       switch (index_type) {
         case ZVEC_INDEX_TYPE_INVERT:
           cpp_params =
               new zvec::InvertIndexParams(true,    // enable_range_optimization
                                           false);  // enable_extended_wildcard
-          printf("[CREATE] created InvertIndexParams\n");
           break;
         case ZVEC_INDEX_TYPE_HNSW:
           cpp_params =
               new zvec::HnswIndexParams(zvec::MetricType::L2,  // metric_type
                                         16,                    // m (default)
-                                        200,  // ef_construction (default)
+                                        200,                   // ef_construction (default)
                                         zvec::QuantizeType::UNDEFINED);
-          printf("[CREATE] created HnswIndexParams\n");
           break;
         case ZVEC_INDEX_TYPE_IVF:
           cpp_params =
               new zvec::IVFIndexParams(zvec::MetricType::L2,  // metric_type
-                                       100,    // n_list (default)
-                                       10,     // n_iters (default)
-                                       false,  // use_soar (default)
+                                       100,                   // n_list (default)
+                                       10,                    // n_iters (default)
+                                       false,                 // use_soar (default)
                                        zvec::QuantizeType::UNDEFINED);
-          printf("[CREATE] created IVFIndexParams\n");
           break;
         case ZVEC_INDEX_TYPE_FLAT:
         default:
           cpp_params =
               new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
                                         zvec::QuantizeType::UNDEFINED);
-          printf("[CREATE] created FlatIndexParams (type=%d, default=%d)\n",
-                 (int)zvec::IndexType::FLAT,
-                 index_type == ZVEC_INDEX_TYPE_FLAT ? 1 : 0);
           break;
       }
-
-      // Debug: check type right after creation
-      printf("[CREATE] cpp_params->type() = %d\n",
-             static_cast<int>(cpp_params->type()));
 
       // Return as opaque pointer (raw pointer)
       return reinterpret_cast<ZVecIndexParams *>(cpp_params);)
@@ -1361,12 +1423,22 @@ ZVecIndexParams *zvec_index_params_create(ZVecIndexType index_type) {
   return nullptr;
 }
 
+/**
+ * @brief Destroy index parameters and free memory
+ * @param params Index params to destroy (can be NULL)
+ */
 void zvec_index_params_destroy(ZVecIndexParams *params) {
   if (params) {
     delete reinterpret_cast<zvec::IndexParams *>(params);
   }
 }
 
+/**
+ * @brief Set metric type for vector index parameters
+ * @param params Index parameters (must be vector index type)
+ * @param metric_type Metric type to set
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_set_metric_type(ZVecIndexParams *params,
                                                 ZVecMetricType metric_type) {
   if (!params) {
@@ -1386,6 +1458,11 @@ ZVecErrorCode zvec_index_params_set_metric_type(ZVecIndexParams *params,
   return ZVEC_OK;
 }
 
+/**
+ * @brief Get metric type from index parameters
+ * @param params Index parameters
+ * @return Metric type, or default (L2) if NULL or not vector index
+ */
 ZVecMetricType zvec_index_params_get_metric_type(
     const ZVecIndexParams *params) {
   if (!params) {
@@ -1404,6 +1481,12 @@ ZVecMetricType zvec_index_params_get_metric_type(
   return ZVEC_METRIC_TYPE_L2;
 }
 
+/**
+ * @brief Set quantization type for vector index parameters
+ * @param params Index parameters (must be vector index type)
+ * @param quantize_type Quantization type to set
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_set_quantize_type(
     ZVecIndexParams *params, ZVecQuantizeType quantize_type) {
   if (!params) {
@@ -1424,6 +1507,11 @@ ZVecErrorCode zvec_index_params_set_quantize_type(
   return ZVEC_OK;
 }
 
+/**
+ * @brief Get quantization type from index parameters
+ * @param params Index parameters
+ * @return Quantization type, or UNDEFINED if NULL or not vector index
+ */
 ZVecQuantizeType zvec_index_params_get_quantize_type(
     const ZVecIndexParams *params) {
   if (!params) {
@@ -1442,6 +1530,11 @@ ZVecQuantizeType zvec_index_params_get_quantize_type(
   return ZVEC_QUANTIZE_TYPE_UNDEFINED;
 }
 
+/**
+ * @brief Get index type from index parameters
+ * @param params Index parameters
+ * @return Index type, or FLAT as default if NULL
+ */
 ZVecIndexType zvec_index_params_get_type(const ZVecIndexParams *params) {
   if (!params) {
     return ZVEC_INDEX_TYPE_FLAT;  // Default
@@ -1451,6 +1544,13 @@ ZVecIndexType zvec_index_params_get_type(const ZVecIndexParams *params) {
       static_cast<uint32_t>(cpp_params->type()));
 }
 
+/**
+ * @brief Set HNSW-specific parameters
+ * @param params Index parameters (must be HNSW type)
+ * @param m Graph connectivity parameter
+ * @param ef_construction Construction exploration factor
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_set_hnsw_params(ZVecIndexParams *params, int m,
                                                 int ef_construction) {
   if (!params) {
@@ -1470,6 +1570,13 @@ ZVecErrorCode zvec_index_params_set_hnsw_params(ZVecIndexParams *params, int m,
   return ZVEC_OK;
 }
 
+/**
+ * @brief Get HNSW parameters
+ * @param params Index parameters (must be HNSW type)
+ * @param out_m Output for m parameter (can be NULL)
+ * @param out_ef_construction Output for ef_construction (can be NULL)
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_get_hnsw_params(const ZVecIndexParams *params,
                                                 int *out_m,
                                                 int *out_ef_construction) {
@@ -1491,6 +1598,11 @@ ZVecErrorCode zvec_index_params_get_hnsw_params(const ZVecIndexParams *params,
   return ZVEC_OK;
 }
 
+/**
+ * @brief Get HNSW m parameter
+ * @param params Index parameters (must be HNSW type)
+ * @return m parameter value, or 0 on error
+ */
 int zvec_index_params_get_hnsw_m(const ZVecIndexParams *params) {
   if (!params) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
@@ -1507,6 +1619,11 @@ int zvec_index_params_get_hnsw_m(const ZVecIndexParams *params) {
   return hnsw_params->m();
 }
 
+/**
+ * @brief Get HNSW ef_construction parameter
+ * @param params Index parameters (must be HNSW type)
+ * @return ef_construction parameter value, or 0 on error
+ */
 int zvec_index_params_get_hnsw_ef_construction(const ZVecIndexParams *params) {
   if (!params) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
@@ -1523,6 +1640,14 @@ int zvec_index_params_get_hnsw_ef_construction(const ZVecIndexParams *params) {
   return hnsw_params->ef_construction();
 }
 
+/**
+ * @brief Set IVF-specific parameters
+ * @param params Index parameters (must be IVF type)
+ * @param n_list Number of clusters
+ * @param n_iters Number of k-means iterations
+ * @param use_soar Whether to use SOAR optimization
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_set_ivf_params(ZVecIndexParams *params,
                                                int n_list, int n_iters,
                                                bool use_soar) {
@@ -1544,6 +1669,14 @@ ZVecErrorCode zvec_index_params_set_ivf_params(ZVecIndexParams *params,
   return ZVEC_OK;
 }
 
+/**
+ * @brief Get IVF parameters
+ * @param params Index parameters (must be IVF type)
+ * @param out_n_list Output for n_list (can be NULL)
+ * @param out_n_iters Output for n_iters (can be NULL)
+ * @param out_use_soar Output for use_soar (can be NULL)
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_get_ivf_params(const ZVecIndexParams *params,
                                                int *out_n_list,
                                                int *out_n_iters,
@@ -1566,6 +1699,13 @@ ZVecErrorCode zvec_index_params_get_ivf_params(const ZVecIndexParams *params,
   return ZVEC_OK;
 }
 
+/**
+ * @brief Set Invert index parameters
+ * @param params Index parameters (must be INVERT type)
+ * @param enable_range_opt Enable range optimization
+ * @param enable_wildcard Enable wildcard search
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_set_invert_params(ZVecIndexParams *params,
                                                   bool enable_range_opt,
                                                   bool enable_wildcard) {
@@ -1586,6 +1726,13 @@ ZVecErrorCode zvec_index_params_set_invert_params(ZVecIndexParams *params,
   return ZVEC_OK;
 }
 
+/**
+ * @brief Get Invert index parameters
+ * @param params Index parameters (must be INVERT type)
+ * @param out_enable_range_opt Output for enable_range_optimization (can be NULL)
+ * @param out_enable_wildcard Output for enable_extended_wildcard (can be NULL)
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_index_params_get_invert_params(const ZVecIndexParams *params,
                                                   bool *out_enable_range_opt,
                                                   bool *out_enable_wildcard) {
@@ -5337,6 +5484,15 @@ ZVecErrorCode zvec_group_by_vector_query_set_flat_params(
 // Index Interface Implementation
 // =============================================================================
 
+/**
+ * @brief Create index on a collection column
+ * @param collection Collection handle
+ * @param column_name Column name to create index on
+ * @param index_params Index parameters
+ * @return ZVEC_OK on success, error code on failure
+ * @note index_params is cloned internally, caller should still call
+ *       zvec_index_params_destroy() to free the original
+ */
 ZVecErrorCode zvec_collection_create_index(
     ZVecCollection *collection, const char *column_name,
     const ZVecIndexParams *index_params) {
@@ -5360,6 +5516,12 @@ ZVecErrorCode zvec_collection_create_index(
     return status_to_error_code(status);)
 }
 
+/**
+ * @brief Drop index from a collection column
+ * @param collection Collection handle
+ * @param column_name Column name to drop index from
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_collection_drop_index(ZVecCollection *collection,
                                           const char *column_name) {
   if (!collection || !column_name) {
@@ -5378,6 +5540,11 @@ ZVecErrorCode zvec_collection_drop_index(ZVecCollection *collection,
       return status_to_error_code(status);)
 }
 
+/**
+ * @brief Optimize collection (rebuild indexes, merge segments)
+ * @param collection Collection handle
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_collection_optimize(ZVecCollection *collection) {
   if (!collection) {
     set_last_error("Invalid argument: collection cannot be null");
@@ -5398,6 +5565,13 @@ ZVecErrorCode zvec_collection_optimize(ZVecCollection *collection) {
 // Column Interface Implementation
 // =============================================================================
 
+/**
+ * @brief Add a column to collection
+ * @param collection Collection handle
+ * @param field_schema Field schema (deep-copied, caller retains ownership)
+ * @param expression Default value expression (can be NULL for no default)
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_collection_add_column(ZVecCollection *collection,
                                           const ZVecFieldSchema *field_schema,
                                           const char *expression) {
@@ -5426,6 +5600,12 @@ ZVecErrorCode zvec_collection_add_column(ZVecCollection *collection,
       return status_to_error_code(status);)
 }
 
+/**
+ * @brief Drop a column from collection
+ * @param collection Collection handle
+ * @param column_name Column name to drop
+ * @return ZVEC_OK on success, error code on failure
+ */
 ZVecErrorCode zvec_collection_drop_column(ZVecCollection *collection,
                                           const char *column_name) {
   if (!collection || !column_name) {
