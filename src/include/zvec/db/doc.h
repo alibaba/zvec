@@ -99,7 +99,7 @@ class Doc {
     op_ = op;
   }
 
-  Operator get_operator() {
+  Operator get_operator() const {
     return op_;
   }
 
