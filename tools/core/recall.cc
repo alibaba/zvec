@@ -97,10 +97,8 @@ class Recall {
     // Prepare file handler
     vector<pair<fstream *, fstream *>> output_fs;
     if (!output_.empty()) {
-      string cmd = "mkdir -p " + output_;
-      int ret = system(cmd.c_str());
-      if (ret != 0) {
-        LOG_ERROR("execute cmd %s failed, ret=%d", cmd.c_str(), ret);
+      if (!ailego::FileHelper::MakePath(output_.c_str())) {
+        LOG_ERROR("make path %s failed", output_.c_str());
         return;
       }
       struct stat sb;
