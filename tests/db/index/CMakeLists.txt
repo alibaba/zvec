@@ -25,12 +25,6 @@ if(MSVC)
     "storage/mem_store_test.cc"
     "column/inverted_column/inverted_indexer_util_test.cc"
     "segment/segment_test.cc"
-#    "buffer/buffer_manager_test.cc"
-#    "flat/flat_streamer_test.cc"
-#    "flat_sparse/flat_sparse_streamer_test.cc"
-#    "hnsw/hnsw_streamer_test.cc"
-#    "hnsw_sparse/hnsw_sparse_builder_test.cc"
-#    "hnsw_sparse/hnsw_sparse_streamer_test.cc"
   )
   foreach(_excl ${_MSVC_EXCLUDE_TESTS})
     list(FILTER ALL_TEST_SRCS EXCLUDE REGEX "${_excl}")
