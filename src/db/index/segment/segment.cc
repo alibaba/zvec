@@ -2286,7 +2286,7 @@ Status SegmentImpl::flush() {
       return Status::InternalError("Failed to remove WAL file");
     }
     wal_file_.reset();
-    LOG_DEBUG("WAL cleaned up: segment[%d]", id());
+    LOG_INFO("WAL cleaned up: segment[%d]", id());
   }
 
   if (delete_snapshot_path_suffix_current != UINT32_MAX) {
@@ -4163,8 +4163,8 @@ Status SegmentImpl::recover() {
   std::string wal_file_path =
       FileHelper::MakeWalPath(path_, segment_meta_->id(), mem_block.id_);
   if (!std::filesystem::exists(wal_file_path)) {
-    LOG_DEBUG("WAL recovery skipped: no WAL file exists [%s]",
-              wal_file_path.c_str());
+    LOG_INFO("WAL recovery skipped: no WAL file exists [%s]",
+             wal_file_path.c_str());
     return Status::OK();
   }
 
@@ -4192,14 +4192,14 @@ Status SegmentImpl::recover() {
                                  " for read");
   }
 
-  LOG_DEBUG("WAL recovery started [%s]", wal_file_path.c_str());
+  LOG_INFO("WAL recovery started [%s]", wal_file_path.c_str());
 
   std::lock_guard<std::mutex> lock(seg_mtx_);
 
   while (true) {
     std::string buf = recover_wal_file->next();
     if (buf.empty()) {
-      LOG_DEBUG("WAL recovery completed [%s]", wal_file_path.c_str());
+      LOG_INFO("WAL recovery completed [%s]", wal_file_path.c_str());
       break;
     }
     total_recovered_doc_count++;
