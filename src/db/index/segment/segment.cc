@@ -4422,11 +4422,13 @@ Result<Segment::Ptr> Segment::CreateAndOpen(
   // check or create path
   if (FileHelper::DirectoryExists(segment_path)) {
     return tl::make_unexpected(Status::InternalError(
-        "Segment path is already exists: ", segment_path));
+        "Segment create failed: segment path already exists [", segment_path,
+        "]"));
   } else {
     if (!FileHelper::CreateDirectory(segment_path)) {
       return tl::make_unexpected(Status::InternalError(
-          "Create segment directory failed: ", segment_path));
+          "Segment create failed: unable to create segment directory [",
+          segment_path, "]"));
     }
   }
 
@@ -4449,8 +4451,8 @@ Result<Segment::Ptr> Segment::Open(const std::string &path,
   auto segment_path = FileHelper::MakeSegmentPath(path, segment_meta.id());
   // check path
   if (!FileHelper::DirectoryExists(segment_path)) {
-    return tl::make_unexpected(
-        Status::InternalError("Segment path is not exist: ", segment_path));
+    return tl::make_unexpected(Status::InternalError(
+        "Segment open failed: segment path not found [", segment_path, "]"));
   }
 
   auto s = segment->Open(options);
