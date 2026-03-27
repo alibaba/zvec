@@ -2,7 +2,7 @@ name: Windows Build
 
 on:
   push:
-    branches: [ "main", "feat/win-compilation-merge-new" ]
+    branches: [ "main", "feat/win-compilationw" ]
     paths-ignore:
       - '**.md'
   merge_group:
@@ -107,7 +107,7 @@ jobs:
       - name: Run Python Tests
         run: |
           cd "$env:GITHUB_WORKSPACE"
-          python -m pytest python/tests/
+          python -m pytest python/tests/ --basetemp=./.pytest_tmp
         shell: powershell
 
       - name: Run C++ Examples
