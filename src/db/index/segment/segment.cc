@@ -2281,8 +2281,9 @@ Status SegmentImpl::flush() {
   if (wal_file_) {
     auto ret = wal_file_->remove();
     if (ret != 0) {
-      LOG_ERROR("WAL cleanup failed: unable to remove WAL file of segment[%d]",
-                id());
+      LOG_ERROR(
+          "WAL cleanup failed: unable to remove WAL file from segment[%d]",
+          id());
       return Status::InternalError("Failed to remove WAL file");
     }
     wal_file_.reset();
