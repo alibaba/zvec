@@ -211,23 +211,13 @@ FIELD_VALUE_VALID_LIST = [
 FIELD_VALUE_INVALID_LIST = [
     (
         "bool_field",
-        [
-            "True",
-            "False",
-            "",
-        ],
+        ["True", "False", "", "测试"],
     ),
-    ("float_field", ["invalid", [1.0], {"value": 1.0}]),
-    ("double_field", ["invalid", [1.0], {"value": 1.0}]),
+    ("float_field", ["invalid", [1.0], {"value": 1.0}, "测试"]),
+    ("double_field", ["invalid", [1.0], {"value": 1.0}, "测试"]),
     (
         "int32_field",
-        [
-            "invalid",
-            [1],
-            {"value": 1},
-            2147483648,
-            -2147483649,
-        ],
+        ["invalid", [1], {"value": 1}, 2147483648, -2147483649, "测试"],
     ),
     (
         "int64_field",
@@ -237,27 +227,16 @@ FIELD_VALUE_INVALID_LIST = [
             {"value": 1},
             9223372036854775808,
             -9223372036854775809,
+            "测试",
         ],
     ),
     (
         "uint32_field",
-        [
-            "invalid",
-            [1],
-            {"value": 1},
-            4294967296,
-            -1,
-        ],
+        ["invalid", [1], {"value": 1}, 4294967296, -1, "测试"],
     ),
     (
         "uint64_field",
-        [
-            "invalid",
-            [1],
-            {"value": 1},
-            18446744073709551616,
-            -1,
-        ],
+        ["invalid", [1], {"value": 1}, 18446744073709551616, -1, "测试"],
     ),
     (
         "string_field",
@@ -271,84 +250,35 @@ FIELD_VALUE_INVALID_LIST = [
     ),
     (
         "array_bool_field",
-        [
-            True,
-            False,
-            [True, "invalid"],
-            {"key": True},
-        ],
+        [True, False, [True, "invalid"], {"key": True}, "测试"],
     ),
     (
         "array_float_field",
-        [
-            [1.0, "invalid"],
-            [1.0, None],
-            "invalid",
-            [1.0, [2.0]],
-            1.0,
-        ],
+        [[1.0, "invalid"], [1.0, None], "invalid", [1.0, [2.0]], 1.0, "测试"],
     ),
     (
         "array_double_field",
-        [
-            [1.0, "invalid"],
-            [1.0, None],
-            "invalid",
-            [1.0, [2.0]],
-            1.0,
-        ],
+        [[1.0, "invalid"], [1.0, None], "invalid", [1.0, [2.0]], 1.0, "测试"],
     ),
     (
         "array_int32_field",
-        [
-            [1, "invalid"],
-            [1, None],
-            "invalid",
-            [1, [2]],
-            1,
-        ],
+        [[1, "invalid"], [1, None], "invalid", [1, [2]], 1, "测试"],
     ),
     (
         "array_int64_field",
-        [
-            [1, "invalid"],
-            [1, None],
-            "invalid",
-            [1, [2]],
-            1,
-        ],
+        [[1, "invalid"], [1, None], "invalid", [1, [2]], 1, "测试"],
     ),
     (
         "array_uint32_field",
-        [
-            [1, "invalid"],
-            [1, None],
-            [1, -1],
-            "invalid",
-            [1, [2]],
-            1,
-        ],
+        [[1, "invalid"], [1, None], [1, -1], "invalid", [1, [2]], 1, "测试"],
     ),
     (
         "array_uint64_field",
-        [
-            [1, "invalid"],
-            [1, None],
-            [1, -1],
-            "invalid",
-            [1, [2]],
-            1,
-        ],
+        [[1, "invalid"], [1, None], [1, -1], "invalid", [1, [2]], 1, "测试"],
     ),
     (
         "array_string_field",
-        [
-            ["valid", 123],
-            ["valid", None],
-            "invalid",
-            [["nested"]],
-            123,
-        ],
+        [["valid", 123], ["valid", None], "invalid", [["nested"]], 123, "测试"],
     ),
 ]
 
