@@ -1,5 +1,10 @@
 {
   "cohere_1m": {
+    "warmup": {
+      "enabled": true,
+      "duration": 15,
+      "num_concurrency": "4"
+    },
     "common": {
       "case_type": "Performance768D1M",
       "num_concurrency": "12,14,16,18,20",
@@ -18,7 +23,7 @@
       "path": "cohere_1m_omega",
       "db_label": "16c64g-v0.1-omega-m15-ef300",
       "target_recalls": [
-        0.91
+        0.90
       ],
       "args": {
         "min_vector_threshold": 100000,
@@ -35,6 +40,11 @@
     }
   },
   "cohere_10m": {
+    "warmup": {
+      "enabled": true,
+      "duration": 15,
+      "num_concurrency": "4"
+    },
     "common": {
       "case_type": "Performance768D10M",
       "num_concurrency": "12,14,16,18,20",
@@ -54,7 +64,7 @@
       "path": "cohere_10m_omega",
       "db_label": "16c64g-v0.1-omega-m50-ef300",
       "target_recalls": [
-        0.91
+        0.95
       ],
       "args": {
         "min_vector_threshold": 100000,

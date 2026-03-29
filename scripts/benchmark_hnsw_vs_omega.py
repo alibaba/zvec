@@ -79,7 +79,71 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Directory containing VectorDBBench JSON result files",
     )
+    parser.add_argument(
+        "--concurrent-warmup",
+        action="store_true",
+        help="Run a concurrent-only warmup pass before the measured search benchmark",
+    )
+    parser.add_argument(
+        "--warmup-duration",
+        type=int,
+        default=None,
+        help="Warmup concurrency duration in seconds "
+        "(default: config warmup.duration or 15)",
+    )
+    parser.add_argument(
+        "--warmup-num-concurrency",
+        type=str,
+        default=None,
+        help="Warmup concurrency list, e.g. '4' or '4,8' "
+        "(default: config warmup.num_concurrency or the first configured concurrency)",
+    )
     return parser.parse_args()
+
+
+def resolve_warmup_settings(
+    args: argparse.Namespace, common: dict[str, object], config: dict[str, object]
+) -> tuple[bool, int, str]:
+    warmup_config = config.get("warmup", {})
+    enabled = args.concurrent_warmup or bool(warmup_config.get("enabled", False))
+    configured_concurrency = str(common.get("num_concurrency", "1"))
+    default_num_concurrency = str(
+        warmup_config.get("num_concurrency", configured_concurrency.split(",")[0])
+    )
+    num_concurrency = args.warmup_num_concurrency or default_num_concurrency
+    duration = args.warmup_duration or int(warmup_config.get("duration", 15))
+    return enabled, duration, num_concurrency
+
+
+def run_concurrent_warmup(
+    *,
+    label: str,
+    vectordbbench_cmd: list[str],
+    client_name: str,
+    path: Path,
+    db_label: str,
+    case_type: str,
+    common_args: dict[str, object],
+    specific_args: dict[str, object],
+    vectordbbench_root: Path,
+    dry_run: bool,
+    extra_flags: list[str] | None = None,
+) -> int:
+    print(f"\n[Warmup] Running concurrent-only warmup for {label}...")
+    warmup_flags = ["skip-drop-old", "skip-load", "skip-search-serial"]
+    if extra_flags:
+        warmup_flags.extend(extra_flags)
+    warmup_cmd = build_base_command(
+        vectordbbench_cmd,
+        client_name,
+        path,
+        db_label,
+        case_type,
+        common_args,
+        specific_args,
+        warmup_flags,
+    )
+    return run_command(warmup_cmd, vectordbbench_root, dry_run=dry_run)
 
 
 def main() -> int:
@@ -102,6 +166,9 @@ def main() -> int:
     hnsw_config = must_get(config, "hnsw")
     omega_config = must_get(config, "omega")
     profiling_config = config.get("profiling", {})
+    warmup_enabled, warmup_duration, warmup_num_concurrency = resolve_warmup_settings(
+        args, common, config
+    )
 
     case_type = must_get(common, "case_type")
     hnsw_path = resolve_index_path(benchmark_dir, must_get(hnsw_config, "path"))
@@ -117,6 +184,9 @@ def main() -> int:
     hnsw_common_args = {k: v for k, v in common.items() if k != "case_type"}
     hnsw_specific_args = hnsw_config.get("args", {})
     omega_specific_args = omega_config.get("args", {})
+    warmup_common_args = dict(hnsw_common_args)
+    warmup_common_args["num_concurrency"] = warmup_num_concurrency
+    warmup_common_args["concurrency_duration"] = warmup_duration
 
     print("=" * 70)
     print(f"VectorDBBench: Zvec HNSW vs OMEGA ({dataset_name})")
@@ -130,6 +200,14 @@ def main() -> int:
     print(f"hnsw_path: {hnsw_path}")
     print(f"omega_path: {omega_path}")
     print(f"target_recalls: {target_recalls}")
+    print(
+        "concurrent_warmup: "
+        + (
+            f"enabled (num_concurrency={warmup_num_concurrency}, duration={warmup_duration}s)"
+            if warmup_enabled
+            else "disabled"
+        )
+    )
     print(
         "build_mode: "
         + ("retrain model only (reuse existing index)" if args.retrain_only else "build index + train model")
@@ -166,6 +244,22 @@ def main() -> int:
                 )
 
         if not args.build_only:
+            if warmup_enabled:
+                warmup_ret = run_concurrent_warmup(
+                    label="HNSW",
+                    vectordbbench_cmd=vectordbbench_cmd,
+                    client_name="zvec",
+                    path=hnsw_path,
+                    db_label=hnsw_db_label,
+                    case_type=case_type,
+                    common_args=warmup_common_args,
+                    specific_args=hnsw_specific_args,
+                    vectordbbench_root=vectordbbench_root,
+                    dry_run=args.dry_run,
+                )
+                if warmup_ret != 0 and not args.dry_run:
+                    print("ERROR: HNSW concurrent warmup failed!")
+                    return 1
             print("\n[Phase 2] Running HNSW search benchmark...")
             before_files = snapshot_result_files(results_dir)
             cmd = build_base_command(
@@ -267,6 +361,24 @@ def main() -> int:
         if not args.build_only:
             for target_recall in target_recalls:
                 print_header(f"OMEGA Search Benchmark (target_recall={target_recall})")
+                if warmup_enabled:
+                    warmup_extra_flags = ["retrain-only"] if args.retrain_only else None
+                    warmup_ret = run_concurrent_warmup(
+                        label=f"OMEGA target_recall={target_recall}",
+                        vectordbbench_cmd=vectordbbench_cmd,
+                        client_name="zvecomega",
+                        path=omega_path,
+                        db_label=omega_db_label,
+                        case_type=case_type,
+                        common_args=warmup_common_args,
+                        specific_args={**omega_specific_args, "target_recall": target_recall},
+                        vectordbbench_root=vectordbbench_root,
+                        dry_run=args.dry_run,
+                        extra_flags=warmup_extra_flags,
+                    )
+                    if warmup_ret != 0 and not args.dry_run:
+                        print("ERROR: OMEGA concurrent warmup failed!")
+                        return 1
                 before_files = snapshot_result_files(results_dir)
                 search_flags = ["skip-drop-old", "skip-load"]
                 if args.retrain_only:
