@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-import importlib
+from __future__ import annotations
+
 import json
 import os
 import re
+import shutil
 import subprocess
-import sys
-import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,27 @@ class BenchmarkResult:
 
 
 KV_PATTERN = re.compile(r"([A-Za-z_]+)=([^\s,]+)")
+AVG_LINE_PATTERN = re.compile(r"Avg latency:\s*([0-9.]+)ms qps:\s*([0-9.]+)")
+PERCENTILE_PATTERN = re.compile(r"(\d+)\s+Percentile:\s*([0-9.]+)\s+ms")
+PROCESS_LINE_PATTERN = re.compile(
+    r"Process query:\s*(\d+), total process time:\s*(\d+)ms, duration:\s*(\d+)ms"
+)
+RECALL_PATTERN = re.compile(r"Recall@(\d+):\s*([0-9.]+)")
+
+_ZVEC_INITIALIZED = False
+
+DATASET_SPECS: dict[str, dict[str, Any]] = {
+    "cohere_1m": {
+        "dataset_dirname": "cohere/cohere_medium_1m",
+        "dimension": 768,
+        "metric_type": "COSINE",
+    },
+    "cohere_10m": {
+        "dataset_dirname": "cohere/cohere_large_10m",
+        "dimension": 768,
+        "metric_type": "COSINE",
+    },
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -51,22 +73,25 @@ def load_dataset_config(path: Path, dataset_name: str) -> dict[str, Any]:
     return dataset_config
 
 
+def must_get(config: dict[str, Any], key: str) -> Any:
+    if key not in config:
+        raise KeyError(f"Missing required config key: {key}")
+    return config[key]
+
+
+def print_header(title: str) -> None:
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
+
+
 def resolve_paths(
     script_path: Path,
     config: dict[str, Any],
     zvec_root_arg: str | None,
-    vectordbbench_root_arg: str | None,
     benchmark_dir_arg: str | None,
-    results_dir_arg: str | None,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, Path]:
     zvec_root = Path(zvec_root_arg).resolve() if zvec_root_arg else script_path.parent.parent
-    vectordbbench_root = (
-        Path(vectordbbench_root_arg).resolve()
-        if vectordbbench_root_arg
-        else Path(
-            os.environ.get("VECTORDBBENCH_ROOT", zvec_root.parent / "VectorDBBench")
-        ).resolve()
-    )
 
     config_benchmark_dir = config.get("benchmark_dir")
     if benchmark_dir_arg:
@@ -74,29 +99,14 @@ def resolve_paths(
     elif config_benchmark_dir:
         benchmark_dir = Path(config_benchmark_dir).expanduser().resolve()
     else:
-        benchmark_dir = Path(
-            os.environ.get("ZVEC_BENCHMARK_DIR", zvec_root / "benchmark_results")
-        ).resolve()
+        benchmark_dir = (zvec_root / "benchmark_results").resolve()
 
-    source_results_dir = vectordbbench_root / "vectordb_bench" / "results" / "Zvec"
-    if results_dir_arg:
-        results_dir = Path(results_dir_arg).resolve()
-    elif config.get("results_dir"):
-        results_dir = Path(config["results_dir"]).expanduser().resolve()
-    elif source_results_dir.exists():
-        results_dir = source_results_dir
-    else:
-        try:
-            bench_config = importlib.import_module("vectordb_bench").config
-            results_dir = Path(bench_config.RESULTS_LOCAL_DIR).resolve() / "Zvec"
-        except Exception:
-            results_dir = source_results_dir
-
-    return zvec_root, vectordbbench_root, benchmark_dir, results_dir
+    return zvec_root, benchmark_dir
 
 
-def resolve_vectordbbench_command() -> list[str]:
-    return [sys.executable, "-m", "vectordb_bench.cli.vectordbbench"]
+def resolve_index_path(benchmark_dir: Path, configured_path: str) -> Path:
+    path = Path(configured_path).expanduser()
+    return path.resolve() if path.is_absolute() else (benchmark_dir / path).resolve()
 
 
 def parse_scalar(value: str) -> Any:
@@ -122,15 +132,12 @@ def avg_metric(records: list[dict[str, Any]], key: str) -> float | None:
     return sum(values) / len(values)
 
 
-def percentile_metric(
-    records: list[dict[str, Any]], key: str, percentile: float
-) -> float | None:
+def percentile_metric(records: list[dict[str, Any]], key: str, percentile: float) -> float | None:
     values = sorted(float(record[key]) for record in records if key in record)
     if not values:
         return None
     if len(values) == 1:
         return values[0]
-
     rank = (len(values) - 1) * percentile / 100.0
     lower = int(rank)
     upper = min(lower + 1, len(values) - 1)
@@ -140,69 +147,90 @@ def percentile_metric(
     return values[lower] * (1.0 - weight) + values[upper] * weight
 
 
-def parse_serial_runner_summary(output: str) -> dict[str, Any]:
-    summary = {}
-    for line in output.splitlines():
-        if "search entire test_data:" not in line:
-            continue
-        summary = parse_key_values(line)
-    return summary
-
-
 def parse_query_records(output: str, prefix: str) -> list[dict[str, Any]]:
     records = []
     for line in output.splitlines():
-        if prefix not in line:
-            continue
-        records.append(parse_key_values(line))
+        if prefix in line:
+            records.append(parse_key_values(line))
     return records
 
 
-def build_hnsw_profile(metrics: dict[str, Any], output: str) -> dict[str, Any]:
+def parse_bench_output(output: str) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for line in output.splitlines():
+        if (match := PROCESS_LINE_PATTERN.search(line)) is not None:
+            metrics["process_query_count"] = int(match.group(1))
+            metrics["total_process_time_ms"] = int(match.group(2))
+            metrics["duration_ms"] = int(match.group(3))
+        elif (match := AVG_LINE_PATTERN.search(line)) is not None:
+            metrics["avg_latency_ms"] = float(match.group(1))
+            metrics["qps"] = float(match.group(2))
+        elif (match := PERCENTILE_PATTERN.search(line)) is not None:
+            metrics[f"p{match.group(1)}_latency_ms"] = float(match.group(2))
+    return metrics
+
+
+def parse_recall_output(output: str, topk: int) -> float | None:
+    recall_by_k: dict[int, float] = {}
+    for line in output.splitlines():
+        match = RECALL_PATTERN.search(line)
+        if match is not None:
+            recall_by_k[int(match.group(1))] = float(match.group(2))
+    if topk in recall_by_k:
+        return recall_by_k[topk]
+    if recall_by_k:
+        return recall_by_k[max(recall_by_k)]
+    return None
+
+
+def build_hnsw_profile(
+    metrics: dict[str, Any], output: str, bench_summary: dict[str, Any]
+) -> dict[str, Any]:
     query_records = parse_query_records(output, "HNSW query stats:")
-    serial_summary = parse_serial_runner_summary(output)
-    avg_latency_ms = avg_metric(query_records, "latency_ms")
-    p50_latency_ms = percentile_metric(query_records, "latency_ms", 50)
-    p90_latency_ms = percentile_metric(query_records, "latency_ms", 90)
-    p95_latency_ms = percentile_metric(query_records, "latency_ms", 95)
-    p99_latency_ms = percentile_metric(query_records, "latency_ms", 99)
     return {
         "benchmark_recall": metrics.get("recall"),
         "benchmark_qps": metrics.get("qps"),
         "profile_query_count": len(query_records),
-        "profile_avg_end2end_latency_ms": avg_latency_ms,
-        "profile_p50_end2end_latency_ms": p50_latency_ms,
-        "profile_p90_end2end_latency_ms": p90_latency_ms,
-        "profile_p95_end2end_latency_ms": p95_latency_ms,
-        "profile_p99_end2end_latency_ms": p99_latency_ms,
+        "profile_avg_end2end_latency_ms": bench_summary.get("avg_latency_ms"),
+        "profile_p50_end2end_latency_ms": bench_summary.get("p50_latency_ms"),
+        "profile_p90_end2end_latency_ms": bench_summary.get("p90_latency_ms"),
+        "profile_p95_end2end_latency_ms": bench_summary.get("p95_latency_ms"),
+        "profile_p99_end2end_latency_ms": bench_summary.get("p99_latency_ms"),
         "profile_avg_cmps": avg_metric(query_records, "pairwise_dist_cnt"),
         "profile_avg_scan_cmps": avg_metric(query_records, "cmps"),
         "profile_avg_pure_search_ms": avg_metric(query_records, "pure_search_ms"),
-        "profile_serial_avg_latency_s": serial_summary.get("avg_latency"),
-        "profile_serial_p99_s": serial_summary.get("p99"),
-        "profile_serial_p95_s": serial_summary.get("p95"),
-        "profile_serial_avg_recall": serial_summary.get("avg_recall"),
+        "profile_serial_avg_latency_s": (
+            bench_summary["avg_latency_ms"] / 1000.0
+            if bench_summary.get("avg_latency_ms") is not None
+            else None
+        ),
+        "profile_serial_p99_s": (
+            bench_summary["p99_latency_ms"] / 1000.0
+            if bench_summary.get("p99_latency_ms") is not None
+            else None
+        ),
+        "profile_serial_p95_s": (
+            bench_summary["p95_latency_ms"] / 1000.0
+            if bench_summary.get("p95_latency_ms") is not None
+            else None
+        ),
+        "profile_serial_avg_recall": metrics.get("recall"),
     }
 
 
 def build_omega_profile(
-    metrics: dict[str, Any], output: str, hnsw_profile: dict[str, Any] | None
+    metrics: dict[str, Any],
+    output: str,
+    bench_summary: dict[str, Any],
+    hnsw_profile: dict[str, Any] | None,
 ) -> dict[str, Any]:
     query_records = parse_query_records(output, "OMEGA query stats:")
-    serial_summary = parse_serial_runner_summary(output)
-    avg_latency_ms = avg_metric(query_records, "total_ms")
-    p50_latency_ms = percentile_metric(query_records, "total_ms", 50)
-    p90_latency_ms = percentile_metric(query_records, "total_ms", 90)
-    p95_latency_ms = percentile_metric(query_records, "total_ms", 95)
-    p99_latency_ms = percentile_metric(query_records, "total_ms", 99)
 
     avg_pairwise_dist_cnt = avg_metric(query_records, "pairwise_dist_cnt")
     avg_core_search_ms = avg_metric(query_records, "core_search_ms")
     avg_pure_search_ms = avg_metric(query_records, "pure_search_ms")
     avg_hook_total_ms = avg_metric(query_records, "hook_total_ms")
-    avg_search_only_ms = (
-        avg_pure_search_ms if avg_pure_search_ms is not None else avg_core_search_ms
-    )
+    avg_search_only_ms = avg_pure_search_ms if avg_pure_search_ms is not None else avg_core_search_ms
 
     cmp_time_ms = None
     if avg_pairwise_dist_cnt and avg_pairwise_dist_cnt > 0 and avg_search_only_ms is not None:
@@ -224,11 +252,11 @@ def build_omega_profile(
         "benchmark_recall": metrics.get("recall"),
         "benchmark_qps": metrics.get("qps"),
         "profile_query_count": len(query_records),
-        "profile_avg_end2end_latency_ms": avg_latency_ms,
-        "profile_p50_end2end_latency_ms": p50_latency_ms,
-        "profile_p90_end2end_latency_ms": p90_latency_ms,
-        "profile_p95_end2end_latency_ms": p95_latency_ms,
-        "profile_p99_end2end_latency_ms": p99_latency_ms,
+        "profile_avg_end2end_latency_ms": bench_summary.get("avg_latency_ms"),
+        "profile_p50_end2end_latency_ms": bench_summary.get("p50_latency_ms"),
+        "profile_p90_end2end_latency_ms": bench_summary.get("p90_latency_ms"),
+        "profile_p95_end2end_latency_ms": bench_summary.get("p95_latency_ms"),
+        "profile_p99_end2end_latency_ms": bench_summary.get("p99_latency_ms"),
         "profile_avg_cmps": avg_pairwise_dist_cnt,
         "profile_avg_scan_cmps": avg_metric(query_records, "scan_cmps"),
         "profile_avg_omega_cmps": avg_metric(query_records, "omega_cmps"),
@@ -244,25 +272,56 @@ def build_omega_profile(
         "profile_avg_hook_total_ms": avg_hook_total_ms,
         "profile_avg_hook_body_ms": avg_metric(query_records, "hook_body_ms"),
         "profile_avg_hook_dispatch_ms": avg_metric(query_records, "hook_dispatch_ms"),
-        "profile_avg_report_visit_candidate_ms": avg_metric(
-            query_records, "report_visit_candidate_ms"
-        ),
+        "profile_avg_report_visit_candidate_ms": avg_metric(query_records, "report_visit_candidate_ms"),
         "profile_avg_should_predict_ms": avg_metric(query_records, "should_predict_ms"),
         "profile_avg_report_hop_ms": avg_metric(query_records, "report_hop_ms"),
-        "profile_avg_update_top_candidates_ms": avg_metric(
-            query_records, "update_top_candidates_ms"
-        ),
-        "profile_avg_push_traversal_window_ms": avg_metric(
-            query_records, "push_traversal_window_ms"
-        ),
+        "profile_avg_update_top_candidates_ms": avg_metric(query_records, "update_top_candidates_ms"),
+        "profile_avg_push_traversal_window_ms": avg_metric(query_records, "push_traversal_window_ms"),
         "profile_avg_model_overhead_cmp_equiv": model_overhead_cmp_equiv,
         "profile_avg_early_stop_saved_cmps": avg_saved_cmps,
         "profile_avg_early_stop_hit_rate": avg_metric(query_records, "early_stop_hit"),
-        "profile_serial_avg_latency_s": serial_summary.get("avg_latency"),
-        "profile_serial_p99_s": serial_summary.get("p99"),
-        "profile_serial_p95_s": serial_summary.get("p95"),
-        "profile_serial_avg_recall": serial_summary.get("avg_recall"),
+        "profile_serial_avg_latency_s": (
+            bench_summary["avg_latency_ms"] / 1000.0
+            if bench_summary.get("avg_latency_ms") is not None
+            else None
+        ),
+        "profile_serial_p99_s": (
+            bench_summary["p99_latency_ms"] / 1000.0
+            if bench_summary.get("p99_latency_ms") is not None
+            else None
+        ),
+        "profile_serial_p95_s": (
+            bench_summary["p95_latency_ms"] / 1000.0
+            if bench_summary.get("p95_latency_ms") is not None
+            else None
+        ),
+        "profile_serial_avg_recall": metrics.get("recall"),
     }
+
+
+def merge_omega_detailed_profile(
+    summary_profile: dict[str, Any], detailed_profile: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(summary_profile)
+    detailed_keys = [
+        "profile_avg_model_overhead_ms",
+        "profile_avg_should_stop_ms",
+        "profile_avg_prediction_eval_ms",
+        "profile_avg_core_search_ms",
+        "profile_avg_pure_search_ms",
+        "profile_avg_hook_total_ms",
+        "profile_avg_hook_body_ms",
+        "profile_avg_hook_dispatch_ms",
+        "profile_avg_report_visit_candidate_ms",
+        "profile_avg_should_predict_ms",
+        "profile_avg_report_hop_ms",
+        "profile_avg_update_top_candidates_ms",
+        "profile_avg_push_traversal_window_ms",
+        "profile_avg_model_overhead_cmp_equiv",
+    ]
+    for key in detailed_keys:
+        merged[key] = detailed_profile.get(key)
+    return merged
 
 
 def profiling_output_path(index_path: Path) -> Path:
@@ -274,9 +333,7 @@ def write_profiling_summary(index_path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def write_grouped_profiling_summaries(
-    dataset: str, results: list[BenchmarkResult]
-) -> list[Path]:
+def write_grouped_profiling_summaries(dataset: str, results: list[BenchmarkResult]) -> list[Path]:
     written_paths: list[Path] = []
     grouped: dict[str, list[BenchmarkResult]] = {}
     for result in results:
@@ -313,121 +370,6 @@ def write_grouped_profiling_summaries(
     return written_paths
 
 
-def get_latest_result(db_label: str, results_dir: Path) -> dict[str, Any]:
-    if not results_dir.exists():
-        return {}
-
-    result_files = sorted(
-        results_dir.glob("result_*.json"),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )
-    for result_file in result_files:
-        try:
-            with open(result_file) as f:
-                data = json.load(f)
-            for result in data.get("results", []):
-                task_config = result.get("task_config", {})
-                db_config = task_config.get("db_config", {})
-                if db_config.get("db_label") == db_label:
-                    metrics = result.get("metrics", {})
-                    return {
-                        "insert_duration": metrics.get("insert_duration"),
-                        "optimize_duration": metrics.get("optimize_duration"),
-                        "load_duration": metrics.get("load_duration"),
-                        "qps": metrics.get("qps"),
-                        "avg_latency_ms": metrics.get("serial_latency_avg"),
-                        "p95_latency_ms": metrics.get("serial_latency_p95"),
-                        "p99_latency_ms": metrics.get("serial_latency_p99"),
-                        "recall": metrics.get("recall"),
-                    }
-        except Exception:
-            continue
-    return {}
-
-
-def latency_summary_from_profile(profile: dict[str, Any] | None) -> dict[str, float | None]:
-    profile = profile or {}
-    return {
-        "avg_latency_ms": profile.get("profile_avg_end2end_latency_ms"),
-        "p50_latency_ms": profile.get("profile_p50_end2end_latency_ms"),
-        "p90_latency_ms": profile.get("profile_p90_end2end_latency_ms"),
-        "p95_latency_ms": profile.get("profile_p95_end2end_latency_ms"),
-        "p99_latency_ms": profile.get("profile_p99_end2end_latency_ms"),
-    }
-
-
-def merge_omega_detailed_profile(
-    summary_profile: dict[str, Any], detailed_profile: dict[str, Any]
-) -> dict[str, Any]:
-    merged = dict(summary_profile)
-    detailed_keys = [
-        "profile_avg_model_overhead_ms",
-        "profile_avg_should_stop_ms",
-        "profile_avg_prediction_eval_ms",
-        "profile_avg_core_search_ms",
-        "profile_avg_pure_search_ms",
-        "profile_avg_hook_total_ms",
-        "profile_avg_hook_body_ms",
-        "profile_avg_hook_dispatch_ms",
-        "profile_avg_report_visit_candidate_ms",
-        "profile_avg_should_predict_ms",
-        "profile_avg_report_hop_ms",
-        "profile_avg_update_top_candidates_ms",
-        "profile_avg_push_traversal_window_ms",
-        "profile_avg_model_overhead_cmp_equiv",
-    ]
-    for key in detailed_keys:
-        merged[key] = detailed_profile.get(key)
-    return merged
-
-
-def snapshot_result_files(results_dir: Path) -> set[str]:
-    if not results_dir.exists():
-        return set()
-    return {str(p) for p in results_dir.glob("result_*.json")}
-
-
-def extract_result_from_file(result_file: Path, db_label: str) -> dict[str, Any]:
-    try:
-        with open(result_file) as f:
-            data = json.load(f)
-        for result in data.get("results", []):
-            task_config = result.get("task_config", {})
-            db_config = task_config.get("db_config", {})
-            if db_config.get("db_label") == db_label:
-                metrics = result.get("metrics", {})
-                return {
-                    "insert_duration": metrics.get("insert_duration"),
-                    "optimize_duration": metrics.get("optimize_duration"),
-                    "load_duration": metrics.get("load_duration"),
-                    "qps": metrics.get("qps"),
-                    "recall": metrics.get("recall"),
-                }
-    except Exception:
-        return {}
-    return {}
-
-
-def get_run_result(
-    db_label: str, before_files: set[str], results_dir: Path
-) -> dict[str, Any]:
-    if not results_dir.exists():
-        return {}
-
-    current_files = {str(p) for p in results_dir.glob("result_*.json")}
-    new_files = sorted(
-        [Path(p) for p in current_files - before_files],
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    for result_file in new_files:
-        metrics = extract_result_from_file(result_file, db_label)
-        if metrics:
-            return metrics
-    return get_latest_result(db_label, results_dir)
-
-
 def offline_summary_path(index_path: Path) -> Path:
     return index_path / "offline_benchmark_summary.json"
 
@@ -457,9 +399,7 @@ def build_offline_summary(
     metrics: dict[str, Any],
     retrain_only: bool = False,
 ) -> dict[str, Any]:
-    previous_summary = (
-        read_json_if_exists(offline_summary_path(index_path)) if retrain_only else {}
-    )
+    previous_summary = read_json_if_exists(offline_summary_path(index_path)) if retrain_only else {}
     previous_offline = previous_summary.get("offline", {})
     previous_omega_training = previous_summary.get("omega_training", {})
 
@@ -477,6 +417,9 @@ def build_offline_summary(
             "lightgbm_timing_ms": read_json_if_exists(
                 omega_model_dir / "lightgbm_training_timing.json"
             ),
+            "lightgbm_training_metrics": read_json_if_exists(
+                omega_model_dir / "lightgbm_training_metrics.json"
+            ),
         }
 
     if retrain_only:
@@ -491,15 +434,11 @@ def build_offline_summary(
             + sum_timing_ms(omega_training.get("lightgbm_timing_ms", {}))
         ) / 1000.0
         if old_optimize_duration is not None:
-            optimize_duration = round(
-                old_optimize_duration - old_training_s + new_training_s, 4
-            )
-        else:
-            optimize_duration = metrics.get("optimize_duration")
+            optimize_duration = round(old_optimize_duration - old_training_s + new_training_s, 4)
         load_duration = (
             round(insert_duration + optimize_duration, 4)
             if insert_duration is not None and optimize_duration is not None
-            else metrics.get("load_duration")
+            else None
         )
 
     summary = {
@@ -518,154 +457,809 @@ def build_offline_summary(
 
 
 def write_offline_summary(
-    index_path: Path,
-    db_label: str,
-    metrics: dict[str, Any],
-    retrain_only: bool = False,
-) -> None:
+    index_path: Path, db_label: str, metrics: dict[str, Any], retrain_only: bool = False
+) -> Path:
     summary = build_offline_summary(index_path, db_label, metrics, retrain_only=retrain_only)
-    with open(offline_summary_path(index_path), "w") as f:
+    path = offline_summary_path(index_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
         json.dump(summary, f, indent=2, sort_keys=True)
+    return path
 
 
 def get_offline_load_duration(index_path: Path) -> float | None:
-    summary = read_json_if_exists(offline_summary_path(index_path))
-    return summary.get("offline", {}).get("load_duration_s")
+    return read_json_if_exists(offline_summary_path(index_path)).get("offline", {}).get(
+        "load_duration_s"
+    )
 
 
-def run_command(
-    cmd: list[str],
-    vectordbbench_root: Path,
+def latency_summary_from_profile(profile: dict[str, Any] | None) -> dict[str, float | None]:
+    profile = profile or {}
+    return {
+        "avg_latency_ms": profile.get("profile_avg_end2end_latency_ms"),
+        "p50_latency_ms": profile.get("profile_p50_end2end_latency_ms"),
+        "p90_latency_ms": profile.get("profile_p90_end2end_latency_ms"),
+        "p95_latency_ms": profile.get("profile_p95_end2end_latency_ms"),
+        "p99_latency_ms": profile.get("profile_p99_end2end_latency_ms"),
+    }
+
+
+def resolve_dataset_spec(
+    dataset_name: str, config: dict[str, Any], dataset_root_arg: str | None
+) -> dict[str, Any]:
+    default = DATASET_SPECS.get(dataset_name, {})
+    dataset_root = None
+    if dataset_root_arg:
+        dataset_root = Path(dataset_root_arg).expanduser().resolve()
+    elif config.get("dataset_root"):
+        dataset_root = Path(config["dataset_root"]).expanduser().resolve()
+    elif os.environ.get("DATASET_LOCAL_DIR"):
+        dataset_root = Path(os.environ["DATASET_LOCAL_DIR"]).expanduser().resolve()
+
+    dataset_dirname = config.get("dataset_dirname", default.get("dataset_dirname"))
+    if dataset_root is None or not dataset_dirname:
+        raise ValueError(
+            "Dataset root is not configured. Set --dataset-root, config.dataset_root, "
+            "or DATASET_LOCAL_DIR."
+        )
+
+    dimension = int(config.get("dimension", default.get("dimension", 0)))
+    metric_type = str(config.get("metric_type", default.get("metric_type", "COSINE"))).upper()
+    if dimension <= 0:
+        raise ValueError(f"Missing dataset dimension for {dataset_name}")
+
+    dataset_dir = (dataset_root / dataset_dirname).resolve()
+    return {
+        "dataset_root": dataset_root,
+        "dataset_dir": dataset_dir,
+        "dimension": dimension,
+        "metric_type": metric_type,
+    }
+
+
+def _require_polars():
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise RuntimeError(
+            "This script requires polars in the active Python environment."
+        ) from exc
+    return pl
+
+
+def _sorted_train_files(dataset_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for pattern in [
+        "shuffle_train-*.parquet",
+        "train-*.parquet",
+        "shuffle_train.parquet",
+        "train.parquet",
+    ]:
+        candidates.extend(sorted(dataset_dir.glob(pattern)))
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def prepare_dataset_artifacts(
+    dataset_name: str,
+    dataset_spec: dict[str, Any],
+    benchmark_dir: Path,
     dry_run: bool = False,
-    extra_env: dict[str, str] | None = None,
-) -> int:
-    cmd_str = " \\\n    ".join(cmd)
-    print(f"\n{'=' * 60}")
-    print(f"Command:\n{cmd_str}")
-    print(f"{'=' * 60}\n")
-    if dry_run:
-        print("[DRY RUN] Command not executed")
-        return 0
+) -> dict[str, Path]:
+    dataset_dir = dataset_spec["dataset_dir"]
+    query_parquet = dataset_dir / "test.parquet"
+    gt_parquet = dataset_dir / "neighbors.parquet"
+    train_files = _sorted_train_files(dataset_dir)
+    if not dry_run:
+        if not dataset_dir.exists():
+            raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
+        if not query_parquet.exists():
+            raise FileNotFoundError(f"Missing query parquet: {query_parquet}")
+        if not gt_parquet.exists():
+            raise FileNotFoundError(f"Missing ground-truth parquet: {gt_parquet}")
+        if not train_files:
+            raise FileNotFoundError(f"No train parquet files found under: {dataset_dir}")
 
-    cwd = vectordbbench_root if vectordbbench_root.exists() else None
-    env = os.environ.copy()
-    if extra_env:
-        env.update(extra_env)
-    result = subprocess.run(cmd, cwd=cwd, env=env)
-    return result.returncode
+    cache_dir = (benchmark_dir / "_dataset_cache" / dataset_name).resolve()
+    query_txt = cache_dir / "query.txt"
+    gt_txt = cache_dir / "groundtruth.txt"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if not dry_run:
+        refresh_query = (not query_txt.exists()) or query_txt.stat().st_mtime < query_parquet.stat().st_mtime
+        refresh_gt = (not gt_txt.exists()) or gt_txt.stat().st_mtime < gt_parquet.stat().st_mtime
+        if refresh_query:
+            _write_query_text(query_parquet, query_txt)
+        if refresh_gt:
+            _write_groundtruth_text(gt_parquet, gt_txt)
+
+    return {
+        "dataset_dir": dataset_dir,
+        "query_parquet": query_parquet,
+        "gt_parquet": gt_parquet,
+        "query_txt": query_txt,
+        "groundtruth_txt": gt_txt,
+        "train_files": train_files,
+    }
+
+
+def _write_query_text(query_parquet: Path, output_path: Path) -> None:
+    pl = _require_polars()
+    frame = pl.read_parquet(query_parquet).sort("id")
+    with open(output_path, "w") as f:
+        for row in frame.iter_rows(named=True):
+            vector = row["emb"]
+            vector_text = " ".join(str(round(float(v), 16)) for v in vector)
+            f.write(f"{int(row['id'])};{vector_text};\n")
+
+
+def _write_groundtruth_text(gt_parquet: Path, output_path: Path) -> None:
+    pl = _require_polars()
+    frame = pl.read_parquet(gt_parquet).sort("id")
+    with open(output_path, "w") as f:
+        for row in frame.iter_rows(named=True):
+            neighbors = " ".join(str(int(v)) for v in row["neighbors_id"])
+            f.write(f"{int(row['id'])};{neighbors}\n")
+
+
+def _ensure_zvec_initialized() -> None:
+    global _ZVEC_INITIALIZED
+    if _ZVEC_INITIALIZED:
+        return
+    import zvec
+
+    zvec.init(log_level=zvec.LogLevel.WARN)
+    _ZVEC_INITIALIZED = True
+
+
+def _quantize_type_from_name(name: str):
+    import zvec
+
+    normalized = str(name).upper()
+    mapping = {
+        "": zvec.QuantizeType.UNDEFINED,
+        "UNDEFINED": zvec.QuantizeType.UNDEFINED,
+        "FP16": zvec.QuantizeType.FP16,
+        "INT8": zvec.QuantizeType.INT8,
+        "INT4": zvec.QuantizeType.INT4,
+    }
+    if normalized not in mapping:
+        raise ValueError(f"Unsupported quantize type: {name}")
+    return mapping[normalized]
+
+
+def _metric_type_from_name(name: str):
+    import zvec
+
+    normalized = str(name).upper()
+    mapping = {
+        "COSINE": zvec.MetricType.COSINE,
+        "IP": zvec.MetricType.IP,
+        "L2": zvec.MetricType.L2,
+    }
+    if normalized not in mapping:
+        raise ValueError(f"Unsupported metric type: {name}")
+    return mapping[normalized]
+
+
+def _maybe_destroy_collection(path: Path) -> None:
+    import zvec
+
+    if not path.exists():
+        return
+    try:
+        zvec.open(str(path)).destroy()
+        return
+    except Exception:
+        pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _build_schema(
+    index_kind: str,
+    dimension: int,
+    metric_type: str,
+    common_args: dict[str, Any],
+    specific_args: dict[str, Any],
+):
+    import zvec
+
+    quantize_type = _quantize_type_from_name(common_args.get("quantize_type", ""))
+    metric = _metric_type_from_name(metric_type)
+    if index_kind == "OMEGA":
+        index_param = zvec.OmegaIndexParam(
+            metric_type=metric,
+            m=int(common_args["m"]),
+            ef_construction=int(specific_args.get("ef_construction", 500)),
+            quantize_type=quantize_type,
+            min_vector_threshold=int(specific_args["min_vector_threshold"]),
+            num_training_queries=int(specific_args["num_training_queries"]),
+            ef_training=int(specific_args["ef_training"]),
+            window_size=int(specific_args["window_size"]),
+            ef_groundtruth=int(specific_args["ef_groundtruth"]),
+            k_train=int(specific_args.get("k_train", 1)),
+        )
+    else:
+        index_param = zvec.HnswIndexParam(
+            metric_type=metric,
+            m=int(common_args["m"]),
+            ef_construction=int(specific_args.get("ef_construction", 500)),
+            quantize_type=quantize_type,
+        )
+
+    return zvec.CollectionSchema(
+        name=f"{index_kind.lower()}_benchmark",
+        fields=[
+            zvec.FieldSchema(
+                "id",
+                zvec.DataType.INT64,
+                nullable=False,
+                index_param=zvec.InvertIndexParam(enable_range_optimization=True),
+            )
+        ],
+        vectors=[
+            zvec.VectorSchema(
+                "dense",
+                zvec.DataType.VECTOR_FP32,
+                dimension=dimension,
+                index_param=index_param,
+            )
+        ],
+    )
+
+
+def build_index(
+    *,
+    index_kind: str,
+    index_path: Path,
+    dataset_spec: dict[str, Any],
+    dataset_artifacts: dict[str, Any],
+    common_args: dict[str, Any],
+    specific_args: dict[str, Any],
+    retrain_only: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if dry_run:
+        print(f"[Dry-run] Build {index_kind} at {index_path}")
+        return {"insert_duration": None, "optimize_duration": None, "load_duration": None}
+
+    _ensure_zvec_initialized()
+    import zvec
+
+    if retrain_only:
+        collection = zvec.open(
+            str(index_path), zvec.CollectionOption(read_only=False, enable_mmap=True)
+        )
+        insert_duration = None
+    else:
+        _maybe_destroy_collection(index_path)
+        schema = _build_schema(
+            index_kind,
+            dataset_spec["dimension"],
+            dataset_spec["metric_type"],
+            common_args,
+            specific_args,
+        )
+        collection = zvec.create_and_open(
+            str(index_path),
+            schema,
+            zvec.CollectionOption(read_only=False, enable_mmap=True),
+        )
+        insert_duration = _insert_training_data(collection, dataset_artifacts["train_files"])
+
+    optimize_start = time.perf_counter()
+    collection.optimize(option=zvec.OptimizeOption(retrain_only=retrain_only))
+    optimize_duration = time.perf_counter() - optimize_start
+    try:
+        collection.flush()
+    except Exception:
+        pass
+    del collection
+
+    load_duration = None
+    if insert_duration is not None:
+        load_duration = insert_duration + optimize_duration
+    elif optimize_duration is not None:
+        load_duration = optimize_duration
+
+    return {
+        "insert_duration": round(insert_duration, 4) if insert_duration is not None else None,
+        "optimize_duration": round(optimize_duration, 4) if optimize_duration is not None else None,
+        "load_duration": round(load_duration, 4) if load_duration is not None else None,
+    }
+
+
+def _insert_training_data(collection, train_files: list[Path], batch_size: int = 1000) -> float:
+    import zvec
+
+    pl = _require_polars()
+    start = time.perf_counter()
+    for train_file in train_files:
+        frame = pl.read_parquet(train_file)
+        for offset in range(0, frame.height, batch_size):
+            batch = frame.slice(offset, batch_size)
+            ids = batch["id"].to_list()
+            vectors = batch["emb"].to_list()
+            docs = [
+                zvec.Doc(
+                    id=str(int(doc_id)),
+                    fields={"id": int(doc_id)},
+                    vectors={"dense": vector},
+                )
+                for doc_id, vector in zip(ids, vectors, strict=True)
+            ]
+            collection.insert(docs)
+    return time.perf_counter() - start
+
+
+def compute_recall_with_zvec(
+    *,
+    index_kind: str,
+    index_path: Path,
+    dataset_artifacts: dict[str, Any],
+    common_args: dict[str, Any],
+    target_recall: float | None,
+    dry_run: bool,
+) -> float | None:
+    if dry_run:
+        return None
+
+    _ensure_zvec_initialized()
+    import zvec
+
+    pl = _require_polars()
+    query_frame = pl.read_parquet(dataset_artifacts["query_parquet"]).sort("id")
+    gt_frame = pl.read_parquet(dataset_artifacts["gt_parquet"]).sort("id")
+    gt_map = {
+        int(row["id"]): [int(value) for value in row["neighbors_id"][: int(common_args["k"])]]
+        for row in gt_frame.iter_rows(named=True)
+    }
+
+    option = zvec.CollectionOption(read_only=True, enable_mmap=True)
+    collection = zvec.open(str(index_path), option)
+    use_refiner = bool(common_args.get("is_using_refiner", False))
+    if index_kind == "OMEGA":
+        query_param = zvec.OmegaQueryParam(
+            ef=int(common_args["ef_search"]),
+            target_recall=float(target_recall),
+            is_using_refiner=use_refiner,
+        )
+    else:
+        query_param = zvec.HnswQueryParam(
+            ef=int(common_args["ef_search"]),
+            is_using_refiner=use_refiner,
+        )
+
+    recall_sum = 0.0
+    query_count = 0
+    topk = int(common_args["k"])
+    for row in query_frame.iter_rows(named=True):
+        query_id = int(row["id"])
+        gt = gt_map.get(query_id)
+        if not gt:
+            continue
+        results = collection.query(
+            vectors=zvec.VectorQuery(field_name="dense", vector=row["emb"], param=query_param),
+            topk=topk,
+            output_fields=[],
+        )
+        pred = [int(doc.id) for doc in results[:topk]]
+        recall_sum += len(set(pred) & set(gt)) / float(topk)
+        query_count += 1
+
+    del collection
+    if query_count == 0:
+        return None
+    return recall_sum / query_count
+
+
+def resolve_core_tools(zvec_root: Path) -> tuple[Path, Path]:
+    bench_bin = (zvec_root / "build/bin/bench").resolve()
+    recall_bin = (zvec_root / "build/bin/recall").resolve()
+    if not bench_bin.exists():
+        raise FileNotFoundError(f"bench binary not found: {bench_bin}")
+    if not recall_bin.exists():
+        raise FileNotFoundError(f"recall binary not found: {recall_bin}")
+    return bench_bin, recall_bin
+
+
+def _metric_type_name_for_core(metric_type: str) -> str:
+    mapping = {
+        "COSINE": "kCosine",
+        "IP": "kInnerProduct",
+        "L2": "kL2sq",
+    }
+    normalized = str(metric_type).upper()
+    if normalized not in mapping:
+        raise ValueError(f"Unsupported metric type: {metric_type}")
+    return mapping[normalized]
+
+
+def _quantizer_json(quantize_type: str) -> dict[str, Any] | None:
+    normalized = str(quantize_type).upper()
+    if normalized in {"", "UNDEFINED"}:
+        return None
+    mapping = {
+        "FP16": "kFP16",
+        "INT8": "kInt8",
+        "INT4": "kInt4",
+    }
+    if normalized not in mapping:
+        raise ValueError(f"Unsupported quantize type: {quantize_type}")
+    return {"type": mapping[normalized]}
+
+
+def build_core_index_config_json(
+    *,
+    index_type: str,
+    metric_type: str,
+    dimension: int,
+    m: int,
+    ef_construction: int,
+    quantize_type: str,
+) -> str:
+    payload: dict[str, Any] = {
+        "index_type": index_type,
+        "metric_type": _metric_type_name_for_core(metric_type),
+        "dimension": int(dimension),
+        "version": 0,
+        "is_sparse": False,
+        "data_type": "DT_FP32",
+        "use_id_map": False,
+        "is_huge_page": False,
+        "m": int(m),
+        "ef_construction": int(ef_construction),
+    }
+    quantizer = _quantizer_json(quantize_type)
+    if quantizer is not None:
+        payload["quantizer_param"] = quantizer
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def build_core_query_param_json(
+    *,
+    index_type: str,
+    ef_search: int,
+    topk: int,
+    target_recall: float | None = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "index_type": index_type,
+        "topk": int(topk),
+        "fetch_vector": False,
+        "radius": 0.0,
+        "is_linear": False,
+        "ef_search": int(ef_search),
+    }
+    if target_recall is not None:
+        payload["target_recall"] = float(target_recall)
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def discover_index_files(index_path: Path) -> dict[str, Path | None]:
+    coarse_candidates = sorted(index_path.glob("*/dense.qindex.*.proxima"))
+    full_candidates = sorted(index_path.glob("*/dense.index.*.proxima"))
+    primary = coarse_candidates[0] if coarse_candidates else (full_candidates[0] if full_candidates else None)
+    reference = full_candidates[0] if full_candidates else None
+    if primary is None:
+        raise FileNotFoundError(f"No core index file found under {index_path}")
+    return {"primary": primary, "reference": reference}
+
+
+def _yaml_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _write_core_config(
+    *,
+    path: Path,
+    index_path: Path,
+    index_config_json: str,
+    query_param_json: str,
+    query_file: Path,
+    topk: int,
+    use_refiner: bool,
+    reference_index_path: Path | None,
+    metric_type: str,
+    dimension: int,
+    m: int,
+    ef_construction: int,
+    bench_thread_count: int | None = None,
+    bench_secs: int | None = None,
+    recall_thread_count: int | None = None,
+    groundtruth_file: Path | None = None,
+) -> None:
+    lines = [
+        "IndexCommon:",
+        f"  IndexPath: {_yaml_quote(str(index_path))}",
+        f"  IndexConfig: {_yaml_quote(index_config_json)}",
+        f"  TopK: {_yaml_quote(str(topk))}",
+        f"  QueryFile: {_yaml_quote(str(query_file))}",
+        "  QueryType: 'float'",
+        "  QueryFirstSep: ';'",
+        "  QuerySecondSep: ' '",
+    ]
+    if bench_thread_count is not None:
+        lines.append(f"  BenchThreadCount: {bench_thread_count}")
+    if bench_secs is not None:
+        lines.append(f"  BenchSecs: {bench_secs}")
+        lines.append("  BenchIterCount: 1000000000")
+    if recall_thread_count is not None:
+        lines.append(f"  RecallThreadCount: {recall_thread_count}")
+        lines.append(f"  RecallGTCount: {topk}")
+        lines.append("  CompareById: true")
+    if groundtruth_file is not None:
+        lines.append(f"  GroundTruthFile: {_yaml_quote(str(groundtruth_file))}")
+        lines.append("  GroundTruthFirstSep: ';'")
+        lines.append("  GroundTruthSecondSep: ' '")
+
+    lines.extend(
+        [
+            "QueryConfig:",
+            f"  QueryParam: {_yaml_quote(query_param_json)}",
+        ]
+    )
+
+    if use_refiner:
+        if reference_index_path is None:
+            raise ValueError("Refiner requested but reference index is missing")
+        reference_config = build_core_index_config_json(
+            index_type="kHNSW",
+            metric_type=metric_type,
+            dimension=dimension,
+            m=m,
+            ef_construction=ef_construction,
+            quantize_type="UNDEFINED",
+        )
+        lines.extend(
+            [
+                "  RefinerConfig:",
+                "    ScaleFactor: 2",
+                "    ReferenceIndex:",
+                f"      Config: {_yaml_quote(reference_config)}",
+                f"      Path: {_yaml_quote(str(reference_index_path))}",
+            ]
+        )
+
+    path.write_text("\n".join(lines) + "\n")
 
 
 def run_command_capture(
     cmd: list[str],
-    vectordbbench_root: Path,
+    *,
+    cwd: Path | None = None,
     dry_run: bool = False,
     extra_env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
-    cmd_str = " \\\n    ".join(cmd)
-    print(f"\n{'=' * 60}")
-    print(f"Command:\n{cmd_str}")
-    print(f"{'=' * 60}\n")
-
+    printable = " ".join(str(token) for token in cmd)
+    print(printable)
     if dry_run:
-        print("[DRY RUN] Command not executed")
         return 0, ""
 
-    cwd = vectordbbench_root if vectordbbench_root.exists() else None
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
-    with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".log") as tmp:
-        tmp_path = Path(tmp.name)
+    completed = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    return completed.returncode, completed.stdout
 
+
+def _temporary_config_path(prefix: str, parent: Path) -> Path:
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / f"{prefix}_{int(time.time() * 1000)}.yaml"
+
+
+def run_bench(
+    *,
+    bench_bin: Path,
+    index_file: Path,
+    query_file: Path,
+    metric_type: str,
+    dimension: int,
+    m: int,
+    ef_construction: int,
+    quantize_type: str,
+    ef_search: int,
+    topk: int,
+    bench_thread_count: int,
+    bench_secs: int,
+    use_refiner: bool,
+    reference_index_path: Path | None,
+    target_recall: float | None = None,
+    dry_run: bool = False,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, str, dict[str, Any]]:
+    config_path = _temporary_config_path("bench", index_file.parent)
     try:
-        with tmp_path.open("w+") as tmp:
-            result = subprocess.run(
-                cmd, cwd=cwd, env=env, stdout=tmp, stderr=subprocess.STDOUT, text=True
-            )
-            tmp.flush()
-            tmp.seek(0)
-            output = tmp.read()
-        print(output, end="" if output.endswith("\n") or not output else "\n")
-        return result.returncode, output
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
-def must_get(config: dict[str, Any], key: str) -> Any:
-    if key not in config:
-        raise ValueError(f"Missing required config key: {key}")
-    return config[key]
-
-
-def resolve_index_path(benchmark_dir: Path, path_value: str) -> Path:
-    path = Path(path_value).expanduser()
-    return path.resolve() if path.is_absolute() else (benchmark_dir / path).resolve()
-
-
-def append_option(cmd: list[str], key: str, value: Any) -> None:
-    if value is None:
-        return
-    flag = f"--{key.replace('_', '-')}"
-    if isinstance(value, bool):
-        if value:
-            cmd.append(flag)
-        return
-    if isinstance(value, list):
-        cmd.extend([flag, ",".join(str(v) for v in value)])
-    else:
-        cmd.extend([flag, str(value)])
-
-
-def extend_with_args(cmd: list[str], args_map: dict[str, Any] | None) -> None:
-    if not args_map:
-        return
-    for key, value in args_map.items():
-        append_option(cmd, key, value)
-
-
-def extend_with_flags(cmd: list[str], flags: list[str] | None) -> None:
-    if not flags:
-        return
-    for flag in flags:
-        cmd.append(f"--{flag}")
-
-
-def build_base_command(
-    vectordbbench_cmd: list[str],
-    client_name: str,
-    path: Path,
-    db_label: str,
-    case_type: str,
-    common_args: dict[str, Any],
-    specific_args: dict[str, Any] | None = None,
-    extra_flags: list[str] | None = None,
-) -> list[str]:
-    cmd = [
-        *vectordbbench_cmd,
-        client_name,
-        "--path",
-        str(path),
-        "--db-label",
-        db_label,
-        "--case-type",
-        case_type,
-    ]
-    extend_with_args(cmd, common_args)
-    extend_with_args(cmd, specific_args)
-    extend_with_flags(cmd, extra_flags)
-    return cmd
-
-
-def validate_profile_output(profile_name: str, ret: int, output: str, prefix: str) -> None:
-    if ret != 0:
-        raise RuntimeError(f"{profile_name} profiling pass failed with exit code {ret}")
-    if not parse_query_records(output, prefix):
-        raise RuntimeError(
-            f"{profile_name} profiling pass completed without any '{prefix}' records in stdout"
+        _write_core_config(
+            path=config_path,
+            index_path=index_file,
+            index_config_json=build_core_index_config_json(
+                index_type="kOMEGA" if target_recall is not None else "kHNSW",
+                metric_type=metric_type,
+                dimension=dimension,
+                m=m,
+                ef_construction=ef_construction,
+                quantize_type=quantize_type,
+            ),
+            query_param_json=build_core_query_param_json(
+                index_type="kOMEGA" if target_recall is not None else "kHNSW",
+                ef_search=ef_search,
+                topk=topk,
+                target_recall=target_recall,
+            ),
+            query_file=query_file,
+            topk=topk,
+            use_refiner=use_refiner,
+            reference_index_path=reference_index_path,
+            metric_type=metric_type,
+            dimension=dimension,
+            m=m,
+            ef_construction=ef_construction,
+            bench_thread_count=bench_thread_count,
+            bench_secs=bench_secs,
         )
+        ret, output = run_command_capture(
+            [str(bench_bin), str(config_path)],
+            dry_run=dry_run,
+            extra_env=extra_env,
+        )
+        return ret, output, parse_bench_output(output)
+    finally:
+        if config_path.exists():
+            config_path.unlink()
 
 
-def print_header(title: str) -> None:
-    print("\n\n" + "#" * 70)
-    print(f"# {title}")
-    print("#" * 70)
+def run_recall(
+    *,
+    recall_bin: Path,
+    index_file: Path,
+    query_file: Path,
+    groundtruth_file: Path,
+    metric_type: str,
+    dimension: int,
+    m: int,
+    ef_construction: int,
+    quantize_type: str,
+    ef_search: int,
+    topk: int,
+    use_refiner: bool,
+    reference_index_path: Path | None,
+    target_recall: float | None = None,
+    dry_run: bool = False,
+) -> tuple[int, str, float | None]:
+    config_path = _temporary_config_path("recall", index_file.parent)
+    try:
+        _write_core_config(
+            path=config_path,
+            index_path=index_file,
+            index_config_json=build_core_index_config_json(
+                index_type="kOMEGA" if target_recall is not None else "kHNSW",
+                metric_type=metric_type,
+                dimension=dimension,
+                m=m,
+                ef_construction=ef_construction,
+                quantize_type=quantize_type,
+            ),
+            query_param_json=build_core_query_param_json(
+                index_type="kOMEGA" if target_recall is not None else "kHNSW",
+                ef_search=ef_search,
+                topk=topk,
+                target_recall=target_recall,
+            ),
+            query_file=query_file,
+            topk=topk,
+            use_refiner=use_refiner,
+            reference_index_path=reference_index_path,
+            metric_type=metric_type,
+            dimension=dimension,
+            m=m,
+            ef_construction=ef_construction,
+            recall_thread_count=1,
+            groundtruth_file=groundtruth_file,
+        )
+        ret, output = run_command_capture([str(recall_bin), str(config_path)], dry_run=dry_run)
+        return ret, output, parse_recall_output(output, topk)
+    finally:
+        if config_path.exists():
+            config_path.unlink()
+
+
+def run_concurrency_benchmark(
+    *,
+    bench_bin: Path,
+    index_files: dict[str, Path | None],
+    dataset_artifacts: dict[str, Any],
+    dataset_spec: dict[str, Any],
+    common_args: dict[str, Any],
+    target_recall: float | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    ef_search = int(common_args["ef_search"])
+    topk = int(common_args["k"])
+    m = int(common_args["m"])
+    ef_construction = int(common_args.get("ef_construction", 500))
+    quantize_type = str(common_args.get("quantize_type", "UNDEFINED"))
+    use_refiner = bool(common_args.get("is_using_refiner", False))
+    duration = int(common_args["concurrency_duration"])
+    thread_counts = [int(value) for value in str(common_args["num_concurrency"]).split(",") if value]
+
+    best_summary: dict[str, Any] | None = None
+    best_output = ""
+    for thread_count in thread_counts:
+        ret, output, summary = run_bench(
+            bench_bin=bench_bin,
+            index_file=index_files["primary"],
+            query_file=dataset_artifacts["query_txt"],
+            metric_type=dataset_spec["metric_type"],
+            dimension=dataset_spec["dimension"],
+            m=m,
+            ef_construction=ef_construction,
+            quantize_type=quantize_type,
+            ef_search=ef_search,
+            topk=topk,
+            bench_thread_count=thread_count,
+            bench_secs=duration,
+            use_refiner=use_refiner,
+            reference_index_path=index_files["reference"],
+            target_recall=target_recall,
+            dry_run=dry_run,
+        )
+        summary["thread_count"] = thread_count
+        summary["retcode"] = ret
+        if best_summary is None or (summary.get("qps") or 0.0) > (best_summary.get("qps") or 0.0):
+            best_summary = summary
+            best_output = output
+
+    return {"summary": best_summary or {}, "output": best_output}
+
+
+def run_profile_benchmark(
+    *,
+    bench_bin: Path,
+    index_files: dict[str, Path | None],
+    dataset_artifacts: dict[str, Any],
+    dataset_spec: dict[str, Any],
+    common_args: dict[str, Any],
+    target_recall: float | None,
+    dry_run: bool,
+    extra_env: dict[str, str] | None,
+) -> tuple[int, str, dict[str, Any]]:
+    return run_bench(
+        bench_bin=bench_bin,
+        index_file=index_files["primary"],
+        query_file=dataset_artifacts["query_txt"],
+        metric_type=dataset_spec["metric_type"],
+        dimension=dataset_spec["dimension"],
+        m=int(common_args["m"]),
+        ef_construction=int(common_args.get("ef_construction", 500)),
+        quantize_type=str(common_args.get("quantize_type", "UNDEFINED")),
+        ef_search=int(common_args["ef_search"]),
+        topk=int(common_args["k"]),
+        bench_thread_count=1,
+        bench_secs=max(1, int(common_args.get("profiling_duration", 1))),
+        use_refiner=bool(common_args.get("is_using_refiner", False)),
+        reference_index_path=index_files["reference"],
+        target_recall=target_recall,
+        dry_run=dry_run,
+        extra_env=extra_env,
+    )
+
+
+def validate_profile_output(label: str, retcode: int, output: str, expected_prefix: str) -> None:
+    if retcode != 0:
+        raise RuntimeError(f"{label} profiling command failed with exit code {retcode}")
+    if expected_prefix not in output:
+        raise RuntimeError(f"{label} profiling output does not contain '{expected_prefix}'")

@@ -98,6 +98,48 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
       }
       return param;
     }
+    case IndexType::kOMEGA: {
+      HNSWIndexParam::Pointer param = std::make_shared<HNSWIndexParam>();
+      auto deserialize_quantizer = [&](const ailego::JsonObject &obj) -> bool {
+        ailego::JsonValue quantizer_json_value;
+        if (obj.has("quantizer_param")) {
+          if (obj.get("quantizer_param", &quantizer_json_value);
+              quantizer_json_value.is_object()) {
+            if (!param->quantizer_param.DeserializeFromJson(
+                    quantizer_json_value.as_json_string().as_stl_string())) {
+              return false;
+            }
+          }
+        }
+        return true;
+      };
+
+      if (!extract_enum_from_json<MetricType>(json_obj, "metric_type",
+                                              param->metric_type,
+                                              tmp_json_value) ||
+          !extract_enum_from_json<DataType>(json_obj, "data_type",
+                                           param->data_type,
+                                           tmp_json_value) ||
+          !extract_value_from_json(json_obj, "dimension", param->dimension,
+                                  tmp_json_value) ||
+          !extract_value_from_json(json_obj, "version", param->version,
+                                  tmp_json_value) ||
+          !extract_value_from_json(json_obj, "is_sparse", param->is_sparse,
+                                  tmp_json_value) ||
+          !extract_value_from_json(json_obj, "use_id_map", param->use_id_map,
+                                  tmp_json_value) ||
+          !extract_value_from_json(json_obj, "is_huge_page",
+                                  param->is_huge_page, tmp_json_value) ||
+          !extract_value_from_json(json_obj, "m", param->m, tmp_json_value) ||
+          !extract_value_from_json(json_obj, "ef_construction",
+                                  param->ef_construction, tmp_json_value) ||
+          !deserialize_quantizer(json_obj)) {
+        LOG_ERROR("Failed to deserialize omega index param");
+        return nullptr;
+      }
+      param->index_type = IndexType::kOMEGA;
+      return param;
+    }
     case IndexType::kIVF: {
       IVFIndexParam::Pointer param = std::make_shared<IVFIndexParam>();
       if (!param->DeserializeFromJson(json_str)) {
@@ -144,6 +186,14 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
     }
     index_type = IndexType::kHNSW;
+  } else if constexpr (std::is_same_v<QueryParamType, OmegaQueryParam>) {
+    if (!omit_empty_value || param.ef_search != 0) {
+      json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
+    }
+    if (!omit_empty_value || param.target_recall != 0.0f) {
+      json_obj.set("target_recall", ailego::JsonValue(param.target_recall));
+    }
+    index_type = IndexType::kOMEGA;
   } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
     if (!omit_empty_value || param.nprobe != 0) {
       json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
@@ -168,6 +218,8 @@ template std::string IndexFactory::QueryParamSerializeToJson<FlatQueryParam>(
     const FlatQueryParam &param, bool omit_empty_value);
 template std::string IndexFactory::QueryParamSerializeToJson<HNSWQueryParam>(
     const HNSWQueryParam &param, bool omit_empty_value);
+template std::string IndexFactory::QueryParamSerializeToJson<OmegaQueryParam>(
+    const OmegaQueryParam &param, bool omit_empty_value);
 template std::string IndexFactory::QueryParamSerializeToJson<IVFQueryParam>(
     const IVFQueryParam &param, bool omit_empty_value);
 
@@ -236,6 +288,22 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         return nullptr;
       }
       return param;
+    } else if (index_type == IndexType::kOMEGA) {
+      auto param = std::make_shared<OmegaQueryParam>();
+      if (!parse_common_fields(param)) {
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize ef_search");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "target_recall",
+                                   param->target_recall, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize target_recall");
+        return nullptr;
+      }
+      return param;
     } else if (index_type == IndexType::kIVF) {
       auto param = std::make_shared<IVFQueryParam>();
       if (!parse_common_fields(param)) {
@@ -264,6 +332,17 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize ef_search");
         return nullptr;
       }
+    } else if constexpr (std::is_same_v<QueryParamType, OmegaQueryParam>) {
+      if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize ef_search");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "target_recall",
+                                   param->target_recall, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize target_recall");
+        return nullptr;
+      }
     } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
       if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
                                    tmp_json_value)) {
@@ -286,6 +365,8 @@ template FlatQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
     FlatQueryParam>(const std::string &json_str);
 template HNSWQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
     HNSWQueryParam>(const std::string &json_str);
+template OmegaQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
+    OmegaQueryParam>(const std::string &json_str);
 template IVFQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
     IVFQueryParam>(const std::string &json_str);
 
