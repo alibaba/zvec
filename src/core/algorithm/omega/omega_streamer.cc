@@ -77,6 +77,285 @@ uint64_t OmegaProfilingElapsedNs(uint64_t start, uint64_t end) {
   return RdtscTimer::ElapsedNs(start, end);
 }
 
+struct OmegaHookSetup {
+  OmegaHookState state;
+  HnswAlgorithm::SearchHooks hooks;
+};
+
+struct OmegaFinalStats {
+  int hops{0};
+  int cmps{0};
+  int collected_gt{0};
+  float predicted_recall_avg{0.0f};
+  float predicted_recall_at_target{0.0f};
+  int omega_early_stop_hit{0};
+  unsigned long long should_stop_calls{0};
+  unsigned long long prediction_calls{0};
+  unsigned long long should_stop_time_ns{0};
+  unsigned long long prediction_eval_time_ns{0};
+  unsigned long long sorted_window_time_ns{0};
+  unsigned long long average_recall_eval_time_ns{0};
+  unsigned long long prediction_feature_prep_time_ns{0};
+  unsigned long long report_visit_candidate_time_ns{0};
+  unsigned long long report_hop_time_ns{0};
+  unsigned long long update_top_candidates_time_ns{0};
+  unsigned long long push_traversal_window_time_ns{0};
+  unsigned long long collected_gt_advance_count{0};
+  unsigned long long should_stop_calls_with_advance{0};
+  unsigned long long max_prediction_calls_per_should_stop{0};
+};
+
+struct OmegaTimingSummary {
+  uint64_t query_total_time_ns{0};
+  uint64_t query_reset_time_ns{0};
+  uint64_t query_search_time_ns{0};
+  uint64_t query_setup_time_ns{0};
+  uint64_t hook_total_time_ns{0};
+  uint64_t hook_body_time_ns{0};
+  uint64_t pure_search_time_ns{0};
+  uint64_t hook_dispatch_time_ns{0};
+};
+
+OmegaHookSetup CreateOmegaHookSetup(omega::SearchContext* omega_search_ctx,
+                                    bool enable_early_stopping,
+                                    bool collect_control_timing,
+                                    bool per_cmp_reporting,
+                                    uint64_t* hook_body_time_ns,
+                                    uint64_t* hook_total_time_ns) {
+  OmegaHookSetup setup;
+  setup.state.search_ctx = omega_search_ctx;
+  setup.state.enable_early_stopping = enable_early_stopping;
+  setup.state.collect_control_timing = collect_control_timing;
+  setup.state.hook_body_time_ns = hook_body_time_ns;
+  setup.state.per_cmp_reporting = per_cmp_reporting;
+  ResetOmegaHookState(&setup.state);
+
+  setup.hooks.user_data = &setup.state;
+  setup.hooks.collect_timing = collect_control_timing;
+  setup.hooks.now_ns = &OmegaProfilingNowNs;
+  setup.hooks.elapsed_ns = &OmegaProfilingElapsedNs;
+  setup.hooks.hook_total_time_ns = hook_total_time_ns;
+  setup.hooks.on_level0_entry = OnOmegaLevel0Entry;
+  setup.hooks.on_hop = OnOmegaHop;
+  setup.hooks.on_visit_candidate = OnOmegaVisitCandidate;
+  return setup;
+}
+
+OmegaFinalStats CollectOmegaFinalStats(omega::SearchContext* omega_search_ctx) {
+  OmegaFinalStats stats;
+  omega_search_ctx->GetStats(&stats.hops, &stats.cmps, &stats.collected_gt);
+  stats.predicted_recall_avg = omega_search_ctx->GetLastPredictedRecallAvg();
+  stats.predicted_recall_at_target =
+      omega_search_ctx->GetLastPredictedRecallAtTarget();
+  stats.omega_early_stop_hit = omega_search_ctx->EarlyStopHit() ? 1 : 0;
+  stats.should_stop_calls = omega_search_ctx->GetShouldStopCalls();
+  stats.prediction_calls = omega_search_ctx->GetPredictionCalls();
+  stats.should_stop_time_ns = omega_search_ctx->GetShouldStopTimeNs();
+  stats.prediction_eval_time_ns = omega_search_ctx->GetPredictionEvalTimeNs();
+  stats.sorted_window_time_ns = omega_search_ctx->GetSortedWindowTimeNs();
+  stats.average_recall_eval_time_ns =
+      omega_search_ctx->GetAverageRecallEvalTimeNs();
+  stats.prediction_feature_prep_time_ns =
+      omega_search_ctx->GetPredictionFeaturePrepTimeNs();
+  stats.report_visit_candidate_time_ns =
+      omega_search_ctx->GetReportVisitCandidateTimeNs();
+  stats.report_hop_time_ns = omega_search_ctx->GetReportHopTimeNs();
+  stats.update_top_candidates_time_ns =
+      omega_search_ctx->GetUpdateTopCandidatesTimeNs();
+  stats.push_traversal_window_time_ns =
+      omega_search_ctx->GetPushTraversalWindowTimeNs();
+  stats.collected_gt_advance_count =
+      omega_search_ctx->GetCollectedGtAdvanceCount();
+  stats.should_stop_calls_with_advance =
+      omega_search_ctx->GetShouldStopCallsWithAdvance();
+  stats.max_prediction_calls_per_should_stop =
+      omega_search_ctx->GetMaxPredictionCallsPerShouldStop();
+  return stats;
+}
+
+void EnableOmegaTrainingIfNeeded(OmegaSearchHandle omega_search, int query_id,
+                                 bool training_mode_enabled,
+                                 const std::vector<std::vector<uint64_t>>& training_ground_truth,
+                                 int training_k_train) {
+  if (!training_mode_enabled) {
+    return;
+  }
+
+  std::vector<int> gt_for_query;
+  if (query_id >= 0 &&
+      static_cast<size_t>(query_id) < training_ground_truth.size()) {
+    const auto& gt = training_ground_truth[query_id];
+    gt_for_query.reserve(gt.size());
+    for (uint64_t node_id : gt) {
+      gt_for_query.push_back(static_cast<int>(node_id));
+    }
+  }
+
+  omega_search_enable_training(omega_search, query_id, gt_for_query.data(),
+                               gt_for_query.size(), training_k_train);
+  LOG_DEBUG("Training mode enabled for query_id=%d with %zu GT nodes",
+            query_id, gt_for_query.size());
+}
+
+void CollectOmegaTrainingOutputs(OmegaSearchHandle omega_search,
+                                 OmegaContext* omega_ctx, int query_id) {
+  if (omega_ctx == nullptr) {
+    return;
+  }
+
+  size_t record_count = omega_search_get_training_records_count(omega_search);
+  if (record_count > 0) {
+    const void* records_ptr = omega_search_get_training_records(omega_search);
+    const auto* records_vec =
+        static_cast<const std::vector<omega::TrainingRecord>*>(records_ptr);
+
+    for (size_t i = 0; i < record_count; ++i) {
+      const auto& omega_record = (*records_vec)[i];
+      core_interface::TrainingRecord record;
+      record.query_id = omega_record.query_id;
+      record.hops_visited = omega_record.hops;
+      record.cmps_visited = omega_record.cmps;
+      record.dist_1st = omega_record.dist_1st;
+      record.dist_start = omega_record.dist_start;
+
+      if (omega_record.traversal_window_stats.size() == 7) {
+        std::copy(omega_record.traversal_window_stats.begin(),
+                  omega_record.traversal_window_stats.end(),
+                  record.traversal_window_stats.begin());
+      }
+
+      record.label = omega_record.label;
+      omega_ctx->add_training_record(std::move(record));
+    }
+
+    LOG_DEBUG("Collected %zu training records for query_id=%d", record_count,
+              query_id);
+  }
+
+  size_t gt_cmps_count = omega_search_get_gt_cmps_count(omega_search);
+  if (gt_cmps_count == 0) {
+    return;
+  }
+
+  const int* gt_cmps_ptr = omega_search_get_gt_cmps(omega_search);
+  int total_cmps = omega_search_get_total_cmps(omega_search);
+  if (gt_cmps_ptr == nullptr) {
+    return;
+  }
+
+  std::vector<int> gt_cmps_vec(gt_cmps_ptr, gt_cmps_ptr + gt_cmps_count);
+  for (auto& v : gt_cmps_vec) {
+    if (v < 0) {
+      v = total_cmps;
+    }
+  }
+  omega_ctx->set_gt_cmps(gt_cmps_vec, total_cmps);
+}
+
+void LogOmegaRuntimeStatsOnce(std::atomic<bool>* debug_stats_logged,
+                              bool model_loaded, float target_recall,
+                              size_t scan_cmps, uint64_t pairwise_dist_cnt,
+                              const OmegaFinalStats& final_stats,
+                              bool early_stop_hit) {
+  bool expected = false;
+  if (!debug_stats_logged->compare_exchange_strong(expected, true)) {
+    return;
+  }
+
+  LOG_INFO("OMEGA runtime stats: model_loaded=%d target_recall=%.4f "
+           "scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d "
+           "collected_gt=%d predicted_recall_avg=%.4f "
+           "predicted_recall_at_target=%.4f early_stop_hit=%d "
+           "should_stop_calls=%llu prediction_calls=%llu "
+           "advance_calls=%llu collected_gt_advance=%llu "
+           "max_pred_per_stop=%llu should_stop_ms=%.3f "
+           "prediction_eval_ms=%.3f",
+           model_loaded ? 1 : 0, target_recall, scan_cmps,
+           static_cast<unsigned long long>(pairwise_dist_cnt), final_stats.cmps,
+           final_stats.collected_gt, final_stats.predicted_recall_avg,
+           final_stats.predicted_recall_at_target, early_stop_hit ? 1 : 0,
+           final_stats.should_stop_calls, final_stats.prediction_calls,
+           final_stats.should_stop_calls_with_advance,
+           final_stats.collected_gt_advance_count,
+           final_stats.max_prediction_calls_per_should_stop,
+           static_cast<double>(final_stats.should_stop_time_ns) / 1e6,
+           static_cast<double>(final_stats.prediction_eval_time_ns) / 1e6);
+}
+
+void LogOmegaQueryStats(uint64_t query_seq, bool model_loaded,
+                        float target_recall, size_t scan_cmps,
+                        uint64_t pairwise_dist_cnt,
+                        const OmegaFinalStats& final_stats,
+                        const OmegaTimingSummary& timing,
+                        bool collect_control_timing, bool early_stop_hit) {
+  if (collect_control_timing) {
+    LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
+             "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
+             "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
+             "early_stop_hit=%d should_stop_calls=%llu "
+             "prediction_calls=%llu advance_calls=%llu "
+             "collected_gt_advance=%llu max_pred_per_stop=%llu "
+             "should_stop_ms=%.3f prediction_eval_ms=%.3f "
+             "setup_ms=%.3f reset_query_ms=%.3f "
+             "core_search_ms=%.3f hook_total_ms=%.3f hook_body_ms=%.3f "
+             "hook_dispatch_ms=%.3f pure_search_ms=%.3f "
+             "report_visit_candidate_ms=%.3f "
+             "report_hop_ms=%.3f update_top_candidates_ms=%.3f "
+             "push_traversal_window_ms=%.3f total_ms=%.3f",
+             static_cast<unsigned long long>(query_seq), model_loaded ? 1 : 0,
+             target_recall, scan_cmps,
+             static_cast<unsigned long long>(pairwise_dist_cnt),
+             final_stats.cmps, final_stats.collected_gt,
+             final_stats.predicted_recall_avg,
+             final_stats.predicted_recall_at_target, early_stop_hit ? 1 : 0,
+             final_stats.should_stop_calls, final_stats.prediction_calls,
+             final_stats.should_stop_calls_with_advance,
+             final_stats.collected_gt_advance_count,
+             final_stats.max_prediction_calls_per_should_stop,
+             static_cast<double>(final_stats.should_stop_time_ns) / 1e6,
+             static_cast<double>(final_stats.prediction_eval_time_ns) / 1e6,
+             static_cast<double>(timing.query_setup_time_ns) / 1e6,
+             static_cast<double>(timing.query_reset_time_ns) / 1e6,
+             static_cast<double>(timing.query_search_time_ns) / 1e6,
+             static_cast<double>(timing.hook_total_time_ns) / 1e6,
+             static_cast<double>(timing.hook_body_time_ns) / 1e6,
+             static_cast<double>(timing.hook_dispatch_time_ns) / 1e6,
+             static_cast<double>(timing.pure_search_time_ns) / 1e6,
+             static_cast<double>(final_stats.report_visit_candidate_time_ns) / 1e6,
+             static_cast<double>(final_stats.report_hop_time_ns) / 1e6,
+             static_cast<double>(final_stats.update_top_candidates_time_ns) / 1e6,
+             static_cast<double>(final_stats.push_traversal_window_time_ns) / 1e6,
+             static_cast<double>(timing.query_total_time_ns) / 1e6);
+    return;
+  }
+
+  LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
+           "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
+           "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
+           "early_stop_hit=%d should_stop_calls=%llu "
+           "prediction_calls=%llu advance_calls=%llu "
+           "collected_gt_advance=%llu max_pred_per_stop=%llu "
+           "should_stop_ms=%.3f prediction_eval_ms=%.3f "
+           "setup_ms=%.3f reset_query_ms=%.3f "
+           "core_search_ms=%.3f search_with_hooks_ms=%.3f total_ms=%.3f",
+           static_cast<unsigned long long>(query_seq), model_loaded ? 1 : 0,
+           target_recall, scan_cmps,
+           static_cast<unsigned long long>(pairwise_dist_cnt), final_stats.cmps,
+           final_stats.collected_gt, final_stats.predicted_recall_avg,
+           final_stats.predicted_recall_at_target, early_stop_hit ? 1 : 0,
+           final_stats.should_stop_calls, final_stats.prediction_calls,
+           final_stats.should_stop_calls_with_advance,
+           final_stats.collected_gt_advance_count,
+           final_stats.max_prediction_calls_per_should_stop,
+           static_cast<double>(final_stats.should_stop_time_ns) / 1e6,
+           static_cast<double>(final_stats.prediction_eval_time_ns) / 1e6,
+           static_cast<double>(timing.query_setup_time_ns) / 1e6,
+           static_cast<double>(timing.query_reset_time_ns) / 1e6,
+           static_cast<double>(timing.query_search_time_ns) / 1e6,
+           static_cast<double>(timing.query_search_time_ns) / 1e6,
+           static_cast<double>(timing.query_total_time_ns) / 1e6);
+}
+
 }  // namespace
 
 bool OmegaStreamer::LoadModel(const std::string& model_dir) {
@@ -232,24 +511,10 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     return IndexError_Runtime;
   }
 
-  // Training state is attached to the OMEGA search context before the shared
-  // HNSW loop starts so label collection sees the full query trajectory.
-  if (training_mode_enabled_) {
-    std::vector<int> gt_for_query;
-    if (query_id >= 0 &&
-        static_cast<size_t>(query_id) < training_ground_truth_.size()) {
-      const auto& gt = training_ground_truth_[query_id];
-      gt_for_query.reserve(gt.size());
-      for (uint64_t node_id : gt) {
-        gt_for_query.push_back(static_cast<int>(node_id));
-      }
-    }
-    omega_search_enable_training(omega_search, query_id,
-                                 gt_for_query.data(), gt_for_query.size(),
-                                 training_k_train_);
-    LOG_DEBUG("Training mode enabled for query_id=%d with %zu GT nodes",
-              query_id, gt_for_query.size());
-  }
+  // Training state is attached before the shared HNSW loop starts so label
+  // collection sees the full query trajectory.
+  EnableOmegaTrainingIfNeeded(omega_search, query_id, training_mode_enabled_,
+                              training_ground_truth_, training_k_train_);
 
   // Rebind the context if it originated from a different searcher/streamer
   // instance so the HNSW state matches this streamer before search begins.
@@ -270,52 +535,22 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   auto query_reset_start = RdtscTimer::Now();
   hnsw_ctx->reset_query(query);
   auto query_reset_end = RdtscTimer::Now();
-  OmegaHookState hook_state;
-  hook_state.search_ctx = omega_search_ctx;
-  hook_state.enable_early_stopping = enable_early_stopping;
-  hook_state.collect_control_timing = collect_control_timing;
-  hook_state.hook_body_time_ns = &hook_body_time_ns;
-  hook_state.per_cmp_reporting = training_mode_enabled_;
-  ResetOmegaHookState(&hook_state);
-  HnswAlgorithm::SearchHooks hooks;
-  hooks.user_data = &hook_state;
-  hooks.collect_timing = collect_control_timing;
-  hooks.now_ns = &OmegaProfilingNowNs;
-  hooks.elapsed_ns = &OmegaProfilingElapsedNs;
-  hooks.hook_total_time_ns = &hook_total_time_ns;
-  hooks.on_level0_entry = OnOmegaLevel0Entry;
-  hooks.on_hop = OnOmegaHop;
-  hooks.on_visit_candidate = OnOmegaVisitCandidate;
+  OmegaHookSetup hook_setup =
+      CreateOmegaHookSetup(omega_search_ctx, enable_early_stopping,
+                           collect_control_timing, training_mode_enabled_,
+                           &hook_body_time_ns, &hook_total_time_ns);
   bool early_stop_hit = false;
   auto query_search_start = RdtscTimer::Now();
-  int ret = alg_->search_with_hooks(hnsw_ctx, &hooks, &early_stop_hit);
+  int ret =
+      alg_->search_with_hooks(hnsw_ctx, &hook_setup.hooks, &early_stop_hit);
   if (ret != 0) {
     omega_search_destroy(omega_search);
     LOG_ERROR("OMEGA search failed");
     return ret;
   }
-  MaybeFlushOmegaPendingCandidates(&hook_state);
+  MaybeFlushOmegaPendingCandidates(&hook_setup.state);
   auto query_search_end = RdtscTimer::Now();
 
-  // Get final statistics
-  int hops, cmps, collected_gt;
-  float predicted_recall_avg = 0.0f;
-  float predicted_recall_at_target = 0.0f;
-  int omega_early_stop_hit = 0;
-  unsigned long long should_stop_calls = 0;
-  unsigned long long prediction_calls = 0;
-  unsigned long long should_stop_time_ns = 0;
-  unsigned long long prediction_eval_time_ns = 0;
-  unsigned long long sorted_window_time_ns = 0;
-  unsigned long long average_recall_eval_time_ns = 0;
-  unsigned long long prediction_feature_prep_time_ns = 0;
-  unsigned long long report_visit_candidate_time_ns = 0;
-  unsigned long long report_hop_time_ns = 0;
-  unsigned long long update_top_candidates_time_ns = 0;
-  unsigned long long push_traversal_window_time_ns = 0;
-  unsigned long long collected_gt_advance_count = 0;
-  unsigned long long should_stop_calls_with_advance = 0;
-  unsigned long long max_prediction_calls_per_should_stop = 0;
   uint64_t query_total_time_ns =
       RdtscTimer::ElapsedNs(query_total_start, RdtscTimer::Now());
   uint64_t query_reset_time_ns =
@@ -328,134 +563,40 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
         query_total_time_ns - query_reset_time_ns - query_search_time_ns;
   }
   uint64_t query_seq = query_stats_sequence_.fetch_add(1);
-  omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
-  predicted_recall_avg = omega_search_ctx->GetLastPredictedRecallAvg();
-  predicted_recall_at_target =
-      omega_search_ctx->GetLastPredictedRecallAtTarget();
-  omega_early_stop_hit = omega_search_ctx->EarlyStopHit() ? 1 : 0;
-  should_stop_calls = omega_search_ctx->GetShouldStopCalls();
-  prediction_calls = omega_search_ctx->GetPredictionCalls();
-  should_stop_time_ns = omega_search_ctx->GetShouldStopTimeNs();
-  prediction_eval_time_ns = omega_search_ctx->GetPredictionEvalTimeNs();
-  sorted_window_time_ns = omega_search_ctx->GetSortedWindowTimeNs();
-  average_recall_eval_time_ns = omega_search_ctx->GetAverageRecallEvalTimeNs();
-  prediction_feature_prep_time_ns =
-      omega_search_ctx->GetPredictionFeaturePrepTimeNs();
-  report_visit_candidate_time_ns =
-      omega_search_ctx->GetReportVisitCandidateTimeNs();
-  report_hop_time_ns = omega_search_ctx->GetReportHopTimeNs();
-  update_top_candidates_time_ns =
-      omega_search_ctx->GetUpdateTopCandidatesTimeNs();
-  push_traversal_window_time_ns =
-      omega_search_ctx->GetPushTraversalWindowTimeNs();
-  collected_gt_advance_count = omega_search_ctx->GetCollectedGtAdvanceCount();
-  should_stop_calls_with_advance =
-      omega_search_ctx->GetShouldStopCallsWithAdvance();
-  max_prediction_calls_per_should_stop =
-      omega_search_ctx->GetMaxPredictionCallsPerShouldStop();
+  const OmegaFinalStats final_stats = CollectOmegaFinalStats(omega_search_ctx);
   LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu, early_stop=%d",
-            cmps, hops, hnsw_ctx->topk_heap().size(), enable_early_stopping);
+            final_stats.cmps, final_stats.hops, hnsw_ctx->topk_heap().size(),
+            enable_early_stopping);
   if (enable_early_stopping) {
+    const bool model_loaded = IsModelLoaded();
     size_t scan_cmps = hnsw_ctx->get_scan_num();
     uint64_t pairwise_dist_cnt = hnsw_ctx->get_pairwise_dist_num();
-    uint64_t pure_search_time_ns = 0;
-    uint64_t hook_dispatch_time_ns = 0;
+    OmegaTimingSummary timing;
+    timing.query_total_time_ns = query_total_time_ns;
+    timing.query_reset_time_ns = query_reset_time_ns;
+    timing.query_search_time_ns = query_search_time_ns;
+    timing.query_setup_time_ns = query_setup_time_ns;
+    timing.hook_total_time_ns = hook_total_time_ns;
+    timing.hook_body_time_ns = hook_body_time_ns;
     if (collect_control_timing) {
-      pure_search_time_ns =
+      timing.pure_search_time_ns =
           query_search_time_ns > hook_total_time_ns
               ? (query_search_time_ns - hook_total_time_ns)
               : 0;
-      hook_dispatch_time_ns =
+      timing.hook_dispatch_time_ns =
           hook_total_time_ns > hook_body_time_ns
               ? (hook_total_time_ns - hook_body_time_ns)
               : 0;
     }
-    bool expected = false;
-    if (debug_stats_logged_.compare_exchange_strong(expected, true)) {
-      LOG_INFO("OMEGA runtime stats: model_loaded=%d target_recall=%.4f "
-               "scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d "
-               "collected_gt=%d predicted_recall_avg=%.4f "
-               "predicted_recall_at_target=%.4f early_stop_hit=%d "
-               "should_stop_calls=%llu prediction_calls=%llu "
-               "advance_calls=%llu collected_gt_advance=%llu "
-               "max_pred_per_stop=%llu should_stop_ms=%.3f "
-               "prediction_eval_ms=%.3f",
-               IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
-               static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
-               collected_gt,
-               predicted_recall_avg, predicted_recall_at_target,
-               (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
-               should_stop_calls, prediction_calls,
-               should_stop_calls_with_advance, collected_gt_advance_count,
-               max_prediction_calls_per_should_stop,
-               static_cast<double>(should_stop_time_ns) / 1e6,
-               static_cast<double>(prediction_eval_time_ns) / 1e6);
-    }
+    const bool omega_early_stop_hit =
+        early_stop_hit || final_stats.omega_early_stop_hit != 0;
+    LogOmegaRuntimeStatsOnce(&debug_stats_logged_, model_loaded, target_recall,
+                             scan_cmps, pairwise_dist_cnt, final_stats,
+                             omega_early_stop_hit);
     if (ShouldLogQueryStats(query_seq)) {
-      if (collect_control_timing) {
-        LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
-                 "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
-                 "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
-                 "early_stop_hit=%d should_stop_calls=%llu "
-                 "prediction_calls=%llu advance_calls=%llu "
-                 "collected_gt_advance=%llu max_pred_per_stop=%llu "
-                 "should_stop_ms=%.3f prediction_eval_ms=%.3f "
-                 "setup_ms=%.3f reset_query_ms=%.3f "
-                 "core_search_ms=%.3f hook_total_ms=%.3f hook_body_ms=%.3f "
-                 "hook_dispatch_ms=%.3f pure_search_ms=%.3f "
-                 "report_visit_candidate_ms=%.3f "
-                 "report_hop_ms=%.3f update_top_candidates_ms=%.3f "
-                 "push_traversal_window_ms=%.3f total_ms=%.3f",
-                 static_cast<unsigned long long>(query_seq),
-                 IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
-                 static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
-                 collected_gt,
-                 predicted_recall_avg, predicted_recall_at_target,
-                 (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
-                 should_stop_calls, prediction_calls,
-                 should_stop_calls_with_advance, collected_gt_advance_count,
-                 max_prediction_calls_per_should_stop,
-                 static_cast<double>(should_stop_time_ns) / 1e6,
-                 static_cast<double>(prediction_eval_time_ns) / 1e6,
-                 static_cast<double>(query_setup_time_ns) / 1e6,
-                 static_cast<double>(query_reset_time_ns) / 1e6,
-                 static_cast<double>(query_search_time_ns) / 1e6,
-                 static_cast<double>(hook_total_time_ns) / 1e6,
-                 static_cast<double>(hook_body_time_ns) / 1e6,
-                 static_cast<double>(hook_dispatch_time_ns) / 1e6,
-                 static_cast<double>(pure_search_time_ns) / 1e6,
-                 static_cast<double>(report_visit_candidate_time_ns) / 1e6,
-                 static_cast<double>(report_hop_time_ns) / 1e6,
-                 static_cast<double>(update_top_candidates_time_ns) / 1e6,
-                 static_cast<double>(push_traversal_window_time_ns) / 1e6,
-                 static_cast<double>(query_total_time_ns) / 1e6);
-      } else {
-        LOG_INFO("OMEGA query stats: query_seq=%llu model_loaded=%d "
-                 "target_recall=%.4f scan_cmps=%zu pairwise_dist_cnt=%llu omega_cmps=%d collected_gt=%d "
-                 "predicted_recall_avg=%.4f predicted_recall_at_target=%.4f "
-                 "early_stop_hit=%d should_stop_calls=%llu "
-                 "prediction_calls=%llu advance_calls=%llu "
-                 "collected_gt_advance=%llu max_pred_per_stop=%llu "
-                 "should_stop_ms=%.3f prediction_eval_ms=%.3f "
-                 "setup_ms=%.3f reset_query_ms=%.3f "
-                 "core_search_ms=%.3f search_with_hooks_ms=%.3f total_ms=%.3f",
-                 static_cast<unsigned long long>(query_seq),
-                 IsModelLoaded() ? 1 : 0, target_recall, scan_cmps,
-                 static_cast<unsigned long long>(pairwise_dist_cnt), cmps,
-                 collected_gt,
-                 predicted_recall_avg, predicted_recall_at_target,
-                 (early_stop_hit || omega_early_stop_hit != 0) ? 1 : 0,
-                 should_stop_calls, prediction_calls,
-                 should_stop_calls_with_advance, collected_gt_advance_count,
-                 max_prediction_calls_per_should_stop,
-                 static_cast<double>(should_stop_time_ns) / 1e6,
-                 static_cast<double>(prediction_eval_time_ns) / 1e6,
-                 static_cast<double>(query_setup_time_ns) / 1e6,
-                 static_cast<double>(query_reset_time_ns) / 1e6,
-                 static_cast<double>(query_search_time_ns) / 1e6,
-                 static_cast<double>(query_search_time_ns) / 1e6,
-                 static_cast<double>(query_total_time_ns) / 1e6);
-      }
+      LogOmegaQueryStats(query_seq, model_loaded, target_recall, scan_cmps,
+                         pairwise_dist_cnt, final_stats, timing,
+                         collect_control_timing, omega_early_stop_hit);
     }
   }
 
@@ -463,51 +604,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   // search-core timer and happens after logging.
   hnsw_ctx->topk_to_result();
 
-  // Collect training records (only in training mode)
   if (training_mode_enabled_) {
-    size_t record_count = omega_search_get_training_records_count(omega_search);
-
-    if (record_count > 0 && omega_ctx != nullptr) {
-      const void* records_ptr = omega_search_get_training_records(omega_search);
-      const auto* records_vec = static_cast<const std::vector<omega::TrainingRecord>*>(records_ptr);
-
-      for (size_t i = 0; i < record_count; ++i) {
-        const auto& omega_record = (*records_vec)[i];
-        core_interface::TrainingRecord record;
-        record.query_id = omega_record.query_id;
-        record.hops_visited = omega_record.hops;
-        record.cmps_visited = omega_record.cmps;
-        record.dist_1st = omega_record.dist_1st;
-        record.dist_start = omega_record.dist_start;
-
-        if (omega_record.traversal_window_stats.size() == 7) {
-          std::copy(omega_record.traversal_window_stats.begin(),
-                    omega_record.traversal_window_stats.end(),
-                    record.traversal_window_stats.begin());
-        }
-
-        record.label = omega_record.label;
-        omega_ctx->add_training_record(std::move(record));
-      }
-
-      LOG_DEBUG("Collected %zu training records for query_id=%d", record_count, query_id);
-    }
-
-    // Collect gt_cmps data
-    if (omega_ctx != nullptr) {
-      size_t gt_cmps_count = omega_search_get_gt_cmps_count(omega_search);
-      if (gt_cmps_count > 0) {
-        const int* gt_cmps_ptr = omega_search_get_gt_cmps(omega_search);
-        int total_cmps = omega_search_get_total_cmps(omega_search);
-        if (gt_cmps_ptr != nullptr) {
-          std::vector<int> gt_cmps_vec(gt_cmps_ptr, gt_cmps_ptr + gt_cmps_count);
-          for (auto& v : gt_cmps_vec) {
-            if (v < 0) v = total_cmps;
-          }
-          omega_ctx->set_gt_cmps(gt_cmps_vec, total_cmps);
-        }
-      }
-    }
+    CollectOmegaTrainingOutputs(omega_search, omega_ctx, query_id);
   }
 
   omega_search_destroy(omega_search);

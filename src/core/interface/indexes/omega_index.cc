@@ -16,6 +16,7 @@
 #include "algorithm/omega/omega_streamer.h"
 #include "algorithm/omega/omega_params.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "omega_training_session.h"
 #include <zvec/core/framework/index_factory.h>
 
 namespace zvec::core_interface {
@@ -58,41 +59,13 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 }
 
 
-zvec::Status OmegaIndex::EnableTrainingMode(bool enable) {
+ITrainingSession::Pointer OmegaIndex::CreateTrainingSession() {
   if (auto* omega_streamer =
           streamer_ ? dynamic_cast<core::OmegaStreamer*>(streamer_.get())
                     : nullptr) {
-    omega_streamer->EnableTrainingMode(enable);
+    return std::make_shared<OmegaTrainingSession>(omega_streamer);
   }
-  return zvec::Status::OK();
-}
-
-void OmegaIndex::SetCurrentQueryId(int query_id) {
-  if (auto* omega_streamer =
-          streamer_ ? dynamic_cast<core::OmegaStreamer*>(streamer_.get())
-                    : nullptr) {
-    omega_streamer->SetCurrentQueryId(query_id);
-  }
-}
-
-std::vector<TrainingRecord> OmegaIndex::GetTrainingRecords() const {
-  // Training records are returned per search through OmegaContext /
-  // SearchResult.training_records_. OmegaIndex itself does not keep a shared
-  // training-record buffer.
-  return {};
-}
-
-void OmegaIndex::ClearTrainingRecords() {
-  // No-op by design: OmegaIndex does not own per-search training records.
-}
-
-void OmegaIndex::SetTrainingGroundTruth(
-    const std::vector<std::vector<uint64_t>>& ground_truth, int k_train) {
-  if (auto* omega_streamer =
-          streamer_ ? dynamic_cast<core::OmegaStreamer*>(streamer_.get())
-                    : nullptr) {
-    omega_streamer->SetTrainingGroundTruth(ground_truth, k_train);
-  }
+  return nullptr;
 }
 
 int OmegaIndex::_prepare_for_search(

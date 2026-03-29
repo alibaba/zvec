@@ -29,6 +29,7 @@
 #include <zvec/core/framework/index_reducer.h>
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/interface/training.h>
+#include <zvec/core/interface/training_session.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
@@ -150,14 +151,6 @@ class Index {
    *
    * @return Pointer to ITrainingCapable interface if supported, nullptr otherwise
    *
-   * @example
-   * @code
-   *   if (auto* training = index->GetTrainingCapability()) {
-   *       training->EnableTrainingMode(true);
-   *       // ... perform searches ...
-   *       auto records = training->GetTrainingRecords();
-   *   }
-   * @endcode
    */
   virtual class ITrainingCapable* GetTrainingCapability() {
     return nullptr;  // Default: capability not supported
@@ -343,13 +336,7 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
     return this;
   }
 
-  // Implement ITrainingCapable interface
-  zvec::Status EnableTrainingMode(bool enable) override;
-  void SetCurrentQueryId(int query_id) override;
-  std::vector<TrainingRecord> GetTrainingRecords() const override;
-  void ClearTrainingRecords() override;
-  void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
-                               int k_train = 1) override;
+  ITrainingSession::Pointer CreateTrainingSession() override;
 
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;

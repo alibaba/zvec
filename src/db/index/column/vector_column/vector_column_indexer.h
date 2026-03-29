@@ -23,6 +23,7 @@
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_param.h>
 #include <zvec/core/interface/training.h>
+#include <zvec/core/interface/training_session.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
@@ -100,65 +101,11 @@ class VectorColumnIndexer {
    */
   core_interface::ITrainingCapable* GetTrainingCapability() const;
 
-  /**
-   * @brief Enable or disable training mode for collecting training features.
-   *
-   * Propagates the training mode setting to the underlying index.
-   * When enabled, searches will collect training features.
-   *
-   * @param enable True to enable training mode, false to disable
-   * @return Status indicating success or failure
-   */
-  Status EnableTrainingMode(bool enable);
+  core_interface::ITrainingSession::Pointer CreateTrainingSession() const;
 
-  /**
-   * @brief Set the query ID for the next search operation.
-   *
-   * Must be called before Search() when training mode is enabled.
-   * The query_id will be propagated to the underlying index.
-   *
-   * @param query_id Unique identifier for the query
-   */
-  void SetCurrentQueryId(int query_id);
+  void SetTrainingSession(const core_interface::ITrainingSession::Pointer& session);
 
-  /**
-   * @brief Get all collected training records.
-   *
-   * Returns a copy of all training records collected from the
-   * underlying index since training mode was enabled.
-   *
-   * @return Vector of TrainingRecord structures
-   */
-  std::vector<core_interface::TrainingRecord> GetTrainingRecords() const;
-
-  /**
-   * @brief Clear all collected training records.
-   *
-   * Clears training records from both this layer and the underlying index.
-   */
-  void ClearTrainingRecords();
-
-  /**
-   * @brief Set ground truth for training queries.
-   *
-   * Ground truth is used for real-time label computation during training.
-   * Labels are computed as: label=1 iff top k_train GT nodes are in current topk.
-   *
-   * @param ground_truth 2D vector: ground_truth[query_id][rank] = node_id
-   * @param k_train Number of GT nodes to check for label (typically 1)
-   */
-  void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
-                               int k_train = 1);
-
-  /**
-   * @brief Get collected gt_cmps data for all queries.
-   *
-   * Returns the gt_cmps data collected during training searches.
-   * The data is indexed by query_id.
-   *
-   * @return GtCmpsData structure with per-query gt_cmps values
-   */
-  core_interface::GtCmpsData GetGtCmpsData() const;
+  void ClearTrainingSession();
 
  public:
   std::string index_file_path() const {
@@ -211,12 +158,8 @@ class VectorColumnIndexer {
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
 
-  // Training mode support
-  bool training_mode_enabled_{false};
   mutable std::mutex training_mutex_;
-  mutable std::vector<core_interface::TrainingRecord> collected_records_;
-  // GT cmps data: gt_cmps_map_[query_id] = {gt_cmps_per_rank, total_cmps}
-  mutable std::map<int, std::pair<std::vector<int>, int>> gt_cmps_map_;
+  core_interface::ITrainingSession::Pointer training_session_;
 };
 
 

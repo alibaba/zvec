@@ -200,30 +200,26 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
         Status::InternalError("Failed to search vector"));
   }
 
-  if (training_mode_enabled_) {
+  core_interface::ITrainingSession::Pointer training_session;
+  {
+    std::lock_guard<std::mutex> lock(training_mutex_);
+    training_session = training_session_;
+  }
+
+  if (training_session != nullptr) {
     LOG_INFO(
         "VectorColumnIndexer training search: query_id=%d records=%zu gt_cmps=%zu total_cmps=%d",
         search_result.training_query_id_, search_result.training_records_.size(),
         search_result.gt_cmps_per_rank_.size(), search_result.total_cmps_);
   }
 
-  // Collect training records from search result (stored in context during search)
-  // This is thread-safe because each search has its own context
-  if (training_mode_enabled_ && !search_result.training_records_.empty()) {
-    std::lock_guard<std::mutex> lock(training_mutex_);
-    collected_records_.insert(collected_records_.end(),
-                             std::make_move_iterator(search_result.training_records_.begin()),
-                             std::make_move_iterator(search_result.training_records_.end()));
-  }
-
-  // Collect gt_cmps data from search result (for OMEGA training)
-  if (training_mode_enabled_ && !search_result.gt_cmps_per_rank_.empty() &&
-      search_result.training_query_id_ >= 0) {
-    std::lock_guard<std::mutex> lock(training_mutex_);
-    gt_cmps_map_[search_result.training_query_id_] = {
-        std::move(search_result.gt_cmps_per_rank_),
-        search_result.total_cmps_
-    };
+  if (training_session != nullptr) {
+    core_interface::QueryTrainingArtifacts artifacts;
+    artifacts.records = std::move(search_result.training_records_);
+    artifacts.gt_cmps_per_rank = std::move(search_result.gt_cmps_per_rank_);
+    artifacts.total_cmps = search_result.total_cmps_;
+    artifacts.training_query_id = search_result.training_query_id_;
+    training_session->CollectQueryArtifacts(std::move(artifacts));
   }
 
   auto result = std::make_shared<VectorIndexResults>(
@@ -233,110 +229,32 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
   return result;
 }
 
-// Training mode method implementations
-Status VectorColumnIndexer::EnableTrainingMode(bool enable) {
-  std::lock_guard<std::mutex> lock(training_mutex_);
-  training_mode_enabled_ = enable;
-
-  // Propagate to underlying index if it exists and supports training
-  if (index != nullptr) {
-    if (auto* training_capable = index->GetTrainingCapability()) {
-      return training_capable->EnableTrainingMode(enable);
-    }
-  }
-
-  return Status::OK();
-}
-
-void VectorColumnIndexer::SetCurrentQueryId(int query_id) {
-  // Propagate to underlying index if it exists and supports training
-  if (index != nullptr) {
-    if (auto* training_capable = index->GetTrainingCapability()) {
-      training_capable->SetCurrentQueryId(query_id);
-    }
-  }
-}
-
-std::vector<core_interface::TrainingRecord> VectorColumnIndexer::GetTrainingRecords() const {
-  std::lock_guard<std::mutex> lock(training_mutex_);
-  // All records are already collected in collected_records_ during Search()
-  // The underlying index records are cleared after each Search to avoid duplication
-  return collected_records_;
-}
-
-void VectorColumnIndexer::ClearTrainingRecords() {
-  std::lock_guard<std::mutex> lock(training_mutex_);
-  collected_records_.clear();
-  gt_cmps_map_.clear();
-
-  // Propagate to underlying index if it exists and supports training
-  if (index != nullptr) {
-    if (auto* training_capable = index->GetTrainingCapability()) {
-      training_capable->ClearTrainingRecords();
-    }
-  }
-}
-
-void VectorColumnIndexer::SetTrainingGroundTruth(
-    const std::vector<std::vector<uint64_t>>& ground_truth, int k_train) {
-  // Propagate to underlying index if it exists and supports training
-  if (index != nullptr) {
-    if (auto* training_capable = index->GetTrainingCapability()) {
-      training_capable->SetTrainingGroundTruth(ground_truth, k_train);
-    }
-  }
-}
-
-core_interface::GtCmpsData VectorColumnIndexer::GetGtCmpsData() const {
-  std::lock_guard<std::mutex> lock(training_mutex_);
-
-  core_interface::GtCmpsData result;
-  if (gt_cmps_map_.empty()) {
-    return result;
-  }
-
-  // Find max query_id to determine array size
-  int max_query_id = gt_cmps_map_.rbegin()->first;
-  result.num_queries = max_query_id + 1;
-
-  // Determine topk from first non-empty entry
-  for (const auto& entry : gt_cmps_map_) {
-    if (!entry.second.first.empty()) {
-      result.topk = entry.second.first.size();
-      break;
-    }
-  }
-
-  // Initialize arrays
-  result.gt_cmps.resize(result.num_queries);
-  result.total_cmps.resize(result.num_queries, 0);
-
-  for (size_t q = 0; q < result.num_queries; ++q) {
-    result.gt_cmps[q].resize(result.topk, 0);
-  }
-
-  // Fill in collected data
-  for (const auto& entry : gt_cmps_map_) {
-    int query_id = entry.first;
-    const auto& gt_cmps_vec = entry.second.first;
-    int total = entry.second.second;
-
-    if (query_id >= 0 && query_id < static_cast<int>(result.num_queries)) {
-      result.total_cmps[query_id] = total;
-      for (size_t r = 0; r < gt_cmps_vec.size() && r < result.topk; ++r) {
-        result.gt_cmps[query_id][r] = gt_cmps_vec[r];
-      }
-    }
-  }
-
-  return result;
-}
-
 core_interface::ITrainingCapable* VectorColumnIndexer::GetTrainingCapability() const {
   if (index != nullptr) {
     return index->GetTrainingCapability();
   }
   return nullptr;
+}
+
+core_interface::ITrainingSession::Pointer
+VectorColumnIndexer::CreateTrainingSession() const {
+  if (index != nullptr) {
+    if (auto* training_capable = index->GetTrainingCapability()) {
+      return training_capable->CreateTrainingSession();
+    }
+  }
+  return nullptr;
+}
+
+void VectorColumnIndexer::SetTrainingSession(
+    const core_interface::ITrainingSession::Pointer& session) {
+  std::lock_guard<std::mutex> lock(training_mutex_);
+  training_session_ = session;
+}
+
+void VectorColumnIndexer::ClearTrainingSession() {
+  std::lock_guard<std::mutex> lock(training_mutex_);
+  training_session_.reset();
 }
 
 }  // namespace zvec
