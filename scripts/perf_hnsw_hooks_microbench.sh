@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Internal profiling helper for hnsw_hooks_microbench.
+# Maintained for OMEGA/HNSW hotspot analysis, not as a public benchmark entrypoint.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,140 +1,48 @@
+# Core Tools
 
-# Benchmarking scripts
+This directory mixes product-adjacent command-line tools with internal
+benchmark helpers. The table below is the maintenance contract for each group.
 
-This directory contains benchmarking scripts and reproducing steps.
+## Maintained Tools
 
-## COHERE experiments
+These binaries are part of the normal local benchmarking / debugging workflow
+ and should keep building with the rest of the tree.
 
-### Getting COHERE Data
+| Tool | Status | Purpose |
+| --- | --- | --- |
+| `txt2vecs` | maintained | Convert text vectors into zvec binary format. |
+| `local_builder` | maintained | Build an index from YAML config. |
+| `recall` | maintained | Offline recall evaluation from YAML config. |
+| `bench` | maintained | Throughput / latency benchmarking from YAML config. |
 
-Please download the COHERE 10M dataset to cohere_large_10m as follows:
+## Internal Perf Tools
 
-```bash
-neighbors_head_1p.parquet   
-neighbors_tail_1pgit.parquet   
-neighbors_labels_label_20p.parquet  
-neighbors_labels_label_50p.parquet  
-neighbors_labels_label_80p.parquet  
-neighbors_labels_label_95p.parquet             
-neighbors.parquet    
-shuffle_train-00-of-10.parquet     
-shuffle_train-01-of-10.parquet          
-shuffle_train-02-of-10.parquet  
-shuffle_train-03-of-10.parquet 
-shuffle_train-04-of-10.parquet  
-shuffle_train-05-of-10.parquet 
-shuffle_train-06-of-10.parquet
-shuffle_train-07-of-10.parquet
-shuffle_train-08-of-10.parquet
-shuffle_train-09-of-10.parquet
-scalar_labels.parquet     
-test.parquet      
-```
+These tools exist to answer OMEGA and HNSW integration questions. They are
+useful for development, but they are not general product entrypoints.
 
-### Preparing Environment 
-Clone code and init:
-```bash
-$ git clone git@github.com:alibaba/zvec.git
-$ cd zvec
-$ git submodule update --init
-```
+| Tool | Status | Purpose | Typical entrypoint |
+| --- | --- | --- | --- |
+| `hnsw_hooks_microbench` | internal | Compare raw HNSW, empty hooks, and OMEGA hooks on the same search core. | `scripts/perf_hnsw_hooks_microbench.sh` |
+| `omega_predict_microbench` | internal | Measure standalone OMEGA prediction cost outside the full search loop. | Invoke binary directly with a saved model. |
 
-Make build docker image:
-```bash
-docker build -t  zvec/build-image:latest -f ./.github/workflows/docker/Dockerfile.ubuntu18.10-glibc228 .
-```
+`hnsw_hooks_microbench` assumes a persisted HNSW index and benchmark query set.
+It is intended for single-machine profiling, not for end-user benchmarking.
 
-Start bulld container:
-```bash
-docker run -it --net=host -d -e DEBUG_MODE=true  --user root --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -v /home/zvec/:/home/zvec/  -w /home/zvec --name=build_zvec zvec/build-image:latest bash
-```
+## Compatibility / Reference Tools
 
-Turn-off complation option:
-```
-option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" ON)
-=>
-option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
-```
+These binaries are retained so older YAML-based flows and historical result
+reproduction still work, but new work should prefer the maintained entrypoints
+above.
 
-Build source code:
-```
-$ docker exec -it build_zvec bash
-$ cd /home/zvec/workspace/zvec
-$ mkdir build
-$ cd build  
-$ cmake -DENABLE_SKYLAKE=ON -DCMAKE_BUILD_TYPE=Release ..
-```
+| Tool | Status | Purpose |
+| --- | --- | --- |
+| `local_builder_original` | compatibility | Reference copy of the legacy builder flow. |
+| `recall_original` | compatibility | Reference copy of the legacy recall flow. |
+| `bench_original` | compatibility | Reference copy of the legacy bench flow. |
+| `convert_cohere_parquet.py` | compatibility | Dataset conversion helper for historical Cohere experiments. |
 
-### Converting Dataset 
-Export vector data using python script:
-```bash
-$ mkdir 10m.output
-$ python3 convert_cohere_parquet.py
-```
+## Notes
 
-Convert vector data to binary formatted file.
-```bash
-/home/zvec/workspace/zvec/bin/txt2vecs -input=cohere_train_vector_10m.txt --output=cohere_train_vector_10m.zvec.vecs --dimension=768
-```
-
-### Preparing Bench Config 
-Prepare Build Config
-
-```yaml
-BuilderCommon:
-    BuilderClass: HnswStreamer
-    BuildFile: /home/zvec/bench/data/10m/cohere_train_vector_10m.zvec.vecs
-    NeedTrain: true 
-    TrainFile: /home/zvec/bench/data/10m/cohere_train_vector_10m.zvec.vecs
-    DumpPath:  /home/zvec/bench/config/cohere_train_vector_10m.index
-    IndexPath: /home/zvec/bench/config/cohere_train_vector_10m.2.index
-
-    ConverterName: CosineInt8Converter
-    MetricName: Cosine
-
-    ThreadCount: 16
-
-BuilderParams: 
-    proxima.general.builder.thread_count: !!int 16
-    proxima.hnsw.builder.thread_count: !!int 16
-```
-
-Prepare Search Config
-
-```yaml
-SearcherCommon:
-    SearcherClass: HnswStreamer
-    IndexPath: /home/zvec/bench/config/cohere_train_vector_10m.2.index
-    TopK: 1,10,50,100 
-    QueryFile: /home/zvec/bench/data/10m/cohere_test_vector_1000.new.txt
-    QueryType: float 
-    QueryFirstSep: ";" 
-    QuerySecondSep: " "
-    GroundTruthFile: /home/zvec/bench/data/10m/neighbors.txt
-    RecallThreadCount: 1
-    BenchThreadCount: 16 
-    BenchIterCount: 1000000000 
-    CompareById: true
-
-SearcherParams: 
-    proxima.hnsw.streamer.ef: !!int 250
-```
-
-### Building Index 
-Conduct Build 
-```bash
-$ /home/zvec/workspace/zvec/build/bin/local_build_original ./build.yaml 
-```
-
-### Performing Bench
-Conduct Recall 
-```bash
-$ /home/zvec/workspace/zvec/build/bin/recall_original ./search.yaml
-```
-
-Conduct Bench 
-```bash
-$ /home/zvec/workspace/zvec/build/bin/bench_original ./search.yaml
-```
-
-
+- The JSON-driven OMEGA vs HNSW workflow lives under [`scripts/`](../scripts).
+- Perf shell wrappers in [`scripts/`](../scripts) are internal-only and assume a
+  prepared local environment plus existing benchmark artifacts.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Internal profiling helper for VectorDBBench search-core comparisons.
+# Kept for local perf investigations; expects prepared benchmark artifacts.
 set -euo pipefail
 
 DATASET="${1:-1m}"
