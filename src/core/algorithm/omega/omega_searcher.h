@@ -26,7 +26,10 @@
 namespace zvec {
 namespace core {
 
-//! OMEGA Index Searcher - extends HNSW with adaptive search
+// OmegaSearcher owns the loaded OMEGA runtime on the searcher side:
+// model loading, mode selection, HNSW-hook wiring, and per-search context
+// creation. It reuses the HNSW search loop instead of defining an independent
+// graph-search implementation.
 class OmegaSearcher : public HnswSearcher {
  public:
   using ContextPointer = IndexSearcher::Context::Pointer;
@@ -132,45 +135,6 @@ class OmegaSearcher : public HnswSearcher {
 
   //! Create a searcher context (creates OmegaContext instead of HnswContext)
   virtual ContextPointer create_context() const override;
-
-  // NOTE: The commented-out delegation methods below are intentionally not used.
-  // OmegaSearcher inherits from HnswSearcher and overrides only the necessary methods.
-  // The base class implementations are sufficient for the remaining functionality.
-  /*
-  //! Fetch vector by key (delegate to HNSW)
-  virtual const void *get_vector(uint64_t key) const override {
-    return hnsw_searcher_->get_vector(key);
-  }
-
-  //! Create a searcher context (delegate to HNSW)
-  virtual ContextPointer create_context() const override {
-    return hnsw_searcher_->create_context();
-  }
-
-  //! Create a new iterator (delegate to HNSW)
-  virtual IndexProvider::Pointer create_provider(void) const override {
-    return hnsw_searcher_->create_provider();
-  }
-
-  //! Retrieve statistics (delegate to HNSW)
-  virtual const Stats &stats(void) const override {
-    return hnsw_searcher_->stats();
-  }
-
-  //! Retrieve meta of index (delegate to HNSW)
-  virtual const IndexMeta &meta(void) const override {
-    return hnsw_searcher_->meta();
-  }
-
-  //! Retrieve params of index
-  virtual const ailego::Params &params(void) const override {
-    return params_;
-  }
-
-  virtual void print_debug_info() override {
-    hnsw_searcher_->print_debug_info();
-  }
-  */
 
  private:
   //! Check if OMEGA mode should be used

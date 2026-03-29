@@ -25,14 +25,15 @@ namespace zvec {
 namespace core {
 
 /**
- * @brief OMEGA Index Streamer
+ * @brief OMEGA-aware HNSW streamer.
  *
- * Inherits from HnswStreamer and overrides dump() to set "OmegaSearcher"
- * as the searcher type, ensuring that disk-persisted indices will use
- * OmegaSearcher (with training support) when loaded.
- *
- * Supports both training mode (feature collection) and inference mode
- * (adaptive search with learned early stopping).
+ * Ownership boundary:
+ * - OmegaStreamer owns persisted-streamer concerns such as open/dump and the
+ *   streamer-side search entry point used by zvec's index framework.
+ * - It carries training-mode/search-mode configuration that must travel with
+ *   the loaded streamer instance.
+ * - It does not define the adaptive-stop policy; that lives in OMEGALib
+ *   through OmegaSearcher/OmegaContext.
  */
 class OmegaStreamer : public HnswStreamer {
  public:
@@ -47,7 +48,7 @@ class OmegaStreamer : public HnswStreamer {
   OmegaStreamer(const OmegaStreamer &streamer) = delete;
   OmegaStreamer &operator=(const OmegaStreamer &streamer) = delete;
 
-  // Training mode support
+  // Training-mode configuration forwarded into per-search contexts.
   void EnableTrainingMode(bool enable) { training_mode_enabled_ = enable; }
   void SetCurrentQueryId(int query_id) { current_query_id_ = query_id; }
   void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
@@ -56,11 +57,9 @@ class OmegaStreamer : public HnswStreamer {
     training_k_train_ = k_train;
   }
 
-  // Inference mode support
+  // Search-mode configuration shared across searches for this streamer.
   bool LoadModel(const std::string& model_dir);
   bool IsModelLoaded() const;
-  void SetTargetRecall(float target_recall) { target_recall_ = target_recall; }
-  void SetWindowSize(int window_size) { window_size_ = window_size; }
 
  protected:
   /**

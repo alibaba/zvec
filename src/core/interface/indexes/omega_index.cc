@@ -20,43 +20,38 @@
 
 namespace zvec::core_interface {
 
-// OmegaIndex uses OmegaStreamer which provides OMEGA adaptive search
+// OmegaIndex owns the framework-facing index lifecycle and delegates OMEGA-
+// specific runtime behavior to OmegaStreamer/OmegaSearcher. It is responsible
+// for creating the correct streamer and injecting OMEGA query params into the
+// search context. It does not own the adaptive-search algorithm itself.
 int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 
-  // First call parent to set up all parameters and create basic streamer
+  // Reuse HNSWIndex setup so the HNSW-compatible on-disk/index metadata is
+  // initialized consistently before swapping in the OMEGA-aware streamer.
   int ret = HNSWIndex::CreateAndInitStreamer(param);
   if (ret != core::IndexError_Success) {
     return ret;
   }
 
-  // NOTE: We intentionally DO NOT create a builder here!
-  // HNSW works by having data written directly to the streamer during Merge
-  // (via add_with_id_impl). If we create a builder, the MixedStreamerReducer
-  // will use add_vec_with_builder() which puts data into the builder instead
-  // of the streamer, causing doc_count=0 after Merge and subsequent crashes.
-
-  // Now replace the HnswStreamer with OmegaStreamer
-  // Save the current meta and params before replacing streamer
+  // OMEGA build/merge still happens through the streamer path. Keeping the
+  // HNSW builder path untouched avoids changing merge semantics.
   core::IndexMeta saved_meta = proxima_index_meta_;
   ailego::Params saved_params = proxima_index_params_;
 
-  // Create OmegaStreamer
   streamer_ = core::IndexFactory::CreateStreamer("OmegaStreamer");
   if (ailego_unlikely(!streamer_)) {
     LOG_ERROR("Failed to create OmegaStreamer");
     return core::IndexError_Runtime;
   }
 
-  // Initialize OmegaStreamer with the same parameters
   if (ailego_unlikely(
           streamer_->init(saved_meta, saved_params) != 0)) {
     LOG_ERROR("Failed to init OmegaStreamer");
     return core::IndexError_Runtime;
   }
 
-  // CRITICAL: Set "OmegaSearcher" in metadata for disk-persisted indices
-  // This ensures that when the index is saved and loaded later,
-  // IndexFlow will create OmegaSearcher instead of HnswSearcher
+  // Persist the OMEGA-aware searcher type so reopened indices route searches
+  // through OmegaSearcher instead of the plain HNSW searcher.
   proxima_index_meta_.set_searcher("OmegaSearcher", 0, ailego::Params());
 
   return core::IndexError_Success;
@@ -98,14 +93,14 @@ void OmegaIndex::SetCurrentQueryId(int query_id) {
 }
 
 std::vector<TrainingRecord> OmegaIndex::GetTrainingRecords() const {
-  // Training records are collected via SearchResult.training_records_ (from OmegaContext),
-  // not through this method. This is kept for ITrainingCapable interface compliance.
+  // Training records are returned per search through OmegaContext /
+  // SearchResult.training_records_. OmegaIndex itself does not keep a shared
+  // training-record buffer.
   return {};
 }
 
 void OmegaIndex::ClearTrainingRecords() {
-  // Training records are managed per-search via OmegaContext,
-  // no shared state to clear here.
+  // No-op by design: OmegaIndex does not own per-search training records.
 }
 
 void OmegaIndex::SetTrainingGroundTruth(
