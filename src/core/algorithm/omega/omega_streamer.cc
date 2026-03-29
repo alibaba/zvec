@@ -399,7 +399,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     return IndexError_Runtime;
   }
 
-  // Enable training mode if active (CRITICAL: must be before search)
+  // Training state is attached to the OMEGA search context before the shared
+  // HNSW loop starts so label collection sees the full query trajectory.
   if (training_mode_enabled_) {
     std::vector<int> gt_for_query;
     if (query_id >= 0 &&
@@ -417,7 +418,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
               query_id, gt_for_query.size());
   }
 
-  // CRITICAL: Update context if it was created by another searcher/streamer
+  // Rebind the context if it originated from a different searcher/streamer
+  // instance so the HNSW state matches this streamer before search begins.
   if (hnsw_ctx->magic() != magic_) {
     int ret = update_context(hnsw_ctx);
     if (ret != 0) {
@@ -723,12 +725,12 @@ int OmegaStreamer::dump(const IndexDumper::Pointer &dumper) {
   shared_mutex_.lock();
   AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
 
-  // Extract OMEGA params from streamer params and pass to searcher
-  // This ensures OmegaSearcher gets the necessary params when loaded
+  // Persist the OMEGA searcher params alongside the dumped index metadata so a
+  // reopened index reconstructs the same searcher-side behavior.
   ailego::Params searcher_params;
   const auto& streamer_params = meta_.streamer_params();
 
-  // Copy omega.* params from streamer to searcher
+  // Copy the omega.* params needed by OmegaSearcher::init().
   if (streamer_params.has("omega.enabled")) {
     searcher_params.insert("omega.enabled",
                            streamer_params.get_as_bool("omega.enabled"));

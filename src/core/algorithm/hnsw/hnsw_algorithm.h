@@ -27,6 +27,21 @@ class HnswAlgorithm {
  public:
   typedef std::unique_ptr<HnswAlgorithm> UPointer;
 
+  // SearchHooks is the integration seam used by OMEGA and a small amount of
+  // profiling tooling. Callbacks are invoked from the level-0 search loop in
+  // this order:
+  // 1. on_level0_entry once after the initial level-0 entry point is accepted
+  // 2. on_hop once per popped candidate expansion
+  // 3. on_visit_candidate once per candidate comparison at level 0
+  //
+  // inserted_to_topk is computed by the HNSW loop before callbacks fire and
+  // tells the callback whether the candidate improved the current result heap.
+  //
+  // Returning true from on_visit_candidate requests early termination of the
+  // level-0 search. This is currently used by OMEGA adaptive stopping.
+  //
+  // collect_timing/now_ns/elapsed_ns/hook_total_time_ns are profiling-only
+  // fields; they do not affect hook semantics.
   struct SearchHooks {
     void *user_data{nullptr};
     bool collect_timing{false};
