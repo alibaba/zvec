@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -44,14 +45,23 @@ _ZVEC_INITIALIZED = False
 DATASET_SPECS: dict[str, dict[str, Any]] = {
     "cohere_1m": {
         "dataset_dirname": "cohere/cohere_medium_1m",
+        "remote_dirname": "cohere_medium_1m",
         "dimension": 768,
         "metric_type": "COSINE",
+        "train_files": ["shuffle_train.parquet"],
     },
     "cohere_10m": {
         "dataset_dirname": "cohere/cohere_large_10m",
+        "remote_dirname": "cohere_large_10m",
         "dimension": 768,
         "metric_type": "COSINE",
+        "train_files": [f"shuffle_train-{idx:02d}-of-10.parquet" for idx in range(10)],
     },
+}
+
+DATASET_DOWNLOAD_BASE_URLS = {
+    "S3": "https://assets.zilliz.com/benchmark",
+    "ALIYUNOSS": "https://assets.zilliz.com.cn/benchmark",
 }
 
 
@@ -495,16 +505,29 @@ def resolve_dataset_spec(
         dataset_root = Path(config["dataset_root"]).expanduser().resolve()
     elif os.environ.get("DATASET_LOCAL_DIR"):
         dataset_root = Path(os.environ["DATASET_LOCAL_DIR"]).expanduser().resolve()
+    else:
+        dataset_root = Path("/tmp/zvec/dataset").resolve()
 
     dataset_dirname = config.get("dataset_dirname", default.get("dataset_dirname"))
-    if dataset_root is None or not dataset_dirname:
+    if not dataset_dirname:
         raise ValueError(
-            "Dataset root is not configured. Set --dataset-root, config.dataset_root, "
-            "or DATASET_LOCAL_DIR."
+            f"Dataset directory name is not configured for {dataset_name}."
         )
 
     dimension = int(config.get("dimension", default.get("dimension", 0)))
     metric_type = str(config.get("metric_type", default.get("metric_type", "COSINE"))).upper()
+    remote_dirname = str(config.get("remote_dirname", default.get("remote_dirname", "")))
+    train_files = list(config.get("train_files", default.get("train_files", [])))
+    dataset_source = str(config.get("dataset_source", os.environ.get("ZVEC_DATASET_SOURCE", "S3")))
+    download_base_url = str(
+        config.get(
+            "dataset_base_url",
+            os.environ.get(
+                "ZVEC_DATASET_BASE_URL",
+                DATASET_DOWNLOAD_BASE_URLS.get(dataset_source.upper(), DATASET_DOWNLOAD_BASE_URLS["S3"]),
+            ),
+        )
+    )
     if dimension <= 0:
         raise ValueError(f"Missing dataset dimension for {dataset_name}")
 
@@ -514,6 +537,9 @@ def resolve_dataset_spec(
         "dataset_dir": dataset_dir,
         "dimension": dimension,
         "metric_type": metric_type,
+        "remote_dirname": remote_dirname,
+        "train_files": train_files,
+        "download_base_url": download_base_url.rstrip("/"),
     }
 
 
@@ -545,6 +571,54 @@ def _sorted_train_files(dataset_dir: Path) -> list[Path]:
     return unique
 
 
+def _dataset_required_files(dataset_name: str, dataset_spec: dict[str, Any]) -> list[str]:
+    required = list(dataset_spec.get("train_files", []))
+    if not required:
+        raise ValueError(
+            f"Dataset {dataset_name} does not define train_files for auto-download"
+        )
+    required.extend(["test.parquet", "neighbors.parquet"])
+    return required
+
+
+def _download_file(url: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    try:
+        with urllib.request.urlopen(url) as response, open(tmp_path, "wb") as out:
+            shutil.copyfileobj(response, out)
+        tmp_path.replace(output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def ensure_dataset_available(dataset_name: str, dataset_spec: dict[str, Any], dry_run: bool) -> None:
+    dataset_dir = dataset_spec["dataset_dir"]
+    required_files = _dataset_required_files(dataset_name, dataset_spec)
+    missing_files = [name for name in required_files if not (dataset_dir / name).exists()]
+    if not missing_files:
+        return
+
+    remote_dirname = dataset_spec.get("remote_dirname")
+    if not remote_dirname:
+        raise FileNotFoundError(
+            f"Dataset directory is incomplete and auto-download is not configured: {dataset_dir}"
+        )
+
+    base_url = dataset_spec["download_base_url"]
+    print(f"Dataset files missing under {dataset_dir}, downloading from {base_url}/{remote_dirname} ...")
+    if dry_run:
+        for name in missing_files:
+            print(f"[Dry-run] download {base_url}/{remote_dirname}/{name} -> {dataset_dir / name}")
+        return
+
+    for name in missing_files:
+        url = f"{base_url}/{remote_dirname}/{name}"
+        output_path = dataset_dir / name
+        print(f"Downloading {url}")
+        _download_file(url, output_path)
+
+
 def prepare_dataset_artifacts(
     dataset_name: str,
     dataset_spec: dict[str, Any],
@@ -554,6 +628,7 @@ def prepare_dataset_artifacts(
     dataset_dir = dataset_spec["dataset_dir"]
     query_parquet = dataset_dir / "test.parquet"
     gt_parquet = dataset_dir / "neighbors.parquet"
+    ensure_dataset_available(dataset_name, dataset_spec, dry_run)
     train_files = _sorted_train_files(dataset_dir)
     if not dry_run:
         if not dataset_dir.exists():

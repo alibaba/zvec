@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Benchmark Zvec HNSW vs OMEGA without VectorDBBench."""
 
 from __future__ import annotations
 
