@@ -1,10 +1,5 @@
 {
   "cohere_1m": {
-    "warmup": {
-      "enabled": true,
-      "duration": 15,
-      "num_concurrency": "4"
-    },
     "common": {
       "case_type": "Performance768D1M",
       "num_concurrency": "12,14,16,18,20",
@@ -40,11 +35,6 @@
     }
   },
   "cohere_10m": {
-    "warmup": {
-      "enabled": true,
-      "duration": 15,
-      "num_concurrency": "4"
-    },
     "common": {
       "case_type": "Performance768D10M",
       "num_concurrency": "12,14,16,18,20",
@@ -52,8 +42,7 @@
       "k": 100,
       "m": 50,
       "ef_search": 300,
-      "quantize_type": "int8",
-      "is_using_refiner": true
+      "quantize_type": "int8"
     },
     "hnsw": {
       "path": "cohere_10m_hnsw",
