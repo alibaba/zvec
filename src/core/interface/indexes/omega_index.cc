@@ -59,36 +59,19 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 
 
 zvec::Status OmegaIndex::EnableTrainingMode(bool enable) {
-  LOG_INFO("OmegaIndex::EnableTrainingMode called with enable=%d", enable);
-  training_mode_enabled_ = enable;
-
-  // Delegate to OmegaStreamer if available
-  if (streamer_) {
-    LOG_INFO("OmegaIndex: streamer_ exists, attempting dynamic_cast to OmegaStreamer");
-    auto* omega_streamer = dynamic_cast<core::OmegaStreamer*>(streamer_.get());
-    if (omega_streamer) {
-      LOG_INFO("OmegaIndex: Successfully cast to OmegaStreamer, calling EnableTrainingMode");
-      omega_streamer->EnableTrainingMode(enable);
-      return zvec::Status::OK();
-    } else {
-      LOG_WARN("OmegaIndex: Failed to cast streamer_ to OmegaStreamer");
-    }
-  } else {
-    LOG_WARN("OmegaIndex: streamer_ is null");
+  if (auto* omega_streamer =
+          streamer_ ? dynamic_cast<core::OmegaStreamer*>(streamer_.get())
+                    : nullptr) {
+    omega_streamer->EnableTrainingMode(enable);
   }
-
   return zvec::Status::OK();
 }
 
 void OmegaIndex::SetCurrentQueryId(int query_id) {
-  current_query_id_ = query_id;
-
-  // Delegate to OmegaStreamer if available
-  if (streamer_) {
-    auto* omega_streamer = dynamic_cast<core::OmegaStreamer*>(streamer_.get());
-    if (omega_streamer) {
-      omega_streamer->SetCurrentQueryId(query_id);
-    }
+  if (auto* omega_streamer =
+          streamer_ ? dynamic_cast<core::OmegaStreamer*>(streamer_.get())
+                    : nullptr) {
+    omega_streamer->SetCurrentQueryId(query_id);
   }
 }
 
@@ -105,12 +88,10 @@ void OmegaIndex::ClearTrainingRecords() {
 
 void OmegaIndex::SetTrainingGroundTruth(
     const std::vector<std::vector<uint64_t>>& ground_truth, int k_train) {
-  // Delegate to OmegaStreamer if available
-  if (streamer_) {
-    auto* omega_streamer = dynamic_cast<core::OmegaStreamer*>(streamer_.get());
-    if (omega_streamer) {
-      omega_streamer->SetTrainingGroundTruth(ground_truth, k_train);
-    }
+  if (auto* omega_streamer =
+          streamer_ ? dynamic_cast<core::OmegaStreamer*>(streamer_.get())
+                    : nullptr) {
+    omega_streamer->SetTrainingGroundTruth(ground_truth, k_train);
   }
 }
 

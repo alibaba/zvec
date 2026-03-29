@@ -153,28 +153,6 @@ class TrainingDataCollector {
       const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
 
   /**
-   * @brief Fill labels in training records based on ground truth
-   *
-   * Label=1 iff the top K_train ground truth nodes are ALL in collected_node_ids.
-   * Label=0 otherwise.
-   *
-   * This follows big-ann-benchmarks labeling strategy:
-   * - Training records represent search states
-   * - label=1 means "we've found enough results, can stop now"
-   * - label=0 means "need to continue searching"
-   *
-   * @param records Training records to fill (modified in-place)
-   * @param ground_truth Ground truth doc IDs per query (sorted by distance)
-   * @param search_results Search result doc IDs per query (unused but kept for compatibility)
-   * @param k_train Number of top ground truth results that must be collected
-   */
-  static void FillLabels(
-      std::vector<core_interface::TrainingRecord>* records,
-      const std::vector<std::vector<uint64_t>>& ground_truth,
-      const std::vector<std::vector<uint64_t>>& search_results,
-      size_t k_train);
-
-  /**
    * @brief Compute gt_cmps data from training records and ground truth
    *
    * For each query and each GT rank, find the cmps value when that GT was first

@@ -32,13 +32,8 @@
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
-#include <zvec/core/interface/training.h>
 #include <zvec/core/interface/training_capable.h>
 #include <zvec/db/status.h>
-
-namespace zvec::core {
-class OmegaSearcher;  // Forward declaration
-}
 
 namespace zvec::core_interface {
 
@@ -362,11 +357,6 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) override;
-
- private:
-  // Training mode state (tracked locally for convenience)
-  bool training_mode_enabled_{false};
-  int current_query_id_{0};
 };
 
 

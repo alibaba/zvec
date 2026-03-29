@@ -869,37 +869,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   return ground_truth;
 }
 
-void TrainingDataCollector::FillLabels(
-    std::vector<core_interface::TrainingRecord>* records,
-    const std::vector<std::vector<uint64_t>>& ground_truth,
-    const std::vector<std::vector<uint64_t>>& search_results,
-    size_t k_train) {
-  // NOTE: Labels are now computed in real-time during search.
-  // This function is kept for backward compatibility but only counts existing labels.
-  (void)ground_truth;
-  (void)search_results;
-  (void)k_train;
-
-  if (!records || records->empty()) {
-    LOG_WARN("No records to fill labels");
-    return;
-  }
-
-  // Count existing labels (already computed in real-time during search)
-  size_t positive_count = 0;
-  size_t negative_count = 0;
-  for (const auto& record : *records) {
-    if (record.label > 0) {
-      positive_count++;
-    } else {
-      negative_count++;
-    }
-  }
-
-  LOG_INFO("Labels already computed in real-time: %zu positive, %zu negative (k_train=%zu)",
-           positive_count, negative_count, k_train);
-}
-
 core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
     const std::vector<core_interface::TrainingRecord>& records,
     const std::vector<std::vector<uint64_t>>& ground_truth,
