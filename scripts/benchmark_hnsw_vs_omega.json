@@ -6,52 +6,17 @@
       "concurrency_duration": 30,
       "k": 100,
       "m": 15,
-      "ef_search": 180,
+      "ef_search": 300,
       "quantize_type": "int8"
     },
     "hnsw": {
       "path": "cohere_1m_hnsw",
-      "db_label": "16c64g-v0.1",
+      "db_label": "16c64g-v0.1-hnsw-m15-ef300",
       "args": {}
     },
     "omega": {
       "path": "cohere_1m_omega",
-      "db_label": "omega-m15-ef180-int8",
-      "target_recalls": [
-        0.91
-      ],
-      "args": {
-        "min_vector_threshold": 100000,
-        "num_training_queries": 4000,
-        "ef_training": 500,
-        "window_size": 100,
-        "ef_groundtruth": 1000
-      }
-    },
-    "profiling": {
-      "hnsw_query_limit": 2000,
-      "omega_query_limit": 2000,
-      "omega_profile_control_timing": true
-    }
-  },
-  "bioasq_1m": {
-    "common": {
-      "case_type": "Performance1024D1M",
-      "num_concurrency": "12,14,16,18,20",
-      "concurrency_duration": 30,
-      "k": 100,
-      "m": 15,
-      "ef_search": 180,
-      "quantize_type": "int8"
-    },
-    "hnsw": {
-      "path": "bioasq_1m_hnsw",
-      "db_label": "bioasq-hnsw",
-      "args": {}
-    },
-    "omega": {
-      "path": "bioasq_1m_omega",
-      "db_label": "bioasq-omega",
+      "db_label": "16c64g-v0.1-omega-m15-ef300",
       "target_recalls": [
         0.91
       ],
@@ -76,17 +41,18 @@
       "concurrency_duration": 30,
       "k": 100,
       "m": 50,
-      "ef_search": 118,
-      "quantize_type": "int8"
+      "ef_search": 300,
+      "quantize_type": "int8",
+      "is_using_refiner": true
     },
     "hnsw": {
       "path": "cohere_10m_hnsw",
-      "db_label": "16c64g-v0.1",
+      "db_label": "16c64g-v0.1-hnsw-m50-ef300",
       "args": {}
     },
     "omega": {
       "path": "cohere_10m_omega",
-      "db_label": "omega-m50-ef118-refiner-int8",
+      "db_label": "16c64g-v0.1-omega-m50-ef300",
       "target_recalls": [
         0.91
       ],

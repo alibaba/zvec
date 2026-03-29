@@ -639,6 +639,10 @@ def append_option(cmd: list[str], key: str, value: Any) -> None:
     if value is None:
         return
     flag = f"--{key.replace('_', '-')}"
+    if isinstance(value, bool):
+        if value:
+            cmd.append(flag)
+        return
     if isinstance(value, list):
         cmd.extend([flag, ",".join(str(v) for v in value)])
     else:
