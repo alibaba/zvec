@@ -18,7 +18,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -58,6 +57,7 @@
 #include "db/index/storage/wal/wal_file.h"
 #include "column_merging_reader.h"
 #include "sql_expr_parser.h"
+#include "db/training/omega_training_coordinator.h"
 #include "db/training/training_data_collector.h"
 #ifdef ZVEC_ENABLE_OMEGA
 #include "db/training/omega_model_trainer.h"
@@ -66,100 +66,6 @@
 namespace zvec {
 
 namespace {
-
-constexpr uint32_t kOmegaQueryCacheMagic = 0x4F514359;  // OQCY
-constexpr uint32_t kOmegaQueryCacheVersion = 1;
-
-void WriteTimingStatsJson(
-    const std::string& output_path,
-    const std::vector<std::pair<std::string, int64_t>>& stats) {
-  std::ofstream ofs(output_path);
-  if (!ofs.is_open()) {
-    return;
-  }
-  ofs << "{\n";
-  for (size_t i = 0; i < stats.size(); ++i) {
-    ofs << "  \"" << stats[i].first << "\": " << stats[i].second;
-    if (i + 1 < stats.size()) {
-      ofs << ",";
-    }
-    ofs << "\n";
-  }
-  ofs << "}\n";
-}
-
-std::string OmegaQueryCachePath(const std::string& model_output_dir) {
-  return model_output_dir + "/training_queries.bin";
-}
-
-bool SaveOmegaTrainingQueryCache(
-    const std::string& model_output_dir,
-    const std::vector<std::vector<float>>& queries,
-    const std::vector<uint64_t>& query_doc_ids) {
-  if (queries.empty() || queries.size() != query_doc_ids.size()) {
-    return false;
-  }
-  const uint32_t dim = static_cast<uint32_t>(queries[0].size());
-  for (const auto& query : queries) {
-    if (query.size() != dim) {
-      return false;
-    }
-  }
-
-  std::ofstream ofs(OmegaQueryCachePath(model_output_dir), std::ios::binary);
-  if (!ofs.is_open()) {
-    return false;
-  }
-
-  const uint64_t num_queries = queries.size();
-  ofs.write(reinterpret_cast<const char*>(&kOmegaQueryCacheMagic), sizeof(kOmegaQueryCacheMagic));
-  ofs.write(reinterpret_cast<const char*>(&kOmegaQueryCacheVersion), sizeof(kOmegaQueryCacheVersion));
-  ofs.write(reinterpret_cast<const char*>(&num_queries), sizeof(num_queries));
-  ofs.write(reinterpret_cast<const char*>(&dim), sizeof(dim));
-  for (size_t i = 0; i < queries.size(); ++i) {
-    ofs.write(reinterpret_cast<const char*>(&query_doc_ids[i]), sizeof(query_doc_ids[i]));
-    ofs.write(reinterpret_cast<const char*>(queries[i].data()),
-              static_cast<std::streamsize>(dim * sizeof(float)));
-  }
-  return ofs.good();
-}
-
-bool LoadOmegaTrainingQueryCache(
-    const std::string& model_output_dir,
-    std::vector<std::vector<float>>* queries,
-    std::vector<uint64_t>* query_doc_ids) {
-  std::ifstream ifs(OmegaQueryCachePath(model_output_dir), std::ios::binary);
-  if (!ifs.is_open()) {
-    return false;
-  }
-
-  uint32_t magic = 0;
-  uint32_t version = 0;
-  uint64_t num_queries = 0;
-  uint32_t dim = 0;
-  ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-  ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
-  ifs.read(reinterpret_cast<char*>(&num_queries), sizeof(num_queries));
-  ifs.read(reinterpret_cast<char*>(&dim), sizeof(dim));
-  if (!ifs.good() || magic != kOmegaQueryCacheMagic || version != kOmegaQueryCacheVersion ||
-      num_queries == 0 || dim == 0) {
-    return false;
-  }
-
-  queries->assign(num_queries, std::vector<float>(dim));
-  query_doc_ids->assign(num_queries, 0);
-  for (size_t i = 0; i < num_queries; ++i) {
-    ifs.read(reinterpret_cast<char*>(&(*query_doc_ids)[i]), sizeof(uint64_t));
-    ifs.read(reinterpret_cast<char*>((*queries)[i].data()),
-             static_cast<std::streamsize>(dim * sizeof(float)));
-    if (!ifs.good()) {
-      queries->clear();
-      query_doc_ids->clear();
-      return false;
-    }
-  }
-  return true;
-}
 
 }  // namespace
 
@@ -1734,22 +1640,21 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   auto* training_capable = vector_indexer->GetTrainingCapability();
   bool needs_training = false;
   std::string model_output_dir;
+  OmegaTrainingParams omega_training_params;
 
   if (training_capable != nullptr) {
-    // Get min_vector_threshold from OMEGA index params
-    uint32_t min_vector_threshold = 100000;  // default
-    if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(field.index_params())) {
-      min_vector_threshold = omega_params->min_vector_threshold();
-    }
+    omega_training_params = ResolveOmegaTrainingParams(field.index_params());
 
     size_t doc_count = vector_indexer->doc_count();
-    if (doc_count >= min_vector_threshold) {
+    if (doc_count >= omega_training_params.min_vector_threshold) {
       needs_training = true;
       LOG_INFO("Trainable index detected after merge for field '%s' in segment %d (doc_count=%zu >= min_vector_threshold=%u)",
-               column.c_str(), id(), doc_count, min_vector_threshold);
+               column.c_str(), id(), doc_count,
+               omega_training_params.min_vector_threshold);
     } else {
       LOG_INFO("Skipping OMEGA training for field '%s': doc_count=%zu < min_vector_threshold=%u",
-               column.c_str(), doc_count, min_vector_threshold);
+               column.c_str(), doc_count,
+               omega_training_params.min_vector_threshold);
     }
   }
 
@@ -1764,54 +1669,22 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     model_output_dir = segment_dir + "/omega_model";
 
     LOG_INFO("Starting OMEGA training data collection for field '%s' (using in-memory graph before flush)", column.c_str());
+    LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d, k_train=%d",
+             omega_training_params.num_training_queries,
+             omega_training_params.ef_training,
+             omega_training_params.ef_groundtruth,
+             omega_training_params.k_train);
 
-    // Get training params from index params
-    size_t num_training_queries = 1000;  // default
-    int ef_training = 1000;  // default
-    int ef_groundtruth = 0;  // default: brute force
-    int k_train = 1;  // default: top-1 label
-    if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(field.index_params())) {
-      num_training_queries = omega_params->num_training_queries();
-      ef_training = omega_params->ef_training();
-      ef_groundtruth = omega_params->ef_groundtruth();
-      k_train = omega_params->k_train();
-      LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d, k_train=%d",
-               num_training_queries, ef_training, ef_groundtruth, k_train);
-    }
-
-    // Collect training data using the current indexer (in-memory graph still exists)
-    TrainingDataCollectorOptions collector_opts;
-    size_t doc_count = vector_indexer->doc_count();
-    collector_opts.num_training_queries = std::min(doc_count, num_training_queries);
-    collector_opts.ef_training = ef_training;
-    collector_opts.ef_groundtruth = ef_groundtruth;
-    collector_opts.topk = 100;
-    collector_opts.k_train = k_train;
-
-    // Use the current vector_indexer which still has the in-memory graph
-    std::vector<VectorColumnIndexer::Ptr> training_indexers = {vector_indexer};
-
-    auto training_result = TrainingDataCollector::CollectTrainingDataWithGtCmps(
-        shared_from_this(), column, collector_opts, training_indexers);
-
+    auto training_result = CollectOmegaTrainingDataBeforeFlush(
+        shared_from_this(), column, vector_indexer, omega_training_params,
+        model_output_dir);
     if (training_result.has_value()) {
       training_result_opt = std::move(training_result.value());
-      if (!FileHelper::DirectoryExists(model_output_dir)) {
-        FileHelper::CreateDirectory(model_output_dir);
-      }
-      if (!SaveOmegaTrainingQueryCache(
-              model_output_dir,
-              training_result_opt->training_queries,
-              training_result_opt->query_doc_ids)) {
-        LOG_WARN("Failed to persist OMEGA training query cache: %s",
-                 OmegaQueryCachePath(model_output_dir).c_str());
-      }
-      WriteTimingStatsJson(
-          model_output_dir + "/training_collection_timing.json",
-          TrainingDataCollector::ConsumeTimingStats());
-      LOG_INFO("Collected %zu training records (before flush)", training_result_opt->records.size());
+      LOG_INFO("Collected %zu training records (before flush)",
+               training_result_opt->records.size());
     } else {
-      LOG_WARN("Failed to collect training data: %s", training_result.error().message().c_str());
+      LOG_WARN("Failed to collect training data: %s",
+               training_result.error().message().c_str());
     }
   }
 
@@ -1821,35 +1694,9 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
 
   // Train the model using the previously collected data (doesn't need the graph)
   if (needs_training && training_result_opt.has_value()) {
-    auto& result = training_result_opt.value();
-
-    if (result.records.size() >= 100) {
-#ifdef ZVEC_ENABLE_OMEGA
-      // Train the model
-      OmegaModelTrainerOptions trainer_opts;
-      trainer_opts.output_dir = model_output_dir;
-      trainer_opts.verbose = true;
-
-      // Create output directory if it doesn't exist
-      if (!FileHelper::DirectoryExists(model_output_dir)) {
-        if (!FileHelper::CreateDirectory(model_output_dir)) {
-          LOG_WARN("Failed to create model output directory: %s", model_output_dir.c_str());
-        }
-      }
-
-      auto train_status = OmegaModelTrainer::TrainModelWithGtCmps(
-          result.records, result.gt_cmps_data, trainer_opts);
-      if (train_status.ok()) {
-        LOG_INFO("OMEGA model training completed successfully: %s", trainer_opts.output_dir.c_str());
-      } else {
-        LOG_WARN("OMEGA model training failed: %s", train_status.message().c_str());
-      }
-#else
-      LOG_INFO("OMEGA training skipped (ZVEC_ENABLE_OMEGA not defined)");
-#endif
-    } else {
-      LOG_INFO("Skipping model training: only %zu records collected (need >= 100)", result.records.size());
-    }
+    auto s_train = TrainOmegaModelAfterBuild(training_result_opt.value(),
+                                             model_output_dir);
+    CHECK_RETURN_STATUS_EXPECTED(s_train);
   }
 
 
@@ -2463,23 +2310,16 @@ Status SegmentImpl::auto_train_omega_index_internal(
   LOG_WARN("Starting auto-training for OMEGA index on field '%s' in segment %d",
            field_name.c_str(), id());
 
-  // Get training params from index params
-  size_t num_training_queries = 1000;  // default
-  int ef_training = 1000;  // default
-  int ef_groundtruth = 0;  // default: brute force
-  uint32_t min_vector_threshold = 100000;  // default
-  int k_train = 1;  // default: top-1 label
+  OmegaTrainingParams omega_training_params;
   auto field = collection_schema_->get_field(field_name);
   if (field && field->index_params()) {
-    if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(field->index_params())) {
-      num_training_queries = omega_params->num_training_queries();
-      ef_training = omega_params->ef_training();
-      ef_groundtruth = omega_params->ef_groundtruth();
-      min_vector_threshold = omega_params->min_vector_threshold();
-      k_train = omega_params->k_train();
-      LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d, min_vector_threshold=%u, k_train=%d",
-               num_training_queries, ef_training, ef_groundtruth, min_vector_threshold, k_train);
-    }
+    omega_training_params = ResolveOmegaTrainingParams(field->index_params());
+    LOG_INFO("Using OMEGA index params: num_training_queries=%zu, ef_training=%d, ef_groundtruth=%d, min_vector_threshold=%u, k_train=%d",
+             omega_training_params.num_training_queries,
+             omega_training_params.ef_training,
+             omega_training_params.ef_groundtruth,
+             omega_training_params.min_vector_threshold,
+             omega_training_params.k_train);
   }
 
   // Check if we have enough vectors to justify training
@@ -2488,44 +2328,24 @@ Status SegmentImpl::auto_train_omega_index_internal(
     total_doc_count += indexer->doc_count();
   }
 
-  if (total_doc_count < min_vector_threshold) {
+  if (total_doc_count < omega_training_params.min_vector_threshold) {
     LOG_INFO("Skipping OMEGA training for field '%s': doc_count=%zu < min_vector_threshold=%u",
-             field_name.c_str(), total_doc_count, min_vector_threshold);
+             field_name.c_str(), total_doc_count,
+             omega_training_params.min_vector_threshold);
     return Status::OK();
   }
 
   LOG_INFO("Proceeding with OMEGA training: doc_count=%zu >= min_vector_threshold=%u",
-           total_doc_count, min_vector_threshold);
+           total_doc_count, omega_training_params.min_vector_threshold);
 
   // Step 1: Collect training data using the provided indexers
   LOG_WARN("OMEGA retrain step 1/2: start collecting training data for field '%s' in segment %d",
            field_name.c_str(), id());
-  TrainingDataCollectorOptions collector_options;
-  collector_options.num_training_queries = num_training_queries;
-  collector_options.ef_training = ef_training;
-  collector_options.ef_groundtruth = ef_groundtruth;
-  collector_options.topk = 100;
-  collector_options.k_train = k_train;
-  collector_options.noise_scale = 0.01f;
-
-  std::vector<std::vector<float>> cached_queries;
-  std::vector<uint64_t> cached_query_doc_ids;
   const std::string model_output_dir =
       FileHelper::MakeSegmentPath(path_, id()) + "/omega_model";
-  Result<TrainingDataCollectorResult> training_records_result;
-  if (LoadOmegaTrainingQueryCache(model_output_dir, &cached_queries, &cached_query_doc_ids)) {
-    LOG_WARN("Loaded %zu cached held-out queries for OMEGA retraining from %s",
-             cached_queries.size(), OmegaQueryCachePath(model_output_dir).c_str());
-    training_records_result =
-        TrainingDataCollector::CollectTrainingDataWithGtCmpsFromQueries(
-            shared_from_this(), field_name, cached_queries, cached_query_doc_ids,
-            collector_options, indexers);
-  } else {
-    LOG_WARN("OMEGA retrain query cache not found, falling back to sampling held-out queries from persisted segment");
-    training_records_result =
-        TrainingDataCollector::CollectTrainingDataWithGtCmps(
-            shared_from_this(), field_name, collector_options, indexers);
-  }
+  auto training_records_result = CollectOmegaRetrainingData(
+      shared_from_this(), field_name, indexers, omega_training_params,
+      model_output_dir);
 
   if (!training_records_result.has_value()) {
     return Status::InternalError(
@@ -2537,81 +2357,11 @@ Status SegmentImpl::auto_train_omega_index_internal(
            field_name.c_str(), id());
 
   auto& training_result = training_records_result.value();
-  auto& training_records = training_result.records;
   LOG_INFO("Collected %zu training records for segment %d",
-           training_records.size(), id());
+           training_result.records.size(), id());
 
-  if (training_records.empty()) {
-    LOG_WARN("No training records collected, skipping model training");
-    return Status::OK();
-  }
-
-  // Check if we have enough positive and negative samples
-  size_t positive_count = 0;
-  size_t negative_count = 0;
-  for (const auto& record : training_records) {
-    if (record.label == 1) {
-      positive_count++;
-    } else {
-      negative_count++;
-    }
-  }
-
-  if (positive_count == 0 || negative_count == 0) {
-    LOG_WARN("Insufficient training samples: %zu positive, %zu negative. Need both > 0. Skipping training.",
-             positive_count, negative_count);
-    return Status::OK();
-  }
-
-  // Need at least 50 samples of each class for reasonable training
-  if (positive_count < 50 || negative_count < 50) {
-    LOG_WARN("Too few training samples: %zu positive, %zu negative. Need at least 50 of each. Skipping training.",
-             positive_count, negative_count);
-    return Status::OK();
-  }
-
-  LOG_INFO("Training data stats: %zu positive, %zu negative samples",
-           positive_count, negative_count);
-
-#ifdef ZVEC_ENABLE_OMEGA
-  // Step 2: Train OMEGA model with gt_cmps data
-  LOG_WARN("OMEGA retrain step 2/2: start model training for field '%s' in segment %d",
-           field_name.c_str(), id());
-  OmegaModelTrainerOptions trainer_options;
-  trainer_options.output_dir = model_output_dir;
-  trainer_options.verbose = true;
-
-  // Create output directory if it doesn't exist
-  if (!FileHelper::DirectoryExists(trainer_options.output_dir)) {
-    if (!FileHelper::CreateDirectory(trainer_options.output_dir)) {
-      return Status::InternalError(
-          "Failed to create model output directory: " +
-          trainer_options.output_dir);
-    }
-  }
-
-  WriteTimingStatsJson(
-      trainer_options.output_dir + "/training_collection_timing.json",
-      TrainingDataCollector::ConsumeTimingStats());
-
-  auto train_status = OmegaModelTrainer::TrainModelWithGtCmps(
-      training_records, training_result.gt_cmps_data, trainer_options);
-  if (!train_status.ok()) {
-    return Status::InternalError(
-        "Failed to train OMEGA model: " + train_status.message());
-  }
-
-  LOG_WARN("OMEGA retrain step 2/2: finished model training for segment %d, output: %s",
-           id(), trainer_options.output_dir.c_str());
-#else
-  LOG_INFO("OMEGA training skipped (ZVEC_ENABLE_OMEGA not defined)");
-#endif
-
-  // Step 3: Load model into the provided indexers
-  // TODO: Implement model loading into VectorColumnIndexer
-  // For now, the model will be loaded when the index is reopened
-
-  return Status::OK();
+  return TrainOmegaModelAfterRetrainCollect(training_result, model_output_dir,
+                                            id(), field_name);
 }
 
 Status SegmentImpl::retrain_omega_model() {
