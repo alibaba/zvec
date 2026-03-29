@@ -16,9 +16,6 @@
 #include <zvec/core/framework/index_framework.h>
 #include "../hnsw/hnsw_searcher.h"
 #include <omega/omega_api.h>
-#include <cstdlib>
-#include <string>
-#include <vector>
 
 namespace zvec {
 namespace core {
@@ -68,15 +65,7 @@ class OmegaSearcher : public HnswSearcher {
 
  private:
   //! Check if OMEGA mode should be used
-  bool should_use_omega() const {
-    if (std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION") != nullptr &&
-        std::string(std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION")) != "0") {
-      return true;
-    }
-    return omega_enabled_ && use_omega_mode_ &&
-           omega_model_ != nullptr &&
-           omega_model_is_loaded(omega_model_);
-  }
+  bool should_use_omega() const;
 
   //! Adaptive search with OMEGA predictions
   int adaptive_search(const void *query, const IndexQueryMeta &qmeta,
@@ -87,7 +76,6 @@ class OmegaSearcher : public HnswSearcher {
   OmegaModelHandle omega_model_;
   bool omega_enabled_;
   bool use_omega_mode_;
-  float target_recall_;
   uint32_t min_vector_threshold_;
   size_t current_vector_count_;
   int window_size_;

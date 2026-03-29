@@ -111,12 +111,6 @@ int HNSWIndex::_prepare_for_search(
                hnsw_search_param->training_query_id);
   }
 
-  if (const auto& omega_search_param =
-          std::dynamic_pointer_cast<OmegaQueryParam>(search_param)) {
-    params.set(core::PARAM_OMEGA_SEARCHER_TARGET_RECALL,
-               omega_search_param->target_recall);
-  }
-
   context->update(params);
   return 0;
 }

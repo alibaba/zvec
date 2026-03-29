@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "query_generator.h"
-#include <random>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/doc.h>
 
@@ -78,56 +77,6 @@ SampledVectors TrainingQueryGenerator::SampleBaseVectorsWithIds(
   return result;
 }
 
-std::vector<std::vector<float>> TrainingQueryGenerator::SampleBaseVectors(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    size_t num_samples,
-    uint64_t seed) {
-  // Use the new method and extract just the vectors
-  auto sampled = SampleBaseVectorsWithIds(segment, field_name, num_samples, seed);
-  return std::move(sampled.vectors);
-}
-
-std::vector<std::vector<float>> TrainingQueryGenerator::AddGaussianNoise(
-    const std::vector<std::vector<float>>& base_vectors,
-    float noise_scale,
-    uint64_t seed) {
-  if (base_vectors.empty()) {
-    LOG_WARN("Input base_vectors is empty, returning empty result");
-    return {};
-  }
-
-  std::vector<std::vector<float>> noisy_vectors;
-  noisy_vectors.reserve(base_vectors.size());
-
-  // Random number generator for Gaussian noise
-  std::mt19937 rng(seed);
-  std::normal_distribution<float> gaussian(0.0f, noise_scale);
-
-  for (const auto& base_vector : base_vectors) {
-    if (base_vector.empty()) {
-      LOG_WARN("Encountered empty vector, skipping");
-      continue;
-    }
-
-    std::vector<float> noisy_vector;
-    noisy_vector.reserve(base_vector.size());
-
-    // Add Gaussian noise to each dimension
-    for (float base_value : base_vector) {
-      float noise = gaussian(rng);
-      noisy_vector.push_back(base_value + noise);
-    }
-
-    noisy_vectors.push_back(std::move(noisy_vector));
-  }
-
-  LOG_INFO("Added Gaussian noise (scale=%.4f) to %zu vectors",
-           noise_scale, noisy_vectors.size());
-
-  return noisy_vectors;
-}
-
 SampledVectors TrainingQueryGenerator::GenerateHeldOutQueries(
     const Segment::Ptr& segment,
     const std::string& field_name,
@@ -146,30 +95,6 @@ SampledVectors TrainingQueryGenerator::GenerateHeldOutQueries(
            result.vectors.size());
 
   return result;
-}
-
-std::vector<std::vector<float>> TrainingQueryGenerator::GenerateTrainingQueries(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    size_t num_queries,
-    float noise_scale,
-    uint64_t seed) {
-  // Step 1: Sample base vectors
-  auto base_vectors = SampleBaseVectors(segment, field_name, num_queries, seed);
-
-  if (base_vectors.empty()) {
-    LOG_ERROR("Failed to sample base vectors from segment");
-    return {};
-  }
-
-  // Step 2: Add Gaussian noise
-  // Use a different seed for noise generation to avoid correlation
-  auto training_queries = AddGaussianNoise(base_vectors, noise_scale, seed + 1);
-
-  LOG_INFO("Generated %zu training queries for field '%s'",
-           training_queries.size(), field_name.c_str());
-
-  return training_queries;
 }
 
 }  // namespace zvec

@@ -164,7 +164,6 @@ class ProximaEngineHelper {
       }
 
       case IndexType::OMEGA: {
-        // OMEGA uses extended query params with target_recall
         auto omega_query_param_result =
             _build_common_query_param<core_interface::OmegaQueryParam>(
                 query_params);
@@ -175,18 +174,11 @@ class ProximaEngineHelper {
         }
         auto &omega_query_param = omega_query_param_result.value();
         if (query_params.query_params) {
-          // Try to cast to OmegaQueryParams first
           if (auto* db_omega_query_params = dynamic_cast<const OmegaQueryParams *>(
-              query_params.query_params.get())) {
+                  query_params.query_params.get())) {
             omega_query_param->ef_search = db_omega_query_params->ef();
             omega_query_param->target_recall = db_omega_query_params->target_recall();
             omega_query_param->training_query_id = db_omega_query_params->training_query_id();
-          } else if (auto* db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
-              query_params.query_params.get())) {
-            // Fallback to HnswQueryParams (backward compatibility)
-            omega_query_param->ef_search = db_hnsw_query_params->ef();
-            omega_query_param->training_query_id = db_hnsw_query_params->training_query_id();
-            // target_recall will use default value (0.95f)
           }
         }
         return std::move(omega_query_param);

@@ -33,7 +33,7 @@ constexpr uint32_t kOmegaQueryCacheVersion = 1;
 
 }  // namespace
 
-void WriteOmegaTimingStatsJson(
+static void WriteOmegaTimingStatsJson(
     const std::string& output_path,
     const std::vector<std::pair<std::string, int64_t>>& stats) {
   std::ofstream ofs(output_path);
@@ -51,11 +51,11 @@ void WriteOmegaTimingStatsJson(
   ofs << "}\n";
 }
 
-std::string OmegaQueryCachePath(const std::string& model_output_dir) {
+static std::string OmegaQueryCachePath(const std::string& model_output_dir) {
   return model_output_dir + "/training_queries.bin";
 }
 
-bool SaveOmegaTrainingQueryCache(
+static bool SaveOmegaTrainingQueryCache(
     const std::string& model_output_dir,
     const std::vector<std::vector<float>>& queries,
     const std::vector<uint64_t>& query_doc_ids) {
@@ -90,7 +90,7 @@ bool SaveOmegaTrainingQueryCache(
   return ofs.good();
 }
 
-bool LoadOmegaTrainingQueryCache(
+static bool LoadOmegaTrainingQueryCache(
     const std::string& model_output_dir,
     std::vector<std::vector<float>>* queries,
     std::vector<uint64_t>* query_doc_ids) {
@@ -192,7 +192,6 @@ Result<TrainingDataCollectorResult> CollectOmegaRetrainingData(
   collector_options.ef_groundtruth = params.ef_groundtruth;
   collector_options.topk = 100;
   collector_options.k_train = params.k_train;
-  collector_options.noise_scale = 0.01f;
 
   std::vector<std::vector<float>> cached_queries;
   std::vector<uint64_t> cached_query_doc_ids;
@@ -317,4 +316,3 @@ Status TrainOmegaModelAfterRetrainCollect(
 }
 
 }  // namespace zvec
-

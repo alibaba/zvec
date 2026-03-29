@@ -34,22 +34,6 @@ struct OmegaTrainingParams {
   int k_train = 1;
 };
 
-void WriteOmegaTimingStatsJson(
-    const std::string& output_path,
-    const std::vector<std::pair<std::string, int64_t>>& stats);
-
-std::string OmegaQueryCachePath(const std::string& model_output_dir);
-
-bool SaveOmegaTrainingQueryCache(
-    const std::string& model_output_dir,
-    const std::vector<std::vector<float>>& queries,
-    const std::vector<uint64_t>& query_doc_ids);
-
-bool LoadOmegaTrainingQueryCache(
-    const std::string& model_output_dir,
-    std::vector<std::vector<float>>* queries,
-    std::vector<uint64_t>* query_doc_ids);
-
 OmegaTrainingParams ResolveOmegaTrainingParams(
     const IndexParams::Ptr& index_params);
 
@@ -78,4 +62,3 @@ Status TrainOmegaModelAfterRetrainCollect(
     const std::string& field_name);
 
 }  // namespace zvec
-

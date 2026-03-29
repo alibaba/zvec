@@ -56,34 +56,6 @@ class TrainingQueryGenerator {
       uint64_t seed = 42);
 
   /**
-   * @brief Sample base vectors from a segment without doc_ids
-   *
-   * @param segment The segment to sample from (must be persisted)
-   * @param field_name The vector field name to sample
-   * @param num_samples Number of vectors to sample
-   * @param seed Random seed for reproducibility
-   * @return Vector of sampled vectors
-   */
-  static std::vector<std::vector<float>> SampleBaseVectors(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      size_t num_samples,
-      uint64_t seed = 42);
-
-  /**
-   * @brief Add Gaussian noise to base vectors
-   *
-   * @param base_vectors Input vectors
-   * @param noise_scale Standard deviation of Gaussian noise
-   * @param seed Random seed for reproducibility
-   * @return Vectors with added noise
-   */
-  static std::vector<std::vector<float>> AddGaussianNoise(
-      const std::vector<std::vector<float>>& base_vectors,
-      float noise_scale = 0.01f,
-      uint64_t seed = 42);
-
-  /**
    * @brief Generate training queries using held-out approach
    *
    * Samples vectors directly from index and uses them as queries.
@@ -99,25 +71,6 @@ class TrainingQueryGenerator {
       const Segment::Ptr& segment,
       const std::string& field_name,
       size_t num_queries,
-      uint64_t seed = 42);
-
-  /**
-   * @brief Generate training queries with the sample-and-noise helper
-   *
-   * Combines sampling and noise addition in one step.
-   *
-   * @param segment The segment to sample from
-   * @param field_name The vector field name
-   * @param num_queries Number of training queries to generate
-   * @param noise_scale Standard deviation of Gaussian noise
-   * @param seed Random seed for reproducibility
-   * @return Training query vectors
-   */
-  static std::vector<std::vector<float>> GenerateTrainingQueries(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      size_t num_queries,
-      float noise_scale = 0.01f,
       uint64_t seed = 42);
 };
 

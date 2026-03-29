@@ -31,7 +31,6 @@ OmegaSearcher::OmegaSearcher(void)
       omega_model_(nullptr),
       omega_enabled_(false),
       use_omega_mode_(false),
-      target_recall_(0.95f),
       min_vector_threshold_(100000),
       current_vector_count_(0),
       window_size_(100) {}
@@ -40,10 +39,17 @@ OmegaSearcher::~OmegaSearcher(void) {
   this->cleanup();
 }
 
+bool OmegaSearcher::should_use_omega() const {
+  if (DisableOmegaModelPrediction()) {
+    return true;
+  }
+  return omega_enabled_ && use_omega_mode_ && omega_model_ != nullptr &&
+         omega_model_is_loaded(omega_model_);
+}
+
 int OmegaSearcher::init(const ailego::Params &params) {
   // Get OMEGA-specific parameters
   omega_enabled_ = params.has("omega.enabled") ? params.get_as_bool("omega.enabled") : false;
-  target_recall_ = params.has("omega.target_recall") ? params.get_as_float("omega.target_recall") : 0.95f;
   min_vector_threshold_ = params.has("omega.min_vector_threshold") ? params.get_as_uint32("omega.min_vector_threshold") : 100000;
   window_size_ = params.has("omega.window_size") ? params.get_as_int32("omega.window_size") : 100;
 
@@ -54,9 +60,9 @@ int OmegaSearcher::init(const ailego::Params &params) {
     return ret;
   }
 
-  LOG_INFO("OmegaSearcher initialized (omega_enabled=%d, target_recall=%.2f, "
-           "min_threshold=%u, window_size=%d)",
-           omega_enabled_, target_recall_, min_vector_threshold_, window_size_);
+  LOG_INFO("OmegaSearcher initialized (omega_enabled=%d, min_threshold=%u, "
+           "window_size=%d)",
+           omega_enabled_, min_vector_threshold_, window_size_);
   return 0;
 }
 

@@ -33,9 +33,6 @@ struct TrainingDataCollectorOptions {
   // Number of training queries to generate
   size_t num_training_queries = 1000;
 
-  // Gaussian noise scale for query generation
-  float noise_scale = 0.01f;
-
   // ef parameter for training searches (large value for recall ≈ 1)
   int ef_training = 1000;
 
@@ -84,21 +81,6 @@ class TrainingDataCollector {
   static void ResetTimingStats();
 
   static TimingStats ConsumeTimingStats();
-
-  /**
-   * @brief Collect training data from a persisted segment
-   *
-   * @param segment The segment to collect data from (must be persisted)
-   * @param field_name Vector field name to train on
-   * @param options Collection options
-   * @param indexers Optional specific indexers to use (if empty, will use segment->get_vector_indexer)
-   * @return Training records with labels filled
-   */
-  static Result<std::vector<core_interface::TrainingRecord>> CollectTrainingData(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      const TrainingDataCollectorOptions& options,
-      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
 
   /**
    * @brief Collect training data with gt_cmps information for table generation

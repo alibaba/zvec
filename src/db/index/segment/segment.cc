@@ -1597,27 +1597,16 @@ Status SegmentImpl::create_all_vector_index(
 Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     const std::string &index_file_path, const std::string &column,
     const FieldSchema &field, int concurrency) {
-
-  LOG_INFO("[TIMING] merge_vector_indexer START for field '%s'", column.c_str());
-  auto timing_start = std::chrono::steady_clock::now();
-
   VectorColumnIndexer::Ptr vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
 
   vector_column_params::ReadOptions options{options_.enable_mmap_, true};
 
-  LOG_INFO("[TIMING] About to Open (create_new=true)");
-  auto open_start = std::chrono::steady_clock::now();
   auto s = vector_indexer->Open(options);
   CHECK_RETURN_STATUS_EXPECTED(s);
-  auto open_end = std::chrono::steady_clock::now();
-  LOG_INFO("[TIMING] Open completed in %ld ms",
-           std::chrono::duration_cast<std::chrono::milliseconds>(open_end - open_start).count());
 
   std::vector<VectorColumnIndexer::Ptr> to_merge_indexers =
       vector_indexers_[column];
-  LOG_INFO("[TIMING] to_merge_indexers count: %zu", to_merge_indexers.size());
-
 
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
@@ -1627,14 +1616,8 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   } else {
     merge_options.write_concurrency = concurrency;
   }
-  LOG_INFO("[TIMING] About to Merge");
-  auto merge_start = std::chrono::steady_clock::now();
   s = vector_indexer->Merge(to_merge_indexers, filter_, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
-  auto merge_end = std::chrono::steady_clock::now();
-  LOG_INFO("[TIMING] Merge completed in %ld ms",
-           std::chrono::duration_cast<std::chrono::milliseconds>(merge_end - merge_start).count());
-
 
   // Check if this is a trainable index (OMEGA)
   auto* training_capable = vector_indexer->GetTrainingCapability();
@@ -2509,7 +2492,7 @@ TablePtr SegmentImpl::fetch_normal(
   const auto &block_offsets = get_persist_block_offsets(BlockType::SCALAR);
   const auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
 
-  // Phase 1: Map each (doc_id, column) to its block and local row
+  // Map each (doc_id, column) to its block and local row.
   for (int output_row = 0; output_row < static_cast<int>(indices.size());
        ++output_row) {
     int doc_id = indices[output_row];
@@ -2553,7 +2536,7 @@ TablePtr SegmentImpl::fetch_normal(
     }
   }
 
-  // Phase 2: Execute batched fetch per block
+  // Execute batched fetches per block.
   for (const auto &[block_index, col_to_rows] : block_request_map) {
     std::vector<std::string> fetch_columns;
     std::vector<int> fetch_local_rows;
@@ -2613,7 +2596,7 @@ TablePtr SegmentImpl::fetch_normal(
     }
   }
 
-  // Phase 3: Construct result arrays
+  // Construct the output arrays.
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
   bool need_local_doc_id = false;

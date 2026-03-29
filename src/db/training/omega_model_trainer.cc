@@ -51,14 +51,6 @@ omega::GtCmpsData ConvertGtCmpsData(const core_interface::GtCmpsData& src) {
 
 }  // namespace
 
-Status OmegaModelTrainer::TrainModel(
-    const std::vector<core_interface::TrainingRecord>& training_records,
-    const OmegaModelTrainerOptions& options) {
-  // Call TrainModelWithGtCmps with empty gt_cmps_data
-  core_interface::GtCmpsData empty_gt_cmps;
-  return TrainModelWithGtCmps(training_records, empty_gt_cmps, options);
-}
-
 Status OmegaModelTrainer::TrainModelWithGtCmps(
     const std::vector<core_interface::TrainingRecord>& training_records,
     const core_interface::GtCmpsData& gt_cmps_data,

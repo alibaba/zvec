@@ -61,17 +61,6 @@ struct OmegaModelTrainerOptions {
 class OmegaModelTrainer {
  public:
   /**
-   * @brief Train OMEGA model from collected training records
-   *
-   * @param training_records Training data collected from searches
-   * @param options Training configuration
-   * @return Status indicating success or failure
-   */
-  static Status TrainModel(
-      const std::vector<core_interface::TrainingRecord>& training_records,
-      const OmegaModelTrainerOptions& options);
-
-  /**
    * @brief Train OMEGA model with gt_cmps data for table generation
    *
    * This is the extended version that also generates gt_collected_table
@@ -86,7 +75,6 @@ class OmegaModelTrainer {
       const std::vector<core_interface::TrainingRecord>& training_records,
       const core_interface::GtCmpsData& gt_cmps_data,
       const OmegaModelTrainerOptions& options);
-
 };
 
 }  // namespace zvec

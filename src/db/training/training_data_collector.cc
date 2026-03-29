@@ -14,15 +14,12 @@
 
 #include "training_data_collector.h"
 #include <algorithm>
-#include <unordered_set>
 #include <chrono>
-#include <fstream>
-#include <iomanip>
-#include <thread>
-#include <future>
-#include <mutex>
 #include <atomic>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/query_params.h>
 #include "db/index/column/vector_column/vector_column_params.h"
@@ -56,35 +53,15 @@ void RecordTimingStat(const std::string& name, int64_t duration_ms) {
   }
 }
 
-static std::ofstream& GetDebugLog() {
-  static std::ofstream log_file("/tmp/omega_training_debug.log", std::ios::app);
-  return log_file;
-}
-
-static void DebugLog(const std::string& msg) {
-  auto now = std::chrono::system_clock::now();
-  auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-      now.time_since_epoch()) % 1000;
-
-  auto& log = GetDebugLog();
-  log << std::put_time(std::localtime(&time_t_now), "%Y-%m-%d %H:%M:%S")
-      << "." << std::setfill('0') << std::setw(3) << ms.count()
-      << " | " << msg << std::endl;
-  log.flush();
-}
-
 class ScopedTimer {
  public:
-  ScopedTimer(const std::string& name) : name_(name) {
+  explicit ScopedTimer(const std::string& name) : name_(name) {
     start_ = std::chrono::high_resolution_clock::now();
-    DebugLog("[START] " + name_);
   }
   ~ScopedTimer() {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_).count();
     RecordTimingStat(name_, duration);
-    DebugLog("[END]   " + name_ + " | Duration: " + std::to_string(duration) + " ms");
   }
  private:
   std::string name_;
@@ -244,8 +221,6 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
 
     search_results.resize(training_queries.size());
 
-    std::atomic<size_t> completed_searches{0};
-    std::mutex progress_mutex;
     auto search_start = std::chrono::high_resolution_clock::now();
 
     auto worker = [&](size_t start_idx, size_t end_idx) {
@@ -283,7 +258,6 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
         if (!search_result.has_value()) {
           LOG_WARN("Search failed for query %zu: %s", query_idx,
                    search_result.error().message().c_str());
-          ++completed_searches;
           continue;
         }
 
@@ -297,19 +271,6 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
         }
 
         search_results[query_idx] = std::move(result_ids);
-
-        size_t completed = ++completed_searches;
-        if (completed % 100 == 0 || completed == training_queries.size()) {
-          std::lock_guard<std::mutex> lock(progress_mutex);
-          auto now = std::chrono::high_resolution_clock::now();
-          auto elapsed_ms =
-              std::chrono::duration_cast<std::chrono::milliseconds>(now - search_start)
-                  .count();
-          DebugLog("  Training search progress: " +
-                   std::to_string(completed) + "/" +
-                   std::to_string(training_queries.size()) + ", elapsed: " +
-                   std::to_string(elapsed_ms) + " ms");
-        }
       }
     };
 
@@ -391,20 +352,6 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
 }
 // ============ END DEBUG TIMING UTILITIES ============
 
-Result<std::vector<core_interface::TrainingRecord>>
-TrainingDataCollector::CollectTrainingData(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const TrainingDataCollectorOptions& options,
-    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
-  auto result = CollectTrainingDataWithGtCmps(segment, field_name, options,
-                                              provided_indexers);
-  if (!result.has_value()) {
-    return tl::make_unexpected(result.error());
-  }
-  return result->records;
-}
-
 std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
     const Segment::Ptr& segment,
     const std::string& field_name,
@@ -442,18 +389,14 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   // Faster for large datasets, approximate results
   // ============================================================
   if (ef_groundtruth > 0) {
-    DebugLog("[ComputeGroundTruth] Using HNSW search with ef=" + std::to_string(ef_groundtruth));
-
     // Use provided indexers if available, otherwise get from segment
     // IMPORTANT: We must use provided_indexers when available because after Flush,
     // segment->get_vector_indexer() returns stale indexers with cleared in-memory data
     std::vector<VectorColumnIndexer::Ptr> indexers;
     if (!provided_indexers.empty()) {
       indexers = provided_indexers;
-      DebugLog("[ComputeGroundTruth] Using provided indexers (count=" + std::to_string(indexers.size()) + ")");
     } else {
       indexers = segment->get_vector_indexer(field_name);
-      DebugLog("[ComputeGroundTruth] Using indexers from segment (count=" + std::to_string(indexers.size()) + ")");
     }
 
     if (indexers.empty()) {
@@ -469,7 +412,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       // We use parallel warmup with all threads to load data faster.
       // ========================================================
       {
-        DebugLog("[ComputeGroundTruth] Warming up HNSW index...");
         auto warmup_start = std::chrono::high_resolution_clock::now();
 
         // Warmup count: use a fraction of queries spread across threads
@@ -480,8 +422,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
         // Parallel warmup using std::thread
         std::vector<std::thread> warmup_threads;
-        std::atomic<size_t> warmup_completed{0};
-
         auto warmup_worker = [&](size_t start_idx, size_t count) {
           for (size_t i = 0; i < count && (start_idx + i) < queries.size(); ++i) {
             size_t q_idx = start_idx + i;
@@ -500,8 +440,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
             omega_params->set_training_query_id(-1);  // Warmup, don't collect training data
             query_params.query_params = omega_params;
 
-            indexers[0]->Search(vector_data, query_params);
-            ++warmup_completed;
+            static_cast<void>(indexers[0]->Search(vector_data, query_params));
           }
         };
 
@@ -521,9 +460,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
         auto warmup_end = std::chrono::high_resolution_clock::now();
         auto warmup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(warmup_end - warmup_start).count();
-        DebugLog("[ComputeGroundTruth] Warmup completed in " + std::to_string(warmup_ms) +
-                 " ms (" + std::to_string(warmup_completed.load()) + " queries, " +
-                 std::to_string(warmup_threads.size()) + " threads)");
 
         // Note: If warmup takes very long (>60s), recommend using ef_groundtruth=0 (Eigen brute force)
         if (warmup_ms > 60000) {
@@ -538,9 +474,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       // Use std::thread instead of OpenMP (same as training searches)
       size_t actual_threads = num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
       actual_threads = std::min(actual_threads, queries.size());
-
-      std::atomic<size_t> completed{0};
-      auto search_start = std::chrono::high_resolution_clock::now();
 
       auto worker = [&](size_t start_idx, size_t end_idx) {
         for (size_t q = start_idx; q < end_idx; ++q) {
@@ -581,15 +514,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
             }
             ground_truth[q] = std::move(result_ids);
           }
-
-          // Progress logging
-          size_t done = ++completed;
-          if (done % 500 == 0 || done == queries.size()) {
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::high_resolution_clock::now() - search_start).count();
-            DebugLog("[ComputeGroundTruth] HNSW progress: " + std::to_string(done) + "/" +
-                     std::to_string(queries.size()) + ", elapsed: " + std::to_string(elapsed) + " ms");
-          }
         }
       };
 
@@ -611,7 +535,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
       auto end_time = std::chrono::high_resolution_clock::now();
       auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-      DebugLog("[ComputeGroundTruth] HNSW search completed in " + std::to_string(total_ms) + " ms");
       LOG_INFO("Computed ground truth (HNSW ef=%d) for %zu queries in %zu ms",
                ef_groundtruth, queries.size(), total_ms);
       return ground_truth;
@@ -622,8 +545,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   // Branch 2: Eigen brute force (ef_groundtruth == 0)
   // Exact results, uses batch matrix multiplication
   // ============================================================
-  DebugLog("[ComputeGroundTruth] Using Eigen brute force search");
-
   // Convert zvec MetricType to omega MetricType
   omega::MetricType omega_metric;
   switch (metric_type) {
@@ -640,11 +561,9 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   }
 
   // Step 1: Load all base vectors into memory
-  DebugLog("[ComputeGroundTruth] Loading " + std::to_string(doc_count) + " base vectors...");
   auto load_start = std::chrono::high_resolution_clock::now();
 
   std::vector<float> base_vectors(doc_count * dim);
-  std::atomic<size_t> loaded_count{0};
   std::atomic<bool> load_error{false};
 
   // Load vectors in parallel
@@ -675,14 +594,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       }
 
       std::memcpy(base_vectors.data() + doc_idx * dim, vec.data(), dim * sizeof(float));
-      ++loaded_count;
-
-      // Progress logging
-      size_t count = loaded_count.load();
-      if (count % 100000 == 0) {
-        DebugLog("[ComputeGroundTruth] Loaded " + std::to_string(count) + "/" +
-                 std::to_string(doc_count) + " vectors");
-      }
     }
   };
 
@@ -703,8 +614,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
   auto load_end = std::chrono::high_resolution_clock::now();
   auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(load_end - load_start).count();
-  DebugLog("[ComputeGroundTruth] Loaded " + std::to_string(loaded_count) +
-           " vectors in " + std::to_string(load_ms) + " ms");
 
   if (load_error) {
     LOG_ERROR("Failed to load all base vectors, cannot compute ground truth");
@@ -718,7 +627,6 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   }
 
   // Step 3: Call OmegaLib's fast ground truth computation (Eigen)
-  DebugLog("[ComputeGroundTruth] Computing ground truth with Eigen...");
   auto compute_start = std::chrono::high_resolution_clock::now();
 
   ground_truth = omega::ComputeGroundTruth(
@@ -734,12 +642,9 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
   auto compute_end = std::chrono::high_resolution_clock::now();
   auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_end - compute_start).count();
-  DebugLog("[ComputeGroundTruth] Computed ground truth in " + std::to_string(compute_ms) + " ms");
 
   auto total_end = std::chrono::high_resolution_clock::now();
   auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - start_time).count();
-  DebugLog("[ComputeGroundTruth] Total time: " + std::to_string(total_ms) +
-           " ms (load: " + std::to_string(load_ms) + " ms, compute: " + std::to_string(compute_ms) + " ms)");
 
   LOG_INFO("Computed ground truth (Eigen brute force) for %zu queries in %zu ms (load: %zu ms, compute: %zu ms)",
            queries.size(), total_ms, load_ms, compute_ms);
@@ -840,8 +745,6 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
         segment, field_name, options.num_training_queries, options.seed);
     training_queries = std::move(sampled.vectors);
     query_doc_ids = std::move(sampled.doc_ids);
-    DebugLog("  Generated " + std::to_string(training_queries.size()) +
-             " held-out queries (with doc_ids for self-exclusion)");
   }
 
   return CollectTrainingDataFromQueriesImpl(segment, field_name,
