@@ -1128,6 +1128,8 @@ def run_command_capture(
         text=True,
         check=False,
     )
+    if completed.returncode != 0 and completed.stdout:
+        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
     return completed.returncode, completed.stdout
 
 
@@ -1337,4 +1339,8 @@ def validate_profile_output(label: str, retcode: int, output: str, expected_pref
     if retcode != 0:
         raise RuntimeError(f"{label} profiling command failed with exit code {retcode}")
     if expected_prefix not in output:
-        raise RuntimeError(f"{label} profiling output does not contain '{expected_prefix}'")
+        tail = "\n".join(output.splitlines()[-40:]) if output else "<empty output>"
+        raise RuntimeError(
+            f"{label} profiling output does not contain '{expected_prefix}'. "
+            f"Last output lines:\n{tail}"
+        )
