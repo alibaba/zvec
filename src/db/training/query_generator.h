@@ -56,7 +56,7 @@ class TrainingQueryGenerator {
       uint64_t seed = 42);
 
   /**
-   * @brief Sample base vectors from a segment (legacy, without doc_ids)
+   * @brief Sample base vectors from a segment without doc_ids
    *
    * @param segment The segment to sample from (must be persisted)
    * @param field_name The vector field name to sample
@@ -102,7 +102,7 @@ class TrainingQueryGenerator {
       uint64_t seed = 42);
 
   /**
-   * @brief Generate training queries (sample + noise) - legacy method
+   * @brief Generate training queries with the sample-and-noise helper
    *
    * Combines sampling and noise addition in one step.
    *

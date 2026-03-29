@@ -209,7 +209,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
 
         // Persisted OMEGA collections currently do not propagate per-query
         // training_query_id through the search context reliably. In the
-        // single-threaded calibration path, fall back to the legacy global
+        // single-threaded calibration path, fall back to the existing global
         // query-id setter to preserve correct labels without races.
         if (actual_threads == 1) {
           indexers[0]->SetCurrentQueryId(static_cast<int>(query_idx));

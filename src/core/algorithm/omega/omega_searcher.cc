@@ -274,7 +274,8 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     return HnswSearcher::search_impl(query, qmeta, count, context);
   }
 
-  // Enable training mode if active (CRITICAL: must be before search)
+  // Attach training state before the HNSW loop starts so labels observe the
+  // full query trajectory.
   if (training_mode_enabled_) {
     // Get ground truth for this query if available
     std::vector<int> gt_for_query;
