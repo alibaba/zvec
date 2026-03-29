@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Dataset key to run from the top-level JSON config map",
     )
+    parser.add_argument(
+        "--target-recalls",
+        type=str,
+        default=None,
+        help="Optional comma-separated override for omega.target_recalls in the JSON config",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     parser.add_argument("--skip-hnsw", action="store_true", help="Skip HNSW benchmark")
     parser.add_argument("--skip-omega", action="store_true", help="Skip OMEGA benchmark")
@@ -103,6 +109,8 @@ def main() -> int:
     hnsw_db_label = must_get(hnsw_config, "db_label")
     omega_db_label = must_get(omega_config, "db_label")
     target_recalls = omega_config.get("target_recalls", [])
+    if args.target_recalls:
+        target_recalls = [float(value) for value in args.target_recalls.split(",") if value]
     if not target_recalls:
         raise ValueError("omega.target_recalls must be a non-empty list")
 
