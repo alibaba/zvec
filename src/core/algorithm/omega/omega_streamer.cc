@@ -17,6 +17,7 @@
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_logger.h>
 #include <zvec/ailego/io/file.h>
+#include "omega_hook_utils.h"
 #include "utility/rdtsc_timer.h"
 #include "../hnsw/hnsw_entity.h"
 #include "../hnsw/hnsw_context.h"
@@ -60,14 +61,6 @@ bool ShouldLogQueryStats(uint64_t query_seq) {
   return limit == 0 || query_seq < limit;
 }
 
-bool DisableOmegaModelPrediction() {
-  const char* value = std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION");
-  if (value == nullptr) {
-    return false;
-  }
-  return std::string(value) != "0";
-}
-
 bool IsOmegaControlTimingEnabled() {
   const char* value = std::getenv("ZVEC_OMEGA_PROFILE_CONTROL_TIMING");
   if (value == nullptr) {
@@ -82,166 +75,6 @@ uint64_t OmegaProfilingNowNs() {
 
 uint64_t OmegaProfilingElapsedNs(uint64_t start, uint64_t end) {
   return RdtscTimer::ElapsedNs(start, end);
-}
-
-struct OmegaHookState {
-  struct PendingVisitBuffer {
-    std::vector<omega::SearchContext::VisitCandidate> storage;
-    int head{0};
-    int count{0};
-
-    void Reset(int capacity) {
-      head = 0;
-      count = 0;
-      storage.resize(std::max(1, capacity));
-    }
-
-    bool Empty() const { return count == 0; }
-
-    int Capacity() const { return static_cast<int>(storage.size()); }
-
-    void Push(const omega::SearchContext::VisitCandidate& candidate) {
-      storage[(head + count) % Capacity()] = candidate;
-      ++count;
-    }
-
-    const omega::SearchContext::VisitCandidate* Data() const {
-      return storage.data() + head;
-    }
-
-    void Clear() {
-      head = 0;
-      count = 0;
-    }
-  };
-
-  omega::SearchContext *search_ctx{nullptr};
-  bool enable_early_stopping{false};
-  bool collect_control_timing{false};
-  uint64_t *hook_body_time_ns{nullptr};
-  bool per_cmp_reporting{false};
-  PendingVisitBuffer pending_candidates;
-  int batch_min_interval{1};
-};
-
-void ResetOmegaHookState(OmegaHookState *state) {
-  if (state->search_ctx != nullptr) {
-    state->batch_min_interval = state->search_ctx->GetPredictionBatchMinInterval();
-  } else {
-    state->batch_min_interval = 1;
-  }
-  state->pending_candidates.Reset(state->batch_min_interval);
-}
-
-bool ShouldFlushOmegaPendingCandidates(const OmegaHookState &state) {
-  if (state.pending_candidates.Empty()) {
-    return false;
-  }
-  if (state.pending_candidates.count >= state.batch_min_interval) {
-    return true;
-  }
-  if (state.search_ctx == nullptr) {
-    return false;
-  }
-  return state.search_ctx->GetTotalCmps() + state.pending_candidates.count >=
-         state.search_ctx->GetNextPredictionCmps();
-}
-
-template <typename Fn>
-bool FlushOmegaPendingCandidates(const OmegaHookState &state,
-                                 int flush_count, Fn &&run_control_hook) {
-  if (state.search_ctx == nullptr || flush_count <= 0 ||
-      state.pending_candidates.Empty()) {
-    return false;
-  }
-
-  auto &mutable_state = const_cast<OmegaHookState &>(state);
-  flush_count = std::min(flush_count, mutable_state.pending_candidates.count);
-  bool should_predict = false;
-  run_control_hook([&]() {
-    should_predict = state.search_ctx->ReportVisitCandidates(
-        mutable_state.pending_candidates.Data(), static_cast<size_t>(flush_count));
-  });
-  mutable_state.pending_candidates.Clear();
-  if (!state.enable_early_stopping || !should_predict) {
-    return false;
-  }
-
-  bool should_stop = false;
-  run_control_hook(
-      [&]() { should_stop = state.search_ctx->ShouldStopEarly(); });
-  return should_stop;
-}
-
-template <typename Fn>
-void RunOmegaControlHook(const OmegaHookState &state, Fn &&fn) {
-  if (!state.collect_control_timing) {
-    fn();
-    return;
-  }
-  auto control_start = RdtscTimer::Now();
-  fn();
-  if (state.hook_body_time_ns != nullptr) {
-    *state.hook_body_time_ns += RdtscTimer::ElapsedNs(
-        control_start, RdtscTimer::Now());
-  }
-}
-
-bool MaybeFlushOmegaPendingCandidates(const OmegaHookState &state) {
-  auto run_control_hook = [&](auto &&fn) {
-    RunOmegaControlHook(state, std::forward<decltype(fn)>(fn));
-  };
-
-  if (!ShouldFlushOmegaPendingCandidates(state)) {
-    return false;
-  }
-  return FlushOmegaPendingCandidates(state, state.pending_candidates.count,
-                                     run_control_hook);
-}
-
-void OnOmegaLevel0Entry(node_id_t id, dist_t dist, bool /*inserted_to_topk*/,
-                        void *user_data) {
-  auto &state = *static_cast<OmegaHookState *>(user_data);
-  if (state.per_cmp_reporting) {
-    RunOmegaControlHook(state, [&]() {
-      state.search_ctx->SetDistStart(dist);
-      state.search_ctx->ReportVisitCandidate(id, dist, true);
-    });
-    return;
-  }
-  RunOmegaControlHook(state, [&]() {
-    state.search_ctx->SetDistStart(dist);
-    state.pending_candidates.Push({static_cast<int>(id), dist, true});
-  });
-  MaybeFlushOmegaPendingCandidates(state);
-}
-
-void OnOmegaHop(void *user_data) {
-  auto &state = *static_cast<OmegaHookState *>(user_data);
-  RunOmegaControlHook(state, [&]() { state.search_ctx->ReportHop(); });
-}
-
-bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
-                           bool inserted_to_topk, void *user_data) {
-  auto &state = *static_cast<OmegaHookState *>(user_data);
-  if (state.per_cmp_reporting) {
-    bool should_predict = false;
-    RunOmegaControlHook(state, [&]() {
-      should_predict =
-          state.search_ctx->ReportVisitCandidate(id, dist, inserted_to_topk);
-    });
-    if (!state.enable_early_stopping || !should_predict) {
-      return false;
-    }
-    bool should_stop = false;
-    RunOmegaControlHook(
-        state, [&]() { should_stop = state.search_ctx->ShouldStopEarly(); });
-    return should_stop;
-  }
-  RunOmegaControlHook(state, [&]() {
-    state.pending_candidates.Push({static_cast<int>(id), dist, inserted_to_topk});
-  });
-  return MaybeFlushOmegaPendingCandidates(state);
 }
 
 }  // namespace
@@ -461,7 +294,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     LOG_ERROR("OMEGA search failed");
     return ret;
   }
-  MaybeFlushOmegaPendingCandidates(hook_state);
+  MaybeFlushOmegaPendingCandidates(&hook_state);
   auto query_search_end = RdtscTimer::Now();
 
   // Get final statistics
