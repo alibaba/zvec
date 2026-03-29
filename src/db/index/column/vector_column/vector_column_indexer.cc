@@ -249,8 +249,6 @@ Status VectorColumnIndexer::EnableTrainingMode(bool enable) {
 }
 
 void VectorColumnIndexer::SetCurrentQueryId(int query_id) {
-  current_query_id_ = query_id;
-
   // Propagate to underlying index if it exists and supports training
   if (index != nullptr) {
     if (auto* training_capable = index->GetTrainingCapability()) {

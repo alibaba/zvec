@@ -213,7 +213,6 @@ class VectorColumnIndexer {
 
   // Training mode support
   bool training_mode_enabled_{false};
-  int current_query_id_{0};
   mutable std::mutex training_mutex_;
   mutable std::vector<core_interface::TrainingRecord> collected_records_;
   // GT cmps data: gt_cmps_map_[query_id] = {gt_cmps_per_rank, total_cmps}

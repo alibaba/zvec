@@ -52,11 +52,6 @@ class OmegaContext : public HnswContext {
     return training_query_id_;
   }
 
-  //! Get training records collected during this search (no locks needed)
-  const std::vector<core_interface::TrainingRecord>& training_records() const {
-    return training_records_;
-  }
-
   //! Move training records out (override base class virtual method)
   std::vector<core_interface::TrainingRecord> take_training_records() override {
     return std::move(training_records_);
@@ -79,16 +74,6 @@ class OmegaContext : public HnswContext {
   void set_gt_cmps(const std::vector<int>& gt_cmps, int total_cmps) {
     gt_cmps_per_rank_ = gt_cmps;
     total_cmps_ = total_cmps;
-  }
-
-  //! Get gt_cmps per rank
-  const std::vector<int>& gt_cmps_per_rank() const {
-    return gt_cmps_per_rank_;
-  }
-
-  //! Get total cmps for this search
-  int total_cmps() const {
-    return total_cmps_;
   }
 
   //! Take gt_cmps data (override base class virtual method)

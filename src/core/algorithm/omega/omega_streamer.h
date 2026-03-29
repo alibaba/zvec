@@ -57,10 +57,6 @@ class OmegaStreamer : public HnswStreamer {
     training_k_train_ = k_train;
   }
 
-  // Search-mode configuration shared across searches for this streamer.
-  bool LoadModel(const std::string& model_dir);
-  bool IsModelLoaded() const;
-
  protected:
   /**
    * @brief Override search to use OMEGA adaptive search
@@ -91,6 +87,10 @@ class OmegaStreamer : public HnswStreamer {
   virtual int dump(const IndexDumper::Pointer &dumper) override;
 
  private:
+  // Search-mode configuration shared across searches for this streamer.
+  bool LoadModel(const std::string& model_dir);
+  bool IsModelLoaded() const;
+
   // Perform OMEGA adaptive search (shared between training and inference mode)
   int omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
                         uint32_t count, Context::Pointer &context,
