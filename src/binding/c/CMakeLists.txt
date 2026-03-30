@@ -69,16 +69,6 @@ set(ZVEC_C_API_HEADERS
 # =============================================================================
 # Build FAT Shared Library (zvec_c_api.so)
 # =============================================================================
-# BUILD_RELEASE_FAT_LIBS=ON:  Fully self-contained, zero external dependencies
-#                             Users only need -lzvec_c_api
-# BUILD_RELEASE_FAT_LIBS=OFF: Development mode, third-party libs linked normally
-#                             Allows parallel test execution without symbol conflicts
-#
-# Implementation:
-# - Always embeds zvec_db, zvec_core, zvec_ailego via --whole-archive
-# - For release: also embeds all third-party libs (rocksdb, glog, protobuf, etc.)
-# - Uses --exclude-libs,ALL to hide third-party symbols from export
-# =============================================================================
 add_library(zvec_c_api SHARED
     ${ZVEC_C_API_SOURCES}
     ${ZVEC_C_API_HEADERS}
@@ -95,10 +85,57 @@ set_target_properties(zvec_c_api PROPERTIES
 
 find_package(Threads REQUIRED)
 
+# Determine C++ standard library for linking
+if(MSVC)
+    # MSVC: C++ runtime is linked automatically, no need for explicit stdc++
+    set(ZVEC_CXX_STD_LIB "")
+elseif(APPLE)
+    # macOS: Use libc++ (Clang's standard library)
+    set(ZVEC_CXX_STD_LIB "c++")
+else()
+    # Linux/Unix: Use libstdc++ (GCC's standard library)
+    set(ZVEC_CXX_STD_LIB "stdc++")
+endif()
+
+# Determine whole-archive flag for current platform
+if(MSVC)
+    # MSVC uses /WHOLEARCHIVE:filename syntax
+    set(ZVEC_WHOLE_ARCHIVE_PREFIX "/WHOLEARCHIVE:")
+    set(ZVEC_NO_WHOLE_ARCHIVE_SUFFIX "")
+elseif(APPLE)
+    # macOS uses -Wl,-force_load,filename
+    set(ZVEC_WHOLE_ARCHIVE_PREFIX "-Wl,-force_load,")
+    set(ZVEC_NO_WHOLE_ARCHIVE_SUFFIX "")
+else()
+    # Linux/Unix uses -Wl,--whole-archive and -Wl,--no-whole-archive
+    set(ZVEC_WHOLE_ARCHIVE_PREFIX "-Wl,--whole-archive")
+    set(ZVEC_NO_WHOLE_ARCHIVE_SUFFIX "-Wl,--no-whole-archive")
+endif()
+
 # FAT mode: embed ALL libraries (including third-party) statically
 # This creates a truly self-contained library with zero external dependencies
 # Users only need to link libzvec_c_api.so without installing any dependencies
-if(APPLE)
+if(MSVC)
+    # Windows MSVC: Use /WHOLEARCHIVE flag
+    target_link_options(zvec_c_api PRIVATE
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_db>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:roaring>
+    )
+    
+    target_link_libraries(zvec_c_api
+        PRIVATE
+            zvec_db
+            zvec_core
+            zvec_ailego
+            zvec_turbo
+            roaring
+            ${ZVEC_CXX_STD_LIB}
+            Threads::Threads
+    )
+elseif(APPLE)
     # Third-party libraries that are dependencies of zvec_db and zvec_ailego
     # These must be linked before the internal libraries that depend on them
     target_link_libraries(zvec_c_api
@@ -115,39 +152,47 @@ if(APPLE)
     )
     
     # Link zvec internal libraries with -force_load to extract all objects
+    # Use target names directly with -Wl,-force_load flag
+    target_link_options(zvec_c_api PRIVATE
+        -Wl,-force_load,$<TARGET_FILE:zvec_db>
+        -Wl,-force_load,$<TARGET_FILE:zvec_core>
+        -Wl,-force_load,$<TARGET_FILE:zvec_ailego>
+        -Wl,-force_load,$<TARGET_FILE:zvec_turbo>
+        -Wl,-force_load,$<TARGET_FILE:roaring>
+    )
+    
+    # Link the libraries themselves (without force_load flags)
     target_link_libraries(zvec_c_api
         PRIVATE
-            # zvec static libraries (force-loaded to extract all objects)
-            "-Wl,-force_load,$<TARGET_FILE:zvec_db>"
-            "-Wl,-force_load,$<TARGET_FILE:zvec_core>"
-            "-Wl,-force_load,$<TARGET_FILE:zvec_ailego>"
-            # zvec_turbo is required by zvec_core (metric module)
-            "-Wl,-force_load,$<TARGET_FILE:zvec_turbo>"
-            # Only roaring needs explicit force_load (C library with no transitive deps)
-            "-Wl,-force_load,$<TARGET_FILE:roaring>"
+            zvec_db
+            zvec_core
+            zvec_ailego
+            zvec_turbo
+            roaring
             # Explicitly link C++ standard library for cross-platform compatibility
-            stdc++
+            ${ZVEC_CXX_STD_LIB}
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
 
 else()
+    # Linux and other Unix-like systems
     target_link_libraries(zvec_c_api
         PRIVATE
             # Force load all zvec internal libraries (extract all objects)
-            "-Wl,--whole-archive"
+            ${ZVEC_WHOLE_ARCHIVE_PREFIX}
                 zvec_db
                 zvec_core
                 zvec_ailego
                 zvec_turbo  # Required by zvec_core (metric module)
-            "-Wl,--no-whole-archive"
+            ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
             # Most third-party libs are linked via zvec_db
             # Only roaring needs explicit whole-archive (C library)
-            "-Wl,--whole-archive"
+            ${ZVEC_WHOLE_ARCHIVE_PREFIX}
                 roaring
-            "-Wl,--no-whole-archive"
+            ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
             # Explicitly link C++ standard library for cross-platform compatibility
-            stdc++
+            ${ZVEC_CXX_STD_LIB}
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
