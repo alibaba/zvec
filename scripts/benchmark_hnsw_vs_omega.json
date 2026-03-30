@@ -5,20 +5,20 @@
       "num_concurrency": "12,14,16,18,20",
       "concurrency_duration": 30,
       "k": 100,
-      "m": 15,
+      "m": 64,
       "ef_search": 300,
       "quantize_type": "int8"
     },
     "hnsw": {
       "path": "cohere_1m_hnsw",
-      "db_label": "16c64g-v0.1-hnsw-m15-ef300",
+      "db_label": "16c64g-v0.1-hnsw-m64-ef300",
       "args": {}
     },
     "omega": {
       "path": "cohere_1m_omega",
-      "db_label": "16c64g-v0.1-omega-m15-ef300",
+      "db_label": "16c64g-v0.1-omega-m64-ef300",
       "target_recalls": [
-        0.90
+        0.92
       ],
       "args": {
         "min_vector_threshold": 100000,
@@ -40,20 +40,20 @@
       "num_concurrency": "12,14,16,18,20",
       "concurrency_duration": 30,
       "k": 100,
-      "m": 50,
+      "m": 64,
       "ef_search": 300,
       "quantize_type": "int8"
     },
     "hnsw": {
       "path": "cohere_10m_hnsw",
-      "db_label": "16c64g-v0.1-hnsw-m50-ef300",
+      "db_label": "16c64g-v0.1-hnsw-m64-ef300",
       "args": {}
     },
     "omega": {
       "path": "cohere_10m_omega",
-      "db_label": "16c64g-v0.1-omega-m50-ef300",
+      "db_label": "16c64g-v0.1-omega-m64-ef300",
       "target_recalls": [
-        0.95
+        0.92
       ],
       "args": {
         "min_vector_threshold": 100000,
