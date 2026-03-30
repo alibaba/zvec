@@ -20,12 +20,13 @@ namespace zvec {
 /*
  * Column index types
  */
+// NOTE: enum values are not the same as zvec.proto
 enum class IndexType : uint32_t {
   UNDEFINED = 0,
   HNSW = 1,
-  IVF = 2,
-  FLAT = 3,
-  HNSW_RABITQ = 4,
+  IVF = 3,
+  FLAT = 4,
+  HNSW_RABITQ = 2,
   INVERT = 10,
 };
 
