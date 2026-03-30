@@ -107,10 +107,6 @@ class Doc {
     return op_;
   }
 
-  Operator get_operator() const {
-    return op_;
-  }
-
   // Set field value
   template <typename T>
   bool set(const std::string &field_name, T value) {
