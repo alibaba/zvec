@@ -213,8 +213,8 @@ void CollectOmegaTrainingOutputs(OmegaSearchHandle omega_search,
       const auto& omega_record = (*records_vec)[i];
       core_interface::TrainingRecord record;
       record.query_id = omega_record.query_id;
-      record.hops_visited = omega_record.hops;
-      record.cmps_visited = omega_record.cmps;
+      record.hops_visited = omega_record.hops_visited;
+      record.cmps_visited = omega_record.cmps_visited;
       record.dist_1st = omega_record.dist_1st;
       record.dist_start = omega_record.dist_start;
 
