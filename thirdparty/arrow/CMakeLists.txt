@@ -57,11 +57,8 @@ if(ANDROID)
                 LOG_BUILD ON
                 LOG_INSTALL ON
         )
-else()
-        set(ARROW_EXTRA_CMAKE_ARGS "")
-        if(MSVC)
-                set(ARROW_EXTRA_CMAKE_ARGS -DCMAKE_C_FLAGS=/FS -DCMAKE_CXX_FLAGS=/FS)
-        endif()
+elseif (MSVC)
+    set(ARROW_EXTRA_CMAKE_ARGS -DCMAKE_C_FLAGS=/FS -DCMAKE_CXX_FLAGS=/FS)
         ExternalProject_Add(
                 ARROW.BUILD PREFIX arrow
                 SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0
@@ -76,6 +73,21 @@ else()
                 LOG_BUILD ON
                 LOG_INSTALL ON
         )
+else ()
+    ExternalProject_Add(
+            ARROW.BUILD PREFIX arrow
+            SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0
+            DOWNLOAD_COMMAND ""
+            BUILD_IN_SOURCE false
+            CONFIGURE_COMMAND env ${CONFIGURE_ENV_LIST} "${CMAKE_COMMAND}" ${CMAKE_CACHE_ARGS} -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_DEBUG_POSTFIX= -DARROW_BUILD_SHARED=OFF -DARROW_ACERO=ON -DARROW_FILESYSTEM=ON -DARROW_DATASET=ON -DARROW_PARQUET=ON -DARROW_COMPUTE=ON -DARROW_WITH_ZLIB=OFF -DARROW_DEPENDENCY_SOURCE=BUNDLED -DARROW_MIMALLOC=OFF -DCMAKE_INSTALL_LIBDIR=lib "<SOURCE_DIR>/cpp"
+            BUILD_COMMAND "${CMAKE_COMMAND}" --build . --target all -- -j ${NPROC}
+            INSTALL_COMMAND "${CMAKE_COMMAND}" --install "<BINARY_DIR>" --prefix=${EXTERNAL_BINARY_DIR}/usr/local
+            BYPRODUCTS ${LIB_PARQUET} ${LIB_ARROW} ${LIB_COMPUTE} ${LIB_ACERO} ${LIB_ARROW_DEPENDS} ${LIB_ARROW_DATASET}
+            LOG_DOWNLOAD ON
+            LOG_CONFIGURE ON
+            LOG_BUILD ON
+            LOG_INSTALL ON
+    )
 endif()
 
 add_library(arrow UNKNOWN IMPORTED GLOBAL)
@@ -102,7 +114,7 @@ set_target_properties(
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ARROW}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends"
-        INTERFACE_COMPILE_DEFINITIONS "ARROW_STATIC"
+        INTERFACE_COMPILE_DEFINITIONS "ARROW_STATIC" #TODO(windows): see if this can be removed
 )
 add_dependencies(Arrow::arrow_static ARROW.BUILD)
 

@@ -28,7 +28,6 @@
 #include <windows.h>
 typedef HANDLE pid_t;
 #define SIGKILL 9
-// 模拟简单的 WIFEXITED 逻辑
 #define WIFEXITED(status) true
 #define WEXITSTATUS(status) (status)
 #define WIFSIGNALED(status) ((status) != 0)

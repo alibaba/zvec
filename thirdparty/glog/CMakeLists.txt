@@ -16,15 +16,6 @@ else()
     apply_patch_once("glog_fix" "${GLOG_SRC_DIR}" "${GLOG_PATCH}")
 endif()
 
-if(MSVC)
-    set(INTTYPES_FORMAT VC7)
-#    # Pre-populate glog type checks that may fail under MSVC in subdirectory builds.
-#    # MSVC has both uint16_t (via <cstdint>) and unsigned __int16 (built-in).
-#    set(HAVE___UINT16 "2" CACHE INTERNAL "sizeof unsigned __int16" FORCE)
-#    set(HAVE_UINT16_T "2" CACHE INTERNAL "sizeof uint16_t" FORCE)
-#    set(HAVE_U_INT16_T "" CACHE INTERNAL "sizeof u_int16_t" FORCE)
-endif()
-
 set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})
 add_subdirectory(glog-0.5.0)
