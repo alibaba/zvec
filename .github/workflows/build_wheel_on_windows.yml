@@ -86,9 +86,9 @@ jobs:
           pip install --upgrade pip
           pip install cibuildwheel==3.4.0
 
-      #      - name: Add Git bin to PATH
-      #        run: echo "C:\Program Files\Git\usr\bin" >> $GITHUB_PATH
-      #        shell: powershell
+      - name: Add Git bin to PATH
+        run: echo "C:\Program Files\Git\usr\bin" >> $env:GITHUB_PATH
+        shell: powershell
 
       - name: Cache built wheels
         id: cache-wheels
