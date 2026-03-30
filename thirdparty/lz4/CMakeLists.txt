@@ -11,9 +11,6 @@ endif()
 
 include(ExternalProject)
 
-include(ProcessorCount)
-ProcessorCount(NPROC)
-
 set(_lz4_env "")
 if(ANDROID)
   string(REGEX REPLACE "^android-([0-9]+)$" "\\1" ANDROID_API_LEVEL "${ANDROID_PLATFORM}")

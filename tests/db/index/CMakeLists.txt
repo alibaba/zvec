@@ -20,6 +20,7 @@ endif()
 file(GLOB_RECURSE ALL_TEST_SRCS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *_test.cc)
 
 if(MSVC)
+  #TODO(windows): should include these UTs
   set(_MSVC_EXCLUDE_TESTS
     "storage/mmap_store_test.cc"
     "storage/mem_store_test.cc"
