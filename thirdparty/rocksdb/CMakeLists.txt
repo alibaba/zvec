@@ -13,6 +13,7 @@ set(WITH_CORE_TOOLS OFF CACHE BOOL "build with ldb and sst_dump" FORCE)
 set(WITH_TOOLS OFF CACHE BOOL "build with tools" FORCE)
 set(WITH_LZ4 ON CACHE BOOL "build with lz4" FORCE)
 set(USE_RTTI ON CACHE BOOL "build with RTTI" FORCE)
+# TODO(windows): verify
 set(ROCKSDB_SKIP_THIRDPARTY ON CACHE BOOL "skip thirdparty.inc" FORCE)
 set(FAIL_ON_WARNINGS OFF CACHE BOOL "build with no Werror" FORCE)
 set(PORTABLE ON CACHE BOOL "build a portable lib" FORCE)
@@ -21,6 +22,7 @@ set(lz4_INCLUDE_DIRS "${lz4_INCLUDE_DIR}" CACHE PATH "lz4 include directory" FOR
 set(lz4_LIBRARIES "${lz4_LIBRARY}" CACHE FILEPATH "lz4 library" FORCE)
 set(lz4_FOUND TRUE CACHE BOOL "lz4 found" FORCE)
 
+# TODO(windows): may remove
 if(NOT TARGET lz4::lz4)
     add_library(lz4::lz4 UNKNOWN IMPORTED GLOBAL)
     set_target_properties(lz4::lz4 PROPERTIES

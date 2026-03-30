@@ -56,6 +56,8 @@ static std::string LocateOptimizeGenerator() {
   for (const auto &p : search_paths) {
     candidates.push_back(p);
   }
+
+// TODO(windows): unify _WIN32/_WIN64/MSCV_VER
 #ifdef _WIN32
   for (const auto &p : search_paths) {
     candidates.push_back(p + "Debug/");

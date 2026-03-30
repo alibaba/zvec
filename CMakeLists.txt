@@ -11,6 +11,7 @@ if(MSVC)
     add_compile_options(/we4716) # -Werror=return-type
 
     ###### reduce output length to make vibe coding work better :) should be removed or solved later
+    # TODO(windows): fix&cleanup
     add_compile_options(/wd4267 /wd4244 /wd4305 /wd4242) # conversion/truncation from 'size_t' to 'type', possible loss of data
     add_compile_options(/wd4310) # cast truncates constant value
     add_compile_options(/wd4146) # unary minus operator applied to unsigned type #usage: uint32_t seg_id_{-1U};

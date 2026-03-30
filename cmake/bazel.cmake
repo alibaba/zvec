@@ -700,7 +700,7 @@ function(_target_link_libraries _NAME)
         list(APPEND LINK_LIBS -Wl,-force_load ${LIB})
       endif()
     else()
-      # Microsoft Visual C++
+      # TODO(windows): revert maybe
       list(APPEND MSVC_WHOLEARCHIVE_OPTS /WHOLEARCHIVE:$<TARGET_FILE:${LIB}>)
       get_target_property(OTHER_LINK_LIBS ${LIB} INTERFACE_LINK_LIBRARIES)
       if(OTHER_LINK_LIBS)
