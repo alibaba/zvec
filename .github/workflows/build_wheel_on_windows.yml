@@ -207,7 +207,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $found = $false
           for ($i = 1; $i -le 30; $i++) {
-            python -m pip install -f @indexArgs --dry-run "zvec==$version" 1>$null 2>$null
+            python -m pip install --force-reinstall @indexArgs --dry-run "zvec==$version" 1>$null 2>$null
             if ($LASTEXITCODE -eq 0) {
               Write-Host "Version $version is available."
               $found = $true
@@ -225,5 +225,5 @@ jobs:
           python -m venv test_env
           $venvPython = "test_env/Scripts/python.exe"
           & $venvPython -m pip install --upgrade pip
-          & $venvPython -m pip install @indexArgs "zvec==$version"
+          & $venvPython -m pip install --force-reinstall @indexArgs "zvec==$version"
           & $venvPython -c "import zvec; print('Import OK:', zvec.__version__)"
