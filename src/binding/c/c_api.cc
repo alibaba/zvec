@@ -183,37 +183,11 @@ static void set_last_error_details(ZVecErrorCode code, const std::string &msg,
 // Version information interface implementation
 // =============================================================================
 
-// Store dynamically generated version information
-static std::string g_version_info;
-static std::mutex g_version_mutex;
-
+// Version string is generated at compile time by CMake
 const char *zvec_get_version(void) {
-  std::lock_guard<std::mutex> lock(g_version_mutex);
-
-  if (g_version_info.empty()) {
-    ZVEC_TRY_BEGIN_VOID
-    std::string version = ZVEC_VERSION_STRING;
-
-    // Try to get Git information
-    std::string git_info;
-#ifdef ZVEC_GIT_DESCRIBE
-    git_info = ZVEC_GIT_DESCRIBE;
-#elif defined(ZVEC_GIT_COMMIT_HASH)
-    git_info = std::string("g") + ZVEC_GIT_COMMIT_HASH;
-#endif
-
-    if (!git_info.empty()) {
-      version += "-" + git_info;
-    }
-
-    version +=
-        " (built " + std::string(__DATE__) + " " + std::string(__TIME__) + ")";
-
-    g_version_info = version;
-    ZVEC_CATCH_END_VOID
-  }
-
-  return g_version_info.c_str();
+  // ZVEC_VERSION_STRING is a compile-time constant from zvec_version.h
+  // Format: "vX.Y.Z-commit-hash" or "g<short-commit-hash>"
+  return ZVEC_VERSION_STRING;
 }
 
 bool zvec_check_version(int major, int minor, int patch) {
@@ -456,131 +430,61 @@ bool zvec_config_log_is_file_type(const ZVecLogConfig *config) {
   return cpp_config->GetLoggerType() == zvec::FILE_LOG_TYPE_NAME;
 }
 
-const char *zvec_config_log_get_dir(const ZVecLogConfig *config) {
-  if (!config) {
-    return nullptr;
-  }
+inline const zvec::GlobalConfig::FileLogConfig* file_config_from_config(const ZVecLogConfig *config) {
   auto *cpp_config =
       reinterpret_cast<const zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    return nullptr;  // Not a file config
-  }
+  return dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(cpp_config);
+}
+
+inline zvec::GlobalConfig::FileLogConfig* mutable_file_config_from_config(ZVecLogConfig *config) {
+  auto *cpp_config =
+      reinterpret_cast<zvec::GlobalConfig::LogConfig *>(config);
+  return dynamic_cast<zvec::GlobalConfig::FileLogConfig *>(cpp_config);
+}
+
+const char *zvec_config_log_get_dir(const ZVecLogConfig *config) {
+  auto* file_config = file_config_from_config(config);
   return file_config->dir.c_str();
 }
 
 ZVecErrorCode zvec_config_log_set_dir(ZVecLogConfig *config, const char *dir) {
-  if (!config || !dir) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Config or dir pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Config is not a file log config");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
+  auto *file_config = mutable_file_config_from_config(config);
   file_config->dir = dir;
   return ZVEC_OK;
 }
 
 const char *zvec_config_log_get_basename(const ZVecLogConfig *config) {
-  if (!config) {
-    return nullptr;
-  }
-  auto *cpp_config =
-      reinterpret_cast<const zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    return nullptr;  // Not a file config
-  }
+  auto* file_config = file_config_from_config(config);
   return file_config->basename.c_str();
 }
 
 ZVecErrorCode zvec_config_log_set_basename(ZVecLogConfig *config,
                                            const char *basename) {
-  if (!config || !basename) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Config or basename pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Config is not a file log config");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
+  auto *file_config = mutable_file_config_from_config(config);
   file_config->basename = basename;
   return ZVEC_OK;
 }
 
 uint32_t zvec_config_log_get_file_size(const ZVecLogConfig *config) {
-  if (!config) {
-    return 0;
-  }
-  auto *cpp_config =
-      reinterpret_cast<const zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    return 0;  // Not a file config
-  }
+  auto* file_config = file_config_from_config(config);
   return file_config->file_size;
 }
 
 ZVecErrorCode zvec_config_log_set_file_size(ZVecLogConfig *config,
                                             uint32_t file_size) {
-  if (!config) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Config is not a file log config");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
+  auto *file_config = mutable_file_config_from_config(config);
   file_config->file_size = file_size;
   return ZVEC_OK;
 }
 
 uint32_t zvec_config_log_get_overdue_days(const ZVecLogConfig *config) {
-  if (!config) {
-    return 0;
-  }
-  auto *cpp_config =
-      reinterpret_cast<const zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    return 0;  // Not a file config
-  }
-  return file_config->overdue_days;
+  auto* file_config = file_config_from_config(config);
+  return file_config ? file_config->overdue_days : 0;
 }
 
 ZVecErrorCode zvec_config_log_set_overdue_days(ZVecLogConfig *config,
                                                uint32_t days) {
-  if (!config) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::LogConfig *>(config);
-  auto *file_config =
-      dynamic_cast<zvec::GlobalConfig::FileLogConfig *>(cpp_config);
-  if (!file_config) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Config is not a file log config");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
+  auto *file_config = mutable_file_config_from_config(config);
   file_config->overdue_days = days;
   return ZVEC_OK;
 }
@@ -789,7 +693,8 @@ ZVecErrorCode zvec_shutdown(void) {
     SET_LAST_ERROR(ZVEC_ERROR_FAILED_PRECONDITION, "Library not initialized");
     return ZVEC_ERROR_FAILED_PRECONDITION;
   }
-
+  // We're do nothing here for now, 
+  // but we might add zvec::GlobalConfig::Finalize in the future.
   ZVEC_TRY_RETURN_ERROR("Shutdown failed", g_initialized.store(false);
                         return ZVEC_OK;)
 }
@@ -937,7 +842,8 @@ static std::vector<std::string> collect_doc_pks(const ZVecDoc **docs,
  * @brief Convert C index params to C++ shared_ptr
  * @param params C index params handle
  * @return Shared pointer to C++ IndexParams, or nullptr on failure
- * @note Uses clone() to create a copy via dynamic dispatch
+ * @note Uses switch-based type checking and copy constructor to create 
+ *       a deep copy of the underlying C++ IndexParams object
  */
 static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
     const ZVecIndexParams *params) {
@@ -982,6 +888,34 @@ static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
 // =============================================================================
 // Memory Management interface implementation
 // =============================================================================
+
+/**
+ * @brief Allocate memory within the library
+ * @param size Number of bytes to allocate
+ * @return Pointer to allocated memory, or NULL on failure
+ * 
+ * @note Use zvec_malloc instead of malloc to ensure memory is managed
+ *       consistently within the library. All memory allocated with zvec_malloc
+ *       should be freed with zvec_free.
+ */
+void* zvec_malloc(size_t size) {
+  return malloc(size);
+}
+
+/**
+ * @brief Free memory allocated by zvec_malloc
+ * @param ptr Pointer to memory to free (can be NULL)
+ * 
+ * @note Use zvec_free instead of free to ensure memory is managed
+ *       consistently within the library. This function should be used to free
+ *       any memory allocated with zvec_malloc or returned by library functions
+ *       that document they return library-allocated memory.
+ */
+void zvec_free(void *ptr) {
+  if (ptr) {
+    free(ptr);
+  }
+}
 
 /**
  * @brief Free a ZVecString structure
@@ -1180,12 +1114,6 @@ ZVecErrorCode zvec_get_last_error(char **error_msg) {
 void zvec_free_uint8_array(uint8_t *array) {
   if (array) {
     free(array);
-  }
-}
-
-void zvec_free_ptr(void *ptr) {
-  if (ptr) {
-    free(ptr);
   }
 }
 
@@ -1396,17 +1324,18 @@ ZVecIndexParams *zvec_index_params_create(ZVecIndexType index_type) {
           break;
         case ZVEC_INDEX_TYPE_HNSW:
           cpp_params =
-              new zvec::HnswIndexParams(zvec::MetricType::L2,  // metric_type
-                                        16,                    // m (default)
-                                        200,                   // ef_construction (default)
-                                        zvec::QuantizeType::UNDEFINED);
+              new zvec::HnswIndexParams(
+                  zvec::MetricType::L2,  // metric_type
+                  zvec::core_interface::kDefaultHnswNeighborCnt,  // m
+                  zvec::core_interface::kDefaultHnswEfConstruction,  // ef_construction
+                  zvec::QuantizeType::UNDEFINED);
           break;
         case ZVEC_INDEX_TYPE_IVF:
           cpp_params =
               new zvec::IVFIndexParams(zvec::MetricType::L2,  // metric_type
-                                       100,                   // n_list (default)
+                                       1024,                   // n_list (default)
                                        10,                    // n_iters (default)
-                                       false,                 // use_soar (default)
+                                       false,                // use_soar (default)
                                        zvec::QuantizeType::UNDEFINED);
           break;
         case ZVEC_INDEX_TYPE_FLAT:
@@ -1567,34 +1496,6 @@ ZVecErrorCode zvec_index_params_set_hnsw_params(ZVecIndexParams *params, int m,
   }
   hnsw_params->set_m(m);
   hnsw_params->set_ef_construction(ef_construction);
-  return ZVEC_OK;
-}
-
-/**
- * @brief Get HNSW parameters
- * @param params Index parameters (must be HNSW type)
- * @param out_m Output for m parameter (can be NULL)
- * @param out_ef_construction Output for ef_construction (can be NULL)
- * @return ZVEC_OK on success, error code on failure
- */
-ZVecErrorCode zvec_index_params_get_hnsw_params(const ZVecIndexParams *params,
-                                                int *out_m,
-                                                int *out_ef_construction) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not HNSW index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-  auto *hnsw_params = dynamic_cast<const zvec::HnswIndexParams *>(cpp_params);
-  if (!hnsw_params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not HNSW index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  if (out_m) *out_m = hnsw_params->m();
-  if (out_ef_construction)
-    *out_ef_construction = hnsw_params->ef_construction();
   return ZVEC_OK;
 }
 
@@ -2084,7 +1985,8 @@ ZVecErrorCode zvec_collection_schema_set_name(ZVecCollectionSchema *schema,
   ZVEC_TRY_RETURN_ERROR(
       "Failed to set collection name",
       auto *cpp_schema = reinterpret_cast<zvec::CollectionSchema *>(schema);
-      cpp_schema->set_name(std::string(name)); return ZVEC_OK;)
+      cpp_schema->set_name(std::string(name)); 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_add_field(ZVecCollectionSchema *schema,
@@ -2229,7 +2131,7 @@ ZVecErrorCode zvec_collection_schema_get_forward_fields(
       auto forward_fields = cpp_schema->forward_fields();
 
       *count = forward_fields.size();
-      *fields = (ZVecFieldSchema **)malloc(*count * sizeof(ZVecFieldSchema *));
+      *fields = (ZVecFieldSchema **)zvec_malloc(*count * sizeof(ZVecFieldSchema *));
       if (!*fields) {
         SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
                        "Failed to allocate memory");
@@ -2240,7 +2142,8 @@ ZVecErrorCode zvec_collection_schema_get_forward_fields(
         // Return non-owning pointers - caller should NOT free these
         (*fields)[i] =
             reinterpret_cast<ZVecFieldSchema *>(forward_fields[i].get());
-      } return ZVEC_OK;)
+      } 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_get_forward_fields_with_index(
@@ -2259,7 +2162,7 @@ ZVecErrorCode zvec_collection_schema_get_forward_fields_with_index(
       auto fields_with_index = cpp_schema->forward_fields_with_index();
 
       *count = fields_with_index.size();
-      *fields = (ZVecFieldSchema **)malloc(*count * sizeof(ZVecFieldSchema *));
+      *fields = (ZVecFieldSchema **)zvec_malloc(*count * sizeof(ZVecFieldSchema *));
       if (!*fields) {
         SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
                        "Failed to allocate memory");
@@ -2270,7 +2173,8 @@ ZVecErrorCode zvec_collection_schema_get_forward_fields_with_index(
         // Return non-owning pointers - caller should NOT free these
         (*fields)[i] =
             reinterpret_cast<ZVecFieldSchema *>(fields_with_index[i].get());
-      } return ZVEC_OK;)
+      } 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_get_forward_field_names(
@@ -2298,7 +2202,8 @@ ZVecErrorCode zvec_collection_schema_get_forward_field_names(
       // Copy strings - caller owns the memory and should free
       for (size_t i = 0; i < *count; ++i) {
         (*names)[i] = strdup(forward_names[i].c_str());
-      } return ZVEC_OK;)
+      } 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_get_forward_field_names_with_index(
@@ -2327,7 +2232,8 @@ ZVecErrorCode zvec_collection_schema_get_forward_field_names_with_index(
       // Copy strings - caller owns the memory and should free
       for (size_t i = 0; i < *count; ++i) {
         (*names)[i] = strdup(forward_names_with_index[i].c_str());
-      } return ZVEC_OK;)
+      } 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_get_all_field_names(
@@ -2354,7 +2260,9 @@ ZVecErrorCode zvec_collection_schema_get_all_field_names(
 
       // Copy strings - caller owns the memory and should free
       for (size_t i = 0; i < *count;
-           ++i) { (*names)[i] = strdup(all_names[i].c_str()); } return ZVEC_OK;)
+           ++i) { (*names)[i] = strdup(all_names[i].c_str()); 
+      } 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_get_vector_fields(
@@ -2384,7 +2292,8 @@ ZVecErrorCode zvec_collection_schema_get_vector_fields(
         // Return non-owning pointers - caller should NOT free these
         (*fields)[i] =
             reinterpret_cast<ZVecFieldSchema *>(vector_fields[i].get());
-      } return ZVEC_OK;)
+      } 
+      return ZVEC_OK;)
 }
 
 uint64_t zvec_collection_schema_get_max_doc_count_per_segment(
@@ -2405,7 +2314,8 @@ ZVecErrorCode zvec_collection_schema_set_max_doc_count_per_segment(
   ZVEC_TRY_RETURN_ERROR(
       "Failed to set max doc count per segment",
       auto *cpp_schema = reinterpret_cast<zvec::CollectionSchema *>(schema);
-      cpp_schema->set_max_doc_count_per_segment(max_doc_count); return ZVEC_OK;)
+      cpp_schema->set_max_doc_count_per_segment(max_doc_count); 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_validate(
@@ -2429,7 +2339,8 @@ ZVecErrorCode zvec_collection_schema_validate(
           *error_msg = zvec_string_create(status.message().c_str());
         }
         return status_to_error_code(status);
-      } return ZVEC_OK;)
+      } 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_collection_schema_add_index(
@@ -2467,7 +2378,8 @@ ZVecErrorCode zvec_collection_schema_drop_index(ZVecCollectionSchema *schema,
       if (!field) {
         SET_LAST_ERROR(ZVEC_ERROR_NOT_FOUND, "Field not found");
         return ZVEC_ERROR_NOT_FOUND;
-      } const_cast<zvec::FieldSchema *>(field)
+      } 
+      const_cast<zvec::FieldSchema *>(field)
           ->set_index_params(nullptr);
       return ZVEC_OK;)
 }
@@ -4388,7 +4300,8 @@ ZVecErrorCode zvec_doc_deserialize(const uint8_t *data, size_t size,
 
       // Create a new Doc by copying the deserialized content
       auto *new_doc = new zvec::Doc(*deserialized_doc);
-      *doc = reinterpret_cast<ZVecDoc *>(new_doc); return ZVEC_OK;)
+      *doc = reinterpret_cast<ZVecDoc *>(new_doc); 
+      return ZVEC_OK;)
 }
 
 void zvec_doc_merge(ZVecDoc *doc, const ZVecDoc *other) {
@@ -4444,7 +4357,8 @@ ZVecErrorCode zvec_doc_validate(const ZVecDoc *doc,
         return status_to_error_code(status);
       }
 
-      if (error_msg) { *error_msg = nullptr; } return ZVEC_OK;)
+      if (error_msg) { *error_msg = nullptr; } 
+      return ZVEC_OK;)
 }
 
 ZVecErrorCode zvec_doc_to_detail_string(const ZVecDoc *doc, char **detail_str) {
@@ -4463,7 +4377,6 @@ ZVecErrorCode zvec_doc_to_detail_string(const ZVecDoc *doc, char **detail_str) {
         set_last_error("Failed to copy detail string");
         return ZVEC_ERROR_INTERNAL_ERROR;
       }
-
       return ZVEC_OK;)
 }
 
@@ -4655,9 +4568,9 @@ ZVecErrorCode zvec_collection_get_stats(const ZVecCollection *collection,
         return ZVEC_ERROR_INTERNAL_ERROR;
       }
 
-          // Create a new CollectionStats object and return as opaque pointer
-          *stats = reinterpret_cast<ZVecCollectionStats *>(
-              new zvec::CollectionStats(result.value()));
+      // Create a new CollectionStats object and return as opaque pointer
+      *stats = reinterpret_cast<ZVecCollectionStats *>(
+          new zvec::CollectionStats(result.value()));
 
       return ZVEC_OK;)
 }

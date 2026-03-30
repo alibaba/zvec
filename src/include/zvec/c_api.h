@@ -372,14 +372,32 @@ ZVEC_EXPORT void ZVEC_CALL zvec_int64_array_destroy(ZVecInt64Array *array);
 ZVEC_EXPORT void ZVEC_CALL zvec_free_uint8_array(uint8_t *array);
 
 /**
- * @brief Free heap memory allocated by zvec C API.
+ * @brief Allocate memory within the zvec library
  *
- * Use this helper for pointer-returning APIs that document malloc-allocated
- * buffers. This avoids allocator mismatch across DLL boundaries.
+ * Use this function instead of malloc to ensure memory is managed consistently
+ * within the library. All memory allocated with zvec_malloc should be freed
+ * with zvec_free.
  *
- * @param ptr Memory pointer returned by zvec C API
+ * @param size Number of bytes to allocate
+ * @return Pointer to allocated memory, or NULL on failure
+ *
+ * @see zvec_free
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_free_ptr(void *ptr);
+ZVEC_EXPORT void *ZVEC_CALL zvec_malloc(size_t size);
+
+/**
+ * @brief Free memory allocated by zvec_malloc or zvec library functions
+ *
+ * Use this function instead of free to ensure memory is managed consistently
+ * within the library. This should be used to free any memory allocated with
+ * zvec_malloc or returned by library functions that document they return
+ * library-allocated memory.
+ *
+ * @param ptr Pointer to memory to free (can be NULL)
+ *
+ * @see zvec_malloc
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_free(void *ptr);
 
 
 // =============================================================================
@@ -908,16 +926,6 @@ ZVEC_EXPORT int ZVEC_CALL
 zvec_index_params_get_hnsw_ef_construction(const ZVecIndexParams *params);
 
 /**
- * @brief Get HNSW parameters (all at once)
- * @param params Index parameters (must not be NULL)
- * @param out_m Output parameter for m
- * @param out_ef_construction Output parameter for ef_construction
- * @return ZVEC_OK on success, error code on failure
- */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_get_hnsw_params(
-    const ZVecIndexParams *params, int *out_m, int *out_ef_construction);
-
-/**
  * @brief Set IVF specific parameters
  * @param params Index parameters (must be IVF type)
  * @param n_list Number of cluster centers
@@ -1431,10 +1439,13 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_vector_query_set_output_fields(
 /**
  * @brief Get output fields
  * @param query Vector query pointer
- * @param[out] fields Output array of field names (caller owns the memory,
- * should free with free())
+ * @param[out] fields Output array of field names (allocated by library)
  * @param[out] count Number of fields
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual string pointers
+ *       are owned by the query and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_vector_query_get_output_fields(
     const ZVecVectorQuery *query, const char ***fields, size_t *count);
@@ -1624,10 +1635,13 @@ zvec_group_by_vector_query_set_output_fields(ZVecGroupByVectorQuery *query,
 /**
  * @brief Get output fields
  * @param query Group by vector query pointer
- * @param[out] fields Output array of field names (caller owns the memory,
- * should free with free())
+ * @param[out] fields Output array of field names (allocated by library)
  * @param[out] count Number of fields
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual string pointers
+ *       are owned by the query and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
 zvec_group_by_vector_query_get_output_fields(ZVecGroupByVectorQuery *query,
@@ -2035,8 +2049,11 @@ zvec_collection_schema_destroy(ZVecCollectionSchema *schema);
 /**
  * @brief Get collection schema name
  * @param schema Collection schema pointer (must not be NULL)
- * @return const char* Collection name (caller owns the memory, should free with
- * free())
+ * @return const char* Collection name string pointer
+ *
+ * @note Returns a pointer to internal memory. Caller does NOT own the memory
+ *       and should NOT free it. The pointer is valid as long as the schema
+ *       exists.
  */
 ZVEC_EXPORT const char *ZVEC_CALL
 zvec_collection_schema_get_name(const ZVecCollectionSchema *schema);
@@ -2121,10 +2138,15 @@ ZVEC_EXPORT ZVecFieldSchema *ZVEC_CALL zvec_collection_schema_get_vector_field(
 /**
  * @brief Get all forward (scalar) fields
  * @param schema Collection schema pointer
- * @param[out] fields Output array of field pointers (owned by caller, do not
- * destroy)
+ * @param[out] fields Receives a newly allocated array of pointers to field
+ *             schemas. The array is allocated by the library and should be
+ *             freed using zvec_free() when no longer needed.
  * @param[out] count Number of fields
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual field pointers
+ *       are owned by the schema and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_forward_fields(
     const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
@@ -2133,9 +2155,15 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_forward_fields(
 /**
  * @brief Get all forward fields with index
  * @param schema Collection schema pointer
- * @param[out] fields Output array of field pointers
+ * @param[out] fields Receives a newly allocated array of pointers to field
+ *             schemas. The array is allocated by the library and should be
+ *             freed using zvec_free() when no longer needed.
  * @param[out] count Number of fields
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual field pointers
+ *       are owned by the schema and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
 zvec_collection_schema_get_forward_fields_with_index(
@@ -2145,10 +2173,13 @@ zvec_collection_schema_get_forward_fields_with_index(
 /**
  * @brief Get all forward (scalar) field names
  * @param schema Collection schema pointer
- * @param[out] names Output array of field names (caller owns the memory, should
- * free with free())
+ * @param[out] names Output array of field names (allocated by library)
  * @param[out] count Number of field names
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual string pointers
+ *       are owned by the schema and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
 zvec_collection_schema_get_forward_field_names(
@@ -2157,10 +2188,13 @@ zvec_collection_schema_get_forward_field_names(
 /**
  * @brief Get all forward field names with index
  * @param schema Collection schema pointer
- * @param[out] names Output array of field names (caller owns the memory, should
- * free with free())
+ * @param[out] names Output array of field names (allocated by library)
  * @param[out] count Number of field names
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual string pointers
+ *       are owned by the schema and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
 zvec_collection_schema_get_forward_field_names_with_index(
@@ -2169,10 +2203,13 @@ zvec_collection_schema_get_forward_field_names_with_index(
 /**
  * @brief Get all field names
  * @param schema Collection schema pointer
- * @param[out] names Output array of field names (caller owns the memory, should
- * free with free())
+ * @param[out] names Output array of field names (allocated by library)
  * @param[out] count Number of field names
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual string pointers
+ *       are owned by the schema and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_all_field_names(
     const ZVecCollectionSchema *schema, const char ***names, size_t *count);
@@ -2180,9 +2217,15 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_all_field_names(
 /**
  * @brief Get all vector fields
  * @param schema Collection schema pointer
- * @param[out] fields Output array of field pointers
+ * @param[out] fields Receives a newly allocated array of pointers to field
+ *             schemas. The array is allocated by the library and should be
+ *             freed using zvec_free() when no longer needed.
  * @param[out] count Number of fields
  * @return ZVecErrorCode Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual field pointers
+ *       are owned by the schema and must NOT be freed.
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_collection_schema_get_vector_fields(
     const ZVecCollectionSchema *schema, ZVecFieldSchema ***fields,
@@ -2816,8 +2859,11 @@ ZVEC_EXPORT const char *ZVEC_CALL zvec_doc_get_pk_pointer(const ZVecDoc *doc);
  * @brief Get document primary key copy (needs manual release)
  *
  * @param doc Document object pointer
- * @return const char* Primary key string copy, needs to call free() to release,
- * returns NULL if not set
+ * @return const char* Primary key string copy, needs to call zvec_free() to
+ *         release, returns NULL if not set
+ *
+ * @note The returned string is allocated by the library and must be freed
+ *       using zvec_free() when no longer needed.
  */
 ZVEC_EXPORT const char *ZVEC_CALL zvec_doc_get_pk_copy(const ZVecDoc *doc);
 
@@ -2853,7 +2899,7 @@ ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_doc_get_field_value_basic(
  *   ARRAY_INT64, ARRAY_UINT32, ARRAY_UINT64, ARRAY_FLOAT, ARRAY_DOUBLE
  *
  * The returned value pointer must be manually freed using appropriate
- * deallocation functions (free() for basic types and strings,
+ * deallocation functions (zvec_free() for basic types and strings,
  * zvec_free_uint8_array() for binary data).
  *
  * @param doc Document object pointer

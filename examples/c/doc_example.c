@@ -28,7 +28,7 @@ static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
     zvec_get_last_error(&error_msg);
     fprintf(stderr, "Error in %s: %d - %s\n", context, error,
             error_msg ? error_msg : "Unknown error");
-    free(error_msg);
+    zvec_free(error_msg);
   }
   return error;
 }
@@ -232,7 +232,7 @@ static void print_doc(const ZVecDoc *doc, int doc_index) {
     }
     if (dim > 10) printf(", ...");
     printf("]\n");
-    free(fp32_vector);  // Free the allocated memory
+    zvec_free(fp32_vector);  // Free the allocated memory
   }
 
   // Large vector (16D)
@@ -251,7 +251,7 @@ static void print_doc(const ZVecDoc *doc, int doc_index) {
     }
     if (dim > 10) printf(", ...");
     printf("]\n");
-    free(large_vector);  // Free the allocated memory
+    zvec_free(large_vector);  // Free the allocated memory
   }
 
   printf("==================\n\n");

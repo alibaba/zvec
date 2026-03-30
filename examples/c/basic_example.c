@@ -26,7 +26,7 @@ static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
     zvec_get_last_error(&error_msg);
     fprintf(stderr, "Error in %s: %d - %s\n", context, error,
             error_msg ? error_msg : "Unknown error");
-    free(error_msg);
+    zvec_free(error_msg);
   }
   return error;
 }
@@ -231,7 +231,7 @@ int main() {
     zvec_get_last_error(&error_msg);
     printf("[ERROR] Query failed: %s\n",
            error_msg ? error_msg : "Unknown error");
-    free(error_msg);
+    zvec_free(error_msg);
     zvec_vector_query_destroy(query);
     goto cleanup;
   }
@@ -250,7 +250,7 @@ int main() {
            zvec_doc_get_score(doc));
 
     if (pk) {
-      free((void *)pk);
+      zvec_free((void *)pk);
     }
   }
 

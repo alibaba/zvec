@@ -879,8 +879,9 @@ ZVecFieldSchema *zvec_test_create_vector_field(
     ZVecIndexParams *cloned_params = zvec_index_params_create(type);
     if (cloned_params) {
       int m, ef_construction;
-      zvec_index_params_get_hnsw_params(vector_index_params, &m,
-                                        &ef_construction);
+      m = zvec_index_params_get_hnsw_m(vector_index_params);
+      ef_construction =
+          zvec_index_params_get_hnsw_ef_construction(vector_index_params);
       zvec_index_params_set_hnsw_params(cloned_params, m, ef_construction);
       zvec_field_schema_set_index_params(field, cloned_params);
       zvec_index_params_destroy(cloned_params);
@@ -904,8 +905,9 @@ ZVecFieldSchema *zvec_test_create_sparse_vector_field(
     ZVecIndexParams *cloned_params = zvec_index_params_create(type);
     if (cloned_params) {
       int m, ef_construction;
-      zvec_index_params_get_hnsw_params(vector_index_params, &m,
-                                        &ef_construction);
+      m = zvec_index_params_get_hnsw_m(vector_index_params);
+      ef_construction =
+          zvec_index_params_get_hnsw_ef_construction(vector_index_params);
       zvec_index_params_set_hnsw_params(cloned_params, m, ef_construction);
       zvec_field_schema_set_index_params(field, cloned_params);
       zvec_index_params_destroy(cloned_params);

@@ -99,15 +99,10 @@ find_package(Threads REQUIRED)
 # This creates a truly self-contained library with zero external dependencies
 # Users only need to link libzvec_c_api.so without installing any dependencies
 if(APPLE)
-    # First, link all libraries normally
+    # Third-party libraries that are dependencies of zvec_db and zvec_ailego
+    # These must be linked before the internal libraries that depend on them
     target_link_libraries(zvec_c_api
         PRIVATE
-            # zvec static libraries
-            zvec_db
-            zvec_core
-            zvec_ailego
-            # Third-party libraries
-            roaring
             Arrow::arrow_static
             Arrow::parquet_static
             Arrow::arrow_compute
@@ -117,54 +112,42 @@ if(APPLE)
             glog
             libprotobuf
             antlr4
-            sparsehash
-            magic_enum
-            Threads::Threads
-            ${CMAKE_DL_LIBS}
     )
     
-    # Then, apply -force_load to ensure all symbols are included
-    # Note: This may cause duplicate library warnings, but they are harmless
-    target_link_options(zvec_c_api PRIVATE
-        -Wl,-force_load,$<TARGET_FILE:zvec_db>
-        -Wl,-force_load,$<TARGET_FILE:zvec_core>
-        -Wl,-force_load,$<TARGET_FILE:zvec_ailego>
-        -Wl,-force_load,$<TARGET_FILE:roaring>
-        -Wl,-force_load,$<TARGET_FILE:Arrow::arrow_static>
-        -Wl,-force_load,$<TARGET_FILE:Arrow::parquet_static>
-        -Wl,-force_load,$<TARGET_FILE:Arrow::arrow_compute>
-        -Wl,-force_load,$<TARGET_FILE:Arrow::arrow_dataset>
-        -Wl,-force_load,$<TARGET_FILE:Arrow::arrow_acero>
-        -Wl,-force_load,$<TARGET_FILE:rocksdb>
-        -Wl,-force_load,$<TARGET_FILE:glog>
-        -Wl,-force_load,$<TARGET_FILE:libprotobuf>
-        -Wl,-force_load,$<TARGET_FILE:antlr4>
+    # Link zvec internal libraries with -force_load to extract all objects
+    target_link_libraries(zvec_c_api
+        PRIVATE
+            # zvec static libraries (force-loaded to extract all objects)
+            "-Wl,-force_load,$<TARGET_FILE:zvec_db>"
+            "-Wl,-force_load,$<TARGET_FILE:zvec_core>"
+            "-Wl,-force_load,$<TARGET_FILE:zvec_ailego>"
+            # zvec_turbo is required by zvec_core (metric module)
+            "-Wl,-force_load,$<TARGET_FILE:zvec_turbo>"
+            # Only roaring needs explicit force_load (C library with no transitive deps)
+            "-Wl,-force_load,$<TARGET_FILE:roaring>"
+            # Explicitly link C++ standard library for cross-platform compatibility
+            stdc++
+            Threads::Threads
+            ${CMAKE_DL_LIBS}
     )
 
 else()
     target_link_libraries(zvec_c_api
         PRIVATE
-            # Force load all zvec static libraries (extract all objects)
+            # Force load all zvec internal libraries (extract all objects)
             "-Wl,--whole-archive"
                 zvec_db
                 zvec_core
                 zvec_ailego
+                zvec_turbo  # Required by zvec_core (metric module)
             "-Wl,--no-whole-archive"
-            # Force load ALL third-party libraries for zero-dependency deployment
+            # Most third-party libs are linked via zvec_db
+            # Only roaring needs explicit whole-archive (C library)
             "-Wl,--whole-archive"
                 roaring
-                Arrow::arrow_static
-                Arrow::parquet_static
-                Arrow::arrow_compute
-                Arrow::arrow_dataset
-                Arrow::arrow_acero
-                rocksdb
-                glog
-                libprotobuf
-                antlr4
-                sparsehash
-                magic_enum
             "-Wl,--no-whole-archive"
+            # Explicitly link C++ standard library for cross-platform compatibility
+            stdc++
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
