@@ -125,6 +125,7 @@ jobs:
           ./core-example
           ./ailego-example
         shell: bash
+
       - name: Run C Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c"
