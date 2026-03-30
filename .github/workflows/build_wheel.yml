@@ -36,3 +36,4 @@ jobs:
     uses: ./.github/workflows/build_wheel_on_windows.yml
     with:
       publish_target: 'pypi'
+    secrets: inherit
