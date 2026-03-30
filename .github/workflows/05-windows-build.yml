@@ -35,10 +35,6 @@ jobs:
             platform: windows-2022-x64
           - os: windows-2025
             platform: windows-2025-x64
-          - os: windows-amd
-            platform: windows-2025-x64-c7a
-          - os: windows-g9i
-            platform: windows-2025-x64-g9i
 
     steps:
       - name: Show env info
