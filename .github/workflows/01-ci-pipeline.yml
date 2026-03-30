@@ -70,3 +70,8 @@ jobs:
     name: Build & Test (android)
     needs: lint
     uses: ./.github/workflows/04-android-build.yml
+
+  build-and-test-on-windows:
+    name: Build & Test (Windows)
+    needs: lint
+    uses: ./.github/workflows/05-windows-build.yml

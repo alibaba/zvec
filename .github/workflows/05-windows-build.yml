@@ -1,31 +1,14 @@
 name: Windows Build
 
 on:
-  push:
-    branches: [ "main", "feat/win-compilationw" ]
-    paths-ignore:
-      - '**.md'
-  merge_group:
-  pull_request:
-    branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
+  workflow_call:
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-
 jobs:
-
   # Windows build and test matrix
   build-and-test-windows:
     name: Build & Test (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-#    runs-on: windows-amd
 
     strategy:
       fail-fast: false
