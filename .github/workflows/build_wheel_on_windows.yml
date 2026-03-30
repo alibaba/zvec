@@ -151,6 +151,12 @@ jobs:
     needs: build_wheels_windows_2025
 
     steps:
+      - name: Download built wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-wheels
+          path: wheelhouse/
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -174,12 +180,6 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      #      - name: Download built wheels
-      #        uses: actions/download-artifact@v4
-      #        with:
-      #          name: windows-wheels
-      #          path: wheelhouse/
-
       - name: Smoke test from PyPI
         shell: powershell
         env:
