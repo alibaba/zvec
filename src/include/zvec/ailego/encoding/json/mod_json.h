@@ -567,7 +567,7 @@ int mod_json_string_assign(mod_json_string_t *str, mod_json_cchar_t *cstr,
 static inline mod_json_string_t *mod_json_string_clone(mod_json_string_t *str) {
   return (str ? mod_json_string_set(str->first,
                                     (mod_json_size_t)(str->last - str->first))
-              : (mod_json_string_t *)0);
+              : (mod_json_string_t *)nullptr);
 }
 
 /**
@@ -718,7 +718,7 @@ static inline mod_json_string_t *mod_json_string_grab(mod_json_string_t *str) {
  *  \return          The pointer of c-string
  */
 static inline mod_json_cchar_t *mod_json_string_cstr(mod_json_string_t *str) {
-  return (str ? str->first : (mod_json_cchar_t *)0);
+  return (str ? str->first : (mod_json_cchar_t *)nullptr);
 }
 
 /**
@@ -727,7 +727,7 @@ static inline mod_json_cchar_t *mod_json_string_cstr(mod_json_string_t *str) {
  *  \return          The pointer of data
  */
 static inline mod_json_char_t *mod_json_string_data(mod_json_string_t *str) {
-  return (str ? str->first : (mod_json_char_t *)0);
+  return (str ? str->first : (mod_json_char_t *)nullptr);
 }
 
 /**

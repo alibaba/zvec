@@ -70,9 +70,9 @@ uint64_t CgroupUtil::getUptime() {
   struct timeval boottime;
   size_t len = sizeof(boottime);
   int mib[2] = {CTL_KERN, KERN_BOOTTIME};
-  if (sysctl(mib, 2, &boottime, &len, NULL, 0) == 0) {
+  if (sysctl(mib, 2, &boottime, &len, nullptr, 0) == 0) {
     time_t bsec = boottime.tv_sec;
-    time_t csec = time(NULL);
+    time_t csec = time(nullptr);
     return csec - bsec;
   }
 #elif defined(PLATFORM_WINDOWS)

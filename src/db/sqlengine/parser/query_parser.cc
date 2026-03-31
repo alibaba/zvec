@@ -20,9 +20,9 @@ SQLInfo::Ptr QueryParser::parse(const std::string &query) {
   ZVecSQLParser se_sql_parser_;
 
   SQLInfo::Ptr sql_info = se_sql_parser_.parse(query);
-  if (sql_info == NULL) {
+  if (sql_info == nullptr) {
     err_msg_ = se_sql_parser_.err_msg();
-    return NULL;
+    return nullptr;
   }
 
   return sql_info;

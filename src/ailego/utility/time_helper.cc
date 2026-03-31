@@ -176,13 +176,13 @@ size_t Realtime::Gmtime(uint64_t stamp, const char *format, char *buf,
 
 size_t Realtime::Localtime(const char *format, char *buf, size_t len) {
   struct tm tmbuf;
-  time_t now = time(0);
+  time_t now = time(nullptr);
   return strftime(buf, len, format, localtime_r(&now, &tmbuf));
 }
 
 size_t Realtime::Gmtime(const char *format, char *buf, size_t len) {
   struct tm tmbuf;
-  time_t now = time(0);
+  time_t now = time(nullptr);
   return strftime(buf, len, format, gmtime_r(&now, &tmbuf));
 }
 

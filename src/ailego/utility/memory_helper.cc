@@ -253,7 +253,7 @@ size_t MemoryHelper::TotalRamSize(void) {
   int mib[2] = {CTL_HW, HW_MEMSIZE};
   uint64_t size = 0;
   size_t len = sizeof(size);
-  if (sysctl(mib, 2, &size, &len, 0, 0) != 0) {
+  if (sysctl(mib, 2, &size, &len, nullptr, 0) != 0) {
     return 0;
   }
   return (size_t)size;
