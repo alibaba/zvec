@@ -2755,7 +2755,9 @@ class JsonParser {
 
   //! Constructor
   JsonParser(void)
-      : state_(mod_json_state_null), error_(mod_json_error_null), context_(nullptr) {
+      : state_(mod_json_state_null),
+        error_(mod_json_error_null),
+        context_(nullptr) {
     option_.options = 0;
     option_.object_depth = 0;
     option_.array_depth = 0;
