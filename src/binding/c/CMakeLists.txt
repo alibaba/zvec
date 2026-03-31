@@ -85,17 +85,7 @@ set_target_properties(zvec_c_api PROPERTIES
 
 find_package(Threads REQUIRED)
 
-# Determine C++ standard library for linking
-if(MSVC)
-    # MSVC: C++ runtime is linked automatically, no need for explicit stdc++
-    set(ZVEC_CXX_STD_LIB "")
-elseif(APPLE)
-    # macOS: Use libc++ (Clang's standard library)
-    set(ZVEC_CXX_STD_LIB "c++")
-else()
-    # Linux/Unix: Use libstdc++ (GCC's standard library)
-    set(ZVEC_CXX_STD_LIB "stdc++")
-endif()
+# Static linking of C++ standard library is handled in platform-specific sections
 
 # Determine whole-archive flag for current platform
 if(MSVC)
@@ -169,11 +159,12 @@ elseif(APPLE)
             zvec_ailego
             zvec_turbo
             roaring
-            # Explicitly link C++ standard library for cross-platform compatibility
-            ${ZVEC_CXX_STD_LIB}
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
+    
+    # Optional: Static link libc++ for better portability (uncomment if needed)
+    # target_link_options(zvec_c_api PRIVATE -static-libstdc++)
 
 else()
     # Linux and other Unix-like systems
@@ -191,10 +182,14 @@ else()
             ${ZVEC_WHOLE_ARCHIVE_PREFIX}
                 roaring
             ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
-            # Explicitly link C++ standard library for cross-platform compatibility
-            ${ZVEC_CXX_STD_LIB}
             Threads::Threads
             ${CMAKE_DL_LIBS}
+    )
+    
+    # Static link libstdc++ to avoid runtime dependency
+    # Must be done in target_link_options to ensure correct order
+    target_link_options(zvec_c_api PRIVATE
+        -static-libstdc++
     )
 endif()
 
