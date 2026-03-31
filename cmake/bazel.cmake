@@ -413,7 +413,7 @@ else()
   unset(_COMPILER_FLAGS)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
   # Build shared library as default
-  set(BUILD_SHARED_LIBS ON)
+  #  set(BUILD_SHARED_LIBS ON)
 endif()
 
 set(CMAKE_C_FLAGS_ASAN ${CMAKE_C_FLAGS_DEBUG})
