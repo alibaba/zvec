@@ -190,6 +190,7 @@ else()
     # Must be done in target_link_options to ensure correct order
     target_link_options(zvec_c_api PRIVATE
         -static-libstdc++
+        -static-libgcc
     )
 endif()
 
@@ -208,6 +209,23 @@ target_compile_options(zvec_c_api PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
     $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Wpedantic>
 )
+
+# Strip symbols in release builds to reduce library size
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(UNIX AND NOT APPLE)
+        # Linux: Use strip command to remove symbols
+        add_custom_command(TARGET zvec_c_api POST_BUILD
+            COMMAND ${CMAKE_STRIP} $<TARGET_FILE:zvec_c_api>
+            COMMENT "Stripping symbols from libzvec_c_api.so to reduce size"
+        )
+    elseif(APPLE)
+        # macOS: Use strip with platform-specific flags
+        add_custom_command(TARGET zvec_c_api POST_BUILD
+            COMMAND /usr/bin/strip -x $<TARGET_FILE:zvec_c_api>
+            COMMENT "Stripping symbols from libzvec_c_api.dylib to reduce size"
+        )
+    endif()
+endif()
 
 # =============================================================================
 # Installation Rules
