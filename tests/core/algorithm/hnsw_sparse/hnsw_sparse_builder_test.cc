@@ -18,6 +18,7 @@
 #include <future>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include "tests/test_util.h"
 #include "zvec/core/framework/index_framework.h"
 #include "hnsw_sparse_params.h"
 
@@ -42,7 +43,7 @@ class HnswSparseBuilderTest : public testing::Test {
   static shared_ptr<IndexMeta> _index_meta_ptr;
 };
 
-std::string HnswSparseBuilderTest::_dir("HnswSparseBuilderTest");
+std::string HnswSparseBuilderTest::_dir("HnswSparseBuilderTest/");
 shared_ptr<IndexMeta> HnswSparseBuilderTest::_index_meta_ptr;
 
 void HnswSparseBuilderTest::SetUp(void) {
@@ -52,9 +53,7 @@ void HnswSparseBuilderTest::SetUp(void) {
 }
 
 void HnswSparseBuilderTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", _dir.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(_dir);
 }
 
 TEST_F(HnswSparseBuilderTest, TestGeneral) {
@@ -92,7 +91,7 @@ TEST_F(HnswSparseBuilderTest, TestGeneral) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestGeneral";
+  string path = _dir + "TestGeneral";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -230,7 +229,7 @@ TEST_F(HnswSparseBuilderTest, TestIndexThreads) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestIndexThreads";
+  string path = _dir + "TestIndexThreads";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder1->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -289,7 +288,7 @@ TEST_F(HnswSparseBuilderTest, TestHalfFloatConverter) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestHalFloatConverter";
+  string path = _dir + "TestHalFloatConverter";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -385,7 +384,7 @@ TEST_F(HnswSparseBuilderTest, TestIndptr) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestIndptr";
+  string path = _dir + "TestIndptr";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -447,7 +446,7 @@ TEST_F(HnswSparseBuilderTest, TestIndptrFp16) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestIndptrFp16";
+  string path = _dir + "TestIndptrFp16";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());

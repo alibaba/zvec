@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "hnsw_sparse_entity.h"
+#include <numeric>
 
 namespace zvec {
 namespace core {
@@ -381,6 +382,7 @@ int64_t HnswSparseEntity::dump_upper_neighbors(
   size_t offset = 0;
   uint32_t crc = 0;
   std::vector<node_id_t> buffer(upper_neighbor_cnt() + 1);
+  size_t buffer_bytes = buffer.size() * sizeof(node_id_t);
   for (node_id_t id = 0; id < doc_cnt(); ++id) {
     node_id_t new_id = reorder_mapping.empty() ? id : reorder_mapping[id];
     auto level = get_level(new_id);
@@ -395,7 +397,7 @@ int64_t HnswSparseEntity::dump_upper_neighbors(
       ailego_assert_with(!!neighbors.data, "invalid neighbors");
       ailego_assert_with(neighbors.size() <= neighbor_cnt(cur_level),
                          "invalid neighbors");
-      memset(buffer.data(), 0, sizeof(node_id_t) * buffer.size());
+      memset(buffer.data(), 0, buffer_bytes);
       buffer[0] = neighbors.size();
       if (neighbor_mapping.empty()) {
         memcpy(&buffer[1], &neighbors[0], neighbors.size() * sizeof(node_id_t));
@@ -404,15 +406,13 @@ int64_t HnswSparseEntity::dump_upper_neighbors(
           buffer[i + 1] = neighbor_mapping[neighbors[i]];
         }
       }
-      if (dumper->write(buffer.data(), sizeof(node_id_t) * buffer.size()) !=
-          sizeof(node_id_t) * buffer.size()) {
+      if (dumper->write(buffer.data(), buffer_bytes) != buffer_bytes) {
         LOG_ERROR("Dump graph neighbor id=%u failed, size %lu", id,
-                  sizeof(node_id_t) * buffer.size());
+                  buffer_bytes);
         return IndexError_WriteData;
       }
-      crc = ailego::Crc32c::Hash(buffer.data(),
-                                 sizeof(node_id_t) * buffer.size(), crc);
-      offset += sizeof(node_id_t) * buffer.size();
+      crc = ailego::Crc32c::Hash(buffer.data(), buffer_bytes, crc);
+      offset += buffer_bytes;
     }
   }
   size_t padding_size = 0;

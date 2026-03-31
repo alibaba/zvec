@@ -17,6 +17,7 @@
 #include <cstring>
 #include <regex>
 #include <stdexcept>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/db/doc.h>
 #include "db/common/constants.h"
 #include "db/index/common/type_helper.h"
@@ -117,16 +118,16 @@ template <typename T>
 T byte_swap(T value) {
   if constexpr (std::is_same_v<T, float16_t>) {
     uint16_t val = *reinterpret_cast<uint16_t *>(&value);
-    val = __builtin_bswap16(val);
+    val = ailego_bswap16(val);
     return *reinterpret_cast<float16_t *>(&val);
   } else if constexpr (sizeof(T) == 1) {
     return value;
   } else if constexpr (sizeof(T) == 2) {
     return (value << 8) | ((value >> 8) & 0xFF);
   } else if constexpr (sizeof(T) == 4) {
-    return __builtin_bswap32(value);
+    return static_cast<T>(ailego_bswap32(static_cast<uint32_t>(value)));
   } else if constexpr (sizeof(T) == 8) {
-    return __builtin_bswap64(value);
+    return static_cast<T>(ailego_bswap64(static_cast<uint64_t>(value)));
   } else {
     T result = 0;
     for (size_t i = 0; i < sizeof(T); ++i) {

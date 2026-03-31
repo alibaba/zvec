@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 namespace zvec::sqlengine {
 

@@ -18,11 +18,26 @@ if(APPLE)
 endif()
 
 file(GLOB_RECURSE ALL_TEST_SRCS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *_test.cc)
+
+if(MSVC)
+  #TODO(windows): should include these UTs
+  set(_MSVC_EXCLUDE_TESTS
+    "storage/mmap_store_test.cc"
+    "storage/mem_store_test.cc"
+    "column/inverted_column/inverted_indexer_util_test.cc"
+    "segment/segment_test.cc"
+  )
+  foreach(_excl ${_MSVC_EXCLUDE_TESTS})
+    list(FILTER ALL_TEST_SRCS EXCLUDE REGEX "${_excl}")
+  endforeach()
+endif()
+
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
   cc_gmock(
     NAME ${CC_TARGET} STRICT
     LIBS zvec_db
+    zvec_ailego
     zvec_proto
     core_metric_static
     core_utility_static

@@ -313,13 +313,17 @@ Status CollectionImpl::Close() {
 }
 
 Status CollectionImpl::close_unsafe() {
+  Status result = Status::OK();
+
   // flush
   if (!options_.read_only_) {
     auto s = flush_unsafe();
-    CHECK_RETURN_STATUS(s);
+    if (!s.ok()) {
+      result = s;
+    }
   }
 
-  // reset
+  // always release resources regardless of flush outcome
   writing_segment_.reset();
   segment_manager_.reset();
   version_manager_.reset();
@@ -328,7 +332,7 @@ Status CollectionImpl::close_unsafe() {
 
   lock_file_.close();
 
-  return Status::OK();
+  return result;
 }
 
 Status CollectionImpl::Destroy() {

@@ -14,6 +14,7 @@
 #include "combined_vector_column_indexer.h"
 #include <algorithm>
 #include <cstdint>
+#include <numeric>
 
 namespace zvec {
 

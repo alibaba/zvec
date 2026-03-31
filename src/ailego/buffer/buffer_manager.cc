@@ -103,7 +103,7 @@ struct BufferManager::BufferContext {
 
   ~BufferContext() {
     if (vector) {
-      free(vector);
+      ailego_aligned_free(vector);
     }
   }
 
@@ -256,15 +256,15 @@ bool BufferManager::BufferContext::read_vector() {
   }
   AILEGO_DEFER([this] { file.close(); });
   uint32_t len = id.vector().length;
-  auto ret = posix_memalign((void **)&vector, 64, len);  // 64-byte alignment
-  if (ret != 0 || vector == nullptr) {
+  vector = (uint8_t *)ailego_aligned_malloc(len, 64);  // 64-byte alignment
+  if (vector == nullptr) {
     LOG_ERROR("Failed to allocate buffer for file[%s]", file_name.c_str());
     return false;
   }
   uint32_t offset = id.vector().offset;
   if (file.read(offset, vector, len) != len) {
     LOG_ERROR("Failed to read file[%s]", file_name.c_str());
-    free(vector);
+    ailego_aligned_free(vector);
     vector = nullptr;
     return false;
   }
@@ -390,7 +390,7 @@ class BufferManager::BufferPool {
       if (victim->id.type == BufferID::TYPE::PARQUET) {
         victim->arrow_refs.clear();
       } else {
-        free(victim->vector);
+        ailego_aligned_free(victim->vector);
         victim->vector = nullptr;
       }
       victim->state = BufferContext::State::IDLE;
@@ -585,10 +585,15 @@ uint64_t BufferManager::total_size_in_bytes() const {
 }
 
 
-BufferManager::~BufferManager() {
+void BufferManager::cleanup() {
   for (auto pool : pools_) {
     delete pool;
   }
+  pools_.clear();
+}
+
+BufferManager::~BufferManager() {
+  cleanup();
 }
 
 

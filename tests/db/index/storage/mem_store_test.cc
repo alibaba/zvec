@@ -807,12 +807,13 @@ TEST_F(MemStoreTest, ThreadSafety) {
   std::vector<std::future<void>> futures;
 
   for (int t = 0; t < num_threads; ++t) {
-    futures.push_back(std::async(std::launch::async, [this, t]() {
-      for (int i = 0; i < inserts_per_thread; ++i) {
-        uint64_t doc_id = t * inserts_per_thread + i;
-        store_->insert(CreateDoc(doc_id));
-      }
-    }));
+    futures.push_back(
+        std::async(std::launch::async, [this, t, inserts_per_thread]() {
+          for (int i = 0; i < inserts_per_thread; ++i) {
+            uint64_t doc_id = t * inserts_per_thread + i;
+            store_->insert(CreateDoc(doc_id));
+          }
+        }));
   }
 
   // Wait for all threads to complete

@@ -56,6 +56,28 @@ elseif (APPLE)
     target_link_libraries(_zvec PRIVATE
             -Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports.mac
     )
+elseif (MSVC)
+    set(_zvec_whole_archive_libs
+            core_knn_flat_static
+            core_knn_flat_sparse_static
+            core_knn_hnsw_static
+            core_knn_hnsw_sparse_static
+            core_knn_ivf_static
+            core_knn_cluster_static
+            core_mix_reducer_static
+            core_metric_static
+            core_utility_static
+            core_quantizer_static
+    )
+    target_link_libraries(_zvec PRIVATE
+            ${_zvec_whole_archive_libs}
+            zvec_db
+    )
+    foreach(_lib ${_zvec_whole_archive_libs})
+        target_link_options(_zvec PRIVATE
+                "/WHOLEARCHIVE:$<TARGET_FILE:${_lib}>"
+        )
+    endforeach()
 endif ()
 
 target_include_directories(_zvec PRIVATE ${PYBIND11_INCLUDE_DIR} ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/binding/python/include)

@@ -41,7 +41,6 @@ struct LinearIndexHeader {
         block_count(0),
         index_meta_size(0) {
     memset(reserved_, 0, sizeof(reserved_));
-    memset(index_meta, 0, sizeof(index_meta));
   }
   uint32_t header_size{0};
   uint32_t total_vector_count{0};
@@ -52,7 +51,11 @@ struct LinearIndexHeader {
   uint32_t block_count{0};
   uint32_t index_meta_size{0};
   char reserved_[28] = {0};
+#ifdef _MSC_VER
+  char index_meta[];
+#else
   char index_meta[0];
+#endif
 };
 
 /*! Index Format of Linear Index Meta for each Linear list

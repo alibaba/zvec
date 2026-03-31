@@ -19,9 +19,9 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|x64")
+    if(HOST_ARCH MATCHES "^(x86|x64)$")
         setup_compiler_march_for_x86(MATH_MARCH_FLAG_SSE MATH_MARCH_FLAG_AVX2 MATH_MARCH_FLAG_AVX512 MATH_MARCH_FLAG_AVX512FP16)
-        message(STATUS "best compiler march, sse: " ${MATH_MARCH_FLAG_SSE} ", avx2: " ${MATH_MARCH_FLAG_AVX2} ", avx512: " ${MATH_MARCH_FLAG_AVX512} ", avx512fp16: " ${MATH_MARCH_FLAG_AVX512FP16})
+        message(STATUS "best compiler march - sse: " ${MATH_MARCH_FLAG_SSE} ", avx2: " ${MATH_MARCH_FLAG_AVX2} ", avx512: " ${MATH_MARCH_FLAG_AVX512} ", avx512fp16: " ${MATH_MARCH_FLAG_AVX512FP16})
 
         file(GLOB_RECURSE MATH_FILES_SSE
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_sse.cc
@@ -90,12 +90,13 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             COMPILE_FLAGS "${MATH_MARCH_FLAG_AVX512FP16}"
         )
     endforeach()
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
-      # set(CMAKE_CXX_FLAGS "-march=armv8-a")
-      # set(CMAKE_C_FLAGS "-march=armv8-a")
-      set(MATH_MARCH_FLAG_NEON "-march=armv8-a")
+    elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
+        if(MSVC)
+            return()
+        endif()
+        set(MATH_MARCH_FLAG_NEON "-march=armv8-a")
 
-      file(GLOB_RECURSE MATH_FILES_NEON
+        file(GLOB_RECURSE MATH_FILES_NEON
           ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.cc
           ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.c
           ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
@@ -104,15 +105,15 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
           ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.c
           ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.cc
           ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.c
-      )
+        )
 
-      foreach(MATH_FILE ${MATH_FILES_NEON})
+        foreach(MATH_FILE ${MATH_FILES_NEON})
           set_source_files_properties(
               ${MATH_FILE}
               PROPERTIES
               COMPILE_FLAGS "${MATH_MARCH_FLAG_NEON}"
           )
-      endforeach()
+        endforeach()
     endif()
 endif()
 
