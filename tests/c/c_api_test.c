@@ -19,10 +19,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifdef _POSIX_C_SOURCE
-#include <sys/time.h>
+
+// Platform-specific headers
+#ifdef _WIN32
+    #include <windows.h>
+#else
+    #include <sys/time.h>
+    #include <unistd.h>
 #endif
-#include <unistd.h>
+
 #include "utils.h"
 
 // =============================================================================
@@ -4309,11 +4314,11 @@ void test_performance_benchmarks(void) {
       const size_t TOTAL_DOCS = 10000;
 
       // Test bulk insertion performance
-#ifdef _POSIX_C_SOURCE
+#ifdef _WIN32
+      clock_t start_clock = clock();
+#else
       struct timeval start_time, end_time;
       gettimeofday(&start_time, NULL);
-#else
-      clock_t start_clock = clock();
 #endif
 
       for (size_t batch_start = 0; batch_start < TOTAL_DOCS;
@@ -4357,13 +4362,13 @@ void test_performance_benchmarks(void) {
         }
       }
 
-#ifdef _POSIX_C_SOURCE
+#ifdef _WIN32
+      clock_t end_clock = clock();
+      double insert_time = ((double)(end_clock - start_clock)) / CLOCKS_PER_SEC;
+#else
       gettimeofday(&end_time, NULL);
       double insert_time = (end_time.tv_sec - start_time.tv_sec) +
                            (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
-#else
-      clock_t end_clock = clock();
-      double insert_time = ((double)(end_clock - start_clock)) / CLOCKS_PER_SEC;
 #endif
       printf("  Inserted %zu documents in %.3f seconds (%.0f docs/sec)\n",
              TOTAL_DOCS, insert_time, TOTAL_DOCS / insert_time);
@@ -4387,11 +4392,11 @@ void test_performance_benchmarks(void) {
       zvec_vector_query_set_include_doc_id(query, true);
 
       const int QUERY_COUNT = 100;
-#ifdef _POSIX_C_SOURCE
+#ifdef _WIN32
+      clock_t query_start_clock = clock();
+#else
       struct timeval query_start_time, query_end_time;
       gettimeofday(&query_start_time, NULL);
-#else
-      clock_t query_start_clock = clock();
 #endif
 
       for (int q = 0; q < QUERY_COUNT; q++) {
@@ -4405,15 +4410,15 @@ void test_performance_benchmarks(void) {
         zvec_docs_free(results, result_count);
       }
 
-#ifdef _POSIX_C_SOURCE
+#ifdef _WIN32
+      clock_t query_end_clock = clock();
+      double query_time =
+          ((double)(query_end_clock - query_start_clock)) / CLOCKS_PER_SEC;
+#else
       gettimeofday(&query_end_time, NULL);
       double query_time =
           (query_end_time.tv_sec - query_start_time.tv_sec) +
           (query_end_time.tv_usec - query_start_time.tv_usec) / 1000000.0;
-#else
-      clock_t query_end_clock = clock();
-      double query_time =
-          ((double)(query_end_clock - query_start_clock)) / CLOCKS_PER_SEC;
 #endif
       double avg_query_time =
           (query_time * 1000) / QUERY_COUNT;  // ms per query
