@@ -32,7 +32,7 @@
 
 > [!IMPORTANT]
 > **🚀 What's New in v0.3.0**
-> - **New Platforms**: Native **Windows (MSVC)** and **Android** support. Published official **Python** and **Node.js** packages
+> - **New Platforms**: Native **Windows (MSVC)** and **Android** support. Published official Windows **Python** and **Node.js** packages
 > - **Efficiency**: **RabitQ** quantization, 2x faster Buffer Manager, and **CPU Auto-Dispatch** for optimized SIMD execution.
 > - **Ecosystem**: Stabilized **C-API** for custom language bindings and **MCP/Skill** integration for AI Agents.
 > 
