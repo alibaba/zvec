@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <ailego/internal/cpu_features.h>
 #include "norm2_matrix.h"
 #include "norm_matrix_fp32.i"
 
@@ -48,11 +49,19 @@ void Norm2Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
                                     float *out) {
 #if defined(__ARM_NEON)
   NORM_FP32_1_NEON(m, dim, out, std::sqrt)
-#elif defined(__AVX512F__)
-  NORM_FP32_1_AVX512(m, dim, out, std::sqrt)
-#elif defined(__AVX__)
-  NORM_FP32_1_AVX(m, dim, out, std::sqrt)
 #else
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    NORM_FP32_1_AVX512(m, dim, out, std::sqrt)
+    return;
+  }
+#endif
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    NORM_FP32_1_AVX(m, dim, out, std::sqrt)
+    return;
+  }
+#endif
   NORM_FP32_1_SSE(m, dim, out, std::sqrt)
 #endif
 }
@@ -62,11 +71,19 @@ void SquaredNorm2Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
                                            float *out) {
 #if defined(__ARM_NEON)
   NORM_FP32_1_NEON(m, dim, out, )
-#elif defined(__AVX512F__)
-  NORM_FP32_1_AVX512(m, dim, out, )
-#elif defined(__AVX__)
-  NORM_FP32_1_AVX(m, dim, out, )
 #else
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    NORM_FP32_1_AVX512(m, dim, out, )
+    return;
+  }
+#endif
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    NORM_FP32_1_AVX(m, dim, out, )
+    return;
+  }
+#endif
   NORM_FP32_1_SSE(m, dim, out, )
 #endif
 }

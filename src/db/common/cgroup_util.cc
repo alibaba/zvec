@@ -75,6 +75,8 @@ uint64_t CgroupUtil::getUptime() {
     time_t csec = time(NULL);
     return csec - bsec;
   }
+#elif defined(PLATFORM_WINDOWS)
+  return GetTickCount64() / 1000;
 #endif
   return 0;
 }
@@ -94,6 +96,13 @@ void CgroupUtil::updateCpuCores() {
   }
 #elif defined(PLATFORM_LINUX)
   cpu_cores_ = sysconf(_SC_NPROCESSORS_ONLN);
+  if (cpu_cores_ <= 0) {
+    cpu_cores_ = 1;
+  }
+#elif defined(PLATFORM_WINDOWS)
+  SYSTEM_INFO sysinfo;
+  GetSystemInfo(&sysinfo);
+  cpu_cores_ = static_cast<int>(sysinfo.dwNumberOfProcessors);
   if (cpu_cores_ <= 0) {
     cpu_cores_ = 1;
   }
@@ -159,6 +168,14 @@ void CgroupUtil::updateMemoryLimit() {
   long page_size = sysconf(_SC_PAGE_SIZE);
   if (pages > 0 && page_size > 0) {
     memory_limit_ = static_cast<uint64_t>(pages) * page_size;
+  } else {
+    memory_limit_ = 0;
+  }
+#elif defined(PLATFORM_WINDOWS)
+  MEMORYSTATUSEX statex;
+  statex.dwLength = sizeof(statex);
+  if (GlobalMemoryStatusEx(&statex)) {
+    memory_limit_ = statex.ullTotalPhys;
   } else {
     memory_limit_ = 0;
   }
@@ -253,6 +270,15 @@ uint64_t CgroupUtil::getCurrentMemoryUsage() {
   return readMemoryUsageProc();
 #elif defined(PLATFORM_MACOS)
   return getMacOSMemoryUsage();
+#elif defined(PLATFORM_WINDOWS)
+  MEMORYSTATUSEX statex;
+  statex.dwLength = sizeof(statex);
+  if (GlobalMemoryStatusEx(&statex)) {
+    return statex.ullTotalPhys - statex.ullAvailPhys;
+  }
+  return 0;
+#else
+  return 0;
 #endif
 }
 
@@ -369,8 +395,9 @@ double CgroupUtil::calculateCpuUsage() {
   return calculateLinuxCpuUsage();
 #elif defined(PLATFORM_MACOS)
   return calculateMacOSCpuUsage();
-#endif
+#else
   return 0.0;
+#endif
 }
 
 #if defined(PLATFORM_LINUX)

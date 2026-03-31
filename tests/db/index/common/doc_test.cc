@@ -1255,7 +1255,7 @@ TEST(VectorQuery, Validate) {
     VectorQuery query;
     query.field_name_ = "field_name";
     query.topk_ = 100;
-    std::vector<uint32_t> query_indices = std::vector<uint32_t>(4097);
+    std::vector<uint32_t> query_indices = std::vector<uint32_t>(16385);
     std::string query_indices_str =
         std::string(reinterpret_cast<char *>(query_indices.data()),
                     query_indices.size() * sizeof(uint32_t));

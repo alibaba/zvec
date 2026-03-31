@@ -18,6 +18,10 @@
 #include <zvec/core/framework/index_mapping.h>
 #include "ailego/utility/memory_helper.h"
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <Windows.h>
+#endif
+
 #ifdef __linux__
 #include <sys/statfs.h>
 #include <sys/vfs.h>
@@ -89,8 +93,13 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) {
 
   bool read_only = copy_on_write_ && !full_mode_;
   if (!file_.open(path.c_str(), read_only, false)) {
+#if defined(_WIN32) || defined(_WIN64)
+    LOG_ERROR("Failed to open file %s, win32 error %lu", path.c_str(),
+              GetLastError());
+#else
     LOG_ERROR("Failed to open file %s, errno %d, %s", path.c_str(), errno,
               std::strerror(errno));
+#endif
     return IndexError_OpenFile;
   }
 

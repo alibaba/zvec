@@ -411,8 +411,9 @@ bool File::create(const char *path, size_t len, bool direct) {
 
   // Try opening or creating the file
   HANDLE file_handle =
-      CreateFileA(path, GENERIC_WRITE | GENERIC_READ, FILE_SHARE_READ, nullptr,
-                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      CreateFileA(path, GENERIC_WRITE | GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   ailego_false_if_false(file_handle != INVALID_HANDLE_VALUE);
 
   // Truncate the file to the specified size
@@ -432,7 +433,8 @@ bool File::create(const char *path, size_t len, bool direct) {
     // Close and reopen file
     CloseHandle(file_handle);
     file_handle = CreateFileA(
-        path, GENERIC_WRITE | GENERIC_READ, FILE_SHARE_READ, nullptr,
+        path, GENERIC_WRITE | GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING, nullptr);
     ailego_false_if_false(file_handle != INVALID_HANDLE_VALUE);
   }
@@ -453,7 +455,8 @@ bool File::open(const char *path, bool rdonly, bool direct) {
   }
   HANDLE file_handle =
       CreateFileA(path, (rdonly ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE),
-                  FILE_SHARE_READ, nullptr, OPEN_EXISTING, flags, nullptr);
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, flags, nullptr);
   ailego_false_if_false(file_handle != INVALID_HANDLE_VALUE);
 
   read_only_ = rdonly;
@@ -639,14 +642,28 @@ ssize_t File::offset(void) const {
 }
 
 void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
-  LARGE_INTEGER file_size;
-  file_size.QuadPart = len;
+  // Root cause: Windows MapViewOfFile requires the file offset to be aligned to
+  // the allocation granularity (64 KB), but segment offsets were only
+  // page-aligned (4 KB). Also, CreateFileMapping was using len instead of
+  // off + len as the max size.
+  //
+  // Fix: Align the view offset down to allocation granularity, adjust the map
+  // length, and return base + excess. MemoryUnmap recovers the base by rounding
+  // down to granularity.
 
-  // Create map object
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  DWORD granularity = si.dwAllocationGranularity;
+  ssize_t aligned_off = (off / (ssize_t)granularity) * (ssize_t)granularity;
+  size_t excess = (size_t)(off - aligned_off);
+
+  LARGE_INTEGER max_size;
+  max_size.QuadPart = off + len;
+
   HANDLE file_mapping = CreateFileMapping(
       handle, nullptr,
       ((opts & File::MMAP_READONLY) ? PAGE_READONLY : PAGE_READWRITE),
-      file_size.HighPart, file_size.LowPart, nullptr);
+      max_size.HighPart, max_size.LowPart, nullptr);
   ailego_null_if_false(file_mapping != nullptr);
 
   DWORD desired_access = FILE_MAP_READ;
@@ -656,13 +673,29 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   if (!(opts & File::MMAP_SHARED)) {
     desired_access |= FILE_MAP_COPY;
   }
-  file_size.QuadPart = off;
 
-  // Map the whole file to memory and close handle
-  void *addr = MapViewOfFile(file_mapping, desired_access, file_size.HighPart,
-                             file_size.LowPart, 0);
+  LARGE_INTEGER view_offset;
+  view_offset.QuadPart = aligned_off;
+  size_t view_len = len + excess;
+
+  void *base = MapViewOfFile(file_mapping, desired_access, view_offset.HighPart,
+                             view_offset.LowPart, view_len);
   CloseHandle(file_mapping);
 
+  ailego_null_if_false(base);
+  void *addr = (char *)base + excess;
+  if (opts & File::MMAP_LOCKED) {
+    VirtualLock(addr, len);
+  }
+  if (opts & File::MMAP_WARMUP) {
+    File::MemoryWarmup(addr, len);
+  }
+  return addr;
+}
+
+void *File::MemoryMap(size_t len, int opts) {
+  void *addr =
+      VirtualAlloc(nullptr, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   ailego_null_if_false(addr);
   if (opts & File::MMAP_LOCKED) {
     VirtualLock(addr, len);
@@ -673,17 +706,20 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   return addr;
 }
 
-void *File::MemoryMap(size_t, int) {
-  return nullptr;
-}
-
 void *File::MemoryRemap(void *, size_t, void *, size_t) {
   return nullptr;
 }
 
 void File::MemoryUnmap(void *addr, size_t /*len*/) {
   ailego_return_if_false(addr);
-  UnmapViewOfFile(addr);
+  MEMORY_BASIC_INFORMATION mbi;
+  if (VirtualQuery(addr, &mbi, sizeof(mbi))) {
+    if (mbi.Type == MEM_MAPPED) {
+      UnmapViewOfFile(mbi.AllocationBase);
+    } else {
+      VirtualFree(mbi.AllocationBase, 0, MEM_RELEASE);
+    }
+  }
 }
 
 bool File::MemoryFlush(void *addr, size_t /*len*/) {

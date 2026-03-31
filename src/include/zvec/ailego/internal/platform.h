@@ -44,6 +44,39 @@
 #endif
 #endif
 
+//! MSVC platform compatibility (before extern "C" so available in C++)
+#if defined(_MSC_VER)
+
+#if !defined(S_ISDIR)
+#define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
+#endif
+
+#if !defined(_SSIZE_T_DEFINED)
+#define _SSIZE_T_DEFINED
+typedef intptr_t ssize_t;
+#endif
+
+#if !defined(_ID_T_DEFINED)
+#define _ID_T_DEFINED
+typedef unsigned int id_t;
+#endif
+
+#include <stdlib.h>
+#define ailego_bswap16(x) _byteswap_ushort(x)
+#define ailego_bswap32(x) _byteswap_ulong(x)
+#define ailego_bswap64(x) _byteswap_uint64(x)
+
+#define strncasecmp _strnicmp
+
+#else  // !_MSC_VER
+
+#define ailego_bswap16(x) __builtin_bswap16(x)
+#define ailego_bswap32(x) __builtin_bswap32(x)
+#define ailego_bswap64(x) __builtin_bswap64(x)
+
+#endif  // _MSC_VER
+
+
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -102,11 +135,6 @@ extern "C" {
 #if !defined(inline)
 #define inline __inline
 #endif
-#endif
-
-//! Add 'ssize_t' for MSVC
-#if defined(_MSC_VER)
-typedef intptr_t ssize_t;
 #endif
 
 #if defined(_MSC_VER)
@@ -174,7 +202,7 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_likely(x) (x)
 #define ailego_unlikely(x) (x)
 #ifdef __SSE__
-#define ailego_prefetch(p) _mm_prefetch((p), 0)
+#define ailego_prefetch(p) _mm_prefetch((const char *)(p), 0)
 #else
 #define ailego_prefetch(p) ((void)(p))
 #endif
@@ -476,11 +504,11 @@ static inline void ailego_assert_report(const char *file, const char *func,
 // is undefined (on arm, result will be zero), it's necessary to convert it
 // to signed integer firstly
 static inline uint8_t static_cast_from_float_to_uint8(float data) {
-  return static_cast<uint8_t>(static_cast<int8_t>(data));
+  return static_cast<uint8_t>(static_cast<int32_t>(data));
 }
 
 static inline uint16_t static_cast_from_float_to_uint16(float data) {
-  return static_cast<uint16_t>(static_cast<int16_t>(data));
+  return static_cast<uint16_t>(static_cast<int32_t>(data));
 }
 
 #ifdef __cplusplus

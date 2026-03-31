@@ -7,10 +7,11 @@
 
 <p align="center">
   <a href="https://codecov.io/github/alibaba/zvec"><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66" alt="Code Coverage"/></a>
-  <a href="https://github.com/alibaba/zvec/actions/workflows/main.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/main.yml/badge.svg?branch=main" alt="Main"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/pyversions/zvec.svg" alt="Python Versions"/></a>
+  <a href="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml/badge.svg?branch=main" alt="Main"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
+  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
+  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/badge/python-3.10%20~%203.14-blue.svg" alt="Python Versions"/></a>
+  <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec.svg" alt="npm Release"/></a>
 </p>
 
 <p align="center">
@@ -22,7 +23,9 @@
   <a href="https://zvec.org/en/">🏠 <strong>Home</strong> </a> |
   <a href="https://zvec.org/en/docs/">📚 <strong>Docs</strong> </a> |
   <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>Benchmarks</strong> </a> |
-  <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a>
+  <a href="https://deepwiki.com/alibaba/zvec">🔎 <strong>DeepWiki</strong> </a> |
+  <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a> |
+  <a href="https://x.com/ZvecAI">🐦 <strong>X (Twitter)</strong> </a>
 </p>
 
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Built on **Proxima** (Alibaba's battle-tested vector search engine), it delivers production-grade, low-latency, scalable similarity search with minimal setup.
@@ -39,7 +42,7 @@
 
 ### [Python](https://pypi.org/project/zvec/)
 
-**Requirements**: Python 3.10 - 3.12
+**Requirements**: Python 3.10 - 3.14
 
 ```bash
 pip install zvec
@@ -106,10 +109,10 @@ Stay updated and get support — scan or click:
 
 <div align="center">
 
-| 💬 DingTalk | 📱 WeChat | 🎮 Discord |
-|:---:|:---:|:---:|
-| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=2" width="150"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) |
-| Scan to join | Scan to join | Click to join |
+| 💬 DingTalk | 📱 WeChat | 🎮 Discord | X (Twitter) |
+| :---: | :---: | :---: | :---: |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="DingTalk QR Code"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=4" width="150" alt="WeChat QR Code"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| Scan to join | Scan to join | Click to join | Click to follow |
 
 </div>
 

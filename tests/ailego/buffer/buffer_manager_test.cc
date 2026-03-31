@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/ailego/logger/logger.h>
+#include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -35,9 +36,7 @@ class BufferManagerTest : public testing::Test {
   /*****  Global initialization and cleanup - Start  *****/
  public:
   static void SetUpTestCase() {
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -rf %s", working_dir.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestPath(working_dir);
 
     if (!File::MakePath(working_dir)) {
       LOG_ERROR("Failed to create working directory.");
@@ -59,7 +58,10 @@ class BufferManagerTest : public testing::Test {
     BufferManager::Instance().init(4 * 1024 * 1024, 1);
   }
 
-  static void TearDownTestCase() {}
+  static void TearDownTestCase() {
+    BufferManager::Instance().cleanup();
+    zvec::test_util::RemoveTestPath(working_dir);
+  }
   /*****  Global initialization and cleanup - End  *****/
   ;
 };

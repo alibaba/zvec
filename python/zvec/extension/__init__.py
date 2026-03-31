@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from .bm25_embedding_function import BM25EmbeddingFunction
 from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
+from .http_embedding_function import HTTPDenseEmbedding
 from .jina_embedding_function import JinaDenseEmbedding
 from .jina_function import JinaFunctionBase
 from .multi_vector_reranker import RrfReRanker, WeightedReRanker
@@ -37,6 +38,7 @@ __all__ = [
     "DefaultLocalReRanker",
     "DefaultLocalSparseEmbedding",
     "DenseEmbeddingFunction",
+    "HTTPDenseEmbedding",
     "JinaDenseEmbedding",
     "JinaFunctionBase",
     "OpenAIDenseEmbedding",

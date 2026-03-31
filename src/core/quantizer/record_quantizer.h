@@ -74,10 +74,16 @@ class RecordQuantizer {
       extras[0] = 1.0f / scale;
       extras[1] = -bias / scale;
       extras[2] = sum;
-      if (is_euclidean) {
+
+      if (type == IndexMeta::DataType::DT_INT8) {
         extras[3] = squared_sum;
+        reinterpret_cast<int32_t *>(extras + 4)[0] = int8_sum;
       } else {
-        reinterpret_cast<int *>(extras)[3] = int8_sum;
+        if (is_euclidean) {
+          extras[3] = squared_sum;
+        } else {
+          reinterpret_cast<int *>(extras)[3] = int8_sum;
+        }
       }
     }
   }

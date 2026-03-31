@@ -143,8 +143,9 @@ class IndexLoggerBroker {
   }
 
   //! Log Message
-  __attribute__((format(printf, 4, 5))) static void Log(
-      int level, const char *file, int line, const char *format, ...) {
+  AILEGO_PRINTF_FORMAT(4, 5)
+  static void Log(int level, const char *file, int line, const char *format,
+                  ...) {
     if (IsLevelEnabled(level)) {
       va_list args;
       va_start(args, format);

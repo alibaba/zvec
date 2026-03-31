@@ -279,7 +279,7 @@ class IntegerStreamingReformer : public IndexReformer {
   //! Constructor
   IntegerStreamingReformer(IndexMeta::DataType dst_type)
       : data_type_(dst_type),
-        extra_dimension_(data_type_ == IndexMeta::DataType::DT_INT8 ? 16 : 32) {
+        extra_dimension_(data_type_ == IndexMeta::DataType::DT_INT8 ? 20 : 32) {
   }
 
   //! Initialize Reformer

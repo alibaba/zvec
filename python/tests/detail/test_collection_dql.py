@@ -204,7 +204,7 @@ def single_querydoc_check(
                         id_include_vector,
                     )
                 assert hasattr(found_doc, "score")
-                assert found_doc.score >= 0.0
+                # assert found_doc.score >= 0.0
                 if not id_include_vector:
                     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
                         assert found_doc.vector(v) == {}

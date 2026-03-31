@@ -199,7 +199,7 @@ void Norm1Benchmark(void) {
   }
 
   ElapsedTime elapsed_time;
-  float results[batch_size];
+  std::vector<float> results(batch_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") INT8 " << dimension << "d, "
             << batch_size << " * " << block_size << std::endl;
@@ -251,7 +251,7 @@ void Norm2Benchmark(void) {
   }
 
   ElapsedTime elapsed_time;
-  float results[batch_size];
+  std::vector<float> results(batch_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") INT8 " << dimension << "d, "
             << batch_size << " * " << block_size << std::endl;
@@ -261,7 +261,7 @@ void Norm2Benchmark(void) {
   for (size_t i = 0; i < block_size; ++i) {
     const int8_t *matrix_batch = &matrix2[i * batch_size * dimension];
     Norm2Matrix<int8_t, batch_size>::Compute(matrix_batch, dimension,
-                                             &results[0]);
+                                             results.data());
   }
   std::cout << "* Batched Norm2 (us) \t" << elapsed_time.micro_seconds()
             << std::endl;

@@ -313,13 +313,17 @@ Status CollectionImpl::Close() {
 }
 
 Status CollectionImpl::close_unsafe() {
+  Status result = Status::OK();
+
   // flush
   if (!options_.read_only_) {
     auto s = flush_unsafe();
-    CHECK_RETURN_STATUS(s);
+    if (!s.ok()) {
+      result = s;
+    }
   }
 
-  // reset
+  // always release resources regardless of flush outcome
   writing_segment_.reset();
   segment_manager_.reset();
   version_manager_.reset();
@@ -328,7 +332,7 @@ Status CollectionImpl::close_unsafe() {
 
   lock_file_.close();
 
-  return Status::OK();
+  return result;
 }
 
 Status CollectionImpl::Destroy() {
@@ -690,13 +694,13 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   }
   new_version.reset_writing_segment_meta(writing_segment_->meta());
 
-  auto persist_semgents = get_all_persist_segments();
+  auto persist_segments = get_all_persist_segments();
 
   std::vector<SegmentTask::Ptr> tasks;
   if (is_vector_field) {
-    tasks = build_drop_vector_index_task(persist_semgents, column_name);
+    tasks = build_drop_vector_index_task(persist_segments, column_name);
   } else {
-    tasks = build_drop_scalar_index_task(persist_semgents, column_name);
+    tasks = build_drop_scalar_index_task(persist_segments, column_name);
   }
 
   if (tasks.empty()) {
@@ -958,7 +962,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
         if (current_actual_doc_count + actual_doc_count >
             max_doc_count_per_segment) {
           // only create SegmentCompactTask when rebuild=true
-          task = SegmentTask::CreateComapctTask(
+          task = SegmentTask::CreateCompactTask(
               CompactTask{path_, schema, current_group,
                           allocate_segment_id_for_tmp_segment(), filter,
                           !options_.enable_mmap_, concurrency});
@@ -972,7 +976,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
                     current_group[0], "", nullptr, concurrency});
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
-            task = SegmentTask::CreateComapctTask(
+            task = SegmentTask::CreateCompactTask(
                 CompactTask{path_, schema, current_group,
                             allocate_segment_id_for_tmp_segment(), nullptr,
                             !options_.enable_mmap_, concurrency});
@@ -1001,7 +1005,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
       task = SegmentTask::CreateCreateVectorIndexTask(
           CreateVectorIndexTask{current_group[0], "", nullptr, concurrency});
     } else {
-      task = SegmentTask::CreateComapctTask(CompactTask{
+      task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
           rebuild ? filter : nullptr, !options_.enable_mmap_, concurrency});
     }
@@ -1722,7 +1726,7 @@ Status CollectionImpl::create() {
   }
   if (ailego::FileHelper::IsExist(path_.c_str())) {
     return Status::InvalidArgument("path validate failed: path[", path_,
-                                   "] is existed");
+                                   "] exists");
   }
 
   // check schema

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <zvec/ailego/internal/platform.h>
+#include "ailego/internal/cpu_features.h"
 #include "norm1_matrix.h"
 #include "norm_matrix_fp32.i"
 
@@ -26,18 +27,15 @@ namespace ailego {
 #define NORM_FP32_STEP_NEON SA_FP32_NEON
 
 #if defined(__SSE__)
-static const __m128 ABS_MASK_FP32_SSE =
-    _mm_castsi128_ps(_mm_set1_epi32(0x7fffffffu));
+#define ABS_MASK_FP32_SSE _mm_castsi128_ps(_mm_set1_epi32(0x7fffffffu))
 #endif  // __SSE__
 
 #if defined(__AVX__)
-static const __m256 ABS_MASK_FP32_AVX =
-    _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffffu));
+#define ABS_MASK_FP32_AVX _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffffu))
 #endif  // __AVX__
 
 #if defined(__AVX512F__)
-static const __m512 ABS_MASK_FP32_AVX512 =
-    _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffffu));
+#define ABS_MASK_FP32_AVX512 _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffffu))
 #endif  // __AVX512F__
 
 //! Calculate sum of absolute (GENERAL)
@@ -64,11 +62,19 @@ void Norm1Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
                                     float *out) {
 #if defined(__ARM_NEON)
   NORM_FP32_1_NEON(m, dim, out, )
-#elif defined(__AVX512F__)
-  NORM_FP32_1_AVX512(m, dim, out, )
-#elif defined(__AVX__)
-  NORM_FP32_1_AVX(m, dim, out, )
 #else
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    NORM_FP32_1_AVX512(m, dim, out, )
+    return;
+  }
+#endif
+#if defined(__AVX__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+    NORM_FP32_1_AVX(m, dim, out, )
+    return;
+  }
+#endif
   NORM_FP32_1_SSE(m, dim, out, )
 #endif
 }

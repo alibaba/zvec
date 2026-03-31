@@ -11,6 +11,6 @@ cc_library(
          Arrow::arrow_static
          Arrow::arrow_compute
          Arrow::arrow_dataset
-    INCS .  ${CMAKE_SOURCE_DIR}/src
+    INCS .  ${PROJECT_ROOT_DIR}/src
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )

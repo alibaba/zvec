@@ -11,6 +11,7 @@
 [submodule "thirdparty/rocksdb/rocksdb-8.1.1"]
 	path = thirdparty/rocksdb/rocksdb-8.1.1
 	url = https://github.com/facebook/rocksdb.git
+	ignore = all
 [submodule "thirdparty/yaml-cpp/yaml-cpp-0.6.3"]
 	path = thirdparty/yaml-cpp/yaml-cpp-0.6.3
 	url = https://github.com/jbeder/yaml-cpp.git
@@ -39,3 +40,6 @@
 	path = thirdparty/magic_enum/magic_enum-0.9.7
 	url = https://github.com/Neargye/magic_enum.git
 	ignore = all
+[submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
+	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
+	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git

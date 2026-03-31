@@ -206,7 +206,7 @@ class CosineConverterHolder : public IndexHolder {
     if (type == IndexMeta::DataType::DT_INT4)
       return 40;  // 5 * sizeof(float) / sizeof(FT_INT4)
     else if (type == IndexMeta::DataType::DT_INT8)
-      return 20;  // 5 * sizeof(float) / sizeof(FT_INT8)
+      return 24;  // (5 * sizeof(float) + sizeof(int)) / sizeof(FT_INT8)
     else if (type == IndexMeta::DataType::DT_FP16)
       return 2;  // 2* sizeof(float) / sizeof(FT_FP16)
     else if (type == IndexMeta::DataType::DT_FP32) {
@@ -362,7 +362,7 @@ class CosineConverter : public IndexConverter {
     if (type == IndexMeta::DataType::DT_INT4)
       return 40;  // 5 * sizeof(float) / sizeof(FT_INT4)
     else if (type == IndexMeta::DataType::DT_INT8)
-      return 20;  // 5 * sizeof(float) / sizeof(FT_INT8)
+      return 24;  // (5 * sizeof(float) + sizeof(int)) / sizeof(FT_INT8)
     else if (type == IndexMeta::DataType::DT_FP16)
       return 2;  // sizeof(float) / sizeof(FT_FP16)
     else if (type == IndexMeta::DataType::DT_FP32) {

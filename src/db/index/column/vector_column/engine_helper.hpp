@@ -20,6 +20,8 @@
 #include <zvec/db/doc.h>
 #include <zvec/db/query_params.h>
 #include <zvec/db/status.h>
+#include "zvec/db/index_params.h"
+#include "zvec/db/type.h"
 #include "vector_column_params.h"
 
 
@@ -109,12 +111,14 @@ class ProximaEngineHelper {
       engine_query_param->is_linear = db_query_params.query_params->is_linear();
     }
     if (db_query_params.refiner_param) {
-      engine_query_param->refiner_param =
-          std::make_shared<core_interface::RefinerParam>(
-              core_interface::RefinerParam{
-                  .scale_factor_ = db_query_params.refiner_param->scale_factor_,
-                  .reference_index =
-                      db_query_params.refiner_param->reference_indexer->index});
+      {
+        core_interface::RefinerParam rp;
+        rp.scale_factor_ = db_query_params.refiner_param->scale_factor_;
+        rp.reference_index =
+            db_query_params.refiner_param->reference_indexer->index;
+        engine_query_param->refiner_param =
+            std::make_shared<core_interface::RefinerParam>(rp);
+      }
     }
 
     return engine_query_param;
@@ -158,6 +162,25 @@ class ProximaEngineHelper {
           auto db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
               query_params.query_params.get());
           hnsw_query_param->ef_search = db_hnsw_query_params->ef();
+        }
+        return std::move(hnsw_query_param);
+      }
+
+      case IndexType::HNSW_RABITQ: {
+        auto hnsw_query_param_result =
+            _build_common_query_param<core_interface::HNSWRabitqQueryParam>(
+                query_params);
+        if (!hnsw_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              hnsw_query_param_result.error().message()));
+        }
+        auto &hnsw_query_param = hnsw_query_param_result.value();
+        if (query_params.query_params) {
+          auto db_hnsw_rabitq_query_params =
+              dynamic_cast<const HnswRabitqQueryParams *>(
+                  query_params.query_params.get());
+          hnsw_query_param->ef_search = db_hnsw_rabitq_query_params->ef();
         }
         return std::move(hnsw_query_param);
       }
@@ -212,6 +235,8 @@ class ProximaEngineHelper {
         return core_interface::QuantizerType::kInt8;
       case QuantizeType::INT4:
         return core_interface::QuantizerType::kInt4;
+      case QuantizeType::RABITQ:
+        return core_interface::QuantizerType::kRabitq;
       default:
         return tl::make_unexpected(
             Status::InvalidArgument("unsupported quantize type"));
@@ -244,6 +269,9 @@ class ProximaEngineHelper {
   _build_common_index_param(const FieldSchema &field_schema) {
     auto db_index_params = dynamic_cast<const DBIndexParamType *>(
         field_schema.index_params().get());
+    if (db_index_params == nullptr) {
+      return tl::make_unexpected(Status::InvalidArgument("bad_cast"));
+    }
     auto index_param_builder = std::make_shared<IndexParamBuilderType>();
 
     // db will ensure the id is consecutive
@@ -318,6 +346,32 @@ class ProximaEngineHelper {
         index_param_builder->WithM(db_index_params->m());
         index_param_builder->WithEFConstruction(
             db_index_params->ef_construction());
+
+        return index_param_builder->Build();
+      }
+
+      case IndexType::HNSW_RABITQ: {
+        auto index_param_builder_result = _build_common_index_param<
+            HnswRabitqIndexParams, core_interface::HNSWRabitqIndexParamBuilder>(
+            field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const HnswRabitqIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->WithM(db_index_params->m());
+        index_param_builder->WithEFConstruction(
+            db_index_params->ef_construction());
+        index_param_builder->WithTotalBits(db_index_params->total_bits());
+        index_param_builder->WithNumClusters(db_index_params->num_clusters());
+        index_param_builder->WithSampleCount(db_index_params->sample_count());
+        index_param_builder->WithProvider(
+            db_index_params->raw_vector_provider());
+        index_param_builder->WithReformer(db_index_params->rabitq_reformer());
 
         return index_param_builder->Build();
       }

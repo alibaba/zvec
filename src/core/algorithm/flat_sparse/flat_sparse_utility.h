@@ -19,7 +19,7 @@
 namespace zvec {
 namespace core {
 
-static constexpr uint32_t PARAM_FLAT_SPARSE_MAX_DIM_SIZE = 4096;
+static constexpr uint32_t PARAM_FLAT_SPARSE_MAX_DIM_SIZE = 16384;
 static const std::string PARAM_FLAT_SPARSE_META_SEG_ID =
     "bruteforce_sparse_meta";
 

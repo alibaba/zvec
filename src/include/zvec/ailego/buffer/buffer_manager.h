@@ -179,6 +179,8 @@ class BufferManager : public Singleton<BufferManager> {
 
   uint64_t total_size_in_bytes() const;
 
+  void cleanup();
+
   ~BufferManager();
 
  private:

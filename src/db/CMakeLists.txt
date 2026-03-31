@@ -14,10 +14,11 @@ cc_directory(sqlengine)
 file(GLOB_RECURSE ALL_DB_SRCS *.cc *.c *.h)
 
 cc_library(
-  NAME zvec_db STATIC STRICT SRCS_NO_GLOB
+  NAME zvec_db STATIC STRICT SRCS_NO_GLOB PACKED
   SRCS ${ALL_DB_SRCS} ${CMAKE_CURRENT_BINARY_DIR}/proto/zvec.pb.cc
   INCS . ${CMAKE_CURRENT_BINARY_DIR}
-  LIBS 
+  PUBINCS ${PROJECT_ROOT_DIR}/src/include
+  LIBS
     zvec_ailego
     zvec_core
     glog

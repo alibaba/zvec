@@ -46,7 +46,7 @@ TEST(BinarySemaphores, General) {
   ailego::BinarySemaphores<1> sem_mutex1(sem_count);
 
   std::atomic<uint32_t> total{0u};
-  uint32_t counts[sem_count] = {0u};
+  std::vector<uint32_t> counts(sem_count, 0u);
   for (int i = 0; i < 2000; ++i) {
     pool.execute([&]() {
       int index1 = sem_mutex32.acquire();
@@ -71,7 +71,7 @@ TEST(BinarySemaphores, General2) {
   const int sem_count = 32;
   ailego::BinarySemaphores<64> sem_mutex64(sem_count);
   std::atomic<uint32_t> total{0u};
-  uint32_t counts[sem_count] = {0u};
+  std::vector<uint32_t> counts(sem_count, 0u);
   bool flag = true;
   for (int i = 0; i < 64; ++i) {
     pool.execute([&]() {

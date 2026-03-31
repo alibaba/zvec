@@ -488,7 +488,7 @@ void InnerProductBenchmark(void) {
       query1.data(), dimension / 8, &query2[0]);
 
   ElapsedTime elapsed_time;
-  float results[batch_size * query_size];
+  std::vector<float> results(batch_size * query_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") INT4 " << dimension << "d, "
             << batch_size << " * " << query_size << " * " << block_size
@@ -516,7 +516,7 @@ void InnerProductBenchmark(void) {
     const uint8_t *matrix_batch = &matrix2[i * batch_size * dimension / 2];
 
     InnerProductMatrix<uint8_t, batch_size, query_size>::Compute(
-        matrix_batch, &query2[0], dimension, results);
+        matrix_batch, &query2[0], dimension, results.data());
   }
   std::cout << "* N Batched InnerProduct (us) \t"
             << elapsed_time.micro_seconds() << std::endl;
