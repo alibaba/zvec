@@ -41,7 +41,7 @@
       "concurrency_duration": 30,
       "k": 100,
       "m": 64,
-      "ef_search": 300,
+      "ef_search": 600,
       "quantize_type": "int8"
     },
     "hnsw": {
@@ -58,9 +58,9 @@
       "args": {
         "min_vector_threshold": 100000,
         "num_training_queries": 4000,
-        "ef_training": 500,
+        "ef_training": 1000,
         "window_size": 100,
-        "ef_groundtruth": 1000
+        "ef_groundtruth": 2000
       }
     },
     "profiling": {
