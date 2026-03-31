@@ -125,3 +125,17 @@ jobs:
           ./core-example
           ./ailego-example
         shell: bash
+
+      - name: Run C Examples
+        run: |
+          cd "$GITHUB_WORKSPACE/examples/c"
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j $NPROC
+          ./c_api_basic_example
+          ./c_api_collection_schema_example
+          ./c_api_doc_example
+          ./c_api_field_schema_example
+          ./c_api_index_example
+          ./c_api_optimized_example
+        shell: bash
