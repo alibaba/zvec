@@ -34,8 +34,6 @@
 // Test helper macro definitions
 // =============================================================================
 
-#include "utils.h"
-
 // Helper function to get field count (replaces GCC-specific statement
 // expression)
 static size_t get_field_count(ZVecCollectionSchema *schema) {
