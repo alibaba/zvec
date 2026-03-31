@@ -138,7 +138,11 @@ struct HNSWHeader {
 
 struct NeighborsHeader {
   uint32_t neighbor_cnt;
+#ifdef _MSC_VER
+  node_id_t neighbors[];
+#else
   node_id_t neighbors[0];
+#endif
 };
 
 struct Neighbors {

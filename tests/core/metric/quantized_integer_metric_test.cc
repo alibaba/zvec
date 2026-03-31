@@ -251,7 +251,7 @@ void TestDistanceMatrixInt8(const std::string &metric_name) {
 
   const size_t batch_size = M;
   const size_t query_size = N;
-  size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen)*4;
+  size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen) * 4;
   auto holder = GetHolder(dimension, batch_size, dist);
   IndexMeta meta(IndexMeta::DT_FP32, dimension);
   meta.set_metric(metric_name, 0, Params());
@@ -453,7 +453,7 @@ void TestDistanceMatrixInt4(const std::string &metric_name) {
 
   const size_t batch_size = M;
   const size_t query_size = N;
-  size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen)*8;
+  size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen) * 8;
   auto holder = GetHolder(dimension, batch_size, dist);
   IndexMeta meta(IndexMeta::DT_FP32, dimension);
   meta.set_metric(metric_name, 0, Params());

@@ -1,0 +1,102 @@
+name: Windows Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  # Windows build and test matrix
+  build-and-test-windows:
+    name: Build & Test (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-2022-x64
+          - os: windows-2025
+            platform: windows-2025-x64
+
+    steps:
+      - name: Show env info
+        run: |
+          Get-CimInstance -ClassName Win32_Processor
+          where cl
+          & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -prerelease -format json
+        shell: powershell
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Cleanup left marker files
+        run: |
+          git submodule foreach --recursive 'git reset --hard && git clean -ffdx'
+        shell: powershell
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up environment variables
+        run: |
+          $nproc = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+          echo "NPROC=$nproc" >> $env:GITHUB_ENV
+          echo "Using $nproc parallel jobs for builds"
+        shell: powershell
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip `
+            pybind11==3.0 `
+            cmake==3.30.0 `
+            ninja==1.11.1 `
+            pytest `
+            scikit-build-core `
+            setuptools_scm
+        shell: powershell
+
+      - name: Build from source
+        run: |
+          cd "$env:GITHUB_WORKSPACE"
+          $env:CMAKE_GENERATOR = "Ninja"
+          $env:CMAKE_BUILD_PARALLEL_LEVEL = "$env:NPROC"
+          python -m pip install -v . `
+            --no-build-isolation `
+            --config-settings='cmake.define.BUILD_TOOLS=ON'
+        shell: powershell
+
+      - name: Run C++ Tests
+        run: |
+          cd "$env:GITHUB_WORKSPACE\build"
+          cmake --build . --target unittest --config Release --parallel $env:NPROC
+        shell: powershell
+
+      - name: Run Python Tests
+        run: |
+          cd "$env:GITHUB_WORKSPACE"
+          python -m pytest python/tests/ --basetemp=./.pytest_tmp
+        shell: powershell
+
+      - name: Run C++ Examples
+        run: |
+          cd "$env:GITHUB_WORKSPACE\examples\c++"
+          mkdir build
+          cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release --parallel $env:NPROC
+          .\db-example.exe
+          .\core-example.exe
+          .\ailego-example.exe
+        shell: powershell

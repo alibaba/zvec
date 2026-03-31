@@ -136,8 +136,8 @@ int HnswBuilderEntity::get_vector(const node_id_t *ids, uint32_t count,
 int HnswBuilderEntity::get_vector(
     const node_id_t *ids, uint32_t count,
     std::vector<IndexStorage::MemoryBlock> &vec_blocks) const {
-  const void *vecs[count];
-  get_vector(ids, count, vecs);
+  std::vector<const void *> vecs(count);
+  get_vector(ids, count, vecs.data());
   for (uint32_t i = 0; i < count; ++i) {
     vec_blocks.emplace_back(IndexStorage::MemoryBlock((void *)vecs[i]));
   }

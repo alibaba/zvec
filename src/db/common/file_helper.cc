@@ -13,14 +13,19 @@
 // limitations under the License.
 
 #include "file_helper.h"
-#include <sys/stat.h>
-#include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <string.h>
-#include <unistd.h>
 #include <algorithm>
 #include <cstdio>
+#ifdef _MSC_VER
+#include <filesystem>
+#include <fstream>
+#else
+#include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <ailego/pattern/defer.h>
 
 namespace zvec {
@@ -32,6 +37,18 @@ const std::string FileHelper::RECOVER_SUFFIX = ".recovering";
 
 bool FileHelper::CopyFile(const std::string &src_file_path,
                           const std::string &dst_file_path) {
+#ifdef _MSC_VER
+  std::string dst_file_path_tmp = dst_file_path + ".tmp";
+  std::error_code ec;
+  std::filesystem::copy_file(src_file_path, dst_file_path_tmp,
+                             std::filesystem::copy_options::overwrite_existing,
+                             ec);
+  if (ec) {
+    return false;
+  }
+  std::filesystem::rename(dst_file_path_tmp, dst_file_path, ec);
+  return !ec;
+#else
   int src_fd = open(src_file_path.c_str(), O_RDONLY, 0);
   if (src_fd < 0) {
     return false;
@@ -54,10 +71,19 @@ bool FileHelper::CopyFile(const std::string &src_file_path,
     }
   }
   return rename(dst_file_path_tmp.c_str(), dst_file_path.c_str()) == 0;
+#endif
 }
 
 bool FileHelper::CopyDirectory(const std::string &src_dir_path,
                                const std::string &dst_dir_path) {
+#ifdef _MSC_VER
+  std::error_code ec;
+  std::filesystem::copy(src_dir_path, dst_dir_path,
+                        std::filesystem::copy_options::recursive |
+                            std::filesystem::copy_options::overwrite_existing,
+                        ec);
+  return !ec;
+#else
   DIR *dir = opendir(src_dir_path.c_str());
   if (!dir) {
     return false;
@@ -91,6 +117,7 @@ bool FileHelper::CopyDirectory(const std::string &src_dir_path,
     }
   }
   return true;
+#endif
 }
 
 void FileHelper::CleanupDirectory(const std::string &backup_dir,
@@ -100,6 +127,18 @@ void FileHelper::CleanupDirectory(const std::string &backup_dir,
     return;
   }
 
+#ifdef _MSC_VER
+  size_t prefix_len = strlen(prefix_name);
+  std::vector<std::string> candidates;
+  std::error_code ec;
+  for (const auto &entry :
+       std::filesystem::directory_iterator(backup_dir, ec)) {
+    std::string name = entry.path().filename().string();
+    if (name.compare(0, prefix_len, prefix_name) == 0) {
+      candidates.emplace_back(name);
+    }
+  }
+#else
   DIR *dir = opendir(backup_dir.c_str());
   if (!dir) {
     return;
@@ -115,6 +154,7 @@ void FileHelper::CleanupDirectory(const std::string &backup_dir,
       candidates.emplace_back(dent->d_name);
     }
   }
+#endif
   if (candidates.size() <= max_backup_count) {
     return;
   }

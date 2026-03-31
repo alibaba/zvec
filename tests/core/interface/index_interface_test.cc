@@ -17,6 +17,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <gtest/gtest.h>
+#include "tests/test_util.h"
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "zvec/core/framework/index_provider.h"
@@ -37,12 +38,10 @@ using namespace zvec::core_interface;
 TEST(IndexInterface, General) {
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test.index"};
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s", index_name.c_str());
 
   auto func = [&](const BaseIndexParam::Pointer &param,
                   const BaseIndexQueryParam::Pointer &query_param) {
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_name);
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
@@ -90,7 +89,7 @@ TEST(IndexInterface, General) {
     ASSERT_FLOAT_EQ(1.0f, fetched_vector[1]);
     ASSERT_FLOAT_EQ(2.0f, fetched_vector[2]);
     index->Close();
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_name);
   };
 
 
@@ -158,13 +157,11 @@ TEST(IndexInterface, General) {
 TEST(IndexInterface, BufferGeneral) {
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test.index"};
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s*", index_name.c_str());
 
   auto func = [&](const BaseIndexParam::Pointer &param,
                   const BaseIndexQueryParam::Pointer &query_param) {
     std::string real_index_name = index_name;
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_name + "*");
     auto write_index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, write_index);
 
@@ -218,7 +215,7 @@ TEST(IndexInterface, BufferGeneral) {
     ASSERT_FLOAT_EQ(2.0f, fetched_vector[2]);
     result.doc_list_.clear();
     read_index->Close();
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_name + "*");
   };
 
 
@@ -264,18 +261,17 @@ TEST(IndexInterface, BufferGeneral) {
            .with_fetch_vector(true)
            .with_ef_search(20)
            .build());
+  zvec::ailego::BufferManager::Instance().cleanup();
 }
 
 
 TEST(IndexInterface, SparseGeneral) {
   constexpr uint32_t kSparseCount = 3;
   const std::string index_name{"test.index"};
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s", index_name.c_str());
 
   auto func = [&](const BaseIndexParam::Pointer &param,
                   const BaseIndexQueryParam::Pointer &query_param) {
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_name);
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
@@ -341,7 +337,7 @@ TEST(IndexInterface, SparseGeneral) {
       ASSERT_EQ(i, fetched_values[i]);
     }
     index->Close();
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_name);
   };
 
 
@@ -390,8 +386,7 @@ TEST(IndexInterface, Merge) {
   const std::string index_name{"test.index"};
 
   auto del_index_file_func = [&](const std::string file_name) {
-    auto cmd_buf = "rm -f " + file_name;
-    system(cmd_buf.c_str());
+    zvec::test_util::RemoveTestFiles(file_name);
   };
 
   auto create_index_func =
@@ -766,7 +761,7 @@ TEST(IndexInterface, Failure) {
     ASSERT_NE(0, ret);
 
     index->Close();
-    system("rm -f test.index");
+    zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test invalid vector data type for sparse operations
@@ -789,7 +784,7 @@ TEST(IndexInterface, Failure) {
     ASSERT_NE(0, ret);
 
     index->Close();
-    system("rm -f test.index");
+    zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test fetch non-existent document
@@ -810,7 +805,7 @@ TEST(IndexInterface, Failure) {
     ASSERT_NE(0, ret);
 
     index->Close();
-    system("rm -f test.index");
+    zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test search with invalid vector data
@@ -843,7 +838,7 @@ TEST(IndexInterface, Failure) {
     ASSERT_NE(0, ret);
 
     index->Close();
-    system("rm -f test.index");
+    zvec::test_util::RemoveTestFiles("test.index");
   }
 
   // Test merge with invalid write concurrency
@@ -887,7 +882,9 @@ TEST(IndexInterface, Failure) {
     index1->Close();
     index2->Close();
     index3->Close();
-    system("rm -f test1.index test2.index test3.index");
+    zvec::test_util::RemoveTestFiles("test1.index");
+    zvec::test_util::RemoveTestFiles("test2.index");
+    zvec::test_util::RemoveTestFiles("test3.index");
   }
 }
 
@@ -1017,9 +1014,7 @@ TEST(IndexInterface, Score) {
   auto sparse_indices = std::vector<uint32_t>{0, 1, 2};
   auto query_vector = std::vector<float>{1.0f, 2.0f, 3.0f};
 
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-  system(cmd_buf);
+  zvec::test_util::RemoveTestFiles(index_file_path);
 
   auto check_score = [&](const SearchResult &result, MetricType metric_type) {
     ASSERT_EQ(result.doc_list_.size(), 2);
@@ -1090,7 +1085,7 @@ TEST(IndexInterface, Score) {
   auto dense_func = [&](const BaseIndexParam::Pointer &param,
                         const BaseIndexQueryParam::Pointer query_param,
                         MetricType metric_type) {
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
@@ -1112,13 +1107,13 @@ TEST(IndexInterface, Score) {
     check_score(result, metric_type);
 
     index->Close();
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   auto sparse_func = [&](const BaseIndexParam::Pointer &param,
                          const BaseIndexQueryParam::Pointer query_param,
                          MetricType metric_type) {
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
@@ -1146,7 +1141,7 @@ TEST(IndexInterface, Score) {
     check_score(result, metric_type);
 
     index->Close();
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   constexpr uint32_t kDimension = 3;

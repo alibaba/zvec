@@ -30,3 +30,10 @@ jobs:
       runner: macos-15
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  build_wheels_windows_amd64:
+    name: Build wheels on Windows (amd64) for PyPi
+    uses: ./.github/workflows/build_wheel_on_windows.yml
+    with:
+      publish_target: 'pypi'
+    secrets: inherit

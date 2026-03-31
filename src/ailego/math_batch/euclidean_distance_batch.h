@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <vector>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/utility/math_helper.h>

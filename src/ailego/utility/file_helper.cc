@@ -28,6 +28,11 @@
 #include <unistd.h>
 #endif
 
+
+#include <filesystem>
+namespace fs = std::filesystem;
+// TODO: refactor all file operations by std::filesystem;
+
 namespace zvec {
 namespace ailego {
 
@@ -253,13 +258,20 @@ bool FileHelper::GetWorkingDirectory(std::string *path) {
 }
 
 bool FileHelper::GetFileSize(const char *path, size_t *psz) {
-  HANDLE handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE handle =
+      CreateFileA(path, GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
 
   LARGE_INTEGER file_size;
   if (!GetFileSizeEx(handle, &file_size)) {
+    CloseHandle(handle);
     return false;
   }
+  CloseHandle(handle);
   *psz = (size_t)file_size.QuadPart;
   return true;
 }
@@ -298,40 +310,20 @@ bool FileHelper::MakePath(const char *path) {
 }
 
 bool FileHelper::RemoveDirectory(const char *path) {
-  char *pathbuf = JoinFilePath(path, "*.*");
-  ailego_false_if_false(pathbuf);
-
-  WIN32_FIND_DATAA file_info;
-  HANDLE file = FindFirstFileA(pathbuf, &file_info);
-
-  ailego_do_if_false(file != INVALID_HANDLE_VALUE) {
-    free(pathbuf);
-    FindClose(file);
+  if (path == nullptr || *path == '\0') {
     return false;
   }
 
-  do {
-    if (!strcmp(file_info.cFileName, ".") ||
-        !strcmp(file_info.cFileName, "..")) {
-      continue;
-    }
+  if (!FileHelper::IsDirectory(path)) {
+    return false;
+  }
 
-    char *fullpath = JoinFilePath(path, file_info.cFileName);
-    if (!fullpath) {
-      continue;
-    }
-
-    if (file_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-      FileHelper::RemoveDirectory(fullpath);
-    } else {
-      FileHelper::DeleteFile(fullpath);
-    }
-    free(fullpath);
-  } while (FindNextFileA(file, &file_info));
-
-  free(pathbuf);
-  FindClose(file);
-  return (!!RemoveDirectoryA(path));
+  std::error_code ec;
+  fs::remove_all(path, ec);
+  if (ec) {
+    return false;
+  }
+  return true;
 }
 
 bool FileHelper::IsExist(const char *path) {

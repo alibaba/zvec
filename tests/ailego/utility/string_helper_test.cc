@@ -15,6 +15,7 @@
 #include <cmath>
 #include <limits>
 #include <gtest/gtest.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/string_helper.h>
 
 using namespace zvec;

@@ -24,7 +24,7 @@ const float DEFAULT_MEMORY_LIMIT_RATIO = 0.8f;
 
 const uint32_t MIN_MEMORY_LIMIT_BYTES = 100 * 1024 * 1024;
 
-const uint64_t INVALID_DOC_ID = -1UL;
+const uint64_t INVALID_DOC_ID = UINT64_MAX;
 
 const std::string LOCAL_ROW_ID = "_zvec_row_id_";
 
@@ -47,7 +47,7 @@ const std::regex FIELD_NAME_REGEX("^[a-zA-Z0-9_-]{1,32}$");
 const std::regex DOC_PK_REGEX("^[a-zA-Z0-9_!@#$%+=.-]{1,64}$");
 
 const std::regex COLLECTION_PATH_REGEX(
-    R"(^/?(?:[a-zA-Z0-9_.\-]+/)*[a-zA-Z0-9_.\-]+$)");
+    R"(^(?:[a-zA-Z]:)?[/\\]?(?:[a-zA-Z0-9_.\-]+[/\\])*[a-zA-Z0-9_.\-]+$)");
 
 constexpr uint32_t kMaxDenseDimSize = 20000;
 

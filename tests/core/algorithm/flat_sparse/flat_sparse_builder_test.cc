@@ -17,6 +17,7 @@
 #include <iostream>
 #include <vector>
 #include <gtest/gtest.h>
+#include "tests/test_util.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -36,7 +37,7 @@ class FlatSparseBuilderTest : public testing::Test {
   static shared_ptr<IndexMeta> _index_meta_ptr;
 };
 
-std::string FlatSparseBuilderTest::_dir("FlatSparseBuilderTest");
+std::string FlatSparseBuilderTest::_dir("FlatSparseBuilderTest/");
 shared_ptr<IndexMeta> FlatSparseBuilderTest::_index_meta_ptr;
 
 void FlatSparseBuilderTest::SetUp(void) {
@@ -46,9 +47,7 @@ void FlatSparseBuilderTest::SetUp(void) {
 }
 
 void FlatSparseBuilderTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", _dir.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(_dir);
 }
 
 TEST_F(FlatSparseBuilderTest, TestGeneral) {
@@ -84,7 +83,7 @@ TEST_F(FlatSparseBuilderTest, TestGeneral) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestGeneral";
+  string path = _dir + "TestGeneral";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -188,7 +187,7 @@ TEST_F(FlatSparseBuilderTest, TestIndexThreads) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestIndexThreads";
+  string path = _dir + "TestIndexThreads";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder1->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -245,7 +244,7 @@ TEST_F(FlatSparseBuilderTest, TestHalfFloatConverter) {
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  string path = _dir + "/TestHalFloatConverter";
+  string path = _dir + "TestHalFloatConverter";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -257,7 +256,7 @@ TEST_F(FlatSparseBuilderTest, TestHalfFloatConverter) {
   ASSERT_EQ(0UL, stats.discarded_count());
   ASSERT_EQ(0UL, stats.trained_costtime());
   ASSERT_EQ(stats.built_costtime(), 0UL);
-  //ASSERT_GT(stats.dumped_costtime(), 0UL);
+  // ASSERT_GT(stats.dumped_costtime(), 0UL);
 
   // cleanup and rebuild
   ASSERT_EQ(0, builder->cleanup());

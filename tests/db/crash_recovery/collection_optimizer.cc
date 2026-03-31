@@ -13,7 +13,9 @@
 // limitations under the License.
 
 
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <filesystem>
 #include <zvec/db/collection.h>
 #include <zvec/db/options.h>

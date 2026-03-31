@@ -145,11 +145,11 @@ class HnswDistCalculator {
     return dist(vec);
   }
 
-  dist_t operator()(id_t i) {
+  dist_t operator()(node_id_t i) {
     return dist(i);
   }
 
-  dist_t operator()(id_t lhs, id_t rhs) {
+  dist_t operator()(node_id_t lhs, node_id_t rhs) {
     return dist(lhs, rhs);
   }
 

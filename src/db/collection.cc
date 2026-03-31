@@ -313,13 +313,17 @@ Status CollectionImpl::Close() {
 }
 
 Status CollectionImpl::close_unsafe() {
+  Status result = Status::OK();
+
   // flush
   if (!options_.read_only_) {
     auto s = flush_unsafe();
-    CHECK_RETURN_STATUS(s);
+    if (!s.ok()) {
+      result = s;
+    }
   }
 
-  // reset
+  // always release resources regardless of flush outcome
   writing_segment_.reset();
   segment_manager_.reset();
   version_manager_.reset();
@@ -328,7 +332,7 @@ Status CollectionImpl::close_unsafe() {
 
   lock_file_.close();
 
-  return Status::OK();
+  return result;
 }
 
 Status CollectionImpl::Destroy() {
@@ -690,13 +694,13 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   }
   new_version.reset_writing_segment_meta(writing_segment_->meta());
 
-  auto persist_semgents = get_all_persist_segments();
+  auto persist_segments = get_all_persist_segments();
 
   std::vector<SegmentTask::Ptr> tasks;
   if (is_vector_field) {
-    tasks = build_drop_vector_index_task(persist_semgents, column_name);
+    tasks = build_drop_vector_index_task(persist_segments, column_name);
   } else {
-    tasks = build_drop_scalar_index_task(persist_semgents, column_name);
+    tasks = build_drop_scalar_index_task(persist_segments, column_name);
   }
 
   if (tasks.empty()) {

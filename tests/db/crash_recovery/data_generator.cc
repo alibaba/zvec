@@ -13,9 +13,9 @@
 // limitations under the License.
 
 
-#include <unistd.h>
 #include <filesystem>
 #include <thread>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/db/collection.h>
 #include "zvec/ailego/logger/logger.h"
 #include "utility.h"

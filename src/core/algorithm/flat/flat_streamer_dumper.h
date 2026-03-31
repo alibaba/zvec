@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <numeric>
 #include "flat_streamer.h"
 #include "flat_utility.h"
 

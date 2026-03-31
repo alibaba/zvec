@@ -82,7 +82,7 @@
   __m128 xmm_sum_0_0 = _mm_add_ps(_mm256_castps256_ps128(ymm_sum_0_0),        \
                                   _mm256_extractf128_ps(ymm_sum_0_0, 1));     \
   if (qe >= qe_aligned + 2) {                                                 \
-    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64(*(const __m64 *)(m)));         \
+    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64x(*(const long long *)(m)));         \
     __m128 xmm_q = _mm_cvtph_ps(                                              \
         _mm_shufflelo_epi16(_mm_broadcast_si32(q), _MM_SHUFFLE(1, 1, 0, 0))); \
     ACCUM_FP32_STEP_SSE(xmm_m, xmm_q, xmm_sum_0_0)                            \
@@ -120,8 +120,8 @@
   __m128 xmm_sum_0_1 = _mm_add_ps(_mm256_castps256_ps128(ymm_sum_0_1),        \
                                   _mm256_extractf128_ps(ymm_sum_0_1, 1));     \
   if (qe >= qe_aligned + 4) {                                                 \
-    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64(*(const __m64 *)(m)));         \
-    __m128 xmm_q = _mm_cvtph_ps(_mm_set1_epi64(*(const __m64 *)(q)));         \
+    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64x(*(const long long *)(m)));         \
+    __m128 xmm_q = _mm_cvtph_ps(_mm_set1_epi64x(*(const long long *)(q)));         \
     __m128 xmm_p = _mm_permute_ps(xmm_q, _MM_SHUFFLE(2, 2, 0, 0));            \
     ACCUM_FP32_STEP_SSE(xmm_m, xmm_p, xmm_sum_0_0)                            \
     xmm_p = _mm_permute_ps(xmm_q, _MM_SHUFFLE(3, 3, 1, 1));                   \
@@ -164,7 +164,7 @@
   __m128 xmm_sum_0_0 = _mm_add_ps(_mm256_castps256_ps128(ymm_sum_0_0),       \
                                   _mm256_extractf128_ps(ymm_sum_0_0, 1));    \
   if (q != qe) {                                                             \
-    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64(*(const __m64 *)(m)));        \
+    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64x(*(const long long *)(m)));        \
     __m128 xmm_q = _mm_cvtph_ps(_mm_set1_epi16(*(const short *)(q)));        \
     ACCUM_FP32_STEP_SSE(xmm_m, xmm_q, xmm_sum_0_0)                           \
   }                                                                          \
@@ -198,7 +198,7 @@
   if (q != qe) {                                                             \
     __m128 xmm_q_0 = _mm_cvtph_ps(_mm_set1_epi16(*(const short *)(q + 0)));  \
     __m128 xmm_q_1 = _mm_cvtph_ps(_mm_set1_epi16(*(const short *)(q + 1)));  \
-    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64(*(const __m64 *)(m)));        \
+    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64x(*(const long long *)(m)));        \
     MATRIX_VAR_PROC(1, 2, 0, xmm_m, xmm_q, xmm_sum, ACCUM_FP32_STEP_SSE)     \
   }                                                                          \
   if (((uintptr_t)out & 0xf) == 0) {                                         \
@@ -233,8 +233,8 @@
   __m128 xmm_sum_0_3 = _mm_add_ps(_mm256_castps256_ps128(ymm_sum_0_3),       \
                                   _mm256_extractf128_ps(ymm_sum_0_3, 1));    \
   if (q != qe) {                                                             \
-    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64(*(const __m64 *)(m)));        \
-    __m128 xmm_q = _mm_cvtph_ps(_mm_set1_epi64(*(const __m64 *)(q)));        \
+    __m128 xmm_m = _mm_cvtph_ps(_mm_set1_epi64x(*(const long long *)(m)));        \
+    __m128 xmm_q = _mm_cvtph_ps(_mm_set1_epi64x(*(const long long *)(q)));        \
     __m128 xmm_p = _mm_permute_ps(xmm_q, _MM_SHUFFLE(0, 0, 0, 0));           \
     ACCUM_FP32_STEP_SSE(xmm_m, xmm_p, xmm_sum_0_0)                           \
     xmm_p = _mm_permute_ps(xmm_q, _MM_SHUFFLE(1, 1, 1, 1));                  \

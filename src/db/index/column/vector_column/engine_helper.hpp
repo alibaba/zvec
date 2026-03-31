@@ -111,12 +111,14 @@ class ProximaEngineHelper {
       engine_query_param->is_linear = db_query_params.query_params->is_linear();
     }
     if (db_query_params.refiner_param) {
-      engine_query_param->refiner_param =
-          std::make_shared<core_interface::RefinerParam>(
-              core_interface::RefinerParam{
-                  .scale_factor_ = db_query_params.refiner_param->scale_factor_,
-                  .reference_index =
-                      db_query_params.refiner_param->reference_indexer->index});
+      {
+        core_interface::RefinerParam rp;
+        rp.scale_factor_ = db_query_params.refiner_param->scale_factor_;
+        rp.reference_index =
+            db_query_params.refiner_param->reference_indexer->index;
+        engine_query_param->refiner_param =
+            std::make_shared<core_interface::RefinerParam>(rp);
+      }
     }
 
     return engine_query_param;

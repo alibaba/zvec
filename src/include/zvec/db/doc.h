@@ -68,6 +68,10 @@ class Doc {
     return pk_;
   }
 
+  const std::string &pk_ref() const {
+    return pk_;
+  }
+
   void set_score(float score) {
     score_ = score;
   }
@@ -99,7 +103,7 @@ class Doc {
     op_ = op;
   }
 
-  Operator get_operator() {
+  Operator get_operator() const {
     return op_;
   }
 
@@ -230,6 +234,26 @@ class Doc {
       return result.value();
     }
     return std::nullopt;
+  }
+
+  // Get field value as const reference, throws exception if field doesn't exist
+  // or type mismatches
+  template <typename T>
+  const T &get_ref(const std::string &field_name) const {
+    auto it = fields_.find(field_name);
+    if (it == fields_.end()) {
+      throw std::runtime_error("Field '" + field_name + "' not found");
+    }
+
+    if (std::holds_alternative<std::monostate>(it->second)) {
+      throw std::runtime_error("Field '" + field_name + "' is null");
+    }
+
+    try {
+      return std::get<T>(it->second);
+    } catch (const std::bad_variant_access &) {
+      throw std::runtime_error("Field '" + field_name + "' type mismatch");
+    }
   }
 
   void remove(const std::string &field_name) {
