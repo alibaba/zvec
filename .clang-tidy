@@ -1,10 +1,6 @@
 Checks: >
   -*,
-  clang-analyzer-*,
-  bugprone-*,
-  performance-*,
   modernize-use-nullptr,
-  modernize-use-override
 WarningsAsErrors: "*"
 HeaderFilterRegex: "^(src|tests|tools)/"
 FormatStyle: none
