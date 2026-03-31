@@ -16,6 +16,7 @@
 
 #include <cstring>
 #include <string>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace ailego {

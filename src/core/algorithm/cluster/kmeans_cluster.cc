@@ -891,8 +891,10 @@ void KmeansCluster::update_features_thread(size_t column,
   for (size_t i = column, j = 0; i < shard_cluster_features_.size();
        i += cluster_count) {
     const std::vector<const void *> &it = shard_cluster_features_[i];
-    std::memcpy(&cluster_features[j], it.data(), it.size() * sizeof(void *));
-    j += it.size();
+    if (!it.empty()) {
+      std::memcpy(&cluster_features[j], it.data(), it.size() * sizeof(void *));
+      j += it.size();
+    }
   }
 }
 

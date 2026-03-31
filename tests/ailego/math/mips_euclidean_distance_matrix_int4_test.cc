@@ -115,13 +115,13 @@ TEST(DistanceMatrix, GeneralRepeatedQuadraticInjection) {
   const uint32_t dim =
       (std::uniform_int_distribution<uint32_t>(2, 128))(gen) * 2;
   const uint32_t count = std::uniform_int_distribution<uint32_t>(1, 1000)(gen);
-  std::uniform_int_distribution<uint8_t> dist(0, 255);
+  std::uniform_int_distribution<uint16_t> dist(0, 255);
   for (size_t i = 0; i < count; ++i) {
     std::vector<uint8_t> vec1(dim / 2);
     std::vector<uint8_t> vec2(dim / 2);
     for (size_t d = 0; d < dim / 2; ++d) {
-      vec1[d] = dist(gen);
-      vec2[d] = dist(gen);
+      vec1[d] = static_cast<uint8_t>(dist(gen));
+      vec2[d] = static_cast<uint8_t>(dist(gen));
     }
     ASSERT_NEAR(
         ConvertAndComputeByMips(vec1.data(), vec2.data(), dim, m_val, e2),
@@ -212,12 +212,12 @@ void TestSquaredEuclideanMatrixRepeatedQuadraticInjection(void) {
   std::vector<float> result1(batch_size * query_size);
   std::vector<float> result2(batch_size * query_size);
 
-  std::uniform_int_distribution<uint8_t> dist(0, 255);
+  std::uniform_int_distribution<uint16_t> dist(0, 255);
   for (size_t i = 0; i < matrix_size; ++i) {
-    matrix1[i] = dist(gen);
+    matrix1[i] = static_cast<uint8_t>(dist(gen));
   }
   for (size_t i = 0; i < query_matrix_size; ++i) {
-    query1[i] = dist(gen);
+    query1[i] = static_cast<uint8_t>(dist(gen));
   }
   float squared_l2_norm = 0.0f;
   for (size_t i = 0; i < matrix_size; i += dimension) {
@@ -421,12 +421,12 @@ void MipsRepeatedQuadraticInjectionBenchMark(void) {
   std::vector<uint8_t> query2(query_matrix_size);
 
   std::mt19937 gen((std::random_device())());
-  std::uniform_int_distribution<uint8_t> dist(0, 255);
+  std::uniform_int_distribution<uint16_t> dist(0, 255);
   for (size_t i = 0; i < matrix_size; ++i) {
-    matrix1[i] = dist(gen);
+    matrix1[i] = static_cast<uint8_t>(dist(gen));
   }
   for (size_t i = 0; i < query_matrix_size; ++i) {
-    query1[i] = dist(gen);
+    query1[i] = static_cast<uint8_t>(dist(gen));
   }
 
   for (size_t i = 0; i < block_size; ++i) {
@@ -596,13 +596,13 @@ TEST(DistanceMatrix, GeneralSphericalInjection) {
   const uint32_t dim =
       (std::uniform_int_distribution<uint32_t>(2, 128))(gen) * 2;
   const uint32_t count = std::uniform_int_distribution<uint32_t>(1, 1000)(gen);
-  std::uniform_int_distribution<uint8_t> dist(0, 255);
+  std::uniform_int_distribution<uint16_t> dist(0, 255);
   for (size_t i = 0; i < count; ++i) {
     std::vector<uint8_t> vec1(dim / 2);
     std::vector<uint8_t> vec2(dim / 2);
     for (size_t d = 0; d < dim / 2; ++d) {
-      vec1[d] = dist(gen);
-      vec2[d] = dist(gen);
+      vec1[d] = static_cast<uint8_t>(dist(gen));
+      vec2[d] = static_cast<uint8_t>(dist(gen));
     }
     ASSERT_NEAR(ConvertAndComputeByMips(vec1.data(), vec2.data(), dim, e2),
                 MipsSquaredEuclidean(vec1.data(), vec2.data(), dim, e2),
@@ -687,12 +687,12 @@ void TestSquaredEuclideanMatrixSphericalInjection(void) {
   std::vector<float> result1(batch_size * query_size);
   std::vector<float> result2(batch_size * query_size);
 
-  std::uniform_int_distribution<uint8_t> dist(0, 255);
+  std::uniform_int_distribution<uint16_t> dist(0, 255);
   for (size_t i = 0; i < matrix_size; ++i) {
-    matrix1[i] = dist(gen);
+    matrix1[i] = static_cast<uint8_t>(dist(gen));
   }
   for (size_t i = 0; i < query_matrix_size; ++i) {
-    query1[i] = dist(gen);
+    query1[i] = static_cast<uint8_t>(dist(gen));
   }
   float squared_l2_norm = 0.0f;
   for (size_t i = 0; i < matrix_size; i += dimension) {
@@ -895,12 +895,12 @@ void MipsSphericalInjectionBenchMark(void) {
   std::vector<uint8_t> query2(query_matrix_size);
 
   std::mt19937 gen((std::random_device())());
-  std::uniform_int_distribution<uint8_t> dist(0, 255);
+  std::uniform_int_distribution<uint16_t> dist(0, 255);
   for (size_t i = 0; i < matrix_size; ++i) {
-    matrix1[i] = dist(gen);
+    matrix1[i] = static_cast<uint8_t>(dist(gen));
   }
   for (size_t i = 0; i < query_matrix_size; ++i) {
-    query1[i] = dist(gen);
+    query1[i] = static_cast<uint8_t>(dist(gen));
   }
 
   for (size_t i = 0; i < block_size; ++i) {

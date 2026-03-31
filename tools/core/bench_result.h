@@ -14,11 +14,15 @@
 
 #pragma once
 
-#include <sys/time.h>
 #include <stdio.h>
 #include <string.h>
 #include <limits>
 #include <map>
+#ifdef _MSC_VER
+#include <chrono>
+#else
+#include <sys/time.h>
+#endif
 #include <ailego/parallel/lock.h>
 
 namespace zvec {
@@ -52,15 +56,29 @@ class BenchResult {
     lock_.unlock();
   }
   void mark_start() {
+#ifdef _MSC_VER
+    start_ = std::chrono::steady_clock::now();
+#else
     gettimeofday(&start_, NULL);
+#endif
   }
   void mark_end() {
+#ifdef _MSC_VER
+    end_ = std::chrono::steady_clock::now();
+#else
     gettimeofday(&end_, NULL);
+#endif
   }
   long get_duration_by_ms() {
+#ifdef _MSC_VER
+    return static_cast<long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(end_ - start_)
+            .count());
+#else
     long duration = (end_.tv_sec - start_.tv_sec) * 1000 +
                     (end_.tv_usec - start_.tv_usec) / 1000;
     return duration;
+#endif
   }
   long get_total_query_count() {
     return total_query_count_;
@@ -114,8 +132,13 @@ class BenchResult {
   long total_process_time_by_us_;
   long min_time_by_us_;
   long max_time_by_us_;
+#ifdef _MSC_VER
+  std::chrono::steady_clock::time_point start_;
+  std::chrono::steady_clock::time_point end_;
+#else
   struct timeval start_;
   struct timeval end_;
+#endif
   ailego::SpinMutex lock_;
   std::map<long, long> process_time_map_;  // <processTimeBy100us, count>
 };

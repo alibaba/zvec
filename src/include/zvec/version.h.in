@@ -1,0 +1,16 @@
+#ifndef ZVEC_VERSION_H
+#define ZVEC_VERSION_H
+
+/** @brief Major version number */
+#define ZVEC_VERSION_MAJOR @ZVEC_VERSION_MAJOR@
+
+/** @brief Minor version number */
+#define ZVEC_VERSION_MINOR @ZVEC_VERSION_MINOR@
+
+/** @brief Patch version number */
+#define ZVEC_VERSION_PATCH @ZVEC_VERSION_PATCH@
+
+/** @brief Full version string */
+#define ZVEC_VERSION_STRING "@ZVEC_VERSION_STRING@"
+
+#endif // ZVEC_VERSION_H

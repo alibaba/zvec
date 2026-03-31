@@ -1,6 +1,25 @@
 #include <zvec/ailego/buffer/buffer_pool.h>
 #include <zvec/core/framework/index_logger.h>
 
+#if defined(_MSC_VER)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+static ssize_t zvec_pread(int fd, void *buf, size_t count, size_t offset) {
+  HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+  if (handle == INVALID_HANDLE_VALUE) return -1;
+  OVERLAPPED ov = {};
+  ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFF);
+  ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+  DWORD bytes_read = 0;
+  if (!ReadFile(handle, buf, static_cast<DWORD>(count), &bytes_read, &ov)) {
+    return -1;
+  }
+  return static_cast<ssize_t>(bytes_read);
+}
+#endif
+
 namespace zvec {
 namespace ailego {
 
@@ -167,13 +186,23 @@ void LPMap::recycle(moodycamel::ConcurrentQueue<char *> &free_buffers) {
 }
 
 VecBufferPool::VecBufferPool(const std::string &filename) {
+#if defined(_MSC_VER)
+  fd_ = _open(filename.c_str(), O_RDONLY | _O_BINARY);
+#else
   fd_ = open(filename.c_str(), O_RDONLY);
+#endif
   if (fd_ < 0) {
     throw std::runtime_error("Failed to open file: " + filename);
   }
+#if defined(_MSC_VER)
+  struct _stat64 st;
+  if (_fstat64(fd_, &st) < 0) {
+    _close(fd_);
+#else
   struct stat st;
   if (fstat(fd_, &st) < 0) {
     ::close(fd_);
+#endif
     throw std::runtime_error("Failed to stat file: " + filename);
   }
   file_size_ = st.st_size;
@@ -247,7 +276,11 @@ char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
     }
   }
 
+#if defined(_MSC_VER)
+  ssize_t read_bytes = zvec_pread(fd_, buffer, size, offset);
+#else
   ssize_t read_bytes = pread(fd_, buffer, size, offset);
+#endif
   if (read_bytes != static_cast<ssize_t>(size)) {
     LOG_ERROR("Buffer pool failed to read file at offset: %zu", offset);
     free_buffers_.enqueue(buffer);
@@ -257,7 +290,11 @@ char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
 }
 
 int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
+#if defined(_MSC_VER)
+  ssize_t read_bytes = zvec_pread(fd_, buffer, length, offset);
+#else
   ssize_t read_bytes = pread(fd_, buffer, length, offset);
+#endif
   if (read_bytes != static_cast<ssize_t>(length)) {
     LOG_ERROR("Buffer pool failed to read file at offset: %zu", offset);
     return -1;

@@ -333,7 +333,6 @@ class IVFEntity {
   IndexMeta meta_{};
   mutable IVFReformerWrapper reformer_{};
   IVFDistanceCalculator::Pointer calculator_{};
-  InvertedIndexHeader header_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};
@@ -345,6 +344,7 @@ class IVFEntity {
   mutable std::string vector_{};  // temporary buffer for colomn major order
   float norm_value_{0.0f};  // normalize the inverted vector to orignal score
   bool norm_value_sqrt_{false};  // does the norm value need to sqrt
+  InvertedIndexHeader header_;
 };
 
 }  // namespace core

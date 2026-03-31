@@ -20,7 +20,18 @@
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/schema.h>
+#include "tests/test_util.h"
 #include "utility.h"
+
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+typedef HANDLE pid_t;
+#define SIGKILL 9
+#define WIFEXITED(status) true
+#define WEXITSTATUS(status) (status)
+#define WIFSIGNALED(status) ((status) != 0)
+#endif
 
 
 namespace zvec {
@@ -34,8 +45,31 @@ const zvec::CollectionOptions options_{false, true, 256 * 1024};
 
 static std::string LocateDataGenerator() {
   namespace fs = std::filesystem;
-  const std::vector<std::string> candidates{"./data_generator",
-                                            "./bin/data_generator"};
+  std::cout << "Current path: " << fs::current_path() << std::endl;
+
+  const std::string base_name = "data_generator";
+  std::vector<std::string> candidates;
+  // Define potential search locations relative to the current working directory
+  const std::vector<std::string> search_paths = {"./", "./bin/"};
+
+  for (const auto &p : search_paths) {
+    candidates.push_back(p);
+  }
+#ifdef _WIN32
+  for (const auto &p : search_paths) {
+    candidates.push_back(p + "Debug/");
+    candidates.push_back(p + "Release/");
+  }
+#endif
+
+
+  for (auto &p : candidates) {
+    p += base_name;
+#ifdef _WIN32
+    p += ".exe";  // Append .exe suffix for Windows compatibility
+#endif
+  }
+
   for (const auto &p : candidates) {
     if (fs::exists(p)) {
       return fs::canonical(p).string();
@@ -45,93 +79,115 @@ static std::string LocateDataGenerator() {
 }
 
 
-void RunGenerator(const std::string &start, const std::string &end,
-                  const std::string &op, const std::string &version) {
+/**
+ * Internal helper to execute the data generator process.
+ * If 'kill_after_seconds' is greater than 0, the process will be forcibly
+ * terminated after the specified duration to simulate a crash.
+ */
+void ExecuteProcess(const std::string &start, const std::string &end,
+                    const std::string &op, const std::string &version,
+                    int kill_after_seconds = -1) {
+  bool should_crash = kill_after_seconds >= 0;
+
+#ifdef _WIN32
+  // 1. Build the command line string with quotes to handle paths with spaces
+  std::string cmd_str = data_generator_bin_ + " --path " + dir_path_ +
+                        " --start " + start + " --end " + end + " --op " + op +
+                        " --version " + version;
+
+  STARTUPINFOA si = {sizeof(si)};
+  PROCESS_INFORMATION pi;
+
+  std::cout << cmd_str << std::endl;
+
+  std::vector<char> cmd_buf(cmd_str.begin(), cmd_str.end());
+  cmd_buf.push_back('\0');
+  if (!CreateProcessA(NULL, cmd_buf.data(), NULL, NULL, FALSE, 0, NULL, NULL,
+                      &si, &pi)) {
+    FAIL() << "CreateProcess failed (" << GetLastError() << ")";
+  }
+
+  if (should_crash) {
+    std::this_thread::sleep_for(std::chrono::seconds(kill_after_seconds));
+    // Simulate a crash by killing the process
+    TerminateProcess(pi.hProcess, 1);
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+
+  DWORD exit_code;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+
+  if (should_crash) {
+    // In crash tests, we expect the process to have been terminated
+    ASSERT_NE(exit_code, 0) << "Process was expected to crash/terminate.";
+  } else {
+    ASSERT_EQ(exit_code, 0) << "Process failed with exit code: " << exit_code;
+  }
+
+#else
+  // POSIX Implementation
   pid_t pid = fork();
   ASSERT_GE(pid, 0);
 
   if (pid == 0) {  // Child process
-    char arg_path[] = "--path";
-    char arg_start[] = "--start";
-    char arg_end[] = "--end";
-    char arg_op[] = "--op";
-    char arg_version[] = "--version";
-    char *args[] = {const_cast<char *>(data_generator_bin_.c_str()),
-                    arg_path,
-                    const_cast<char *>(dir_path_.c_str()),
-                    arg_start,
-                    const_cast<char *>(start.c_str()),
-                    arg_end,
-                    const_cast<char *>(end.c_str()),
-                    arg_op,
-                    const_cast<char *>(op.c_str()),
-                    arg_version,
-                    const_cast<char *>(version.c_str()),
-                    nullptr};
-    execvp(args[0], args);
+    // Use a vector to manage arguments cleanly
+    std::vector<const char *> args = {data_generator_bin_.c_str(),
+                                      "--path",
+                                      dir_path_.c_str(),
+                                      "--start",
+                                      start.c_str(),
+                                      "--end",
+                                      end.c_str(),
+                                      "--op",
+                                      op.c_str(),
+                                      "--version",
+                                      version.c_str(),
+                                      nullptr};
+    execvp(args[0], const_cast<char *const *>(args.data()));
     perror("execvp failed");
     _exit(1);
   }
 
   int status;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFEXITED(status))
-      << "Child process did not exit normally. Terminated by signal?";
-  int exit_code = WEXITSTATUS(status);
-  ASSERT_EQ(exit_code, 0) << "data_generator failed with exit code: "
-                          << exit_code;
+  if (should_crash) {
+    std::this_thread::sleep_for(std::chrono::seconds(kill_after_seconds));
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    ASSERT_TRUE(WIFSIGNALED(status)) << "Process did not crash as expected.";
+  } else {
+    waitpid(pid, &status, 0);
+    ASSERT_TRUE(WIFEXITED(status)) << "Process exited abnormally.";
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+  }
+#endif
 }
 
+// Public API 1: Normal execution
+void RunGenerator(const std::string &start, const std::string &end,
+                  const std::string &op, const std::string &version) {
+  ExecuteProcess(start, end, op, version);
+}
 
+// Public API 2: Execution with simulated crash
 void RunGeneratorAndCrash(const std::string &start, const std::string &end,
                           const std::string &op, const std::string &version,
                           int seconds) {
-  pid_t pid = fork();
-  ASSERT_GE(pid, 0);
-
-  if (pid == 0) {  // Child process
-    char arg_path[] = "--path";
-    char arg_start[] = "--start";
-    char arg_end[] = "--end";
-    char arg_op[] = "--op";
-    char arg_version[] = "--version";
-    char *args[] = {const_cast<char *>(data_generator_bin_.c_str()),
-                    arg_path,
-                    const_cast<char *>(dir_path_.c_str()),
-                    arg_start,
-                    const_cast<char *>(start.c_str()),
-                    arg_end,
-                    const_cast<char *>(end.c_str()),
-                    arg_op,
-                    const_cast<char *>(op.c_str()),
-                    arg_version,
-                    const_cast<char *>(version.c_str()),
-                    nullptr};
-    execvp(args[0], args);
-    perror("execvp failed");
-    _exit(1);
-  }
-
-  std::this_thread::sleep_for(std::chrono::seconds(seconds));
-  if (kill(pid, 0) == 0) {
-    kill(pid, SIGKILL);
-  }
-  int status;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFSIGNALED(status))
-      << "Child process was not killed by a signal. It exited normally?";
+  ExecuteProcess(start, end, op, version, seconds);
 }
 
 
 class CrashRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    system("rm -rf ./write_recovery_test_db");
+    zvec::test_util::RemoveTestPath("./write_recovery_test_db");
     ASSERT_NO_THROW(data_generator_bin_ = LocateDataGenerator());
   }
 
   void TearDown() override {
-    system("rm -rf ./write_recovery_test_db");
+    zvec::test_util::RemoveTestPath("./write_recovery_test_db");
   }
 };
 
