@@ -36,7 +36,7 @@
 > - **Efficiency**: **RabitQ** quantization, 2x faster Buffer Manager, and **CPU Auto-Dispatch** for optimized SIMD execution.
 > - **Ecosystem**: Stabilized **C-API** for custom language bindings and **MCP/Skill** integration for AI Agents.
 > 
-> 👉 [Read the Release Notes](https://github.com/jalinwang/zvec/releases/tag/v0.2.1) | [View Roadmap 📍](https://github.com/jalinwang/zvec/issues/2)
+> 👉 [Read the Release Notes](https://github.com/jalinwang/zvec/releases/tag/v0.3.0) | [View Roadmap 📍](https://github.com/jalinwang/zvec/issues/2)
 
 ## 💫 Features
 
