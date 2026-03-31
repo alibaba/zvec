@@ -53,6 +53,19 @@ static size_t get_field_count(ZVecCollectionSchema *schema) {
   return count;
 }
 
+// Cross-platform helper function to clean up temporary directories
+static void cleanup_temp_directory(const char *dir) {
+#ifdef _WIN32
+  char cmd[512];
+  snprintf(cmd, sizeof(cmd), "rmdir /s /q \"%s\" 2>nul", dir);
+  system(cmd);
+#else
+  char cmd[512];
+  snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+  system(cmd);
+#endif
+}
+
 static int test_count = 0;
 static int passed_count = 0;
 static int current_test_passed = 1;  // Track if current test function passes
@@ -978,9 +991,7 @@ void test_collection_basic_operations(void) {
   }
 
   // Clean up temporary directory
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -1029,9 +1040,7 @@ void test_collection_edge_cases(void) {
   }
 
   // Clean up temporary directory
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -1070,9 +1079,7 @@ void test_collection_delete_by_filter(void) {
   }
 
   // Clean up temporary directory
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -1110,9 +1117,7 @@ void test_collection_stats(void) {
   }
 
   // Clean up temporary directory
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -3757,9 +3762,7 @@ void test_collection_stats_functions(void) {
   }
 
   // Clean up temporary directory
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -3885,9 +3888,7 @@ void test_collection_dml_functions(void) {
   }
 
   // Clean up temporary directory
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -4111,9 +4112,7 @@ void test_actual_vector_queries(void) {
   }
 
   // Clean up
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -4169,9 +4168,7 @@ void test_index_creation_and_management(void) {
   }
 
   // Clean up
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -4241,9 +4238,7 @@ void test_collection_ddl_operations(void) {
   }
 
   // Clean up
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -4445,9 +4440,7 @@ void test_performance_benchmarks(void) {
   }
 
   // Clean up
-  char cmd[256];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", temp_dir);
-  system(cmd);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -5390,7 +5383,12 @@ int main(void) {
 
   // Clean up previous test directories
   printf("Cleaning up previous test directories...\n");
+#ifdef _WIN32
+  system("rmdir /s /q %TEMP%\\zvec_test_* 2>nul");
+  system("del /q %TEMP%\\zvec_test_* 2>nul");
+#else
   system("rm -rf /tmp/zvec_test_*");
+#endif
   printf("Cleanup completed.\n\n");
 
   test_version_functions();
