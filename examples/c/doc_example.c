@@ -372,10 +372,15 @@ int main() {
   // 5. Create and insert multiple test documents
   printf("Creating and inserting test documents...\n");
 
-  const int doc_count = 5;
-  ZVecDoc *test_docs[doc_count];
+#define DOC_COUNT 5
+  // Use dynamic allocation for MSVC compatibility (no VLA support)
+  ZVecDoc **test_docs = (ZVecDoc **)malloc(DOC_COUNT * sizeof(ZVecDoc *));
+  if (!test_docs) {
+    fprintf(stderr, "Failed to allocate test documents\n");
+    goto cleanup;
+  }
 
-  for (int i = 0; i < doc_count; i++) {
+  for (int i = 0; i < DOC_COUNT; i++) {
     test_docs[i] = create_full_type_test_doc(i);
     if (!test_docs[i]) {
       fprintf(stderr, "Failed to create document %d\n", i);
@@ -391,14 +396,14 @@ int main() {
 
   // Print all documents before insertion
   printf("\nDocuments before insertion:\n");
-  for (int i = 0; i < doc_count; i++) {
+  for (int i = 0; i < DOC_COUNT; i++) {
     print_doc(test_docs[i], i);
   }
 
   // Insert documents
   size_t success_count = 0, error_count = 0;
   error = zvec_collection_insert(collection, (const ZVecDoc **)test_docs,
-                                 doc_count, &success_count, &error_count);
+                                 DOC_COUNT, &success_count, &error_count);
   if (handle_error(error, "inserting documents") == ZVEC_OK) {
     printf("✓ Documents inserted - Success: %zu, Failed: %zu\n", success_count,
            error_count);
@@ -447,13 +452,13 @@ int main() {
   }
 
   // Compare query results
-  for (size_t i = 0; i < result_count && i < doc_count; i++) {
+  for (size_t i = 0; i < result_count && i < DOC_COUNT; i++) {
     const char *result_pk = zvec_doc_get_pk_pointer(query_results[i]);
     printf("Comparing query result[%zu]: %s\n", i, result_pk);
 
     // Find matching original document
     bool found = false;
-    for (int j = 0; j < doc_count; j++) {
+    for (int j = 0; j < DOC_COUNT; j++) {
       const char *original_pk = zvec_doc_get_pk_pointer(test_docs[j]);
       if (strcmp(result_pk, original_pk) == 0) {
         if (compare_documents(test_docs[j], query_results[i])) {
@@ -515,9 +520,10 @@ int main() {
   }
 
   // 9. Cleanup documents
-  for (int i = 0; i < doc_count; i++) {
+  for (int i = 0; i < DOC_COUNT; i++) {
     zvec_doc_destroy(test_docs[i]);
   }
+  free(test_docs);  // Free the array itself
 
   // 10. Final cleanup
 cleanup:

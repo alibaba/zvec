@@ -34,26 +34,24 @@
 // Test helper macro definitions
 // =============================================================================
 
-// Global helper variables for field count operations (avoids GCC-specific
-// extensions)
-static const char **g_field_names = NULL;
-static size_t g_field_count = 0;
-static ZVecErrorCode g_field_err;
+#include "utils.h"
 
-#define GET_FIELD_COUNT(s)                                    \
-  ({                                                          \
-    g_field_names = NULL;                                     \
-    g_field_count = 0;                                        \
-    g_field_err = zvec_collection_schema_get_all_field_names( \
-        (s), &g_field_names, &g_field_count);                 \
-    if (g_field_err == ZVEC_OK && g_field_names) {            \
-      for (size_t g_i = 0; g_i < g_field_count; g_i++) {      \
-        zvec_free((char *)g_field_names[g_i]);                \
-      }                                                       \
-      zvec_free(g_field_names);                               \
-    }                                                         \
-    g_field_count;                                            \
-  })
+// Helper function to get field count (replaces GCC-specific statement
+// expression)
+static size_t get_field_count(ZVecCollectionSchema *schema) {
+  const char **names = NULL;
+  size_t count = 0;
+  ZVecErrorCode err =
+      zvec_collection_schema_get_all_field_names(schema, &names, &count);
+  if (err == ZVEC_OK && names) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+      zvec_free((char *)names[i]);
+    }
+    zvec_free(names);
+  }
+  return count;
+}
 
 static int test_count = 0;
 static int passed_count = 0;
@@ -327,11 +325,11 @@ void test_schema_basic_operations(void) {
   TEST_ASSERT(schema != NULL);
   TEST_ASSERT(zvec_collection_schema_get_name(schema) != NULL);
   TEST_ASSERT(strcmp(zvec_collection_schema_get_name(schema), "demo") == 0);
-  TEST_ASSERT(GET_FIELD_COUNT(schema) == 0);
+  TEST_ASSERT(get_field_count(schema) == 0);
   TEST_ASSERT(zvec_collection_schema_get_max_doc_count_per_segment(schema) > 0);
 
   // Test 2: Schema field count operations
-  size_t initial_count = GET_FIELD_COUNT(schema);
+  size_t initial_count = get_field_count(schema);
   TEST_ASSERT(initial_count == 0);
 
   // Test 3: Adding fields to schema
@@ -340,7 +338,7 @@ void test_schema_basic_operations(void) {
   ZVecErrorCode err = zvec_collection_schema_add_field(schema, id_field);
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t count_after_add = GET_FIELD_COUNT(schema);
+  size_t count_after_add = get_field_count(schema);
   TEST_ASSERT(count_after_add == 1);
 
   // Test 4: Finding fields in schema
@@ -384,7 +382,7 @@ void test_schema_basic_operations(void) {
   err = zvec_collection_schema_add_field(schema, vec_field);
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t count_after_multi_add = GET_FIELD_COUNT(schema);
+  size_t count_after_multi_add = get_field_count(schema);
   TEST_ASSERT(count_after_multi_add == 4);  // id, name, age, embedding
 
   // Test 7: Finding newly added fields
@@ -421,7 +419,7 @@ void test_schema_basic_operations(void) {
   err = zvec_collection_schema_drop_field(schema, "age");
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t count_after_remove = GET_FIELD_COUNT(schema);
+  size_t count_after_remove = get_field_count(schema);
   TEST_ASSERT(count_after_remove == 3);  // id, name, embedding
 
   const ZVecFieldSchema *removed_field =
@@ -435,7 +433,7 @@ void test_schema_basic_operations(void) {
   err = zvec_collection_schema_drop_field(schema, "id");
   TEST_ASSERT(err == ZVEC_OK);
 
-  size_t final_count = GET_FIELD_COUNT(schema);
+  size_t final_count = get_field_count(schema);
   TEST_ASSERT(final_count == 1);  // Only embedding remains
 
   // Test 12: Schema cleanup
@@ -601,7 +599,7 @@ void test_schema_edge_cases(void) {
   zvec_field_schema_destroy(second_id);
 
   // Verify fields
-  size_t verify_field_count = GET_FIELD_COUNT(schema);
+  size_t verify_field_count = get_field_count(schema);
   TEST_ASSERT(verify_field_count == 1);
 
   // Test 21: Cleanup
@@ -618,7 +616,7 @@ void test_schema_field_operations(void) {
 
   if (schema) {
     // Test field count
-    size_t initial_count = GET_FIELD_COUNT(schema);
+    size_t initial_count = get_field_count(schema);
     TEST_ASSERT(initial_count == 5);
 
     // Test finding non-existent field
@@ -654,7 +652,7 @@ void test_normal_schema_creation(void) {
         strcmp(zvec_collection_schema_get_name(schema), "test_normal") == 0);
 
     // Verify field count
-    size_t field_count = GET_FIELD_COUNT(schema);
+    size_t field_count = get_field_count(schema);
     TEST_ASSERT(field_count > 0);
 
     zvec_collection_schema_destroy(schema);
@@ -4186,7 +4184,7 @@ void test_collection_ddl_operations(void) {
   ZVecCollectionSchema *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
 
-  size_t field_count = GET_FIELD_COUNT(schema);
+  size_t field_count = get_field_count(schema);
 
   if (schema) {
     ZVecCollection *collection = NULL;
@@ -4210,7 +4208,7 @@ void test_collection_ddl_operations(void) {
       TEST_ASSERT(err == ZVEC_OK);
       TEST_ASSERT(retrieved_schema != NULL);
 
-      size_t new_field_count = GET_FIELD_COUNT(retrieved_schema);
+      size_t new_field_count = get_field_count(retrieved_schema);
       TEST_ASSERT((field_count + 1) == new_field_count);
 
       // Test 3: Alter column
@@ -4229,7 +4227,7 @@ void test_collection_ddl_operations(void) {
       // Test 5: Verify field count after drop
       err = zvec_collection_get_schema(collection, &retrieved_schema);
       TEST_ASSERT(err == ZVEC_OK);
-      new_field_count = GET_FIELD_COUNT(retrieved_schema);
+      new_field_count = get_field_count(retrieved_schema);
       TEST_ASSERT(new_field_count == field_count);
 
       zvec_collection_schema_destroy(retrieved_schema);
@@ -4331,7 +4329,13 @@ void test_performance_benchmarks(void) {
 
       for (size_t batch_start = 0; batch_start < TOTAL_DOCS;
            batch_start += BATCH_SIZE) {
-        ZVecDoc *batch_docs[BATCH_SIZE];
+        // Use dynamic allocation for MSVC compatibility (no VLA support)
+        ZVecDoc **batch_docs =
+            (ZVecDoc **)malloc(BATCH_SIZE * sizeof(ZVecDoc *));
+        if (!batch_docs) {
+          fprintf(stderr, "Failed to allocate batch documents\n");
+          break;
+        }
         size_t current_batch_size = (batch_start + BATCH_SIZE > TOTAL_DOCS)
                                         ? TOTAL_DOCS - batch_start
                                         : BATCH_SIZE;
@@ -4368,6 +4372,7 @@ void test_performance_benchmarks(void) {
         for (size_t i = 0; i < current_batch_size; i++) {
           zvec_doc_destroy(batch_docs[i]);
         }
+        free(batch_docs);  // Free the array itself
       }
 
 #ifdef _WIN32
