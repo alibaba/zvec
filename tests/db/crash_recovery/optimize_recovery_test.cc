@@ -20,7 +20,18 @@
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/schema.h>
+#include "tests/test_util.h"
 #include "utility.h"
+
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+typedef HANDLE pid_t;
+#define SIGKILL 9
+#define WIFEXITED(status) true
+#define WEXITSTATUS(status) (status)
+#define WIFSIGNALED(status) ((status) != 0)
+#endif
 
 
 namespace zvec {
@@ -36,8 +47,31 @@ const int num_batches{1000};
 
 static std::string LocateOptimizeGenerator() {
   namespace fs = std::filesystem;
-  const std::vector<std::string> candidates{"./collection_optimizer",
-                                            "./bin/collection_optimizer"};
+  std::cout << "Current path: " << fs::current_path() << std::endl;
+
+  const std::string base_name = "collection_optimizer";
+  std::vector<std::string> candidates;
+  const std::vector<std::string> search_paths = {"./", "./bin/"};
+
+  for (const auto &p : search_paths) {
+    candidates.push_back(p);
+  }
+
+// TODO(windows): unify _WIN32/_WIN64/MSCV_VER
+#ifdef _WIN32
+  for (const auto &p : search_paths) {
+    candidates.push_back(p + "Debug/");
+    candidates.push_back(p + "Release/");
+  }
+#endif
+
+  for (auto &p : candidates) {
+    p += base_name;
+#ifdef _WIN32
+    p += ".exe";
+#endif
+  }
+
   for (const auto &p : candidates) {
     if (fs::exists(p)) {
       return fs::canonical(p).string();
@@ -47,11 +81,48 @@ static std::string LocateOptimizeGenerator() {
 }
 
 
-void RunOptimizer(const std::string &path) {
+void ExecuteOptimizer(const std::string &path, int kill_after_seconds = -1) {
+  bool should_crash = kill_after_seconds >= 0;
+
+#ifdef _WIN32
+  std::string cmd_str = optimizer_bin_ + " --path " + path;
+
+  STARTUPINFOA si = {sizeof(si)};
+  PROCESS_INFORMATION pi;
+
+  std::cout << cmd_str << std::endl;
+
+  std::vector<char> cmd_buf(cmd_str.begin(), cmd_str.end());
+  cmd_buf.push_back('\0');
+  if (!CreateProcessA(NULL, cmd_buf.data(), NULL, NULL, FALSE, 0, NULL, NULL,
+                      &si, &pi)) {
+    FAIL() << "CreateProcess failed (" << GetLastError() << ")";
+  }
+
+  if (should_crash) {
+    std::this_thread::sleep_for(std::chrono::seconds(kill_after_seconds));
+    DWORD wait_result = WaitForSingleObject(pi.hProcess, 0);
+    if (wait_result == WAIT_TIMEOUT) {
+      TerminateProcess(pi.hProcess, 1);
+    }
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+
+  DWORD exit_code;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+
+  if (!should_crash) {
+    ASSERT_EQ(exit_code, 0) << "Process failed with exit code: " << exit_code;
+  }
+
+#else
   pid_t pid = fork();
   ASSERT_GE(pid, 0);
 
-  if (pid == 0) {  // Child process
+  if (pid == 0) {
     char arg_path[] = "--path";
     char *args[] = {const_cast<char *>(optimizer_bin_.c_str()), arg_path,
                     const_cast<char *>(path.c_str()), nullptr};
@@ -61,47 +132,42 @@ void RunOptimizer(const std::string &path) {
   }
 
   int status;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFEXITED(status))
-      << "Child process did not exit normally. Terminated by signal?";
-  int exit_code = WEXITSTATUS(status);
-  ASSERT_EQ(exit_code, 0) << "optimizer failed with exit code: " << exit_code;
+  if (should_crash) {
+    std::this_thread::sleep_for(std::chrono::seconds(kill_after_seconds));
+    if (kill(pid, 0) == 0) {
+      kill(pid, SIGKILL);
+    }
+    waitpid(pid, &status, 0);
+  } else {
+    waitpid(pid, &status, 0);
+    ASSERT_TRUE(WIFEXITED(status))
+        << "Child process did not exit normally. Terminated by signal?";
+    int exit_code = WEXITSTATUS(status);
+    ASSERT_EQ(exit_code, 0) << "optimizer failed with exit code: " << exit_code;
+  }
+#endif
+}
+
+
+void RunOptimizer(const std::string &path) {
+  ExecuteOptimizer(path);
 }
 
 
 void RunOptimizerAndCrash(const std::string &path, int seconds) {
-  pid_t pid = fork();
-  ASSERT_GE(pid, 0);
-
-  if (pid == 0) {  // Child process
-    char arg_path[] = "--path";
-    char *args[] = {const_cast<char *>(optimizer_bin_.c_str()), arg_path,
-                    const_cast<char *>(path.c_str()), nullptr};
-    execvp(args[0], args);
-    perror("execvp failed");
-    _exit(1);
-  }
-
-  std::this_thread::sleep_for(std::chrono::seconds(seconds));
-  if (kill(pid, 0) == 0) {
-    kill(pid, SIGKILL);
-  }
-  int status;
-  waitpid(pid, &status, 0);
-  ASSERT_TRUE(WIFSIGNALED(status))
-      << "Child process was not killed by a signal. It exited normally?";
+  ExecuteOptimizer(path, seconds);
 }
 
 
 class OptimizeRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    system("rm -rf ./optimize_recovery_test_db");
+    zvec::test_util::RemoveTestPath("./optimize_recovery_test_db");
     ASSERT_NO_THROW(optimizer_bin_ = LocateOptimizeGenerator());
   }
 
   void TearDown() override {
-    system("rm -rf ./optimize_recovery_test_db");
+    zvec::test_util::RemoveTestPath("./optimize_recovery_test_db");
   }
 };
 

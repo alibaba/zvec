@@ -20,6 +20,7 @@
 #include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include "tests/test_util.h"
 #include "hnsw_sparse_streamer.h"
 
 using namespace std;
@@ -47,7 +48,8 @@ class HnswSparseStreamerTest : public testing::Test {
   static shared_ptr<IndexMeta> index_meta_ptr_;
 };
 
-std::string HnswSparseStreamerTest::dir_("HnswSparseStreamerTest/");
+std::string HnswSparseStreamerTest::dir_(
+    "hnsw_sparse_streamer_buffer_test_dir/");
 shared_ptr<IndexMeta> HnswSparseStreamerTest::index_meta_ptr_;
 
 void HnswSparseStreamerTest::generate_sparse_data(
@@ -85,15 +87,11 @@ void HnswSparseStreamerTest::SetUp(void) {
                                                 IndexMeta::DataType::DT_FP32));
   index_meta_ptr_->set_metric("InnerProductSparse", 0, ailego::Params());
 
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 void HnswSparseStreamerTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 TEST_F(HnswSparseStreamerTest, TestGeneral) {
@@ -117,7 +115,7 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   ailego::Params stg_params;
   auto write_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, write_storage->init(stg_params));
-  ASSERT_EQ(0, write_storage->open(dir_ + "/Test/HnswSparseSearch", true));
+  ASSERT_EQ(0, write_storage->open(dir_ + "Test/HnswSparseSearch", true));
   ASSERT_EQ(0, write_streamer->init(index_meta, params));
   ASSERT_EQ(0, write_streamer->open(write_storage));
 
@@ -141,6 +139,7 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   write_streamer->flush(0UL);
   write_streamer->close();
   write_streamer.reset();
+  write_storage->close();
 
   IndexStreamer::Pointer read_streamer =
       IndexFactory::CreateStreamer("HnswSparseStreamer");
@@ -148,7 +147,7 @@ TEST_F(HnswSparseStreamerTest, TestGeneral) {
   auto read_storage = IndexFactory::CreateStorage("BufferStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "/Test/HnswSparseSearch", false));
+  ASSERT_EQ(0, read_storage->open(dir_ + "Test/HnswSparseSearch", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
 
   auto linearCtx = read_streamer->create_context();
@@ -245,7 +244,7 @@ TEST_F(HnswSparseStreamerTest, TestHnswSearchMMap) {
   ailego::Params stg_params;
   auto write_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, write_storage->init(stg_params));
-  ASSERT_EQ(0, write_storage->open(dir_ + "/Test/HnswSparseSearch", true));
+  ASSERT_EQ(0, write_storage->open(dir_ + "Test/HnswSparseSearch", true));
   ASSERT_EQ(0, write_streamer->init(index_meta, params));
   ASSERT_EQ(0, write_streamer->open(write_storage));
 
@@ -269,6 +268,7 @@ TEST_F(HnswSparseStreamerTest, TestHnswSearchMMap) {
   write_streamer->flush(0UL);
   write_streamer->close();
   write_streamer.reset();
+  write_storage->close();
 
   IndexStreamer::Pointer read_streamer =
       IndexFactory::CreateStreamer("HnswSparseStreamer");
@@ -276,7 +276,7 @@ TEST_F(HnswSparseStreamerTest, TestHnswSearchMMap) {
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "/Test/HnswSparseSearch", false));
+  ASSERT_EQ(0, read_storage->open(dir_ + "Test/HnswSparseSearch", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
 
   auto linearCtx = read_streamer->create_context();

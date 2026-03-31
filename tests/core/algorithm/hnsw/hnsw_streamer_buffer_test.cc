@@ -8,6 +8,7 @@
 #include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "tests/test_util.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -31,7 +32,7 @@ class HnswStreamerTest : public testing::Test {
   static std::shared_ptr<IndexMeta> index_meta_ptr_;
 };
 
-std::string HnswStreamerTest::dir_("streamer_test/");
+std::string HnswStreamerTest::dir_("hnsw_streamer_buffer_test_dir/");
 std::shared_ptr<IndexMeta> HnswStreamerTest::index_meta_ptr_;
 
 void HnswStreamerTest::SetUp(void) {
@@ -39,15 +40,11 @@ void HnswStreamerTest::SetUp(void) {
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
 
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 void HnswStreamerTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {
@@ -63,7 +60,7 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
   ASSERT_NE(nullptr, storage);
   Params stg_params;
   ASSERT_EQ(0, storage->init(stg_params));
-  ASSERT_EQ(0, storage->open(dir_ + "/Test/HnswSearch", true));
+  ASSERT_EQ(0, storage->open(dir_ + "Test/HnswSearch", true));
   ASSERT_EQ(0, write_streamer->open(storage));
 
   auto ctx = write_streamer->create_context();
@@ -81,6 +78,7 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
   write_streamer->flush(0UL);
   write_streamer->close();
   write_streamer.reset();
+  storage->close();
 
   IndexStreamer::Pointer read_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
@@ -88,7 +86,7 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
   auto read_storage = IndexFactory::CreateStorage("BufferStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "/Test/HnswSearch", false));
+  ASSERT_EQ(0, read_storage->open(dir_ + "Test/HnswSearch", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
   size_t topk = 3;
   auto provider = read_streamer->create_provider();
@@ -185,7 +183,7 @@ TEST_F(HnswStreamerTest, TestHnswSearchMMap) {
   ASSERT_NE(nullptr, storage);
   Params stg_params;
   ASSERT_EQ(0, storage->init(stg_params));
-  ASSERT_EQ(0, storage->open(dir_ + "/Test/HnswSearchMMap", true));
+  ASSERT_EQ(0, storage->open(dir_ + "Test/HnswSearchMMap", true));
   ASSERT_EQ(0, write_streamer->open(storage));
 
   auto ctx = write_streamer->create_context();
@@ -203,6 +201,7 @@ TEST_F(HnswStreamerTest, TestHnswSearchMMap) {
   write_streamer->flush(0UL);
   write_streamer->close();
   write_streamer.reset();
+  storage->close();
 
   ElapsedTime elapsed_time;
   IndexStreamer::Pointer read_streamer =
@@ -211,7 +210,7 @@ TEST_F(HnswStreamerTest, TestHnswSearchMMap) {
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "/Test/HnswSearchMMap", false));
+  ASSERT_EQ(0, read_storage->open(dir_ + "Test/HnswSearchMMap", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
   size_t topk = 3;
   auto provider = read_streamer->create_provider();

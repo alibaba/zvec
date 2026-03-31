@@ -642,6 +642,9 @@ Status SegmentHelper::ReduceVectorIndex(
       s = vector_indexer->Flush();
       CHECK_RETURN_STATUS(s);
 
+      s = vector_indexer->Close();
+      CHECK_RETURN_STATUS(s);
+
       BlockMeta new_block_meta;
       new_block_meta.set_id(vector_block_id);
       new_block_meta.set_type(BlockType::VECTOR_INDEX);
@@ -687,6 +690,9 @@ Status SegmentHelper::ReduceVectorIndex(
       s = vector_indexer->Flush();
       CHECK_RETURN_STATUS(s);
 
+      s = vector_indexer->Close();
+      CHECK_RETURN_STATUS(s);
+
       BlockMeta new_block_meta;
       new_block_meta.set_id(vector_block_id);
       new_block_meta.set_type(BlockType::VECTOR_INDEX);
@@ -717,6 +723,9 @@ Status SegmentHelper::ReduceVectorIndex(
       CHECK_RETURN_STATUS(s);
 
       s = vector_indexer_quantize->Flush();
+      CHECK_RETURN_STATUS(s);
+
+      s = vector_indexer_quantize->Close();
       CHECK_RETURN_STATUS(s);
 
       new_block_meta.set_id(vector_quan_block_id);

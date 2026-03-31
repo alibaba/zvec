@@ -2,9 +2,9 @@ include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|x64")
+    if (HOST_ARCH MATCHES "^(x86|x64)$")
         setup_compiler_march_for_x86(TURBO_MARCH_FLAG_SSE TURBO_MARCH_FLAG_AVX2 TURBO_MARCH_FLAG_AVX512 TURBO_MARCH_FLAG_AVX512FP16)
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
         # ARM64 architecture - no special march flags needed for now
         # NEON implementations can be added here if needed
         message(STATUS "turbo: ARM64 detected, skipping x86-specific optimizations")
@@ -18,7 +18,7 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 # same directory that adds the sources to a target (i.e. here, not in a
 # subdirectory).
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|x64")
+    if (HOST_ARCH MATCHES "^(x86|x64)$")
         file(GLOB_RECURSE AVX512_VNNI_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/avx512_vnni/*.cc)
         set_source_files_properties(
             ${AVX512_VNNI_SRCS}

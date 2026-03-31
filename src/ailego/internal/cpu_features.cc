@@ -15,7 +15,9 @@
 #include "cpu_features.h"
 #include <cstddef>
 
-#if !defined(_MSC_VER) && !defined(__ARM_ARCH)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#elif !defined(__ARM_ARCH)
 #include <cpuid.h>
 #endif
 

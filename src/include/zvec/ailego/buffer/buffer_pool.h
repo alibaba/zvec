@@ -2,7 +2,6 @@
 
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <atomic>
 #include <cassert>
 #include <cstdio>
@@ -19,6 +18,10 @@
 #include <unordered_map>
 #include <zvec/ailego/internal/platform.h>
 #include "concurrentqueue.h"
+
+#if defined(_MSC_VER)
+#include <io.h>
+#endif
 
 namespace zvec {
 namespace ailego {
@@ -107,7 +110,11 @@ class VecBufferPool {
       char *b = lp_map_.evict_block(i);
       if (b) ailego_free(b);
     }
+#if defined(_MSC_VER)
+    _close(fd_);
+#else
     close(fd_);
+#endif
   }
 
   int init(size_t pool_capacity, size_t block_size, size_t segment_count);

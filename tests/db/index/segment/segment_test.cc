@@ -1078,12 +1078,12 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexer) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = new_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
   auto results = combined_indexer->Search(query, query_params);
   ASSERT_TRUE(results.has_value());
 
@@ -1144,13 +1144,14 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerWithQuantVectorIndex) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = new_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false,
-      .query_params = std::make_shared<zvec::QueryParams>(IndexType::HNSW)};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
+  query_params.query_params =
+      std::make_shared<zvec::QueryParams>(IndexType::HNSW);
   query_params.query_params->set_is_using_refiner(true);
 
   auto results = combined_indexer->Search(query, query_params);
@@ -1195,18 +1196,16 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerQueryWithPks) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = verify_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .data_type = dense_fp32_field->data_type(),
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false,
-      .query_params = std::make_shared<zvec::QueryParams>(IndexType::HNSW),
-      .group_by = nullptr,
-      .bf_pks = bf_pks,
-      .refiner_param = nullptr,
-      .extra_params = {}};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.data_type = dense_fp32_field->data_type();
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
+  query_params.query_params =
+      std::make_shared<zvec::QueryParams>(IndexType::HNSW);
+  query_params.bf_pks = bf_pks;
 
   auto results = combined_indexer->Search(query, query_params);
   ASSERT_TRUE(results.has_value());

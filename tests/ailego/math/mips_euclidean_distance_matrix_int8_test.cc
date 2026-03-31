@@ -100,7 +100,7 @@ TEST(DistanceMatrix, GeneralRepeatedQuadraticInjection) {
   const float epsilon = 1e-6;
   const uint32_t dim = std::uniform_int_distribution<uint32_t>(2, 128)(gen);
   const uint32_t count = std::uniform_int_distribution<uint32_t>(1, 1000)(gen);
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < count; ++i) {
     std::vector<int8_t> vec1(dim);
     std::vector<int8_t> vec2(dim);
@@ -193,7 +193,7 @@ void TestSquaredEuclideanMatrixRepeatedQuadraticInjection(void) {
   std::vector<float> result1(batch_size * query_size);
   std::vector<float> result2(batch_size * query_size);
 
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
@@ -402,7 +402,7 @@ void MipsRepeatedQuadraticInjectionBenchMark(void) {
   std::vector<int8_t> query2(query_matrix_size);
 
   std::mt19937 gen((std::random_device())());
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
@@ -561,7 +561,7 @@ TEST(DistanceMatrix, GeneralSphericalInjection) {
   const float epsilon = 1e-6;
   const uint32_t dim = std::uniform_int_distribution<uint32_t>(2, 128)(gen);
   const uint32_t count = std::uniform_int_distribution<uint32_t>(1, 1000)(gen);
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < count; ++i) {
     std::vector<int8_t> vec1(dim);
     std::vector<int8_t> vec2(dim);
@@ -649,7 +649,7 @@ void TestSquaredEuclideanMatrixSphericalInjection(void) {
   std::vector<float> result1(batch_size * query_size);
   std::vector<float> result2(batch_size * query_size);
 
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
@@ -853,7 +853,7 @@ void MipsSphericalInjectionBenchMark(void) {
   std::vector<int8_t> query2(query_matrix_size);
 
   std::mt19937 gen((std::random_device())());
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }

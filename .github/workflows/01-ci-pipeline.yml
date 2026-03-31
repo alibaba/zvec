@@ -22,6 +22,10 @@ permissions:
 jobs:
   # Code quality checks (fast, run first)
   lint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !contains(github.event.pull_request.title, 'wip'))
     uses: ./.github/workflows/02-lint-check.yml
 
   # Main build and test matrix
@@ -70,3 +74,8 @@ jobs:
     name: Build & Test (android)
     needs: lint
     uses: ./.github/workflows/04-android-build.yml
+
+  build-and-test-on-windows:
+    name: Build & Test (Windows)
+    needs: lint
+    uses: ./.github/workflows/05-windows-build.yml

@@ -49,7 +49,10 @@ class CollectionTest : public ::testing::Test {
     FileHelper::RemoveDirectory(col_path);
   }
 
-  void TearDown() override {}
+  void TearDown() override {
+    FileHelper::RemoveDirectory(col_path);
+    ailego::FileHelper::RemoveDirectory("demo");
+  }
 };
 
 TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
@@ -233,6 +236,8 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
         std::cout << result.error().message() << std::endl;
       }
       ASSERT_TRUE(result.has_value());
+
+      result.value()->Destroy();
     }
   }
 
@@ -252,7 +257,6 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
         "a*b",        // *
         "a[b]",       // []
         "a{b}",       // {}
-        "a\\b",       //
         "a~b",        // ~
         "a#b",        // #
         "a\tb",       // tab
@@ -1896,6 +1900,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
     auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
+    ASSERT_NE(collection, nullptr);
 
     ASSERT_TRUE(collection->Flush().ok());
 

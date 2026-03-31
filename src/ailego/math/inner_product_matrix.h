@@ -781,7 +781,7 @@ struct MinusInnerProductSparseMatrix {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
-  static inline float ComputeInnerProductSparseInSegment(
+  static float ComputeInnerProductSparseInSegment(
       uint32_t m_sparse_count, const uint16_t *m_sparse_index,
       const ValueType *m_sparse_value, uint32_t q_sparse_count,
       const uint16_t *q_sparse_index, const ValueType *q_sparse_value);

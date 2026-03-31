@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <numeric>
 #include <vector>
 #include <zvec/core/framework/index_document.h>
@@ -24,6 +23,8 @@
 
 namespace zvec {
 namespace core {
+
+using key_t = uint64_t;
 
 constexpr uint32_t SEGMENT_ID_BITS = 16;
 constexpr uint32_t SEGMENT_ID_MASK = 0xFFFF;

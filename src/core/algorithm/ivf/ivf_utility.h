@@ -35,22 +35,22 @@ namespace core {
 #endif
 
 #ifndef ivf_check_with_msg
-#define ivf_check_with_msg(code, fmt, args...) \
-  do {                                         \
-    if (ailego_unlikely((code) != 0)) {        \
-      LOG_ERROR(fmt, ##args);                  \
-      return code;                             \
-    }                                          \
+#define ivf_check_with_msg(code, fmt, ...) \
+  do {                                     \
+    if (ailego_unlikely((code) != 0)) {    \
+      LOG_ERROR(fmt, ##__VA_ARGS__);       \
+      return code;                         \
+    }                                      \
   } while (0)
 #endif
 
 #ifndef ivf_assert_with_msg
-#define ivf_assert_with_msg(cond, err, fmt, args...) \
-  do {                                               \
-    if (ailego_unlikely(!(cond))) {                  \
-      LOG_ERROR(fmt, ##args);                        \
-      return err;                                    \
-    }                                                \
+#define ivf_assert_with_msg(cond, err, fmt, ...) \
+  do {                                           \
+    if (ailego_unlikely(!(cond))) {              \
+      LOG_ERROR(fmt, ##__VA_ARGS__);             \
+      return err;                                \
+    }                                            \
   } while (0)
 #endif
 

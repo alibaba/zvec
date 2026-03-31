@@ -24,7 +24,7 @@ namespace zvec::ailego::DistanceBatch {
 
 inline float sum4(__m128 v) {
   v = _mm_add_ps(v, _mm_castsi128_ps(_mm_srli_si128(_mm_castps_si128(v), 8)));
-  return v[0] + v[1];
+  return _mm_cvtss_f32(v) + _mm_cvtss_f32(_mm_shuffle_ps(v, v, 1));
 }
 
 inline __m128 sum_top_bottom_avx(__m256 v) {

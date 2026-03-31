@@ -19,7 +19,7 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__AVX__) && defined(__F16C__)
+#if defined(__AVX__)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value
 float InnerProductAndSquaredNormFp16AVX(const Float16 *lhs, const Float16 *rhs,
                                         size_t size, float *sql, float *sqr) {
@@ -143,7 +143,7 @@ float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16AVX(
   return sum;
 }
 
-#endif  // __AVX__ && __F16C__
+#endif  // __AVX__
 
 }  // namespace ailego
 }  // namespace zvec

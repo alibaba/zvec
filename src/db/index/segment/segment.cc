@@ -617,7 +617,7 @@ Status SegmentImpl::InsertVector(VectorColumnIndexer::Ptr &indexer,
           (void *)sparse_value.data()};
     } else {
       vector_data.vector =
-          vector_column_params::DenseVector{.data = value.value().data()};
+          vector_column_params::DenseVector{value.value().data()};
     }
 
     auto &mem_block_meta = segment_meta_->writing_forward_block().value();
