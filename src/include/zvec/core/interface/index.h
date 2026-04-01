@@ -35,6 +35,7 @@
 #include <zvec/core/interface/index_param.h>
 #include <zvec/core/interface/training_capable.h>
 #include <zvec/db/status.h>
+#include "zvec/core/framework/index_provider.h"
 
 namespace zvec::core_interface {
 
@@ -179,6 +180,12 @@ class Index {
     return streamer_;
   }
 
+  core::IndexProvider::Pointer create_index_provider() const {
+    return streamer_->create_provider();
+  }
+
+  static std::string get_metric_name(MetricType metric_type, bool is_sparse);
+
  protected:
   int _sparse_fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
@@ -316,6 +323,23 @@ class HNSWIndex : public Index {
 
  private:
   HNSWIndexParam param_{};
+};
+
+class HNSWRabitqIndex : public Index {
+ public:
+  HNSWRabitqIndex() = default;
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+  int _get_coarse_search_topk(
+      const BaseIndexQueryParam::Pointer &search_param) override;
+
+ private:
+  HNSWRabitqIndexParam param_{};
 };
 
 

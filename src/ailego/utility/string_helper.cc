@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec {
@@ -63,10 +64,6 @@ std::string StringHelper::CopyTrim(std::string str) {
   StringHelper::Trim(str);
   return str;
 }
-
-#if defined(_MSC_VER)
-#define strncasecmp _strnicmp
-#endif
 
 bool StringHelper::CompareIgnoreCase(const std::string &a,
                                      const std::string &b) {

@@ -128,7 +128,7 @@ class HnswSearcher : public IndexSearcher {
   bool check_crc_enabled_{false};
   bool neighbors_in_memory_enabled_{false};
   bool force_padding_topk_enabled_{false};
-  float bf_negative_probility_{HnswEntity::kDefaultBFNegativeProbility};
+  float bf_negative_probability_{HnswEntity::kDefaultBFNegativeProbability};
   uint32_t magic_{0U};
   State state_{STATE_INIT};
   HnswSearcherEntity entity_{};

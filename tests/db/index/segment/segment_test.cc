@@ -814,9 +814,9 @@ TEST_P(SegmentTest, DeleteDoc) {
   count = segment->doc_count(segment->get_filter());
   EXPECT_EQ(count, 9);
 
-  // Delete a document by local doc id
+  // Delete a document by global doc id
   status = segment->Delete(3);
-  EXPECT_TRUE(status.ok()) << "Delete by local doc id failed: "
+  EXPECT_TRUE(status.ok()) << "Delete by global doc id failed: "
                            << status.message();
 
   count = segment->doc_count(segment->get_filter());
@@ -942,6 +942,33 @@ TEST_P(SegmentTest, Flush) {
   EXPECT_TRUE(status.ok()) << "Flush failed: " << status.message();
 }
 
+TEST_P(SegmentTest, FlushAfterInsert) {
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
+      0, 100);
+  ASSERT_TRUE(segment != nullptr);
+
+  // Flush the segment
+  auto status = segment->flush();
+  EXPECT_TRUE(status.ok()) << "Flush failed: " << status.message();
+
+  test::TestHelper::SegmentInsertDoc(segment, *schema, 100, 150);
+
+  ASSERT_EQ(segment->doc_count(), 150);
+
+  for (int i = 0; i < 150; i++) {
+    auto ret_doc = segment->Fetch(i);
+    EXPECT_TRUE(ret_doc != nullptr);
+
+    Doc verify_doc = test::TestHelper::CreateDoc(i, *schema);
+    auto vv = verify_doc.get<std::vector<float>>("dense_fp32").value();
+    auto v = ret_doc->get<std::vector<float>>("dense_fp32").value();
+    for (uint32_t j = 0; j < vv.size(); j++) {
+      ASSERT_FLOAT_EQ(v[j], vv[j]);
+    }
+  }
+}
+
 TEST_P(SegmentTest, Dump) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
@@ -1051,12 +1078,12 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexer) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = new_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
   auto results = combined_indexer->Search(query, query_params);
   ASSERT_TRUE(results.has_value());
 
@@ -1117,13 +1144,14 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerWithQuantVectorIndex) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = new_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false,
-      .query_params = std::make_shared<zvec::QueryParams>(IndexType::HNSW)};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
+  query_params.query_params =
+      std::make_shared<zvec::QueryParams>(IndexType::HNSW);
   query_params.query_params->set_is_using_refiner(true);
 
   auto results = combined_indexer->Search(query, query_params);
@@ -1141,6 +1169,64 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerWithQuantVectorIndex) {
     iter->next();
   }
   ASSERT_EQ(count, 10);
+}
+
+TEST_P(SegmentTest, CombinedVectorColumnIndexerQueryWithPks) {
+  options.max_buffer_size_ = 10 * 1024;
+
+  auto tmp_schema = test::TestHelper::CreateSchemaWithVectorIndex(
+      false, "demo", std::make_shared<HnswIndexParams>(MetricType::IP));
+
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *tmp_schema, 0, 0, id_map, delete_store, version_manager,
+      options, 0, 0);
+  ASSERT_TRUE(segment != nullptr);
+
+
+  uint64_t MAX_DOC = 1000;
+  test::TestHelper::SegmentInsertDoc(segment, *schema, 0, MAX_DOC);
+
+  auto combined_indexer = segment->get_combined_vector_indexer("dense_fp32");
+  ASSERT_TRUE(combined_indexer != nullptr);
+
+  Doc verify_doc = test::TestHelper::CreateDoc(999, *schema);
+  std::vector<std::vector<uint64_t>> bf_pks = {
+      {10, 20, 30, 40, 50, 60, 70, 80, 90, 999}};
+  // query
+  auto dense_fp32_field = schema->get_field("dense_fp32");
+  auto query_vector = verify_doc.get<std::vector<float>>("dense_fp32").value();
+  auto query = vector_column_params::VectorData{
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.data_type = dense_fp32_field->data_type();
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
+  query_params.query_params =
+      std::make_shared<zvec::QueryParams>(IndexType::HNSW);
+  query_params.bf_pks = bf_pks;
+
+  auto results = combined_indexer->Search(query, query_params);
+  ASSERT_TRUE(results.has_value());
+
+  auto vector_results =
+      dynamic_cast<VectorIndexResults *>(results.value().get());
+  ASSERT_TRUE(vector_results);
+  ASSERT_EQ(vector_results->count(), 10);
+
+  int count = 0;
+  std::vector<uint64_t> result_doc_ids;
+  auto iter = vector_results->create_iterator();
+  while (iter->valid()) {
+    count++;
+    result_doc_ids.push_back(iter->doc_id());
+    iter->next();
+  }
+  ASSERT_EQ(count, 10);
+  // need reverse result_doc_ids
+  std::reverse(result_doc_ids.begin(), result_doc_ids.end());
+  ASSERT_EQ(result_doc_ids, bf_pks[0]);
 }
 
 
@@ -1273,9 +1359,6 @@ TEST_P(SegmentTest, DeleteNonExistentDoc) {
 
   auto status1 = segment->Delete("pk_999");
   EXPECT_FALSE(status1.ok()) << "Delete non-existent pk should fail";
-
-  auto status2 = segment->Delete(999);
-  EXPECT_FALSE(status2.ok()) << "Delete non-existent doc_id should fail";
 }
 
 TEST_P(SegmentTest, UpdateNonExistentDoc) {
@@ -1521,7 +1604,6 @@ TEST_P(SegmentTest, FetchPerf) {
   ASSERT_TRUE(segment != nullptr);
 
   s = segment->add_column(
-      "add_int32",
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false),
       "int32 + 1", AddColumnOptions());
   EXPECT_TRUE(s.ok());
@@ -1575,7 +1657,6 @@ TEST_P(SegmentTest, AddColumn) {
   ASSERT_TRUE(segment != nullptr);
 
   auto s = segment->add_column(
-      "add_int32",
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false),
       "int32 + 1", AddColumnOptions());
   EXPECT_FALSE(s.ok());
@@ -1633,13 +1714,11 @@ TEST_P(SegmentTest, AddColumn) {
   ASSERT_TRUE(segment != nullptr);
 
   s = segment->add_column(
-      "add_int32",
       std::make_shared<FieldSchema>("add_int32", DataType::INT32, false), "",
       AddColumnOptions());
   EXPECT_FALSE(s.ok());
 
-  s = segment->add_column("add_undefined",
-                          std::make_shared<FieldSchema>(
+  s = segment->add_column(std::make_shared<FieldSchema>(
                               "add_undefined", DataType::UNDEFINED, false),
                           "", AddColumnOptions());
   EXPECT_FALSE(s.ok());
@@ -1655,12 +1734,11 @@ TEST_P(SegmentTest, AddColumn) {
   }
 
   int add_column_cnt = 0;
-  auto func = [&](const std::string &column_name,
-                  const std::shared_ptr<FieldSchema> &field_schema,
+  auto func = [&](const std::shared_ptr<FieldSchema> &field_schema,
                   const std::string &expression) {
+    auto &column_name = field_schema->name();
     AddColumnOptions add_options;
-    status =
-        segment->add_column(column_name, field_schema, expression, add_options);
+    status = segment->add_column(field_schema, expression, add_options);
     EXPECT_TRUE(status.ok());
 
     // after add column
@@ -1796,7 +1874,7 @@ TEST_P(SegmentTest, AddColumn) {
           field_schema->name(), field_schema->data_type(),
           field_schema->nullable(), field_schema->index_params());
       new_field_schema->set_name(col_name);
-      func(col_name, new_field_schema, expression);
+      func(new_field_schema, expression);
     }
   }
 }

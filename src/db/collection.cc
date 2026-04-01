@@ -98,8 +98,7 @@ class CollectionImpl : public Collection {
 
   Status Optimize(const OptimizeOptions &options) override;
 
-  Status AddColumn(const std::string &column_name,
-                   const FieldSchema::Ptr &column_schema,
+  Status AddColumn(const FieldSchema::Ptr &column_schema,
                    const std::string &expression,
                    const AddColumnOptions &options) override;
 
@@ -319,13 +318,17 @@ Status CollectionImpl::Close() {
 }
 
 Status CollectionImpl::close_unsafe() {
+  Status result = Status::OK();
+
   // flush
   if (!options_.read_only_) {
     auto s = flush_unsafe();
-    CHECK_RETURN_STATUS(s);
+    if (!s.ok()) {
+      result = s;
+    }
   }
 
-  // reset
+  // always release resources regardless of flush outcome
   writing_segment_.reset();
   segment_manager_.reset();
   version_manager_.reset();
@@ -334,7 +337,7 @@ Status CollectionImpl::close_unsafe() {
 
   lock_file_.close();
 
-  return Status::OK();
+  return result;
 }
 
 Status CollectionImpl::Destroy() {
@@ -696,13 +699,13 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   }
   new_version.reset_writing_segment_meta(writing_segment_->meta());
 
-  auto persist_semgents = get_all_persist_segments();
+  auto persist_segments = get_all_persist_segments();
 
   std::vector<SegmentTask::Ptr> tasks;
   if (is_vector_field) {
-    tasks = build_drop_vector_index_task(persist_semgents, column_name);
+    tasks = build_drop_vector_index_task(persist_segments, column_name);
   } else {
-    tasks = build_drop_scalar_index_task(persist_semgents, column_name);
+    tasks = build_drop_scalar_index_task(persist_segments, column_name);
   }
 
   if (tasks.empty()) {
@@ -1025,7 +1028,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
         if (current_actual_doc_count + actual_doc_count >
             max_doc_count_per_segment) {
           // only create SegmentCompactTask when rebuild=true
-          task = SegmentTask::CreateComapctTask(
+          task = SegmentTask::CreateCompactTask(
               CompactTask{path_, schema, current_group,
                           allocate_segment_id_for_tmp_segment(), filter,
                           !options_.enable_mmap_, concurrency});
@@ -1039,7 +1042,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
                     current_group[0], "", nullptr, concurrency});
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
-            task = SegmentTask::CreateComapctTask(
+            task = SegmentTask::CreateCompactTask(
                 CompactTask{path_, schema, current_group,
                             allocate_segment_id_for_tmp_segment(), nullptr,
                             !options_.enable_mmap_, concurrency});
@@ -1068,7 +1071,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
       task = SegmentTask::CreateCreateVectorIndexTask(
           CreateVectorIndexTask{current_group[0], "", nullptr, concurrency});
     } else {
-      task = SegmentTask::CreateComapctTask(CompactTask{
+      task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),
           rebuild ? filter : nullptr, !options_.enable_mmap_, concurrency});
     }
@@ -1112,16 +1115,10 @@ Status CollectionImpl::validate(const std::string &column,
         return Status::InvalidArgument("Column schema is null");
       }
 
-      if (column.empty()) {
+      if (schema->name().empty()) {
         return Status::InvalidArgument("Column name is empty");
       }
-
-      if (schema->name() != column) {
-        return Status::InvalidArgument(
-            "Column name and schema name are not matched");
-      }
-
-      if (schema_->has_field(column)) {
+      if (schema_->has_field(schema->name())) {
         return Status::InvalidArgument("column already exists");
       }
 
@@ -1209,8 +1206,7 @@ Status CollectionImpl::validate(const std::string &column,
   return Status::OK();
 }
 
-Status CollectionImpl::AddColumn(const std::string &column_name,
-                                 const FieldSchema::Ptr &column_schema,
+Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
                                  const std::string &expression,
                                  const AddColumnOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
@@ -1220,7 +1216,7 @@ Status CollectionImpl::AddColumn(const std::string &column_name,
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   // validate
-  auto s = validate(column_name, column_schema, expression, "", ColumnOp::ADD);
+  auto s = validate("", column_schema, expression, "", ColumnOp::ADD);
   CHECK_RETURN_STATUS(s);
 
   // forbidden writing until index is ready
@@ -1238,7 +1234,7 @@ Status CollectionImpl::AddColumn(const std::string &column_name,
   Version new_version = version_manager_->get_current_version();
 
   // add column on segment manager
-  s = segment_manager_->add_column(column_name, column_schema, expression,
+  s = segment_manager_->add_column(column_schema, expression,
                                    options.concurrency_);
   CHECK_RETURN_STATUS(s);
 
@@ -1796,7 +1792,7 @@ Status CollectionImpl::create() {
   }
   if (ailego::FileHelper::IsExist(path_.c_str())) {
     return Status::InvalidArgument("path validate failed: path[", path_,
-                                   "] is existed");
+                                   "] exists");
   }
 
   // check schema

@@ -191,7 +191,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
       "Init params: maxIndexSize=%zu docsHardLimit=%zu docsSoftLimit=%zu "
       "efConstruction=%u ef=%u l0NeighborCnt=%u upperNeighborCnt=%u "
       "scalingFactor=%u maxScanRatio=%.3f minScanLimit=%zu maxScanLimit=%zu "
-      "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbility=%.5f "
+      "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbability=%.5f "
       "checkCrcEnabled=%d pruneSize=%zu chunkSize=%zu "
       "filterSameKey=%u getVectorEnabled=%u "
       "minNeighborCount=%u forcePadding=%u filteringRatio=%f",
@@ -242,7 +242,7 @@ int HnswSparseStreamer::cleanup(void) {
   max_scan_limit_ = HnswSparseEntity::kDefaultMaxScanLimit;
   min_scan_limit_ = HnswSparseEntity::kDefaultMinScanLimit;
   chunk_size_ = HnswSparseEntity::kDefaultChunkSize;
-  bf_negative_prob_ = HnswSparseEntity::kDefaultBFNegativeProbility;
+  bf_negative_prob_ = HnswSparseEntity::kDefaultBFNegativeProbability;
   max_scan_ratio_ = HnswSparseEntity::kDefaultScanRatio;
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
@@ -384,7 +384,7 @@ IndexStreamer::Context::Pointer HnswSparseStreamer::create_context(void) const {
   ctx->set_max_scan_ratio(max_scan_ratio_);
   ctx->set_filter_mode(bf_enabled_ ? VisitFilter::BloomFilter
                                    : VisitFilter::ByteMap);
-  ctx->set_filter_negative_probility(bf_negative_prob_);
+  ctx->set_filter_negative_probability(bf_negative_prob_);
   ctx->set_magic(magic_);
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
@@ -438,9 +438,11 @@ int HnswSparseStreamer::add_with_id_impl(uint32_t id,
     return ret;
   }
 
-  if (ailego_unlikely(sparse_count >= HnswSparseEntity::kSparseMaxDimSize)) {
-    LOG_WARN("Add vector failed, dim size too larg, dim_size=%u, id=%u",
-             sparse_count, id);
+  if (ailego_unlikely(sparse_count > HnswSparseEntity::kSparseMaxDimSize)) {
+    LOG_WARN(
+        "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
+        "maximum allowed (%u), id=%u",
+        sparse_count, HnswSparseEntity::kSparseMaxDimSize, id);
     return IndexError_InvalidValue;
   }
 
@@ -523,9 +525,11 @@ int HnswSparseStreamer::add_impl(uint64_t pkey, const uint32_t sparse_count,
     return ret;
   }
 
-  if (ailego_unlikely(sparse_count >= HnswSparseEntity::kSparseMaxDimSize)) {
-    LOG_WARN("Add vector failed, dim size too larg, dim_size=%u, key=%zu",
-             sparse_count, (size_t)pkey);
+  if (ailego_unlikely(sparse_count > HnswSparseEntity::kSparseMaxDimSize)) {
+    LOG_WARN(
+        "Failed to add sparse vector: number of non-zero elements (%u) exceeds "
+        "maximum allowed (%u), key=%zu",
+        sparse_count, HnswSparseEntity::kSparseMaxDimSize, (size_t)pkey);
     return IndexError_InvalidValue;
   }
 

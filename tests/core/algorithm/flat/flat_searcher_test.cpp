@@ -1346,7 +1346,7 @@ TEST(FlatProvider, Provider_FP32) {
     const float *features1 = (const float *)provider1->get_vector(it1->key());
     const float *features2 = (const float *)provider2->get_vector(it2->key());
     for (size_t idx = 0; idx < dim; idx++) {
-      ASSERT_EQ(*features1, *features2);
+      ASSERT_FLOAT_EQ(*features1, *features2);
       features1++;
       features2++;
     }

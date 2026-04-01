@@ -15,6 +15,7 @@
 #include "hnsw_sparse_algorithm.h"
 #include <chrono>
 #include <iostream>
+#include <vector>
 #include <ailego/internal/cpu_features.h>
 
 namespace zvec {
@@ -107,28 +108,6 @@ int HnswSparseAlgorithm::search(HnswSparseContext *ctx) const {
 
   return 0;
 }
-
-int HnswSparseAlgorithm::fast_search(HnswSparseContext *ctx) const {
-  auto max_level = entity_.cur_max_level();
-  auto entry_point = entity_.entry_point();
-
-  dist_t dist = ctx->dist_calculator().dist(entry_point);
-  for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
-    select_entry_point(cur_level, &entry_point, &dist, ctx);
-  }
-
-  auto &topk_heap = ctx->topk_heap();
-  topk_heap.clear();
-
-  search_neighbors(0, &entry_point, &dist, topk_heap, ctx);
-
-  if (ctx->group_by_search()) {
-    expand_neighbors_by_group(topk_heap, ctx);
-  }
-
-  return 0;
-}
-
 
 //! select_entry_point on hnsw level, ef = 1
 void HnswSparseAlgorithm::select_entry_point(level_t level,
@@ -230,7 +209,7 @@ void HnswSparseAlgorithm::search_neighbors(level_t level,
       (*ctx->mutable_stats_get_neighbors())++;
     }
 
-    node_id_t neighbor_ids[neighbors.size()];
+    std::vector<node_id_t> neighbor_ids(neighbors.size());
     uint32_t size = 0;
     for (uint32_t i = 0; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
@@ -248,7 +227,8 @@ void HnswSparseAlgorithm::search_neighbors(level_t level,
     }
 
     std::vector<IndexStorage::MemoryBlock> neighbor_block_vecs;
-    int ret = entity.get_vector_metas(neighbor_ids, size, neighbor_block_vecs);
+    int ret =
+        entity.get_vector_metas(neighbor_ids.data(), size, neighbor_block_vecs);
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -359,7 +339,7 @@ void HnswSparseAlgorithm::expand_neighbors_by_group(
         (*ctx->mutable_stats_get_neighbors())++;
       }
 
-      node_id_t neighbor_ids[neighbors.size()];
+      std::vector<node_id_t> neighbor_ids(neighbors.size());
       uint32_t size = 0;
       for (uint32_t i = 0; i < neighbors.size(); ++i) {
         node_id_t node = neighbors[i];
@@ -377,8 +357,8 @@ void HnswSparseAlgorithm::expand_neighbors_by_group(
       }
 
       std::vector<IndexStorage::MemoryBlock> neighbor_block_vecs;
-      int ret =
-          entity.get_vector_metas(neighbor_ids, size, neighbor_block_vecs);
+      int ret = entity.get_vector_metas(neighbor_ids.data(), size,
+                                        neighbor_block_vecs);
       if (ailego_unlikely(ctx->debugging())) {
         (*ctx->mutable_stats_get_vector())++;
       }

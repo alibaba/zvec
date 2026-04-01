@@ -1,0 +1,82 @@
+diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+index 7fa4b66d4b..78bcb6d47e 100644
+--- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
++++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+@@ -950,6 +950,13 @@ set(EP_COMMON_CMAKE_ARGS
+     # https://github.com/apache/arrow/issues/45985
+     -DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+ 
++if(ANDROID)
++  list(APPEND EP_COMMON_CMAKE_ARGS 
++  -DANDROID_ABI=${ANDROID_ABI}
++  -DANDROID_NATIVE_API_LEVEL=${ANDROID_NATIVE_API_LEVEL}
++  -DANDROID_NDK=${ANDROID_NDK})
++endif()
++
+ # if building with a toolchain file, pass that through
+ if(CMAKE_TOOLCHAIN_FILE)
+   list(APPEND EP_COMMON_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
+diff --git a/cpp/src/arrow/acero/source_node.cc b/cpp/src/arrow/acero/source_node.cc
+index 0f58406760..cf68bfdcbe 100644
+--- a/cpp/src/arrow/acero/source_node.cc
++++ b/cpp/src/arrow/acero/source_node.cc
+@@ -407,7 +407,7 @@ struct SchemaSourceNode : public SourceNode {
+ struct RecordBatchReaderSourceNode : public SourceNode {
+   RecordBatchReaderSourceNode(ExecPlan* plan, std::shared_ptr<Schema> schema,
+                               arrow::AsyncGenerator<std::optional<ExecBatch>> generator)
+-      : SourceNode(plan, schema, generator) {}
++      : SourceNode(plan, schema, generator, Ordering::Implicit()) {}
+ 
+   static Result<ExecNode*> Make(ExecPlan* plan, std::vector<ExecNode*> inputs,
+                                 const ExecNodeOptions& options) {
+diff --git a/cpp/src/arrow/vendored/datetime/tz.cpp b/cpp/src/arrow/vendored/datetime/tz.cpp
+index 2cf6c62a84..9e64b62297 100644
+--- a/cpp/src/arrow/vendored/datetime/tz.cpp
++++ b/cpp/src/arrow/vendored/datetime/tz.cpp
+@@ -605,7 +605,9 @@ tzdb_list
+ create_tzdb()
+ {
+     tzdb_list tz_db;
++#if !defined(ANDROID) && !defined(__ANDROID__)
+     tzdb_list::undocumented_helper::push_front(tz_db, init_tzdb().release());
++#endif // !defined(ANDROID) && !defined(__ANDROID__)
+     return tz_db;
+ }
+ 
+@@ -3900,7 +3902,9 @@ reload_tzdb()
+     if (!v.empty() && v == remote_version())
+         return get_tzdb_list().front();
+ #endif  // AUTO_DOWNLOAD
++#if !defined(ANDROID) && !defined(__ANDROID__)
+     tzdb_list::undocumented_helper::push_front(get_tzdb_list(), init_tzdb().release());
++#endif  // !defined(ANDROID) && !defined(__ANDROID__)
+     return get_tzdb_list().front();
+ }
+ 
+diff --git a/cpp/src/arrow/vendored/datetime/tz.h b/cpp/src/arrow/vendored/datetime/tz.h
+index 61ab3df106..d456d6765f 100644
+--- a/cpp/src/arrow/vendored/datetime/tz.h
++++ b/cpp/src/arrow/vendored/datetime/tz.h
+@@ -858,7 +858,9 @@ private:
+     load_data(std::istream& inf, std::int32_t tzh_leapcnt, std::int32_t tzh_timecnt,
+                                  std::int32_t tzh_typecnt, std::int32_t tzh_charcnt);
+ # if defined(ANDROID) || defined(__ANDROID__)
++public:
+     void parse_from_android_tzdata(std::ifstream& inf, const std::size_t off);
++private:
+ # endif // defined(ANDROID) || defined(__ANDROID__)
+ #else  // !USE_OS_TZDB
+     DATE_API sys_info   get_info_impl(sys_seconds tp, int tz_int) const;
+diff --git a/cpp/src/arrow/vendored/musl/strptime.c b/cpp/src/arrow/vendored/musl/strptime.c
+index 41912fd1bb..9d0b4dc1bf 100644
+--- a/cpp/src/arrow/vendored/musl/strptime.c
++++ b/cpp/src/arrow/vendored/musl/strptime.c
+@@ -17,7 +17,7 @@
+ 
+ #undef HAVE_LANGINFO
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__ANDROID__)
+ #define HAVE_LANGINFO 1
+ #endif
+ 

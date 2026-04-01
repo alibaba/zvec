@@ -212,4 +212,71 @@ TEST_F(VectorRecallTest, Sparse) {
   }
 }
 
+TEST_F(VectorRecallTest, DeleteFilter) {
+  // This test uses only one segment and thus we only operate on the first one
+  for (int i = 0; i < 4000; i++) {
+    segments_[0]->Delete("pk_" + std::to_string(i));
+  }
+
+  VectorQuery query;
+  query.output_fields_ = {"name", "age"};
+  query.topk_ = 100;
+  std::vector<float> feature(4, 0.0);
+  query.query_vector_.assign((const char *)feature.data(),
+                             feature.size() * sizeof(float));
+  query.field_name_ = "dense";
+
+  auto engine = SQLEngine::create(std::make_shared<Profiler>());
+  auto ret = engine->execute(collection_schema_, query, segments_);
+  if (!ret) {
+    LOG_ERROR("execute failed: [%s]", ret.error().c_str());
+  }
+  ASSERT_TRUE(ret.has_value());
+  auto docs = ret.value();
+  EXPECT_EQ(docs.size(), 100);
+  for (size_t j = 0; j < docs.size(); j++) {
+    auto &doc = docs[j];
+    int doc_id = j + 4000;
+    EXPECT_EQ(doc->pk(), "pk_" + std::to_string(doc_id));
+    auto age = doc->get<int32_t>("age");
+    EXPECT_EQ(age.value(), doc_id % 100);
+    auto name = doc->get<std::string>("name");
+    ASSERT_TRUE(name);
+    EXPECT_EQ(name.value(), "user_" + std::to_string(doc_id % 100));
+    EXPECT_FLOAT_EQ(doc->score(), (float)doc_id * doc_id * 4);
+  }
+}
+
+TEST_F(VectorRecallTest, HybridInvertForwardDeleteFilter) {
+  // In previous test, docs[0-4000) has been deleted
+  VectorQuery query;
+  query.output_fields_ = {"name", "age"};
+  query.filter_ = "invert_id >= 6000 and id < 6080";
+  query.topk_ = 100;
+  std::vector<float> feature(4, 0.0);
+  query.query_vector_.assign((const char *)feature.data(),
+                             feature.size() * sizeof(float));
+  query.field_name_ = "dense";
+
+  auto engine = SQLEngine::create(std::make_shared<Profiler>());
+  auto ret = engine->execute(collection_schema_, query, segments_);
+  if (!ret) {
+    LOG_ERROR("execute failed: [%s]", ret.error().c_str());
+  }
+  ASSERT_TRUE(ret.has_value());
+  auto docs = ret.value();
+  EXPECT_EQ(docs.size(), 80);
+  for (size_t j = 0; j < docs.size(); j++) {
+    auto &doc = docs[j];
+    int doc_id = j + 6000;
+    EXPECT_EQ(doc->pk(), "pk_" + std::to_string(doc_id));
+    auto age = doc->get<int32_t>("age");
+    EXPECT_EQ(age.value(), doc_id % 100);
+    auto name = doc->get<std::string>("name");
+    ASSERT_TRUE(name);
+    EXPECT_EQ(name.value(), "user_" + std::to_string(doc_id % 100));
+    EXPECT_FLOAT_EQ(doc->score(), (float)doc_id * doc_id * 4);
+  }
+}
+
 }  // namespace zvec::sqlengine

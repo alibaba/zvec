@@ -49,7 +49,7 @@
     }                                                                          \
     case 4: {                                                                  \
       __m256 ymm_m = _mm256_cvtph_ps(                                          \
-          _mm_set_epi64((__m64)(0ull), *((const __m64 *)(m))));                \
+          _mm_set_epi64x(0LL, *(const long long *)(m)));                \
       NORM_FP32_STEP_AVX(ymm_m, _RES##_0_0)                                    \
       break;                                                                   \
     }                                                                          \

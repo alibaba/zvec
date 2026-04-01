@@ -233,7 +233,7 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "Init params: maxIndexSize=%zu docsHardLimit=%zu docsSoftLimit=%zu "
       "efConstruction=%u ef=%u upperMaxNeighborCnt=%u l0MaxNeighborCnt=%u "
       "scalingFactor=%u maxScanRatio=%.3f minScanLimit=%zu maxScanLimit=%zu "
-      "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbility=%.5f "
+      "bfEnabled=%d bruteFoceThreshold=%zu bfNegativeProbability=%.5f "
       "checkCrcEnabled=%d pruneSize=%zu vectorSize=%u chunkSize=%zu "
       "filterSameKey=%u getVectorEnabled=%u minNeighborCount=%u "
       "forcePadding=%u ",
@@ -285,7 +285,7 @@ int HnswStreamer::cleanup(void) {
   max_scan_limit_ = HnswEntity::kDefaultMaxScanLimit;
   min_scan_limit_ = HnswEntity::kDefaultMinScanLimit;
   chunk_size_ = HnswEntity::kDefaultChunkSize;
-  bf_negative_prob_ = HnswEntity::kDefaultBFNegativeProbility;
+  bf_negative_prob_ = HnswEntity::kDefaultBFNegativeProbability;
   max_scan_ratio_ = HnswEntity::kDefaultScanRatio;
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
@@ -339,7 +339,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   }
   ret = metric_->init(meta_, meta_.metric_params());
   if (ret != 0) {
-    LOG_ERROR("Failled to init metric, ret=%d", ret);
+    LOG_ERROR("Failed to init metric, ret=%d", ret);
     return ret;
   }
 
@@ -433,7 +433,7 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
   ctx->set_max_scan_ratio(max_scan_ratio_);
   ctx->set_filter_mode(bf_enabled_ ? VisitFilter::BloomFilter
                                    : VisitFilter::ByteMap);
-  ctx->set_filter_negative_probility(bf_negative_prob_);
+  ctx->set_filter_negative_probability(bf_negative_prob_);
   ctx->set_magic(magic_);
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
@@ -546,7 +546,7 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
 
   ret = alg_->add_node(id, level, ctx);
   if (ailego_unlikely(ret != 0)) {
-    LOG_ERROR("Hnsw stramer add node failed");
+    LOG_ERROR("Hnsw steamer add node failed");
     (*stats_.mutable_discarded_count())++;
     return ret;
   }
@@ -627,7 +627,7 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
 
   ret = alg_->add_node(id, level, ctx);
   if (ailego_unlikely(ret != 0)) {
-    LOG_ERROR("Hnsw stramer add node failed");
+    LOG_ERROR("Hnsw steamer add node failed");
     (*stats_.mutable_discarded_count())++;
     return ret;
   }

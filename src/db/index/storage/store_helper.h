@@ -40,7 +40,7 @@
 namespace zvec {
 
 inline FileFormat InferFileFormat(const std::string &file_path) {
-  std::string ext = std::filesystem::path(file_path).extension();
+  std::string ext = std::filesystem::path(file_path).extension().string();
   std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
   if (ext == ".parquet") {
     return FileFormat::PARQUET;

@@ -142,11 +142,10 @@ void ZVecPyCollection::bind_ddl_methods(
 
   // binding column ddl methods
   col.def("AddColumn",
-          [](Collection &self, const std::string &column_name,
-             const FieldSchema::Ptr &column_schema,
+          [](Collection &self, const FieldSchema::Ptr &column_schema,
              const std::string &expression, const AddColumnOptions &options) {
             const auto status =
-                self.AddColumn(column_name, column_schema, expression, options);
+                self.AddColumn(column_schema, expression, options);
             throw_if_error(status);
           })
       .def("DropColumn",

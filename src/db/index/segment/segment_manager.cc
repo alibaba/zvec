@@ -81,8 +81,7 @@ std::vector<SegmentMeta::Ptr> SegmentManager::get_segments_meta() const {
   return segments_meta;
 }
 
-Status SegmentManager::add_column(const std::string &column_name,
-                                  const FieldSchema::Ptr &column_schema,
+Status SegmentManager::add_column(const FieldSchema::Ptr &column_schema,
                                   const std::string &expression,
                                   int concurrency) {
   if (concurrency <= 0) {
@@ -98,7 +97,7 @@ Status SegmentManager::add_column(const std::string &column_name,
     for (size_t j = i; j < end; ++j) {
       auto &segment = segments[j].second;
       futures.emplace_back(std::async(std::launch::async, [&]() -> Status {
-        return segment->add_column(column_name, column_schema, expression,
+        return segment->add_column(column_schema, expression,
                                    AddColumnOptions{concurrency});
       }));
     }

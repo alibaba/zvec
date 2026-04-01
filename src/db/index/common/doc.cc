@@ -11,11 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <regex>
 #include <stdexcept>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/db/doc.h>
 #include "db/common/constants.h"
 #include "db/index/common/type_helper.h"
@@ -116,16 +118,16 @@ template <typename T>
 T byte_swap(T value) {
   if constexpr (std::is_same_v<T, float16_t>) {
     uint16_t val = *reinterpret_cast<uint16_t *>(&value);
-    val = __builtin_bswap16(val);
+    val = ailego_bswap16(val);
     return *reinterpret_cast<float16_t *>(&val);
   } else if constexpr (sizeof(T) == 1) {
     return value;
   } else if constexpr (sizeof(T) == 2) {
     return (value << 8) | ((value >> 8) & 0xFF);
   } else if constexpr (sizeof(T) == 4) {
-    return __builtin_bswap32(value);
+    return static_cast<T>(ailego_bswap32(static_cast<uint32_t>(value)));
   } else if constexpr (sizeof(T) == 8) {
-    return __builtin_bswap64(value);
+    return static_cast<T>(ailego_bswap64(static_cast<uint64_t>(value)));
   } else {
     T result = 0;
     for (size_t i = 0; i < sizeof(T); ++i) {
@@ -865,6 +867,12 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
                 "doc validate failed: field[", field_name,
                 "]'s sparse vector indices and values size not match");
           }
+          if (sparse_indices.size() > kSparseMaxDimSize) {
+            return Status::InvalidArgument(
+                "doc validate failed: vector[", field_name,
+                "], the number of sparse indices exceeds the maximum limit ",
+                kSparseMaxDimSize);
+          }
         }
         break;
       }
@@ -879,6 +887,12 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
             return Status::InvalidArgument(
                 "doc validate failed: field[", field_name,
                 "]'s sparse vector indices and values size not match");
+          }
+          if (sparse_indices.size() > kSparseMaxDimSize) {
+            return Status::InvalidArgument(
+                "doc validate failed: vector[", field_name,
+                "], the number of sparse indices exceeds the maximum limit ",
+                kSparseMaxDimSize);
           }
         }
         break;
@@ -1108,6 +1122,52 @@ std::string Doc::to_detail_string() const {
   return oss.str();
 }
 
+struct Doc::ValueEqual {
+  template <typename T, typename U>
+  bool operator()(const T &, const U &) const {
+    return false;
+  }
+
+  template <typename T>
+  bool operator()(const T &a, const T &b) const {
+    return a == b;
+  }
+
+  bool operator()(float a, float b) const {
+    return std::fabs(a - b) < 1e-6f;
+  }
+
+  bool operator()(double a, double b) const {
+    return std::fabs(a - b) < 1e-9;
+  }
+
+  bool operator()(const std::vector<float16_t> &a,
+                  const std::vector<float16_t> &b) const {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+      if (std::fabs(static_cast<float>(a[i]) - static_cast<float>(b[i])) >=
+          1e-3f)
+        return false;
+    return true;
+  }
+
+  bool operator()(const std::vector<float> &a,
+                  const std::vector<float> &b) const {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+      if (std::fabs(a[i] - b[i]) >= 1e-4f) return false;
+    return true;
+  }
+
+  bool operator()(const std::vector<double> &a,
+                  const std::vector<double> &b) const {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+      if (std::fabs(a[i] - b[i]) >= 1e-6) return false;
+    return true;
+  }
+};
+
 bool Doc::operator==(const Doc &other) const {
   // Compare basic fields
   if (pk_ != other.pk_) {
@@ -1135,21 +1195,7 @@ bool Doc::operator==(const Doc &other) const {
     }
 
     // Use visitor to compare the actual values
-    bool values_equal = std::visit(
-        [](const auto &lhs, const auto &rhs) -> bool {
-          if constexpr (std::is_same_v<std::decay_t<decltype(lhs)>,
-                                       std::decay_t<decltype(rhs)>>) {
-            return lhs == rhs;
-          } else {
-            // This should not happen due to the index check above
-            return false;
-          }
-        },
-        field_value, it->second);
-
-    if (!values_equal) {
-      return false;
-    }
+    if (!std::visit(ValueEqual{}, field_value, it->second)) return false;
   }
 
   return true;
@@ -1218,9 +1264,11 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
     }
   } else if (schema->is_sparse_vector()) {
     // validate sparse indices size
-    if (query_sparse_indices_.size() >= kSparseMaxDimSize * sizeof(uint32_t)) {
+    if (query_sparse_indices_.size() > kSparseMaxDimSize * sizeof(uint32_t)) {
       return Status::InvalidArgument(
-          "query validate failed: sparse indices size is too large");
+          "query validate failed: the number of sparse indices exceeds the "
+          "maximum limit ",
+          kSparseMaxDimSize);
     }
   } else {
     return Status::InvalidArgument(

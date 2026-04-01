@@ -1,7 +1,15 @@
+if(NOT MSVC)
 add_compile_options(-Wno-deprecated-copy)
+endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-Wno-maybe-uninitialized)
 endif()
+
+if (MSVC)
+    set(BUILD_SHARED_LIBS OFF)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+endif ()
+
 
 set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})

@@ -40,13 +40,9 @@ class HnswSparseAlgorithm {
   //! return 0 on success, or errCode in failure
   int add_node(node_id_t id, level_t level, HnswSparseContext *ctx);
 
-  //! do knn search in graph with lock
+  //! do knn search in graph
   //! return 0 on success, or errCode in failure. results saved in ctx
   int search(HnswSparseContext *ctx) const;
-
-  //! do knn search in graph without lock
-  //! return 0 on success, or errCode in failure. results saved in ctx
-  int fast_search(HnswSparseContext *ctx) const;
 
   //! Initiate HnswAlgorithm
   int init() {

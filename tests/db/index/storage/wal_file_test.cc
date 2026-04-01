@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifdef _MSC_VER
+#define _ALLOW_KEYWORD_MACROS
+#endif
 #define private public
 #define protected public
 #include "db/index/storage/wal/wal_file.h"
@@ -27,6 +30,7 @@
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include "db/common/file_helper.h"
+#include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -39,9 +43,7 @@ using SegmentID = uint32_t;
 class WalFileTest : public testing::Test {
  protected:
   void SetUp() {
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -rf ./data.wal.*");
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles("./data.wal.*");
   }
 
   void TearDown() {}
@@ -288,12 +290,12 @@ TEST_F(WalFileTest, TestBoundaryCondition) {
 
   // write very large record 4Mb
   size_t BIG_DATA_SIZE = 4 * 1024 * 1024;
-  uint8_t big_data[BIG_DATA_SIZE];
+  std::vector<uint8_t> big_data(BIG_DATA_SIZE);
   for (size_t i = 0; i < BIG_DATA_SIZE; i++) {
     big_data[i] = i % 256;
   }
   str.clear();
-  str.assign((const char *)big_data, BIG_DATA_SIZE);
+  str.assign((const char *)big_data.data(), BIG_DATA_SIZE);
   wal_option.create_new = true;
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);

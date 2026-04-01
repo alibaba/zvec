@@ -249,11 +249,11 @@ class IVFDumper {
   size_t block_vector_count_{kDefaultBlockCount};
   std::vector<InvertedListMeta> inverted_lists_meta_{};
   std::vector<uint64_t> keys_{};
-  InvertedIndexHeader header_{};
   uint32_t cur_list_id_{0};
   uint32_t dumped_feature_count_{0};
   size_t dumped_features_size_{0};
   mutable size_t dumped_size_{0};
+  InvertedIndexHeader header_;
 };
 
 }  // namespace core

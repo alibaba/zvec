@@ -1,0 +1,13 @@
+diff --git a/env/io_posix.cc b/env/io_posix.cc
+index 0ec0e9c83..a78ac5a13 100644
+--- a/env/io_posix.cc
++++ b/env/io_posix.cc
+@@ -27,7 +27,7 @@
+ #include <sys/mman.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+-#ifdef OS_LINUX
++#if defined(OS_LINUX) || defined(OS_ANDROID)
+ #include <sys/statfs.h>
+ #include <sys/sysmacros.h>
+ #endif

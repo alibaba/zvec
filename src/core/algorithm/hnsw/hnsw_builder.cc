@@ -24,7 +24,7 @@
 namespace zvec {
 namespace core {
 
-HnswBuilder::HnswBuilder() {}
+HnswBuilder::HnswBuilder() = default;
 
 int HnswBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin HnswBuilder::init");

@@ -297,8 +297,8 @@ class HnswSparseContext : public IndexContext {
     filter_mode_ = v;
   }
 
-  inline void set_filter_negative_probility(float v) {
-    negative_probility_ = v;
+  inline void set_filter_negative_probability(float v) {
+    negative_probability_ = v;
   }
 
   inline void set_max_scan_ratio(float v) {
@@ -494,7 +494,7 @@ class HnswSparseContext : public IndexContext {
   uint32_t topk_{0};
   uint32_t group_topk_{0};
   uint32_t filter_mode_{VisitFilter::ByteMap};
-  float negative_probility_{HnswSparseEntity::kDefaultBFNegativeProbility};
+  float negative_probability_{HnswSparseEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswSparseEntity::kDefaultEf};
   float max_scan_ratio_{HnswSparseEntity::kDefaultScanRatio};
   uint32_t magic_{0U};

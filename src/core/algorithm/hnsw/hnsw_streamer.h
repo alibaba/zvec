@@ -213,7 +213,7 @@ class HnswStreamer : public IndexStreamer {
   size_t bruteforce_threshold_{HnswEntity::kDefaultBruteForceThreshold};
   size_t max_scan_limit_{HnswEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{HnswEntity::kDefaultMinScanLimit};
-  float bf_negative_prob_{HnswEntity::kDefaultBFNegativeProbility};
+  float bf_negative_prob_{HnswEntity::kDefaultBFNegativeProbability};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
 
   uint32_t magic_{0U};

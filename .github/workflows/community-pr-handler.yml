@@ -1,0 +1,148 @@
+name: Community PR Handler
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  handle-community-pr:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Check if community contributor
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const prAuthor = pr.user.login;
+            const association = pr.author_association;
+            
+            console.log('========== PR Info ==========');
+            console.log(`PR Number: #${pr.number}`);
+            console.log(`PR Title: ${pr.title}`);
+            console.log(`PR Author: ${prAuthor}`);
+            console.log(`Author Association: ${association}`);
+            console.log(`Base Branch: ${pr.base.ref}`);
+            console.log(`Head Branch: ${pr.head.ref}`);
+            console.log(`Head Repo: ${pr.head.repo?.full_name || 'same repo'}`);
+            
+            // OWNER, MEMBER, COLLABORATOR are maintainers; others are community contributors
+            const maintainerRoles = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            const isCommunity = !maintainerRoles.includes(association);
+            
+            console.log('========== Decision ==========');
+            console.log(`Maintainer Roles: ${maintainerRoles.join(', ')}`);
+            console.log(`Is Community Contributor: ${isCommunity}`);
+            
+            if (!isCommunity) {
+              console.log('Skipping: PR author is a maintainer, no action needed.');
+            }
+            
+            core.setOutput('is_community', isCommunity);
+
+      - name: Checkout base branch for CODEOWNERS
+        if: steps.check.outputs.is_community == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: .github/CODEOWNERS
+          sparse-checkout-cone-mode: false
+
+      - name: Assign reviewer as assignee
+        if: steps.check.outputs.is_community == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = context.payload.pull_request.number;
+            
+            console.log('========== Fetching Changed Files ==========');
+            // Get changed files
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            const changedFiles = files.map(f => f.filename);
+            console.log(`Total changed files: ${changedFiles.length}`);
+            changedFiles.forEach((f, i) => console.log(`  [${i + 1}] ${f}`));
+            
+            console.log('========== Parsing CODEOWNERS ==========');
+            // Parse CODEOWNERS
+            let codeowners = [];
+            try {
+              const content = fs.readFileSync('.github/CODEOWNERS', 'utf8');
+              const lines = content.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+              console.log(`Found ${lines.length} rules in CODEOWNERS`);
+              for (const line of lines) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length >= 2) {
+                  const pattern = parts[0];
+                  const owners = parts.slice(1).map(o => o.replace('@', ''));
+                  codeowners.push({ pattern, owners });
+                  console.log(`  Rule: "${pattern}" -> [${owners.join(', ')}]`);
+                }
+              }
+            } catch (e) {
+              console.log('ERROR: Could not read CODEOWNERS:', e.message);
+              return;
+            }
+            
+            console.log('========== Matching Files to Owners ==========');
+            // Find matching owners for changed files
+            const matchedOwners = new Set();
+            for (const file of changedFiles) {
+              let matchedOwner = null;
+              let matchedPattern = null;
+              for (const rule of codeowners) {
+                const pattern = rule.pattern;
+                if (pattern === '*') {
+                  matchedOwner = rule.owners[0];
+                  matchedPattern = pattern;
+                } else if (pattern.endsWith('/')) {
+                  const dir = pattern.replace(/^\//, '').replace(/\/$/, '');
+                  if (file.startsWith(dir + '/') || file.startsWith(dir)) {
+                    matchedOwner = rule.owners[0];
+                    matchedPattern = pattern;
+                  }
+                } else if (file === pattern || file === pattern.replace(/^\//, '')) {
+                  matchedOwner = rule.owners[0];
+                  matchedPattern = pattern;
+                }
+              }
+              if (matchedOwner) {
+                matchedOwners.add(matchedOwner);
+                console.log(`  "${file}" -> matched "${matchedPattern}" -> @${matchedOwner}`);
+              } else {
+                console.log(`  "${file}" -> NO MATCH`);
+              }
+            }
+            
+            console.log('========== Setting Assignees ==========');
+            // Set assignees
+            const assignees = Array.from(matchedOwners);
+            console.log(`Assignees to set: [${assignees.join(', ')}]`);
+            
+            if (assignees.length > 0) {
+              try {
+                await github.rest.issues.addAssignees({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  assignees: assignees
+                });
+                console.log('SUCCESS: Assignees set successfully!');
+              } catch (e) {
+                console.log('ERROR: Failed to set assignees:', e.message);
+                console.log('Error details:', JSON.stringify(e, null, 2));
+              }
+            } else {
+              console.log('WARNING: No assignees to set - no matching owners found.');
+            }
+            
+            console.log('========== Done ==========');

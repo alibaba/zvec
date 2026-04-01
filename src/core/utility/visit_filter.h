@@ -22,6 +22,7 @@
 #include <vector>
 #include <ailego/container/bloom_filter.h>
 #include <ailego/utility/bitset_helper.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_logger.h>
 
@@ -218,7 +219,7 @@ class VisitBitMap {
   template <class... T>
   static int init(Context *, void **ctx, uint64_t maxDocCnt,
                   uint64_t maxScanNum, std::tuple<T...> &&tpl) {
-    (void)tpl;  // unsed warning
+    (void)tpl;  // unused warning
     Context *c = new (std::nothrow) Context;
     if (c == nullptr) {
       LOG_ERROR("New memory in initVisitBitMap failed");
@@ -312,7 +313,7 @@ class VisitByteMap {
   template <class... T>
   static int init(Context *, void **ctx, uint64_t maxDocCnt,
                   uint64_t maxScanNum, std::tuple<T...> &&tpl) {
-    (void)tpl;  // unsed warning
+    (void)tpl;  // unused warning
     Context *c = new (std::nothrow) Context;
     if (c == nullptr) {
       LOG_ERROR("New memory in initVisitByteMap failed");
@@ -403,10 +404,10 @@ class VisitFilter {
   }
 
   int init(int mode, uint64_t maxDocCnt, uint64_t maxScanNum,
-           float negativeProbility) {
+           float negativeProbability) {
     mode_ = mode;
     PROXIMA_HNSW_VISITFILTER_CALL_IMPL(init, &ctx_, maxDocCnt, maxScanNum,
-                                       std::make_tuple(negativeProbility));
+                                       std::make_tuple(negativeProbability));
     return 0;  // place holder
   }
 

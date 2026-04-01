@@ -65,7 +65,7 @@ class HnswAlgorithm {
   //! return 0 on success, or errCode in failure
   int add_node(node_id_t id, level_t level, HnswContext *ctx);
 
-  //! do knn search in graph with lock
+  //! do knn search in graph
   //! return 0 on success, or errCode in failure. results saved in ctx
   int search(HnswContext *ctx) const;
 
@@ -80,7 +80,6 @@ class HnswAlgorithm {
   //! do knn search in graph without lock with optional callbacks
   int fast_search_with_hooks(HnswContext *ctx, const SearchHooks *hooks,
                              bool *stopped_early = nullptr) const;
-
   //! Initiate HnswAlgorithm
   int init() {
     level_probas_.clear();

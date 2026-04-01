@@ -80,8 +80,8 @@ int HnswStreamerEntity::cleanup() {
 int HnswStreamerEntity::update_neighbors(
     level_t level, node_id_t id,
     const std::vector<std::pair<node_id_t, dist_t>> &neighbors) {
-  char buffer[neighbor_size_];
-  NeighborsHeader *hd = reinterpret_cast<NeighborsHeader *>(buffer);
+  std::vector<char> buffer(neighbor_size_);
+  NeighborsHeader *hd = reinterpret_cast<NeighborsHeader *>(buffer.data());
   hd->neighbor_cnt = neighbors.size();
   size_t i = 0;
   for (; i < neighbors.size(); ++i) {
@@ -89,7 +89,7 @@ int HnswStreamerEntity::update_neighbors(
   }
 
   auto loc = get_neighbor_chunk_loc(level, id);
-  size_t size = reinterpret_cast<char *>(&hd->neighbors[i]) - &buffer[0];
+  size_t size = reinterpret_cast<char *>(&hd->neighbors[i]) - buffer.data();
   size_t ret = loc.first->write(loc.second, hd, size);
   if (ailego_unlikely(ret != size)) {
     LOG_ERROR("Write neighbor header failed, ret=%zu", ret);
@@ -127,7 +127,7 @@ const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
     LOG_ERROR("Read neighbor header failed, ret=%zu", size);
     return Neighbors();
   }
-  return Neighbors(std::move(neighbor_block));
+  return Neighbors(neighbor_block);
 }
 
 //! Get vector data by key
@@ -485,7 +485,9 @@ int HnswStreamerEntity::check_hnsw_index(const HNSWHeader *hd) const {
 int HnswStreamerEntity::add_vector(level_t level, key_t key, const void *vec,
                                    node_id_t *id) {
   Chunk::Pointer node_chunk;
-  size_t chunk_offset = -1UL;
+  // On MSVC, unsigned long is 32-bit, so -1UL is 0xFFFFFFFF not
+  // 0xFFFFFFFFFFFFFFFF.
+  size_t chunk_offset = static_cast<size_t>(-1);
 
   std::lock_guard<std::mutex> lock(mutex_);
   // duplicate check
@@ -558,7 +560,7 @@ int HnswStreamerEntity::add_vector(level_t level, key_t key, const void *vec,
 int HnswStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
                                            const void *vec) {
   Chunk::Pointer node_chunk;
-  size_t chunk_offset = -1UL;
+  size_t chunk_offset = static_cast<size_t>(-1);
   key_t key = id;
 
   std::lock_guard<std::mutex> lock(mutex_);

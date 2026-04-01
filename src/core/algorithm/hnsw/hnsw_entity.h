@@ -138,7 +138,11 @@ struct HNSWHeader {
 
 struct NeighborsHeader {
   uint32_t neighbor_cnt;
+#ifdef _MSC_VER
+  node_id_t neighbors[];
+#else
   node_id_t neighbors[0];
+#endif
 };
 
 struct Neighbors {
@@ -147,8 +151,8 @@ struct Neighbors {
   Neighbors(uint32_t cnt_in, const node_id_t *data_in)
       : cnt{cnt_in}, data{data_in} {}
 
-  Neighbors(IndexStorage::MemoryBlock &&mem_block)
-      : neighbor_block{std::move(mem_block)} {
+  Neighbors(const IndexStorage::MemoryBlock &mem_block)
+      : neighbor_block{mem_block} {
     auto hd = reinterpret_cast<const NeighborsHeader *>(neighbor_block.data());
     cnt = hd->neighbor_cnt;
     data = hd->neighbors;
@@ -506,7 +510,7 @@ class HnswEntity {
   constexpr static uint32_t kDefaultMinScanLimit = 10000;
   constexpr static uint32_t kDefaultMaxScanLimit =
       std::numeric_limits<uint32_t>::max();
-  constexpr static float kDefaultBFNegativeProbility = 0.001f;
+  constexpr static float kDefaultBFNegativeProbability = 0.001f;
   constexpr static uint32_t kDefaultScalingFactor = 50U;
   constexpr static uint32_t kDefaultBruteForceThreshold = 1000U;
   constexpr static uint32_t kDefaultDocsHardLimit = 1 << 30U;  // 1 billion

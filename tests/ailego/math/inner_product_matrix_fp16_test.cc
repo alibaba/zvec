@@ -652,7 +652,7 @@ void InnerProductBenchmark(void) {
   MatrixTranspose(&query2[0], query1.data(), dimension, query_size);
 
   ElapsedTime elapsed_time;
-  float results[batch_size * query_size];
+  std::vector<float> results(batch_size * query_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") FP16 " << dimension << "d, "
             << batch_size << " * " << query_size << " * " << block_size
@@ -680,7 +680,7 @@ void InnerProductBenchmark(void) {
     const Float16 *matrix_batch = &matrix2[i * batch_size * dimension];
 
     InnerProductMatrix<Float16, batch_size, query_size>::Compute(
-        matrix_batch, &query2[0], dimension, results);
+        matrix_batch, &query2[0], dimension, results.data());
   }
   std::cout << "* N Batched InnerProduct (us) \t"
             << elapsed_time.micro_seconds() << std::endl;
@@ -736,7 +736,7 @@ void MinusInnerProductBenchmark(void) {
   MatrixTranspose(&query2[0], query1.data(), dimension, query_size);
 
   ElapsedTime elapsed_time;
-  float results[batch_size * query_size];
+  std::vector<float> results(batch_size * query_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") FP16 " << dimension << "d, "
             << batch_size << " * " << query_size << " * " << block_size
@@ -764,7 +764,7 @@ void MinusInnerProductBenchmark(void) {
     const Float16 *matrix_batch = &matrix2[i * batch_size * dimension];
 
     MinusInnerProductMatrix<Float16, batch_size, query_size>::Compute(
-        matrix_batch, &query2[0], dimension, results);
+        matrix_batch, &query2[0], dimension, results.data());
   }
   std::cout << "* N Batched MinusInnerProduct (us) \t"
             << elapsed_time.micro_seconds() << std::endl;

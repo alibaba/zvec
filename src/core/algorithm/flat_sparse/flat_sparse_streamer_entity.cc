@@ -15,6 +15,7 @@
 #include "flat_sparse_streamer_entity.h"
 #include <cstdint>
 #include <memory>
+#include <numeric>
 #include <utility>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/internal/platform.h>

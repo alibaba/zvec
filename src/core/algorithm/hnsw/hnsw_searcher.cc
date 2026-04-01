@@ -19,9 +19,9 @@
 namespace zvec {
 namespace core {
 
-HnswSearcher::HnswSearcher() {}
+HnswSearcher::HnswSearcher() = default;
 
-HnswSearcher::~HnswSearcher() {}
+HnswSearcher::~HnswSearcher() = default;
 
 int HnswSearcher::init(const ailego::Params &search_params) {
   params_ = search_params;
@@ -32,7 +32,7 @@ int HnswSearcher::init(const ailego::Params &search_params) {
   params_.get(PARAM_HNSW_SEARCHER_NEIGHBORS_IN_MEMORY_ENABLE,
               &neighbors_in_memory_enabled_);
   params_.get(PARAM_HNSW_SEARCHER_VISIT_BLOOMFILTER_NEGATIVE_PROB,
-              &bf_negative_probility_);
+              &bf_negative_probability_);
   params_.get(PARAM_HNSW_SEARCHER_BRUTE_FORCE_THRESHOLD,
               &bruteforce_threshold_);
   params_.get(PARAM_HNSW_SEARCHER_FORCE_PADDING_RESULT_ENABLE,
@@ -41,7 +41,7 @@ int HnswSearcher::init(const ailego::Params &search_params) {
   if (ef_ == 0) {
     ef_ = HnswEntity::kDefaultEf;
   }
-  if (bf_negative_probility_ <= 0.0f || bf_negative_probility_ >= 1.0f) {
+  if (bf_negative_probability_ <= 0.0f || bf_negative_probability_ >= 1.0f) {
     LOG_ERROR("[%s] must be in range (0,1)",
               PARAM_HNSW_SEARCHER_VISIT_BLOOMFILTER_NEGATIVE_PROB.c_str());
     return IndexError_InvalidArgument;
@@ -56,7 +56,7 @@ int HnswSearcher::init(const ailego::Params &search_params) {
       "neighborsInMemoryEnabled=%u bfNagtiveProb=%f bruteForceThreshold=%u "
       "forcePadding=%u",
       ef_, max_scan_ratio_, bf_enabled_, check_crc_enabled_,
-      neighbors_in_memory_enabled_, bf_negative_probility_,
+      neighbors_in_memory_enabled_, bf_negative_probability_,
       bruteforce_threshold_, force_padding_topk_enabled_);
 
   return 0;
@@ -90,7 +90,7 @@ int HnswSearcher::cleanup() {
   max_scan_num_ = 0U;
   ef_ = HnswEntity::kDefaultEf;
   bf_enabled_ = false;
-  bf_negative_probility_ = HnswEntity::kDefaultBFNegativeProbility;
+  bf_negative_probability_ = HnswEntity::kDefaultBFNegativeProbability;
   bruteforce_threshold_ = HnswEntity::kDefaultBruteForceThreshold;
   check_crc_enabled_ = false;
   neighbors_in_memory_enabled_ = false;
@@ -228,7 +228,7 @@ int HnswSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->resize_results(count);
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
-    int ret = alg_->fast_search(ctx);
+    int ret = alg_->search(ctx);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
@@ -435,7 +435,7 @@ IndexSearcher::Context::Pointer HnswSearcher::create_context() const {
   uint32_t filter_mode =
       bf_enabled_ ? VisitFilter::BloomFilter : VisitFilter::ByteMap;
   ctx->set_filter_mode(filter_mode);
-  ctx->set_filter_negative_probility(bf_negative_probility_);
+  ctx->set_filter_negative_probability(bf_negative_probability_);
   ctx->set_magic(magic_);
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);

@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <numeric>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_helper.h>
 #include "flat_utility.h"

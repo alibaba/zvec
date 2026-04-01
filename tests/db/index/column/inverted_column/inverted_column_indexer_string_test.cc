@@ -16,6 +16,7 @@
 #include <random>
 #include <gtest/gtest.h>
 #include "db/index/column/inverted_column/inverted_indexer.h"
+#include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -292,9 +293,7 @@ class InvertedIndexTest : public testing::Test {
   /*****  Global initialization and cleanup - Start  *****/
  public:
   static void SetUpTestCase() {
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -rf %s", working_dir.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestPath(working_dir);
 
     indexer_ = InvertedIndexer::CreateAndOpen(collection_name, working_dir,
                                               true, {}, false);
@@ -305,9 +304,7 @@ class InvertedIndexTest : public testing::Test {
   static void TearDownTestCase() {
     indexer_.reset();
 
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -rf %s", working_dir.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestPath(working_dir);
   }
   /*****  Global initialization and cleanup - End  *****/
 

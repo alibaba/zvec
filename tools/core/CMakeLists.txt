@@ -1,5 +1,5 @@
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 set(ZVEC_TOOL_CORE_INTERFACE_LIBS
     core_framework
@@ -10,6 +10,7 @@ set(ZVEC_TOOL_CORE_INTERFACE_LIBS
     core_knn_flat_sparse
     core_knn_hnsw
     core_knn_hnsw_sparse
+    core_knn_hnsw_rabitq
     core_knn_cluster
     core_knn_ivf
     core_interface
@@ -25,7 +26,7 @@ cc_binary(
     STRICT PACKED
     SRCS txt2vecs.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags core_framework zvec_ailego 
+    LIBS gflags core_framework zvec_ailego
   )
 
 cc_binary(
@@ -73,5 +74,6 @@ cc_binary(
         STRICT PACKED
         SRCS local_builder_original.cc
         INCS ${PROJECT_ROOT_DIR}/src/core/
+        LIBS gflags yaml-cpp magic_enum ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
         LIBS gflags yaml-cpp magic_enum ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )

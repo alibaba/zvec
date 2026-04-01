@@ -200,7 +200,7 @@ class HnswSparseStreamer : public IndexStreamer {
   size_t bruteforce_threshold_{HnswSparseEntity::kDefaultBruteForceThreshold};
   size_t max_scan_limit_{HnswSparseEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{HnswSparseEntity::kDefaultMinScanLimit};
-  float bf_negative_prob_{HnswSparseEntity::kDefaultBFNegativeProbility};
+  float bf_negative_prob_{HnswSparseEntity::kDefaultBFNegativeProbability};
   float max_scan_ratio_{HnswSparseEntity::kDefaultScanRatio};
   float sparse_neighbor_ratio_{HnswSparseEntity::kDefaultSparseNeighborRatio};
   uint32_t sparse_neighbor_cnt_{0UL};

@@ -1,6 +1,6 @@
 
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 file(GLOB_RECURSE ALL_TEST_SRCS *_test.cc)
 
@@ -12,7 +12,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     Arrow::arrow_depends
     Arrow::parquet_static
     SRCS ${CC_SRCS}
-    INCS . ${CMAKE_SOURCE_DIR}/src/core/
+    INCS . ${PROJECT_ROOT_DIR}/src/core/
   )
   cc_test_suite(zvec_ailego ${CC_TARGET})
 endforeach()

@@ -1,0 +1,41 @@
+name: Profiling / Investigation
+description: Profile performance, compatibility, or behavior in a specific scenario
+title: "[Profile]: "
+labels: ["profile"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for tasks like performance profiling, architecture compatibility checks, or feasibility studies.
+  
+  - type: input
+    id: scenario
+    attributes:
+      label: Target Scenario
+      description: e.g., ARM64 deployment, high-concurrency load, large dataset ingestion
+    validations:
+      required: true
+  
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What do you want to learn or validate?
+    validations:
+      required: true
+  
+  - type: textarea
+    id: methodology
+    attributes:
+      label: Proposed Methodology
+      description: How will you conduct the investigation? (tools, metrics, test data)
+    validations:
+      required: true
+  
+  - type: textarea
+    id: expected_outcome
+    attributes:
+      label: Expected Outcome
+      description: What deliverables are expected? (e.g., report, optimization PR, benchmark results)
+    validations:
+      required: true

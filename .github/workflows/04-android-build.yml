@@ -1,0 +1,186 @@
+name: Android Cross Build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    # sdkmanager and other Android tools are x86‑only; ARM runners fail with exit code 1
+    # switch back to an x86 image so the setup-android action can install the SDK
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [x86_64]
+        api: [21]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.ccache
+          key: ${{ runner.os }}-dependencies-cache-${{ hashFiles('**/CMakeLists.txt', 'thirdparty/**') }}-stl-fix
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build git ca-certificates python3 \
+            build-essential make ccache
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK (side by side)
+        shell: bash
+        run: |
+          sdkmanager "ndk;26.1.10909125"
+
+      - name: Cache host protoc build
+        uses: actions/cache@v5
+        with:
+          path: build-host
+          key: ${{ runner.os }}-host-protoc-${{ hashFiles('src/**', 'CMakeLists.txt') }}-stl-fix
+          restore-keys: |
+            ${{ runner.os }}-host-protoc-
+
+      - name: Use host env to compile protoc
+        shell: bash
+        run: |
+          git submodule update --init
+          if [ ! -d "build-host" ]; then
+            export CCACHE_BASEDIR="$GITHUB_WORKSPACE"
+            export CCACHE_NOHASHDIR=1
+            export CCACHE_SLOPPINESS=clang_index_store,file_stat_matches,include_file_mtime,locale,time_macros
+
+            cmake -S . -B build-host -G Ninja \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            cmake --build build-host --target protoc --parallel
+          else
+            echo "Using cached host protoc build"
+          fi
+
+      - name: Cache Android build
+        uses: actions/cache@v5
+        with:
+          path: build-android-${{ matrix.abi }}
+          key: ${{ runner.os }}-android-build-${{ matrix.abi }}-${{ hashFiles('src/**', 'CMakeLists.txt', 'cmake/**', 'thirdparty/**') }}-stl-fix-3
+
+      - name: Configure and Build
+        shell: bash
+        run: |
+          git submodule foreach --recursive 'git stash --include-untracked'
+
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/26.1.10909125"
+
+          export CCACHE_BASEDIR="$GITHUB_WORKSPACE"
+          export CCACHE_NOHASHDIR=1
+          export CCACHE_SLOPPINESS=clang_index_store,file_stat_matches,include_file_mtime,locale,time_macros
+
+          if [ ! -d "build-android-${{ matrix.abi }}" ]; then
+            cmake -S . -B build-android-${{ matrix.abi }} -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=${{ matrix.abi }} \
+              -DANDROID_PLATFORM=android-${{ matrix.api }} \
+              -DANDROID_STL=c++_static \
+              -DBUILD_PYTHON_BINDINGS=OFF \
+              -DENABLE_NATIVE=OFF \
+              -DAUTO_DETECT_ARCH=OFF \
+              -DBUILD_TOOLS=OFF \
+              -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build-host/bin/protoc" \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_VERBOSE_MAKEFILE=ON
+            cmake --build build-android-${{ matrix.abi }} --parallel --verbose
+          else
+            echo "Using cached Android build directory"
+          fi
+
+      - name: Cache examples build
+        uses: actions/cache@v5
+        with:
+          path: examples/c++/build-android-examples-${{ matrix.abi }}
+          key: ${{ runner.os }}-examples-build-${{ matrix.abi }}-${{ hashFiles('examples/c++/**', 'CMakeLists.txt', 'src/**') }}-stl-fix-3
+
+      - name: Build examples
+        shell: bash
+        run: |
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/26.1.10909125"
+
+          if [ ! -d "examples/c++/build-android-examples-${{ matrix.abi }}" ]; then
+            cmake -S examples/c++ -B examples/c++/build-android-examples-${{ matrix.abi }} -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=${{ matrix.abi }} \
+              -DANDROID_PLATFORM=android-${{ matrix.api }} \
+              -DANDROID_STL=c++_static \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+              -DHOST_BUILD_DIR="build-android-${{ matrix.abi }}" \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            cmake --build examples/c++/build-android-examples-${{ matrix.abi }} --parallel
+          else
+            echo "Using cached examples build"
+          fi
+
+      - name: Run on Android emulator (arm64) and verify
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.abi }}
+          # target: google_apis
+          # emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -netdelay none -netspeed full
+          # disable-animations: true
+          script: |
+            adb wait-for-device
+
+            echo "Device ABI:"
+            adb shell getprop ro.product.cpu.abi
+            adb shell getprop ro.product.cpu.abilist
+
+            echo "=== CPU ISA / Instruction Set Support ==="
+            echo "--- /proc/cpuinfo flags ---"
+            adb shell 'cat /proc/cpuinfo | grep -E "^(Features|flags)"'
+
+            echo "Checking binary sizes:"
+            ls -lah examples/c++/build-android-examples-${{ matrix.abi }}/
+
+            # Push executables to device
+            adb push examples/c++/build-android-examples-${{ matrix.abi }}/ailego-example /data/local/tmp/
+            adb push examples/c++/build-android-examples-${{ matrix.abi }}/core-example /data/local/tmp/
+            adb push examples/c++/build-android-examples-${{ matrix.abi }}/db-example /data/local/tmp/
+
+            adb shell chmod 755 /data/local/tmp/ailego-example
+            adb shell chmod 755 /data/local/tmp/core-example
+            adb shell chmod 755 /data/local/tmp/db-example
+
+            echo "File info on device:"
+            adb shell ls -la /data/local/tmp/ailego-example
+            adb shell ls -la /data/local/tmp/core-example
+            adb shell ls -la /data/local/tmp/db-example
+
+            echo "Running ailego example:"
+            adb shell 'cd /data/local/tmp && ./ailego-example'
+
+            echo "Running core example:"
+            adb shell 'cd /data/local/tmp && ./core-example'
+
+            echo "Running db example:"
+            adb shell 'cd /data/local/tmp && ./db-example'

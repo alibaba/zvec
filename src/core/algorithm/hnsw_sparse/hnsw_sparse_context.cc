@@ -35,7 +35,7 @@ int HnswSparseContext::init(ContextType type) {
   switch (type) {
     case kSparseBuilderContext:
       ret = visit_filter_.init(VisitFilter::ByteMap, entity_->doc_cnt(),
-                               max_scan_num_, negative_probility_);
+                               max_scan_num_, negative_probability_);
       if (ret != 0) {
         LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
         return ret;
@@ -46,7 +46,7 @@ int HnswSparseContext::init(ContextType type) {
 
     case kSparseSearcherContext:
       ret = visit_filter_.init(filter_mode_, entity_->doc_cnt(), max_scan_num_,
-                               negative_probility_);
+                               negative_probability_);
       if (ret != 0) {
         LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
         return ret;
@@ -62,7 +62,7 @@ int HnswSparseContext::init(ContextType type) {
       max_scan_num_ = compute_max_scan_num(doc_cnt);
       reserve_max_doc_cnt_ = doc_cnt + compute_reserve_cnt(doc_cnt);
       ret = visit_filter_.init(filter_mode_, reserve_max_doc_cnt_,
-                               max_scan_num_, negative_probility_);
+                               max_scan_num_, negative_probability_);
       if (ret != 0) {
         LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
         return ret;
@@ -107,7 +107,7 @@ int HnswSparseContext::update(const ailego::Params &params) {
       }
     }
 
-    float prob = negative_probility_;
+    float prob = negative_probability_;
     p.clear();
     switch (type_) {
       case kSparseSearcherContext:
@@ -119,7 +119,7 @@ int HnswSparseContext::update(const ailego::Params &params) {
     }
     params.get(p, &prob);
     if (filter_mode_ == VisitFilter::BloomFilter &&
-        std::abs(prob - negative_probility_) > 1e-6) {
+        std::abs(prob - negative_probability_) > 1e-6) {
       need_update = true;
     }
     if (need_update) {
@@ -131,7 +131,7 @@ int HnswSparseContext::update(const ailego::Params &params) {
         max_doc_cnt = reserve_max_doc_cnt_;
       }
       int ret = visit_filter_.init(filter_mode_, max_doc_cnt, max_scan_num_,
-                                   negative_probility_);
+                                   negative_probability_);
       if (ret != 0) {
         LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
         return ret;

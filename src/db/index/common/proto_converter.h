@@ -25,6 +25,11 @@ struct ProtoConverter {
 
   static proto::HnswIndexParams ToPb(const HnswIndexParams *params);
 
+  // HnswRabitqIndexParams
+  static HnswRabitqIndexParams::OPtr FromPb(
+      const proto::HnswRabitqIndexParams &params_pb);
+  static proto::HnswRabitqIndexParams ToPb(const HnswRabitqIndexParams *params);
+
   // FlatIndexParams
   static FlatIndexParams::OPtr FromPb(const proto::FlatIndexParams &params_pb);
   static proto::FlatIndexParams ToPb(const FlatIndexParams *params);
