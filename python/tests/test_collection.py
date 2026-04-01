@@ -13,16 +13,19 @@
 # limitations under the License.
 from __future__ import annotations
 
+from pathlib import Path
 
 import pytest
 import zvec
 from zvec import (
     Collection,
+    CollectionSchema,
     CollectionOption,
     DataType,
     Doc,
     FieldSchema,
     HnswIndexParam,
+    HnswQueryParam,
     OmegaIndexParam,
     OmegaQueryParam,
     InvertIndexParam,
@@ -199,6 +202,65 @@ def omega_multiple_docs():
         )
         for id in range(1, 65)
     ]
+
+
+@pytest.fixture
+def omega_workflow_docs():
+    return [
+        Doc(
+            id=f"{id}",
+            fields={"id": id, "name": f"workflow-doc-{id}"},
+            vectors={"dense": [float(id) + 0.1] * 128},
+        )
+        for id in range(1, 129)
+    ]
+
+
+def _create_vector_collection(
+    tmp_path_factory,
+    collection_option: CollectionOption,
+    collection_name: str,
+    vector_index_param,
+) -> Collection:
+    temp_dir = tmp_path_factory.mktemp(collection_name)
+    collection_path = temp_dir / collection_name
+    schema = CollectionSchema(
+        name=collection_name,
+        fields=[
+            FieldSchema(
+                "id",
+                DataType.INT64,
+                nullable=False,
+                index_param=InvertIndexParam(enable_range_optimization=True),
+            ),
+            FieldSchema("name", DataType.STRING, nullable=False),
+        ],
+        vectors=[
+            VectorSchema(
+                "dense",
+                DataType.VECTOR_FP32,
+                dimension=128,
+                index_param=vector_index_param,
+            )
+        ],
+    )
+    coll = zvec.create_and_open(
+        path=str(collection_path), schema=schema, option=collection_option
+    )
+    assert coll is not None
+    return coll
+
+
+def _omega_model_files(collection: Collection) -> set[str]:
+    return {
+        path.name
+        for path in Path(collection.path).rglob("*")
+        if path.is_file() and path.parent.name == "omega_model"
+    }
+
+
+def _result_ids(result) -> list[str]:
+    return [doc.id for doc in result]
 
 
 @pytest.fixture
@@ -1066,6 +1128,109 @@ class TestCollectionQuery:
         )
         assert len(query_result) > 0
         assert query_result[0].id == omega_multiple_docs[0].id
+
+    def test_omega_workflow_optimize_trains_model_and_query_runs(
+        self, tmp_path_factory, collection_option, omega_workflow_docs
+    ):
+        omega_collection = _create_vector_collection(
+            tmp_path_factory,
+            collection_option,
+            "omega_workflow_active",
+            OmegaIndexParam(
+                metric_type=MetricType.L2,
+                min_vector_threshold=32,
+                num_training_queries=16,
+                ef_training=64,
+                ef_groundtruth=128,
+                window_size=32,
+            ),
+        )
+        try:
+            result = omega_collection.insert(omega_workflow_docs)
+            assert len(result) == len(omega_workflow_docs)
+            for item in result:
+                assert item.ok()
+
+            omega_collection.optimize(option=OptimizeOption(concurrency=1))
+
+            model_files = _omega_model_files(omega_collection)
+            assert {
+                "model.txt",
+                "threshold_table.txt",
+                "interval_table.txt",
+                "gt_collected_table.txt",
+                "gt_cmps_all_table.txt",
+            }.issubset(model_files)
+
+            query_result = omega_collection.query(
+                VectorQuery(
+                    field_name="dense",
+                    vector=omega_workflow_docs[31].vector("dense"),
+                    param=OmegaQueryParam(ef=128, target_recall=0.91),
+                ),
+                topk=10,
+            )
+
+            assert len(query_result) == 10
+            assert query_result[0].id == omega_workflow_docs[31].id
+        finally:
+            omega_collection.destroy()
+
+    def test_omega_query_falls_back_to_hnsw_when_model_not_trained(
+        self, tmp_path_factory, collection_option, omega_workflow_docs
+    ):
+        hnsw_collection = _create_vector_collection(
+            tmp_path_factory,
+            collection_option,
+            "hnsw_workflow_baseline",
+            HnswIndexParam(metric_type=MetricType.L2),
+        )
+        omega_collection = _create_vector_collection(
+            tmp_path_factory,
+            collection_option,
+            "omega_workflow_fallback",
+            OmegaIndexParam(
+                metric_type=MetricType.L2,
+                min_vector_threshold=100000,
+                num_training_queries=16,
+                ef_training=64,
+                ef_groundtruth=128,
+                window_size=32,
+            ),
+        )
+        try:
+            hnsw_insert_result = hnsw_collection.insert(omega_workflow_docs)
+            omega_insert_result = omega_collection.insert(omega_workflow_docs)
+            assert len(hnsw_insert_result) == len(omega_workflow_docs)
+            assert len(omega_insert_result) == len(omega_workflow_docs)
+
+            hnsw_collection.optimize(option=OptimizeOption(concurrency=1))
+            omega_collection.optimize(option=OptimizeOption(concurrency=1))
+
+            assert "model.txt" not in _omega_model_files(omega_collection)
+
+            query_vector = omega_workflow_docs[63].vector("dense")
+            hnsw_result = hnsw_collection.query(
+                VectorQuery(
+                    field_name="dense",
+                    vector=query_vector,
+                    param=HnswQueryParam(ef=128),
+                ),
+                topk=10,
+            )
+            omega_result = omega_collection.query(
+                VectorQuery(
+                    field_name="dense",
+                    vector=query_vector,
+                    param=OmegaQueryParam(ef=128, target_recall=0.91),
+                ),
+                topk=10,
+            )
+
+            assert _result_ids(omega_result) == _result_ids(hnsw_result)
+        finally:
+            omega_collection.destroy()
+            hnsw_collection.destroy()
 
     def test_collection_query_multi_vector_with_same_field(
         self, collection_with_multiple_docs: Collection, multiple_docs
