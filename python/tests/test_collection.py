@@ -1209,7 +1209,9 @@ class TestCollectionQuery:
 
             assert "model.txt" not in _omega_model_files(omega_collection)
 
-            query_vector = omega_workflow_docs[63].vector("dense")
+            # Use a non-document query vector to avoid equal-distance ties,
+            # so fallback-to-HNSW can be checked via exact result equality.
+            query_vector = [64.3] * 128
             hnsw_result = hnsw_collection.query(
                 VectorQuery(
                     field_name="dense",
