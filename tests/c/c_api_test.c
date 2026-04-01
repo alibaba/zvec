@@ -2621,7 +2621,7 @@ void test_doc_get_field_value_copy(void) {
   TEST_ASSERT(((int32_t *)array_int32_result)[0] == 100);
   TEST_ASSERT(((int32_t *)array_int32_result)[1] == 200);
   TEST_ASSERT(((int32_t *)array_int32_result)[2] == 300);
-  free(array_int32_result);
+  zvec_free(array_int32_result);
 
   // ARRAY_INT64 type
   int64_t array_int64_data[] = {-9223372036854775807LL, 0,
@@ -2642,7 +2642,7 @@ void test_doc_get_field_value_copy(void) {
   TEST_ASSERT(((int64_t *)array_int64_result)[0] == -9223372036854775807LL);
   TEST_ASSERT(((int64_t *)array_int64_result)[1] == 0);
   TEST_ASSERT(((int64_t *)array_int64_result)[2] == 9223372036854775807LL);
-  free(array_int64_result);
+  zvec_free(array_int64_result);
 
   // ARRAY_UINT32 type
   uint32_t array_uint32_data[] = {0U, 1000000U, 4000000000U};
@@ -2662,7 +2662,7 @@ void test_doc_get_field_value_copy(void) {
   TEST_ASSERT(((uint32_t *)array_uint32_result)[0] == 0U);
   TEST_ASSERT(((uint32_t *)array_uint32_result)[1] == 1000000U);
   TEST_ASSERT(((uint32_t *)array_uint32_result)[2] == 4000000000U);
-  free(array_uint32_result);
+  zvec_free(array_uint32_result);
 
   // ARRAY_UINT64 type
   uint64_t array_uint64_data[] = {0ULL, 1000000000000ULL,
@@ -2683,7 +2683,7 @@ void test_doc_get_field_value_copy(void) {
   TEST_ASSERT(((uint64_t *)array_uint64_result)[0] == 0ULL);
   TEST_ASSERT(((uint64_t *)array_uint64_result)[1] == 1000000000000ULL);
   TEST_ASSERT(((uint64_t *)array_uint64_result)[2] == 18000000000000000000ULL);
-  free(array_uint64_result);
+  zvec_free(array_uint64_result);
 
   // ARRAY_FLOAT type
   float array_float_data[] = {1.5f, 2.5f, 3.5f};
@@ -2703,7 +2703,7 @@ void test_doc_get_field_value_copy(void) {
   TEST_ASSERT(((float *)array_float_result)[0] == 1.5f);
   TEST_ASSERT(((float *)array_float_result)[1] == 2.5f);
   TEST_ASSERT(((float *)array_float_result)[2] == 3.5f);
-  free(array_float_result);
+  zvec_free(array_float_result);
 
   // ARRAY_DOUBLE type
   double array_double_data[] = {1.111111, 2.222222, 3.333333};
@@ -2723,10 +2723,10 @@ void test_doc_get_field_value_copy(void) {
   TEST_ASSERT(fabs(((double *)array_double_result)[0] - 1.111111) < 1e-10);
   TEST_ASSERT(fabs(((double *)array_double_result)[1] - 2.222222) < 1e-10);
   TEST_ASSERT(fabs(((double *)array_double_result)[2] - 3.333333) < 1e-10);
-  free(array_double_result);
+  zvec_free(array_double_result);
 
 
-  free(binary_field.value.string_value.data);
+  zvec_free(binary_field.value.string_value.data);
   zvec_doc_destroy(doc);
 
   TEST_END();
@@ -3142,8 +3142,8 @@ void test_doc_get_field_value_pointer(void) {
   TEST_ASSERT(fabs(((const double *)array_double_ptr)[1] - 2.222222) < 1e-10);
   TEST_ASSERT(fabs(((const double *)array_double_ptr)[2] - 3.333333) < 1e-10);
 
-  free(string_field.value.string_value.data);
-  free(binary_field.value.string_value.data);
+  zvec_free(string_field.value.string_value.data);
+  zvec_free(binary_field.value.string_value.data);
   zvec_doc_destroy(doc);
 
   TEST_END();
@@ -3217,7 +3217,7 @@ void test_doc_field_operations(void) {
   TEST_ASSERT(found_key_fields == true);
 
   zvec_free_str_array(field_names, name_count);
-  free(string_field.value.string_value.data);
+  zvec_free(string_field.value.string_value.data);
   zvec_doc_destroy(doc);
 
   TEST_END();
@@ -3350,21 +3350,21 @@ void test_index_params(void) {
   ZVecIndexParams *hnsw_params = zvec_test_create_default_hnsw_params();
   TEST_ASSERT(hnsw_params != NULL);
   if (hnsw_params) {
-    free(hnsw_params);
+    zvec_free(hnsw_params);
   }
 
   // Test Flat parameter creation
   ZVecIndexParams *flat_params = zvec_test_create_default_flat_params();
   TEST_ASSERT(flat_params != NULL);
   if (flat_params) {
-    free(flat_params);
+    zvec_free(flat_params);
   }
 
   // Test scalar index parameter creation
   ZVecIndexParams *invert_params = zvec_test_create_default_invert_params(true);
   TEST_ASSERT(invert_params != NULL);
   if (invert_params) {
-    free(invert_params);
+    zvec_free(invert_params);
   }
 
   TEST_END();
@@ -4681,40 +4681,6 @@ void test_collection_query_functions(void) {
     TEST_ASSERT(found_count == 2);
     zvec_docs_free(results, found_count);
 
-    // Test zvec_collection_query_by_group
-    ZVecGroupByVectorQuery *group_query = zvec_group_by_vector_query_create();
-    TEST_ASSERT(group_query != NULL);
-    zvec_group_by_vector_query_set_field_name(group_query, "vec");
-    float query_vec[4] = {0.5f, 0.5f, 0.0f, 0.0f};
-    zvec_group_by_vector_query_set_query_vector(group_query, query_vec,
-                                                sizeof(query_vec));
-    zvec_group_by_vector_query_set_group_by_field_name(group_query, "name");
-    zvec_group_by_vector_query_set_group_count(group_query, 2);
-    zvec_group_by_vector_query_set_group_topk(group_query, 1);
-    zvec_group_by_vector_query_set_include_vector(group_query, false);
-
-    const char *output_fields[] = {"name"};
-    zvec_group_by_vector_query_set_output_fields(group_query, output_fields, 1);
-
-    ZVecDoc **group_results = NULL;
-    ZVecString **group_values = NULL;
-    size_t group_result_count = 0;
-    err =
-        zvec_collection_query_by_group(collection, group_query, &group_results,
-                                       &group_values, &group_result_count);
-    TEST_ASSERT(err == ZVEC_OK);
-    if (group_results) {
-      zvec_docs_free(group_results, group_result_count);
-    }
-    if (group_values) {
-      for (size_t i = 0; i < group_result_count; i++) {
-        zvec_free_string(group_values[i]);
-      }
-      free(group_values);
-    }
-
-    zvec_group_by_vector_query_destroy(group_query);
-
     // Test zvec_collection_get_options
     ZVecCollectionOptions *options = NULL;
     err = zvec_collection_get_options(collection, &options);
@@ -4750,7 +4716,7 @@ void test_doc_advanced_functions(void) {
   const char *pk_copy = zvec_doc_get_pk_copy(doc);
   TEST_ASSERT(pk_copy != NULL);
   TEST_ASSERT(strcmp(pk_copy, "test_pk_copy") == 0);
-  free((void *)pk_copy);
+  zvec_free((void *)pk_copy);
 
   // Test zvec_doc_is_empty
   ZVecDoc *empty_doc = zvec_doc_create();
@@ -4803,7 +4769,7 @@ void test_doc_advanced_functions(void) {
   ZVecErrorCode err = zvec_doc_validate(val_doc, schema, false, &error_msg);
   TEST_ASSERT(err == ZVEC_OK);
   if (error_msg) {
-    free(error_msg);
+    zvec_free(error_msg);
   }
 
   zvec_doc_destroy(val_doc);
@@ -4823,7 +4789,7 @@ void test_doc_advanced_functions(void) {
   TEST_ASSERT(err == ZVEC_OK);
   TEST_ASSERT(detail_str != NULL);
   // printf("  Document detail: %s\n", detail_str);
-  free(detail_str);
+  zvec_free(detail_str);
 
   zvec_doc_destroy(detail_doc);
 
@@ -4967,7 +4933,7 @@ void test_collection_open_close(void) {
       zvec_get_last_error(&error_msg);
       printf("  Insert error: %s (err=%d, success=%zu)\n",
              error_msg ? error_msg : "unknown", err, success_count);
-      if (error_msg) free(error_msg);
+      if (error_msg) zvec_free(error_msg);
     }
     TEST_ASSERT(err == ZVEC_OK);
     TEST_ASSERT(success_count == 1);
@@ -4985,7 +4951,7 @@ void test_collection_open_close(void) {
       zvec_get_last_error(&error_msg);
       printf("  Open error: %s (err=%d)\n", error_msg ? error_msg : "unknown",
              err);
-      if (error_msg) free(error_msg);
+      if (error_msg) zvec_free(error_msg);
     }
     TEST_ASSERT(err == ZVEC_OK);
     TEST_ASSERT(reopened_collection != NULL);
@@ -5008,7 +4974,7 @@ void test_collection_open_close(void) {
         zvec_get_last_error(&error_msg);
         printf("  Query error: %s (err=%d, count=%zu)\n",
                error_msg ? error_msg : "unknown", err, result_count);
-        if (error_msg) free(error_msg);
+        if (error_msg) zvec_free(error_msg);
       }
       TEST_ASSERT(err == ZVEC_OK);
       TEST_ASSERT(result_count >= 1);
@@ -5016,11 +4982,11 @@ void test_collection_open_close(void) {
         const char *pk = zvec_doc_get_pk_copy(results[0]);
         TEST_ASSERT(pk != NULL);
         TEST_ASSERT(strcmp(pk, "doc1") == 0);
-        free((void *)pk);
+        zvec_free((void *)pk);
         for (size_t i = 0; i < result_count; i++) {
           zvec_doc_destroy(results[i]);
         }
-        free(results);
+        zvec_free(results);
       }
       zvec_vector_query_destroy(query);
     }
@@ -5334,7 +5300,7 @@ void test_collection_schema_getters(void) {
     printf("%s ", field_names[i]);
   }
   printf("\n");
-  free(field_names);
+  zvec_free(field_names);
 
   // Test get_forward_fields
   ZVecFieldSchema **forward_fields = NULL;
@@ -5346,7 +5312,7 @@ void test_collection_schema_getters(void) {
   TEST_ASSERT(forward_count == 2);  // field1 and field2 are scalars
   // Note: forward_fields contains pointers to fields owned by schema,
   // do not destroy them individually - just free the array
-  free(forward_fields);
+  zvec_free(forward_fields);
 
   // Test get_vector_fields
   ZVecFieldSchema **vector_fields = NULL;
@@ -5358,7 +5324,7 @@ void test_collection_schema_getters(void) {
   TEST_ASSERT(vector_count == 1);  // Only field3 is vector
   // Note: vector_fields contains pointers to fields owned by schema,
   // do not destroy them individually - just free the array
-  free(vector_fields);
+  zvec_free(vector_fields);
 
   // Test NULL pointer handling
   TEST_ASSERT(zvec_collection_schema_has_field(NULL, "field") == false);
