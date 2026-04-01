@@ -106,22 +106,21 @@ endif()
 # This creates a truly self-contained library with zero external dependencies
 # Users only need to link libzvec_c_api.so without installing any dependencies
 if(MSVC)
-    # Windows MSVC: Use /WHOLEARCHIVE flag for static libraries only
-    # Note: roaring might be a DLL on Windows, so we don't apply WHOLEARCHIVE to it
     target_link_options(zvec_c_api PRIVATE
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_db>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:roaring>
     )
-    
+
     target_link_libraries(zvec_c_api
         PRIVATE
             zvec_db
             zvec_core
             zvec_ailego
             zvec_turbo
-            roaring  # May be DLL on Windows, link normally
+            roaring
             ${ZVEC_CXX_STD_LIB}
             Threads::Threads
     )

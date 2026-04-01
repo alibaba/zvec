@@ -129,14 +129,4 @@ if(BUILD_PYTHON_BINDINGS)
 
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
-
-    if(MSVC)
-        install(FILES
-            $<TARGET_FILE:glog>
-            $<TARGET_FILE:gflags>
-            $<TARGET_FILE:roaring>
-            $<TARGET_FILE:libprotobuf>
-            DESTINATION ${ZVEC_PY_INSTALL_DIR}
-        )
-    endif()
 endif()
