@@ -984,7 +984,9 @@ void zvec_string_array_add(ZVecStringArray *array, size_t idx,
 void zvec_string_array_destroy(ZVecStringArray *array) {
   if (!array) return;
   for (size_t i = 0; i < array->count; i++) {
-    free((void *)array->strings[i].data);
+    if (array->strings[i].data) {
+      free((void *)array->strings[i].data);
+    }
   }
   free(array->strings);
   free(array);
@@ -5928,77 +5930,6 @@ ZVecErrorCode convert_document_results(
   return ZVEC_OK;
 }
 
-// Helper function to convert grouped document results to C API format
-ZVecErrorCode convert_grouped_document_results(
-    const std::vector<zvec::GroupResult> &group_results, ZVecDoc ***results,
-    ZVecString ***group_by_values, size_t *result_count) {
-  // Calculate total document count across all groups
-  size_t total_docs = 0;
-  for (const auto &group_result : group_results) {
-    total_docs += group_result.docs_.size();
-  }
-
-  // Allocate memory for document pointers and group by values
-  *result_count = total_docs;
-  *results =
-      static_cast<ZVecDoc **>(malloc(*result_count * sizeof(ZVecDoc *)));
-  *group_by_values = static_cast<ZVecString **>(
-      malloc(group_results.size() * sizeof(ZVecString *)));
-
-  if (!*results) {
-    set_last_error("Failed to allocate memory for query results");
-    return ZVEC_ERROR_INTERNAL_ERROR;
-  }
-
-  // Convert C++ grouped results to C API format
-  size_t doc_index = 0;
-  for (const auto &group_result : group_results) {
-    for (const auto &internal_doc : group_result.docs_) {
-      if (doc_index >= *result_count) {
-        break;
-      }
-
-      // Create new document wrapper
-      ZVecDoc *c_doc = zvec_doc_create();
-      if (!c_doc) {
-        // Clean up previously allocated documents
-        for (size_t j = 0; j < doc_index; ++j) {
-          zvec_doc_destroy((*results)[j]);
-        }
-        free(*results);
-        *results = nullptr;
-        *result_count = 0;
-        set_last_error("Failed to create document wrapper");
-        return ZVEC_ERROR_INTERNAL_ERROR;
-      }
-
-      // Copy the C++ document to our wrapper
-      auto *doc_ptr = reinterpret_cast<zvec::Doc *>(c_doc);
-      *doc_ptr = internal_doc;  // Copy assignment
-
-      ZVecString *c_group_value =
-          zvec_string_create(group_result.group_by_value_.c_str());
-      if (!c_group_value) {
-        for (size_t j = 0; j < doc_index; ++j) {
-          zvec_doc_destroy((*results)[j]);
-          zvec_free_string((*group_by_values)[doc_index]);
-        }
-        free(*results);
-        *results = nullptr;
-        *result_count = 0;
-        set_last_error("Failed to create string wrapper");
-        return ZVEC_ERROR_INTERNAL_ERROR;
-      }
-
-      (*group_by_values)[doc_index] = c_group_value;
-      (*results)[doc_index] = c_doc;
-      ++doc_index;
-    }
-  }
-
-  return ZVEC_OK;
-}
-
 // Helper function to convert fetched document results to C API format
 static void normalize_nullable_fields_for_fetch(
     const zvec::CollectionSchema &schema, zvec::DocPtrMap &doc_map) {
@@ -6116,44 +6047,6 @@ ZVecErrorCode zvec_collection_query(const ZVecCollection *collection,
             convert_document_results(query_results, results, result_count);
       } else {
         *results = nullptr;
-        *result_count = 0;
-      }
-
-      return error_code;)
-}
-
-ZVecErrorCode zvec_collection_query_by_group(
-    const ZVecCollection *collection, const ZVecGroupByVectorQuery *query,
-    ZVecDoc ***results, ZVecString ***group_by_values, size_t *result_count) {
-  if (!collection || !query || !results || !group_by_values ||
-      !result_count) {
-    set_last_error(
-        "Invalid arguments: collection, query, results, group_by_values and "
-        "result_count cannot "
-        "be null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-
-  ZVEC_TRY_RETURN_ERROR(
-      "Exception occurred",
-      auto coll_ptr =
-          reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
-              collection);
-
-      // Cast ZVecGroupByVectorQuery* to zvec::GroupByVectorQuery* directly
-      auto *internal_query =
-          reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
-
-      auto result = (*coll_ptr)->GroupByQuery(*internal_query);
-      ZVecErrorCode error_code = handle_expected_result(result);
-
-      if (error_code == ZVEC_OK) {
-        const auto &group_results = result.value();
-        error_code = convert_grouped_document_results(
-            group_results, results, group_by_values, result_count);
-      } else {
-        *results = nullptr;
-        *group_by_values = nullptr;
         *result_count = 0;
       }
 
