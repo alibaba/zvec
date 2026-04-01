@@ -78,6 +78,7 @@ elseif (MSVC)
                 "/WHOLEARCHIVE:$<TARGET_FILE:${_lib}>"
         )
     endforeach()
+    target_compile_options(_zvec PRIVATE "/MT$<$<CONFIG:Debug>:d>")
 endif ()
 
 target_include_directories(_zvec PRIVATE ${PYBIND11_INCLUDE_DIR} ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/binding/python/include)
