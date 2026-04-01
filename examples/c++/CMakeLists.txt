@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # --- Paths to Zvec and dependencies ---
 # Allow custom host build directory, default to "build"
 if(NOT DEFINED HOST_BUILD_DIR)
-    set(HOST_BUILD_DIR "build-r-test")
+    set(HOST_BUILD_DIR "build")
 endif()
 
 set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
