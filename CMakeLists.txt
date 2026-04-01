@@ -59,6 +59,9 @@ include_directories(${PROJECT_ROOT_DIR})
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 
+option(BUILD_C_BINDINGS "Build C bindings" ON)
+message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
+
 option(BUILD_TOOLS "Build tools" ON)
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
