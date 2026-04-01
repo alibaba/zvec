@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.26)
 cmake_policy(SET CMP0077 NEW)
 project(zvec-example-c++)
 set(CMAKE_CXX_STANDARD 17)
@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # --- Paths to Zvec and dependencies ---
 # Allow custom host build directory, default to "build"
 if(NOT DEFINED HOST_BUILD_DIR)
-    set(HOST_BUILD_DIR "build")
+    set(HOST_BUILD_DIR "build-r-test")
 endif()
 
 set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
@@ -19,6 +19,15 @@ set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/exter
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR})
 link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
+
+# Support multi-config builds (libs in Release/ or Debug/ subdirectories)
+if (CMAKE_BUILD_TYPE)
+    link_directories(
+            ${ZVEC_LIB_DIR}/${CMAKE_BUILD_TYPE}
+            ${ZVEC_DEPENDENCY_LIB_DIR}/${CMAKE_BUILD_TYPE}
+    )
+endif ()
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # --- Determine debug/release library names ---
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -55,7 +64,6 @@ if (NOT WIN32)
             ${CMAKE_THREAD_LIBS_INIT}
             ${CMAKE_DL_LIBS}
     )
-
 
     set(zvec_db_deps
             roaring
