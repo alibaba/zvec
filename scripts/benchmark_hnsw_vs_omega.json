@@ -27,11 +27,6 @@
         "window_size": 100,
         "ef_groundtruth": 1000
       }
-    },
-    "profiling": {
-      "hnsw_query_limit": 2000,
-      "omega_query_limit": 2000,
-      "omega_profile_control_timing": true
     }
   },
   "cohere_10m": {
@@ -62,11 +57,6 @@
         "window_size": 100,
         "ef_groundtruth": 2000
       }
-    },
-    "profiling": {
-      "hnsw_query_limit": 2000,
-      "omega_query_limit": 2000,
-      "omega_profile_control_timing": true
     }
   }
 }

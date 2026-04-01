@@ -29,7 +29,6 @@ class BenchmarkResult:
     p90_latency_ms: float | None = None
     p95_latency_ms: float | None = None
     p99_latency_ms: float | None = None
-    profiling: dict[str, Any] | None = None
 
 
 KV_PATTERN = re.compile(r"([A-Za-z_]+)=([^\s,]+)")
@@ -193,157 +192,16 @@ def parse_recall_output(output: str, topk: int) -> float | None:
     return None
 
 
-def build_hnsw_profile(
-    metrics: dict[str, Any], output: str, bench_summary: dict[str, Any]
-) -> dict[str, Any]:
-    query_records = parse_query_records(output, "HNSW query stats:")
-    return {
-        "benchmark_recall": metrics.get("recall"),
-        "benchmark_qps": metrics.get("qps"),
-        "profile_query_count": len(query_records),
-        "profile_avg_end2end_latency_ms": bench_summary.get("avg_latency_ms"),
-        "profile_p50_end2end_latency_ms": bench_summary.get("p50_latency_ms"),
-        "profile_p90_end2end_latency_ms": bench_summary.get("p90_latency_ms"),
-        "profile_p95_end2end_latency_ms": bench_summary.get("p95_latency_ms"),
-        "profile_p99_end2end_latency_ms": bench_summary.get("p99_latency_ms"),
-        "profile_avg_cmps": avg_metric(query_records, "pairwise_dist_cnt"),
-        "profile_avg_scan_cmps": avg_metric(query_records, "cmps"),
-        "profile_avg_pure_search_ms": avg_metric(query_records, "pure_search_ms"),
-        "profile_serial_avg_latency_s": (
-            bench_summary["avg_latency_ms"] / 1000.0
-            if bench_summary.get("avg_latency_ms") is not None
-            else None
-        ),
-        "profile_serial_p99_s": (
-            bench_summary["p99_latency_ms"] / 1000.0
-            if bench_summary.get("p99_latency_ms") is not None
-            else None
-        ),
-        "profile_serial_p95_s": (
-            bench_summary["p95_latency_ms"] / 1000.0
-            if bench_summary.get("p95_latency_ms") is not None
-            else None
-        ),
-        "profile_serial_avg_recall": metrics.get("recall"),
-    }
-
-
-def build_omega_profile(
-    metrics: dict[str, Any],
-    output: str,
-    bench_summary: dict[str, Any],
-    hnsw_profile: dict[str, Any] | None,
-) -> dict[str, Any]:
-    query_records = parse_query_records(output, "OMEGA query stats:")
-
-    avg_pairwise_dist_cnt = avg_metric(query_records, "pairwise_dist_cnt")
-    avg_core_search_ms = avg_metric(query_records, "core_search_ms")
-    avg_pure_search_ms = avg_metric(query_records, "pure_search_ms")
-    avg_hook_total_ms = avg_metric(query_records, "hook_total_ms")
-    avg_search_only_ms = avg_pure_search_ms if avg_pure_search_ms is not None else avg_core_search_ms
-
-    cmp_time_ms = None
-    if avg_pairwise_dist_cnt and avg_pairwise_dist_cnt > 0 and avg_search_only_ms is not None:
-        cmp_time_ms = avg_search_only_ms / avg_pairwise_dist_cnt
-
-    model_overhead_cmp_equiv = None
-    if cmp_time_ms and cmp_time_ms > 0 and avg_hook_total_ms is not None:
-        model_overhead_cmp_equiv = avg_hook_total_ms / cmp_time_ms
-
-    avg_saved_cmps = None
-    if (
-        hnsw_profile
-        and hnsw_profile.get("profile_avg_cmps") is not None
-        and avg_pairwise_dist_cnt is not None
-    ):
-        avg_saved_cmps = hnsw_profile["profile_avg_cmps"] - avg_pairwise_dist_cnt
-
-    return {
-        "benchmark_recall": metrics.get("recall"),
-        "benchmark_qps": metrics.get("qps"),
-        "profile_query_count": len(query_records),
-        "profile_avg_end2end_latency_ms": bench_summary.get("avg_latency_ms"),
-        "profile_p50_end2end_latency_ms": bench_summary.get("p50_latency_ms"),
-        "profile_p90_end2end_latency_ms": bench_summary.get("p90_latency_ms"),
-        "profile_p95_end2end_latency_ms": bench_summary.get("p95_latency_ms"),
-        "profile_p99_end2end_latency_ms": bench_summary.get("p99_latency_ms"),
-        "profile_avg_cmps": avg_pairwise_dist_cnt,
-        "profile_avg_scan_cmps": avg_metric(query_records, "scan_cmps"),
-        "profile_avg_omega_cmps": avg_metric(query_records, "omega_cmps"),
-        "profile_avg_prediction_calls": avg_metric(query_records, "prediction_calls"),
-        "profile_avg_should_stop_calls": avg_metric(query_records, "should_stop_calls"),
-        "profile_avg_advance_calls": avg_metric(query_records, "advance_calls"),
-        "profile_avg_model_overhead_ms": avg_hook_total_ms,
-        "profile_avg_setup_ms": avg_metric(query_records, "setup_ms"),
-        "profile_avg_should_stop_ms": avg_metric(query_records, "should_stop_ms"),
-        "profile_avg_prediction_eval_ms": avg_metric(query_records, "prediction_eval_ms"),
-        "profile_avg_core_search_ms": avg_core_search_ms,
-        "profile_avg_pure_search_ms": avg_pure_search_ms,
-        "profile_avg_hook_total_ms": avg_hook_total_ms,
-        "profile_avg_hook_body_ms": avg_metric(query_records, "hook_body_ms"),
-        "profile_avg_hook_dispatch_ms": avg_metric(query_records, "hook_dispatch_ms"),
-        "profile_avg_report_visit_candidate_ms": avg_metric(query_records, "report_visit_candidate_ms"),
-        "profile_avg_should_predict_ms": avg_metric(query_records, "should_predict_ms"),
-        "profile_avg_report_hop_ms": avg_metric(query_records, "report_hop_ms"),
-        "profile_avg_update_top_candidates_ms": avg_metric(query_records, "update_top_candidates_ms"),
-        "profile_avg_push_traversal_window_ms": avg_metric(query_records, "push_traversal_window_ms"),
-        "profile_avg_model_overhead_cmp_equiv": model_overhead_cmp_equiv,
-        "profile_avg_early_stop_saved_cmps": avg_saved_cmps,
-        "profile_avg_early_stop_hit_rate": avg_metric(query_records, "early_stop_hit"),
-        "profile_serial_avg_latency_s": (
-            bench_summary["avg_latency_ms"] / 1000.0
-            if bench_summary.get("avg_latency_ms") is not None
-            else None
-        ),
-        "profile_serial_p99_s": (
-            bench_summary["p99_latency_ms"] / 1000.0
-            if bench_summary.get("p99_latency_ms") is not None
-            else None
-        ),
-        "profile_serial_p95_s": (
-            bench_summary["p95_latency_ms"] / 1000.0
-            if bench_summary.get("p95_latency_ms") is not None
-            else None
-        ),
-        "profile_serial_avg_recall": metrics.get("recall"),
-    }
-
-
-def merge_omega_detailed_profile(
-    summary_profile: dict[str, Any], detailed_profile: dict[str, Any]
-) -> dict[str, Any]:
-    merged = dict(summary_profile)
-    detailed_keys = [
-        "profile_avg_model_overhead_ms",
-        "profile_avg_should_stop_ms",
-        "profile_avg_prediction_eval_ms",
-        "profile_avg_core_search_ms",
-        "profile_avg_pure_search_ms",
-        "profile_avg_hook_total_ms",
-        "profile_avg_hook_body_ms",
-        "profile_avg_hook_dispatch_ms",
-        "profile_avg_report_visit_candidate_ms",
-        "profile_avg_should_predict_ms",
-        "profile_avg_report_hop_ms",
-        "profile_avg_update_top_candidates_ms",
-        "profile_avg_push_traversal_window_ms",
-        "profile_avg_model_overhead_cmp_equiv",
-    ]
-    for key in detailed_keys:
-        merged[key] = detailed_profile.get(key)
-    return merged
-
-
-def profiling_output_path(index_path: Path) -> Path:
+def online_summary_path(index_path: Path) -> Path:
     return index_path / "online_benchmark_summary.json"
 
 
-def write_profiling_summary(index_path: Path, payload: dict[str, Any]) -> None:
-    with open(profiling_output_path(index_path), "w") as f:
+def write_online_summary(index_path: Path, payload: dict[str, Any]) -> None:
+    with open(online_summary_path(index_path), "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def write_grouped_profiling_summaries(dataset: str, results: list[BenchmarkResult]) -> list[Path]:
+def write_grouped_online_summaries(dataset: str, results: list[BenchmarkResult]) -> list[Path]:
     written_paths: list[Path] = []
     grouped: dict[str, list[BenchmarkResult]] = {}
     for result in results:
@@ -351,7 +209,7 @@ def write_grouped_profiling_summaries(dataset: str, results: list[BenchmarkResul
 
     for path_str, grouped_results in grouped.items():
         index_path = Path(path_str)
-        write_profiling_summary(
+        write_online_summary(
             index_path,
             {
                 "generated_at": datetime.now().isoformat(),
@@ -369,13 +227,12 @@ def write_grouped_profiling_summaries(dataset: str, results: list[BenchmarkResul
                         "p95_latency_ms": result.p95_latency_ms,
                         "p99_latency_ms": result.p99_latency_ms,
                         "recall": result.recall,
-                        "profiling": result.profiling,
                     }
                     for result in grouped_results
                 ],
             },
         )
-        written_paths.append(profiling_output_path(index_path))
+        written_paths.append(online_summary_path(index_path))
 
     return written_paths
 
@@ -481,18 +338,6 @@ def get_offline_load_duration(index_path: Path) -> float | None:
     return read_json_if_exists(offline_summary_path(index_path)).get("offline", {}).get(
         "load_duration_s"
     )
-
-
-def latency_summary_from_profile(profile: dict[str, Any] | None) -> dict[str, float | None]:
-    profile = profile or {}
-    return {
-        "avg_latency_ms": profile.get("profile_avg_end2end_latency_ms"),
-        "p50_latency_ms": profile.get("profile_p50_end2end_latency_ms"),
-        "p90_latency_ms": profile.get("profile_p90_end2end_latency_ms"),
-        "p95_latency_ms": profile.get("profile_p95_end2end_latency_ms"),
-        "p99_latency_ms": profile.get("profile_p99_end2end_latency_ms"),
-    }
-
 
 def resolve_dataset_spec(
     dataset_name: str, config: dict[str, Any], dataset_root_arg: str | None
@@ -1302,45 +1147,3 @@ def run_concurrency_benchmark(
 
     return {"summary": best_summary or {}, "output": best_output}
 
-
-def run_profile_benchmark(
-    *,
-    bench_bin: Path,
-    index_files: dict[str, Path | None],
-    dataset_artifacts: dict[str, Any],
-    dataset_spec: dict[str, Any],
-    common_args: dict[str, Any],
-    target_recall: float | None,
-    dry_run: bool,
-    extra_env: dict[str, str] | None,
-) -> tuple[int, str, dict[str, Any]]:
-    return run_bench(
-        bench_bin=bench_bin,
-        index_file=index_files["primary"],
-        query_file=dataset_artifacts["query_txt"],
-        metric_type=dataset_spec["metric_type"],
-        dimension=dataset_spec["dimension"],
-        m=int(common_args["m"]),
-        ef_construction=int(common_args.get("ef_construction", 500)),
-        quantize_type=str(common_args.get("quantize_type", "UNDEFINED")),
-        ef_search=int(common_args["ef_search"]),
-        topk=int(common_args["k"]),
-        bench_thread_count=1,
-        bench_secs=max(1, int(common_args.get("profiling_duration", 1))),
-        use_refiner=bool(common_args.get("is_using_refiner", False)),
-        reference_index_path=index_files["reference"],
-        target_recall=target_recall,
-        dry_run=dry_run,
-        extra_env=extra_env,
-    )
-
-
-def validate_profile_output(label: str, retcode: int, output: str, expected_prefix: str) -> None:
-    if retcode != 0:
-        raise RuntimeError(f"{label} profiling command failed with exit code {retcode}")
-    if expected_prefix not in output:
-        tail = "\n".join(output.splitlines()[-40:]) if output else "<empty output>"
-        raise RuntimeError(
-            f"{label} profiling output does not contain '{expected_prefix}'. "
-            f"Last output lines:\n{tail}"
-        )

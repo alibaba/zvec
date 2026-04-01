@@ -228,18 +228,6 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
     filter = [&](node_id_t id) { return ctx->filter()(entity.get_key(id)); };
   }
 
-  auto run_timed_hook = [&](auto &&fn) {
-    if (hooks == nullptr || !hooks->collect_timing || hooks->now_ns == nullptr ||
-        hooks->elapsed_ns == nullptr || hooks->hook_total_time_ns == nullptr) {
-      return fn();
-    }
-    uint64_t start_ns = hooks->now_ns();
-    auto result = fn();
-    *hooks->hook_total_time_ns +=
-        hooks->elapsed_ns(start_ns, hooks->now_ns());
-    return result;
-  };
-
   const uint32_t result_topk_limit = ctx->topk();
   const bool track_hook_result_topk =
       hooks != nullptr && hooks->on_visit_candidate != nullptr &&
@@ -259,18 +247,12 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
 
   candidates.emplace(*entry_point, *dist);
   if (hooks != nullptr && hooks->on_level0_entry != nullptr) {
-    run_timed_hook([&]() {
-      hooks->on_level0_entry(*entry_point, *dist, entry_inserted_to_topk,
-                             hooks->user_data);
-      return 0;
-    });
+    hooks->on_level0_entry(*entry_point, *dist, entry_inserted_to_topk,
+                           hooks->user_data);
   }
   while (!candidates.empty() && !ctx->reach_scan_limit()) {
     if (hooks != nullptr && hooks->on_hop != nullptr) {
-      run_timed_hook([&]() {
-        hooks->on_hop(hooks->user_data);
-        return 0;
-      });
+      hooks->on_hop(hooks->user_data);
     }
 
     auto top = candidates.begin();
@@ -358,10 +340,8 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
       }
 
       if (hooks != nullptr && hooks->on_visit_candidate != nullptr) {
-        bool should_stop = run_timed_hook([&]() {
-          return hooks->on_visit_candidate(node, cur_dist, inserted_to_topk,
-                                           hooks->user_data);
-        });
+        bool should_stop = hooks->on_visit_candidate(
+            node, cur_dist, inserted_to_topk, hooks->user_data);
         if (should_stop) {
           return true;
         }
