@@ -169,7 +169,7 @@ IndexSearcher::Context::Pointer OmegaSearcher::create_context() const {
   uint32_t filter_mode =
       bf_enabled_ ? VisitFilter::BloomFilter : VisitFilter::ByteMap;
   ctx->set_filter_mode(filter_mode);
-  ctx->set_filter_negative_probility(bf_negative_probility_);
+  ctx->set_filter_negative_probability(bf_negative_probability_);
   ctx->set_magic(magic_);
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);

@@ -358,7 +358,7 @@ IndexStreamer::Context::Pointer OmegaStreamer::create_context(void) const {
   ctx->set_max_scan_ratio(max_scan_ratio_);
   ctx->set_filter_mode(bf_enabled_ ? VisitFilter::BloomFilter
                                    : VisitFilter::ByteMap);
-  ctx->set_filter_negative_probility(bf_negative_prob_);
+  ctx->set_filter_negative_probability(bf_negative_prob_);
   ctx->set_magic(magic_);
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
