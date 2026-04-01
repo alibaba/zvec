@@ -92,7 +92,7 @@ TEST(FixedBitset, General) {
 }
 
 TEST(FixedBitset, And) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<3552> bitset1;
@@ -137,7 +137,7 @@ TEST(FixedBitset, And) {
 }
 
 TEST(FixedBitset, Andnot) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -183,7 +183,7 @@ TEST(FixedBitset, Andnot) {
 }
 
 TEST(FixedBitset, Or) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -228,7 +228,7 @@ TEST(FixedBitset, Or) {
 }
 
 TEST(FixedBitset, Xor) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -362,7 +362,7 @@ TEST(FixedBitset, TestNone) {
 }
 
 TEST(FixedBitset, Extract) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -386,7 +386,7 @@ TEST(FixedBitset, Extract) {
 }
 
 TEST(FixedBitset, BitwiseXorCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -425,7 +425,7 @@ TEST(FixedBitset, BitwiseXorCardinality) {
 }
 
 TEST(FixedBitset, BitwiseOrCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -458,7 +458,7 @@ TEST(FixedBitset, BitwiseOrCardinality) {
 }
 
 TEST(FixedBitset, BitwiseAndCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -491,7 +491,7 @@ TEST(FixedBitset, BitwiseAndCardinality) {
 }
 
 TEST(FixedBitset, BitwiseAndnotCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<2528> bitset1;
@@ -527,7 +527,7 @@ TEST(FixedBitset, BitwiseAndnotCardinality) {
 }
 
 TEST(FixedBitset, Benchmark) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   const uint32_t dimension = 2048u;
@@ -716,7 +716,7 @@ TEST(Bitset, General) {
 }
 
 TEST(Bitset, BitwiseXorCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitset bitset1;
@@ -758,7 +758,7 @@ TEST(Bitset, BitwiseXorCardinality) {
 }
 
 TEST(Bitset, BitwiseOrCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitset bitset1;
@@ -796,7 +796,7 @@ TEST(Bitset, BitwiseOrCardinality) {
 }
 
 TEST(Bitset, BitwiseAndCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitset bitset1;
@@ -834,7 +834,7 @@ TEST(Bitset, BitwiseAndCardinality) {
 }
 
 TEST(Bitset, BitwiseAndnotCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitset bitset1;
@@ -979,7 +979,7 @@ TEST(Bitmap, ShrinkToFit) {
 }
 
 TEST(Bitmap, And) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1, bitmap2;
@@ -1010,7 +1010,7 @@ TEST(Bitmap, And) {
 }
 
 TEST(Bitmap, Andnot) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1, bitmap2;
@@ -1041,7 +1041,7 @@ TEST(Bitmap, Andnot) {
 }
 
 TEST(Bitmap, Or) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1, bitmap2;
@@ -1072,7 +1072,7 @@ TEST(Bitmap, Or) {
 }
 
 TEST(Bitmap, Xor) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1, bitmap2;
@@ -1232,7 +1232,7 @@ TEST(Bitmap, TestNone) {
 }
 
 TEST(Bitmap, Extract) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1;
@@ -1256,7 +1256,7 @@ TEST(Bitmap, Extract) {
 }
 
 TEST(Bitmap, BitwiseXorCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1;
@@ -1295,7 +1295,7 @@ TEST(Bitmap, BitwiseXorCardinality) {
 }
 
 TEST(Bitmap, BitwiseOrCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1;
@@ -1330,7 +1330,7 @@ TEST(Bitmap, BitwiseOrCardinality) {
 }
 
 TEST(Bitmap, BitwiseAndCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1;
@@ -1365,7 +1365,7 @@ TEST(Bitmap, BitwiseAndCardinality) {
 }
 
 TEST(Bitmap, BitwiseAndnotCardinality) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1;
@@ -1401,7 +1401,7 @@ TEST(Bitmap, BitwiseAndnotCardinality) {
 }
 
 TEST(Bitmap, Benchmark) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   Bitmap bitmap1, bitmap2;
