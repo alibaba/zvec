@@ -23,7 +23,10 @@ from zvec import (
     Doc,
     FieldSchema,
     HnswIndexParam,
+    OmegaIndexParam,
+    OmegaQueryParam,
     InvertIndexParam,
+    MetricType,
     LogLevel,
     LogType,
     VectorSchema,
@@ -127,6 +130,75 @@ def test_collection(
                 coll.destroy()
             except Exception as e:
                 print(f"Warning: failed to destroy collection: {e}")
+
+
+@pytest.fixture(scope="session")
+def omega_collection_schema():
+    return zvec.CollectionSchema(
+        name="omega_test_collection",
+        fields=[
+            FieldSchema(
+                "id",
+                DataType.INT64,
+                nullable=False,
+                index_param=InvertIndexParam(enable_range_optimization=True),
+            ),
+            FieldSchema("name", DataType.STRING, nullable=False),
+        ],
+        vectors=[
+            VectorSchema(
+                "dense",
+                DataType.VECTOR_FP32,
+                dimension=128,
+                index_param=OmegaIndexParam(
+                    metric_type=MetricType.L2,
+                    min_vector_threshold=100000,
+                    num_training_queries=16,
+                    ef_training=64,
+                    window_size=32,
+                ),
+            )
+        ],
+    )
+
+
+@pytest.fixture(scope="function")
+def omega_test_collection(
+    tmp_path_factory, omega_collection_schema, collection_option
+) -> Collection:
+    temp_dir = tmp_path_factory.mktemp("zvec_omega")
+    collection_path = temp_dir / "omega_test_collection"
+
+    coll = zvec.create_and_open(
+        path=str(collection_path),
+        schema=omega_collection_schema,
+        option=collection_option,
+    )
+
+    assert coll is not None
+    assert coll.path == str(collection_path)
+    assert coll.schema.vectors[0].index_param.type == IndexType.OMEGA
+
+    try:
+        yield coll
+    finally:
+        if hasattr(coll, "destroy") and coll is not None:
+            try:
+                coll.destroy()
+            except Exception as e:
+                print(f"Warning: failed to destroy omega collection: {e}")
+
+
+@pytest.fixture
+def omega_multiple_docs():
+    return [
+        Doc(
+            id=f"{id}",
+            fields={"id": id, "name": f"doc-{id}"},
+            vectors={"dense": [id + 0.1] * 128},
+        )
+        for id in range(1, 65)
+    ]
 
 
 @pytest.fixture
@@ -968,6 +1040,32 @@ class TestCollectionQuery:
             VectorQuery(field_name="dense", id=multiple_docs[0].id)
         )
         assert len(result) == 10
+
+    def test_omega_collection_schema_uses_omega_index(
+        self, omega_test_collection: Collection
+    ):
+        vector_schema = omega_test_collection.schema.vector("dense")
+        assert vector_schema is not None
+        assert vector_schema.index_param.type == IndexType.OMEGA
+
+    def test_omega_collection_query_by_id_with_omega_param(
+        self, omega_test_collection: Collection, omega_multiple_docs
+    ):
+        result = omega_test_collection.insert(omega_multiple_docs)
+        assert len(result) == len(omega_multiple_docs)
+        for item in result:
+            assert item.ok()
+
+        query_result = omega_test_collection.query(
+            VectorQuery(
+                field_name="dense",
+                vector=omega_multiple_docs[0].vector("dense"),
+                param=OmegaQueryParam(ef=128, target_recall=0.91),
+            ),
+            topk=5,
+        )
+        assert len(query_result) > 0
+        assert query_result[0].id == omega_multiple_docs[0].id
 
     def test_collection_query_multi_vector_with_same_field(
         self, collection_with_multiple_docs: Collection, multiple_docs

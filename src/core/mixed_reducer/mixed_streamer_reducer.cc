@@ -199,18 +199,24 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   if (target_builder_ != nullptr) {
     IndexBuild();
 
-    // CRITICAL FIX: After IndexBuild(), the builder's entity has the graph data (1500 docs),
-    // but the streamer's entity is still empty (0 docs). They are separate objects!
-    // Solution: Dump builder to storage, then close and reopen streamer to reload the data.
+    // Best-effort persistence hook for builder-backed indexes. Some newer
+    // flows want the built graph persisted immediately after reduce(), but
+    // legacy paths such as IVF already perform their own dump/reopen later in
+    // the merge flow. Missing storage context must not break those existing
+    // paths.
 
     if (target_storage_ == nullptr) {
-      LOG_ERROR("target_storage_ is null, cannot dump/reload");
-      return IndexError_Runtime;
+      LOG_WARN("target_storage_ is null, skip dump/reload hook");
+      LOG_INFO("End brute force reduce. cost time: [%zu]s",
+               (size_t)timer.seconds());
+      return 0;
     }
 
     if (target_file_path_.empty()) {
-      LOG_ERROR("target_file_path_ is empty, cannot dump/reload");
-      return IndexError_Runtime;
+      LOG_WARN("target_file_path_ is empty, skip dump/reload hook");
+      LOG_INFO("End brute force reduce. cost time: [%zu]s",
+               (size_t)timer.seconds());
+      return 0;
     }
 
 

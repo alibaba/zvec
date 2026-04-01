@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import pickle
 import sys
 import time
 
@@ -25,11 +26,13 @@ from zvec import (
     CollectionOption,
     FlatIndexParam,
     HnswIndexParam,
+    OmegaIndexParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
     OptimizeOption,
     HnswQueryParam,
+    OmegaQueryParam,
     IVFQueryParam,
     VectorQuery,
     IndexType,
@@ -175,6 +178,69 @@ class TestIVFIndexParam:
             match_pattern = r"can't set attribute"
         with pytest.raises(AttributeError, match=match_pattern):
             setattr(param, attr, getattr(param, attr))
+
+
+# ----------------------------
+# OMEGA Index Param Test Case
+# ----------------------------
+class TestOmegaIndexParam:
+    def test_default(self):
+        param = OmegaIndexParam()
+        assert param.type == IndexType.OMEGA
+        assert param.metric_type == MetricType.IP
+        assert param.m == 50
+        assert param.ef_construction == 500
+        assert param.quantize_type == QuantizeType.UNDEFINED
+        assert param.min_vector_threshold == 100000
+        assert param.num_training_queries == 1000
+        assert param.ef_training == 1000
+        assert param.window_size == 100
+        assert param.ef_groundtruth == 0
+        assert param.k_train == 1
+
+    def test_custom(self):
+        param = OmegaIndexParam(
+            metric_type=MetricType.COSINE,
+            m=32,
+            ef_construction=700,
+            quantize_type=QuantizeType.INT8,
+            min_vector_threshold=1234,
+            num_training_queries=567,
+            ef_training=890,
+            window_size=42,
+            ef_groundtruth=321,
+            k_train=3,
+        )
+        assert param.metric_type == MetricType.COSINE
+        assert param.m == 32
+        assert param.ef_construction == 700
+        assert param.quantize_type == QuantizeType.INT8
+        assert param.min_vector_threshold == 1234
+        assert param.num_training_queries == 567
+        assert param.ef_training == 890
+        assert param.window_size == 42
+        assert param.ef_groundtruth == 321
+        assert param.k_train == 3
+
+    def test_pickle_round_trip(self):
+        param = OmegaIndexParam(
+            metric_type=MetricType.COSINE,
+            m=24,
+            ef_construction=320,
+            quantize_type=QuantizeType.INT8,
+            min_vector_threshold=2048,
+            num_training_queries=256,
+            ef_training=640,
+            window_size=48,
+            ef_groundtruth=96,
+            k_train=2,
+        )
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.type == IndexType.OMEGA
+        assert restored.metric_type == MetricType.COSINE
+        assert restored.m == 24
+        assert restored.ef_training == 640
+        assert restored.k_train == 2
 
 
 # ----------------------------
@@ -345,6 +411,51 @@ class TestHnswQueryParam:
                 param.is_linear = True
 
 
+# ----------------------------
+# OMEGA Query Param Test Case
+# ----------------------------
+class TestOmegaQueryParam:
+    def test_default(self):
+        param = OmegaQueryParam()
+        assert param.type == IndexType.OMEGA
+        assert param.ef == 300
+        assert param.target_recall == pytest.approx(0.95)
+        assert param.radius == pytest.approx(0.0)
+        assert param.is_linear is False
+        assert param.is_using_refiner is False
+
+    def test_custom(self):
+        param = OmegaQueryParam(
+            ef=480,
+            target_recall=0.92,
+            radius=1.5,
+            is_linear=True,
+            is_using_refiner=True,
+        )
+        assert param.type == IndexType.OMEGA
+        assert param.ef == 480
+        assert param.target_recall == pytest.approx(0.92)
+        assert param.radius == pytest.approx(1.5)
+        assert param.is_linear is True
+        assert param.is_using_refiner is True
+
+    def test_pickle_round_trip(self):
+        param = OmegaQueryParam(
+            ef=384,
+            target_recall=0.91,
+            radius=0.25,
+            is_linear=True,
+            is_using_refiner=True,
+        )
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.type == IndexType.OMEGA
+        assert restored.ef == 384
+        assert restored.target_recall == pytest.approx(0.91)
+        assert restored.radius == pytest.approx(0.25)
+        assert restored.is_linear is True
+        assert restored.is_using_refiner is True
+
+
 # # ----------------------------
 # # IVFQueryParam Test Case
 # # ----------------------------
@@ -389,6 +500,15 @@ class TestVectorQuery:
         assert vq.vector == vec
         assert vq.param == param
 
+    def test_init_with_valid_omega_param(self):
+        vec = [0.1, 0.2, 0.3]
+        param = OmegaQueryParam(ef=256, target_recall=0.91)
+        vq = VectorQuery(field_name="embedding", vector=vec, param=param)
+        assert vq.field_name == "embedding"
+        assert vq.vector == vec
+        assert vq.param == param
+        assert vq.param.target_recall == pytest.approx(0.91)
+
     def test_init_both_id_and_vector_raises_error(self):
         with pytest.raises(ValueError):
             VectorQuery(field_name="embedding", id="doc123", vector=[0.1])._validate()
@@ -413,3 +533,21 @@ class TestVectorQuery:
         vq = VectorQuery(field_name="test", id="doc123", vector=[0.1])
         with pytest.raises(ValueError):
             vq._validate()
+
+
+class TestVectorSchemaWithOmega:
+    def test_accepts_omega_index_param(self):
+        schema = VectorSchema(
+            name="dense",
+            data_type=DataType.VECTOR_FP32,
+            dimension=8,
+            index_param=OmegaIndexParam(
+                metric_type=MetricType.COSINE,
+                m=16,
+                ef_construction=300,
+                window_size=64,
+            ),
+        )
+        assert schema.index_param.type == IndexType.OMEGA
+        assert schema.index_param.metric_type == MetricType.COSINE
+        assert schema.index_param.window_size == 64
