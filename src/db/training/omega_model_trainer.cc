@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifdef ZVEC_ENABLE_OMEGA
-
 #include "omega_model_trainer.h"
 #include <omega/omega_trainer.h>
 #include <algorithm>
@@ -122,5 +120,3 @@ Status OmegaModelTrainer::TrainModelWithGtCmps(
 }
 
 }  // namespace zvec
-
-#endif  // ZVEC_ENABLE_OMEGA

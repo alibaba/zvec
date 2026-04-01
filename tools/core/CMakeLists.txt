@@ -16,10 +16,7 @@ set(ZVEC_TOOL_CORE_INTERFACE_LIBS
     core_interface
 )
 
-set(ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS core_mix_reducer)
-if(ZVEC_ENABLE_OMEGA)
-  list(APPEND ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS core_knn_omega)
-endif()
+set(ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS core_mix_reducer core_knn_omega)
 
 cc_binary(
     NAME txt2vecs

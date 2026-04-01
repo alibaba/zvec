@@ -17,11 +17,9 @@ set(ZVEC_TEST_CORE_INTERFACE_LIBS
     core_knn_hnsw_sparse
     core_knn_ivf
     core_knn_hnsw_rabitq
+    core_knn_omega
+    omega
 )
-
-if(ZVEC_ENABLE_OMEGA)
-  list(APPEND ZVEC_TEST_CORE_INTERFACE_LIBS core_knn_omega omega)
-endif()
 
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)

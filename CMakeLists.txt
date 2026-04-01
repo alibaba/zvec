@@ -65,11 +65,7 @@ message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 option(BUILD_TOOLS "Build tools" ON)
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
-option(ZVEC_ENABLE_OMEGA "Enable OMEGA support with LightGBM (requires LightGBM library)" OFF)
-message(STATUS "ZVEC_ENABLE_OMEGA:${ZVEC_ENABLE_OMEGA}")
-if(ZVEC_ENABLE_OMEGA)
-    add_definitions(-DZVEC_ENABLE_OMEGA)
-endif()
+message(STATUS "OMEGA support: always enabled")
 option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT ANDROID)

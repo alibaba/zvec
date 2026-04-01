@@ -32,12 +32,6 @@ cc_directory(mixed_reducer)
 git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 
-# Exclude omega algorithm files when OMEGA is disabled
-if(NOT ZVEC_ENABLE_OMEGA)
-    list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/omega/.*")
-    list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/omega_index\\.cc$")
-endif()
-
 # Remove algorithm/hnsw_rabitq implementation files if not supported.
 # interface/indexes/hnsw_rabitq_index.cc is kept because it provides the vtable
 # for HNSWRabitqIndex and guards rabitqlib usage with #if RABITQ_SUPPORTED.
@@ -45,10 +39,7 @@ if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
 endif()
 
-set(CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
-if(ZVEC_ENABLE_OMEGA)
-    list(APPEND CORE_LIBS omega)
-endif()
+set(CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib omega)
 
 cc_library(
     NAME zvec_core STATIC STRICT PACKED

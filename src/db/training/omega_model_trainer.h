@@ -14,8 +14,6 @@
 
 #pragma once
 
-#ifdef ZVEC_ENABLE_OMEGA
-
 #include <algorithm>
 #include <thread>
 #include <string>
@@ -78,5 +76,3 @@ class OmegaModelTrainer {
 };
 
 }  // namespace zvec
-
-#endif  // ZVEC_ENABLE_OMEGA

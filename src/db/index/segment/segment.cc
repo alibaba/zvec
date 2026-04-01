@@ -68,9 +68,7 @@
 #include "sql_expr_parser.h"
 #include "db/training/omega_training_coordinator.h"
 #include "db/training/training_data_collector.h"
-#ifdef ZVEC_ENABLE_OMEGA
 #include "db/training/omega_model_trainer.h"
-#endif
 
 namespace zvec {
 

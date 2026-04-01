@@ -20,9 +20,7 @@
 #include <vector>
 #include <zvec/ailego/logger/logger.h>
 #include "db/common/file_helper.h"
-#ifdef ZVEC_ENABLE_OMEGA
 #include "db/training/omega_model_trainer.h"
-#endif
 
 namespace zvec {
 
@@ -218,7 +216,6 @@ Status TrainOmegaModelAfterBuild(
     return Status::OK();
   }
 
-#ifdef ZVEC_ENABLE_OMEGA
   OmegaModelTrainerOptions trainer_opts;
   trainer_opts.output_dir = model_output_dir;
   trainer_opts.verbose = true;
@@ -238,9 +235,6 @@ Status TrainOmegaModelAfterBuild(
     LOG_WARN("OMEGA model training failed: %s",
              train_status.message().c_str());
   }
-#else
-  LOG_INFO("OMEGA training skipped (ZVEC_ENABLE_OMEGA not defined)");
-#endif
 
   return Status::OK();
 }
@@ -281,7 +275,6 @@ Status TrainOmegaModelAfterRetrainCollect(
   LOG_INFO("Training data stats: %zu positive, %zu negative samples",
            positive_count, negative_count);
 
-#ifdef ZVEC_ENABLE_OMEGA
   LOG_WARN("OMEGA retrain step 2/2: start model training for field '%s' in segment %d",
            field_name.c_str(), segment_id);
   OmegaModelTrainerOptions trainer_options;
@@ -308,9 +301,6 @@ Status TrainOmegaModelAfterRetrainCollect(
 
   LOG_WARN("OMEGA retrain step 2/2: finished model training for segment %d, output: %s",
            segment_id, trainer_options.output_dir.c_str());
-#else
-  LOG_INFO("OMEGA training skipped (ZVEC_ENABLE_OMEGA not defined)");
-#endif
 
   return Status::OK();
 }
