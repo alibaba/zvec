@@ -15,7 +15,7 @@ cc_library(
     NAME core_knn_hnsw_rabitq
     STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
-    LIBS core_framework rabitqlib sparsehash
+    LIBS core_framework core_utility rabitqlib sparsehash
     INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )
