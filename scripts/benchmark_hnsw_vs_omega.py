@@ -40,11 +40,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional comma-separated override for omega.target_recalls in the JSON config",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Print actions without executing")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print actions without executing"
+    )
     parser.add_argument("--skip-hnsw", action="store_true", help="Skip HNSW benchmark")
-    parser.add_argument("--skip-omega", action="store_true", help="Skip OMEGA benchmark")
-    parser.add_argument("--build-only", action="store_true", help="Only build index, skip search")
-    parser.add_argument("--search-only", action="store_true", help="Only run search on existing index")
+    parser.add_argument(
+        "--skip-omega", action="store_true", help="Skip OMEGA benchmark"
+    )
+    parser.add_argument(
+        "--build-only", action="store_true", help="Only build index, skip search"
+    )
+    parser.add_argument(
+        "--search-only", action="store_true", help="Only run search on existing index"
+    )
     parser.add_argument(
         "--retrain-only",
         action="store_true",
@@ -270,7 +278,9 @@ def _parse_target_recalls(
 ) -> list[float]:
     target_recalls = omega_config.get("target_recalls", [])
     if args.target_recalls:
-        target_recalls = [float(value) for value in args.target_recalls.split(",") if value]
+        target_recalls = [
+            float(value) for value in args.target_recalls.split(",") if value
+        ]
     if not target_recalls:
         raise ValueError("omega.target_recalls must be a non-empty list")
     return list(target_recalls)
@@ -309,8 +319,12 @@ def _format_summary_row(result: BenchmarkResult) -> str:
     status = "OK" if result.success else "FAILED"
     ld = f"{result.load_duration:.1f}" if result.load_duration is not None else "N/A"
     qps = f"{result.qps:.1f}" if result.qps is not None else "N/A"
-    avg_latency = f"{result.avg_latency_ms:.3f}" if result.avg_latency_ms is not None else "N/A"
-    p95_latency = f"{result.p95_latency_ms:.3f}" if result.p95_latency_ms is not None else "N/A"
+    avg_latency = (
+        f"{result.avg_latency_ms:.3f}" if result.avg_latency_ms is not None else "N/A"
+    )
+    p95_latency = (
+        f"{result.p95_latency_ms:.3f}" if result.p95_latency_ms is not None else "N/A"
+    )
     recall = f"{result.recall:.4f}" if result.recall is not None else "N/A"
     return (
         f"{result.type:<10} {tr:<15} {ld:<12} {qps:<8} "
@@ -318,7 +332,9 @@ def _format_summary_row(result: BenchmarkResult) -> str:
     )
 
 
-def _emit_result_summary(results: list[BenchmarkResult], summary_paths: list[Path]) -> None:
+def _emit_result_summary(
+    results: list[BenchmarkResult], summary_paths: list[Path]
+) -> None:
     emit(f"\n\n{'=' * 70}")
     emit("Benchmark Summary")
     emit("=" * 70)

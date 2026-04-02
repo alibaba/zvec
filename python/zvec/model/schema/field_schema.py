@@ -276,7 +276,9 @@ class VectorSchema:
         return self._cpp_obj.dimension
 
     @property
-    def index_param(self) -> Union[HnswIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]:
+    def index_param(
+        self,
+    ) -> Union[HnswIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]:
         """Union[HnswIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]: Index configuration for the vector."""
         return self._cpp_obj.index_param
 

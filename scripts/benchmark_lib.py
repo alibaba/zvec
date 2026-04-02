@@ -113,7 +113,9 @@ def resolve_paths(
     zvec_root_arg: str | None,
     benchmark_dir_arg: str | None,
 ) -> tuple[Path, Path]:
-    zvec_root = Path(zvec_root_arg).resolve() if zvec_root_arg else script_path.parent.parent
+    zvec_root = (
+        Path(zvec_root_arg).resolve() if zvec_root_arg else script_path.parent.parent
+    )
 
     config_benchmark_dir = config.get("benchmark_dir")
     if benchmark_dir_arg:
@@ -154,7 +156,9 @@ def avg_metric(records: list[dict[str, Any]], key: str) -> float | None:
     return sum(values) / len(values)
 
 
-def percentile_metric(records: list[dict[str, Any]], key: str, percentile: float) -> float | None:
+def percentile_metric(
+    records: list[dict[str, Any]], key: str, percentile: float
+) -> float | None:
     values = sorted(float(record[key]) for record in records if key in record)
     if not values:
         return None
@@ -214,7 +218,9 @@ def write_online_summary(index_path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def write_grouped_online_summaries(dataset: str, results: list[BenchmarkResult]) -> list[Path]:
+def write_grouped_online_summaries(
+    dataset: str, results: list[BenchmarkResult]
+) -> list[Path]:
     written_paths: list[Path] = []
     grouped: dict[str, list[BenchmarkResult]] = {}
     for result in results:
@@ -279,7 +285,9 @@ def build_offline_summary(
     metrics: dict[str, Any],
     retrain_only: bool = False,
 ) -> dict[str, Any]:
-    previous_summary = read_json_if_exists(offline_summary_path(index_path)) if retrain_only else {}
+    previous_summary = (
+        read_json_if_exists(offline_summary_path(index_path)) if retrain_only else {}
+    )
     previous_offline = previous_summary.get("offline", {})
     previous_omega_training = previous_summary.get("omega_training", {})
 
@@ -314,7 +322,9 @@ def build_offline_summary(
             + sum_timing_ms(omega_training.get("lightgbm_timing_ms", {}))
         ) / 1000.0
         if old_optimize_duration is not None:
-            optimize_duration = round(old_optimize_duration - old_training_s + new_training_s, 4)
+            optimize_duration = round(
+                old_optimize_duration - old_training_s + new_training_s, 4
+            )
         load_duration = (
             round(insert_duration + optimize_duration, 4)
             if insert_duration is not None and optimize_duration is not None
@@ -339,7 +349,9 @@ def build_offline_summary(
 def write_offline_summary(
     index_path: Path, db_label: str, metrics: dict[str, Any], retrain_only: bool = False
 ) -> Path:
-    summary = build_offline_summary(index_path, db_label, metrics, retrain_only=retrain_only)
+    summary = build_offline_summary(
+        index_path, db_label, metrics, retrain_only=retrain_only
+    )
     path = offline_summary_path(index_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as f:
@@ -348,8 +360,10 @@ def write_offline_summary(
 
 
 def get_offline_load_duration(index_path: Path) -> float | None:
-    return read_json_if_exists(offline_summary_path(index_path)).get("offline", {}).get(
-        "load_duration_s"
+    return (
+        read_json_if_exists(offline_summary_path(index_path))
+        .get("offline", {})
+        .get("load_duration_s")
     )
 
 
@@ -374,8 +388,12 @@ def resolve_dataset_spec(
         )
 
     dimension = int(config.get("dimension", default.get("dimension", 0)))
-    metric_type = str(config.get("metric_type", default.get("metric_type", "COSINE"))).upper()
-    remote_dirname = str(config.get("remote_dirname", default.get("remote_dirname", "")))
+    metric_type = str(
+        config.get("metric_type", default.get("metric_type", "COSINE"))
+    ).upper()
+    remote_dirname = str(
+        config.get("remote_dirname", default.get("remote_dirname", ""))
+    )
     train_files = list(config.get("train_files", default.get("train_files", [])))
     dataset_source = str(
         config.get("dataset_source", os.environ.get("ZVEC_DATASET_SOURCE", "S3"))
@@ -416,7 +434,9 @@ def _require_polars():
 
 def _require_zvec():
     if zvec is None:
-        raise RuntimeError("This script requires zvec in the active Python environment.")
+        raise RuntimeError(
+            "This script requires zvec in the active Python environment."
+        )
     return zvec
 
 
@@ -438,7 +458,9 @@ def _sorted_train_files(dataset_dir: Path) -> list[Path]:
     return unique
 
 
-def _dataset_required_files(dataset_name: str, dataset_spec: dict[str, Any]) -> list[str]:
+def _dataset_required_files(
+    dataset_name: str, dataset_spec: dict[str, Any]
+) -> list[str]:
     required = list(dataset_spec.get("train_files", []))
     if not required:
         raise ValueError(
@@ -459,10 +481,14 @@ def _download_file(url: str, output_path: Path) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
-def ensure_dataset_available(dataset_name: str, dataset_spec: dict[str, Any], dry_run: bool) -> None:
+def ensure_dataset_available(
+    dataset_name: str, dataset_spec: dict[str, Any], dry_run: bool
+) -> None:
     dataset_dir = dataset_spec["dataset_dir"]
     required_files = _dataset_required_files(dataset_name, dataset_spec)
-    missing_files = [name for name in required_files if not (dataset_dir / name).exists()]
+    missing_files = [
+        name for name in required_files if not (dataset_dir / name).exists()
+    ]
     if not missing_files:
         return
 
@@ -473,10 +499,14 @@ def ensure_dataset_available(dataset_name: str, dataset_spec: dict[str, Any], dr
         )
 
     base_url = dataset_spec["download_base_url"]
-    emit(f"Dataset files missing under {dataset_dir}, downloading from {base_url}/{remote_dirname} ...")
+    emit(
+        f"Dataset files missing under {dataset_dir}, downloading from {base_url}/{remote_dirname} ..."
+    )
     if dry_run:
         for name in missing_files:
-            emit(f"[Dry-run] download {base_url}/{remote_dirname}/{name} -> {dataset_dir / name}")
+            emit(
+                f"[Dry-run] download {base_url}/{remote_dirname}/{name} -> {dataset_dir / name}"
+            )
         return
 
     for name in missing_files:
@@ -505,7 +535,9 @@ def prepare_dataset_artifacts(
         if not gt_parquet.exists():
             raise FileNotFoundError(f"Missing ground-truth parquet: {gt_parquet}")
         if not train_files:
-            raise FileNotFoundError(f"No train parquet files found under: {dataset_dir}")
+            raise FileNotFoundError(
+                f"No train parquet files found under: {dataset_dir}"
+            )
 
     cache_dir = (benchmark_dir / "_dataset_cache" / dataset_name).resolve()
     query_txt = cache_dir / "query.txt"
@@ -517,7 +549,9 @@ def prepare_dataset_artifacts(
             not query_txt.exists()
             or query_txt.stat().st_mtime < query_parquet.stat().st_mtime
         )
-        refresh_gt = (not gt_txt.exists()) or gt_txt.stat().st_mtime < gt_parquet.stat().st_mtime
+        refresh_gt = (
+            not gt_txt.exists()
+        ) or gt_txt.stat().st_mtime < gt_parquet.stat().st_mtime
         if refresh_query:
             _write_query_text(query_parquet, query_txt)
         if refresh_gt:
@@ -664,7 +698,11 @@ def build_index(
 ) -> dict[str, Any]:
     if dry_run:
         emit(f"[Dry-run] Build {index_kind} at {index_path}")
-        return {"insert_duration": None, "optimize_duration": None, "load_duration": None}
+        return {
+            "insert_duration": None,
+            "optimize_duration": None,
+            "load_duration": None,
+        }
 
     module = _initialized_zvec()
 
@@ -687,7 +725,9 @@ def build_index(
             schema,
             module.CollectionOption(read_only=False, enable_mmap=True),
         )
-        insert_duration = _insert_training_data(collection, dataset_artifacts["train_files"])
+        insert_duration = _insert_training_data(
+            collection, dataset_artifacts["train_files"]
+        )
 
     optimize_start = time.perf_counter()
     collection.optimize(option=module.OptimizeOption(retrain_only=retrain_only))
@@ -703,13 +743,19 @@ def build_index(
         load_duration = optimize_duration
 
     return {
-        "insert_duration": round(insert_duration, 4) if insert_duration is not None else None,
-        "optimize_duration": round(optimize_duration, 4) if optimize_duration is not None else None,
+        "insert_duration": round(insert_duration, 4)
+        if insert_duration is not None
+        else None,
+        "optimize_duration": round(optimize_duration, 4)
+        if optimize_duration is not None
+        else None,
         "load_duration": round(load_duration, 4) if load_duration is not None else None,
     }
 
 
-def _insert_training_data(collection, train_files: list[Path], batch_size: int = 1000) -> float:
+def _insert_training_data(
+    collection, train_files: list[Path], batch_size: int = 1000
+) -> float:
     module = _initialized_zvec()
     polars = _require_polars()
     start = time.perf_counter()
@@ -748,7 +794,9 @@ def compute_recall_with_zvec(
     query_frame = polars.read_parquet(dataset_artifacts["query_parquet"]).sort("id")
     gt_frame = polars.read_parquet(dataset_artifacts["gt_parquet"]).sort("id")
     gt_map = {
-        int(row["id"]): [int(value) for value in row["neighbors_id"][: int(common_args["k"])]]
+        int(row["id"]): [
+            int(value) for value in row["neighbors_id"][: int(common_args["k"])]
+        ]
         for row in gt_frame.iter_rows(named=True)
     }
 
@@ -776,7 +824,9 @@ def compute_recall_with_zvec(
         if not gt:
             continue
         results = collection.query(
-            vectors=module.VectorQuery(field_name="dense", vector=row["emb"], param=query_param),
+            vectors=module.VectorQuery(
+                field_name="dense", vector=row["emb"], param=query_param
+            ),
             topk=topk,
             output_fields=[],
         )
@@ -876,7 +926,11 @@ def build_core_query_param_json(
 def discover_index_files(index_path: Path) -> dict[str, Path | None]:
     coarse_candidates = sorted(index_path.glob("*/dense.qindex.*.proxima"))
     full_candidates = sorted(index_path.glob("*/dense.index.*.proxima"))
-    primary = coarse_candidates[0] if coarse_candidates else (full_candidates[0] if full_candidates else None)
+    primary = (
+        coarse_candidates[0]
+        if coarse_candidates
+        else (full_candidates[0] if full_candidates else None)
+    )
     reference = full_candidates[0] if full_candidates else None
     if primary is None:
         raise FileNotFoundError(f"No core index file found under {index_path}")
@@ -1106,7 +1160,9 @@ def run_recall(
             recall_thread_count=1,
             groundtruth_file=groundtruth_file,
         )
-        ret, output = run_command_capture([str(recall_bin), str(config_path)], dry_run=dry_run)
+        ret, output = run_command_capture(
+            [str(recall_bin), str(config_path)], dry_run=dry_run
+        )
         return ret, output, parse_recall_output(output, topk)
     finally:
         if config_path.exists():
@@ -1130,7 +1186,9 @@ def run_concurrency_benchmark(
     quantize_type = str(common_args.get("quantize_type", "UNDEFINED"))
     use_refiner = bool(common_args.get("is_using_refiner", False))
     duration = int(common_args["concurrency_duration"])
-    thread_counts = [int(value) for value in str(common_args["num_concurrency"]).split(",") if value]
+    thread_counts = [
+        int(value) for value in str(common_args["num_concurrency"]).split(",") if value
+    ]
 
     best_summary: dict[str, Any] | None = None
     best_output = ""
@@ -1155,7 +1213,9 @@ def run_concurrency_benchmark(
         )
         summary["thread_count"] = thread_count
         summary["retcode"] = ret
-        if best_summary is None or (summary.get("qps") or 0.0) > (best_summary.get("qps") or 0.0):
+        if best_summary is None or (summary.get("qps") or 0.0) > (
+            best_summary.get("qps") or 0.0
+        ):
             best_summary = summary
             best_output = output
 
