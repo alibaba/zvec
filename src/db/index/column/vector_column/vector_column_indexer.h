@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <variant>
-#include <mutex>
-#include <map>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
@@ -98,13 +98,15 @@ class VectorColumnIndexer {
   /**
    * @brief Check if the underlying index supports training capability.
    *
-   * @return Pointer to ITrainingCapable interface if supported, nullptr otherwise
+   * @return Pointer to ITrainingCapable interface if supported, nullptr
+   * otherwise
    */
-  core_interface::ITrainingCapable* GetTrainingCapability() const;
+  core_interface::ITrainingCapable *GetTrainingCapability() const;
 
   core_interface::ITrainingSession::Pointer CreateTrainingSession() const;
 
-  void SetTrainingSession(const core_interface::ITrainingSession::Pointer& session);
+  void SetTrainingSession(
+      const core_interface::ITrainingSession::Pointer &session);
 
   void ClearTrainingSession();
 
@@ -131,7 +133,8 @@ class VectorColumnIndexer {
   MetricType metric_type() const {
     auto index_params = field_schema_.index_params();
     if (index_params) {
-      auto vector_params = std::dynamic_pointer_cast<VectorIndexParams>(index_params);
+      auto vector_params =
+          std::dynamic_pointer_cast<VectorIndexParams>(index_params);
       if (vector_params) {
         return vector_params->metric_type();
       }

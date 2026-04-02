@@ -13,12 +13,11 @@
 // limitations under the License.
 
 #include "omega_training_session.h"
-
 #include "algorithm/omega/omega_streamer.h"
 
 namespace zvec::core_interface {
 
-zvec::Status OmegaTrainingSession::Start(const TrainingSessionConfig& config) {
+zvec::Status OmegaTrainingSession::Start(const TrainingSessionConfig &config) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (streamer_ == nullptr) {
     return zvec::Status::InvalidArgument("Omega streamer is not available");
@@ -39,7 +38,8 @@ void OmegaTrainingSession::BeginQuery(int query_id) {
   }
 }
 
-void OmegaTrainingSession::CollectQueryArtifacts(QueryTrainingArtifacts&& artifacts) {
+void OmegaTrainingSession::CollectQueryArtifacts(
+    QueryTrainingArtifacts &&artifacts) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!artifacts.records.empty()) {
     records_.insert(records_.end(),
@@ -65,7 +65,7 @@ TrainingArtifacts OmegaTrainingSession::ConsumeArtifacts() {
     }
     size_t topk = topk_;
     if (topk == 0) {
-      for (const auto& entry : gt_cmps_map_) {
+      for (const auto &entry : gt_cmps_map_) {
         if (!entry.second.first.empty()) {
           topk = entry.second.first.size();
           break;
@@ -80,14 +80,15 @@ TrainingArtifacts OmegaTrainingSession::ConsumeArtifacts() {
     for (size_t q = 0; q < num_queries; ++q) {
       artifacts.gt_cmps_data.gt_cmps[q].resize(topk, 0);
     }
-    for (const auto& entry : gt_cmps_map_) {
+    for (const auto &entry : gt_cmps_map_) {
       size_t query_id = static_cast<size_t>(entry.first);
       if (query_id >= num_queries) {
         continue;
       }
-      const auto& [gt_cmps_per_rank, total_cmps] = entry.second;
+      const auto &[gt_cmps_per_rank, total_cmps] = entry.second;
       artifacts.gt_cmps_data.total_cmps[query_id] = total_cmps;
-      for (size_t rank = 0; rank < gt_cmps_per_rank.size() && rank < topk; ++rank) {
+      for (size_t rank = 0; rank < gt_cmps_per_rank.size() && rank < topk;
+           ++rank) {
         artifacts.gt_cmps_data.gt_cmps[query_id][rank] = gt_cmps_per_rank[rank];
       }
     }

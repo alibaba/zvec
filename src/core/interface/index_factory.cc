@@ -116,25 +116,23 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
         return true;
       };
 
-      if (!extract_enum_from_json<MetricType>(json_obj, "metric_type",
-                                              param->metric_type,
-                                              tmp_json_value) ||
+      if (!extract_enum_from_json<MetricType>(
+              json_obj, "metric_type", param->metric_type, tmp_json_value) ||
           !extract_enum_from_json<DataType>(json_obj, "data_type",
-                                           param->data_type,
-                                           tmp_json_value) ||
+                                            param->data_type, tmp_json_value) ||
           !extract_value_from_json(json_obj, "dimension", param->dimension,
-                                  tmp_json_value) ||
+                                   tmp_json_value) ||
           !extract_value_from_json(json_obj, "version", param->version,
-                                  tmp_json_value) ||
+                                   tmp_json_value) ||
           !extract_value_from_json(json_obj, "is_sparse", param->is_sparse,
-                                  tmp_json_value) ||
+                                   tmp_json_value) ||
           !extract_value_from_json(json_obj, "use_id_map", param->use_id_map,
-                                  tmp_json_value) ||
+                                   tmp_json_value) ||
           !extract_value_from_json(json_obj, "is_huge_page",
-                                  param->is_huge_page, tmp_json_value) ||
+                                   param->is_huge_page, tmp_json_value) ||
           !extract_value_from_json(json_obj, "m", param->m, tmp_json_value) ||
           !extract_value_from_json(json_obj, "ef_construction",
-                                  param->ef_construction, tmp_json_value) ||
+                                   param->ef_construction, tmp_json_value) ||
           !deserialize_quantizer(json_obj)) {
         LOG_ERROR("Failed to deserialize omega index param");
         return nullptr;

@@ -208,8 +208,10 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
 
   if (training_session != nullptr) {
     LOG_INFO(
-        "VectorColumnIndexer training search: query_id=%d records=%zu gt_cmps=%zu total_cmps=%d",
-        search_result.training_query_id_, search_result.training_records_.size(),
+        "VectorColumnIndexer training search: query_id=%d records=%zu "
+        "gt_cmps=%zu total_cmps=%d",
+        search_result.training_query_id_,
+        search_result.training_records_.size(),
         search_result.gt_cmps_per_rank_.size(), search_result.total_cmps_);
   }
 
@@ -229,7 +231,8 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
   return result;
 }
 
-core_interface::ITrainingCapable* VectorColumnIndexer::GetTrainingCapability() const {
+core_interface::ITrainingCapable *VectorColumnIndexer::GetTrainingCapability()
+    const {
   if (index != nullptr) {
     return index->GetTrainingCapability();
   }
@@ -239,7 +242,7 @@ core_interface::ITrainingCapable* VectorColumnIndexer::GetTrainingCapability() c
 core_interface::ITrainingSession::Pointer
 VectorColumnIndexer::CreateTrainingSession() const {
   if (index != nullptr) {
-    if (auto* training_capable = index->GetTrainingCapability()) {
+    if (auto *training_capable = index->GetTrainingCapability()) {
       return training_capable->CreateTrainingSession();
     }
   }
@@ -247,7 +250,7 @@ VectorColumnIndexer::CreateTrainingSession() const {
 }
 
 void VectorColumnIndexer::SetTrainingSession(
-    const core_interface::ITrainingSession::Pointer& session) {
+    const core_interface::ITrainingSession::Pointer &session) {
   std::lock_guard<std::mutex> lock(training_mutex_);
   training_session_ = session;
 }

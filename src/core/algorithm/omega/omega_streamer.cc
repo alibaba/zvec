@@ -13,17 +13,17 @@
 // limitations under the License.
 
 #include "omega_streamer.h"
+#include <omega/omega_api.h>
+#include <omega/search_context.h>
+#include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_logger.h>
-#include <zvec/ailego/io/file.h>
-#include "omega_hook_utils.h"
-#include "../hnsw/hnsw_entity.h"
-#include "../hnsw/hnsw_context.h"
 #include "omega_context.h"
+#include "omega_hook_utils.h"
 #include "omega_params.h"
-#include <omega/omega_api.h>
-#include <omega/search_context.h>
+#include "../hnsw/hnsw_context.h"
+#include "../hnsw/hnsw_entity.h"
 
 namespace zvec {
 namespace core {
@@ -35,7 +35,7 @@ struct OmegaHookSetup {
   HnswAlgorithm::SearchHooks hooks;
 };
 
-OmegaHookSetup CreateOmegaHookSetup(omega::SearchContext* omega_search_ctx,
+OmegaHookSetup CreateOmegaHookSetup(omega::SearchContext *omega_search_ctx,
                                     bool enable_early_stopping,
                                     bool per_cmp_reporting) {
   OmegaHookSetup setup;
@@ -51,10 +51,10 @@ OmegaHookSetup CreateOmegaHookSetup(omega::SearchContext* omega_search_ctx,
   return setup;
 }
 
-void EnableOmegaTrainingIfNeeded(OmegaSearchHandle omega_search, int query_id,
-                                 bool training_mode_enabled,
-                                 const std::vector<std::vector<uint64_t>>& training_ground_truth,
-                                 int training_k_train) {
+void EnableOmegaTrainingIfNeeded(
+    OmegaSearchHandle omega_search, int query_id, bool training_mode_enabled,
+    const std::vector<std::vector<uint64_t>> &training_ground_truth,
+    int training_k_train) {
   if (!training_mode_enabled) {
     return;
   }
@@ -62,7 +62,7 @@ void EnableOmegaTrainingIfNeeded(OmegaSearchHandle omega_search, int query_id,
   std::vector<int> gt_for_query;
   if (query_id >= 0 &&
       static_cast<size_t>(query_id) < training_ground_truth.size()) {
-    const auto& gt = training_ground_truth[query_id];
+    const auto &gt = training_ground_truth[query_id];
     gt_for_query.reserve(gt.size());
     for (uint64_t node_id : gt) {
       gt_for_query.push_back(static_cast<int>(node_id));
@@ -71,24 +71,24 @@ void EnableOmegaTrainingIfNeeded(OmegaSearchHandle omega_search, int query_id,
 
   omega_search_enable_training(omega_search, query_id, gt_for_query.data(),
                                gt_for_query.size(), training_k_train);
-  LOG_DEBUG("Training mode enabled for query_id=%d with %zu GT nodes",
-            query_id, gt_for_query.size());
+  LOG_DEBUG("Training mode enabled for query_id=%d with %zu GT nodes", query_id,
+            gt_for_query.size());
 }
 
 void CollectOmegaTrainingOutputs(OmegaSearchHandle omega_search,
-                                 OmegaContext* omega_ctx, int query_id) {
+                                 OmegaContext *omega_ctx, int query_id) {
   if (omega_ctx == nullptr) {
     return;
   }
 
   size_t record_count = omega_search_get_training_records_count(omega_search);
   if (record_count > 0) {
-    const void* records_ptr = omega_search_get_training_records(omega_search);
-    const auto* records_vec =
-        static_cast<const std::vector<omega::TrainingRecord>*>(records_ptr);
+    const void *records_ptr = omega_search_get_training_records(omega_search);
+    const auto *records_vec =
+        static_cast<const std::vector<omega::TrainingRecord> *>(records_ptr);
 
     for (size_t i = 0; i < record_count; ++i) {
-      const auto& omega_record = (*records_vec)[i];
+      const auto &omega_record = (*records_vec)[i];
       core_interface::TrainingRecord record;
       record.query_id = omega_record.query_id;
       record.hops_visited = omega_record.hops_visited;
@@ -115,14 +115,14 @@ void CollectOmegaTrainingOutputs(OmegaSearchHandle omega_search,
     return;
   }
 
-  const int* gt_cmps_ptr = omega_search_get_gt_cmps(omega_search);
+  const int *gt_cmps_ptr = omega_search_get_gt_cmps(omega_search);
   int total_cmps = omega_search_get_total_cmps(omega_search);
   if (gt_cmps_ptr == nullptr) {
     return;
   }
 
   std::vector<int> gt_cmps_vec(gt_cmps_ptr, gt_cmps_ptr + gt_cmps_count);
-  for (auto& v : gt_cmps_vec) {
+  for (auto &v : gt_cmps_vec) {
     if (v < 0) {
       v = total_cmps;
     }
@@ -132,7 +132,7 @@ void CollectOmegaTrainingOutputs(OmegaSearchHandle omega_search,
 
 }  // namespace
 
-bool OmegaStreamer::LoadModel(const std::string& model_dir) {
+bool OmegaStreamer::LoadModel(const std::string &model_dir) {
   std::lock_guard<std::mutex> lock(model_mutex_);
 
   if (omega_model_ != nullptr) {
@@ -179,28 +179,33 @@ int OmegaStreamer::open(IndexStorage::Pointer stg) {
   }
 
   if (index_path.empty()) {
-    LOG_WARN("OmegaStreamer open: storage file path is empty, using HNSW fallback");
+    LOG_WARN(
+        "OmegaStreamer open: storage file path is empty, using HNSW fallback");
     return 0;
   }
 
   size_t last_slash = index_path.rfind('/');
   if (last_slash == std::string::npos) {
-    LOG_WARN("OmegaStreamer open: cannot derive omega_model path from index path %s",
-             index_path.c_str());
+    LOG_WARN(
+        "OmegaStreamer open: cannot derive omega_model path from index path %s",
+        index_path.c_str());
     return 0;
   }
 
   std::string model_dir = index_path.substr(0, last_slash) + "/omega_model";
   std::string model_path = model_dir + "/model.txt";
   if (!ailego::File::IsExist(model_path)) {
-    LOG_INFO("OmegaStreamer open: no OMEGA model found at %s, using HNSW fallback",
-             model_dir.c_str());
+    LOG_INFO(
+        "OmegaStreamer open: no OMEGA model found at %s, using HNSW fallback",
+        model_dir.c_str());
     return 0;
   }
 
   if (!LoadModel(model_dir)) {
-    LOG_WARN("OmegaStreamer open: failed to load OMEGA model from %s, using HNSW fallback",
-             model_dir.c_str());
+    LOG_WARN(
+        "OmegaStreamer open: failed to load OMEGA model from %s, using HNSW "
+        "fallback",
+        model_dir.c_str());
   }
 
   return 0;
@@ -214,10 +219,10 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                uint32_t count,
                                Context::Pointer &context) const {
-  // Determine mode: training (no early stopping) vs inference (with early stopping)
-  bool enable_early_stopping =
-      !training_mode_enabled_ && IsModelLoaded() &&
-      !DisableOmegaModelPrediction();
+  // Determine mode: training (no early stopping) vs inference (with early
+  // stopping)
+  bool enable_early_stopping = !training_mode_enabled_ && IsModelLoaded() &&
+                               !DisableOmegaModelPrediction();
 
   if (training_mode_enabled_) {
     LOG_DEBUG("OmegaStreamer: training mode, early stopping DISABLED");
@@ -230,13 +235,14 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return omega_search_impl(query, qmeta, count, context, enable_early_stopping);
 }
 
-int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
+int OmegaStreamer::omega_search_impl(const void *query,
+                                     const IndexQueryMeta &qmeta,
                                      uint32_t count, Context::Pointer &context,
                                      bool enable_early_stopping) const {
   (void)qmeta;
 
   // Cast context to OmegaContext to access training_query_id
-  auto *omega_ctx = dynamic_cast<OmegaContext*>(context.get());
+  auto *omega_ctx = dynamic_cast<OmegaContext *>(context.get());
   int query_id = current_query_id_;  // Default to member variable
   if (omega_ctx != nullptr && omega_ctx->training_query_id() >= 0) {
     query_id = omega_ctx->training_query_id();
@@ -249,7 +255,7 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   }
 
   // Cast context to HnswContext to access HNSW-specific features
-  auto *hnsw_ctx = dynamic_cast<HnswContext*>(context.get());
+  auto *hnsw_ctx = dynamic_cast<HnswContext *>(context.get());
   if (hnsw_ctx == nullptr) {
     LOG_ERROR("Context is not HnswContext");
     return IndexError_InvalidArgument;
@@ -264,7 +270,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
 
   // In training mode: model=nullptr (collect features only)
   // In inference mode: model=omega_model_ (use for early stopping)
-  OmegaModelHandle model_to_use = enable_early_stopping ? omega_model_ : nullptr;
+  OmegaModelHandle model_to_use =
+      enable_early_stopping ? omega_model_ : nullptr;
 
   OmegaSearchHandle omega_search = omega_search_create_with_params(
       model_to_use, target_recall, omega_topk, window_size_);
@@ -273,7 +280,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
     LOG_ERROR("Failed to create OMEGA search context");
     return IndexError_Runtime;
   }
-  omega::SearchContext* omega_search_ctx = omega_search_get_cpp_context(omega_search);
+  omega::SearchContext *omega_search_ctx =
+      omega_search_get_cpp_context(omega_search);
   if (omega_search_ctx == nullptr) {
     omega_search_destroy(omega_search);
     LOG_ERROR("Failed to get OMEGA search context");
@@ -302,9 +310,8 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   hnsw_ctx->resize_results(count);
   hnsw_ctx->check_need_adjuct_ctx(entity_.doc_cnt());
   hnsw_ctx->reset_query(query);
-  OmegaHookSetup hook_setup =
-      CreateOmegaHookSetup(omega_search_ctx, enable_early_stopping,
-                           training_mode_enabled_);
+  OmegaHookSetup hook_setup = CreateOmegaHookSetup(
+      omega_search_ctx, enable_early_stopping, training_mode_enabled_);
   bool early_stop_hit = false;
   int ret =
       alg_->search_with_hooks(hnsw_ctx, &hook_setup.hooks, &early_stop_hit);
@@ -317,9 +324,10 @@ int OmegaStreamer::omega_search_impl(const void *query, const IndexQueryMeta &qm
   int hops = 0;
   int cmps = 0;
   omega_search_ctx->GetStats(&hops, &cmps, nullptr);
-  LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu, early_stop=%d",
-            cmps, hops, hnsw_ctx->topk_heap().size(),
-            (early_stop_hit || omega_search_ctx->EarlyStopHit()) ? 1 : 0);
+  LOG_DEBUG(
+      "OMEGA search completed: cmps=%d, hops=%d, results=%zu, early_stop=%d",
+      cmps, hops, hnsw_ctx->topk_heap().size(),
+      (early_stop_hit || omega_search_ctx->EarlyStopHit()) ? 1 : 0);
 
   // Match HNSW timing semantics: result materialization is outside the
   // search-core timer and happens after logging.
@@ -380,7 +388,7 @@ int OmegaStreamer::dump(const IndexDumper::Pointer &dumper) {
   // Persist the OMEGA searcher params alongside the dumped index metadata so a
   // reopened index reconstructs the same searcher-side behavior.
   ailego::Params searcher_params;
-  const auto& streamer_params = meta_.streamer_params();
+  const auto &streamer_params = meta_.streamer_params();
 
   // Copy the omega.* params needed by OmegaSearcher::init().
   if (streamer_params.has("omega.enabled")) {
@@ -388,22 +396,27 @@ int OmegaStreamer::dump(const IndexDumper::Pointer &dumper) {
                            streamer_params.get_as_bool("omega.enabled"));
   }
   if (streamer_params.has("omega.min_vector_threshold")) {
-    searcher_params.insert("omega.min_vector_threshold",
-                           streamer_params.get_as_uint32("omega.min_vector_threshold"));
+    searcher_params.insert(
+        "omega.min_vector_threshold",
+        streamer_params.get_as_uint32("omega.min_vector_threshold"));
   }
   if (streamer_params.has("omega.window_size")) {
     searcher_params.insert("omega.window_size",
                            streamer_params.get_as_int32("omega.window_size"));
   }
 
-  LOG_INFO("OmegaStreamer::dump: passing omega params to searcher "
-           "(enabled=%d, min_threshold=%u, window_size=%d)",
-           searcher_params.has("omega.enabled") ?
-               searcher_params.get_as_bool("omega.enabled") : false,
-           searcher_params.has("omega.min_vector_threshold") ?
-               searcher_params.get_as_uint32("omega.min_vector_threshold") : 0,
-           searcher_params.has("omega.window_size") ?
-               searcher_params.get_as_int32("omega.window_size") : 0);
+  LOG_INFO(
+      "OmegaStreamer::dump: passing omega params to searcher "
+      "(enabled=%d, min_threshold=%u, window_size=%d)",
+      searcher_params.has("omega.enabled")
+          ? searcher_params.get_as_bool("omega.enabled")
+          : false,
+      searcher_params.has("omega.min_vector_threshold")
+          ? searcher_params.get_as_uint32("omega.min_vector_threshold")
+          : 0,
+      searcher_params.has("omega.window_size")
+          ? searcher_params.get_as_int32("omega.window_size")
+          : 0);
 
   meta_.set_searcher("OmegaSearcher", HnswEntity::kRevision, searcher_params);
 

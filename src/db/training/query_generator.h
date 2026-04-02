@@ -27,7 +27,8 @@ namespace zvec {
  */
 struct SampledVectors {
   std::vector<std::vector<float>> vectors;
-  std::vector<uint64_t> doc_ids;  // doc_id of each sampled vector (for exclusion in GT)
+  std::vector<uint64_t>
+      doc_ids;  // doc_id of each sampled vector (for exclusion in GT)
 };
 
 /**
@@ -49,11 +50,10 @@ class TrainingQueryGenerator {
    * @param seed Random seed for reproducibility
    * @return SampledVectors with vectors and their doc_ids
    */
-  static SampledVectors SampleBaseVectorsWithIds(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      size_t num_samples,
-      uint64_t seed = 42);
+  static SampledVectors SampleBaseVectorsWithIds(const Segment::Ptr &segment,
+                                                 const std::string &field_name,
+                                                 size_t num_samples,
+                                                 uint64_t seed = 42);
 
   /**
    * @brief Generate training queries using held-out approach
@@ -67,11 +67,10 @@ class TrainingQueryGenerator {
    * @param seed Random seed for reproducibility
    * @return SampledVectors with query vectors and their doc_ids
    */
-  static SampledVectors GenerateHeldOutQueries(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      size_t num_queries,
-      uint64_t seed = 42);
+  static SampledVectors GenerateHeldOutQueries(const Segment::Ptr &segment,
+                                               const std::string &field_name,
+                                               size_t num_queries,
+                                               uint64_t seed = 42);
 };
 
 }  // namespace zvec

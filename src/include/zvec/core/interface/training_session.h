@@ -46,11 +46,11 @@ class ITrainingSession {
 
   virtual ~ITrainingSession() = default;
 
-  virtual zvec::Status Start(const TrainingSessionConfig& config) = 0;
+  virtual zvec::Status Start(const TrainingSessionConfig &config) = 0;
 
   virtual void BeginQuery(int query_id) = 0;
 
-  virtual void CollectQueryArtifacts(QueryTrainingArtifacts&& artifacts) = 0;
+  virtual void CollectQueryArtifacts(QueryTrainingArtifacts &&artifacts) = 0;
 
   virtual TrainingArtifacts ConsumeArtifacts() = 0;
 

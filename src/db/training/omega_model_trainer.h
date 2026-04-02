@@ -15,8 +15,8 @@
 #pragma once
 
 #include <algorithm>
-#include <thread>
 #include <string>
+#include <thread>
 #include <vector>
 #include <zvec/core/interface/training.h>
 #include <zvec/db/status.h>
@@ -70,9 +70,9 @@ class OmegaModelTrainer {
    * @return Status indicating success or failure
    */
   static Status TrainModelWithGtCmps(
-      const std::vector<core_interface::TrainingRecord>& training_records,
-      const core_interface::GtCmpsData& gt_cmps_data,
-      const OmegaModelTrainerOptions& options);
+      const std::vector<core_interface::TrainingRecord> &training_records,
+      const core_interface::GtCmpsData &gt_cmps_data,
+      const OmegaModelTrainerOptions &options);
 };
 
 }  // namespace zvec

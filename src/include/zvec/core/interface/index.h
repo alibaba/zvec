@@ -28,12 +28,12 @@
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_reducer.h>
 #include <zvec/core/framework/index_reformer.h>
-#include <zvec/core/interface/training.h>
-#include <zvec/core/interface/training_session.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/training.h>
 #include <zvec/core/interface/training_capable.h>
+#include <zvec/core/interface/training_session.h>
 #include <zvec/db/status.h>
 #include "zvec/core/framework/index_provider.h"
 
@@ -104,9 +104,10 @@ struct SearchResult {
   // Training records collected during search (for OMEGA training mode)
   std::vector<TrainingRecord> training_records_{};
   // GT cmps data: cmps value when each GT rank was found (for OMEGA training)
-  // gt_cmps_per_rank_[rank] = cmps when GT[rank] first entered topk (-1 if not found)
+  // gt_cmps_per_rank_[rank] = cmps when GT[rank] first entered topk (-1 if not
+  // found)
   std::vector<int> gt_cmps_per_rank_{};
-  int total_cmps_{0};  // Total comparisons in this search
+  int total_cmps_{0};          // Total comparisons in this search
   int training_query_id_{-1};  // Query ID for this search (-1 if not training)
 };
 
@@ -150,10 +151,11 @@ class Index {
    * This method allows indexes to optionally provide training functionality
    * without polluting the base Index class. Follows the Capability Pattern.
    *
-   * @return Pointer to ITrainingCapable interface if supported, nullptr otherwise
+   * @return Pointer to ITrainingCapable interface if supported, nullptr
+   * otherwise
    *
    */
-  virtual class ITrainingCapable* GetTrainingCapability() {
+  virtual class ITrainingCapable *GetTrainingCapability() {
     return nullptr;  // Default: capability not supported
   }
 
@@ -348,15 +350,15 @@ class HNSWRabitqIndex : public Index {
  * OmegaIndex is a specialized HNSW index that supports training mode for
  * collecting features to train the OMEGA early stopping model.
  *
- * It implements the ITrainingCapable interface to provide training functionality
- * without modifying the generic HNSWIndex class.
+ * It implements the ITrainingCapable interface to provide training
+ * functionality without modifying the generic HNSWIndex class.
  */
 class OmegaIndex : public HNSWIndex, public ITrainingCapable {
  public:
   OmegaIndex() = default;
 
   // Override GetTrainingCapability to return this
-  ITrainingCapable* GetTrainingCapability() override {
+  ITrainingCapable *GetTrainingCapability() override {
     return this;
   }
 

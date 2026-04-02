@@ -108,12 +108,9 @@ OmegaIndexParams::OPtr ProtoConverter::FromPb(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()), params_pb.m(),
       params_pb.ef_construction(),
       QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
-      params_pb.min_vector_threshold(),
-      params_pb.num_training_queries(),
-      params_pb.ef_training(),
-      params_pb.window_size(),
-      params_pb.ef_groundtruth(),
-      params_pb.k_train());
+      params_pb.min_vector_threshold(), params_pb.num_training_queries(),
+      params_pb.ef_training(), params_pb.window_size(),
+      params_pb.ef_groundtruth(), params_pb.k_train());
 
   return params;
 }

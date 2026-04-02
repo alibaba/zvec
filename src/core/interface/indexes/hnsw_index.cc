@@ -15,9 +15,9 @@
 #include <memory>
 #include <string>
 #include <zvec/core/interface/index.h>
-#include "algorithm/omega/omega_params.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
+#include "algorithm/omega/omega_params.h"
 
 namespace zvec::core_interface {
 

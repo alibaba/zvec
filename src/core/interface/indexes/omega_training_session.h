@@ -27,14 +27,14 @@ namespace core_interface {
 
 class OmegaTrainingSession : public ITrainingSession {
  public:
-  explicit OmegaTrainingSession(core::OmegaStreamer* streamer)
+  explicit OmegaTrainingSession(core::OmegaStreamer *streamer)
       : streamer_(streamer) {}
 
-  zvec::Status Start(const TrainingSessionConfig& config) override;
+  zvec::Status Start(const TrainingSessionConfig &config) override;
 
   void BeginQuery(int query_id) override;
 
-  void CollectQueryArtifacts(QueryTrainingArtifacts&& artifacts) override;
+  void CollectQueryArtifacts(QueryTrainingArtifacts &&artifacts) override;
 
   TrainingArtifacts ConsumeArtifacts() override;
 
@@ -43,7 +43,7 @@ class OmegaTrainingSession : public ITrainingSession {
  private:
   void ResetArtifactsLocked();
 
-  core::OmegaStreamer* streamer_{nullptr};
+  core::OmegaStreamer *streamer_{nullptr};
   std::mutex mutex_;
   size_t topk_{0};
   size_t num_queries_{0};

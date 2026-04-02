@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <zvec/core/interface/index.h>
-#include "algorithm/omega/omega_streamer.h"
-#include "algorithm/omega/omega_params.h"
-#include "algorithm/hnsw/hnsw_params.h"
-#include "omega_training_session.h"
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/core/interface/index.h>
+#include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/omega/omega_params.h"
+#include "algorithm/omega/omega_streamer.h"
+#include "omega_training_session.h"
 
 namespace zvec::core_interface {
 
@@ -26,7 +26,6 @@ namespace zvec::core_interface {
 // for creating the correct streamer and injecting OMEGA query params into the
 // search context. It does not own the adaptive-search algorithm itself.
 int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
-
   // Reuse HNSWIndex setup so the HNSW-compatible on-disk/index metadata is
   // initialized consistently before swapping in the OMEGA-aware streamer.
   int ret = HNSWIndex::CreateAndInitStreamer(param);
@@ -45,8 +44,7 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
     return core::IndexError_Runtime;
   }
 
-  if (ailego_unlikely(
-          streamer_->init(saved_meta, saved_params) != 0)) {
+  if (ailego_unlikely(streamer_->init(saved_meta, saved_params) != 0)) {
     LOG_ERROR("Failed to init OmegaStreamer");
     return core::IndexError_Runtime;
   }
@@ -60,8 +58,8 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 
 
 ITrainingSession::Pointer OmegaIndex::CreateTrainingSession() {
-  if (auto* omega_streamer =
-          streamer_ ? dynamic_cast<core::OmegaStreamer*>(streamer_.get())
+  if (auto *omega_streamer =
+          streamer_ ? dynamic_cast<core::OmegaStreamer *>(streamer_.get())
                     : nullptr) {
     return std::make_shared<OmegaTrainingSession>(omega_streamer);
   }

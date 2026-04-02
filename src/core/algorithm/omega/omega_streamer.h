@@ -13,12 +13,12 @@
 // limitations under the License.
 #pragma once
 
-#include "../hnsw/hnsw_streamer.h"
-#include "omega_context.h"
-#include <zvec/core/interface/training.h>
-#include <omega/omega_api.h>
-#include <mutex>
 #include <memory>
+#include <mutex>
+#include <omega/omega_api.h>
+#include <zvec/core/interface/training.h>
+#include "omega_context.h"
+#include "../hnsw/hnsw_streamer.h"
 
 namespace zvec {
 namespace core {
@@ -48,10 +48,14 @@ class OmegaStreamer : public HnswStreamer {
   OmegaStreamer &operator=(const OmegaStreamer &streamer) = delete;
 
   // Training-mode configuration forwarded into per-search contexts.
-  void EnableTrainingMode(bool enable) { training_mode_enabled_ = enable; }
-  void SetCurrentQueryId(int query_id) { current_query_id_ = query_id; }
-  void SetTrainingGroundTruth(const std::vector<std::vector<uint64_t>>& ground_truth,
-                               int k_train = 1) {
+  void EnableTrainingMode(bool enable) {
+    training_mode_enabled_ = enable;
+  }
+  void SetCurrentQueryId(int query_id) {
+    current_query_id_ = query_id;
+  }
+  void SetTrainingGroundTruth(
+      const std::vector<std::vector<uint64_t>> &ground_truth, int k_train = 1) {
     training_ground_truth_ = ground_truth;
     training_k_train_ = k_train;
   }
@@ -87,7 +91,7 @@ class OmegaStreamer : public HnswStreamer {
 
  private:
   // Search-mode configuration shared across searches for this streamer.
-  bool LoadModel(const std::string& model_dir);
+  bool LoadModel(const std::string &model_dir);
   bool IsModelLoaded() const;
 
   // Perform OMEGA adaptive search (shared between training and inference mode)

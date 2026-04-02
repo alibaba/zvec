@@ -59,8 +59,9 @@ struct TrainingRecord {
 /**
  * @brief Ground truth cmps data for OMEGA table generation.
  *
- * For each query, stores the cmps value when each ground truth result was found.
- * This data is used to generate gt_collected_table and gt_cmps_all_table.
+ * For each query, stores the cmps value when each ground truth result was
+ * found. This data is used to generate gt_collected_table and
+ * gt_cmps_all_table.
  *
  * gt_cmps[query_id][rank] = cmps value when GT[rank] was collected
  *                         = total_cmps if GT[rank] was never found

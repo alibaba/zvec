@@ -36,16 +36,18 @@ struct TrainingDataCollectorOptions {
   // ef parameter for training searches (large value for recall ≈ 1)
   int ef_training = 1000;
 
-  // ef parameter for ground truth computation (0 = brute force, >0 = HNSW with this ef)
-  // Using HNSW with large ef is much faster than brute force while maintaining high accuracy
+  // ef parameter for ground truth computation (0 = brute force, >0 = HNSW with
+  // this ef) Using HNSW with large ef is much faster than brute force while
+  // maintaining high accuracy
   int ef_groundtruth = 0;
 
   // Top-K results to retrieve per query
   size_t topk = 100;
 
   // K_train: number of ground truth results that must be collected for label=1
-  // Label=1 iff the top K_train ground truth nodes are all in collected_node_ids
-  // Typically set to 1 (i.e., label=1 when the 1st ground truth is found)
+  // Label=1 iff the top K_train ground truth nodes are all in
+  // collected_node_ids Typically set to 1 (i.e., label=1 when the 1st ground
+  // truth is found)
   size_t k_train = 1;
 
   // Random seed for reproducibility
@@ -95,18 +97,17 @@ class TrainingDataCollector {
    * @return TrainingDataCollectorResult with records and gt_cmps_data
    */
   static Result<TrainingDataCollectorResult> CollectTrainingDataWithGtCmps(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      const TrainingDataCollectorOptions& options,
-      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
+      const Segment::Ptr &segment, const std::string &field_name,
+      const TrainingDataCollectorOptions &options,
+      const std::vector<VectorColumnIndexer::Ptr> &indexers = {});
 
-  static Result<TrainingDataCollectorResult> CollectTrainingDataWithGtCmpsFromQueries(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      const std::vector<std::vector<float>>& training_queries,
-      const std::vector<uint64_t>& query_doc_ids,
-      const TrainingDataCollectorOptions& options,
-      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
+  static Result<TrainingDataCollectorResult>
+  CollectTrainingDataWithGtCmpsFromQueries(
+      const Segment::Ptr &segment, const std::string &field_name,
+      const std::vector<std::vector<float>> &training_queries,
+      const std::vector<uint64_t> &query_doc_ids,
+      const TrainingDataCollectorOptions &options,
+      const std::vector<VectorColumnIndexer::Ptr> &indexers = {});
 
  private:
   /**
@@ -117,28 +118,27 @@ class TrainingDataCollector {
    * @param queries Training query vectors
    * @param topk Number of top results to retrieve
    * @param num_threads Number of threads (0 = hardware_concurrency)
-   * @param query_doc_ids Optional doc_ids of query vectors (for self-exclusion in held-out mode)
+   * @param query_doc_ids Optional doc_ids of query vectors (for self-exclusion
+   * in held-out mode)
    * @param ef_groundtruth ef value for HNSW search (0 = brute force, >0 = HNSW)
    * @param metric_type Distance metric type (L2, IP, COSINE)
-   * @param indexers Optional pre-opened indexers (for HNSW GT, avoids using stale indexers from segment)
+   * @param indexers Optional pre-opened indexers (for HNSW GT, avoids using
+   * stale indexers from segment)
    * @return Ground truth doc IDs for each query
    */
   static std::vector<std::vector<uint64_t>> ComputeGroundTruth(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      const std::vector<std::vector<float>>& queries,
-      size_t topk,
-      size_t num_threads,
-      const std::vector<uint64_t>& query_doc_ids = {},
-      int ef_groundtruth = 0,
-      MetricType metric_type = MetricType::IP,
-      const std::vector<VectorColumnIndexer::Ptr>& indexers = {});
+      const Segment::Ptr &segment, const std::string &field_name,
+      const std::vector<std::vector<float>> &queries, size_t topk,
+      size_t num_threads, const std::vector<uint64_t> &query_doc_ids = {},
+      int ef_groundtruth = 0, MetricType metric_type = MetricType::IP,
+      const std::vector<VectorColumnIndexer::Ptr> &indexers = {});
 
   /**
    * @brief Compute gt_cmps data from training records and ground truth
    *
    * For each query and each GT rank, find the cmps value when that GT was first
-   * collected. This data is used to generate gt_collected_table and gt_cmps_all_table.
+   * collected. This data is used to generate gt_collected_table and
+   * gt_cmps_all_table.
    *
    * @param records Training records (must be sorted by query_id, then by cmps)
    * @param ground_truth Ground truth doc IDs per query
@@ -146,18 +146,16 @@ class TrainingDataCollector {
    * @return GtCmpsData structure with computed gt_cmps
    */
   static core_interface::GtCmpsData ComputeGtCmps(
-      const std::vector<core_interface::TrainingRecord>& records,
-      const std::vector<std::vector<uint64_t>>& ground_truth,
-      size_t topk);
+      const std::vector<core_interface::TrainingRecord> &records,
+      const std::vector<std::vector<uint64_t>> &ground_truth, size_t topk);
 
   static Result<TrainingDataCollectorResult> CollectTrainingDataFromQueriesImpl(
-      const Segment::Ptr& segment,
-      const std::string& field_name,
-      const std::vector<std::vector<float>>& training_queries,
-      const std::vector<std::vector<uint64_t>>& provided_ground_truth,
-      const TrainingDataCollectorOptions& options,
-      const std::vector<uint64_t>& query_doc_ids,
-      const std::vector<VectorColumnIndexer::Ptr>& provided_indexers);
+      const Segment::Ptr &segment, const std::string &field_name,
+      const std::vector<std::vector<float>> &training_queries,
+      const std::vector<std::vector<uint64_t>> &provided_ground_truth,
+      const TrainingDataCollectorOptions &options,
+      const std::vector<uint64_t> &query_doc_ids,
+      const std::vector<VectorColumnIndexer::Ptr> &provided_indexers);
 };
 
 }  // namespace zvec

@@ -44,8 +44,7 @@ class HnswAlgorithm {
     void (*on_level0_entry)(node_id_t id, dist_t dist, bool inserted_to_topk,
                             void *user_data){nullptr};
     void (*on_hop)(void *user_data){nullptr};
-    bool (*on_visit_candidate)(node_id_t id, dist_t dist,
-                               bool inserted_to_topk,
+    bool (*on_visit_candidate)(node_id_t id, dist_t dist, bool inserted_to_topk,
                                void *user_data){nullptr};
   };
 
@@ -113,8 +112,7 @@ class HnswAlgorithm {
   }
 
  private:
-  int search_internal(HnswContext *ctx, bool use_lock,
-                      const SearchHooks *hooks,
+  int search_internal(HnswContext *ctx, bool use_lock, const SearchHooks *hooks,
                       bool *stopped_early) const;
 
   //! Select in upper layer to get entry point for next layer search

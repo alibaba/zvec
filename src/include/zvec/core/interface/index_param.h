@@ -184,7 +184,8 @@ struct HNSWQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<HNSWQueryParam>;
 
   uint32_t ef_search = kDefaultHnswEfSearch;
-  int training_query_id = -1;  // For parallel training searches, -1 means use global
+  int training_query_id =
+      -1;  // For parallel training searches, -1 means use global
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<HNSWQueryParam>(*this);

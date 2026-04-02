@@ -13,15 +13,15 @@
 // limitations under the License.
 
 #include "omega_searcher.h"
-#include "omega_context.h"
-#include "omega_hook_utils.h"
-#include "omega_params.h"
+#include <limits>
+#include <omega/search_context.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_logger.h>
-#include <omega/search_context.h>
+#include "omega_context.h"
+#include "omega_hook_utils.h"
+#include "omega_params.h"
 #include "../hnsw/hnsw_context.h"
-#include <limits>
 
 namespace zvec {
 namespace core {
@@ -49,9 +49,15 @@ bool OmegaSearcher::should_use_omega() const {
 
 int OmegaSearcher::init(const ailego::Params &params) {
   // Get OMEGA-specific parameters
-  omega_enabled_ = params.has("omega.enabled") ? params.get_as_bool("omega.enabled") : false;
-  min_vector_threshold_ = params.has("omega.min_vector_threshold") ? params.get_as_uint32("omega.min_vector_threshold") : 100000;
-  window_size_ = params.has("omega.window_size") ? params.get_as_int32("omega.window_size") : 100;
+  omega_enabled_ =
+      params.has("omega.enabled") ? params.get_as_bool("omega.enabled") : false;
+  min_vector_threshold_ =
+      params.has("omega.min_vector_threshold")
+          ? params.get_as_uint32("omega.min_vector_threshold")
+          : 100000;
+  window_size_ = params.has("omega.window_size")
+                     ? params.get_as_int32("omega.window_size")
+                     : 100;
 
   // Call parent class init
   int ret = HnswSearcher::init(params);
@@ -60,9 +66,10 @@ int OmegaSearcher::init(const ailego::Params &params) {
     return ret;
   }
 
-  LOG_INFO("OmegaSearcher initialized (omega_enabled=%d, min_threshold=%u, "
-           "window_size=%d)",
-           omega_enabled_, min_vector_threshold_, window_size_);
+  LOG_INFO(
+      "OmegaSearcher initialized (omega_enabled=%d, min_threshold=%u, "
+      "window_size=%d)",
+      omega_enabled_, min_vector_threshold_, window_size_);
   return 0;
 }
 
@@ -111,7 +118,8 @@ int OmegaSearcher::load(IndexStorage::Pointer container,
         ret = omega_model_load(omega_model_, effective_model_dir.c_str());
         if (ret == 0 && omega_model_is_loaded(omega_model_)) {
           use_omega_mode_ = true;
-          LOG_INFO("OMEGA model loaded successfully from %s", effective_model_dir.c_str());
+          LOG_INFO("OMEGA model loaded successfully from %s",
+                   effective_model_dir.c_str());
         } else {
           LOG_WARN("Failed to load OMEGA model from %s, falling back to HNSW",
                    effective_model_dir.c_str());
@@ -120,7 +128,9 @@ int OmegaSearcher::load(IndexStorage::Pointer container,
         }
       }
     } else {
-      LOG_WARN("OMEGA enabled but cannot derive omega_model path from index storage, falling back to HNSW");
+      LOG_WARN(
+          "OMEGA enabled but cannot derive omega_model path from index "
+          "storage, falling back to HNSW");
     }
   } else {
     if (omega_enabled_) {
@@ -184,8 +194,7 @@ IndexSearcher::Context::Pointer OmegaSearcher::create_context() const {
 }
 
 int OmegaSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
-                               uint32_t count,
-                               ContextPointer &context) const {
+                               uint32_t count, ContextPointer &context) const {
   // If OMEGA mode is not active, delegate to parent HNSW
   if (!should_use_omega()) {
     return HnswSearcher::search_impl(query, qmeta, count, context);
@@ -195,11 +204,11 @@ int OmegaSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return adaptive_search(query, qmeta, count, context);
 }
 
-int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmeta,
-                                   uint32_t count,
+int OmegaSearcher::adaptive_search(const void *query,
+                                   const IndexQueryMeta &qmeta, uint32_t count,
                                    ContextPointer &context) const {
   // Cast context to OmegaContext to access OMEGA-specific features
-  auto *omega_ctx = dynamic_cast<OmegaContext*>(context.get());
+  auto *omega_ctx = dynamic_cast<OmegaContext *>(context.get());
   if (omega_ctx == nullptr) {
     LOG_ERROR("Context is not OmegaContext");
     return IndexError_InvalidArgument;
@@ -226,7 +235,8 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
     LOG_WARN("Failed to create OMEGA search context, falling back to HNSW");
     return HnswSearcher::search_impl(query, qmeta, count, context);
   }
-  omega::SearchContext* omega_search_ctx = omega_search_get_cpp_context(omega_search);
+  omega::SearchContext *omega_search_ctx =
+      omega_search_get_cpp_context(omega_search);
   if (omega_search_ctx == nullptr) {
     omega_search_destroy(omega_search);
     LOG_WARN("Failed to get OMEGA search context, falling back to HNSW");
@@ -268,8 +278,8 @@ int OmegaSearcher::adaptive_search(const void *query, const IndexQueryMeta &qmet
   // Get final statistics
   int hops, cmps, collected_gt;
   omega_search_ctx->GetStats(&hops, &cmps, &collected_gt);
-  LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu",
-            cmps, hops, omega_ctx->topk_heap().size());
+  LOG_DEBUG("OMEGA search completed: cmps=%d, hops=%d, results=%zu", cmps, hops,
+            omega_ctx->topk_heap().size());
 
   // Cleanup
   omega_search_destroy(omega_search);

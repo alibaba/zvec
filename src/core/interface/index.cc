@@ -16,8 +16,8 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
-#include "../mixed_reducer/mixed_streamer_reducer.h"
 #include "../mixed_reducer/mixed_reducer_params.h"
+#include "../mixed_reducer/mixed_streamer_reducer.h"
 
 namespace zvec::core_interface {
 
@@ -815,7 +815,8 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
 
 
   // Set storage and file path for dump/reload operations
-  auto* mixed_reducer = dynamic_cast<core::MixedStreamerReducer*>(reducer.get());
+  auto *mixed_reducer =
+      dynamic_cast<core::MixedStreamerReducer *>(reducer.get());
   if (mixed_reducer != nullptr) {
     mixed_reducer->set_storage(storage_, file_path_);
   }
@@ -842,9 +843,11 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
 
   // Generic training support: Check if this index supports training capability
   // The actual training orchestration happens at the db layer (Segment level)
-  auto* training_capable = this->GetTrainingCapability();
+  auto *training_capable = this->GetTrainingCapability();
   if (training_capable != nullptr) {
-    LOG_INFO("Index merge completed for trainable index, training can now be performed");
+    LOG_INFO(
+        "Index merge completed for trainable index, training can now be "
+        "performed");
   }
 
   return 0;

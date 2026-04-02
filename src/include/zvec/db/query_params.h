@@ -107,9 +107,8 @@ class HnswQueryParams : public QueryParams {
 class OmegaQueryParams : public HnswQueryParams {
  public:
   OmegaQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
-                   float target_recall = 0.95f,
-                   float radius = 0.0f, bool is_linear = false,
-                   bool is_using_refiner = false)
+                   float target_recall = 0.95f, float radius = 0.0f,
+                   bool is_linear = false, bool is_using_refiner = false)
       : HnswQueryParams(ef, radius, is_linear, is_using_refiner),
         target_recall_(target_recall) {
     set_type(IndexType::OMEGA);

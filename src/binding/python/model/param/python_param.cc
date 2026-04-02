@@ -705,7 +705,8 @@ Examples:
     10
 )pbdoc");
   omega_params
-      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, size_t, int, int, int, int>(),
+      .def(py::init<MetricType, int, int, QuantizeType, uint32_t, size_t, int,
+                    int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
@@ -713,10 +714,8 @@ Examples:
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("min_vector_threshold") = 100000,
            py::arg("num_training_queries") = 1000,
-           py::arg("ef_training") = 1000,
-           py::arg("window_size") = 100,
-           py::arg("ef_groundtruth") = 0,
-           py::arg("k_train") = 1)
+           py::arg("ef_training") = 1000, py::arg("window_size") = 100,
+           py::arg("ef_groundtruth") = 0, py::arg("k_train") = 1)
       .def_property_readonly(
           "m", &OmegaIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
@@ -738,9 +737,9 @@ Examples:
       .def_property_readonly(
           "ef_groundtruth", &OmegaIndexParams::ef_groundtruth,
           "int: ef for ground truth computation (0=brute force, >0=HNSW).")
-      .def_property_readonly(
-          "k_train", &OmegaIndexParams::k_train,
-          "int: Number of top GT results required for a positive training label.")
+      .def_property_readonly("k_train", &OmegaIndexParams::k_train,
+                             "int: Number of top GT results required for a "
+                             "positive training label.")
       .def(
           "to_dict",
           [](const OmegaIndexParams &self) -> py::dict {
@@ -772,25 +771,21 @@ Examples:
                     std::to_string(self.min_vector_threshold()) +
                     ", \"num_training_queries\":" +
                     std::to_string(self.num_training_queries()) +
-                    ", \"ef_training\":" +
-                    std::to_string(self.ef_training()) +
-                    ", \"window_size\":" +
-                    std::to_string(self.window_size()) +
+                    ", \"ef_training\":" + std::to_string(self.ef_training()) +
+                    ", \"window_size\":" + std::to_string(self.window_size()) +
                     ", \"ef_groundtruth\":" +
                     std::to_string(self.ef_groundtruth()) +
-                    ", \"k_train\":" +
-                    std::to_string(self.k_train()) +
+                    ", \"k_train\":" + std::to_string(self.k_train()) +
                     ", \"quantize_type\":" +
                     quantize_type_to_string(self.quantize_type()) + "}";
            })
       .def(py::pickle(
           [](const OmegaIndexParams &self) {
-            return py::make_tuple(self.metric_type(), self.m(),
-                                  self.ef_construction(), self.quantize_type(),
-                                  self.min_vector_threshold(),
-                                  self.num_training_queries(),
-                                  self.ef_training(), self.window_size(),
-                                  self.ef_groundtruth(), self.k_train());
+            return py::make_tuple(
+                self.metric_type(), self.m(), self.ef_construction(),
+                self.quantize_type(), self.min_vector_threshold(),
+                self.num_training_queries(), self.ef_training(),
+                self.window_size(), self.ef_groundtruth(), self.k_train());
           },
           [](py::tuple t) {
             if (t.size() == 10) {
@@ -926,7 +921,8 @@ Args:
           }));
 
   // binding omega query params
-  py::class_<OmegaQueryParams, HnswQueryParams, std::shared_ptr<OmegaQueryParams>>
+  py::class_<OmegaQueryParams, HnswQueryParams,
+             std::shared_ptr<OmegaQueryParams>>
       omega_query_params(m, "OmegaQueryParam", R"pbdoc(
 Query parameters for OMEGA index with adaptive early stopping.
 
@@ -953,9 +949,8 @@ Examples:
   omega_query_params
       .def(py::init<int, float, float, bool, bool>(),
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
-           py::arg("target_recall") = 0.95f,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false,
+           py::arg("target_recall") = 0.95f, py::arg("radius") = 0.0f,
+           py::arg("is_linear") = false, py::arg("is_using_refiner") = false,
            R"pbdoc(
 Constructs an OmegaQueryParam instance.
 
@@ -970,7 +965,9 @@ Args:
 )pbdoc")
       .def_property_readonly(
           "target_recall",
-          [](const OmegaQueryParams &self) -> float { return self.target_recall(); },
+          [](const OmegaQueryParams &self) -> float {
+            return self.target_recall();
+          },
           "float: Target recall for OMEGA early stopping (0.0 to 1.0).")
       .def("__repr__",
            [](const OmegaQueryParams &self) -> std::string {
@@ -978,7 +975,8 @@ Args:
                     "\"type\":" +
                     index_type_to_string(self.type()) +
                     ", \"ef\":" + std::to_string(self.ef()) +
-                    ", \"target_recall\":" + std::to_string(self.target_recall()) +
+                    ", \"target_recall\":" +
+                    std::to_string(self.target_recall()) +
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
@@ -993,8 +991,8 @@ Args:
           [](py::tuple t) {
             if (t.size() != 5)
               throw std::runtime_error("Invalid state for OmegaQueryParams");
-            auto obj = std::make_shared<OmegaQueryParams>(
-                t[0].cast<int>(), t[1].cast<float>());
+            auto obj = std::make_shared<OmegaQueryParams>(t[0].cast<int>(),
+                                                          t[1].cast<float>());
             obj->set_radius(t[2].cast<float>());
             obj->set_is_linear(t[3].cast<bool>());
             obj->set_is_using_refiner(t[4].cast<bool>());

@@ -90,8 +90,7 @@ int HnswAlgorithm::fast_search(HnswContext *ctx) const {
   return search_internal(ctx, false, nullptr, nullptr);
 }
 
-int HnswAlgorithm::search_with_hooks(HnswContext *ctx,
-                                     const SearchHooks *hooks,
+int HnswAlgorithm::search_with_hooks(HnswContext *ctx, const SearchHooks *hooks,
                                      bool *stopped_early) const {
   return search_internal(ctx, true, hooks, stopped_early);
 }
@@ -228,9 +227,9 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
   }
 
   const uint32_t result_topk_limit = ctx->topk();
-  const bool track_hook_result_topk =
-      hooks != nullptr && hooks->on_visit_candidate != nullptr &&
-      result_topk_limit > 0;
+  const bool track_hook_result_topk = hooks != nullptr &&
+                                      hooks->on_visit_candidate != nullptr &&
+                                      result_topk_limit > 0;
   TopkHeap hook_result_topk(result_topk_limit > 0 ? result_topk_limit : 1U);
 
   candidates.clear();
@@ -329,8 +328,8 @@ bool HnswAlgorithm::search_neighbors(level_t level, node_id_t *entry_point,
         if (!filter(node)) {
           topk.emplace(node, cur_dist);
           if (track_hook_result_topk) {
-            inserted_to_topk =
-                !hook_result_topk.full() || cur_dist < hook_result_topk[0].second;
+            inserted_to_topk = !hook_result_topk.full() ||
+                               cur_dist < hook_result_topk[0].second;
             if (inserted_to_topk) {
               hook_result_topk.emplace(node, cur_dist);
             }

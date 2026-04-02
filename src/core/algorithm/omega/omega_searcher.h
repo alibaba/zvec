@@ -13,9 +13,9 @@
 // limitations under the License.
 #pragma once
 
+#include <omega/omega_api.h>
 #include <zvec/core/framework/index_framework.h>
 #include "../hnsw/hnsw_searcher.h"
-#include <omega/omega_api.h>
 
 namespace zvec {
 namespace core {
@@ -32,7 +32,7 @@ class OmegaSearcher : public HnswSearcher {
   OmegaSearcher(void);
   ~OmegaSearcher(void);
 
- OmegaSearcher(const OmegaSearcher &) = delete;
+  OmegaSearcher(const OmegaSearcher &) = delete;
   OmegaSearcher &operator=(const OmegaSearcher &) = delete;
 
  protected:

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_streamer.h"
-#include <iostream>
 #include <atomic>
 #include <cstdlib>
+#include <iostream>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
@@ -32,7 +32,7 @@ namespace {
 
 bool ShouldLogHnswQueryStats(uint64_t query_seq) {
   static const bool enabled = []() {
-    const char* value = std::getenv("ZVEC_HNSW_LOG_QUERY_STATS");
+    const char *value = std::getenv("ZVEC_HNSW_LOG_QUERY_STATS");
     if (value == nullptr) {
       return false;
     }
@@ -43,11 +43,11 @@ bool ShouldLogHnswQueryStats(uint64_t query_seq) {
   }
 
   static const uint64_t limit = []() -> uint64_t {
-    const char* value = std::getenv("ZVEC_HNSW_LOG_QUERY_LIMIT");
+    const char *value = std::getenv("ZVEC_HNSW_LOG_QUERY_LIMIT");
     if (value == nullptr || *value == '\0') {
       return std::numeric_limits<uint64_t>::max();
     }
-    char* end = nullptr;
+    char *end = nullptr;
     unsigned long long parsed = std::strtoull(value, &end, 10);
     if (end == value) {
       return std::numeric_limits<uint64_t>::max();
@@ -59,14 +59,14 @@ bool ShouldLogHnswQueryStats(uint64_t query_seq) {
 }
 
 bool UseEmptyHnswHooks() {
-  const char* value = std::getenv("ZVEC_HNSW_ENABLE_EMPTY_HOOKS");
+  const char *value = std::getenv("ZVEC_HNSW_ENABLE_EMPTY_HOOKS");
   if (value == nullptr) {
     return false;
   }
   return std::string(value) != "0";
 }
 
-std::atomic<uint64_t>& HnswQueryStatsSequence() {
+std::atomic<uint64_t> &HnswQueryStatsSequence() {
   static std::atomic<uint64_t> sequence{0};
   return sequence;
 }
@@ -85,9 +85,9 @@ int HnswStreamer::FastSearch(HnswContext *ctx) const {
   return alg_->fast_search(ctx);
 }
 
-int HnswStreamer::FastSearchWithHooks(
-    HnswContext *ctx, const HnswAlgorithm::SearchHooks *hooks,
-    bool *stopped_early) const {
+int HnswStreamer::FastSearchWithHooks(HnswContext *ctx,
+                                      const HnswAlgorithm::SearchHooks *hooks,
+                                      bool *stopped_early) const {
   return alg_->fast_search_with_hooks(ctx, hooks, stopped_early);
 }
 
@@ -696,16 +696,18 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     auto query_search_end = RdtscTimer::Now();
     auto query_search_time_ns =
         RdtscTimer::ElapsedNs(query_search_start, query_search_end);
-    auto query_latency_ns = RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
+    auto query_latency_ns =
+        RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
     uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
     if (ShouldLogHnswQueryStats(query_seq)) {
-      LOG_INFO("HNSW query stats: query_seq=%llu hook_mode=%s cmps=%zu "
-               "pairwise_dist_cnt=%zu pure_search_ms=%.3f latency_ms=%.3f",
-               static_cast<unsigned long long>(query_seq),
-               use_empty_hooks ? "empty" : "none", ctx->get_scan_num(),
-               ctx->get_pairwise_dist_num(),
-               static_cast<double>(query_search_time_ns) / 1e6,
-               static_cast<double>(query_latency_ns) / 1e6);
+      LOG_INFO(
+          "HNSW query stats: query_seq=%llu hook_mode=%s cmps=%zu "
+          "pairwise_dist_cnt=%zu pure_search_ms=%.3f latency_ms=%.3f",
+          static_cast<unsigned long long>(query_seq),
+          use_empty_hooks ? "empty" : "none", ctx->get_scan_num(),
+          ctx->get_pairwise_dist_num(),
+          static_cast<double>(query_search_time_ns) / 1e6,
+          static_cast<double>(query_latency_ns) / 1e6);
     }
     ctx->topk_to_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
@@ -822,13 +824,16 @@ int HnswStreamer::search_bf_impl(
           topk.emplace(id, dist);
         }
       }
-      auto query_latency_ns = RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
+      auto query_latency_ns =
+          RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
       uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
       if (ShouldLogHnswQueryStats(query_seq)) {
-        LOG_INFO("HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%zu latency_ms=%.3f",
-                 static_cast<unsigned long long>(query_seq), ctx->get_scan_num(),
-                 ctx->get_pairwise_dist_num(),
-                 static_cast<double>(query_latency_ns) / 1e6);
+        LOG_INFO(
+            "HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%zu "
+            "latency_ms=%.3f",
+            static_cast<unsigned long long>(query_seq), ctx->get_scan_num(),
+            ctx->get_pairwise_dist_num(),
+            static_cast<double>(query_latency_ns) / 1e6);
       }
       ctx->topk_to_result(q);
       query = static_cast<const char *>(query) + qmeta.element_size();

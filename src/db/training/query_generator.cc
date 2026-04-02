@@ -19,10 +19,8 @@
 namespace zvec {
 
 SampledVectors TrainingQueryGenerator::SampleBaseVectorsWithIds(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    size_t num_samples,
-    uint64_t seed) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    size_t num_samples, uint64_t seed) {
   SampledVectors result;
 
   // Get total document count
@@ -78,21 +76,22 @@ SampledVectors TrainingQueryGenerator::SampleBaseVectorsWithIds(
 }
 
 SampledVectors TrainingQueryGenerator::GenerateHeldOutQueries(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    size_t num_queries,
-    uint64_t seed) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    size_t num_queries, uint64_t seed) {
   // Sample vectors directly from the index - no noise added
-  // These vectors will be used as queries, with their doc_ids excluded from ground truth
-  auto result = SampleBaseVectorsWithIds(segment, field_name, num_queries, seed);
+  // These vectors will be used as queries, with their doc_ids excluded from
+  // ground truth
+  auto result =
+      SampleBaseVectorsWithIds(segment, field_name, num_queries, seed);
 
   if (result.vectors.empty()) {
     LOG_ERROR("Failed to sample vectors from segment for held-out queries");
     return result;
   }
 
-  LOG_INFO("Generated %zu held-out queries (vectors sampled directly from index)",
-           result.vectors.size());
+  LOG_INFO(
+      "Generated %zu held-out queries (vectors sampled directly from index)",
+      result.vectors.size());
 
   return result;
 }

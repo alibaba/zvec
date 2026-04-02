@@ -14,17 +14,17 @@
 
 #include "training_data_collector.h"
 #include <algorithm>
-#include <chrono>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <omega/ground_truth.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/query_params.h>
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "query_generator.h"
-#include <omega/ground_truth.h>
 
 namespace zvec {
 
@@ -36,13 +36,13 @@ struct TimingStatsState {
   std::unordered_map<std::string, size_t> index_by_name;
 };
 
-TimingStatsState& GetTimingStatsState() {
+TimingStatsState &GetTimingStatsState() {
   static TimingStatsState state;
   return state;
 }
 
-void RecordTimingStat(const std::string& name, int64_t duration_ms) {
-  auto& state = GetTimingStatsState();
+void RecordTimingStat(const std::string &name, int64_t duration_ms) {
+  auto &state = GetTimingStatsState();
   std::lock_guard<std::mutex> lock(state.mu);
   auto it = state.index_by_name.find(name);
   if (it == state.index_by_name.end()) {
@@ -55,22 +55,25 @@ void RecordTimingStat(const std::string& name, int64_t duration_ms) {
 
 class ScopedTimer {
  public:
-  explicit ScopedTimer(const std::string& name) : name_(name) {
+  explicit ScopedTimer(const std::string &name) : name_(name) {
     start_ = std::chrono::high_resolution_clock::now();
   }
   ~ScopedTimer() {
     auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_).count();
+    auto duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - start_)
+            .count();
     RecordTimingStat(name_, duration);
   }
+
  private:
   std::string name_;
   std::chrono::high_resolution_clock::time_point start_;
 };
 
 std::vector<VectorColumnIndexer::Ptr> ResolveTrainingIndexers(
-    const Segment::Ptr& segment, const std::string& field_name,
-    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    const std::vector<VectorColumnIndexer::Ptr> &provided_indexers) {
   if (!provided_indexers.empty()) {
     return provided_indexers;
   }
@@ -78,8 +81,8 @@ std::vector<VectorColumnIndexer::Ptr> ResolveTrainingIndexers(
 }
 
 std::vector<core_interface::ITrainingSession::Pointer> StartTrainingSessions(
-    const std::vector<VectorColumnIndexer::Ptr>& indexers,
-    const std::vector<std::vector<uint64_t>>& ground_truth, size_t topk,
+    const std::vector<VectorColumnIndexer::Ptr> &indexers,
+    const std::vector<std::vector<uint64_t>> &ground_truth, size_t topk,
     int k_train) {
   std::vector<core_interface::ITrainingSession::Pointer> sessions;
   sessions.reserve(indexers.size());
@@ -89,7 +92,7 @@ std::vector<core_interface::ITrainingSession::Pointer> StartTrainingSessions(
   config.topk = topk;
   config.k_train = k_train;
 
-  for (auto& indexer : indexers) {
+  for (auto &indexer : indexers) {
     auto session = indexer->CreateTrainingSession();
     if (session == nullptr) {
       LOG_WARN("Indexer does not expose a training session");
@@ -111,9 +114,9 @@ std::vector<core_interface::ITrainingSession::Pointer> StartTrainingSessions(
 }
 
 core_interface::TrainingArtifacts ConsumeTrainingArtifacts(
-    const std::vector<core_interface::ITrainingSession::Pointer>& sessions) {
+    const std::vector<core_interface::ITrainingSession::Pointer> &sessions) {
   core_interface::TrainingArtifacts merged;
-  for (const auto& session : sessions) {
+  for (const auto &session : sessions) {
     if (session == nullptr) {
       continue;
     }
@@ -130,8 +133,8 @@ core_interface::TrainingArtifacts ConsumeTrainingArtifacts(
 }
 
 void FinishTrainingSessions(
-    const std::vector<VectorColumnIndexer::Ptr>& indexers,
-    const std::vector<core_interface::ITrainingSession::Pointer>& sessions) {
+    const std::vector<VectorColumnIndexer::Ptr> &indexers,
+    const std::vector<core_interface::ITrainingSession::Pointer> &sessions) {
   for (size_t i = 0; i < indexers.size(); ++i) {
     if (i < sessions.size() && sessions[i] != nullptr) {
       sessions[i]->Finish();
@@ -142,14 +145,14 @@ void FinishTrainingSessions(
 }  // namespace
 
 void TrainingDataCollector::ResetTimingStats() {
-  auto& state = GetTimingStatsState();
+  auto &state = GetTimingStatsState();
   std::lock_guard<std::mutex> lock(state.mu);
   state.ordered_stats.clear();
   state.index_by_name.clear();
 }
 
 TrainingDataCollector::TimingStats TrainingDataCollector::ConsumeTimingStats() {
-  auto& state = GetTimingStatsState();
+  auto &state = GetTimingStatsState();
   std::lock_guard<std::mutex> lock(state.mu);
   TimingStats timings = std::move(state.ordered_stats);
   state.ordered_stats.clear();
@@ -157,19 +160,20 @@ TrainingDataCollector::TimingStats TrainingDataCollector::ConsumeTimingStats() {
   return timings;
 }
 
-Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFromQueriesImpl(
-    const Segment::Ptr& segment, const std::string& field_name,
-    const std::vector<std::vector<float>>& training_queries,
-    const std::vector<std::vector<uint64_t>>& provided_ground_truth,
-    const TrainingDataCollectorOptions& options,
-    const std::vector<uint64_t>& query_doc_ids,
-    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
+Result<TrainingDataCollectorResult>
+TrainingDataCollector::CollectTrainingDataFromQueriesImpl(
+    const Segment::Ptr &segment, const std::string &field_name,
+    const std::vector<std::vector<float>> &training_queries,
+    const std::vector<std::vector<uint64_t>> &provided_ground_truth,
+    const TrainingDataCollectorOptions &options,
+    const std::vector<uint64_t> &query_doc_ids,
+    const std::vector<VectorColumnIndexer::Ptr> &provided_indexers) {
   std::vector<VectorColumnIndexer::Ptr> indexers =
       ResolveTrainingIndexers(segment, field_name, provided_indexers);
 
   if (indexers.empty()) {
-    return tl::make_unexpected(
-        Status::InternalError("No vector indexers found for field: " + field_name));
+    return tl::make_unexpected(Status::InternalError(
+        "No vector indexers found for field: " + field_name));
   }
 
   if (training_queries.empty()) {
@@ -185,16 +189,17 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
              options.topk, options.ef_groundtruth);
     ScopedTimer timer("Step2: ComputeGroundTruth");
     ground_truth = TrainingDataCollector::ComputeGroundTruth(
-        segment, field_name, training_queries, options.topk, options.num_threads,
-        query_doc_ids, options.ef_groundtruth, metric_type, indexers);
+        segment, field_name, training_queries, options.topk,
+        options.num_threads, query_doc_ids, options.ef_groundtruth, metric_type,
+        indexers);
   } else if (ground_truth.size() != training_queries.size()) {
     return tl::make_unexpected(Status::InvalidArgument(
         "Ground truth size does not match query count"));
   }
 
   if (ground_truth.empty()) {
-    return tl::make_unexpected(Status::InternalError(
-        "Failed to obtain ground truth"));
+    return tl::make_unexpected(
+        Status::InternalError("Failed to obtain ground truth"));
   }
 
   LOG_INFO("Starting training sessions for %zu queries on %zu indexers",
@@ -225,11 +230,12 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
 
     auto worker = [&](size_t start_idx, size_t end_idx) {
       for (size_t query_idx = start_idx; query_idx < end_idx; ++query_idx) {
-        const auto& query_vector = training_queries[query_idx];
+        const auto &query_vector = training_queries[query_idx];
 
         vector_column_params::VectorData vector_data;
         vector_data.vector = vector_column_params::DenseVector{
-            .data = const_cast<void*>(static_cast<const void*>(query_vector.data()))};
+            .data = const_cast<void *>(
+                static_cast<const void *>(query_vector.data()))};
 
         vector_column_params::QueryParams query_params;
         query_params.topk = options.topk;
@@ -242,7 +248,8 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
         query_params.query_params = omega_params;
 
         if (indexers.size() != 1 && query_idx == start_idx) {
-          LOG_WARN("Expected 1 indexer but found %zu, using first one only", indexers.size());
+          LOG_WARN("Expected 1 indexer but found %zu, using first one only",
+                   indexers.size());
         }
 
         // Persisted OMEGA collections currently do not propagate per-query
@@ -261,7 +268,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
           continue;
         }
 
-        auto& results = search_result.value();
+        auto &results = search_result.value();
         std::vector<uint64_t> result_ids;
         result_ids.reserve(results->count());
         auto iter = results->create_iterator();
@@ -279,22 +286,23 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
         (training_queries.size() + actual_threads - 1) / actual_threads;
     for (size_t t = 0; t < actual_threads; ++t) {
       size_t start_idx = t * queries_per_thread;
-      size_t end_idx = std::min(start_idx + queries_per_thread, training_queries.size());
+      size_t end_idx =
+          std::min(start_idx + queries_per_thread, training_queries.size());
       if (start_idx < end_idx) {
         threads.emplace_back(worker, start_idx, end_idx);
       }
     }
 
-    for (auto& thread : threads) {
+    for (auto &thread : threads) {
       thread.join();
     }
 
     auto search_end = std::chrono::high_resolution_clock::now();
-    auto total_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(search_end - search_start)
-            .count();
-    LOG_INFO("Training searches completed in %zu ms (%zu threads)",
-             total_ms, actual_threads);
+    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        search_end - search_start)
+                        .count();
+    LOG_INFO("Training searches completed in %zu ms (%zu threads)", total_ms,
+             actual_threads);
   }
 
   LOG_INFO("Collecting training records from indexers");
@@ -306,7 +314,7 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
              training_artifacts.records.size());
   }
 
-  auto& all_records = training_artifacts.records;
+  auto &all_records = training_artifacts.records;
 
   if (all_records.empty()) {
     LOG_WARN("No training records collected from any indexer");
@@ -314,24 +322,28 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
 
   size_t positive_count = 0;
   size_t negative_count = 0;
-  for (const auto& record : all_records) {
+  for (const auto &record : all_records) {
     if (record.label > 0) {
       ++positive_count;
     } else {
       ++negative_count;
     }
   }
-  LOG_INFO("Collected %zu records: %zu positive, %zu negative (labels computed in real-time)",
-           all_records.size(), positive_count, negative_count);
+  LOG_INFO(
+      "Collected %zu records: %zu positive, %zu negative (labels computed in "
+      "real-time)",
+      all_records.size(), positive_count, negative_count);
 
   LOG_INFO("Collecting gt_cmps data from indexers");
-  core_interface::GtCmpsData gt_cmps_data = std::move(training_artifacts.gt_cmps_data);
+  core_interface::GtCmpsData gt_cmps_data =
+      std::move(training_artifacts.gt_cmps_data);
   {
     ScopedTimer timer("Step6: GetGtCmpsData");
     if (gt_cmps_data.gt_cmps.empty()) {
-      LOG_WARN("No actual gt_cmps data collected, falling back to approximation");
-      gt_cmps_data =
-          TrainingDataCollector::ComputeGtCmps(all_records, ground_truth, options.topk);
+      LOG_WARN(
+          "No actual gt_cmps data collected, falling back to approximation");
+      gt_cmps_data = TrainingDataCollector::ComputeGtCmps(
+          all_records, ground_truth, options.topk);
     } else {
       LOG_INFO("Got actual gt_cmps data for %zu queries, topk=%zu",
                gt_cmps_data.num_queries, gt_cmps_data.topk);
@@ -353,15 +365,11 @@ Result<TrainingDataCollectorResult> TrainingDataCollector::CollectTrainingDataFr
 // ============ END DEBUG TIMING UTILITIES ============
 
 std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const std::vector<std::vector<float>>& queries,
-    size_t topk,
-    size_t num_threads,
-    const std::vector<uint64_t>& query_doc_ids,
-    int ef_groundtruth,
-    MetricType metric_type,
-    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    const std::vector<std::vector<float>> &queries, size_t topk,
+    size_t num_threads, const std::vector<uint64_t> &query_doc_ids,
+    int ef_groundtruth, MetricType metric_type,
+    const std::vector<VectorColumnIndexer::Ptr> &provided_indexers) {
   std::vector<std::vector<uint64_t>> ground_truth(queries.size());
 
   if (queries.empty()) {
@@ -369,18 +377,22 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   }
 
   // Check if we have query doc_ids for self-exclusion (held-out mode)
-  bool held_out_mode = !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
+  bool held_out_mode =
+      !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
   if (held_out_mode) {
-    LOG_INFO("Computing ground truth in held-out mode (excluding self-matches)");
+    LOG_INFO(
+        "Computing ground truth in held-out mode (excluding self-matches)");
   }
 
   // Get total document count
   uint64_t doc_count = segment->doc_count();
   size_t dim = queries[0].size();
 
-  LOG_INFO("Computing ground truth: %zu queries, %zu base vectors, dim=%zu, topk=%zu, metric=%s, ef_groundtruth=%d",
-           queries.size(), static_cast<size_t>(doc_count), dim, topk,
-           MetricTypeCodeBook::AsString(metric_type).c_str(), ef_groundtruth);
+  LOG_INFO(
+      "Computing ground truth: %zu queries, %zu base vectors, dim=%zu, "
+      "topk=%zu, metric=%s, ef_groundtruth=%d",
+      queries.size(), static_cast<size_t>(doc_count), dim, topk,
+      MetricTypeCodeBook::AsString(metric_type).c_str(), ef_groundtruth);
 
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -390,8 +402,9 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   // ============================================================
   if (ef_groundtruth > 0) {
     // Use provided indexers if available, otherwise get from segment
-    // IMPORTANT: We must use provided_indexers when available because after Flush,
-    // segment->get_vector_indexer() returns stale indexers with cleared in-memory data
+    // IMPORTANT: We must use provided_indexers when available because after
+    // Flush, segment->get_vector_indexer() returns stale indexers with cleared
+    // in-memory data
     std::vector<VectorColumnIndexer::Ptr> indexers;
     if (!provided_indexers.empty()) {
       indexers = provided_indexers;
@@ -400,7 +413,10 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
     }
 
     if (indexers.empty()) {
-      LOG_ERROR("No vector indexers found for field '%s', falling back to brute force", field_name.c_str());
+      LOG_ERROR(
+          "No vector indexers found for field '%s', falling back to brute "
+          "force",
+          field_name.c_str());
       ef_groundtruth = 0;  // Fall back to brute force
     } else {
       // For held-out mode, we need topk+1 to exclude self
@@ -416,19 +432,22 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
         // Warmup count: use a fraction of queries spread across threads
         // This helps load different parts of the index in parallel
-        size_t actual_threads = num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
+        size_t actual_threads =
+            num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
         size_t warmup_per_thread = 5;  // Each thread does 5 warmup queries
-        size_t warmup_total = std::min(actual_threads * warmup_per_thread, queries.size());
+        size_t warmup_total =
+            std::min(actual_threads * warmup_per_thread, queries.size());
 
         // Parallel warmup using std::thread
         std::vector<std::thread> warmup_threads;
         auto warmup_worker = [&](size_t start_idx, size_t count) {
-          for (size_t i = 0; i < count && (start_idx + i) < queries.size(); ++i) {
+          for (size_t i = 0; i < count && (start_idx + i) < queries.size();
+               ++i) {
             size_t q_idx = start_idx + i;
             vector_column_params::VectorData vector_data;
             vector_data.vector = vector_column_params::DenseVector{
-                .data = const_cast<void*>(static_cast<const void*>(queries[q_idx].data()))
-            };
+                .data = const_cast<void *>(
+                    static_cast<const void *>(queries[q_idx].data()))};
 
             vector_column_params::QueryParams query_params;
             query_params.topk = actual_topk;
@@ -437,7 +456,8 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
             auto omega_params = std::make_shared<OmegaQueryParams>();
             omega_params->set_ef(ef_groundtruth);
-            omega_params->set_training_query_id(-1);  // Warmup, don't collect training data
+            omega_params->set_training_query_id(
+                -1);  // Warmup, don't collect training data
             query_params.query_params = omega_params;
 
             static_cast<void>(indexers[0]->Search(vector_data, query_params));
@@ -446,25 +466,33 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
         // Launch warmup threads
         size_t queries_per_warmup_thread = warmup_total / actual_threads;
-        for (size_t t = 0; t < actual_threads && t * queries_per_warmup_thread < warmup_total; ++t) {
+        for (size_t t = 0;
+             t < actual_threads && t * queries_per_warmup_thread < warmup_total;
+             ++t) {
           size_t start = t * queries_per_warmup_thread;
-          size_t count = std::min(queries_per_warmup_thread, warmup_total - start);
+          size_t count =
+              std::min(queries_per_warmup_thread, warmup_total - start);
           if (count > 0) {
             warmup_threads.emplace_back(warmup_worker, start, count);
           }
         }
 
-        for (auto& t : warmup_threads) {
+        for (auto &t : warmup_threads) {
           t.join();
         }
 
         auto warmup_end = std::chrono::high_resolution_clock::now();
-        auto warmup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(warmup_end - warmup_start).count();
+        auto warmup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             warmup_end - warmup_start)
+                             .count();
 
-        // Note: If warmup takes very long (>60s), recommend using ef_groundtruth=0 (Eigen brute force)
+        // Note: If warmup takes very long (>60s), recommend using
+        // ef_groundtruth=0 (Eigen brute force)
         if (warmup_ms > 60000) {
-          LOG_INFO("HNSW warmup took %zu ms. For cold indexes, consider using ef_groundtruth=0 (Eigen brute force)",
-                   warmup_ms);
+          LOG_INFO(
+              "HNSW warmup took %zu ms. For cold indexes, consider using "
+              "ef_groundtruth=0 (Eigen brute force)",
+              warmup_ms);
         }
       }
 
@@ -472,7 +500,8 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       ground_truth.resize(queries.size());
 
       // Use std::thread instead of OpenMP (same as training searches)
-      size_t actual_threads = num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
+      size_t actual_threads =
+          num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
       actual_threads = std::min(actual_threads, queries.size());
 
       auto worker = [&](size_t start_idx, size_t end_idx) {
@@ -480,8 +509,8 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
           // Prepare query parameters (exactly same as training searches)
           vector_column_params::VectorData vector_data;
           vector_data.vector = vector_column_params::DenseVector{
-              .data = const_cast<void*>(static_cast<const void*>(queries[q].data()))
-          };
+              .data = const_cast<void *>(
+                  static_cast<const void *>(queries[q].data()))};
 
           vector_column_params::QueryParams query_params;
           query_params.topk = actual_topk;
@@ -497,7 +526,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
           // Search on first indexer (same as training searches)
           auto search_result = indexers[0]->Search(vector_data, query_params);
           if (search_result.has_value()) {
-            auto& results = search_result.value();
+            auto &results = search_result.value();
             std::vector<uint64_t> result_ids;
             result_ids.reserve(results->count());
             auto iter = results->create_iterator();
@@ -519,22 +548,26 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
       // Launch threads
       std::vector<std::thread> threads;
-      size_t queries_per_thread = (queries.size() + actual_threads - 1) / actual_threads;
+      size_t queries_per_thread =
+          (queries.size() + actual_threads - 1) / actual_threads;
       for (size_t t = 0; t < actual_threads; ++t) {
         size_t start_idx = t * queries_per_thread;
-        size_t end_idx = std::min(start_idx + queries_per_thread, queries.size());
+        size_t end_idx =
+            std::min(start_idx + queries_per_thread, queries.size());
         if (start_idx < end_idx) {
           threads.emplace_back(worker, start_idx, end_idx);
         }
       }
 
       // Wait for all threads
-      for (auto& thread : threads) {
+      for (auto &thread : threads) {
         thread.join();
       }
 
       auto end_time = std::chrono::high_resolution_clock::now();
-      auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+      auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          end_time - start_time)
+                          .count();
       LOG_INFO("Computed ground truth (HNSW ef=%d) for %zu queries in %zu ms",
                ef_groundtruth, queries.size(), total_ms);
       return ground_truth;
@@ -567,11 +600,13 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   std::atomic<bool> load_error{false};
 
   // Load vectors in parallel
-  size_t actual_threads = num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
+  size_t actual_threads =
+      num_threads > 0 ? num_threads : std::thread::hardware_concurrency();
   actual_threads = std::min(actual_threads, static_cast<size_t>(doc_count));
 
   auto load_worker = [&](size_t start_idx, size_t end_idx) {
-    for (size_t doc_idx = start_idx; doc_idx < end_idx && !load_error; ++doc_idx) {
+    for (size_t doc_idx = start_idx; doc_idx < end_idx && !load_error;
+         ++doc_idx) {
       auto doc = segment->Fetch(doc_idx);
       if (!doc) {
         LOG_WARN("Failed to fetch document at index %zu", doc_idx);
@@ -581,19 +616,22 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
       auto vector_opt = doc->get<std::vector<float>>(field_name);
       if (!vector_opt.has_value()) {
-        LOG_WARN("Document at index %zu does not have field '%s'", doc_idx, field_name.c_str());
+        LOG_WARN("Document at index %zu does not have field '%s'", doc_idx,
+                 field_name.c_str());
         load_error = true;
         continue;
       }
 
-      const auto& vec = vector_opt.value();
+      const auto &vec = vector_opt.value();
       if (vec.size() != dim) {
-        LOG_WARN("Vector at index %zu has wrong dimension: %zu vs %zu", doc_idx, vec.size(), dim);
+        LOG_WARN("Vector at index %zu has wrong dimension: %zu vs %zu", doc_idx,
+                 vec.size(), dim);
         load_error = true;
         continue;
       }
 
-      std::memcpy(base_vectors.data() + doc_idx * dim, vec.data(), dim * sizeof(float));
+      std::memcpy(base_vectors.data() + doc_idx * dim, vec.data(),
+                  dim * sizeof(float));
     }
   };
 
@@ -602,18 +640,21 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
 
   for (size_t t = 0; t < actual_threads; ++t) {
     size_t start_idx = t * docs_per_thread;
-    size_t end_idx = std::min(start_idx + docs_per_thread, static_cast<size_t>(doc_count));
+    size_t end_idx =
+        std::min(start_idx + docs_per_thread, static_cast<size_t>(doc_count));
     if (start_idx < end_idx) {
       load_threads.emplace_back(load_worker, start_idx, end_idx);
     }
   }
 
-  for (auto& thread : load_threads) {
+  for (auto &thread : load_threads) {
     thread.join();
   }
 
   auto load_end = std::chrono::high_resolution_clock::now();
-  auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(load_end - load_start).count();
+  auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     load_end - load_start)
+                     .count();
 
   if (load_error) {
     LOG_ERROR("Failed to load all base vectors, cannot compute ground truth");
@@ -623,39 +664,39 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   // Step 2: Flatten query vectors
   std::vector<float> query_flat(queries.size() * dim);
   for (size_t i = 0; i < queries.size(); ++i) {
-    std::memcpy(query_flat.data() + i * dim, queries[i].data(), dim * sizeof(float));
+    std::memcpy(query_flat.data() + i * dim, queries[i].data(),
+                dim * sizeof(float));
   }
 
   // Step 3: Call OmegaLib's fast ground truth computation (Eigen)
   auto compute_start = std::chrono::high_resolution_clock::now();
 
   ground_truth = omega::ComputeGroundTruth(
-      base_vectors.data(),
-      query_flat.data(),
-      doc_count,
-      queries.size(),
-      dim,
-      topk,
-      omega_metric,
-      held_out_mode,
+      base_vectors.data(), query_flat.data(), doc_count, queries.size(), dim,
+      topk, omega_metric, held_out_mode,
       query_doc_ids);  // Pass query-to-base mapping for correct self-exclusion
 
   auto compute_end = std::chrono::high_resolution_clock::now();
-  auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(compute_end - compute_start).count();
+  auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        compute_end - compute_start)
+                        .count();
 
   auto total_end = std::chrono::high_resolution_clock::now();
-  auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - start_time).count();
+  auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      total_end - start_time)
+                      .count();
 
-  LOG_INFO("Computed ground truth (Eigen brute force) for %zu queries in %zu ms (load: %zu ms, compute: %zu ms)",
-           queries.size(), total_ms, load_ms, compute_ms);
+  LOG_INFO(
+      "Computed ground truth (Eigen brute force) for %zu queries in %zu ms "
+      "(load: %zu ms, compute: %zu ms)",
+      queries.size(), total_ms, load_ms, compute_ms);
 
   return ground_truth;
 }
 
 core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
-    const std::vector<core_interface::TrainingRecord>& records,
-    const std::vector<std::vector<uint64_t>>& ground_truth,
-    size_t topk) {
+    const std::vector<core_interface::TrainingRecord> &records,
+    const std::vector<std::vector<uint64_t>> &ground_truth, size_t topk) {
   // NOTE: This is a FALLBACK approximation method.
   // The preferred method is to collect actual gt_cmps during search via
   // VectorColumnIndexer::GetGtCmpsData(), which tracks the exact cmps value
@@ -687,14 +728,14 @@ core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
   std::unordered_map<int, int> query_max_cmps;
   std::unordered_map<int, int> query_first_found_cmps;
 
-  for (const auto& record : records) {
+  for (const auto &record : records) {
     int query_id = record.query_id;
     if (query_id < 0 || query_id >= static_cast<int>(ground_truth.size())) {
       continue;
     }
 
     // Track max cmps for each query
-    auto& max_cmps = query_max_cmps[query_id];
+    auto &max_cmps = query_max_cmps[query_id];
     max_cmps = std::max(max_cmps, record.cmps_visited);
 
     // Track first cmps where label became 1
@@ -715,23 +756,25 @@ core_interface::GtCmpsData TrainingDataCollector::ComputeGtCmps(
 
     // Use first_found_cmps if available, otherwise use total_cmps
     auto it = query_first_found_cmps.find(query_id);
-    int gt_cmps_value = (it != query_first_found_cmps.end()) ? it->second : result.total_cmps[q];
+    int gt_cmps_value = (it != query_first_found_cmps.end())
+                            ? it->second
+                            : result.total_cmps[q];
 
     for (size_t r = 0; r < result.gt_cmps[q].size(); ++r) {
       result.gt_cmps[q][r] = gt_cmps_value;
     }
   }
 
-  LOG_INFO("Computed gt_cmps (approximation) for %zu queries, topk=%zu", result.num_queries, result.topk);
+  LOG_INFO("Computed gt_cmps (approximation) for %zu queries, topk=%zu",
+           result.num_queries, result.topk);
   return result;
 }
 
 Result<TrainingDataCollectorResult>
 TrainingDataCollector::CollectTrainingDataWithGtCmps(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const TrainingDataCollectorOptions& options,
-    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    const TrainingDataCollectorOptions &options,
+    const std::vector<VectorColumnIndexer::Ptr> &provided_indexers) {
   ResetTimingStats();
   ScopedTimer total_timer("CollectTrainingDataWithGtCmps [TOTAL]");
   LOG_INFO("Generating %zu held-out training queries for field '%s'",
@@ -754,12 +797,11 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
 
 Result<TrainingDataCollectorResult>
 TrainingDataCollector::CollectTrainingDataWithGtCmpsFromQueries(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const std::vector<std::vector<float>>& training_queries,
-    const std::vector<uint64_t>& query_doc_ids,
-    const TrainingDataCollectorOptions& options,
-    const std::vector<VectorColumnIndexer::Ptr>& provided_indexers) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    const std::vector<std::vector<float>> &training_queries,
+    const std::vector<uint64_t> &query_doc_ids,
+    const TrainingDataCollectorOptions &options,
+    const std::vector<VectorColumnIndexer::Ptr> &provided_indexers) {
   ResetTimingStats();
   ScopedTimer total_timer("CollectTrainingDataWithGtCmps [TOTAL]");
   LOG_INFO("Reusing %zu cached held-out training queries for field '%s'",

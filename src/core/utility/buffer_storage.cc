@@ -421,6 +421,7 @@ class BufferStorage : public IndexStorage {
   uint32_t get_context_offset() {
     return header_.content_offset;
   }
+
  protected:
   //! Initialize index version segment
   int init_version_segment(void) {

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "utility/rdtsc_timer.h"
-
 #include <ctime>
 
 namespace zvec {
@@ -24,10 +23,7 @@ RdtscTimer::tick_t RdtscTimer::Now() {
   uint32_t lo = 0;
   uint32_t hi = 0;
   uint32_t aux = 0;
-  __asm__ __volatile__("rdtscp"
-                       : "=a"(lo), "=d"(hi), "=c"(aux)
-                       :
-                       :);
+  __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi), "=c"(aux) : :);
   return (static_cast<uint64_t>(hi) << 32) | lo;
 #else
   return MonotonicRawNs();
@@ -39,8 +35,7 @@ uint64_t RdtscTimer::ElapsedNs(tick_t start, tick_t end) {
   if (end <= start) {
     return 0;
   }
-  return static_cast<uint64_t>(
-      static_cast<double>(end - start) * NsPerTick());
+  return static_cast<uint64_t>(static_cast<double>(end - start) * NsPerTick());
 #else
   return end > start ? (end - start) : 0;
 #endif

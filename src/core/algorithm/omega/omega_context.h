@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include "../hnsw/hnsw_context.h"
-#include "omega_params.h"
 #include <zvec/core/interface/training.h>
+#include "omega_params.h"
+#include "../hnsw/hnsw_context.h"
 
 namespace zvec {
 namespace core {
@@ -32,12 +32,16 @@ class OmegaContext : public HnswContext {
   //! Constructor
   OmegaContext(size_t dimension, const IndexMetric::Pointer &metric,
                const HnswEntity::Pointer &entity)
-      : HnswContext(dimension, metric, entity), target_recall_(0.95f), training_query_id_(-1) {}
+      : HnswContext(dimension, metric, entity),
+        target_recall_(0.95f),
+        training_query_id_(-1) {}
 
   //! Constructor
   OmegaContext(const IndexMetric::Pointer &metric,
                const HnswEntity::Pointer &entity)
-      : HnswContext(metric, entity), target_recall_(0.95f), training_query_id_(-1) {}
+      : HnswContext(metric, entity),
+        target_recall_(0.95f),
+        training_query_id_(-1) {}
 
   //! Destructor
   virtual ~OmegaContext() = default;
@@ -71,7 +75,7 @@ class OmegaContext : public HnswContext {
   }
 
   //! Set gt_cmps data for this query
-  void set_gt_cmps(const std::vector<int>& gt_cmps, int total_cmps) {
+  void set_gt_cmps(const std::vector<int> &gt_cmps, int total_cmps) {
     gt_cmps_per_rank_ = gt_cmps;
     total_cmps_ = total_cmps;
   }
@@ -111,11 +115,12 @@ class OmegaContext : public HnswContext {
   }
 
  private:
-  float target_recall_;  // Per-query target recall
+  float target_recall_;    // Per-query target recall
   int training_query_id_;  // Per-query training query ID for parallel training
-  std::vector<core_interface::TrainingRecord> training_records_;  // Per-query training records
+  std::vector<core_interface::TrainingRecord>
+      training_records_;               // Per-query training records
   std::vector<int> gt_cmps_per_rank_;  // cmps value when each GT rank was found
-  int total_cmps_ = 0;  // Total cmps for this search
+  int total_cmps_ = 0;                 // Total cmps for this search
 };
 
 }  // namespace core

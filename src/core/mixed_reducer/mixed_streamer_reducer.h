@@ -53,7 +53,8 @@ class MixedStreamerReducer : public IndexStreamerReducer {
       const IndexQueryMeta &original_query_meta) override;
 
   // Set the storage and file path for dump/reload operations
-  void set_storage(const IndexStorage::Pointer &storage, const std::string &file_path) {
+  void set_storage(const IndexStorage::Pointer &storage,
+                   const std::string &file_path) {
     target_storage_ = storage;
     target_file_path_ = file_path;
   }

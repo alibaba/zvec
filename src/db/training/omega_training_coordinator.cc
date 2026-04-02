@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "db/training/omega_training_coordinator.h"
-
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
@@ -32,8 +31,8 @@ constexpr uint32_t kOmegaQueryCacheVersion = 1;
 }  // namespace
 
 static void WriteOmegaTimingStatsJson(
-    const std::string& output_path,
-    const std::vector<std::pair<std::string, int64_t>>& stats) {
+    const std::string &output_path,
+    const std::vector<std::pair<std::string, int64_t>> &stats) {
   std::ofstream ofs(output_path);
   if (!ofs.is_open()) {
     return;
@@ -49,19 +48,19 @@ static void WriteOmegaTimingStatsJson(
   ofs << "}\n";
 }
 
-static std::string OmegaQueryCachePath(const std::string& model_output_dir) {
+static std::string OmegaQueryCachePath(const std::string &model_output_dir) {
   return model_output_dir + "/training_queries.bin";
 }
 
 static bool SaveOmegaTrainingQueryCache(
-    const std::string& model_output_dir,
-    const std::vector<std::vector<float>>& queries,
-    const std::vector<uint64_t>& query_doc_ids) {
+    const std::string &model_output_dir,
+    const std::vector<std::vector<float>> &queries,
+    const std::vector<uint64_t> &query_doc_ids) {
   if (queries.empty() || queries.size() != query_doc_ids.size()) {
     return false;
   }
   const uint32_t dim = static_cast<uint32_t>(queries[0].size());
-  for (const auto& query : queries) {
+  for (const auto &query : queries) {
     if (query.size() != dim) {
       return false;
     }
@@ -73,25 +72,25 @@ static bool SaveOmegaTrainingQueryCache(
   }
 
   const uint64_t num_queries = queries.size();
-  ofs.write(reinterpret_cast<const char*>(&kOmegaQueryCacheMagic),
+  ofs.write(reinterpret_cast<const char *>(&kOmegaQueryCacheMagic),
             sizeof(kOmegaQueryCacheMagic));
-  ofs.write(reinterpret_cast<const char*>(&kOmegaQueryCacheVersion),
+  ofs.write(reinterpret_cast<const char *>(&kOmegaQueryCacheVersion),
             sizeof(kOmegaQueryCacheVersion));
-  ofs.write(reinterpret_cast<const char*>(&num_queries), sizeof(num_queries));
-  ofs.write(reinterpret_cast<const char*>(&dim), sizeof(dim));
+  ofs.write(reinterpret_cast<const char *>(&num_queries), sizeof(num_queries));
+  ofs.write(reinterpret_cast<const char *>(&dim), sizeof(dim));
   for (size_t i = 0; i < queries.size(); ++i) {
-    ofs.write(reinterpret_cast<const char*>(&query_doc_ids[i]),
+    ofs.write(reinterpret_cast<const char *>(&query_doc_ids[i]),
               sizeof(query_doc_ids[i]));
-    ofs.write(reinterpret_cast<const char*>(queries[i].data()),
+    ofs.write(reinterpret_cast<const char *>(queries[i].data()),
               static_cast<std::streamsize>(dim * sizeof(float)));
   }
   return ofs.good();
 }
 
 static bool LoadOmegaTrainingQueryCache(
-    const std::string& model_output_dir,
-    std::vector<std::vector<float>>* queries,
-    std::vector<uint64_t>* query_doc_ids) {
+    const std::string &model_output_dir,
+    std::vector<std::vector<float>> *queries,
+    std::vector<uint64_t> *query_doc_ids) {
   std::ifstream ifs(OmegaQueryCachePath(model_output_dir), std::ios::binary);
   if (!ifs.is_open()) {
     return false;
@@ -101,10 +100,10 @@ static bool LoadOmegaTrainingQueryCache(
   uint32_t version = 0;
   uint64_t num_queries = 0;
   uint32_t dim = 0;
-  ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-  ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
-  ifs.read(reinterpret_cast<char*>(&num_queries), sizeof(num_queries));
-  ifs.read(reinterpret_cast<char*>(&dim), sizeof(dim));
+  ifs.read(reinterpret_cast<char *>(&magic), sizeof(magic));
+  ifs.read(reinterpret_cast<char *>(&version), sizeof(version));
+  ifs.read(reinterpret_cast<char *>(&num_queries), sizeof(num_queries));
+  ifs.read(reinterpret_cast<char *>(&dim), sizeof(dim));
   if (!ifs.good() || magic != kOmegaQueryCacheMagic ||
       version != kOmegaQueryCacheVersion || num_queries == 0 || dim == 0) {
     return false;
@@ -113,8 +112,8 @@ static bool LoadOmegaTrainingQueryCache(
   queries->assign(num_queries, std::vector<float>(dim));
   query_doc_ids->assign(num_queries, 0);
   for (size_t i = 0; i < num_queries; ++i) {
-    ifs.read(reinterpret_cast<char*>(&(*query_doc_ids)[i]), sizeof(uint64_t));
-    ifs.read(reinterpret_cast<char*>((*queries)[i].data()),
+    ifs.read(reinterpret_cast<char *>(&(*query_doc_ids)[i]), sizeof(uint64_t));
+    ifs.read(reinterpret_cast<char *>((*queries)[i].data()),
              static_cast<std::streamsize>(dim * sizeof(float)));
     if (!ifs.good()) {
       queries->clear();
@@ -126,7 +125,7 @@ static bool LoadOmegaTrainingQueryCache(
 }
 
 OmegaTrainingParams ResolveOmegaTrainingParams(
-    const IndexParams::Ptr& index_params) {
+    const IndexParams::Ptr &index_params) {
   OmegaTrainingParams params;
   auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(index_params);
   if (!omega_params) {
@@ -142,11 +141,9 @@ OmegaTrainingParams ResolveOmegaTrainingParams(
 }
 
 Result<TrainingDataCollectorResult> CollectOmegaTrainingDataBeforeFlush(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const VectorColumnIndexer::Ptr& vector_indexer,
-    const OmegaTrainingParams& params,
-    const std::string& model_output_dir) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    const VectorColumnIndexer::Ptr &vector_indexer,
+    const OmegaTrainingParams &params, const std::string &model_output_dir) {
   TrainingDataCollectorOptions collector_opts;
   const size_t doc_count = vector_indexer->doc_count();
   collector_opts.num_training_queries =
@@ -179,11 +176,9 @@ Result<TrainingDataCollectorResult> CollectOmegaTrainingDataBeforeFlush(
 }
 
 Result<TrainingDataCollectorResult> CollectOmegaRetrainingData(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const std::vector<VectorColumnIndexer::Ptr>& indexers,
-    const OmegaTrainingParams& params,
-    const std::string& model_output_dir) {
+    const Segment::Ptr &segment, const std::string &field_name,
+    const std::vector<VectorColumnIndexer::Ptr> &indexers,
+    const OmegaTrainingParams &params, const std::string &model_output_dir) {
   TrainingDataCollectorOptions collector_options;
   collector_options.num_training_queries = params.num_training_queries;
   collector_options.ef_training = params.ef_training;
@@ -196,23 +191,27 @@ Result<TrainingDataCollectorResult> CollectOmegaRetrainingData(
   if (LoadOmegaTrainingQueryCache(model_output_dir, &cached_queries,
                                   &cached_query_doc_ids)) {
     LOG_WARN("Loaded %zu cached held-out queries for OMEGA retraining from %s",
-             cached_queries.size(), OmegaQueryCachePath(model_output_dir).c_str());
+             cached_queries.size(),
+             OmegaQueryCachePath(model_output_dir).c_str());
     return TrainingDataCollector::CollectTrainingDataWithGtCmpsFromQueries(
         segment, field_name, cached_queries, cached_query_doc_ids,
         collector_options, indexers);
   }
 
-  LOG_WARN("OMEGA retrain query cache not found, falling back to sampling held-out queries from persisted segment");
+  LOG_WARN(
+      "OMEGA retrain query cache not found, falling back to sampling held-out "
+      "queries from persisted segment");
   return TrainingDataCollector::CollectTrainingDataWithGtCmps(
       segment, field_name, collector_options, indexers);
 }
 
 Status TrainOmegaModelAfterBuild(
-    const TrainingDataCollectorResult& training_result,
-    const std::string& model_output_dir) {
+    const TrainingDataCollectorResult &training_result,
+    const std::string &model_output_dir) {
   if (training_result.records.size() < 100) {
-    LOG_INFO("Skipping model training: only %zu records collected (need >= 100)",
-             training_result.records.size());
+    LOG_INFO(
+        "Skipping model training: only %zu records collected (need >= 100)",
+        training_result.records.size());
     return Status::OK();
   }
 
@@ -232,19 +231,17 @@ Status TrainOmegaModelAfterBuild(
     LOG_INFO("OMEGA model training completed successfully: %s",
              trainer_opts.output_dir.c_str());
   } else {
-    LOG_WARN("OMEGA model training failed: %s",
-             train_status.message().c_str());
+    LOG_WARN("OMEGA model training failed: %s", train_status.message().c_str());
   }
 
   return Status::OK();
 }
 
 Status TrainOmegaModelAfterRetrainCollect(
-    const TrainingDataCollectorResult& training_result,
-    const std::string& model_output_dir,
-    SegmentID segment_id,
-    const std::string& field_name) {
-  const auto& training_records = training_result.records;
+    const TrainingDataCollectorResult &training_result,
+    const std::string &model_output_dir, SegmentID segment_id,
+    const std::string &field_name) {
+  const auto &training_records = training_result.records;
   if (training_records.empty()) {
     LOG_WARN("No training records collected, skipping model training");
     return Status::OK();
@@ -252,7 +249,7 @@ Status TrainOmegaModelAfterRetrainCollect(
 
   size_t positive_count = 0;
   size_t negative_count = 0;
-  for (const auto& record : training_records) {
+  for (const auto &record : training_records) {
     if (record.label == 1) {
       positive_count++;
     } else {
@@ -261,31 +258,36 @@ Status TrainOmegaModelAfterRetrainCollect(
   }
 
   if (positive_count == 0 || negative_count == 0) {
-    LOG_WARN("Insufficient training samples: %zu positive, %zu negative. Need both > 0. Skipping training.",
-             positive_count, negative_count);
+    LOG_WARN(
+        "Insufficient training samples: %zu positive, %zu negative. Need both "
+        "> 0. Skipping training.",
+        positive_count, negative_count);
     return Status::OK();
   }
 
   if (positive_count < 50 || negative_count < 50) {
-    LOG_WARN("Too few training samples: %zu positive, %zu negative. Need at least 50 of each. Skipping training.",
-             positive_count, negative_count);
+    LOG_WARN(
+        "Too few training samples: %zu positive, %zu negative. Need at least "
+        "50 of each. Skipping training.",
+        positive_count, negative_count);
     return Status::OK();
   }
 
   LOG_INFO("Training data stats: %zu positive, %zu negative samples",
            positive_count, negative_count);
 
-  LOG_WARN("OMEGA retrain step 2/2: start model training for field '%s' in segment %d",
-           field_name.c_str(), segment_id);
+  LOG_WARN(
+      "OMEGA retrain step 2/2: start model training for field '%s' in segment "
+      "%d",
+      field_name.c_str(), segment_id);
   OmegaModelTrainerOptions trainer_options;
   trainer_options.output_dir = model_output_dir;
   trainer_options.verbose = true;
 
   if (!FileHelper::DirectoryExists(trainer_options.output_dir) &&
       !FileHelper::CreateDirectory(trainer_options.output_dir)) {
-    return Status::InternalError(
-        "Failed to create model output directory: " +
-        trainer_options.output_dir);
+    return Status::InternalError("Failed to create model output directory: " +
+                                 trainer_options.output_dir);
   }
 
   WriteOmegaTimingStatsJson(
@@ -295,12 +297,14 @@ Status TrainOmegaModelAfterRetrainCollect(
   auto train_status = OmegaModelTrainer::TrainModelWithGtCmps(
       training_records, training_result.gt_cmps_data, trainer_options);
   if (!train_status.ok()) {
-    return Status::InternalError(
-        "Failed to train OMEGA model: " + train_status.message());
+    return Status::InternalError("Failed to train OMEGA model: " +
+                                 train_status.message());
   }
 
-  LOG_WARN("OMEGA retrain step 2/2: finished model training for segment %d, output: %s",
-           segment_id, trainer_options.output_dir.c_str());
+  LOG_WARN(
+      "OMEGA retrain step 2/2: finished model training for segment %d, output: "
+      "%s",
+      segment_id, trainer_options.output_dir.c_str());
 
   return Status::OK();
 }

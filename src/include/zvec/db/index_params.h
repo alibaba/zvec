@@ -439,11 +439,10 @@ class OmegaIndexParams : public VectorIndexParams {
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
       uint32_t min_vector_threshold = 100000,
-      size_t num_training_queries = 1000,
-      int ef_training = 1000,
-      int window_size = 100,
-      int ef_groundtruth = 0,
-      int k_train = 1)  // 0 means use brute force, >0 means use HNSW with this ef
+      size_t num_training_queries = 1000, int ef_training = 1000,
+      int window_size = 100, int ef_groundtruth = 0,
+      int k_train =
+          1)  // 0 means use brute force, >0 means use HNSW with this ef
       : VectorIndexParams(IndexType::OMEGA, metric_type, quantize_type),
         m_(m),
         ef_construction_(ef_construction),
@@ -458,11 +457,10 @@ class OmegaIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<OmegaIndexParams>(metric_type_, m_, ef_construction_,
-                                             quantize_type_, min_vector_threshold_,
-                                             num_training_queries_, ef_training_,
-                                             window_size_, ef_groundtruth_,
-                                             k_train_);
+    return std::make_shared<OmegaIndexParams>(
+        metric_type_, m_, ef_construction_, quantize_type_,
+        min_vector_threshold_, num_training_queries_, ef_training_,
+        window_size_, ef_groundtruth_, k_train_);
   }
 
   std::string to_string() const override {
@@ -472,10 +470,9 @@ class OmegaIndexParams : public VectorIndexParams {
     oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
         << ",min_vector_threshold:" << min_vector_threshold_
         << ",num_training_queries:" << num_training_queries_
-        << ",ef_training:" << ef_training_
-        << ",window_size:" << window_size_
-        << ",ef_groundtruth:" << ef_groundtruth_
-        << ",k_train:" << k_train_ << "}";
+        << ",ef_training:" << ef_training_ << ",window_size:" << window_size_
+        << ",ef_groundtruth:" << ef_groundtruth_ << ",k_train:" << k_train_
+        << "}";
     return oss.str();
   }
 
@@ -486,18 +483,17 @@ class OmegaIndexParams : public VectorIndexParams {
            m_ == static_cast<const OmegaIndexParams &>(other).m_ &&
            ef_construction_ ==
                static_cast<const OmegaIndexParams &>(other).ef_construction_ &&
-           min_vector_threshold_ ==
-               static_cast<const OmegaIndexParams &>(other).min_vector_threshold_ &&
-           num_training_queries_ ==
-               static_cast<const OmegaIndexParams &>(other).num_training_queries_ &&
+           min_vector_threshold_ == static_cast<const OmegaIndexParams &>(other)
+                                        .min_vector_threshold_ &&
+           num_training_queries_ == static_cast<const OmegaIndexParams &>(other)
+                                        .num_training_queries_ &&
            ef_training_ ==
                static_cast<const OmegaIndexParams &>(other).ef_training_ &&
            window_size_ ==
                static_cast<const OmegaIndexParams &>(other).window_size_ &&
            ef_groundtruth_ ==
                static_cast<const OmegaIndexParams &>(other).ef_groundtruth_ &&
-           k_train_ ==
-               static_cast<const OmegaIndexParams &>(other).k_train_ &&
+           k_train_ == static_cast<const OmegaIndexParams &>(other).k_train_ &&
            quantize_type() ==
                static_cast<const OmegaIndexParams &>(other).quantize_type();
   }

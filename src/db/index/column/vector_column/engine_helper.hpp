@@ -162,7 +162,8 @@ class ProximaEngineHelper {
           auto db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
               query_params.query_params.get());
           hnsw_query_param->ef_search = db_hnsw_query_params->ef();
-          hnsw_query_param->training_query_id = db_hnsw_query_params->training_query_id();
+          hnsw_query_param->training_query_id =
+              db_hnsw_query_params->training_query_id();
         }
         return std::move(hnsw_query_param);
       }
@@ -178,11 +179,14 @@ class ProximaEngineHelper {
         }
         auto &omega_query_param = omega_query_param_result.value();
         if (query_params.query_params) {
-          if (auto* db_omega_query_params = dynamic_cast<const OmegaQueryParams *>(
-                  query_params.query_params.get())) {
+          if (auto *db_omega_query_params =
+                  dynamic_cast<const OmegaQueryParams *>(
+                      query_params.query_params.get())) {
             omega_query_param->ef_search = db_omega_query_params->ef();
-            omega_query_param->target_recall = db_omega_query_params->target_recall();
-            omega_query_param->training_query_id = db_omega_query_params->training_query_id();
+            omega_query_param->target_recall =
+                db_omega_query_params->target_recall();
+            omega_query_param->training_query_id =
+                db_omega_query_params->training_query_id();
           }
         }
         return std::move(omega_query_param);

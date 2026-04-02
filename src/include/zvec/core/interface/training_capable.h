@@ -20,7 +20,8 @@ namespace zvec {
 namespace core_interface {
 
 /**
- * @brief Training capability interface for indexes that support post-build training.
+ * @brief Training capability interface for indexes that support post-build
+ * training.
  *
  * This interface follows the Capability Pattern, allowing indexes to optionally
  * provide training functionality without polluting the base Index class.

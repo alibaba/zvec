@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <pybind11/stl.h>
 #include "python_collection.h"
 #include "python_config.h"
 #include "python_doc.h"
 #include "python_param.h"
 #include "python_schema.h"
 #include "python_type.h"
-#include <pybind11/stl.h>
 
 namespace zvec {
 PYBIND11_MODULE(_zvec, m) {

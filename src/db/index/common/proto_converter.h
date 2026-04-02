@@ -39,7 +39,8 @@ struct ProtoConverter {
   static proto::IVFIndexParams ToPb(const IVFIndexParams *params);
 
   // OmegaIndexParams
-  static OmegaIndexParams::OPtr FromPb(const proto::OmegaIndexParams &params_pb);
+  static OmegaIndexParams::OPtr FromPb(
+      const proto::OmegaIndexParams &params_pb);
   static proto::OmegaIndexParams ToPb(const OmegaIndexParams *params);
 
   // InvertIndexParams

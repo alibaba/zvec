@@ -824,9 +824,10 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   }
 
   if (options.retrain_only_) {
-    LOG_WARN("Optimize running in OMEGA retrain-only mode on %zu persisted segments",
-             persist_segments.size());
-    for (auto& segment : persist_segments) {
+    LOG_WARN(
+        "Optimize running in OMEGA retrain-only mode on %zu persisted segments",
+        persist_segments.size());
+    for (auto &segment : persist_segments) {
       auto s = segment->retrain_omega_model();
       CHECK_RETURN_STATUS(s);
     }
@@ -834,7 +835,8 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   }
 
   // Step 1: Build vector indexes if not ready
-  // This ensures indexes are built even for single segments that won't be compacted
+  // This ensures indexes are built even for single segments that won't be
+  // compacted
   std::vector<SegmentTask::Ptr> index_build_tasks;
   for (auto &segment : persist_segments) {
     if (!segment->all_vector_index_ready()) {
@@ -845,7 +847,8 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   }
 
   if (!index_build_tasks.empty()) {
-    LOG_INFO("Building vector indexes for %zu segments", index_build_tasks.size());
+    LOG_INFO("Building vector indexes for %zu segments",
+             index_build_tasks.size());
     auto s = execute_tasks(index_build_tasks);
     CHECK_RETURN_STATUS(s);
 

@@ -35,30 +35,25 @@ struct OmegaTrainingParams {
 };
 
 OmegaTrainingParams ResolveOmegaTrainingParams(
-    const IndexParams::Ptr& index_params);
+    const IndexParams::Ptr &index_params);
 
 Result<TrainingDataCollectorResult> CollectOmegaTrainingDataBeforeFlush(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const VectorColumnIndexer::Ptr& vector_indexer,
-    const OmegaTrainingParams& params,
-    const std::string& model_output_dir);
+    const Segment::Ptr &segment, const std::string &field_name,
+    const VectorColumnIndexer::Ptr &vector_indexer,
+    const OmegaTrainingParams &params, const std::string &model_output_dir);
 
 Result<TrainingDataCollectorResult> CollectOmegaRetrainingData(
-    const Segment::Ptr& segment,
-    const std::string& field_name,
-    const std::vector<VectorColumnIndexer::Ptr>& indexers,
-    const OmegaTrainingParams& params,
-    const std::string& model_output_dir);
+    const Segment::Ptr &segment, const std::string &field_name,
+    const std::vector<VectorColumnIndexer::Ptr> &indexers,
+    const OmegaTrainingParams &params, const std::string &model_output_dir);
 
 Status TrainOmegaModelAfterBuild(
-    const TrainingDataCollectorResult& training_result,
-    const std::string& model_output_dir);
+    const TrainingDataCollectorResult &training_result,
+    const std::string &model_output_dir);
 
 Status TrainOmegaModelAfterRetrainCollect(
-    const TrainingDataCollectorResult& training_result,
-    const std::string& model_output_dir,
-    SegmentID segment_id,
-    const std::string& field_name);
+    const TrainingDataCollectorResult &training_result,
+    const std::string &model_output_dir, SegmentID segment_id,
+    const std::string &field_name);
 
 }  // namespace zvec

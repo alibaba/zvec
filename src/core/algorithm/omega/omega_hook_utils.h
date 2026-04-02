@@ -24,7 +24,7 @@
 namespace zvec::core {
 
 inline bool DisableOmegaModelPrediction() {
-  const char* value = std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION");
+  const char *value = std::getenv("ZVEC_OMEGA_DISABLE_MODEL_PREDICTION");
   if (value == nullptr) {
     return false;
   }
@@ -43,16 +43,20 @@ struct OmegaHookState {
       storage.resize(std::max(1, capacity));
     }
 
-    bool Empty() const { return count == 0; }
+    bool Empty() const {
+      return count == 0;
+    }
 
-    int Capacity() const { return static_cast<int>(storage.size()); }
+    int Capacity() const {
+      return static_cast<int>(storage.size());
+    }
 
-    void Push(const omega::SearchContext::VisitCandidate& candidate) {
+    void Push(const omega::SearchContext::VisitCandidate &candidate) {
       storage[(head + count) % Capacity()] = candidate;
       ++count;
     }
 
-    const omega::SearchContext::VisitCandidate* Data() const {
+    const omega::SearchContext::VisitCandidate *Data() const {
       return storage.data() + head;
     }
 
@@ -62,23 +66,24 @@ struct OmegaHookState {
     }
   };
 
-  omega::SearchContext* search_ctx{nullptr};
+  omega::SearchContext *search_ctx{nullptr};
   bool enable_early_stopping{false};
   bool per_cmp_reporting{false};
   PendingVisitBuffer pending_candidates;
   int batch_min_interval{1};
 };
 
-inline void ResetOmegaHookState(OmegaHookState* state) {
+inline void ResetOmegaHookState(OmegaHookState *state) {
   if (state->search_ctx != nullptr) {
-    state->batch_min_interval = state->search_ctx->GetPredictionBatchMinInterval();
+    state->batch_min_interval =
+        state->search_ctx->GetPredictionBatchMinInterval();
   } else {
     state->batch_min_interval = 1;
   }
   state->pending_candidates.Reset(state->batch_min_interval);
 }
 
-inline bool ShouldFlushOmegaPendingCandidates(const OmegaHookState& state) {
+inline bool ShouldFlushOmegaPendingCandidates(const OmegaHookState &state) {
   if (state.pending_candidates.Empty()) {
     return false;
   }
@@ -92,7 +97,8 @@ inline bool ShouldFlushOmegaPendingCandidates(const OmegaHookState& state) {
          state.search_ctx->GetNextPredictionCmps();
 }
 
-inline bool FlushOmegaPendingCandidates(OmegaHookState* state, int flush_count) {
+inline bool FlushOmegaPendingCandidates(OmegaHookState *state,
+                                        int flush_count) {
   if (state->search_ctx == nullptr || flush_count <= 0 ||
       state->pending_candidates.Empty()) {
     return false;
@@ -112,7 +118,7 @@ inline bool FlushOmegaPendingCandidates(OmegaHookState* state, int flush_count) 
   return should_stop;
 }
 
-inline bool MaybeFlushOmegaPendingCandidates(OmegaHookState* state) {
+inline bool MaybeFlushOmegaPendingCandidates(OmegaHookState *state) {
   if (!ShouldFlushOmegaPendingCandidates(*state)) {
     return false;
   }
@@ -120,8 +126,8 @@ inline bool MaybeFlushOmegaPendingCandidates(OmegaHookState* state) {
 }
 
 inline void OnOmegaLevel0Entry(node_id_t id, dist_t dist,
-                               bool /*inserted_to_topk*/, void* user_data) {
-  auto& state = *static_cast<OmegaHookState*>(user_data);
+                               bool /*inserted_to_topk*/, void *user_data) {
+  auto &state = *static_cast<OmegaHookState *>(user_data);
   if (state.per_cmp_reporting) {
     state.search_ctx->SetDistStart(dist);
     state.search_ctx->ReportVisitCandidate(id, dist, true);
@@ -132,14 +138,14 @@ inline void OnOmegaLevel0Entry(node_id_t id, dist_t dist,
   MaybeFlushOmegaPendingCandidates(&state);
 }
 
-inline void OnOmegaHop(void* user_data) {
-  auto& state = *static_cast<OmegaHookState*>(user_data);
+inline void OnOmegaHop(void *user_data) {
+  auto &state = *static_cast<OmegaHookState *>(user_data);
   state.search_ctx->ReportHop();
 }
 
 inline bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
-                                  bool inserted_to_topk, void* user_data) {
-  auto& state = *static_cast<OmegaHookState*>(user_data);
+                                  bool inserted_to_topk, void *user_data) {
+  auto &state = *static_cast<OmegaHookState *>(user_data);
   if (state.per_cmp_reporting) {
     bool should_predict = false;
     should_predict =
@@ -151,8 +157,7 @@ inline bool OnOmegaVisitCandidate(node_id_t id, dist_t dist,
     should_stop = state.search_ctx->ShouldStopEarly();
     return should_stop;
   }
-  state.pending_candidates.Push(
-      {static_cast<int>(id), dist, inserted_to_topk});
+  state.pending_candidates.Push({static_cast<int>(id), dist, inserted_to_topk});
   return MaybeFlushOmegaPendingCandidates(&state);
 }
 

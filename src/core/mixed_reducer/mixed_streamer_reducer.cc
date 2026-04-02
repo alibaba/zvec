@@ -230,7 +230,8 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     // Initialize the dumper with the file path
     int ret = dumper->create(target_file_path_);
     if (ret != 0) {
-      LOG_ERROR("Failed to create dumper at path=%s, ret=%d", target_file_path_.c_str(), ret);
+      LOG_ERROR("Failed to create dumper at path=%s, ret=%d",
+                target_file_path_.c_str(), ret);
       return ret;
     }
 
@@ -249,9 +250,10 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     }
 
 
-    // NOTE: We cannot safely reload the streamer here (close/open causes crashes).
-    // The streamer will properly load data when the collection is reopened.
-    // For now, auto-training will need to handle the case where streamer doc_count=0.
+    // NOTE: We cannot safely reload the streamer here (close/open causes
+    // crashes). The streamer will properly load data when the collection is
+    // reopened. For now, auto-training will need to handle the case where
+    // streamer doc_count=0.
   } else {
   }
 
