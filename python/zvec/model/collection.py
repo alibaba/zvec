@@ -28,6 +28,7 @@ from .param import (
     CollectionOption,
     FlatIndexParam,
     HnswIndexParam,
+    HnswRabitqIndexParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
@@ -38,7 +39,12 @@ from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
 
-_VECTOR_INDEX_TYPES = (HnswIndexParam, IVFIndexParam, FlatIndexParam)
+_VECTOR_INDEX_TYPES = (
+    HnswIndexParam,
+    HnswRabitqIndexParam,
+    IVFIndexParam,
+    FlatIndexParam,
+)
 
 
 class Collection:
@@ -107,7 +113,11 @@ class Collection:
         self,
         field_name: str,
         index_param: Union[
-            HnswIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam
+            HnswIndexParam,
+            HnswRabitqIndexParam,
+            IVFIndexParam,
+            FlatIndexParam,
+            InvertIndexParam,
         ],
         option: IndexOption = IndexOption(),
     ) -> None:
@@ -118,7 +128,7 @@ class Collection:
 
         Args:
             field_name (str): Name of the field to index.
-            index_param (Union[HnswIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam]):
+            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam]):
                 Index configuration.
             option (Optional[IndexOption], optional): Index creation options.
                 Defaults to ``IndexOption()``.
