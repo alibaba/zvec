@@ -18,8 +18,8 @@
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
-#include "utility/rdtsc_timer.h"
 #include "utility/sparse_utility.h"
+#include "utility/steady_clock_timer.h"
 #include "hnsw_algorithm.h"
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"
@@ -680,9 +680,9 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   const bool use_empty_hooks = UseEmptyHnswHooks();
   HnswAlgorithm::SearchHooks empty_hooks;
   for (size_t q = 0; q < count; ++q) {
-    auto query_start = RdtscTimer::Now();
+    auto query_start = SteadyClockTimer::Now();
     ctx->reset_query(query);
-    auto query_search_start = RdtscTimer::Now();
+    auto query_search_start = SteadyClockTimer::Now();
     if (use_empty_hooks) {
       bool stopped_early = false;
       ret = alg_->search_with_hooks(ctx, &empty_hooks, &stopped_early);
@@ -693,11 +693,11 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
     }
-    auto query_search_end = RdtscTimer::Now();
+    auto query_search_end = SteadyClockTimer::Now();
     auto query_search_time_ns =
-        RdtscTimer::ElapsedNs(query_search_start, query_search_end);
+        SteadyClockTimer::ElapsedNs(query_search_start, query_search_end);
     auto query_latency_ns =
-        RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
+        SteadyClockTimer::ElapsedNs(query_start, SteadyClockTimer::Now());
     uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
     if (ShouldLogHnswQueryStats(query_seq)) {
       LOG_INFO(
@@ -811,7 +811,7 @@ int HnswStreamer::search_bf_impl(
     auto &topk = ctx->topk_heap();
 
     for (size_t q = 0; q < count; ++q) {
-      auto query_start = RdtscTimer::Now();
+      auto query_start = SteadyClockTimer::Now();
       ctx->reset_query(query);
       topk.clear();
       for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
@@ -825,7 +825,7 @@ int HnswStreamer::search_bf_impl(
         }
       }
       auto query_latency_ns =
-          RdtscTimer::ElapsedNs(query_start, RdtscTimer::Now());
+          SteadyClockTimer::ElapsedNs(query_start, SteadyClockTimer::Now());
       uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
       if (ShouldLogHnswQueryStats(query_seq)) {
         LOG_INFO(

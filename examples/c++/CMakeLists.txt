@@ -33,10 +33,18 @@ endif()
 
 # --- Dependency groups ---
 find_package(Threads REQUIRED)
+find_package(OpenMP QUIET)
 
+set(zvec_openmp_deps)
+if(OpenMP_FOUND)
+    list(APPEND zvec_openmp_deps OpenMP::OpenMP_CXX)
+endif()
 
 set(zvec_core_deps
     zvec_turbo
+    omega
+    _lightgbm
+    ${zvec_openmp_deps}
 )
 
 if (NOT WIN32)
@@ -52,6 +60,8 @@ if (NOT WIN32)
     set(zvec_db_deps
             roaring
             rocksdb
+            omega
+            _lightgbm
             arrow
             arrow_acero
             arrow_bundled_dependencies
@@ -63,6 +73,7 @@ if (NOT WIN32)
             ${GFLAGS_LIB}
             ${PROTOBUF_LIB}
             lz4
+            ${zvec_openmp_deps}
     )
 else ()
     # Windows static libraries use different naming conventions
@@ -77,6 +88,8 @@ else ()
     set(zvec_db_deps
             roaring
             rocksdb
+            omega
+            _lightgbm
             arrow_static
             arrow_acero_static
             arrow_bundled_dependencies
@@ -90,6 +103,7 @@ else ()
             lz4
             rpcrt4
             shlwapi
+            ${zvec_openmp_deps}
     )
 endif ()
 
@@ -124,6 +138,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 elseif(APPLE)
     target_link_libraries(zvec-core INTERFACE
         -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_core.a
+        -Wl,-force_load ${ZVEC_LIB_DIR}/libomega.a
         zvec-ailego
         ${zvec_core_deps}
     )
@@ -161,6 +176,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 elseif(APPLE)
     target_link_libraries(zvec-db INTERFACE
+        -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_db.a
         zvec_db
         zvec-core
         zvec-ailego

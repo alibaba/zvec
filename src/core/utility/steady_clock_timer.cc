@@ -12,34 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ZVEC_CORE_UTILITY_RDTSC_TIMER_H_
-#define ZVEC_CORE_UTILITY_RDTSC_TIMER_H_
-
-#include <cstdint>
-
-#if defined(__x86_64__) || defined(__i386__)
-#define ZVEC_CORE_HAS_TSC 1
-#else
-#define ZVEC_CORE_HAS_TSC 0
-#endif
+#include "utility/steady_clock_timer.h"
 
 namespace zvec {
 namespace core {
 
-class RdtscTimer {
- public:
-  using tick_t = uint64_t;
+SteadyClockTimer::tick_t SteadyClockTimer::Now() {
+  const auto now = std::chrono::steady_clock::now().time_since_epoch();
+  return static_cast<tick_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
 
-  static tick_t Now();
-  static uint64_t ElapsedNs(tick_t start, tick_t end);
-
- private:
-  static uint64_t MonotonicRawNs();
-  static double NsPerTick();
-  static double CalibrateNsPerTick();
-};
+uint64_t SteadyClockTimer::ElapsedNs(tick_t start, tick_t end) {
+  return end > start ? (end - start) : 0;
+}
 
 }  // namespace core
 }  // namespace zvec
-
-#endif  // ZVEC_CORE_UTILITY_RDTSC_TIMER_H_

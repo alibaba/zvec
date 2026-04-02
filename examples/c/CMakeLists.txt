@@ -45,6 +45,12 @@ link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
 
 # Find required packages
 find_package(Threads REQUIRED)
+find_package(OpenMP QUIET)
+
+set(zvec_openmp_deps)
+if(OpenMP_FOUND)
+    list(APPEND zvec_openmp_deps OpenMP::OpenMP_CXX)
+endif()
 
 # --- Determine debug/release library names ---
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -62,6 +68,8 @@ if(NOT WIN32)
     set(zvec_c_api_deps
         roaring
         rocksdb
+        omega
+        _lightgbm
         arrow
         arrow_acero
         arrow_bundled_dependencies
@@ -73,6 +81,7 @@ if(NOT WIN32)
         ${GFLAGS_LIB}
         ${PROTOBUF_LIB}
         lz4
+        ${zvec_openmp_deps}
         ${CMAKE_THREAD_LIBS_INIT}
         ${CMAKE_DL_LIBS}
     )
@@ -82,6 +91,8 @@ else()
     set(zvec_c_api_deps
         roaring
         rocksdb
+        omega
+        _lightgbm
         arrow_static
         arrow_acero_static
         arrow_bundled_dependencies
@@ -93,6 +104,7 @@ else()
         ${GFLAGS_LIB}
         ${PROTOBUF_LIB}
         lz4
+        ${zvec_openmp_deps}
         ${CMAKE_THREAD_LIBS_INIT}
         rpcrt4
         shlwapi
