@@ -138,7 +138,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 elseif(APPLE)
     target_link_libraries(zvec-core INTERFACE
         -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_core.a
-        -Wl,-force_load ${ZVEC_LIB_DIR}/libomega.a
+        -Wl,-force_load ${ZVEC_DEPENDENCY_LIB_DIR}/libomega.a
         zvec-ailego
         ${zvec_core_deps}
     )

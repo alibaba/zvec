@@ -234,8 +234,7 @@ TrainingDataCollector::CollectTrainingDataFromQueriesImpl(
 
         vector_column_params::VectorData vector_data;
         vector_data.vector = vector_column_params::DenseVector{
-            .data = const_cast<void *>(
-                static_cast<const void *>(query_vector.data()))};
+            const_cast<void *>(static_cast<const void *>(query_vector.data()))};
 
         vector_column_params::QueryParams query_params;
         query_params.topk = options.topk;
@@ -445,8 +444,8 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
                ++i) {
             size_t q_idx = start_idx + i;
             vector_column_params::VectorData vector_data;
-            vector_data.vector = vector_column_params::DenseVector{
-                .data = const_cast<void *>(
+            vector_data.vector =
+                vector_column_params::DenseVector{const_cast<void *>(
                     static_cast<const void *>(queries[q_idx].data()))};
 
             vector_column_params::QueryParams query_params;
@@ -509,8 +508,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
           // Prepare query parameters (exactly same as training searches)
           vector_column_params::VectorData vector_data;
           vector_data.vector = vector_column_params::DenseVector{
-              .data = const_cast<void *>(
-                  static_cast<const void *>(queries[q].data()))};
+              const_cast<void *>(static_cast<const void *>(queries[q].data()))};
 
           vector_column_params::QueryParams query_params;
           query_params.topk = actual_topk;
