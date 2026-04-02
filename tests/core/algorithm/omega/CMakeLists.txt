@@ -8,7 +8,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       NAME ${CC_TARGET}
       STRICT
       LIBS zvec_ailego core_framework core_utility core_metric core_quantizer
-           core_knn_hnsw core_knn_flat core_knn_omega core_interface
+           core_knn_hnsw core_knn_hnsw_rabitq core_knn_flat core_knn_omega core_interface
            core_mix_reducer omega
       SRCS ${CC_SRCS}
       INCS . ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/src/core/algorithm
