@@ -29,6 +29,7 @@ jobs:
         with:
           submodules: recursive
           fetch-tags: true
+          fetch-depth: 0
       
       - name: Set up Python (for cibuildwheel controller)
         uses: actions/setup-python@v6

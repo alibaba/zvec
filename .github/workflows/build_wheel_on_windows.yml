@@ -72,6 +72,7 @@ jobs:
         with:
           submodules: recursive
           fetch-tags: true
+          fetch-depth: 0
 
       - name: Cleanup left marker files
         run: |
