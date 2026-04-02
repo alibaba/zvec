@@ -1,8 +1,6 @@
 name: Build and Test PyPi Wheels on Windows
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_call:
     inputs:
       publish_target:
@@ -107,6 +105,11 @@ jobs:
       - name: Build wheels using cibuildwheel
         if: steps.cache-wheels.outputs.cache-hit != 'true'
         shell: powershell
+#        env:
+#          CIBW_BUILD_VERBOSITY: 1
+#          CIBW_DEBUG_TRACEBACK: 1
+#          CIBW_DEBUG_KEEP_CONTAINER: 1
+
         run: |
           python -m cibuildwheel --output-dir wheelhouse
 
