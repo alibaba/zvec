@@ -21,13 +21,7 @@ if TYPE_CHECKING:
     from importlib.metadata import PackageNotFoundError
 
 
-# ==============================
-# Public API — grouped by category
-# ==============================
-
 from . import model as model
-
-# —— Extensions ——
 from .extension import (
     BM25EmbeddingFunction,
     DefaultLocalDenseEmbedding,
@@ -46,16 +40,10 @@ from .extension import (
     SparseEmbeddingFunction,
     WeightedReRanker,
 )
-
-# —— Typing ——
 from .model import param as param
 from .model import schema as schema
-
-# —— Core data structures ——
 from .model.collection import Collection
 from .model.doc import Doc
-
-# —— Query & index parameters ——
 from .model.param import (
     AddColumnOption,
     AlterColumnOption,
@@ -74,11 +62,7 @@ from .model.param import (
     OptimizeOption,
 )
 from .model.param.vector_query import VectorQuery
-
-# —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
-
-# —— tools ——
 from .tool import require_module
 from .typing import (
     DataType,
@@ -89,12 +73,8 @@ from .typing import (
     StatusCode,
 )
 from .typing.enum import LogLevel, LogType
-
-# —— lifecycle ——
 from .zvec import create_and_open, init, open
-# ==============================
-# Public interface declaration
-# ==============================
+
 __all__ = [
     # Zvec functions
     "create_and_open",

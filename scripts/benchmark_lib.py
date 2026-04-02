@@ -1,18 +1,29 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+try:
+    import polars as pl
+except ImportError:
+    pl = None
+
+try:
+    import zvec
+except ImportError:
+    zvec = None
 
 
 @dataclass
@@ -39,8 +50,6 @@ PROCESS_LINE_PATTERN = re.compile(
 )
 RECALL_PATTERN = re.compile(r"Recall@(\d+):\s*([0-9.]+)")
 
-_ZVEC_INITIALIZED = False
-
 DATASET_SPECS: dict[str, dict[str, Any]] = {
     "cohere_1m": {
         "dataset_dirname": "cohere/cohere_medium_1m",
@@ -65,7 +74,7 @@ DATASET_DOWNLOAD_BASE_URLS = {
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    with open(path) as f:
+    with path.open() as f:
         return json.load(f)
 
 
@@ -89,9 +98,13 @@ def must_get(config: dict[str, Any], key: str) -> Any:
 
 
 def print_header(title: str) -> None:
-    print("\n" + "=" * 70)
-    print(title)
-    print("=" * 70)
+    emit(f"\n{'=' * 70}")
+    emit(title)
+    emit("=" * 70)
+
+
+def emit(message: str = "") -> None:
+    sys.stdout.write(f"{message}\n")
 
 
 def resolve_paths(
@@ -197,7 +210,7 @@ def online_summary_path(index_path: Path) -> Path:
 
 
 def write_online_summary(index_path: Path, payload: dict[str, Any]) -> None:
-    with open(online_summary_path(index_path), "w") as f:
+    with online_summary_path(index_path).open("w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
@@ -245,7 +258,7 @@ def read_json_if_exists(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with open(path) as f:
+        with path.open() as f:
             return json.load(f)
     except Exception:
         return {}
@@ -329,7 +342,7 @@ def write_offline_summary(
     summary = build_offline_summary(index_path, db_label, metrics, retrain_only=retrain_only)
     path = offline_summary_path(index_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    with path.open("w") as f:
         json.dump(summary, f, indent=2, sort_keys=True)
     return path
 
@@ -338,6 +351,7 @@ def get_offline_load_duration(index_path: Path) -> float | None:
     return read_json_if_exists(offline_summary_path(index_path)).get("offline", {}).get(
         "load_duration_s"
     )
+
 
 def resolve_dataset_spec(
     dataset_name: str, config: dict[str, Any], dataset_root_arg: str | None
@@ -363,13 +377,17 @@ def resolve_dataset_spec(
     metric_type = str(config.get("metric_type", default.get("metric_type", "COSINE"))).upper()
     remote_dirname = str(config.get("remote_dirname", default.get("remote_dirname", "")))
     train_files = list(config.get("train_files", default.get("train_files", [])))
-    dataset_source = str(config.get("dataset_source", os.environ.get("ZVEC_DATASET_SOURCE", "S3")))
+    dataset_source = str(
+        config.get("dataset_source", os.environ.get("ZVEC_DATASET_SOURCE", "S3"))
+    )
     download_base_url = str(
         config.get(
             "dataset_base_url",
             os.environ.get(
                 "ZVEC_DATASET_BASE_URL",
-                DATASET_DOWNLOAD_BASE_URLS.get(dataset_source.upper(), DATASET_DOWNLOAD_BASE_URLS["S3"]),
+                DATASET_DOWNLOAD_BASE_URLS.get(
+                    dataset_source.upper(), DATASET_DOWNLOAD_BASE_URLS["S3"]
+                ),
             ),
         )
     )
@@ -389,13 +407,17 @@ def resolve_dataset_spec(
 
 
 def _require_polars():
-    try:
-        import polars as pl
-    except ImportError as exc:
+    if pl is None:
         raise RuntimeError(
             "This script requires polars in the active Python environment."
-        ) from exc
+        )
     return pl
+
+
+def _require_zvec():
+    if zvec is None:
+        raise RuntimeError("This script requires zvec in the active Python environment.")
+    return zvec
 
 
 def _sorted_train_files(dataset_dir: Path) -> list[Path]:
@@ -430,7 +452,7 @@ def _download_file(url: str, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     try:
-        with urllib.request.urlopen(url) as response, open(tmp_path, "wb") as out:
+        with urllib.request.urlopen(url) as response, tmp_path.open("wb") as out:
             shutil.copyfileobj(response, out)
         tmp_path.replace(output_path)
     finally:
@@ -451,16 +473,16 @@ def ensure_dataset_available(dataset_name: str, dataset_spec: dict[str, Any], dr
         )
 
     base_url = dataset_spec["download_base_url"]
-    print(f"Dataset files missing under {dataset_dir}, downloading from {base_url}/{remote_dirname} ...")
+    emit(f"Dataset files missing under {dataset_dir}, downloading from {base_url}/{remote_dirname} ...")
     if dry_run:
         for name in missing_files:
-            print(f"[Dry-run] download {base_url}/{remote_dirname}/{name} -> {dataset_dir / name}")
+            emit(f"[Dry-run] download {base_url}/{remote_dirname}/{name} -> {dataset_dir / name}")
         return
 
     for name in missing_files:
         url = f"{base_url}/{remote_dirname}/{name}"
         output_path = dataset_dir / name
-        print(f"Downloading {url}")
+        emit(f"Downloading {url}")
         _download_file(url, output_path)
 
 
@@ -491,7 +513,10 @@ def prepare_dataset_artifacts(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     if not dry_run:
-        refresh_query = (not query_txt.exists()) or query_txt.stat().st_mtime < query_parquet.stat().st_mtime
+        refresh_query = (
+            not query_txt.exists()
+            or query_txt.stat().st_mtime < query_parquet.stat().st_mtime
+        )
         refresh_gt = (not gt_txt.exists()) or gt_txt.stat().st_mtime < gt_parquet.stat().st_mtime
         if refresh_query:
             _write_query_text(query_parquet, query_txt)
@@ -509,9 +534,9 @@ def prepare_dataset_artifacts(
 
 
 def _write_query_text(query_parquet: Path, output_path: Path) -> None:
-    pl = _require_polars()
-    frame = pl.read_parquet(query_parquet).sort("id")
-    with open(output_path, "w") as f:
+    polars = _require_polars()
+    frame = polars.read_parquet(query_parquet).sort("id")
+    with output_path.open("w") as f:
         for row in frame.iter_rows(named=True):
             vector = row["emb"]
             vector_text = " ".join(str(round(float(v), 16)) for v in vector)
@@ -519,34 +544,30 @@ def _write_query_text(query_parquet: Path, output_path: Path) -> None:
 
 
 def _write_groundtruth_text(gt_parquet: Path, output_path: Path) -> None:
-    pl = _require_polars()
-    frame = pl.read_parquet(gt_parquet).sort("id")
-    with open(output_path, "w") as f:
+    polars = _require_polars()
+    frame = polars.read_parquet(gt_parquet).sort("id")
+    with output_path.open("w") as f:
         for row in frame.iter_rows(named=True):
             neighbors = " ".join(str(int(v)) for v in row["neighbors_id"])
             f.write(f"{int(row['id'])};{neighbors}\n")
 
 
-def _ensure_zvec_initialized() -> None:
-    global _ZVEC_INITIALIZED
-    if _ZVEC_INITIALIZED:
-        return
-    import zvec
-
-    zvec.init(log_level=zvec.LogLevel.WARN)
-    _ZVEC_INITIALIZED = True
+@lru_cache(maxsize=1)
+def _initialized_zvec():
+    module = _require_zvec()
+    module.init(log_level=module.LogLevel.WARN)
+    return module
 
 
 def _quantize_type_from_name(name: str):
-    import zvec
-
+    module = _initialized_zvec()
     normalized = str(name).upper()
     mapping = {
-        "": zvec.QuantizeType.UNDEFINED,
-        "UNDEFINED": zvec.QuantizeType.UNDEFINED,
-        "FP16": zvec.QuantizeType.FP16,
-        "INT8": zvec.QuantizeType.INT8,
-        "INT4": zvec.QuantizeType.INT4,
+        "": module.QuantizeType.UNDEFINED,
+        "UNDEFINED": module.QuantizeType.UNDEFINED,
+        "FP16": module.QuantizeType.FP16,
+        "INT8": module.QuantizeType.INT8,
+        "INT4": module.QuantizeType.INT4,
     }
     if normalized not in mapping:
         raise ValueError(f"Unsupported quantize type: {name}")
@@ -554,13 +575,12 @@ def _quantize_type_from_name(name: str):
 
 
 def _metric_type_from_name(name: str):
-    import zvec
-
+    module = _initialized_zvec()
     normalized = str(name).upper()
     mapping = {
-        "COSINE": zvec.MetricType.COSINE,
-        "IP": zvec.MetricType.IP,
-        "L2": zvec.MetricType.L2,
+        "COSINE": module.MetricType.COSINE,
+        "IP": module.MetricType.IP,
+        "L2": module.MetricType.L2,
     }
     if normalized not in mapping:
         raise ValueError(f"Unsupported metric type: {name}")
@@ -568,12 +588,11 @@ def _metric_type_from_name(name: str):
 
 
 def _maybe_destroy_collection(path: Path) -> None:
-    import zvec
-
+    module = _initialized_zvec()
     if not path.exists():
         return
     try:
-        zvec.open(str(path)).destroy()
+        module.open(str(path)).destroy()
         return
     except Exception:
         pass
@@ -587,12 +606,11 @@ def _build_schema(
     common_args: dict[str, Any],
     specific_args: dict[str, Any],
 ):
-    import zvec
-
+    module = _initialized_zvec()
     quantize_type = _quantize_type_from_name(common_args.get("quantize_type", ""))
     metric = _metric_type_from_name(metric_type)
     if index_kind == "OMEGA":
-        index_param = zvec.OmegaIndexParam(
+        index_param = module.OmegaIndexParam(
             metric_type=metric,
             m=int(common_args["m"]),
             ef_construction=int(specific_args.get("ef_construction", 500)),
@@ -605,27 +623,27 @@ def _build_schema(
             k_train=int(specific_args.get("k_train", 1)),
         )
     else:
-        index_param = zvec.HnswIndexParam(
+        index_param = module.HnswIndexParam(
             metric_type=metric,
             m=int(common_args["m"]),
             ef_construction=int(specific_args.get("ef_construction", 500)),
             quantize_type=quantize_type,
         )
 
-    return zvec.CollectionSchema(
+    return module.CollectionSchema(
         name=f"{index_kind.lower()}_benchmark",
         fields=[
-            zvec.FieldSchema(
+            module.FieldSchema(
                 "id",
-                zvec.DataType.INT64,
+                module.DataType.INT64,
                 nullable=False,
-                index_param=zvec.InvertIndexParam(enable_range_optimization=True),
+                index_param=module.InvertIndexParam(enable_range_optimization=True),
             )
         ],
         vectors=[
-            zvec.VectorSchema(
+            module.VectorSchema(
                 "dense",
-                zvec.DataType.VECTOR_FP32,
+                module.DataType.VECTOR_FP32,
                 dimension=dimension,
                 index_param=index_param,
             )
@@ -645,15 +663,14 @@ def build_index(
     dry_run: bool,
 ) -> dict[str, Any]:
     if dry_run:
-        print(f"[Dry-run] Build {index_kind} at {index_path}")
+        emit(f"[Dry-run] Build {index_kind} at {index_path}")
         return {"insert_duration": None, "optimize_duration": None, "load_duration": None}
 
-    _ensure_zvec_initialized()
-    import zvec
+    module = _initialized_zvec()
 
     if retrain_only:
-        collection = zvec.open(
-            str(index_path), zvec.CollectionOption(read_only=False, enable_mmap=True)
+        collection = module.open(
+            str(index_path), module.CollectionOption(read_only=False, enable_mmap=True)
         )
         insert_duration = None
     else:
@@ -665,20 +682,18 @@ def build_index(
             common_args,
             specific_args,
         )
-        collection = zvec.create_and_open(
+        collection = module.create_and_open(
             str(index_path),
             schema,
-            zvec.CollectionOption(read_only=False, enable_mmap=True),
+            module.CollectionOption(read_only=False, enable_mmap=True),
         )
         insert_duration = _insert_training_data(collection, dataset_artifacts["train_files"])
 
     optimize_start = time.perf_counter()
-    collection.optimize(option=zvec.OptimizeOption(retrain_only=retrain_only))
+    collection.optimize(option=module.OptimizeOption(retrain_only=retrain_only))
     optimize_duration = time.perf_counter() - optimize_start
-    try:
+    with contextlib.suppress(Exception):
         collection.flush()
-    except Exception:
-        pass
     del collection
 
     load_duration = None
@@ -695,18 +710,17 @@ def build_index(
 
 
 def _insert_training_data(collection, train_files: list[Path], batch_size: int = 1000) -> float:
-    import zvec
-
-    pl = _require_polars()
+    module = _initialized_zvec()
+    polars = _require_polars()
     start = time.perf_counter()
     for train_file in train_files:
-        frame = pl.read_parquet(train_file)
+        frame = polars.read_parquet(train_file)
         for offset in range(0, frame.height, batch_size):
             batch = frame.slice(offset, batch_size)
             ids = batch["id"].to_list()
             vectors = batch["emb"].to_list()
             docs = [
-                zvec.Doc(
+                module.Doc(
                     id=str(int(doc_id)),
                     fields={"id": int(doc_id)},
                     vectors={"dense": vector},
@@ -729,28 +743,26 @@ def compute_recall_with_zvec(
     if dry_run:
         return None
 
-    _ensure_zvec_initialized()
-    import zvec
-
-    pl = _require_polars()
-    query_frame = pl.read_parquet(dataset_artifacts["query_parquet"]).sort("id")
-    gt_frame = pl.read_parquet(dataset_artifacts["gt_parquet"]).sort("id")
+    module = _initialized_zvec()
+    polars = _require_polars()
+    query_frame = polars.read_parquet(dataset_artifacts["query_parquet"]).sort("id")
+    gt_frame = polars.read_parquet(dataset_artifacts["gt_parquet"]).sort("id")
     gt_map = {
         int(row["id"]): [int(value) for value in row["neighbors_id"][: int(common_args["k"])]]
         for row in gt_frame.iter_rows(named=True)
     }
 
-    option = zvec.CollectionOption(read_only=True, enable_mmap=True)
-    collection = zvec.open(str(index_path), option)
+    option = module.CollectionOption(read_only=True, enable_mmap=True)
+    collection = module.open(str(index_path), option)
     use_refiner = bool(common_args.get("is_using_refiner", False))
     if index_kind == "OMEGA":
-        query_param = zvec.OmegaQueryParam(
+        query_param = module.OmegaQueryParam(
             ef=int(common_args["ef_search"]),
             target_recall=float(target_recall),
             is_using_refiner=use_refiner,
         )
     else:
-        query_param = zvec.HnswQueryParam(
+        query_param = module.HnswQueryParam(
             ef=int(common_args["ef_search"]),
             is_using_refiner=use_refiner,
         )
@@ -764,7 +776,7 @@ def compute_recall_with_zvec(
         if not gt:
             continue
         results = collection.query(
-            vectors=zvec.VectorQuery(field_name="dense", vector=row["emb"], param=query_param),
+            vectors=module.VectorQuery(field_name="dense", vector=row["emb"], param=query_param),
             topk=topk,
             output_fields=[],
         )
@@ -957,7 +969,7 @@ def run_command_capture(
     extra_env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     printable = " ".join(str(token) for token in cmd)
-    print(printable)
+    emit(printable)
     if dry_run:
         return 0, ""
 
@@ -974,7 +986,9 @@ def run_command_capture(
         check=False,
     )
     if completed.returncode != 0 and completed.stdout:
-        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+        sys.stdout.write(completed.stdout)
+        if not completed.stdout.endswith("\n"):
+            sys.stdout.write("\n")
     return completed.returncode, completed.stdout
 
 
@@ -1146,4 +1160,3 @@ def run_concurrency_benchmark(
             best_output = output
 
     return {"summary": best_summary or {}, "output": best_output}
-

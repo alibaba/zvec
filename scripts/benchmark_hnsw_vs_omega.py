@@ -1,16 +1,16 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from benchmark_lib import (
     BenchmarkResult,
     build_index,
     compute_recall_with_zvec,
     discover_index_files,
+    emit,
     get_offline_load_duration,
     load_dataset_config,
     must_get,
@@ -74,7 +74,6 @@ def parse_args() -> argparse.Namespace:
 def run_hnsw(
     *,
     args: argparse.Namespace,
-    dataset_name: str,
     dataset_spec: dict[str, object],
     dataset_artifacts: dict[str, object],
     bench_bin: Path,
@@ -87,7 +86,7 @@ def run_hnsw(
 
     hnsw_specific_args = hnsw_config.get("args", {})
     if not args.search_only:
-        print("\n[Phase 1] Building HNSW index...")
+        emit("\n[Phase 1] Building HNSW index...")
         offline_metrics = build_index(
             index_kind="HNSW",
             index_path=hnsw_path,
@@ -164,10 +163,12 @@ def run_omega(
 
     omega_specific_args = omega_config.get("args", {})
     if not args.search_only:
-        if args.retrain_only:
-            print("\n[Phase 1] Retraining OMEGA model only (reusing existing index)...")
-        else:
-            print("\n[Phase 1] Building OMEGA index + training model...")
+        phase_message = (
+            "\n[Phase 1] Retraining OMEGA model only (reusing existing index)..."
+            if args.retrain_only
+            else "\n[Phase 1] Building OMEGA index + training model..."
+        )
+        emit(phase_message)
         offline_metrics = build_index(
             index_kind="OMEGA",
             index_path=omega_path,
@@ -198,6 +199,27 @@ def run_omega(
             for target_recall in target_recalls
         ]
 
+    return _run_omega_searches(
+        args=args,
+        dataset_spec=dataset_spec,
+        dataset_artifacts=dataset_artifacts,
+        bench_bin=bench_bin,
+        omega_path=omega_path,
+        common=common,
+        target_recalls=target_recalls,
+    )
+
+
+def _run_omega_searches(
+    *,
+    args: argparse.Namespace,
+    dataset_spec: dict[str, object],
+    dataset_artifacts: dict[str, object],
+    bench_bin: Path,
+    omega_path: Path,
+    common: dict[str, object],
+    target_recalls: list[float],
+) -> list[BenchmarkResult]:
     results: list[BenchmarkResult] = []
     index_files = discover_index_files(omega_path)
     omega_common = dict(common)
@@ -223,13 +245,11 @@ def run_omega(
             dry_run=args.dry_run,
         )
         online = benchmark["summary"]
-        success = online.get("retcode", 0) == 0
-
         results.append(
             BenchmarkResult(
                 type="OMEGA",
                 path=str(omega_path),
-                success=success,
+                success=online.get("retcode", 0) == 0,
                 target_recall=target_recall,
                 load_duration=get_offline_load_duration(omega_path),
                 qps=online.get("qps"),
@@ -245,8 +265,78 @@ def run_omega(
     return results
 
 
-def main() -> int:
-    args = parse_args()
+def _parse_target_recalls(
+    args: argparse.Namespace, omega_config: dict[str, object]
+) -> list[float]:
+    target_recalls = omega_config.get("target_recalls", [])
+    if args.target_recalls:
+        target_recalls = [float(value) for value in args.target_recalls.split(",") if value]
+    if not target_recalls:
+        raise ValueError("omega.target_recalls must be a non-empty list")
+    return list(target_recalls)
+
+
+def _emit_run_header(
+    *,
+    dataset_name: str,
+    config_path: Path,
+    zvec_root: Path,
+    benchmark_dir: Path,
+    dataset_spec: dict[str, object],
+    bench_bin: Path,
+    recall_bin: Path,
+    hnsw_path: Path,
+    omega_path: Path,
+    target_recalls: list[float],
+) -> None:
+    emit("=" * 70)
+    emit(f"Zvec HNSW vs OMEGA ({dataset_name})")
+    emit(f"Config: {config_path}")
+    emit("=" * 70)
+    emit(f"zvec_root: {zvec_root}")
+    emit(f"benchmark_dir: {benchmark_dir}")
+    emit(f"dataset_dir: {dataset_spec['dataset_dir']}")
+    emit(f"bench_bin: {bench_bin}")
+    emit(f"recall_bin: {recall_bin}")
+    emit(f"hnsw_path: {hnsw_path}")
+    emit(f"omega_path: {omega_path}")
+    emit(f"target_recalls: {target_recalls}")
+    emit("=" * 70)
+
+
+def _format_summary_row(result: BenchmarkResult) -> str:
+    tr = f"{result.target_recall:.2f}" if result.target_recall is not None else "N/A"
+    status = "OK" if result.success else "FAILED"
+    ld = f"{result.load_duration:.1f}" if result.load_duration is not None else "N/A"
+    qps = f"{result.qps:.1f}" if result.qps is not None else "N/A"
+    avg_latency = f"{result.avg_latency_ms:.3f}" if result.avg_latency_ms is not None else "N/A"
+    p95_latency = f"{result.p95_latency_ms:.3f}" if result.p95_latency_ms is not None else "N/A"
+    recall = f"{result.recall:.4f}" if result.recall is not None else "N/A"
+    return (
+        f"{result.type:<10} {tr:<15} {ld:<12} {qps:<8} "
+        f"{avg_latency:<16} {p95_latency:<16} {recall:<10} {status:<10}"
+    )
+
+
+def _emit_result_summary(results: list[BenchmarkResult], summary_paths: list[Path]) -> None:
+    emit(f"\n\n{'=' * 70}")
+    emit("Benchmark Summary")
+    emit("=" * 70)
+    emit(
+        f"{'Type':<10} {'target_recall':<15} {'load_dur(s)':<12} "
+        f"{'qps':<8} {'avg_latency(ms)':<16} {'p95_latency(ms)':<16} "
+        f"{'recall':<10} {'Status':<10}"
+    )
+    emit("-" * 100)
+    for result in results:
+        emit(_format_summary_row(result))
+
+    emit()
+    for path in summary_paths:
+        emit(f"Summary JSON: {path}")
+
+
+def _resolve_run_context(args: argparse.Namespace) -> dict[str, Any]:
     config_path = Path(args.config).expanduser().resolve()
     config = load_dataset_config(config_path, args.dataset)
     zvec_root, benchmark_dir = resolve_paths(
@@ -262,101 +352,82 @@ def main() -> int:
     bench_bin, recall_bin = resolve_core_tools(zvec_root)
     benchmark_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_name = args.dataset
-    common = must_get(config, "common")
     hnsw_config = must_get(config, "hnsw")
     omega_config = must_get(config, "omega")
 
-    hnsw_path = resolve_index_path(benchmark_dir, must_get(hnsw_config, "path"))
-    omega_path = resolve_index_path(benchmark_dir, must_get(omega_config, "path"))
-    hnsw_db_label = must_get(hnsw_config, "db_label")
-    omega_db_label = must_get(omega_config, "db_label")
-    target_recalls = omega_config.get("target_recalls", [])
-    if args.target_recalls:
-        target_recalls = [float(value) for value in args.target_recalls.split(",") if value]
-    if not target_recalls:
-        raise ValueError("omega.target_recalls must be a non-empty list")
+    return {
+        "config_path": config_path,
+        "dataset_name": args.dataset,
+        "dataset_spec": dataset_spec,
+        "dataset_artifacts": dataset_artifacts,
+        "zvec_root": zvec_root,
+        "benchmark_dir": benchmark_dir,
+        "bench_bin": bench_bin,
+        "recall_bin": recall_bin,
+        "common": must_get(config, "common"),
+        "hnsw_config": hnsw_config,
+        "omega_config": omega_config,
+        "hnsw_path": resolve_index_path(benchmark_dir, must_get(hnsw_config, "path")),
+        "omega_path": resolve_index_path(benchmark_dir, must_get(omega_config, "path")),
+        "hnsw_db_label": must_get(hnsw_config, "db_label"),
+        "omega_db_label": must_get(omega_config, "db_label"),
+        "target_recalls": _parse_target_recalls(args, omega_config),
+    }
 
-    print("=" * 70)
-    print(f"Zvec HNSW vs OMEGA ({dataset_name})")
-    print(f"Config: {config_path}")
-    print("=" * 70)
-    print(f"zvec_root: {zvec_root}")
-    print(f"benchmark_dir: {benchmark_dir}")
-    print(f"dataset_dir: {dataset_spec['dataset_dir']}")
-    print(f"bench_bin: {bench_bin}")
-    print(f"recall_bin: {recall_bin}")
-    print(f"hnsw_path: {hnsw_path}")
-    print(f"omega_path: {omega_path}")
-    print(f"target_recalls: {target_recalls}")
-    print("=" * 70)
+
+def main() -> int:
+    args = parse_args()
+    context = _resolve_run_context(args)
+    _emit_run_header(
+        dataset_name=context["dataset_name"],
+        config_path=context["config_path"],
+        zvec_root=context["zvec_root"],
+        benchmark_dir=context["benchmark_dir"],
+        dataset_spec=context["dataset_spec"],
+        bench_bin=context["bench_bin"],
+        recall_bin=context["recall_bin"],
+        hnsw_path=context["hnsw_path"],
+        omega_path=context["omega_path"],
+        target_recalls=context["target_recalls"],
+    )
 
     results: list[BenchmarkResult] = []
-
     if not args.skip_hnsw:
-        hnsw_result = run_hnsw(
-            args=args,
-            dataset_name=dataset_name,
-            dataset_spec=dataset_spec,
-            dataset_artifacts=dataset_artifacts,
-            bench_bin=bench_bin,
-            hnsw_path=hnsw_path,
-            hnsw_db_label=hnsw_db_label,
-            common=common,
-            hnsw_config=hnsw_config,
+        results.append(
+            run_hnsw(
+                args=args,
+                dataset_spec=context["dataset_spec"],
+                dataset_artifacts=context["dataset_artifacts"],
+                bench_bin=context["bench_bin"],
+                hnsw_path=context["hnsw_path"],
+                hnsw_db_label=context["hnsw_db_label"],
+                common=context["common"],
+                hnsw_config=context["hnsw_config"],
+            )
         )
-        results.append(hnsw_result)
 
     if not args.skip_omega:
         results.extend(
             run_omega(
                 args=args,
-                dataset_spec=dataset_spec,
-                dataset_artifacts=dataset_artifacts,
-                bench_bin=bench_bin,
-                omega_path=omega_path,
-                omega_db_label=omega_db_label,
-                common=common,
-                omega_config=omega_config,
-                target_recalls=target_recalls,
+                dataset_spec=context["dataset_spec"],
+                dataset_artifacts=context["dataset_artifacts"],
+                bench_bin=context["bench_bin"],
+                omega_path=context["omega_path"],
+                omega_db_label=context["omega_db_label"],
+                common=context["common"],
+                omega_config=context["omega_config"],
+                target_recalls=context["target_recalls"],
             )
         )
 
     if results:
-        written_summary_paths = (
-            write_grouped_online_summaries(dataset_name, results)
+        summary_paths = (
+            write_grouped_online_summaries(context["dataset_name"], results)
             if not args.dry_run
             else []
         )
-        print("\n\n" + "=" * 70)
-        print("Benchmark Summary")
-        print("=" * 70)
-        print(
-            f"{'Type':<10} {'target_recall':<15} {'load_dur(s)':<12} "
-            f"{'qps':<8} {'avg_latency(ms)':<16} {'p95_latency(ms)':<16} "
-            f"{'recall':<10} {'Status':<10}"
-        )
-        print("-" * 100)
-        for result in results:
-            tr = f"{result.target_recall:.2f}" if result.target_recall is not None else "N/A"
-            status = "OK" if result.success else "FAILED"
-            ld = f"{result.load_duration:.1f}" if result.load_duration is not None else "N/A"
-            qps = f"{result.qps:.1f}" if result.qps is not None else "N/A"
-            avg_latency = (
-                f"{result.avg_latency_ms:.3f}" if result.avg_latency_ms is not None else "N/A"
-            )
-            p95_latency = (
-                f"{result.p95_latency_ms:.3f}" if result.p95_latency_ms is not None else "N/A"
-            )
-            recall = f"{result.recall:.4f}" if result.recall is not None else "N/A"
-            print(
-                f"{result.type:<10} {tr:<15} {ld:<12} {qps:<8} "
-                f"{avg_latency:<16} {p95_latency:<16} {recall:<10} {status:<10}"
-            )
-
-        print()
-        for path in written_summary_paths:
-            print(f"Summary JSON: {path}")
+        _emit_result_summary(results, summary_paths)
 
     return 0 if all(result.success for result in results) else 1
 
