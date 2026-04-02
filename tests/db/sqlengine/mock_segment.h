@@ -504,6 +504,10 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
+  Status retrain_omega_model() override {
+    return Status::OK();
+  }
+
   Status destroy() override {
     return Status::OK();
   }

@@ -34,15 +34,31 @@ TEST(OmegaTrainingSessionTest, ConsumeArtifactsAggregatesRecordsAndGtCmps) {
   first.training_query_id = 0;
   first.total_cmps = 13;
   first.gt_cmps_per_rank = {3, 7, 11};
-  first.records.push_back(
-      TrainingRecord{0, 1, 3, 0.1f, 0.2f, std::vector<float>(7, 1.0f), 1});
+  TrainingRecord first_record;
+  first_record.query_id = 0;
+  first_record.hops_visited = 1;
+  first_record.cmps_visited = 3;
+  first_record.dist_1st = 0.1f;
+  first_record.dist_start = 0.2f;
+  first_record.traversal_window_stats = {1.0f, 1.0f, 1.0f, 1.0f,
+                                         1.0f, 1.0f, 1.0f};
+  first_record.label = 1;
+  first.records.push_back(first_record);
 
   QueryTrainingArtifacts second;
   second.training_query_id = 2;
   second.total_cmps = 21;
   second.gt_cmps_per_rank = {5, 9, 15};
-  second.records.push_back(
-      TrainingRecord{2, 4, 8, 0.3f, 0.4f, std::vector<float>(7, 2.0f), 0});
+  TrainingRecord second_record;
+  second_record.query_id = 2;
+  second_record.hops_visited = 4;
+  second_record.cmps_visited = 8;
+  second_record.dist_1st = 0.3f;
+  second_record.dist_start = 0.4f;
+  second_record.traversal_window_stats = {2.0f, 2.0f, 2.0f, 2.0f,
+                                          2.0f, 2.0f, 2.0f};
+  second_record.label = 0;
+  second.records.push_back(second_record);
 
   session.CollectQueryArtifacts(std::move(first));
   session.CollectQueryArtifacts(std::move(second));

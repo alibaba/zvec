@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "mixed_streamer_reducer.h"
+#include <algorithm>
 #include <ailego/pattern/defer.h>
 #include <utility/sparse_utility.h>
 #include <zvec/ailego/utility/file_helper.h>
@@ -141,7 +142,8 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   ailego::ElapsedTime timer;
 
 
-  std::vector<int> add_results(num_of_add_threads_, -1);
+  const size_t add_thread_count = enable_pk_rewrite_ ? 1 : num_of_add_threads_;
+  std::vector<int> add_results(add_thread_count, -1);
   auto add_group = thread_pool_->make_group();
 
   std::vector<int> read_results(streamers_.size(), -1);
@@ -149,7 +151,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   uint32_t id_offset = 0, next_id = 0;
 
   if (is_sparse_) {
-    for (size_t i = 0; i < num_of_add_threads_; i++) {
+    for (size_t i = 0; i < add_thread_count; i++) {
       add_group->submit(ailego::Closure::New(
           this, &MixedStreamerReducer::add_sparse_vec, &add_results[i]));
     }
@@ -162,7 +164,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
     sparse_mt_list_.done();
   } else {
-    for (size_t i = 0; i < num_of_add_threads_; i++) {
+    for (size_t i = 0; i < add_thread_count; i++) {
       add_group->submit(ailego::Closure::New(
           this, &MixedStreamerReducer::add_vec, &add_results[i]));
       // add_vec(&add_results[i]);
@@ -304,6 +306,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
 
   IndexProvider::Pointer provider = streamer->create_provider();
   IndexProvider::Iterator::Pointer iterator = provider->create_iterator();
+  std::vector<std::pair<uint32_t, std::vector<uint8_t>>> pending_items;
 
   while (iterator->is_valid()) {
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
@@ -332,13 +335,19 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       memcpy(bytes.data(), iterator->data(), bytes.size());
     }
 
-    // TODO: use id instead of key
-    if (!mt_list_.produce(VectorItem((*next_id)++, std::move(bytes)))) {
-      LOG_ERROR("Produce vector to queue failed. key[%lu]",
-                (size_t)iterator->key());
+    pending_items.emplace_back(iterator->key() + id_offset, std::move(bytes));
+    iterator->next();
+  }
+
+  std::sort(pending_items.begin(), pending_items.end(),
+            [](const auto &lhs, const auto &rhs) {
+              return lhs.first < rhs.first;
+            });
+  for (auto &item : pending_items) {
+    if (!mt_list_.produce(VectorItem((*next_id)++, std::move(item.second)))) {
+      LOG_ERROR("Produce vector to queue failed. key[%u]", item.first);
       return IndexError_Runtime;
     }
-    iterator->next();
   }
   return 0;
 }
@@ -508,6 +517,7 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
       streamer->create_sparse_provider();
   IndexStreamer::SparseProvider::Iterator::Pointer iterator =
       provider->create_iterator();
+  std::vector<SparseVectorItem> pending_items;
 
   while (iterator->is_valid()) {
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
@@ -547,15 +557,24 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
     memcpy(sparse_indices.data(), iterator->sparse_indices(),
            sparse_indices.size() * sizeof(uint32_t));
 
-    // TODO: use id instead of key
-    if (!sparse_mt_list_.produce(SparseVectorItem((*next_id)++,
-                                                  std::move(sparse_indices),
-                                                  std::move(sparse_values)))) {
+    pending_items.emplace_back(iterator->key() + id_offset,
+                               std::move(sparse_indices),
+                               std::move(sparse_values));
+    iterator->next();
+  }
+
+  std::sort(pending_items.begin(), pending_items.end(),
+            [](const SparseVectorItem &lhs, const SparseVectorItem &rhs) {
+              return lhs.pkey_ < rhs.pkey_;
+            });
+  for (auto &item : pending_items) {
+    if (!sparse_mt_list_.produce(SparseVectorItem(
+            (*next_id)++, std::move(item.sparse_indices_),
+            std::move(item.sparse_values_)))) {
       LOG_ERROR("Produce vector to queue failed. key[%lu]",
-                (size_t)iterator->key());
+                static_cast<size_t>(item.pkey_));
       return IndexError_Runtime;
     }
-    iterator->next();
   }
   return 0;
 }
