@@ -17,6 +17,7 @@ import json
 from typing import Any, Optional, Union
 
 from _zvec.schema import _FieldSchema
+
 from zvec.model.param import (
     FlatIndexParam,
     HnswIndexParam,
