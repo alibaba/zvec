@@ -1,8 +1,6 @@
 name: Build and Test PyPi Wheels on Windows
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_call:
     inputs:
       publish_target:
