@@ -15,7 +15,7 @@ echo "workspace: $GITHUB_WORKSPACE"
 DB_LABEL_PREFIX="Zvec16c64g-$COMMIT_ID"
 
 # install zvec
-git submodule update --init
+git submodule update --init --recursive
 
 # for debug
 #cd ..

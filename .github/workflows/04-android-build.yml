@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Cache dependencies
         uses: actions/cache@v5
@@ -60,7 +62,7 @@ jobs:
       - name: Use host env to compile protoc
         shell: bash
         run: |
-          git submodule update --init
+          git submodule update --init --recursive
           if [ ! -d "build-host" ]; then
             export CCACHE_BASEDIR="$GITHUB_WORKSPACE"
             export CCACHE_NOHASHDIR=1
