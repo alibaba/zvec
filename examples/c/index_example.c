@@ -20,7 +20,8 @@
 /**
  * @brief Print error message and return error code
  */
-static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
+static zvec_error_code_t handle_error(zvec_error_code_t error,
+                                      const char *context) {
   if (error != ZVEC_OK) {
     char *error_msg = NULL;
     zvec_get_last_error(&error_msg);
@@ -37,10 +38,10 @@ static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
 int main() {
   printf("=== ZVec Index Example ===\n\n");
 
-  ZVecErrorCode error;
+  zvec_error_code_t error;
 
   // 1. Create collection schema
-  ZVecCollectionSchema *schema =
+  zvec_collection_schema_t *schema =
       zvec_collection_schema_create("index_example_collection");
   if (!schema) {
     fprintf(stderr, "Failed to create collection schema\n");
@@ -52,7 +53,7 @@ int main() {
   printf("Creating index parameters...\n");
 
   // Inverted index parameters
-  ZVecIndexParams *invert_params_standard =
+  zvec_index_params_t *invert_params_standard =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   if (!invert_params_standard) {
     fprintf(stderr, "Failed to create invert index parameters (standard)\n");
@@ -61,7 +62,7 @@ int main() {
   }
   zvec_index_params_set_invert_params(invert_params_standard, true, false);
 
-  ZVecIndexParams *invert_params_extended =
+  zvec_index_params_t *invert_params_extended =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   if (!invert_params_extended) {
     fprintf(stderr, "Failed to create invert index parameters (extended)\n");
@@ -72,7 +73,7 @@ int main() {
   zvec_index_params_set_invert_params(invert_params_extended, true, true);
 
   // HNSW index parameters with different configurations
-  ZVecIndexParams *hnsw_params_fast =
+  zvec_index_params_t *hnsw_params_fast =
       zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params_fast) {
     fprintf(stderr, "Failed to create HNSW index parameters (fast)\n");
@@ -84,7 +85,7 @@ int main() {
   zvec_index_params_set_metric_type(hnsw_params_fast, ZVEC_METRIC_TYPE_L2);
   zvec_index_params_set_hnsw_params(hnsw_params_fast, 16, 100);
 
-  ZVecIndexParams *hnsw_params_balanced =
+  zvec_index_params_t *hnsw_params_balanced =
       zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params_balanced) {
     fprintf(stderr, "Failed to create HNSW index parameters (balanced)\n");
@@ -98,7 +99,7 @@ int main() {
                                     ZVEC_METRIC_TYPE_COSINE);
   zvec_index_params_set_hnsw_params(hnsw_params_balanced, 32, 200);
 
-  ZVecIndexParams *hnsw_params_accurate =
+  zvec_index_params_t *hnsw_params_accurate =
       zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params_accurate) {
     fprintf(stderr, "Failed to create HNSW index parameters (accurate)\n");
@@ -113,7 +114,7 @@ int main() {
   zvec_index_params_set_hnsw_params(hnsw_params_accurate, 64, 400);
 
   // Flat index parameters
-  ZVecIndexParams *flat_params_l2 =
+  zvec_index_params_t *flat_params_l2 =
       zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
   if (!flat_params_l2) {
     fprintf(stderr, "Failed to create Flat index parameters (L2)\n");
@@ -127,7 +128,7 @@ int main() {
   }
   zvec_index_params_set_metric_type(flat_params_l2, ZVEC_METRIC_TYPE_L2);
 
-  ZVecIndexParams *flat_params_cosine =
+  zvec_index_params_t *flat_params_cosine =
       zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
   if (!flat_params_cosine) {
     fprintf(stderr, "Failed to create Flat index parameters (cosine)\n");
@@ -147,7 +148,7 @@ int main() {
   printf("Creating fields with various index types...\n");
 
   // Fields with inverted indexes
-  ZVecFieldSchema *id_field =
+  zvec_field_schema_t *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_STRING, false, 0);
   if (id_field) {
     zvec_field_schema_set_index_params(id_field, invert_params_standard);
@@ -157,7 +158,7 @@ int main() {
     }
   }
 
-  ZVecFieldSchema *category_field =
+  zvec_field_schema_t *category_field =
       zvec_field_schema_create("category", ZVEC_DATA_TYPE_STRING, true, 0);
   if (category_field) {
     zvec_field_schema_set_index_params(category_field, invert_params_extended);
@@ -168,7 +169,7 @@ int main() {
   }
 
   // Vector fields with HNSW indexes (different configurations)
-  ZVecFieldSchema *fast_search_field = zvec_field_schema_create(
+  zvec_field_schema_t *fast_search_field = zvec_field_schema_create(
       "fast_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 64);
   if (fast_search_field) {
     zvec_field_schema_set_index_params(fast_search_field, hnsw_params_fast);
@@ -178,7 +179,7 @@ int main() {
     }
   }
 
-  ZVecFieldSchema *balanced_field = zvec_field_schema_create(
+  zvec_field_schema_t *balanced_field = zvec_field_schema_create(
       "balanced_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
   if (balanced_field) {
     zvec_field_schema_set_index_params(balanced_field, hnsw_params_balanced);
@@ -188,7 +189,7 @@ int main() {
     }
   }
 
-  ZVecFieldSchema *accurate_field = zvec_field_schema_create(
+  zvec_field_schema_t *accurate_field = zvec_field_schema_create(
       "accurate_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 256);
   if (accurate_field) {
     zvec_field_schema_set_index_params(accurate_field, hnsw_params_accurate);
@@ -199,7 +200,7 @@ int main() {
   }
 
   // Vector field with Flat index
-  ZVecFieldSchema *exact_field = zvec_field_schema_create(
+  zvec_field_schema_t *exact_field = zvec_field_schema_create(
       "exact_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 32);
   if (exact_field) {
     zvec_field_schema_set_index_params(exact_field, flat_params_l2);
@@ -210,13 +211,13 @@ int main() {
   }
 
   // 4. Create collection
-  ZVecCollectionOptions *options = zvec_collection_options_create();
+  zvec_collection_options_t *options = zvec_collection_options_create();
   if (!options) {
     fprintf(stderr, "Failed to create collection options\n");
     zvec_collection_schema_destroy(schema);
     return -1;
   }
-  ZVecCollection *collection = NULL;
+  zvec_collection_t *collection = NULL;
 
   error = zvec_collection_create_and_open("./index_example_collection", schema,
                                           options, &collection);
@@ -230,7 +231,7 @@ int main() {
   // 5. Create test data
   printf("Creating test documents...\n");
 
-  ZVecDoc *docs[3];
+  zvec_doc_t *docs[3];
   for (int i = 0; i < 3; i++) {
     docs[i] = zvec_doc_create();
     if (!docs[i]) {
@@ -297,7 +298,7 @@ int main() {
 
   // 6. Insert documents
   size_t success_count = 0, error_count = 0;
-  error = zvec_collection_insert(collection, (const ZVecDoc **)docs, 3,
+  error = zvec_collection_insert(collection, (const zvec_doc_t **)docs, 3,
                                  &success_count, &error_count);
   if (handle_error(error, "inserting documents") == ZVEC_OK) {
     printf("✓ Documents inserted - Success: %zu, Failed: %zu\n", success_count,
@@ -319,7 +320,7 @@ int main() {
   printf("Testing various index queries...\n");
 
   // Test HNSW query (balanced)
-  ZVecVectorQuery *hnsw_query = zvec_vector_query_create();
+  zvec_vector_query_t *hnsw_query = zvec_vector_query_create();
   if (!hnsw_query) {
     fprintf(stderr, "Failed to create HNSW query\n");
     goto cleanup;
@@ -332,10 +333,11 @@ int main() {
   zvec_vector_query_set_include_vector(hnsw_query, false);
   zvec_vector_query_set_include_doc_id(hnsw_query, true);
 
-  ZVecDoc **hnsw_results = NULL;
+  zvec_doc_t **hnsw_results = NULL;
   size_t hnsw_result_count = 0;
-  error = zvec_collection_query(collection, (const ZVecVectorQuery *)hnsw_query,
-                                &hnsw_results, &hnsw_result_count);
+  error =
+      zvec_collection_query(collection, (const zvec_vector_query_t *)hnsw_query,
+                            &hnsw_results, &hnsw_result_count);
   if (error == ZVEC_OK) {
     printf("✓ HNSW query successful - Found %zu results\n", hnsw_result_count);
     zvec_docs_free(hnsw_results, hnsw_result_count);
@@ -343,7 +345,7 @@ int main() {
   zvec_vector_query_destroy(hnsw_query);
 
   // Test Flat query (exact)
-  ZVecVectorQuery *flat_query = zvec_vector_query_create();
+  zvec_vector_query_t *flat_query = zvec_vector_query_create();
   if (!flat_query) {
     fprintf(stderr, "Failed to create Flat query\n");
     goto cleanup;
@@ -356,10 +358,11 @@ int main() {
   zvec_vector_query_set_include_vector(flat_query, false);
   zvec_vector_query_set_include_doc_id(flat_query, true);
 
-  ZVecDoc **flat_results = NULL;
+  zvec_doc_t **flat_results = NULL;
   size_t flat_result_count = 0;
-  error = zvec_collection_query(collection, (const ZVecVectorQuery *)flat_query,
-                                &flat_results, &flat_result_count);
+  error =
+      zvec_collection_query(collection, (const zvec_vector_query_t *)flat_query,
+                            &flat_results, &flat_result_count);
   if (error == ZVEC_OK) {
     printf("✓ Flat (exact) query successful - Found %zu results\n",
            flat_result_count);

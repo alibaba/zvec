@@ -22,7 +22,8 @@
 /**
  * @brief Print error message and return error code
  */
-static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
+static zvec_error_code_t handle_error(zvec_error_code_t error,
+                                      const char *context) {
   if (error != ZVEC_OK) {
     char *error_msg = NULL;
     zvec_get_last_error(&error_msg);
@@ -36,10 +37,10 @@ static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
 /**
  * @brief Create a test document with all data types
  * @param doc_index Document index for generating unique data
- * @return ZVecDoc* Created document pointer
+ * @return zvec_doc_t* Created document pointer
  */
-static ZVecDoc *create_full_type_test_doc(int doc_index) {
-  ZVecDoc *doc = zvec_doc_create();
+static zvec_doc_t *create_full_type_test_doc(int doc_index) {
+  zvec_doc_t *doc = zvec_doc_create();
   if (!doc) {
     fprintf(stderr, "Failed to create document\n");
     return NULL;
@@ -107,7 +108,7 @@ static ZVecDoc *create_full_type_test_doc(int doc_index) {
 /**
  * @brief Compare two documents for equality
  */
-static bool compare_documents(const ZVecDoc *doc1, const ZVecDoc *doc2) {
+static bool compare_documents(const zvec_doc_t *doc1, const zvec_doc_t *doc2) {
   if (!doc1 || !doc2) return false;
 
   // Compare primary keys
@@ -128,7 +129,7 @@ static bool compare_documents(const ZVecDoc *doc1, const ZVecDoc *doc2) {
  * @param doc The document to print
  * @param doc_index Document index for identification
  */
-static void print_doc(const ZVecDoc *doc, int doc_index) {
+static void print_doc(const zvec_doc_t *doc, int doc_index) {
   if (!doc) {
     printf("Document %d: NULL document\n", doc_index);
     return;
@@ -154,7 +155,7 @@ static void print_doc(const ZVecDoc *doc, int doc_index) {
   // ID field (using pointer function for strings)
   const void *id_value = NULL;
   size_t id_size = 0;
-  ZVecErrorCode error = zvec_doc_get_field_value_pointer(
+  zvec_error_code_t error = zvec_doc_get_field_value_pointer(
       doc, "id", ZVEC_DATA_TYPE_STRING, &id_value, &id_size);
   if (error == ZVEC_OK && id_value) {
     printf("  id: %.*s\n", (int)id_size, (const char *)id_value);
@@ -263,10 +264,10 @@ static void print_doc(const ZVecDoc *doc, int doc_index) {
 int main() {
   printf("=== ZVec Document Example ===\n\n");
 
-  ZVecErrorCode error;
+  zvec_error_code_t error;
 
   // 1. Create collection schema for document testing
-  ZVecCollectionSchema *schema =
+  zvec_collection_schema_t *schema =
       zvec_collection_schema_create("doc_example_collection");
   if (!schema) {
     fprintf(stderr, "Failed to create collection schema\n");
@@ -275,7 +276,7 @@ int main() {
   printf("✓ Collection schema created\n");
 
   // 2. Create index parameters
-  ZVecIndexParams *invert_params =
+  zvec_index_params_t *invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   if (!invert_params) {
     fprintf(stderr, "Failed to create invert index parameters\n");
@@ -284,7 +285,8 @@ int main() {
   }
   zvec_index_params_set_invert_params(invert_params, true, false);
 
-  ZVecIndexParams *hnsw_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params) {
     fprintf(stderr, "Failed to create HNSW index parameters\n");
     zvec_index_params_destroy(invert_params);
@@ -298,7 +300,7 @@ int main() {
   printf("Creating fields for all data types...\n");
 
   // Id field with inverted index
-  ZVecFieldSchema *id_field =
+  zvec_field_schema_t *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_STRING, false, 0);
   if (id_field) {
     zvec_field_schema_set_index_params(id_field, invert_params);
@@ -309,17 +311,17 @@ int main() {
   }
 
   // Scalar fields
-  ZVecFieldSchema *string_field =
+  zvec_field_schema_t *string_field =
       zvec_field_schema_create("string_field", ZVEC_DATA_TYPE_STRING, true, 0);
-  ZVecFieldSchema *bool_field =
+  zvec_field_schema_t *bool_field =
       zvec_field_schema_create("bool_field", ZVEC_DATA_TYPE_BOOL, true, 0);
-  ZVecFieldSchema *int32_field =
+  zvec_field_schema_t *int32_field =
       zvec_field_schema_create("int32_field", ZVEC_DATA_TYPE_INT32, true, 0);
-  ZVecFieldSchema *int64_field =
+  zvec_field_schema_t *int64_field =
       zvec_field_schema_create("int64_field", ZVEC_DATA_TYPE_INT64, true, 0);
-  ZVecFieldSchema *float_field =
+  zvec_field_schema_t *float_field =
       zvec_field_schema_create("float_field", ZVEC_DATA_TYPE_FLOAT, true, 0);
-  ZVecFieldSchema *double_field =
+  zvec_field_schema_t *double_field =
       zvec_field_schema_create("double_field", ZVEC_DATA_TYPE_DOUBLE, true, 0);
 
   if (string_field) zvec_collection_schema_add_field(schema, string_field);
@@ -330,9 +332,9 @@ int main() {
   if (double_field) zvec_collection_schema_add_field(schema, double_field);
 
   // Vector fields
-  ZVecFieldSchema *vector_fp32_field = zvec_field_schema_create(
+  zvec_field_schema_t *vector_fp32_field = zvec_field_schema_create(
       "vector_fp32", ZVEC_DATA_TYPE_VECTOR_FP32, false, 3);
-  ZVecFieldSchema *large_vector_field = zvec_field_schema_create(
+  zvec_field_schema_t *large_vector_field = zvec_field_schema_create(
       "large_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 16);
 
   if (vector_fp32_field) {
@@ -352,13 +354,13 @@ int main() {
   }
 
   // 4. Create collection
-  ZVecCollectionOptions *options = zvec_collection_options_create();
+  zvec_collection_options_t *options = zvec_collection_options_create();
   if (!options) {
     fprintf(stderr, "Failed to create collection options\n");
     zvec_collection_schema_destroy(schema);
     return -1;
   }
-  ZVecCollection *collection = NULL;
+  zvec_collection_t *collection = NULL;
 
   error = zvec_collection_create_and_open("./doc_example_collection", schema,
                                           options, &collection);
@@ -374,7 +376,8 @@ int main() {
 
 #define DOC_COUNT 5
   // Use dynamic allocation for MSVC compatibility (no VLA support)
-  ZVecDoc **test_docs = (ZVecDoc **)malloc(DOC_COUNT * sizeof(ZVecDoc *));
+  zvec_doc_t **test_docs =
+      (zvec_doc_t **)malloc(DOC_COUNT * sizeof(zvec_doc_t *));
   if (!test_docs) {
     fprintf(stderr, "Failed to allocate test documents\n");
     goto cleanup;
@@ -402,7 +405,7 @@ int main() {
 
   // Insert documents
   size_t success_count = 0, error_count = 0;
-  error = zvec_collection_insert(collection, (const ZVecDoc **)test_docs,
+  error = zvec_collection_insert(collection, (const zvec_doc_t **)test_docs,
                                  DOC_COUNT, &success_count, &error_count);
   if (handle_error(error, "inserting documents") == ZVEC_OK) {
     printf("✓ Documents inserted - Success: %zu, Failed: %zu\n", success_count,
@@ -419,7 +422,7 @@ int main() {
 
   // Use the first document's vector for querying
   float query_vector[] = {0.0f, 0.0f, 0.0f};
-  ZVecVectorQuery *query = zvec_vector_query_create();
+  zvec_vector_query_t *query = zvec_vector_query_create();
   if (!query) {
     fprintf(stderr, "Failed to create vector query\n");
     zvec_collection_destroy(collection);
@@ -433,10 +436,10 @@ int main() {
   zvec_vector_query_set_include_vector(query, true);
   zvec_vector_query_set_include_doc_id(query, true);
 
-  ZVecDoc **query_results = NULL;
+  zvec_doc_t **query_results = NULL;
   size_t result_count = 0;
 
-  error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
+  error = zvec_collection_query(collection, (const zvec_vector_query_t *)query,
                                 &query_results, &result_count);
   if (handle_error(error, "querying documents") != ZVEC_OK) {
     query_results = NULL;
@@ -483,10 +486,10 @@ int main() {
   // Create filtered query
   zvec_vector_query_set_filter(query, "string_field = 'string_field_0'");
 
-  ZVecDoc **filtered_results = NULL;
+  zvec_doc_t **filtered_results = NULL;
   size_t filtered_count = 0;
 
-  error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
+  error = zvec_collection_query(collection, (const zvec_vector_query_t *)query,
                                 &filtered_results, &filtered_count);
   if (handle_error(error, "filtered querying") == ZVEC_OK) {
     printf("Filtered query returned %zu results\n", filtered_count);

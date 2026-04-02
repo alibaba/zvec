@@ -20,7 +20,8 @@
 /**
  * @brief Print error message and return error code
  */
-static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
+static zvec_error_code_t handle_error(zvec_error_code_t error,
+                                      const char *context) {
   if (error != ZVEC_OK) {
     char *error_msg = NULL;
     zvec_get_last_error(&error_msg);
@@ -34,19 +35,19 @@ static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
 /**
  * @brief Create a simple test collection using CollectionSchema
  */
-static ZVecErrorCode create_simple_test_collection(
-    ZVecCollection **collection) {
+static zvec_error_code_t create_simple_test_collection(
+    zvec_collection_t **collection) {
   // Create collection schema using C API
-  ZVecCollectionSchema *schema =
+  zvec_collection_schema_t *schema =
       zvec_collection_schema_create("test_collection");
   if (!schema) {
     return ZVEC_ERROR_INTERNAL_ERROR;
   }
 
-  ZVecErrorCode error = ZVEC_OK;
+  zvec_error_code_t error = ZVEC_OK;
 
   // Create index parameters using new API
-  ZVecIndexParams *invert_params =
+  zvec_index_params_t *invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   if (!invert_params) {
     zvec_collection_schema_destroy(schema);
@@ -54,7 +55,8 @@ static ZVecErrorCode create_simple_test_collection(
   }
   zvec_index_params_set_invert_params(invert_params, true, false);
 
-  ZVecIndexParams *hnsw_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params) {
     zvec_index_params_destroy(invert_params);
     zvec_collection_schema_destroy(schema);
@@ -64,7 +66,7 @@ static ZVecErrorCode create_simple_test_collection(
   zvec_index_params_set_hnsw_params(hnsw_params, 16, 200);
 
   // Create and add ID field (primary key)
-  ZVecFieldSchema *id_field =
+  zvec_field_schema_t *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_STRING, false, 0);
   zvec_field_schema_set_index_params(id_field, invert_params);
   error = zvec_collection_schema_add_field(schema, id_field);
@@ -76,7 +78,7 @@ static ZVecErrorCode create_simple_test_collection(
   }
 
   // Create text field (inverted index)
-  ZVecFieldSchema *text_field =
+  zvec_field_schema_t *text_field =
       zvec_field_schema_create("text", ZVEC_DATA_TYPE_STRING, true, 0);
   zvec_field_schema_set_index_params(text_field, invert_params);
   error = zvec_collection_schema_add_field(schema, text_field);
@@ -88,7 +90,7 @@ static ZVecErrorCode create_simple_test_collection(
   }
 
   // Create embedding field (HNSW index)
-  ZVecFieldSchema *embedding_field = zvec_field_schema_create(
+  zvec_field_schema_t *embedding_field = zvec_field_schema_create(
       "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, 3);
   zvec_field_schema_set_index_params(embedding_field, hnsw_params);
   error = zvec_collection_schema_add_field(schema, embedding_field);
@@ -104,7 +106,7 @@ static ZVecErrorCode create_simple_test_collection(
   zvec_index_params_destroy(hnsw_params);
 
   // Use default options
-  ZVecCollectionOptions *options = zvec_collection_options_create();
+  zvec_collection_options_t *options = zvec_collection_options_create();
   if (!options) {
     zvec_collection_schema_destroy(schema);
     return ZVEC_ERROR_RESOURCE_EXHAUSTED;
@@ -127,10 +129,10 @@ static ZVecErrorCode create_simple_test_collection(
 int main() {
   printf("=== ZVec C API Basic Example ===\n\n");
 
-  ZVecErrorCode error;
+  zvec_error_code_t error;
 
   // Create collection using simplified function
-  ZVecCollection *collection = NULL;
+  zvec_collection_t *collection = NULL;
   error = create_simple_test_collection(&collection);
   if (handle_error(error, "creating collection") != ZVEC_OK) {
     return 1;
@@ -141,7 +143,7 @@ int main() {
   float vector1[] = {0.1f, 0.2f, 0.3f};
   float vector2[] = {0.4f, 0.5f, 0.6f};
 
-  ZVecDoc *docs[2];
+  zvec_doc_t *docs[2];
   for (int i = 0; i < 2; ++i) {
     docs[i] = zvec_doc_create();
     if (!docs[i]) {
@@ -175,7 +177,7 @@ int main() {
   // Insert documents
   size_t success_count = 0;
   size_t error_count = 0;
-  error = zvec_collection_insert(collection, (const ZVecDoc **)docs, 2,
+  error = zvec_collection_insert(collection, (const zvec_doc_t **)docs, 2,
                                  &success_count, &error_count);
   if (handle_error(error, "inserting documents") != ZVEC_OK) {
     zvec_collection_destroy(collection);
@@ -196,7 +198,7 @@ int main() {
   }
 
   // Get collection statistics
-  ZVecCollectionStats *stats = NULL;
+  zvec_collection_stats_t *stats = NULL;
   error = zvec_collection_get_stats(collection, &stats);
   if (handle_error(error, "getting collection stats") == ZVEC_OK) {
     printf("✓ Collection stats - Document count: %llu\n",
@@ -207,7 +209,7 @@ int main() {
 
   printf("Testing vector query...\n");
   // Query documents
-  ZVecVectorQuery *query = zvec_vector_query_create();
+  zvec_vector_query_t *query = zvec_vector_query_create();
   if (!query) {
     fprintf(stderr, "Failed to create vector query\n");
     zvec_collection_destroy(collection);
@@ -221,9 +223,9 @@ int main() {
   zvec_vector_query_set_include_vector(query, true);
   zvec_vector_query_set_include_doc_id(query, true);
 
-  ZVecDoc **results = NULL;
+  zvec_doc_t **results = NULL;
   size_t result_count = 0;
-  error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
+  error = zvec_collection_query(collection, (const zvec_vector_query_t *)query,
                                 &results, &result_count);
 
   if (error != ZVEC_OK) {
@@ -242,7 +244,7 @@ int main() {
 
   // Process query results
   for (size_t i = 0; i < result_count && i < 5; ++i) {
-    const ZVecDoc *doc = results[i];
+    const zvec_doc_t *doc = results[i];
     const char *pk = zvec_doc_get_pk_copy(doc);
 
     printf("  Result %zu: PK=%s, DocID=%llu, Score=%.4f\n", i + 1,
