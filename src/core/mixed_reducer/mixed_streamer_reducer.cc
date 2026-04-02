@@ -339,10 +339,9 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     iterator->next();
   }
 
-  std::sort(pending_items.begin(), pending_items.end(),
-            [](const auto &lhs, const auto &rhs) {
-              return lhs.first < rhs.first;
-            });
+  std::sort(
+      pending_items.begin(), pending_items.end(),
+      [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
   for (auto &item : pending_items) {
     if (!mt_list_.produce(VectorItem((*next_id)++, std::move(item.second)))) {
       LOG_ERROR("Produce vector to queue failed. key[%u]", item.first);
@@ -568,9 +567,9 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
               return lhs.pkey_ < rhs.pkey_;
             });
   for (auto &item : pending_items) {
-    if (!sparse_mt_list_.produce(SparseVectorItem(
-            (*next_id)++, std::move(item.sparse_indices_),
-            std::move(item.sparse_values_)))) {
+    if (!sparse_mt_list_.produce(
+            SparseVectorItem((*next_id)++, std::move(item.sparse_indices_),
+                             std::move(item.sparse_values_)))) {
       LOG_ERROR("Produce vector to queue failed. key[%lu]",
                 static_cast<size_t>(item.pkey_));
       return IndexError_Runtime;

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <gtest/gtest.h>
 #include "core/interface/indexes/omega_training_session.h"
+#include <gtest/gtest.h>
 
 namespace zvec::core_interface {
 
@@ -88,7 +88,8 @@ TEST(OmegaTrainingSessionTest, ConsumeArtifactsAggregatesRecordsAndGtCmps) {
   EXPECT_TRUE(drained.gt_cmps_data.gt_cmps.empty());
 }
 
-TEST(OmegaTrainingSessionTest, ConsumeArtifactsUsesConfiguredShapeWhenAvailable) {
+TEST(OmegaTrainingSessionTest,
+     ConsumeArtifactsUsesConfiguredShapeWhenAvailable) {
   OmegaTrainingSession session(nullptr);
 
   QueryTrainingArtifacts only;
