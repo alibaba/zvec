@@ -82,6 +82,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install cibuildwheel
         run: |
           pip install --upgrade pip
