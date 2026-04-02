@@ -6,6 +6,10 @@ else()
         set(ARROW_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.patch)
         apply_patch_once("arrow_fix" "${ARROW_SRC_DIR}" "${ARROW_PATCH}")
 endif()
+if(MSVC)
+        set(ARROW_WIN_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.windows.patch)
+        apply_patch_once("arrow_windows_crt_fix" "${ARROW_SRC_DIR}" "${ARROW_WIN_PATCH}")
+endif()
 
 include(ExternalProject)
 include(ProcessorCount)
@@ -58,7 +62,19 @@ if(ANDROID)
                 LOG_INSTALL ON
         )
 elseif (MSVC)
-    set(ARROW_EXTRA_CMAKE_ARGS -DCMAKE_C_FLAGS=/FS -DCMAKE_CXX_FLAGS=/FS)
+    if(ZVEC_USE_STATIC_CRT)
+        set(_ARROW_CRT_FLAG "/MT")
+        set(_ARROW_MSVC_RUNTIME "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+        set(_ARROW_CRT_FLAG "/MD")
+        set(_ARROW_MSVC_RUNTIME "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>")
+    endif()
+    set(ARROW_EXTRA_CMAKE_ARGS
+        "-DCMAKE_C_FLAGS=/FS ${_ARROW_CRT_FLAG}"
+        "-DCMAKE_CXX_FLAGS=/FS ${_ARROW_CRT_FLAG}"
+        -DARROW_USE_STATIC_CRT=${ZVEC_USE_STATIC_CRT}
+        "-DCMAKE_MSVC_RUNTIME_LIBRARY=${_ARROW_MSVC_RUNTIME}"
+    )
         ExternalProject_Add(
                 ARROW.BUILD PREFIX arrow
                 SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0
