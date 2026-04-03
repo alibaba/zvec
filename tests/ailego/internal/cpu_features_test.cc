@@ -80,6 +80,9 @@ TEST(CpuFeatures, General) {
   std::cout << "* HT:               " << CpuFeatures::HT() << std::endl;
   std::cout << "* VMX:              " << CpuFeatures::VMX() << std::endl;
   std::cout << "* HYPERVISOR:       " << CpuFeatures::HYPERVISOR() << std::endl;
+  std::cout << "* RISCV_VECTOR:     " << CpuFeatures::RISCV_VECTOR()
+            << std::endl;
+  std::cout << "* RISCV_ZVFH:       " << CpuFeatures::RISCV_ZVFH() << std::endl;
 
 // #if defined(__AVX512VBMI2__)
 //     EXPECT_TRUE(CpuFeatures::AVX512VBMI2());
@@ -174,6 +177,12 @@ TEST(CpuFeatures, General) {
 #endif
 #if defined(__MMX__)
   EXPECT_TRUE(CpuFeatures::MMX());
+#endif
+#if defined(__riscv_vector)
+  EXPECT_TRUE(CpuFeatures::RISCV_VECTOR());
+#endif
+#if defined(__riscv_zvfh)
+  EXPECT_TRUE(CpuFeatures::RISCV_ZVFH());
 #endif
 }
 
@@ -282,5 +291,9 @@ TEST(CpuFeatures, Static) {
   std::cout << "* VMX:              " << CpuFeatures::static_flags_.VMX
             << std::endl;
   std::cout << "* HYPERVISOR:       " << CpuFeatures::static_flags_.HYPERVISOR
+            << std::endl;
+  std::cout << "* RISCV_VECTOR:     " << CpuFeatures::static_flags_.RISCV_VECTOR
+            << std::endl;
+  std::cout << "* RISCV_ZVFH:       " << CpuFeatures::static_flags_.RISCV_ZVFH
             << std::endl;
 }
