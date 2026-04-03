@@ -44,7 +44,12 @@ Index::Pointer IndexFactory::CreateAndInitIndex(const BaseIndexParam &param) {
   } else if (param.index_type == IndexType::kHNSW) {
     ptr = std::make_shared<HNSWIndex>();
   } else if (param.index_type == IndexType::kOMEGA) {
+#if ZVEC_ENABLE_OMEGA
     ptr = std::make_shared<OmegaIndex>();
+#else
+    LOG_ERROR("OMEGA is not supported on this platform");
+    return nullptr;
+#endif
   } else if (param.index_type == IndexType::kIVF) {
     ptr = std::make_shared<IVFIndex>();
   } else if (param.index_type == IndexType::kHNSWRabitq) {

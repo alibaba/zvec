@@ -16,6 +16,20 @@ set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
 set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
 set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
 
+set(_zvec_host_omega_default OFF)
+if(WIN32)
+    if(EXISTS "${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/Release/omega.lib" AND
+       EXISTS "${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/Release/lib_lightgbm.lib")
+        set(_zvec_host_omega_default ON)
+    endif()
+else()
+    if(EXISTS "${ZVEC_DEPENDENCY_LIB_DIR}/libomega.a" AND
+       EXISTS "${ZVEC_DEPENDENCY_LIB_DIR}/lib_lightgbm.a")
+        set(_zvec_host_omega_default ON)
+    endif()
+endif()
+option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" ${_zvec_host_omega_default})
+
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR})
 link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
@@ -42,10 +56,11 @@ endif()
 
 set(zvec_core_deps
     zvec_turbo
-    omega
-    _lightgbm
     ${zvec_openmp_deps}
 )
+if(ZVEC_ENABLE_OMEGA)
+    list(APPEND zvec_core_deps omega _lightgbm)
+endif()
 
 if (NOT WIN32)
     set(zvec_ailego_deps
@@ -60,8 +75,6 @@ if (NOT WIN32)
     set(zvec_db_deps
             roaring
             rocksdb
-            omega
-            _lightgbm
             arrow
             arrow_acero
             arrow_bundled_dependencies
@@ -75,6 +88,9 @@ if (NOT WIN32)
             lz4
             ${zvec_openmp_deps}
     )
+    if(ZVEC_ENABLE_OMEGA)
+        list(APPEND zvec_db_deps omega _lightgbm)
+    endif()
 else ()
     # Windows static libraries use different naming conventions
     set(PROTOBUF_LIB libprotobuf)
@@ -88,8 +104,6 @@ else ()
     set(zvec_db_deps
             roaring
             rocksdb
-            omega
-            _lightgbm
             arrow_static
             arrow_acero_static
             arrow_bundled_dependencies
@@ -105,6 +119,9 @@ else ()
             shlwapi
             ${zvec_openmp_deps}
     )
+    if(ZVEC_ENABLE_OMEGA)
+        list(APPEND zvec_db_deps omega _lightgbm)
+    endif()
 endif ()
 
 # --- Create INTERFACE targets for Zvec components ---
@@ -138,10 +155,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 elseif(APPLE)
     target_link_libraries(zvec-core INTERFACE
         -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_core.a
-        -Wl,-force_load ${ZVEC_DEPENDENCY_LIB_DIR}/libomega.a
         zvec-ailego
         ${zvec_core_deps}
     )
+    if(ZVEC_ENABLE_OMEGA)
+        target_link_libraries(zvec-core INTERFACE
+            -Wl,-force_load ${ZVEC_DEPENDENCY_LIB_DIR}/libomega.a
+        )
+    endif()
 elseif(ANDROID)
     target_link_libraries(zvec-core INTERFACE
         -Wl,--whole-archive

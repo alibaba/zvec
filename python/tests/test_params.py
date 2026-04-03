@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import os
 import pickle
 import sys
 import time
@@ -43,6 +44,18 @@ from zvec import (
 )
 
 from _zvec.param import _VectorQuery
+
+IS_ANDROID = hasattr(sys, "getandroidapilevel") or "ANDROID_ROOT" in os.environ
+OMEGA_ENABLED = os.environ.get("ZVEC_ENABLE_OMEGA", "1").lower() not in {
+    "0",
+    "off",
+    "false",
+    "no",
+}
+OMEGA_AVAILABLE = OMEGA_ENABLED and not IS_ANDROID
+OMEGA_ANDROID_SKIP = pytest.mark.skipif(
+    not OMEGA_AVAILABLE, reason="OMEGA is disabled on this build/platform"
+)
 
 # ----------------------------
 # Invert Index Param Test Case
@@ -183,6 +196,7 @@ class TestIVFIndexParam:
 # ----------------------------
 # OMEGA Index Param Test Case
 # ----------------------------
+@OMEGA_ANDROID_SKIP
 class TestOmegaIndexParam:
     def test_default(self):
         param = OmegaIndexParam()
@@ -414,6 +428,7 @@ class TestHnswQueryParam:
 # ----------------------------
 # OMEGA Query Param Test Case
 # ----------------------------
+@OMEGA_ANDROID_SKIP
 class TestOmegaQueryParam:
     def test_default(self):
         param = OmegaQueryParam()
@@ -500,6 +515,7 @@ class TestVectorQuery:
         assert vq.vector == vec
         assert vq.param == param
 
+    @OMEGA_ANDROID_SKIP
     def test_init_with_valid_omega_param(self):
         vec = [0.1, 0.2, 0.3]
         param = OmegaQueryParam(ef=256, target_recall=0.91)
@@ -535,6 +551,7 @@ class TestVectorQuery:
             vq._validate()
 
 
+@OMEGA_ANDROID_SKIP
 class TestVectorSchemaWithOmega:
     def test_accepts_omega_index_param(self):
         schema = VectorSchema(

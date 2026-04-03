@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,18 @@ from zvec import (
     IndexType,
     VectorQuery,
     OptimizeOption,
+)
+
+IS_ANDROID = hasattr(sys, "getandroidapilevel") or "ANDROID_ROOT" in os.environ
+OMEGA_ENABLED = os.environ.get("ZVEC_ENABLE_OMEGA", "1").lower() not in {
+    "0",
+    "off",
+    "false",
+    "no",
+}
+OMEGA_AVAILABLE = OMEGA_ENABLED and not IS_ANDROID
+OMEGA_ANDROID_SKIP = pytest.mark.skipif(
+    not OMEGA_AVAILABLE, reason="OMEGA is disabled on this build/platform"
 )
 
 # ==================== Common ====================
@@ -135,6 +149,7 @@ def test_collection(
                 print(f"Warning: failed to destroy collection: {e}")
 
 
+@OMEGA_ANDROID_SKIP
 @pytest.fixture(scope="session")
 def omega_collection_schema():
     return zvec.CollectionSchema(
@@ -165,6 +180,7 @@ def omega_collection_schema():
     )
 
 
+@OMEGA_ANDROID_SKIP
 @pytest.fixture(scope="function")
 def omega_test_collection(
     tmp_path_factory, omega_collection_schema, collection_option
@@ -192,6 +208,7 @@ def omega_test_collection(
                 print(f"Warning: failed to destroy omega collection: {e}")
 
 
+@OMEGA_ANDROID_SKIP
 @pytest.fixture
 def omega_multiple_docs():
     return [
@@ -204,6 +221,7 @@ def omega_multiple_docs():
     ]
 
 
+@OMEGA_ANDROID_SKIP
 @pytest.fixture
 def omega_workflow_docs():
     return [
@@ -1103,6 +1121,7 @@ class TestCollectionQuery:
         )
         assert len(result) == 10
 
+    @OMEGA_ANDROID_SKIP
     def test_omega_collection_schema_uses_omega_index(
         self, omega_test_collection: Collection
     ):
@@ -1110,6 +1129,7 @@ class TestCollectionQuery:
         assert vector_schema is not None
         assert vector_schema.index_param.type == IndexType.OMEGA
 
+    @OMEGA_ANDROID_SKIP
     def test_omega_collection_query_by_id_with_omega_param(
         self, omega_test_collection: Collection, omega_multiple_docs
     ):
@@ -1129,6 +1149,7 @@ class TestCollectionQuery:
         assert len(query_result) > 0
         assert query_result[0].id == omega_multiple_docs[0].id
 
+    @OMEGA_ANDROID_SKIP
     def test_omega_workflow_optimize_trains_model_and_query_runs(
         self, tmp_path_factory, collection_option, omega_workflow_docs
     ):
@@ -1176,6 +1197,7 @@ class TestCollectionQuery:
         finally:
             omega_collection.destroy()
 
+    @OMEGA_ANDROID_SKIP
     def test_omega_query_falls_back_to_hnsw_when_model_not_trained(
         self, tmp_path_factory, collection_option, omega_workflow_docs
     ):

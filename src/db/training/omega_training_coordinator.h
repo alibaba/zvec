@@ -37,6 +37,7 @@ struct OmegaTrainingParams {
 OmegaTrainingParams ResolveOmegaTrainingParams(
     const IndexParams::Ptr &index_params);
 
+#if ZVEC_ENABLE_OMEGA
 Result<TrainingDataCollectorResult> CollectOmegaTrainingDataBeforeFlush(
     const Segment::Ptr &segment, const std::string &field_name,
     const VectorColumnIndexer::Ptr &vector_indexer,
@@ -55,5 +56,42 @@ Status TrainOmegaModelAfterRetrainCollect(
     const TrainingDataCollectorResult &training_result,
     const std::string &model_output_dir, SegmentID segment_id,
     const std::string &field_name);
+#else
+inline OmegaTrainingParams ResolveOmegaTrainingParams(
+    const IndexParams::Ptr & /*index_params*/) {
+  return {};
+}
+
+inline Result<TrainingDataCollectorResult> CollectOmegaTrainingDataBeforeFlush(
+    const Segment::Ptr & /*segment*/, const std::string & /*field_name*/,
+    const VectorColumnIndexer::Ptr & /*vector_indexer*/,
+    const OmegaTrainingParams & /*params*/,
+    const std::string & /*model_output_dir*/) {
+  return tl::make_unexpected(
+      Status::NotSupported("OMEGA is disabled on Android"));
+}
+
+inline Result<TrainingDataCollectorResult> CollectOmegaRetrainingData(
+    const Segment::Ptr & /*segment*/, const std::string & /*field_name*/,
+    const std::vector<VectorColumnIndexer::Ptr> & /*indexers*/,
+    const OmegaTrainingParams & /*params*/,
+    const std::string & /*model_output_dir*/) {
+  return tl::make_unexpected(
+      Status::NotSupported("OMEGA is disabled on Android"));
+}
+
+inline Status TrainOmegaModelAfterBuild(
+    const TrainingDataCollectorResult & /*training_result*/,
+    const std::string & /*model_output_dir*/) {
+  return Status::NotSupported("OMEGA is disabled on Android");
+}
+
+inline Status TrainOmegaModelAfterRetrainCollect(
+    const TrainingDataCollectorResult & /*training_result*/,
+    const std::string & /*model_output_dir*/, SegmentID /*segment_id*/,
+    const std::string & /*field_name*/) {
+  return Status::NotSupported("OMEGA is disabled on Android");
+}
+#endif
 
 }  // namespace zvec

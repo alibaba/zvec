@@ -16,17 +16,96 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#if ZVEC_ENABLE_OMEGA
 #include <omega/ground_truth.h>
+#endif
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/query_params.h>
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "query_generator.h"
 
 namespace zvec {
+
+namespace {
+
+#if !ZVEC_ENABLE_OMEGA
+std::vector<std::vector<uint64_t>> ComputeGroundTruthFallbackBruteForce(
+    const Segment::Ptr &segment, const std::string &field_name,
+    const std::vector<std::vector<float>> &queries, size_t topk,
+    const std::vector<uint64_t> &query_doc_ids, MetricType metric_type) {
+  std::vector<std::vector<uint64_t>> ground_truth(queries.size());
+  const bool held_out_mode =
+      !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
+  const uint64_t doc_count = segment->doc_count();
+  if (queries.empty() || doc_count == 0) {
+    return ground_truth;
+  }
+
+  for (size_t q = 0; q < queries.size(); ++q) {
+    std::vector<std::pair<float, uint64_t>> scored;
+    scored.reserve(static_cast<size_t>(doc_count));
+
+    for (uint64_t doc_id = 0; doc_id < doc_count; ++doc_id) {
+      if (held_out_mode && doc_id == query_doc_ids[q]) {
+        continue;
+      }
+      auto doc = segment->Fetch(doc_id);
+      if (!doc) {
+        continue;
+      }
+      auto vector_opt = doc->get<std::vector<float>>(field_name);
+      if (!vector_opt.has_value()) {
+        continue;
+      }
+      const auto &base = vector_opt.value();
+      if (base.size() != queries[q].size()) {
+        continue;
+      }
+
+      float score = 0.0f;
+      if (metric_type == MetricType::IP || metric_type == MetricType::COSINE) {
+        for (size_t d = 0; d < base.size(); ++d) {
+          score += queries[q][d] * base[d];
+        }
+      } else {
+        for (size_t d = 0; d < base.size(); ++d) {
+          const float diff = queries[q][d] - base[d];
+          score += diff * diff;
+        }
+      }
+      scored.emplace_back(score, doc_id);
+    }
+
+    const auto limit = std::min(topk, scored.size());
+    if (metric_type == MetricType::L2) {
+      std::partial_sort(scored.begin(), scored.begin() + limit, scored.end(),
+                        [](const auto &lhs, const auto &rhs) {
+                          return lhs.first < rhs.first;
+                        });
+    } else {
+      std::partial_sort(scored.begin(), scored.begin() + limit, scored.end(),
+                        [](const auto &lhs, const auto &rhs) {
+                          return lhs.first > rhs.first;
+                        });
+    }
+
+    auto &result = ground_truth[q];
+    result.reserve(limit);
+    for (size_t i = 0; i < limit; ++i) {
+      result.push_back(scored[i].second);
+    }
+  }
+
+  return ground_truth;
+}
+#endif
+
+}  // namespace
 
 // ============ DEBUG TIMING UTILITIES ============
 namespace {
@@ -577,6 +656,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   // Exact results, uses batch matrix multiplication
   // ============================================================
   // Convert zvec MetricType to omega MetricType
+#if ZVEC_ENABLE_OMEGA
   omega::MetricType omega_metric;
   switch (metric_type) {
     case MetricType::L2:
@@ -590,6 +670,7 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       omega_metric = omega::MetricType::IP;
       break;
   }
+#endif
 
   // Step 1: Load all base vectors into memory
   auto load_start = std::chrono::high_resolution_clock::now();
@@ -669,10 +750,15 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
   // Step 3: Call OmegaLib's fast ground truth computation (Eigen)
   auto compute_start = std::chrono::high_resolution_clock::now();
 
+#if ZVEC_ENABLE_OMEGA
   ground_truth = omega::ComputeGroundTruth(
       base_vectors.data(), query_flat.data(), doc_count, queries.size(), dim,
       topk, omega_metric, held_out_mode,
       query_doc_ids);  // Pass query-to-base mapping for correct self-exclusion
+#else
+  ground_truth = ComputeGroundTruthFallbackBruteForce(
+      segment, field_name, queries, topk, query_doc_ids, metric_type);
+#endif
 
   auto compute_end = std::chrono::high_resolution_clock::now();
   auto compute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

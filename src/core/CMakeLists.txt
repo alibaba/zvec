@@ -39,7 +39,15 @@ if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
 endif()
 
-set(CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib omega)
+if(NOT ZVEC_ENABLE_OMEGA)
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/omega/.*")
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/omega_.*")
+endif()
+
+set(CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
+if(ZVEC_ENABLE_OMEGA)
+  list(APPEND CORE_LIBS omega)
+endif()
 
 cc_library(
     NAME zvec_core STATIC STRICT PACKED

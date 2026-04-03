@@ -170,6 +170,12 @@ Status FieldSchema::validate() const {
         }
       }
 
+#if !ZVEC_ENABLE_OMEGA
+      if (index_params_->type() == IndexType::OMEGA) {
+        return Status::NotSupported("OMEGA is not supported on Android");
+      }
+#endif
+
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         auto iter = quantize_type_map.find(data_type_);

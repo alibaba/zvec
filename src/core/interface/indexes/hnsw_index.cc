@@ -17,7 +17,9 @@
 #include <zvec/core/interface/index.h>
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
+#if ZVEC_ENABLE_OMEGA
 #include "algorithm/omega/omega_params.h"
+#endif
 
 namespace zvec::core_interface {
 
@@ -107,8 +109,10 @@ int HNSWIndex::_prepare_for_search(
   params.set(core::PARAM_HNSW_STREAMER_EF, real_search_ef);
 
   if (hnsw_search_param->training_query_id >= 0) {
+#if ZVEC_ENABLE_OMEGA
     params.set(core::PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID,
                hnsw_search_param->training_query_id);
+#endif
   }
 
   context->update(params);

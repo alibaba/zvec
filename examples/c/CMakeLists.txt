@@ -39,6 +39,20 @@ else()
     set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
 endif()
 
+set(_zvec_host_omega_default OFF)
+if(WIN32)
+    if(EXISTS "${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/Release/omega.lib" AND
+       EXISTS "${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/Release/lib_lightgbm.lib")
+        set(_zvec_host_omega_default ON)
+    endif()
+else()
+    if(EXISTS "${ZVEC_DEPENDENCY_LIB_DIR}/libomega.a" AND
+       EXISTS "${ZVEC_DEPENDENCY_LIB_DIR}/lib_lightgbm.a")
+        set(_zvec_host_omega_default ON)
+    endif()
+endif()
+option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" ${_zvec_host_omega_default})
+
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR} ${ZVEC_GENERATED_INCLUDE_DIR})
 link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
@@ -68,8 +82,6 @@ if(NOT WIN32)
     set(zvec_c_api_deps
         roaring
         rocksdb
-        omega
-        _lightgbm
         arrow
         arrow_acero
         arrow_bundled_dependencies
@@ -85,14 +97,15 @@ if(NOT WIN32)
         ${CMAKE_THREAD_LIBS_INIT}
         ${CMAKE_DL_LIBS}
     )
+    if(ZVEC_ENABLE_OMEGA)
+        list(APPEND zvec_c_api_deps omega _lightgbm)
+    endif()
 else()
     # Windows static libraries use different naming conventions
     set(PROTOBUF_LIB libprotobuf)
     set(zvec_c_api_deps
         roaring
         rocksdb
-        omega
-        _lightgbm
         arrow_static
         arrow_acero_static
         arrow_bundled_dependencies
@@ -109,6 +122,9 @@ else()
         rpcrt4
         shlwapi
     )
+    if(ZVEC_ENABLE_OMEGA)
+        list(APPEND zvec_c_api_deps omega _lightgbm)
+    endif()
 endif()
 
 # Create INTERFACE target for zvec_c_api with platform-specific linking
