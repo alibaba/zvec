@@ -32,7 +32,7 @@
 
 > [!IMPORTANT]
 > **🚀 v0.3.0 Released on March 31, 2026**
-> - **New Platforms**: Initial **Windows (MSVC)** and **Android** support. Published official Windows **Python** and **Node.js** packages
+> - **New Platforms**: Initial **Windows (MSVC)** and **Android** support. Published official Windows **Python** and **Node.js** packages.
 > - **Efficiency**: **RabitQ** quantization, **5x faster** Buffer Manager, and **CPU Auto-Dispatch** for optimized SIMD execution.
 > - **Ecosystem**: **C-API** for custom language bindings and **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** integration for AI Agents.
 > 
