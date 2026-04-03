@@ -31,7 +31,7 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Built on **Proxima** (Alibaba's battle-tested vector search engine), it delivers production-grade, low-latency, scalable similarity search with minimal setup.
 
 > [!IMPORTANT]
-> **🚀 v0.3.0 Released on March 31, 2026**
+> **🚀 v0.3.0 Released on April 3, 2026**
 > - **New Platforms**: Initial **Windows (MSVC)** and **Android** support. Published official Windows **Python** and **Node.js** packages.
 > - **Efficiency**: **RabitQ** quantization, **5x faster** Buffer Manager, and **CPU Auto-Dispatch** for optimized SIMD execution.
 > - **Ecosystem**: **C-API** for custom language bindings and **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** integration for AI Agents.
