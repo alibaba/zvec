@@ -392,7 +392,14 @@ if(NOT MSVC)
     )
   unset(_COMPILER_FLAGS)
 else()
-  # Replace the default compiling flags
+  option(ZVEC_USE_STATIC_CRT "Use static CRT (/MT) instead of dynamic CRT (/MD), default=ON" ON)
+
+  if(ZVEC_USE_STATIC_CRT)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+  else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+  endif()
+
   set(
       _COMPILER_FLAGS
       CMAKE_CXX_FLAGS
@@ -406,14 +413,21 @@ else()
       CMAKE_C_FLAGS_RELWITHDEBINFO
       CMAKE_C_FLAGS_MINSIZEREL
     )
-  foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
-    string(REPLACE "/MT" "/MD" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
-    string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
-  endforeach()
+  if(ZVEC_USE_STATIC_CRT)
+    foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
+      string(REPLACE "/MD" "/MT" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+      string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+    endforeach()
+  else()
+    foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
+      string(REPLACE "/MT" "/MD" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+      string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+    endforeach()
+  endif()
   unset(_COMPILER_FLAGS)
+
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-  # Build shared library as default
-  set(BUILD_SHARED_LIBS ON)
+  set(BUILD_SHARED_LIBS OFF)
 endif()
 
 set(CMAKE_C_FLAGS_ASAN ${CMAKE_C_FLAGS_DEBUG})

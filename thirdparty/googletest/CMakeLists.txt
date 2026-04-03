@@ -6,8 +6,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 if (MSVC)
-    set(BUILD_SHARED_LIBS OFF)
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    if(NOT ZVEC_USE_STATIC_CRT)
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    else()
+        set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+    endif()
 endif ()
 
 

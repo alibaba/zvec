@@ -6,6 +6,14 @@ endif()
 
 set(ROCKSDB_BUILD_SHARED OFF CACHE BOOL "Disable install in rocksdb" FORCE)
 
+if(MSVC)
+    if(ZVEC_USE_STATIC_CRT)
+        set(WITH_MD_LIBRARY OFF CACHE BOOL "build rocksdb with MT to match project CRT" FORCE)
+    else()
+        set(WITH_MD_LIBRARY ON CACHE BOOL "build rocksdb with MD to match project CRT" FORCE)
+    endif()
+endif()
+
 set(WITH_TESTS OFF CACHE BOOL "Disable testing in rocksdb" FORCE)
 set(WITH_ALL_TESTS OFF CACHE BOOL "Build all test, rather than a small subset" FORCE)
 set(WITH_BENCHMARK_TOOLS OFF CACHE BOOL "Disable benchmarks in rocksdb" FORCE)

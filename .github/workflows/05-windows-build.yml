@@ -4,20 +4,21 @@ on:
   workflow_call:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # Windows build and test matrix
   build-and-test-windows:
     name: Build & Test (${{ matrix.platform }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022
-            platform: windows-2022-x64
-          - os: windows-2025
-            platform: windows-2025-x64
+          - platform: windows-2022
+          - platform: windows-2025
 
     steps:
       - name: Show env info
