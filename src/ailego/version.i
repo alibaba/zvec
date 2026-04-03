@@ -114,6 +114,10 @@
 #define AILEGO_VERSION_PROCESSOR "x86 64-bit Processor"
 #elif defined(__i386) || defined(_M_IX86)
 #define AILEGO_VERSION_PROCESSOR "x86 32-bit Processor"
+#elif defined(__riscv) && defined(__riscv_xlen) && (__riscv_xlen == 64)
+#define AILEGO_VERSION_PROCESSOR "RISC-V 64-bit Processor"
+#elif defined(__riscv) && defined(__riscv_xlen) && (__riscv_xlen == 32)
+#define AILEGO_VERSION_PROCESSOR "RISC-V 32-bit Processor"
 #elif defined(__ARM_ARCH)
 #if defined(__ARM_64BIT_STATE)
 #define AILEGO_VERSION_PROCESSOR "ARM 64-bit Processor"
@@ -227,6 +231,12 @@
 
 #if defined(__ARM_NEON)
 #define AILEGO_VERSION_SIMD "  Arm Neon Instruction Set\n"
+#elif defined(__riscv_vector)
+#if defined(__riscv_zvfh)
+#define AILEGO_VERSION_SIMD "  RISC-V Vector Instruction Set (+Zvfh)\n"
+#else
+#define AILEGO_VERSION_SIMD "  RISC-V Vector Instruction Set\n"
+#endif
 #elif defined(__AVX512FP16__)
 #define AILEGO_VERSION_SIMD "  AVX-512FP16 Instruction Set\n"
 #elif defined(__AVX512F__)
