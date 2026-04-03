@@ -54,6 +54,11 @@ OMEGA_ANDROID_SKIP = pytest.mark.skipif(
     not OMEGA_AVAILABLE, reason="OMEGA is disabled on this build/platform"
 )
 
+
+def _require_omega() -> None:
+    if not OMEGA_AVAILABLE:
+        pytest.skip("OMEGA is disabled on this build/platform")
+
 # ==================== Common ====================
 
 
@@ -149,9 +154,9 @@ def test_collection(
                 print(f"Warning: failed to destroy collection: {e}")
 
 
-@OMEGA_ANDROID_SKIP
 @pytest.fixture(scope="session")
 def omega_collection_schema():
+    _require_omega()
     return zvec.CollectionSchema(
         name="omega_test_collection",
         fields=[
@@ -180,11 +185,11 @@ def omega_collection_schema():
     )
 
 
-@OMEGA_ANDROID_SKIP
 @pytest.fixture(scope="function")
 def omega_test_collection(
     tmp_path_factory, omega_collection_schema, collection_option
 ) -> Collection:
+    _require_omega()
     temp_dir = tmp_path_factory.mktemp("zvec_omega")
     collection_path = temp_dir / "omega_test_collection"
 
@@ -208,9 +213,9 @@ def omega_test_collection(
                 print(f"Warning: failed to destroy omega collection: {e}")
 
 
-@OMEGA_ANDROID_SKIP
 @pytest.fixture
 def omega_multiple_docs():
+    _require_omega()
     return [
         Doc(
             id=f"{id}",
@@ -221,9 +226,9 @@ def omega_multiple_docs():
     ]
 
 
-@OMEGA_ANDROID_SKIP
 @pytest.fixture
 def omega_workflow_docs():
+    _require_omega()
     return [
         Doc(
             id=f"{id}",

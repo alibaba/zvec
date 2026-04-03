@@ -50,7 +50,7 @@ find_package(Threads REQUIRED)
 find_package(OpenMP QUIET)
 
 set(zvec_openmp_deps)
-if(OpenMP_FOUND)
+if(OpenMP_FOUND AND NOT ANDROID)
     list(APPEND zvec_openmp_deps OpenMP::OpenMP_CXX)
 endif()
 
