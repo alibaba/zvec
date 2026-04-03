@@ -33,7 +33,7 @@
 > [!IMPORTANT]
 > **🚀 v0.3.0 Released on April 3, 2026**
 > - **New Platforms**: Initial **Windows (MSVC)** and **Android** support. Published official Windows **Python** and **Node.js** packages.
-> - **Efficiency**: **RabitQ** quantization, **5x faster** Buffer Manager, and **CPU Auto-Dispatch** for optimized SIMD execution.
+> - **Efficiency**: **RabitQ** quantization and **CPU Auto-Dispatch** for optimized SIMD execution.
 > - **Ecosystem**: **C-API** for custom language bindings and **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** integration for AI Agents.
 > 
 > 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
