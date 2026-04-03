@@ -1,0 +1,98 @@
+name: Windows Examples
+
+on:
+  push:
+    paths:
+      - '.github/workflows/06-windows-examples.yml'
+      - '.github/workflows/05-windows-build.yml'
+      - 'examples/c/**'
+      - 'examples/c++/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'pyproject.toml'
+  pull_request:
+    paths:
+      - '.github/workflows/06-windows-examples.yml'
+      - '.github/workflows/05-windows-build.yml'
+      - 'examples/c/**'
+      - 'examples/c++/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'pyproject.toml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-examples:
+    name: Windows Examples (windows-2022)
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up environment variables
+        run: |
+          $nproc = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+          echo "NPROC=$nproc" >> $env:GITHUB_ENV
+          echo "Using $nproc parallel jobs for builds"
+        shell: powershell
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip `
+            pybind11==3.0 `
+            cmake==3.30.0 `
+            ninja==1.11.1 `
+            scikit-build-core `
+            setuptools_scm
+        shell: powershell
+
+      - name: Build host libraries
+        run: |
+          cd "$env:GITHUB_WORKSPACE"
+          $env:CMAKE_GENERATOR = "Ninja"
+          $env:CMAKE_BUILD_PARALLEL_LEVEL = "$env:NPROC"
+          python -m pip install -v . `
+            --no-build-isolation
+        shell: powershell
+
+      - name: Build C++ examples
+        run: |
+          cd "$env:GITHUB_WORKSPACE\examples\c++"
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+          mkdir build
+          cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --parallel $env:NPROC
+        shell: powershell
+
+      - name: Build C examples
+        run: |
+          cd "$env:GITHUB_WORKSPACE\examples\c"
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+          mkdir build
+          cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --parallel $env:NPROC
+        shell: powershell
