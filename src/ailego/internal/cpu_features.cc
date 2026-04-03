@@ -14,6 +14,7 @@
 
 #include "cpu_features.h"
 #include <cstddef>
+#include <cstdint>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -30,6 +31,17 @@
 #endif
 #endif
 
+#if defined(__riscv) && defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#if defined(__has_include)
+#if __has_include(<asm/hwprobe.h>)
+#define AILEGO_HAVE_RISCV_HWPROBE_HEADER 1
+#include <asm/hwprobe.h>
+#endif
+#endif
+#endif
+
 namespace zvec {
 namespace ailego {
 namespace internal {
@@ -43,9 +55,82 @@ namespace internal {
 
 CpuFeatures::CpuFlags CpuFeatures::flags_;
 
+namespace {
+
+#if defined(__riscv) && defined(__linux__)
+
+constexpr uint32_t kRiscvFlagVector = (1u << 0);
+constexpr uint32_t kRiscvFlagZvfh = (1u << 1);
+
+#if !defined(SYS_riscv_hwprobe) && !defined(__NR_riscv_hwprobe)
+#define __NR_riscv_hwprobe 258
+#endif
+
+#if !defined(AILEGO_HAVE_RISCV_HWPROBE_HEADER)
+struct riscv_hwprobe {
+  int64_t key;
+  uint64_t value;
+};
+#endif
+
+#ifndef RISCV_HWPROBE_KEY_IMA_EXT_0
+#define RISCV_HWPROBE_KEY_IMA_EXT_0 4
+#endif
+
+#ifndef RISCV_HWPROBE_IMA_V
+#define RISCV_HWPROBE_IMA_V (1ULL << 2)
+#endif
+
+static long AilegoRiscvHwprobe(struct riscv_hwprobe *pairs, size_t pair_count) {
+#if defined(SYS_riscv_hwprobe)
+  return syscall(SYS_riscv_hwprobe, pairs, pair_count, 0, nullptr, 0);
+#elif defined(__NR_riscv_hwprobe)
+  return syscall(__NR_riscv_hwprobe, pairs, pair_count, 0, nullptr, 0);
+#else
+  (void)pairs;
+  (void)pair_count;
+  return -1;
+#endif
+}
+
+static uint32_t ProbeRiscvFlags() {
+  uint32_t flags = 0;
+
+  riscv_hwprobe pairs[] = {
+      {static_cast<int64_t>(RISCV_HWPROBE_KEY_IMA_EXT_0), 0},
+  };
+
+  const long ret = AilegoRiscvHwprobe(pairs, sizeof(pairs) / sizeof(pairs[0]));
+  if (ret != 0) {
+    return 0;
+  }
+
+  if (pairs[0].key < 0) {
+    return 0;
+  }
+
+  const uint64_t ext = pairs[0].value;
+
+  if (ext & RISCV_HWPROBE_IMA_V) {
+    flags |= kRiscvFlagVector;
+  }
+
+#if defined(RISCV_HWPROBE_EXT_ZVFH)
+  if (ext & RISCV_HWPROBE_EXT_ZVFH) {
+    flags |= kRiscvFlagZvfh;
+  }
+#endif
+
+  return flags;
+}
+
+#endif  // defined(__riscv) && defined(__linux__)
+
+}  // namespace
+
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 CpuFeatures::CpuFlags::CpuFlags(void)
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
+    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0), RISCV_FLAGS(0) {
   int l1[4] = {0, 0, 0, 0};
   int l7[4] = {0, 0, 0, 0};
 
@@ -57,9 +142,9 @@ CpuFeatures::CpuFlags::CpuFlags(void)
   L7_ECX = l7[2];
   L7_EDX = l7[3];
 }
-#elif defined(__x86_64__) || defined(__i386__)
+#elif (defined(__x86_64__) || defined(__i386__)) && !defined(_MSC_VER)
 CpuFeatures::CpuFlags::CpuFlags(void)
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
+    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0), RISCV_FLAGS(0) {
   uint32_t eax, ebx, ecx, edx;
 
   if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
@@ -73,9 +158,24 @@ CpuFeatures::CpuFlags::CpuFlags(void)
     L7_EDX = edx;
   }
 }
+
+#elif defined(__riscv)
+CpuFeatures::CpuFlags::CpuFlags(void)
+    : L1_ECX(0),
+      L1_EDX(0),
+      L7_EBX(0),
+      L7_ECX(0),
+      L7_EDX(0),
+#if defined(__linux__)
+      RISCV_FLAGS(ProbeRiscvFlags()) {
+#else
+      RISCV_FLAGS(0) {
+#endif
+}
+
 #else
 CpuFeatures::CpuFlags::CpuFlags(void)
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {}
+    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0), RISCV_FLAGS(0) {}
 #endif
 
 //! 16-bit FP conversions
@@ -338,7 +438,6 @@ bool CpuFeatures::VMX(void) {
   return !!(flags_.L1_ECX & (1u << 5));
 }
 
-// ！Running on a hypervisor
 bool CpuFeatures::HYPERVISOR(void) {
   return !!(flags_.L1_ECX & (1u << 31));
 }
@@ -354,6 +453,16 @@ bool CpuFeatures::NEON(void) {
 #endif
 }
 
+//! RISC-V Vector Extension
+bool CpuFeatures::RISCV_VECTOR(void) {
+  return !!(flags_.RISCV_FLAGS & (1u << 0));
+}
+
+//! RISC-V Zvfh Extension
+bool CpuFeatures::RISCV_ZVFH(void) {
+  return !!(flags_.RISCV_FLAGS & (1u << 1));
+}
+
 const char *CpuFeatures::Intrinsics(void) {
   return ""
 #if defined(__ARM_NEON)
@@ -364,6 +473,11 @@ const char *CpuFeatures::Intrinsics(void) {
 #if defined(__ARM_FEATURE_FP16_SCALAR_ARITHMETIC) || \
     defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
          "+FP16"
+#endif
+#elif defined(__riscv_vector)
+         "RVV"
+#if defined(__riscv_zvfh)
+         "+Zvfh"
 #endif
 #elif defined(__AVX512F__)
          "AVX512F"
@@ -440,6 +554,7 @@ const char *CpuFeatures::Intrinsics(void) {
 }
 
 CpuFeatures::StaticFlags CpuFeatures::static_flags_;
+
 }  // namespace internal
 }  // namespace ailego
 }  // namespace zvec
