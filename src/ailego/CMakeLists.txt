@@ -83,13 +83,14 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
         endforeach()
 
         foreach(MATH_FILE ${MATH_FILES_AVX512FP16})
-        set_source_files_properties(
-            ${MATH_FILE}
-            PROPERTIES
-            COMPILE_FLAGS "${MATH_MARCH_FLAG_AVX512FP16}"
-        )
-    endforeach()
-    elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
+            set_source_files_properties(
+                ${MATH_FILE}
+                PROPERTIES
+                COMPILE_FLAGS "${MATH_MARCH_FLAG_AVX512FP16}"
+            )
+        endforeach()
+
+    elseif(HOST_ARCH MATCHES "^(arm|arm64)$")
         if(MSVC)
             return()
         endif()
@@ -113,6 +114,28 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
               COMPILE_FLAGS "${MATH_MARCH_FLAG_NEON}"
           )
         endforeach()
+
+    elseif(HOST_ARCH STREQUAL "riscv64")
+        setup_compiler_march_for_riscv64_rvv(MATH_MARCH_FLAG_RVV)
+
+        if(MATH_MARCH_FLAG_RVV)
+            file(GLOB_RECURSE MATH_FILES_RVV
+                ${CMAKE_CURRENT_SOURCE_DIR}/math/*_rvv.cc
+                ${CMAKE_CURRENT_SOURCE_DIR}/math/*_rvv.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_rvv.cc
+                ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_rvv.c
+            )
+
+            foreach(MATH_FILE ${MATH_FILES_RVV})
+                set_source_files_properties(
+                    ${MATH_FILE}
+                    PROPERTIES
+                    COMPILE_FLAGS "${MATH_MARCH_FLAG_RVV}"
+                )
+            endforeach()
+        else()
+            message(STATUS "RISC-V RVV-specific march is not supported by the compiler; skipping *_rvv sources")
+        endif()
     endif()
 endif()
 
