@@ -59,6 +59,7 @@ def _require_omega() -> None:
     if not OMEGA_AVAILABLE:
         pytest.skip("OMEGA is disabled on this build/platform")
 
+
 # ==================== Common ====================
 
 
