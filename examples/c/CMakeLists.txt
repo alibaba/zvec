@@ -29,29 +29,22 @@ endif()
 
 set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
 set(ZVEC_GENERATED_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/src/generated)
+set(ZVEC_LIB_ROOT_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
+set(ZVEC_DEPENDENCY_LIB_ROOT_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
 
-# On Windows, libraries are in Debug/Release subdirectories
 if(WIN32)
-    set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib/$<CONFIG>)
-    set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/$<CONFIG>)
+    set(ZVEC_LIB_DIR ${ZVEC_LIB_ROOT_DIR}/$<CONFIG>)
+    set(ZVEC_DEPENDENCY_LIB_DIR ${ZVEC_DEPENDENCY_LIB_ROOT_DIR}/$<CONFIG>)
 else()
-    set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
-    set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
+    set(ZVEC_LIB_DIR ${ZVEC_LIB_ROOT_DIR})
+    set(ZVEC_DEPENDENCY_LIB_DIR ${ZVEC_DEPENDENCY_LIB_ROOT_DIR})
 endif()
 
-set(_zvec_host_omega_default OFF)
-if(WIN32)
-    if(EXISTS "${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/Release/omega.lib" AND
-       EXISTS "${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/Release/lib_lightgbm.lib")
-        set(_zvec_host_omega_default ON)
-    endif()
+if(ANDROID)
+    option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" OFF)
 else()
-    if(EXISTS "${ZVEC_DEPENDENCY_LIB_DIR}/libomega.a" AND
-       EXISTS "${ZVEC_DEPENDENCY_LIB_DIR}/lib_lightgbm.a")
-        set(_zvec_host_omega_default ON)
-    endif()
+    option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" ON)
 endif()
-option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" ${_zvec_host_omega_default})
 
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR} ${ZVEC_GENERATED_INCLUDE_DIR})
@@ -75,6 +68,32 @@ else()
     set(GLOG_LIB glog)
     set(GFLAGS_LIB gflags_nothreads)
     set(PROTOBUF_LIB protobuf)
+endif()
+
+if(ZVEC_ENABLE_OMEGA)
+    set(_zvec_omega_search_paths
+        ${ZVEC_DEPENDENCY_LIB_ROOT_DIR}
+        ${ZVEC_DEPENDENCY_LIB_ROOT_DIR}/Debug
+        ${ZVEC_DEPENDENCY_LIB_ROOT_DIR}/Release
+        ${ZVEC_DEPENDENCY_LIB_ROOT_DIR}/RelWithDebInfo
+        ${ZVEC_DEPENDENCY_LIB_ROOT_DIR}/MinSizeRel
+    )
+    find_library(ZVEC_OMEGA_LIB
+        NAMES omega
+        PATHS ${_zvec_omega_search_paths}
+        NO_DEFAULT_PATH
+    )
+    find_library(ZVEC_LIGHTGBM_LIB
+        NAMES lib_lightgbm _lightgbm
+        PATHS ${_zvec_omega_search_paths}
+        NO_DEFAULT_PATH
+    )
+    if(NOT ZVEC_OMEGA_LIB OR NOT ZVEC_LIGHTGBM_LIB)
+        message(FATAL_ERROR
+            "ZVEC_ENABLE_OMEGA=ON but failed to locate OMEGA host libraries under "
+            "${ZVEC_DEPENDENCY_LIB_ROOT_DIR}"
+        )
+    endif()
 endif()
 
 if(WIN32)
@@ -104,7 +123,7 @@ if(NOT WIN32)
         ${CMAKE_DL_LIBS}
     )
     if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_c_api_deps omega ${ZVEC_LIGHTGBM_LIB})
+        list(APPEND zvec_c_api_deps ${ZVEC_OMEGA_LIB} ${ZVEC_LIGHTGBM_LIB})
     endif()
 else()
     # Windows static libraries use different naming conventions
@@ -129,7 +148,7 @@ else()
         shlwapi
     )
     if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_c_api_deps omega ${ZVEC_LIGHTGBM_LIB})
+        list(APPEND zvec_c_api_deps ${ZVEC_OMEGA_LIB} ${ZVEC_LIGHTGBM_LIB})
     endif()
 endif()
 
