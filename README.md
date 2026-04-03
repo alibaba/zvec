@@ -66,7 +66,6 @@ npm install @zvec/zvec
 
 - Linux (x86_64, ARM64)
 - macOS (ARM64)
-- Android (ARM64)
 - Windows (x86_64)
 
 ### 🛠️ Building from Source
