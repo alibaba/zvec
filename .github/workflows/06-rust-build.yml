@@ -1,0 +1,133 @@
+name: Rust Build
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: 'Platform identifier'
+        required: true
+        type: string
+      os:
+        description: 'GitHub Actions runner OS'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rust-build-and-test:
+    name: Rust Build & Test (${{ inputs.platform }})
+    runs-on: ${{ inputs.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ inputs.platform }}-cargo-${{ hashFiles('rust/**/Cargo.lock', 'rust/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ inputs.platform }}-cargo-
+
+      - name: Set up environment variables
+        run: |
+          if [[ "${{ inputs.platform }}" == macos-* ]]; then
+            NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
+          else
+            NPROC=$(nproc 2>/dev/null || echo 2)
+          fi
+          echo "NPROC=$NPROC" >> $GITHUB_ENV
+
+          echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            scikit-build-core \
+            setuptools_scm
+        shell: bash
+
+      - name: Build C library (libzvec_c_api)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+
+          CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+          python -m pip install -v . \
+            --no-build-isolation \
+            --config-settings='cmake.define.BUILD_TOOLS="ON"'
+        shell: bash
+
+      - name: Set Rust library path
+        run: |
+          ZVEC_LIB_DIR="$GITHUB_WORKSPACE/build/lib"
+          echo "ZVEC_LIB_DIR=$ZVEC_LIB_DIR" >> $GITHUB_ENV
+
+          if [[ "${{ inputs.platform }}" == macos-* ]]; then
+            echo "DYLD_LIBRARY_PATH=$ZVEC_LIB_DIR" >> $GITHUB_ENV
+          else
+            echo "LD_LIBRARY_PATH=$ZVEC_LIB_DIR" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Rust format check
+        run: |
+          cd "$GITHUB_WORKSPACE/rust"
+          cargo fmt --all -- --check
+        shell: bash
+
+      - name: Rust clippy lint
+        run: |
+          cd "$GITHUB_WORKSPACE/rust"
+          cargo clippy --workspace --all-targets -- -D warnings
+        shell: bash
+
+      - name: Run Rust unit tests
+        run: |
+          cd "$GITHUB_WORKSPACE/rust"
+          cargo test --workspace --lib -- --nocapture
+        shell: bash
+
+      - name: Run Rust integration tests
+        run: |
+          cd "$GITHUB_WORKSPACE/rust"
+          cargo test --workspace --test '*' -- --nocapture
+        shell: bash
+
+      - name: Run Rust doc tests
+        run: |
+          cd "$GITHUB_WORKSPACE/rust"
+          cargo test --workspace --doc
+        shell: bash
+
+      - name: Run Rust benchmarks (compile check only)
+        run: |
+          cd "$GITHUB_WORKSPACE/rust"
+          cargo bench --workspace --no-run
+        shell: bash

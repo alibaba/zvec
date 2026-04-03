@@ -1,0 +1,11 @@
+[package]
+name = "zvec-sys"
+version = "0.3.0"
+edition = "2021"
+description = "Raw FFI bindings to the zvec C-API"
+license = "Apache-2.0"
+repository = "https://github.com/alibaba/zvec"
+readme = "README.md"
+links = "zvec_c_api"
+
+[build-dependencies]

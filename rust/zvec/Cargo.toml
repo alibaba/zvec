@@ -1,0 +1,24 @@
+[package]
+name = "zvec"
+version = "0.3.0"
+edition = "2021"
+description = "Safe Rust bindings for the zvec vector database"
+license = "Apache-2.0"
+repository = "https://github.com/alibaba/zvec"
+readme = "../README.md"
+
+[dependencies]
+zvec-sys = { path = "../zvec-sys" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+rand = "0.8"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
+
+[[bench]]
+name = "zvec_bench"
+harness = false
