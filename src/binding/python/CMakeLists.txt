@@ -21,6 +21,7 @@ pybind11_add_module(_zvec ${SRC_LISTS})
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(_zvec PRIVATE
             -Wl,--whole-archive
+            $<TARGET_FILE:core_knn_omega_static>
             $<TARGET_FILE:core_knn_flat_static>
             $<TARGET_FILE:core_knn_flat_sparse_static>
             $<TARGET_FILE:core_knn_hnsw_static>
@@ -40,6 +41,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 elseif (APPLE)
     target_link_libraries(_zvec PRIVATE
+            -Wl,-force_load,$<TARGET_FILE:core_knn_omega_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_sparse_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_static>
@@ -58,6 +60,7 @@ elseif (APPLE)
     )
 elseif (MSVC)
     set(_zvec_whole_archive_libs
+            core_knn_omega_static
             core_knn_flat_static
             core_knn_flat_sparse_static
             core_knn_hnsw_static
