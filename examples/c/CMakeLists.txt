@@ -77,6 +77,12 @@ else()
     set(PROTOBUF_LIB protobuf)
 endif()
 
+if(WIN32)
+    set(ZVEC_LIGHTGBM_LIB lib_lightgbm)
+else()
+    set(ZVEC_LIGHTGBM_LIB _lightgbm)
+endif()
+
 # --- Dependency groups ---
 if(NOT WIN32)
     set(zvec_c_api_deps
@@ -98,7 +104,7 @@ if(NOT WIN32)
         ${CMAKE_DL_LIBS}
     )
     if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_c_api_deps omega _lightgbm)
+        list(APPEND zvec_c_api_deps omega ${ZVEC_LIGHTGBM_LIB})
     endif()
 else()
     # Windows static libraries use different naming conventions
@@ -123,7 +129,7 @@ else()
         shlwapi
     )
     if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_c_api_deps omega _lightgbm)
+        list(APPEND zvec_c_api_deps omega ${ZVEC_LIGHTGBM_LIB})
     endif()
 endif()
 

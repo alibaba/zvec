@@ -13,8 +13,13 @@ if(NOT DEFINED HOST_BUILD_DIR)
 endif()
 
 set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
-set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
-set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
+if(WIN32)
+    set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib/$<CONFIG>)
+    set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/$<CONFIG>)
+else()
+    set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
+    set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
+endif()
 
 set(_zvec_host_omega_default OFF)
 if(WIN32)
@@ -45,6 +50,12 @@ else()
     set(PROTOBUF_LIB protobuf)
 endif()
 
+if(WIN32)
+    set(ZVEC_LIGHTGBM_LIB lib_lightgbm)
+else()
+    set(ZVEC_LIGHTGBM_LIB _lightgbm)
+endif()
+
 # --- Dependency groups ---
 find_package(Threads REQUIRED)
 find_package(OpenMP QUIET)
@@ -59,7 +70,7 @@ set(zvec_core_deps
     ${zvec_openmp_deps}
 )
 if(ZVEC_ENABLE_OMEGA)
-    list(APPEND zvec_core_deps omega _lightgbm)
+    list(APPEND zvec_core_deps omega ${ZVEC_LIGHTGBM_LIB})
 endif()
 
 if (NOT WIN32)
@@ -89,7 +100,7 @@ if (NOT WIN32)
             ${zvec_openmp_deps}
     )
     if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_db_deps omega _lightgbm)
+        list(APPEND zvec_db_deps omega ${ZVEC_LIGHTGBM_LIB})
     endif()
 else ()
     # Windows static libraries use different naming conventions
@@ -120,7 +131,7 @@ else ()
             ${zvec_openmp_deps}
     )
     if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_db_deps omega _lightgbm)
+        list(APPEND zvec_db_deps omega ${ZVEC_LIGHTGBM_LIB})
     endif()
 endif ()
 
