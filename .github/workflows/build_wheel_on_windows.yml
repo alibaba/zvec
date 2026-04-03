@@ -102,16 +102,16 @@ jobs:
       #          key: ${{ runner.os }}-wheels-${{ hashFiles('**/pyproject.toml', '**/setup.py', '**/*.py', '**/*.c', '**/*.cpp') }}
 
       - name: Build wheels using cibuildwheel
-        if: steps.cache-wheels.outputs.cache-hit != 'true'
+        # if: steps.cache-wheels.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           # 1. Generate and capture the version from setuptools_scm
           pip install --upgrade pip
           pip install cibuildwheel==3.4.0
           pip install setuptools-scm>=8.0
+          
           $SCM_VERSION = python -m setuptools_scm
           echo "Detected Version: $SCM_VERSION"
-          "zvec version: $version" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           
           # 2. Set it as an environment variable for the current shell and subsequent steps
           $env:SETUPTOOLS_SCM_PRETEND_VERSION = $SCM_VERSION
