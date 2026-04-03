@@ -1,24 +1,7 @@
 name: Windows Examples
 
 on:
-  push:
-    paths:
-      - '.github/workflows/06-windows-examples.yml'
-      - '.github/workflows/05-windows-build.yml'
-      - 'examples/c/**'
-      - 'examples/c++/**'
-      - 'src/**'
-      - 'CMakeLists.txt'
-      - 'pyproject.toml'
-  pull_request:
-    paths:
-      - '.github/workflows/06-windows-examples.yml'
-      - '.github/workflows/05-windows-build.yml'
-      - 'examples/c/**'
-      - 'examples/c++/**'
-      - 'src/**'
-      - 'CMakeLists.txt'
-      - 'pyproject.toml'
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
