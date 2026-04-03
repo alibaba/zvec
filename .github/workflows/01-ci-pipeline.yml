@@ -93,3 +93,28 @@ jobs:
     name: Build & Test (Windows)
     needs: lint
     uses: ./.github/workflows/05-windows-build.yml
+
+  # Go SDK build and test
+  go-sdk-macos-arm64:
+    name: Go SDK (macos-arm64)
+    needs: lint
+    uses: ./.github/workflows/06-go-sdk-build.yml
+    with:
+      platform: macos-arm64
+      os: macos-15
+
+  go-sdk-linux-x64:
+    name: Go SDK (linux-x64)
+    needs: lint
+    uses: ./.github/workflows/06-go-sdk-build.yml
+    with:
+      platform: linux-x64
+      os: ubuntu-24.04
+
+  go-sdk-linux-arm64:
+    name: Go SDK (linux-arm64)
+    needs: lint
+    uses: ./.github/workflows/06-go-sdk-build.yml
+    with:
+      platform: linux-arm64
+      os: ubuntu-24.04-arm
