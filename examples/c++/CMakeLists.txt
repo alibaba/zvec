@@ -37,12 +37,6 @@ else()
     set(PROTOBUF_LIB protobuf)
 endif()
 
-if(WIN32)
-    set(ZVEC_LIGHTGBM_LIB lib_lightgbm)
-else()
-    set(ZVEC_LIGHTGBM_LIB _lightgbm)
-endif()
-
 if(ZVEC_ENABLE_OMEGA)
     set(_zvec_omega_search_paths
         ${ZVEC_DEPENDENCY_LIB_DIR}
@@ -269,6 +263,13 @@ target_link_libraries(ailego-example PRIVATE
     zvec-ailego
 )
 
+if(ZVEC_ENABLE_OMEGA)
+    add_executable(omega-example omega/main.cc)
+    target_link_libraries(omega-example PRIVATE
+        zvec-core
+    )
+endif()
+
 # Strip symbols to reduce executable size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
     add_custom_command(TARGET db-example POST_BUILD
@@ -280,6 +281,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
     add_custom_command(TARGET ailego-example POST_BUILD
         COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:ailego-example>"
         COMMENT "Stripping symbols from ailego-example")
+    if(ZVEC_ENABLE_OMEGA)
+        add_custom_command(TARGET omega-example POST_BUILD
+            COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:omega-example>"
+            COMMENT "Stripping symbols from omega-example")
+    endif()
 endif()
 
 # Optimize for size
@@ -288,4 +294,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
                  PROPERTY COMPILE_FLAGS "-Os")
     set_property(TARGET db-example core-example ailego-example
                  PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    if(ZVEC_ENABLE_OMEGA)
+        set_property(TARGET omega-example
+                     PROPERTY COMPILE_FLAGS "-Os")
+        set_property(TARGET omega-example
+                     PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
 endif()

@@ -88,12 +88,6 @@ if(ZVEC_ENABLE_OMEGA)
     endif()
 endif()
 
-if(WIN32)
-    set(ZVEC_LIGHTGBM_LIB lib_lightgbm)
-else()
-    set(ZVEC_LIGHTGBM_LIB _lightgbm)
-endif()
-
 # --- Dependency groups ---
 if(NOT WIN32)
     set(zvec_c_api_deps
@@ -221,6 +215,13 @@ target_link_libraries(c_api_optimized_example PRIVATE
     zvec-c-api
 )
 
+if(ZVEC_ENABLE_OMEGA)
+    add_executable(c_api_omega_example omega_example.c)
+    target_link_libraries(c_api_omega_example PRIVATE
+        zvec-c-api
+    )
+endif()
+
 # Strip symbols to reduce executable size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND (ANDROID OR (CMAKE_SYSTEM_NAME STREQUAL "Linux")))
     add_custom_command(TARGET c_api_basic_example POST_BUILD
@@ -241,6 +242,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND (ANDROID OR (CMAKE_SYSTEM_NAME STREQU
     add_custom_command(TARGET c_api_optimized_example POST_BUILD
         COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:c_api_optimized_example>"
         COMMENT "Stripping symbols from c_api_optimized_example")
+    if(ZVEC_ENABLE_OMEGA)
+        add_custom_command(TARGET c_api_omega_example POST_BUILD
+            COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:c_api_omega_example>"
+            COMMENT "Stripping symbols from c_api_omega_example")
+    endif()
 endif()
 
 # Optimize for size
@@ -251,4 +257,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
     set_property(TARGET c_api_basic_example c_api_collection_schema_example c_api_doc_example
                  c_api_index_example c_api_field_schema_example c_api_optimized_example
                  PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    if(ZVEC_ENABLE_OMEGA)
+        set_property(TARGET c_api_omega_example
+                     PROPERTY COMPILE_FLAGS "-Os")
+        set_property(TARGET c_api_omega_example
+                     PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
 endif()

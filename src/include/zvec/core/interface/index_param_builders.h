@@ -299,6 +299,29 @@ class HNSWQueryParamBuilder
   }
 };
 
+class OmegaQueryParamBuilder
+    : public BaseIndexQueryParamBuilder<OmegaQueryParam, OmegaQueryParamBuilder> {
+ public:
+  OmegaQueryParamBuilder &with_ef_search(int ef_search) {
+    m_param.ef_search = ef_search;
+    return *this;
+  }
+
+  OmegaQueryParamBuilder &with_training_query_id(int training_query_id) {
+    m_param.training_query_id = training_query_id;
+    return *this;
+  }
+
+  OmegaQueryParamBuilder &with_target_recall(float target_recall) {
+    m_param.target_recall = target_recall;
+    return *this;
+  }
+
+  OmegaQueryParam::Pointer build() {
+    return std::make_shared<OmegaQueryParam>(std::move(m_param));
+  }
+};
+
 // Example Usage:
 // HNSWQueryParam::Pointer hnsw_config = HNSWQueryParamBuilder()
 //     .with_topk(5)
