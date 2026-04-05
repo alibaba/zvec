@@ -300,7 +300,8 @@ class HNSWQueryParamBuilder
 };
 
 class OmegaQueryParamBuilder
-    : public BaseIndexQueryParamBuilder<OmegaQueryParam, OmegaQueryParamBuilder> {
+    : public BaseIndexQueryParamBuilder<OmegaQueryParam,
+                                        OmegaQueryParamBuilder> {
  public:
   OmegaQueryParamBuilder &with_ef_search(int ef_search) {
     m_param.ef_search = ef_search;

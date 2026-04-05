@@ -36,9 +36,8 @@ int main() {
     return 1;
   }
 
-  if (index->Open(kIndexPath,
-                  StorageOptions{StorageOptions::StorageType::kMMAP, true}) !=
-      0) {
+  if (index->Open(kIndexPath, StorageOptions{StorageOptions::StorageType::kMMAP,
+                                             true}) != 0) {
     std::cerr << "failed to open omega index" << std::endl;
     return 1;
   }

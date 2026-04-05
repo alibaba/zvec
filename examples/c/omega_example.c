@@ -29,7 +29,8 @@ static ZVecErrorCode check(ZVecErrorCode error, const char *context) {
 }
 
 static ZVecErrorCode create_omega_collection(ZVecCollection **collection) {
-  ZVecCollectionSchema *schema = zvec_collection_schema_create("omega_collection");
+  ZVecCollectionSchema *schema =
+      zvec_collection_schema_create("omega_collection");
   ZVecCollectionOptions *options = NULL;
   ZVecIndexParams *invert_params = NULL;
   ZVecIndexParams *omega_params = NULL;

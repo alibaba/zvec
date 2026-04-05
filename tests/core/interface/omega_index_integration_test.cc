@@ -69,11 +69,11 @@ class OmegaIndexIntegrationTest : public ::testing::Test {
   }
 };
 
-TEST_F(OmegaIndexIntegrationTest, SearchFallsBackWithoutModelAndReturnsResults) {
+TEST_F(OmegaIndexIntegrationTest,
+       SearchFallsBackWithoutModelAndReturnsResults) {
   auto index = IndexFactory::CreateAndInitIndex(*CreateOmegaIndexParam());
   ASSERT_NE(index, nullptr);
-  ASSERT_EQ(index->Open(kIndexPath,
-                        {StorageOptions::StorageType::kMMAP, true}),
+  ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
             0);
 
   PopulateIndex(index, 8);
@@ -97,11 +97,11 @@ TEST_F(OmegaIndexIntegrationTest, SearchFallsBackWithoutModelAndReturnsResults) 
   ASSERT_EQ(index->Close(), 0);
 }
 
-TEST_F(OmegaIndexIntegrationTest, TrainingSessionCollectsArtifactsThroughIndexSearch) {
+TEST_F(OmegaIndexIntegrationTest,
+       TrainingSessionCollectsArtifactsThroughIndexSearch) {
   auto index = IndexFactory::CreateAndInitIndex(*CreateOmegaIndexParam());
   ASSERT_NE(index, nullptr);
-  ASSERT_EQ(index->Open(kIndexPath,
-                        {StorageOptions::StorageType::kMMAP, true}),
+  ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
             0);
 
   PopulateIndex(index, 8);

@@ -1145,9 +1145,9 @@ zvec_query_params_hnsw_get_is_using_refiner(const ZVecHnswQueryParams *params);
  * @return ZVecOmegaQueryParams* Pointer to the newly created OMEGA query
  * parameters
  */
-ZVEC_EXPORT ZVecOmegaQueryParams *ZVEC_CALL zvec_query_params_omega_create(
-    int ef, float target_recall, float radius, bool is_linear,
-    bool is_using_refiner);
+ZVEC_EXPORT ZVecOmegaQueryParams *ZVEC_CALL
+zvec_query_params_omega_create(int ef, float target_recall, float radius,
+                               bool is_linear, bool is_using_refiner);
 
 /**
  * @brief Destroy OMEGA query parameters
@@ -1230,16 +1230,16 @@ zvec_query_params_omega_get_is_linear(const ZVecOmegaQueryParams *params);
  * @param is_using_refiner Whether to use refiner
  * @return ZVecErrorCode Error code
  */
-ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_query_params_omega_set_is_using_refiner(
-    ZVecOmegaQueryParams *params, bool is_using_refiner);
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_query_params_omega_set_is_using_refiner(ZVecOmegaQueryParams *params,
+                                             bool is_using_refiner);
 
 /**
  * @brief Get whether to use refiner
  * @param params OMEGA query parameters pointer
  * @return bool Whether to use refiner
  */
-ZVEC_EXPORT bool ZVEC_CALL
-zvec_query_params_omega_get_is_using_refiner(
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_omega_get_is_using_refiner(
     const ZVecOmegaQueryParams *params);
 
 // -----------------------------------------------------------------------------
