@@ -156,7 +156,7 @@ jobs:
           "wheels=$($wheels -join ' ')" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload built wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-wheels
           path: wheelhouse/*.whl
