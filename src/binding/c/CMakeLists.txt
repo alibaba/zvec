@@ -106,22 +106,21 @@ endif()
 # This creates a truly self-contained library with zero external dependencies
 # Users only need to link libzvec_c_api.so without installing any dependencies
 if(MSVC)
-    # Windows MSVC: Use /WHOLEARCHIVE flag for static libraries only
-    # Note: roaring might be a DLL on Windows, so we don't apply WHOLEARCHIVE to it
     target_link_options(zvec_c_api PRIVATE
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_db>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:roaring>
     )
-    
+
     target_link_libraries(zvec_c_api
         PRIVATE
             zvec_db
             zvec_core
             zvec_ailego
             zvec_turbo
-            roaring  # May be DLL on Windows, link normally
+            roaring
             ${ZVEC_CXX_STD_LIB}
             Threads::Threads
     )
@@ -186,12 +185,46 @@ else()
             ${CMAKE_DL_LIBS}
     )
     
-    # Static link libstdc++ to avoid runtime dependency
-    # Must be done in target_link_options to ensure correct order
-    target_link_options(zvec_c_api PRIVATE
-        -static-libstdc++
-        -static-libgcc
+    # Link C++ standard library appropriately for the platform
+    # On Linux, we need to explicitly link libstdc++
+    # Try static linking first, fall back to dynamic
+    
+    set(STATIC_LIBS_FOUND FALSE)
+    
+    # Try to find static libraries using compiler's built-in search
+    execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.a
+        OUTPUT_VARIABLE LIBSTDCPP_A_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
     )
+    execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libgcc.a
+        OUTPUT_VARIABLE LIBGCC_A_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    
+    # Check if both static libraries exist (not just filename returned)
+    # If library not found, -print-file-name returns just the filename without path
+    if(EXISTS "${LIBSTDCPP_A_PATH}" AND EXISTS "${LIBGCC_A_PATH}")
+        # Verify we got actual paths, not just filenames
+        if(IS_ABSOLUTE "${LIBSTDCPP_A_PATH}" AND IS_ABSOLUTE "${LIBGCC_A_PATH}")
+            set(STATIC_LIBS_FOUND TRUE)
+            message(STATUS "Found static libraries: ${LIBSTDCPP_A_PATH}")
+        endif()
+    endif()
+    
+    if(STATIC_LIBS_FOUND)
+        # Both static libraries found - use them
+        target_link_options(zvec_c_api PRIVATE
+            -static-libstdc++
+            -static-libgcc
+        )
+        message(STATUS "Using static libstdc++ and libgcc")
+    else()
+        # Fall back to dynamic linking
+        # Note: We still need to link the libraries, just not statically
+        message(STATUS "Static libraries not found, using dynamic linking for libstdc++ and libgcc")
+    endif()
 endif()
 
 # Include directories

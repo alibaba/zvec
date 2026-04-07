@@ -3,13 +3,27 @@ name: Main
 on:
   push:
     branches: [ "main" ]
-    paths-ignore:
+    paths-ignore: &paths-ignore
       - '**.md'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/auto-assign-config.yml'
+      - '.github/codecov.yml'
+      - '.github/dependabot.yml'
+      - '.github/workflows/auto-assign.yml'
+      - '.github/workflows/community-pr-handler.yml'
+      - '.github/workflows/issue-auto-assign.yml'
+      - '.github/workflows/build_wheel.yml'
+      - '.github/workflows/build_test_wheel.yml'
+      - '.github/workflows/_build_wheel_job.yml'
+      - '.github/workflows/continuous_bench.yml'
+      - '.github/workflows/nightly_coverage.yml'
+      - '.github/workflows/docker/**'
+      - '.github/workflows/scripts/**'
   merge_group:
   pull_request:
     branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
+    paths-ignore: *paths-ignore
   workflow_dispatch:
 
 concurrency:

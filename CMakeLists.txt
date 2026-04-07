@@ -5,9 +5,9 @@ set(CC_CXX_STANDARD 17)
 
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
-    add_compile_options(/FS) # handle .pdb
+    add_compile_options(/FS) # handle .pdb concurrency
     add_compile_options(/EHsc) # def c++ exception behavior
-    add_compile_options(/Zc:preprocessor)
+    add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
     add_compile_options(/we4716) # -Werror=return-type
 
     ###### reduce output length to make vibe coding work better :) should be removed or solved later
@@ -54,7 +54,6 @@ endif()
 
 include_directories(${PROJECT_ROOT_DIR}/src/include)
 include_directories(${PROJECT_ROOT_DIR}/src)
-include_directories(${PROJECT_ROOT_DIR})
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
@@ -130,14 +129,4 @@ if(BUILD_PYTHON_BINDINGS)
 
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
-
-    if(MSVC)
-        install(FILES
-            $<TARGET_FILE:glog>
-            $<TARGET_FILE:gflags>
-            $<TARGET_FILE:roaring>
-            $<TARGET_FILE:libprotobuf>
-            DESTINATION ${ZVEC_PY_INSTALL_DIR}
-        )
-    endif()
 endif()

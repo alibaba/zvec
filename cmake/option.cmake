@@ -288,7 +288,7 @@ else()
     set(HOST_ARCH unknown)
     message(WARNING "unknown host arch: ${CMAKE_SYSTEM_PROCESSOR}")
   endif()
-  message(STATUS "host arch: ${HOST_ARCH}")
+  #  message(STATUS "host arch: ${HOST_ARCH}")
 
   if (HOST_ARCH MATCHES "^(arm|arm64)$")
     _setup_armv8_march()
