@@ -32,18 +32,18 @@ extern "C" {
  * @brief Create temporary test schema
  * Contains basic scalar fields and vector fields
  *
- * @return ZVecCollectionSchema* Created schema pointer, needs to be released by
- * calling zvec_collection_schema_cleanup
+ * @return zvec_collection_schema_t* Created schema pointer, needs to be
+ * released by calling zvec_collection_schema_cleanup
  */
-ZVecCollectionSchema *zvec_test_create_temp_schema(void);
+zvec_collection_schema_t *zvec_test_create_temp_schema(void);
 
 /**
  * @brief Create pure scalar schema
  * Contains only scalar fields (int32, string)
  *
- * @return ZVecCollectionSchema* Created schema pointer
+ * @return zvec_collection_schema_t* Created schema pointer
  */
-ZVecCollectionSchema *zvec_test_create_scalar_schema(void);
+zvec_collection_schema_t *zvec_test_create_scalar_schema(void);
 
 /**
  * @brief Create full-featured schema
@@ -54,11 +54,12 @@ ZVecCollectionSchema *zvec_test_create_scalar_schema(void);
  * @param scalar_index_params Scalar index parameters (can be NULL)
  * @param vector_index_params Vector index parameters (can be NULL)
  * @param max_doc_count Maximum documents per segment
- * @return ZVecCollectionSchema* Created schema pointer
+ * @return zvec_collection_schema_t* Created schema pointer
  */
-ZVecCollectionSchema *zvec_test_create_normal_schema(
-    bool nullable, const char *name, const ZVecIndexParams *scalar_index_params,
-    const ZVecIndexParams *vector_index_params, uint64_t max_doc_count);
+zvec_collection_schema_t *zvec_test_create_normal_schema(
+    bool nullable, const char *name,
+    const zvec_index_params_t *scalar_index_params,
+    const zvec_index_params_t *vector_index_params, uint64_t max_doc_count);
 
 /**
  * @brief Create schema with scalar index
@@ -66,9 +67,9 @@ ZVecCollectionSchema *zvec_test_create_normal_schema(
  * @param nullable Whether to allow null values
  * @param enable_optimize Whether to enable optimization
  * @param name Schema name
- * @return ZVecCollectionSchema* Created schema pointer
+ * @return zvec_collection_schema_t* Created schema pointer
  */
-ZVecCollectionSchema *zvec_test_create_schema_with_scalar_index(
+zvec_collection_schema_t *zvec_test_create_schema_with_scalar_index(
     bool nullable, bool enable_optimize, const char *name);
 
 /**
@@ -78,19 +79,19 @@ ZVecCollectionSchema *zvec_test_create_schema_with_scalar_index(
  * @param name Schema name
  * @param vector_index_params Vector index parameters (can be NULL, uses default
  * HNSW parameters)
- * @return ZVecCollectionSchema* Created schema pointer
+ * @return zvec_collection_schema_t* Created schema pointer
  */
-ZVecCollectionSchema *zvec_test_create_schema_with_vector_index(
+zvec_collection_schema_t *zvec_test_create_schema_with_vector_index(
     bool nullable, const char *name,
-    const ZVecIndexParams *vector_index_params);
+    const zvec_index_params_t *vector_index_params);
 
 /**
  * @brief Create schema with specified maximum document count
  *
  * @param doc_count Maximum documents per segment
- * @return ZVecCollectionSchema* Created schema pointer
+ * @return zvec_collection_schema_t* Created schema pointer
  */
-ZVecCollectionSchema *zvec_test_create_schema_with_max_doc_count(
+zvec_collection_schema_t *zvec_test_create_schema_with_max_doc_count(
     uint64_t doc_count);
 
 // =============================================================================
@@ -113,12 +114,12 @@ char *zvec_test_make_pk(uint64_t doc_id);
  * @param doc_id Document ID
  * @param schema Schema pointer
  * @param pk Primary key (can be NULL, auto-generated)
- * @return ZVecDoc* Created document pointer, needs to be released by calling
+ * @return zvec_doc_t* Created document pointer, needs to be released by calling
  * zvec_doc_destroy
  */
-ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
-                              const ZVecCollectionSchema *schema,
-                              const char *pk);
+zvec_doc_t *zvec_test_create_doc(uint64_t doc_id,
+                                 const zvec_collection_schema_t *schema,
+                                 const char *pk);
 
 /**
  * @brief Create partial null document
@@ -127,11 +128,11 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
  * @param doc_id Document ID
  * @param schema Schema pointer
  * @param pk Primary key (can be NULL, auto-generated)
- * @return ZVecDoc* Created document pointer
+ * @return zvec_doc_t* Created document pointer
  */
-ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
-                                   const ZVecCollectionSchema *schema,
-                                   const char *pk);
+zvec_doc_t *zvec_test_create_doc_null(uint64_t doc_id,
+                                      const zvec_collection_schema_t *schema,
+                                      const char *pk);
 
 /**
  * @brief Create document with specified fields
@@ -142,12 +143,11 @@ ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
  * @param field_types Field type array
  * @param field_count Number of fields
  * @param pk Primary key (can be NULL, auto-generated)
- * @return ZVecDoc* Created document pointer
+ * @return zvec_doc_t* Created document pointer
  */
-ZVecDoc *zvec_test_create_doc_with_fields(uint64_t doc_id,
-                                          const char **field_names,
-                                          const ZVecDataType *field_types,
-                                          size_t field_count, const char *pk);
+zvec_doc_t *zvec_test_create_doc_with_fields(
+    uint64_t doc_id, const char **field_names,
+    const zvec_data_type_t *field_types, size_t field_count, const char *pk);
 
 // =============================================================================
 // Index Parameter Creation Helper Functions
@@ -156,24 +156,25 @@ ZVecDoc *zvec_test_create_doc_with_fields(uint64_t doc_id,
 /**
  * @brief Create default HNSW index parameters
  *
- * @return ZVecIndexParams* Created parameter pointer
+ * @return zvec_index_params_t* Created parameter pointer
  */
-ZVecIndexParams *zvec_test_create_default_hnsw_params(void);
+zvec_index_params_t *zvec_test_create_default_hnsw_params(void);
 
 /**
  * @brief Create default Flat index parameters
  *
- * @return ZVecIndexParams* Created parameter pointer
+ * @return zvec_index_params_t* Created parameter pointer
  */
-ZVecIndexParams *zvec_test_create_default_flat_params(void);
+zvec_index_params_t *zvec_test_create_default_flat_params(void);
 
 /**
  * @brief Create default scalar index parameters
  *
  * @param enable_optimize Whether to enable optimization
- * @return ZVecIndexParams* Created parameter pointer
+ * @return zvec_index_params_t* Created parameter pointer
  */
-ZVecIndexParams *zvec_test_create_default_invert_params(bool enable_optimize);
+zvec_index_params_t *zvec_test_create_default_invert_params(
+    bool enable_optimize);
 
 // =============================================================================
 // Field Schema Creation Helper Functions
@@ -186,12 +187,12 @@ ZVecIndexParams *zvec_test_create_default_invert_params(bool enable_optimize);
  * @param data_type Data type
  * @param nullable Whether to allow null values
  * @param invert_params Scalar index parameters (can be NULL)
- * @return ZVecFieldSchema* Created field schema pointer, needs to be released
- * by calling free()
+ * @return zvec_field_schema_t* Created field schema pointer, needs to be
+ * released by calling free()
  */
-ZVecFieldSchema *zvec_test_create_scalar_field(
-    const char *name, ZVecDataType data_type, bool nullable,
-    const ZVecIndexParams *invert_params);
+zvec_field_schema_t *zvec_test_create_scalar_field(
+    const char *name, zvec_data_type_t data_type, bool nullable,
+    const zvec_index_params_t *invert_params);
 
 /**
  * @brief Create vector field schema
@@ -201,11 +202,11 @@ ZVecFieldSchema *zvec_test_create_scalar_field(
  * @param dimension Vector dimension
  * @param nullable Whether to allow null values
  * @param vector_index_params Vector index parameters (can be NULL)
- * @return ZVecFieldSchema* Created field schema pointer
+ * @return zvec_field_schema_t* Created field schema pointer
  */
-ZVecFieldSchema *zvec_test_create_vector_field(
-    const char *name, ZVecDataType data_type, uint32_t dimension, bool nullable,
-    const ZVecIndexParams *vector_index_params);
+zvec_field_schema_t *zvec_test_create_vector_field(
+    const char *name, zvec_data_type_t data_type, uint32_t dimension,
+    bool nullable, const zvec_index_params_t *vector_index_params);
 
 /**
  * @brief Create sparse vector field schema
@@ -214,11 +215,11 @@ ZVecFieldSchema *zvec_test_create_vector_field(
  * @param data_type Data type
  * @param nullable Whether to allow null values
  * @param vector_index_params Vector index parameters (can be NULL)
- * @return ZVecFieldSchema* Created field schema pointer
+ * @return zvec_field_schema_t* Created field schema pointer
  */
-ZVecFieldSchema *zvec_test_create_sparse_vector_field(
-    const char *name, ZVecDataType data_type, bool nullable,
-    const ZVecIndexParams *vector_index_params);
+zvec_field_schema_t *zvec_test_create_sparse_vector_field(
+    const char *name, zvec_data_type_t data_type, bool nullable,
+    const zvec_index_params_t *vector_index_params);
 
 // =============================================================================
 // Memory Management Helper Functions

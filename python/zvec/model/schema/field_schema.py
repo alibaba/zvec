@@ -21,6 +21,7 @@ from _zvec.schema import _FieldSchema
 from zvec.model.param import (
     FlatIndexParam,
     HnswIndexParam,
+    HnswRabitqIndexParam,
     InvertIndexParam,
     IVFIndexParam,
 )
@@ -209,7 +210,7 @@ class VectorSchema:
         data_type: DataType,
         dimension: Optional[int] = 0,
         index_param: Optional[
-            Union[HnswIndexParam, FlatIndexParam, IVFIndexParam]
+            Union[HnswIndexParam, HnswRabitqIndexParam, FlatIndexParam, IVFIndexParam]
         ] = None,
     ):
         if name is None or not isinstance(name, str):
@@ -263,8 +264,10 @@ class VectorSchema:
         return self._cpp_obj.dimension
 
     @property
-    def index_param(self) -> Union[HnswIndexParam, IVFIndexParam, FlatIndexParam]:
-        """Union[HnswIndexParam, IVFIndexParam, FlatIndexParam]: Index configuration for the vector."""
+    def index_param(
+        self,
+    ) -> Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam]:
+        """Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam]: Index configuration for the vector."""
         return self._cpp_obj.index_param
 
     def __dict__(self) -> dict[str, Any]:

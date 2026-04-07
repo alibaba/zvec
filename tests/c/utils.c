@@ -36,55 +36,55 @@ static char *strdup_safe(const char *str) {
 // Schema Creation Helper Functions Implementation
 // =============================================================================
 
-ZVecCollectionSchema *zvec_test_create_temp_schema(void) {
+zvec_collection_schema_t *zvec_test_create_temp_schema(void) {
   // Create collection schema using C API
-  ZVecCollectionSchema *schema = zvec_collection_schema_create("demo");
+  zvec_collection_schema_t *schema = zvec_collection_schema_create("demo");
   zvec_collection_schema_set_max_doc_count_per_segment(schema, 1000);
 
   // Create index parameters using new opaque pointer API
-  ZVecIndexParams *invert_params =
+  zvec_index_params_t *invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   zvec_index_params_set_invert_params(invert_params, true, true);
 
-  ZVecIndexParams *dense_hnsw_params =
+  zvec_index_params_t *dense_hnsw_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   zvec_index_params_set_metric_type(dense_hnsw_params, ZVEC_METRIC_TYPE_L2);
   zvec_index_params_set_hnsw_params(dense_hnsw_params, 16, 100);
 
-  ZVecIndexParams *sparse_hnsw_params =
+  zvec_index_params_t *sparse_hnsw_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   zvec_index_params_set_metric_type(sparse_hnsw_params, ZVEC_METRIC_TYPE_IP);
   zvec_index_params_set_hnsw_params(sparse_hnsw_params, 16, 100);
 
-  ZVecIndexParams *name_invert_params =
+  zvec_index_params_t *name_invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   zvec_index_params_set_invert_params(name_invert_params, false, false);
 
   // Create and add fields
-  ZVecFieldSchema *id_field =
+  zvec_field_schema_t *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_INT64, false, 0);
   zvec_field_schema_set_index_params(id_field, invert_params);
   zvec_collection_schema_add_field(schema, id_field);
 
   // Create name field (inverted index without optimization)
-  ZVecFieldSchema *name_field =
+  zvec_field_schema_t *name_field =
       zvec_field_schema_create("name", ZVEC_DATA_TYPE_STRING, false, 0);
   zvec_field_schema_set_index_params(name_field, name_invert_params);
   zvec_collection_schema_add_field(schema, name_field);
 
   // Create weight field (no index)
-  ZVecFieldSchema *weight_field =
+  zvec_field_schema_t *weight_field =
       zvec_field_schema_create("weight", ZVEC_DATA_TYPE_FLOAT, true, 0);
   zvec_collection_schema_add_field(schema, weight_field);
 
   // Create dense field (HNSW index)
-  ZVecFieldSchema *dense_field =
+  zvec_field_schema_t *dense_field =
       zvec_field_schema_create("dense", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
   zvec_field_schema_set_index_params(dense_field, dense_hnsw_params);
   zvec_collection_schema_add_field(schema, dense_field);
 
   // Create sparse field (HNSW index)
-  ZVecFieldSchema *sparse_field = zvec_field_schema_create(
+  zvec_field_schema_t *sparse_field = zvec_field_schema_create(
       "sparse", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32, false, 0);
   zvec_field_schema_set_index_params(sparse_field, sparse_hnsw_params);
   zvec_collection_schema_add_field(schema, sparse_field);
@@ -98,40 +98,41 @@ ZVecCollectionSchema *zvec_test_create_temp_schema(void) {
   return schema;
 }
 
-ZVecCollectionSchema *zvec_test_create_scalar_schema(void) {
+zvec_collection_schema_t *zvec_test_create_scalar_schema(void) {
   // Create collection schema using C API
-  ZVecCollectionSchema *schema = zvec_collection_schema_create("demo");
+  zvec_collection_schema_t *schema = zvec_collection_schema_create("demo");
 
   // Create fields
-  ZVecFieldSchema *int32_field =
+  zvec_field_schema_t *int32_field =
       zvec_field_schema_create("int32", ZVEC_DATA_TYPE_INT32, false, 0);
   zvec_collection_schema_add_field(schema, int32_field);
 
-  ZVecFieldSchema *string_field =
+  zvec_field_schema_t *string_field =
       zvec_field_schema_create("string", ZVEC_DATA_TYPE_STRING, false, 0);
   zvec_collection_schema_add_field(schema, string_field);
 
   return schema;
 }
 
-ZVecCollectionSchema *zvec_test_create_normal_schema(
-    bool nullable, const char *name, const ZVecIndexParams *scalar_index_params,
-    const ZVecIndexParams *vector_index_params, uint64_t max_doc_count) {
+zvec_collection_schema_t *zvec_test_create_normal_schema(
+    bool nullable, const char *name,
+    const zvec_index_params_t *scalar_index_params,
+    const zvec_index_params_t *vector_index_params, uint64_t max_doc_count) {
   // Create collection schema using C API
-  ZVecCollectionSchema *schema =
+  zvec_collection_schema_t *schema =
       zvec_collection_schema_create(name ? name : "demo");
   zvec_collection_schema_set_max_doc_count_per_segment(schema, max_doc_count);
 
   // Create scalar fields (8)
   const char *scalar_names[] = {"int32", "string", "uint32", "bool",
                                 "float", "double", "int64",  "uint64"};
-  ZVecDataType scalar_types[] = {ZVEC_DATA_TYPE_INT32,  ZVEC_DATA_TYPE_STRING,
-                                 ZVEC_DATA_TYPE_UINT32, ZVEC_DATA_TYPE_BOOL,
-                                 ZVEC_DATA_TYPE_FLOAT,  ZVEC_DATA_TYPE_DOUBLE,
-                                 ZVEC_DATA_TYPE_INT64,  ZVEC_DATA_TYPE_UINT64};
+  zvec_data_type_t scalar_types[] = {
+      ZVEC_DATA_TYPE_INT32, ZVEC_DATA_TYPE_STRING, ZVEC_DATA_TYPE_UINT32,
+      ZVEC_DATA_TYPE_BOOL,  ZVEC_DATA_TYPE_FLOAT,  ZVEC_DATA_TYPE_DOUBLE,
+      ZVEC_DATA_TYPE_INT64, ZVEC_DATA_TYPE_UINT64};
 
   for (int i = 0; i < 8; i++) {
-    ZVecFieldSchema *field =
+    zvec_field_schema_t *field =
         zvec_field_schema_create(scalar_names[i], scalar_types[i], nullable, 0);
     if (scalar_index_params) {
       zvec_field_schema_set_index_params(field, scalar_index_params);
@@ -143,14 +144,14 @@ ZVecCollectionSchema *zvec_test_create_normal_schema(
   const char *array_names[] = {"array_int32", "array_string", "array_uint32",
                                "array_bool",  "array_float",  "array_double",
                                "array_int64", "array_uint64"};
-  ZVecDataType array_types[] = {
+  zvec_data_type_t array_types[] = {
       ZVEC_DATA_TYPE_ARRAY_INT32,  ZVEC_DATA_TYPE_ARRAY_STRING,
       ZVEC_DATA_TYPE_ARRAY_UINT32, ZVEC_DATA_TYPE_ARRAY_BOOL,
       ZVEC_DATA_TYPE_ARRAY_FLOAT,  ZVEC_DATA_TYPE_ARRAY_DOUBLE,
       ZVEC_DATA_TYPE_ARRAY_INT64,  ZVEC_DATA_TYPE_ARRAY_UINT64};
 
   for (int i = 0; i < 8; i++) {
-    ZVecFieldSchema *field =
+    zvec_field_schema_t *field =
         zvec_field_schema_create(array_names[i], array_types[i], nullable, 0);
     if (scalar_index_params) {
       zvec_field_schema_set_index_params(field, scalar_index_params);
@@ -160,38 +161,38 @@ ZVecCollectionSchema *zvec_test_create_normal_schema(
 
   // Create vector fields (5)
   // dense vectors
-  ZVecFieldSchema *dense_fp32 = zvec_field_schema_create(
+  zvec_field_schema_t *dense_fp32 = zvec_field_schema_create(
       "dense_fp32", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
   if (vector_index_params) {
     zvec_field_schema_set_index_params(dense_fp32, vector_index_params);
   }
   zvec_collection_schema_add_field(schema, dense_fp32);
 
-  ZVecFieldSchema *dense_fp16 = zvec_field_schema_create(
+  zvec_field_schema_t *dense_fp16 = zvec_field_schema_create(
       "dense_fp16", ZVEC_DATA_TYPE_VECTOR_FP16, false, 128);
-  ZVecIndexParams *flat_params1 = zvec_test_create_default_flat_params();
+  zvec_index_params_t *flat_params1 = zvec_test_create_default_flat_params();
   zvec_field_schema_set_index_params(dense_fp16, flat_params1);
   zvec_index_params_destroy(flat_params1);
   zvec_collection_schema_add_field(schema, dense_fp16);
 
-  ZVecFieldSchema *dense_int8 = zvec_field_schema_create(
+  zvec_field_schema_t *dense_int8 = zvec_field_schema_create(
       "dense_int8", ZVEC_DATA_TYPE_VECTOR_INT8, false, 128);
-  ZVecIndexParams *flat_params2 = zvec_test_create_default_flat_params();
+  zvec_index_params_t *flat_params2 = zvec_test_create_default_flat_params();
   zvec_field_schema_set_index_params(dense_int8, flat_params2);
   zvec_index_params_destroy(flat_params2);
   zvec_collection_schema_add_field(schema, dense_int8);
 
   // sparse vectors
-  ZVecFieldSchema *sparse_fp32 = zvec_field_schema_create(
+  zvec_field_schema_t *sparse_fp32 = zvec_field_schema_create(
       "sparse_fp32", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32, false, 0);
   if (vector_index_params) {
     zvec_field_schema_set_index_params(sparse_fp32, vector_index_params);
   }
   zvec_collection_schema_add_field(schema, sparse_fp32);
 
-  ZVecFieldSchema *sparse_fp16 = zvec_field_schema_create(
+  zvec_field_schema_t *sparse_fp16 = zvec_field_schema_create(
       "sparse_fp16", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16, false, 0);
-  ZVecIndexParams *flat_params3 = zvec_test_create_default_flat_params();
+  zvec_index_params_t *flat_params3 = zvec_test_create_default_flat_params();
   zvec_field_schema_set_index_params(sparse_fp16, flat_params3);
   zvec_index_params_destroy(flat_params3);
   zvec_collection_schema_add_field(schema, sparse_fp16);
@@ -199,25 +200,25 @@ ZVecCollectionSchema *zvec_test_create_normal_schema(
   return schema;
 }
 
-ZVecCollectionSchema *zvec_test_create_schema_with_scalar_index(
+zvec_collection_schema_t *zvec_test_create_schema_with_scalar_index(
     bool nullable, bool enable_optimize, const char *name) {
-  ZVecIndexParams *invert_params =
+  zvec_index_params_t *invert_params =
       zvec_test_create_default_invert_params(enable_optimize);
-  ZVecCollectionSchema *schema =
+  zvec_collection_schema_t *schema =
       zvec_test_create_normal_schema(nullable, name, invert_params, NULL, 1000);
   free(invert_params);
   return schema;
 }
 
-ZVecCollectionSchema *zvec_test_create_schema_with_vector_index(
+zvec_collection_schema_t *zvec_test_create_schema_with_vector_index(
     bool nullable, const char *name,
-    const ZVecIndexParams *vector_index_params) {
-  ZVecIndexParams *default_params = NULL;
+    const zvec_index_params_t *vector_index_params) {
+  zvec_index_params_t *default_params = NULL;
   if (!vector_index_params) {
     default_params = zvec_test_create_default_hnsw_params();
   }
 
-  ZVecCollectionSchema *schema = zvec_test_create_normal_schema(
+  zvec_collection_schema_t *schema = zvec_test_create_normal_schema(
       nullable, name, NULL,
       vector_index_params ? vector_index_params : default_params, 1000);
 
@@ -228,7 +229,7 @@ ZVecCollectionSchema *zvec_test_create_schema_with_vector_index(
   return schema;
 }
 
-ZVecCollectionSchema *zvec_test_create_schema_with_max_doc_count(
+zvec_collection_schema_t *zvec_test_create_schema_with_max_doc_count(
     uint64_t doc_count) {
   return zvec_test_create_normal_schema(false, "demo", NULL, NULL, doc_count);
 }
@@ -250,11 +251,11 @@ uint64_t zvec_test_extract_doc_id(const char *pk) {
   return strtoull(pk + 3, NULL, 10);
 }
 
-ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
-                              const ZVecCollectionSchema *schema,
-                              const char *pk) {
+zvec_doc_t *zvec_test_create_doc(uint64_t doc_id,
+                                 const zvec_collection_schema_t *schema,
+                                 const char *pk) {
   if (!schema) return NULL;
-  ZVecDoc *doc = zvec_doc_create();
+  zvec_doc_t *doc = zvec_doc_create();
   if (!doc) return NULL;
 
   // Set primary key
@@ -267,7 +268,7 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
   // Create test data for each field
   const char **field_names = NULL;
   size_t field_count = 0;
-  ZVecErrorCode ret = zvec_collection_schema_get_all_field_names(
+  zvec_error_code_t ret = zvec_collection_schema_get_all_field_names(
       schema, &field_names, &field_count);
   if (ret != ZVEC_OK || !field_names) {
     zvec_doc_destroy(doc);
@@ -276,10 +277,10 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
 
   for (size_t i = 0; i < field_count; i++) {
     const char *field_name = field_names[i];
-    const ZVecFieldSchema *field =
+    const zvec_field_schema_t *field =
         zvec_collection_schema_get_field(schema, field_name);
     if (!field) continue;
-    ZVecDataType field_type = zvec_field_schema_get_data_type(field);
+    zvec_data_type_t field_type = zvec_field_schema_get_data_type(field);
     uint32_t field_dimension = zvec_field_schema_get_dimension(field);
 
     switch (field_type) {
@@ -579,11 +580,11 @@ ZVecDoc *zvec_test_create_doc(uint64_t doc_id,
   return doc;
 }
 
-ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
-                                   const ZVecCollectionSchema *schema,
-                                   const char *pk) {
+zvec_doc_t *zvec_test_create_doc_null(uint64_t doc_id,
+                                      const zvec_collection_schema_t *schema,
+                                      const char *pk) {
   // Reuse create_doc function, but only process vector fields
-  ZVecDoc *doc = zvec_doc_create();
+  zvec_doc_t *doc = zvec_doc_create();
   if (!doc) return NULL;
 
   // Set primary key
@@ -596,7 +597,7 @@ ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
   // Only create data for vector fields
   const char **field_names = NULL;
   size_t field_count = 0;
-  ZVecErrorCode ret = zvec_collection_schema_get_all_field_names(
+  zvec_error_code_t ret = zvec_collection_schema_get_all_field_names(
       schema, &field_names, &field_count);
   if (ret != ZVEC_OK || !field_names) {
     zvec_doc_destroy(doc);
@@ -605,10 +606,10 @@ ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
 
   for (size_t i = 0; i < field_count; i++) {
     const char *field_name = field_names[i];
-    const ZVecFieldSchema *field =
+    const zvec_field_schema_t *field =
         zvec_collection_schema_get_field(schema, field_name);
     if (!field) continue;
-    ZVecDataType field_type = zvec_field_schema_get_data_type(field);
+    zvec_data_type_t field_type = zvec_field_schema_get_data_type(field);
     uint32_t field_dimension = zvec_field_schema_get_dimension(field);
 
     // Only process specific vector type fields
@@ -620,7 +621,7 @@ ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
       continue;
     }
 
-    ZVecErrorCode err = ZVEC_OK;
+    zvec_error_code_t err = ZVEC_OK;
 
     switch (field_type) {
       case ZVEC_DATA_TYPE_VECTOR_FP32: {
@@ -743,11 +744,10 @@ ZVecDoc *zvec_test_create_doc_null(uint64_t doc_id,
   return doc;
 }
 
-ZVecDoc *zvec_test_create_doc_with_fields(uint64_t doc_id,
-                                          const char **field_names,
-                                          const ZVecDataType *field_types,
-                                          size_t field_count, const char *pk) {
-  ZVecDoc *doc = zvec_doc_create();
+zvec_doc_t *zvec_test_create_doc_with_fields(
+    uint64_t doc_id, const char **field_names,
+    const zvec_data_type_t *field_types, size_t field_count, const char *pk) {
+  zvec_doc_t *doc = zvec_doc_create();
   if (!doc) return NULL;
 
   // Set primary key
@@ -759,7 +759,7 @@ ZVecDoc *zvec_test_create_doc_with_fields(uint64_t doc_id,
 
   // Create data for specified fields
   for (size_t i = 0; i < field_count; i++) {
-    ZVecErrorCode err = ZVEC_OK;
+    zvec_error_code_t err = ZVEC_OK;
 
     switch (field_types[i]) {
       case ZVEC_DATA_TYPE_INT32:
@@ -807,8 +807,8 @@ ZVecDoc *zvec_test_create_doc_with_fields(uint64_t doc_id,
 // Index Parameter Creation Helper Functions Implementation
 // =============================================================================
 
-ZVecIndexParams *zvec_test_create_default_hnsw_params(void) {
-  ZVecIndexParams *params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+zvec_index_params_t *zvec_test_create_default_hnsw_params(void) {
+  zvec_index_params_t *params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!params) return NULL;
 
   zvec_index_params_set_metric_type(params, ZVEC_METRIC_TYPE_IP);
@@ -817,8 +817,8 @@ ZVecIndexParams *zvec_test_create_default_hnsw_params(void) {
   return params;
 }
 
-ZVecIndexParams *zvec_test_create_default_flat_params(void) {
-  ZVecIndexParams *params = zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
+zvec_index_params_t *zvec_test_create_default_flat_params(void) {
+  zvec_index_params_t *params = zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
   if (!params) return NULL;
 
   zvec_index_params_set_metric_type(params, ZVEC_METRIC_TYPE_IP);
@@ -826,8 +826,10 @@ ZVecIndexParams *zvec_test_create_default_flat_params(void) {
   return params;
 }
 
-ZVecIndexParams *zvec_test_create_default_invert_params(bool enable_optimize) {
-  ZVecIndexParams *params = zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+zvec_index_params_t *zvec_test_create_default_invert_params(
+    bool enable_optimize) {
+  zvec_index_params_t *params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   if (!params) return NULL;
 
   zvec_index_params_set_invert_params(params, enable_optimize, enable_optimize);
@@ -839,18 +841,18 @@ ZVecIndexParams *zvec_test_create_default_invert_params(bool enable_optimize) {
 // Field Schema Creation Helper Functions Implementation
 // =============================================================================
 
-ZVecFieldSchema *zvec_test_create_scalar_field(
-    const char *name, ZVecDataType data_type, bool nullable,
-    const ZVecIndexParams *invert_params) {
+zvec_field_schema_t *zvec_test_create_scalar_field(
+    const char *name, zvec_data_type_t data_type, bool nullable,
+    const zvec_index_params_t *invert_params) {
   // Use the public API to create the field
-  ZVecFieldSchema *field =
+  zvec_field_schema_t *field =
       zvec_field_schema_create(name, data_type, nullable, 0);
   if (!field) return NULL;
 
   if (invert_params) {
     // Clone the index params using setter API
-    ZVecIndexType type = zvec_index_params_get_type(invert_params);
-    ZVecIndexParams *cloned_params = zvec_index_params_create(type);
+    zvec_index_type_t type = zvec_index_params_get_type(invert_params);
+    zvec_index_params_t *cloned_params = zvec_index_params_create(type);
     if (cloned_params) {
       bool enable_range_opt, enable_wildcard;
       zvec_index_params_get_invert_params(invert_params, &enable_range_opt,
@@ -865,18 +867,18 @@ ZVecFieldSchema *zvec_test_create_scalar_field(
   return field;
 }
 
-ZVecFieldSchema *zvec_test_create_vector_field(
-    const char *name, ZVecDataType data_type, uint32_t dimension, bool nullable,
-    const ZVecIndexParams *vector_index_params) {
+zvec_field_schema_t *zvec_test_create_vector_field(
+    const char *name, zvec_data_type_t data_type, uint32_t dimension,
+    bool nullable, const zvec_index_params_t *vector_index_params) {
   // Use the public API to create the field
-  ZVecFieldSchema *field =
+  zvec_field_schema_t *field =
       zvec_field_schema_create(name, data_type, nullable, dimension);
   if (!field) return NULL;
 
   if (vector_index_params) {
     // Clone the index params using setter API
-    ZVecIndexType type = zvec_index_params_get_type(vector_index_params);
-    ZVecIndexParams *cloned_params = zvec_index_params_create(type);
+    zvec_index_type_t type = zvec_index_params_get_type(vector_index_params);
+    zvec_index_params_t *cloned_params = zvec_index_params_create(type);
     if (cloned_params) {
       int m, ef_construction;
       m = zvec_index_params_get_hnsw_m(vector_index_params);
@@ -891,18 +893,18 @@ ZVecFieldSchema *zvec_test_create_vector_field(
   return field;
 }
 
-ZVecFieldSchema *zvec_test_create_sparse_vector_field(
-    const char *name, ZVecDataType data_type, bool nullable,
-    const ZVecIndexParams *vector_index_params) {
+zvec_field_schema_t *zvec_test_create_sparse_vector_field(
+    const char *name, zvec_data_type_t data_type, bool nullable,
+    const zvec_index_params_t *vector_index_params) {
   // Use the public API to create the field
-  ZVecFieldSchema *field =
+  zvec_field_schema_t *field =
       zvec_field_schema_create(name, data_type, nullable, 0);
   if (!field) return NULL;
 
   if (vector_index_params) {
     // Clone the index params using setter API
-    ZVecIndexType type = zvec_index_params_get_type(vector_index_params);
-    ZVecIndexParams *cloned_params = zvec_index_params_create(type);
+    zvec_index_type_t type = zvec_index_params_get_type(vector_index_params);
+    zvec_index_params_t *cloned_params = zvec_index_params_create(type);
     if (cloned_params) {
       int m, ef_construction;
       m = zvec_index_params_get_hnsw_m(vector_index_params);
