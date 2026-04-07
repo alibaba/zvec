@@ -20,7 +20,8 @@
 /**
  * @brief Print error message and return error code
  */
-static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
+static zvec_error_code_t handle_error(zvec_error_code_t error,
+                                      const char *context) {
   if (error != ZVEC_OK) {
     char *error_msg = NULL;
     zvec_get_last_error(&error_msg);
@@ -37,10 +38,10 @@ static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
 int main() {
   printf("=== ZVec Field Schema Example ===\n\n");
 
-  ZVecErrorCode error;
+  zvec_error_code_t error;
 
   // 1. Create collection schema
-  ZVecCollectionSchema *schema =
+  zvec_collection_schema_t *schema =
       zvec_collection_schema_create("field_example_collection");
   if (!schema) {
     fprintf(stderr, "Failed to create collection schema\n");
@@ -49,7 +50,7 @@ int main() {
   printf("✓ Collection schema created successfully\n");
 
   // 2. Create different types of index parameters
-  ZVecIndexParams *invert_params =
+  zvec_index_params_t *invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
   if (!invert_params) {
     fprintf(stderr, "Failed to create invert index parameters\n");
@@ -58,7 +59,8 @@ int main() {
   }
   zvec_index_params_set_invert_params(invert_params, true, false);
 
-  ZVecIndexParams *hnsw_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params) {
     fprintf(stderr, "Failed to create HNSW index parameters\n");
     zvec_index_params_destroy(invert_params);
@@ -68,7 +70,8 @@ int main() {
   zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_COSINE);
   zvec_index_params_set_hnsw_params(hnsw_params, 16, 200);
 
-  ZVecIndexParams *flat_params = zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
+  zvec_index_params_t *flat_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
   if (!flat_params) {
     fprintf(stderr, "Failed to create Flat index parameters\n");
     zvec_index_params_destroy(invert_params);
@@ -91,7 +94,7 @@ int main() {
   printf("Creating scalar fields...\n");
 
   // String field with inverted index
-  ZVecFieldSchema *name_field =
+  zvec_field_schema_t *name_field =
       zvec_field_schema_create("name", ZVEC_DATA_TYPE_STRING, false, 0);
   if (name_field) {
     zvec_field_schema_set_index_params(name_field, invert_params);
@@ -102,7 +105,7 @@ int main() {
   }
 
   // Integer field
-  ZVecFieldSchema *age_field =
+  zvec_field_schema_t *age_field =
       zvec_field_schema_create("age", ZVEC_DATA_TYPE_INT32, true, 0);
   if (age_field) {
     error = zvec_collection_schema_add_field(schema, age_field);
@@ -112,7 +115,7 @@ int main() {
   }
 
   // Float field
-  ZVecFieldSchema *score_field =
+  zvec_field_schema_t *score_field =
       zvec_field_schema_create("score", ZVEC_DATA_TYPE_FLOAT, true, 0);
   if (score_field) {
     error = zvec_collection_schema_add_field(schema, score_field);
@@ -122,7 +125,7 @@ int main() {
   }
 
   // Boolean field
-  ZVecFieldSchema *active_field =
+  zvec_field_schema_t *active_field =
       zvec_field_schema_create("active", ZVEC_DATA_TYPE_BOOL, false, 0);
   if (active_field) {
     error = zvec_collection_schema_add_field(schema, active_field);
@@ -135,7 +138,7 @@ int main() {
   printf("Creating vector fields...\n");
 
   // Small dimension vector with HNSW index
-  ZVecFieldSchema *small_vector_field = zvec_field_schema_create(
+  zvec_field_schema_t *small_vector_field = zvec_field_schema_create(
       "small_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 32);
   if (small_vector_field) {
     zvec_field_schema_set_index_params(small_vector_field, hnsw_params);
@@ -147,7 +150,7 @@ int main() {
   }
 
   // Medium dimension vector with Flat index
-  ZVecFieldSchema *medium_vector_field = zvec_field_schema_create(
+  zvec_field_schema_t *medium_vector_field = zvec_field_schema_create(
       "medium_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
   if (medium_vector_field) {
     zvec_field_schema_set_index_params(medium_vector_field, flat_params);
@@ -160,7 +163,7 @@ int main() {
   }
 
   // Large dimension vector with HNSW index
-  ZVecFieldSchema *large_vector_field = zvec_field_schema_create(
+  zvec_field_schema_t *large_vector_field = zvec_field_schema_create(
       "large_vector", ZVEC_DATA_TYPE_VECTOR_FP32, false, 512);
   if (large_vector_field) {
     zvec_field_schema_set_index_params(large_vector_field, hnsw_params);
@@ -172,13 +175,13 @@ int main() {
   }
 
   // 5. Create collection with the schema
-  ZVecCollectionOptions *options = zvec_collection_options_create();
+  zvec_collection_options_t *options = zvec_collection_options_create();
   if (!options) {
     fprintf(stderr, "Failed to create collection options\n");
     zvec_collection_schema_destroy(schema);
     return -1;
   }
-  ZVecCollection *collection = NULL;
+  zvec_collection_t *collection = NULL;
 
   error = zvec_collection_create_and_open("./field_example_collection", schema,
                                           options, &collection);
@@ -192,8 +195,8 @@ int main() {
   // 6. Create test documents with various field types
   printf("Creating test documents...\n");
 
-  ZVecDoc *doc1 = zvec_doc_create();
-  ZVecDoc *doc2 = zvec_doc_create();
+  zvec_doc_t *doc1 = zvec_doc_create();
+  zvec_doc_t *doc2 = zvec_doc_create();
 
   if (!doc1 || !doc2) {
     fprintf(stderr, "Failed to create documents\n");
@@ -261,9 +264,9 @@ int main() {
                               large_vec2, 512 * sizeof(float));
 
   // 7. Insert documents
-  ZVecDoc *docs[] = {doc1, doc2};
+  zvec_doc_t *docs[] = {doc1, doc2};
   size_t success_count = 0, error_count = 0;
-  error = zvec_collection_insert(collection, (const ZVecDoc **)docs, 2,
+  error = zvec_collection_insert(collection, (const zvec_doc_t **)docs, 2,
                                  &success_count, &error_count);
   if (handle_error(error, "inserting documents") == ZVEC_OK) {
     printf("✓ Documents inserted - Success: %zu, Failed: %zu\n", success_count,
@@ -275,7 +278,7 @@ int main() {
   printf("✓ Collection flushed\n");
 
   // Test vector query on medium vector field
-  ZVecVectorQuery *query = zvec_vector_query_create();
+  zvec_vector_query_t *query = zvec_vector_query_create();
   if (!query) {
     fprintf(stderr, "Failed to create vector query\n");
     goto cleanup;
@@ -287,9 +290,9 @@ int main() {
   zvec_vector_query_set_include_vector(query, false);
   zvec_vector_query_set_include_doc_id(query, true);
 
-  ZVecDoc **results = NULL;
+  zvec_doc_t **results = NULL;
   size_t result_count = 0;
-  error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
+  error = zvec_collection_query(collection, (const zvec_vector_query_t *)query,
                                 &results, &result_count);
   if (error == ZVEC_OK) {
     printf("✓ Vector query successful - Found %zu results\n", result_count);
