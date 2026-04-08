@@ -69,6 +69,7 @@ jobs:
           
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+          CXXFLAGS="-fprofile-update=atomic" \
           python -m pip install -v . \
             --no-build-isolation \
             --config-settings="cmake.build-type=COVERAGE"
