@@ -24,7 +24,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: main  # Always use main for nightly
+          ref: actions/checkout@v6  # Always use main for nightly
           submodules: recursive
 
       - name: Set up Python
