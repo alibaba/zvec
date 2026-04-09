@@ -83,7 +83,7 @@ jobs:
       - name: Run C++ Tests and Generate Coverage
         run: |
           cd "$GITHUB_WORKSPACE/build"
-          make unittest -j$NPROC
+          make VERBOSE=1 unittest -j$NPROC
           cd "$GITHUB_WORKSPACE"
           # Ensure gcov.sh is executable
           chmod +x scripts/gcov.sh
