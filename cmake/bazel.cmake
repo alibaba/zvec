@@ -458,6 +458,8 @@ set(
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:Clang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:AppleClang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:GNU>:--coverage>>"
+    "-fprofile-update=atomic"
+    "-latomic"
   )
 
 # C/C++ strict compile flags
