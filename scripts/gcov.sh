@@ -1,5 +1,4 @@
 #!/bin/bash
-set -ex
 
 project_name=proxima-zvec
 gcov_tool=gcov
