@@ -1,4 +1,5 @@
 #!/bin/bash
+set -ex
 
 project_name=proxima-zvec
 gcov_tool=gcov
@@ -27,7 +28,7 @@ done
 
 # Process sources
 /usr/bin/lcov -c -b "$source_base" -d . -o $project_name.lcov.info --gcov-tool=$gcov_tool --no-external --keep-going --ignore-errors unused,mismatch || exit 1
-eval $(echo /usr/bin/lcov -r $project_name.lcov.info -o $project_name-filtered.lcov.info $filter_list) || exit 1
+eval $(echo /usr/bin/lcov -r $project_name.lcov.info -o $project_name-filtered.lcov.info $filter_list --ignore-errors unused,mismatch) || exit 1
 
 # Gather HTML files
 genhtml -t "$project_name" -o $output_name $project_name-filtered.lcov.info || exit 1
