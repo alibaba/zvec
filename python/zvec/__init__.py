@@ -112,7 +112,6 @@ __all__ = [
     "InvertIndexParam",
     "HnswIndexParam",
     "HnswRabitqIndexParam",
-    "HnswRabitqQueryParam",
     "FlatIndexParam",
     "IVFIndexParam",
     "CollectionOption",
@@ -121,6 +120,7 @@ __all__ = [
     "AddColumnOption",
     "AlterColumnOption",
     "HnswQueryParam",
+    "HnswRabitqQueryParam",
     "IVFQueryParam",
     # Extensions
     "DenseEmbeddingFunction",

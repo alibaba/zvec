@@ -18,6 +18,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+#endif
+
 // =============================================================================
 // Internal Helper Functions
 // =============================================================================
@@ -960,10 +966,28 @@ int zvec_test_delete_dir(const char *dir_path) {
   int result = system(cmd);
   return (result == 0) ? 0 : -1;
 #else
-  // Unix/Linux/macOS platform implementation
-  char cmd[1024];
-  snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>/dev/null", dir_path);
-  int result = system(cmd);
-  return (result == 0) ? 0 : -1;
+  // Unix/Linux/macOS/iOS: pure C recursive removal (no system() call)
+  struct stat st;
+  if (stat(dir_path, &st) != 0) {
+    return -1;  // path does not exist
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    return unlink(dir_path);  // regular file
+  }
+  DIR *dir = opendir(dir_path);
+  if (!dir) {
+    return -1;
+  }
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    char child[1024];
+    snprintf(child, sizeof(child), "%s/%s", dir_path, entry->d_name);
+    zvec_test_delete_dir(child);  // recurse
+  }
+  closedir(dir);
+  return rmdir(dir_path);
 #endif
 }

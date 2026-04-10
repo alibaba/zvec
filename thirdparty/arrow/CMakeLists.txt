@@ -2,6 +2,9 @@ set(ARROW_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0)
 if(ANDROID)
         set(ARROW_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.android.patch)
         apply_patch_once("arrow_android_fix" "${ARROW_SRC_DIR}" "${ARROW_PATCH}")
+elseif(IOS)
+        set(ARROW_IOS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.ios.patch)
+        apply_patch_once("arrow_ios_fix" "${ARROW_SRC_DIR}" "${ARROW_IOS_PATCH}")
 else()
         set(ARROW_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.patch)
         apply_patch_once("arrow_fix" "${ARROW_SRC_DIR}" "${ARROW_PATCH}")
@@ -54,6 +57,33 @@ if(ANDROID)
                 BUILD_IN_SOURCE false
                 CONFIGURE_COMMAND env ${CONFIGURE_ENV_LIST} "${CMAKE_COMMAND}" ${CMAKE_CACHE_ARGS} -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_DEBUG_POSTFIX= -DARROW_BUILD_SHARED=OFF -DARROW_ACERO=ON -DARROW_FILESYSTEM=ON -DARROW_DATASET=ON -DARROW_PARQUET=ON -DARROW_COMPUTE=ON -DARROW_WITH_ZLIB=OFF -DARROW_DEPENDENCY_SOURCE=BUNDLED -DARROW_MIMALLOC=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} -DANDROID_ABI=${ANDROID_ABI} -DANDROID_NATIVE_API_LEVEL=${ANDROID_NATIVE_API_LEVEL} -DARROW_WITH_MUSL=OFF "<SOURCE_DIR>/cpp"
                 BUILD_COMMAND "${CMAKE_COMMAND}" --build . --target all -- -j ${NPROC}
+                INSTALL_COMMAND "${CMAKE_COMMAND}" --install "<BINARY_DIR>" --prefix=${EXTERNAL_BINARY_DIR}/usr/local
+                BYPRODUCTS ${LIB_PARQUET} ${LIB_ARROW} ${LIB_COMPUTE} ${LIB_ACERO} ${LIB_ARROW_DEPENDS} ${LIB_ARROW_DATASET}
+                LOG_DOWNLOAD ON
+                LOG_CONFIGURE ON
+                LOG_BUILD ON
+                LOG_INSTALL ON
+        )
+elseif(IOS)
+        # Determine ARROW_CPU_FLAG based on architecture
+        if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+                set(IOS_ARROW_CPU_FLAG "aarch64")
+        elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+                set(IOS_ARROW_CPU_FLAG "x86")
+        else()
+                set(IOS_ARROW_CPU_FLAG "aarch64")
+        endif()
+        # Propagate deployment target to Arrow's bundled dependencies via env var.
+        # Without this, sub-ExternalProjects (re2, utf8proc, etc.) pick up the SDK
+        # version instead of the intended deployment target, causing linker warnings.
+        set(_arrow_ios_env ${CONFIGURE_ENV_LIST} "IPHONEOS_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        ExternalProject_Add(
+                ARROW.BUILD PREFIX arrow
+                SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0
+                DOWNLOAD_COMMAND ""
+                BUILD_IN_SOURCE false
+                CONFIGURE_COMMAND env ${_arrow_ios_env} "${CMAKE_COMMAND}" ${CMAKE_CACHE_ARGS} -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_DEBUG_POSTFIX= -DARROW_BUILD_SHARED=OFF -DARROW_ACERO=ON -DARROW_FILESYSTEM=ON -DARROW_DATASET=ON -DARROW_PARQUET=ON -DARROW_COMPUTE=ON -DARROW_WITH_ZLIB=OFF -DARROW_DEPENDENCY_SOURCE=BUNDLED -DARROW_MIMALLOC=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET} -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES} -DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT} -DARROW_CPU_FLAG=${IOS_ARROW_CPU_FLAG} "<SOURCE_DIR>/cpp"
+                BUILD_COMMAND env "IPHONEOS_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}" "${CMAKE_COMMAND}" --build . --target all -- -j ${NPROC}
                 INSTALL_COMMAND "${CMAKE_COMMAND}" --install "<BINARY_DIR>" --prefix=${EXTERNAL_BINARY_DIR}/usr/local
                 BYPRODUCTS ${LIB_PARQUET} ${LIB_ARROW} ${LIB_COMPUTE} ${LIB_ACERO} ${LIB_ARROW_DEPENDS} ${LIB_ARROW_DATASET}
                 LOG_DOWNLOAD ON

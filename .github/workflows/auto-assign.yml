@@ -20,6 +20,6 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Auto Assign PR Author
-        uses: kentaro-m/auto-assign-action@v2.0.0
+        uses: kentaro-m/auto-assign-action@v2.0.2
         with:
           configuration-path: '.github/auto-assign-config.yml'

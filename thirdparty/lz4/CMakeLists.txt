@@ -47,6 +47,42 @@ if(ANDROID)
     "CFLAGS=${_lz4_cflags}"
   )
 
+elseif(IOS)
+  # iOS cross-compilation
+  set(_ios_arch ${CMAKE_OSX_ARCHITECTURES})
+  if(NOT _ios_arch)
+    set(_ios_arch "arm64")
+  endif()
+  
+  set(_ios_min_version ${CMAKE_OSX_DEPLOYMENT_TARGET})
+  if(NOT _ios_min_version)
+    set(_ios_min_version "13.0")
+  endif()
+  
+  # Get iOS SDK path - detect from CMAKE_OSX_SYSROOT or IOS_PLATFORM
+  string(TOLOWER "${CMAKE_OSX_SYSROOT}" _sysroot_lower)
+  if(IOS_PLATFORM STREQUAL "OS" OR _sysroot_lower MATCHES "iphoneos")
+    set(_ios_sdk "iphoneos")
+    set(_ios_target_flag "-miphoneos-version-min=${_ios_min_version}")
+  else()
+    set(_ios_sdk "iphonesimulator")
+    set(_ios_target_flag "-mios-simulator-version-min=${_ios_min_version}")
+  endif()
+  
+  execute_process(
+    COMMAND xcrun --sdk ${_ios_sdk} --show-sdk-path
+    OUTPUT_VARIABLE _ios_sysroot
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  
+  set(_lz4_cflags "-arch ${_ios_arch} -isysroot ${_ios_sysroot} ${_ios_target_flag} -fPIC")
+  
+  list(APPEND _lz4_env
+    "CC=${CMAKE_C_COMPILER}"
+    "AR=${CMAKE_AR}"
+    "RANLIB=${CMAKE_RANLIB}"
+    "CFLAGS=${_lz4_cflags}"
+  )
 else()
   list(APPEND _lz4_env "CFLAGS=-fPIC")
 endif()
