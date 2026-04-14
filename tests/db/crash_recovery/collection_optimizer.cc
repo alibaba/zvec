@@ -95,11 +95,12 @@ int main(int argc, char **argv) {
   std::cout << "Initial stats: " << collection->Stats()->to_string_formatted()
             << std::endl;
 
-  auto s = collection->Optimize();
+  auto s = collection->Optimize(zvec::OptimizeOptions{2});
   if (s.ok()) {
     std::cout << "Optimize completed successfully" << std::endl;
     // Print final stats
-    std::cout << "Final stats: " << collection->Stats()->to_string_formatted() << std::endl;
+    std::cout << "Final stats: " << collection->Stats()->to_string_formatted()
+              << std::endl;
     return 0;
   } else {
     std::cout << "Optimize failed: " << s.message() << std::endl;
