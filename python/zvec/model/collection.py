@@ -136,7 +136,9 @@ class Collection:
         Raises:
             ValueError: If a vector index is applied to a non-vector field.
         """
-        if isinstance(index_param, _VECTOR_INDEX_TYPES) and not self.schema.vector(field_name):
+        if isinstance(index_param, _VECTOR_INDEX_TYPES) and not self.schema.vector(
+            field_name
+        ):
             supported_types = ", ".join(cls.__name__ for cls in _VECTOR_INDEX_TYPES)
             raise ValueError(
                 f"Cannot apply vector index to non-vector field '{field_name}'. "
