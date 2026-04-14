@@ -25,6 +25,7 @@
 #include <windows.h>
 #else
 #include <sys/time.h>
+#include <glob.h>
 #include <unistd.h>
 #endif
 
@@ -53,15 +54,7 @@ static size_t get_field_count(zvec_collection_schema_t *schema) {
 
 // Cross-platform helper function to clean up temporary directories
 static void cleanup_temp_directory(const char *dir) {
-#ifdef _WIN32
-  char cmd[512];
-  snprintf(cmd, sizeof(cmd), "rmdir /s /q \"%s\" 2>nul", dir);
-  system(cmd);
-#else
-  char cmd[512];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-  system(cmd);
-#endif
+  zvec_test_delete_dir(dir);
 }
 
 static int test_count = 0;
@@ -5357,7 +5350,15 @@ int main(void) {
   system("rmdir /s /q %TEMP%\\zvec_test_* 2>nul");
   system("del /q %TEMP%\\zvec_test_* 2>nul");
 #else
-  system("rm -rf /tmp/zvec_test_*");
+  {
+    glob_t gl;
+    if (glob("/tmp/zvec_test_*", 0, NULL, &gl) == 0) {
+      for (size_t gi = 0; gi < gl.gl_pathc; gi++) {
+        zvec_test_delete_dir(gl.gl_pathv[gi]);
+      }
+      globfree(&gl);
+    }
+  }
 #endif
   printf("Cleanup completed.\n\n");
 

@@ -1054,7 +1054,7 @@ Status CollectionImpl::validate(const std::string &column,
       }
       if (schema_->has_field(schema->name())) {
         return Status::InvalidArgument("column already exists: ",
-                                        schema->name());
+                                       schema->name());
       }
 
       auto s = schema->validate();
@@ -1448,8 +1448,8 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   // validate write batch size
   if (docs.size() > kMaxWriteBatchSize) {
     CHECK_RETURN_STATUS_EXPECTED(Status::InvalidArgument(
-        "Too many docs: ", docs.size(),
-        " exceeds max write batch size ", kMaxWriteBatchSize));
+        "Too many docs: ", docs.size(), " exceeds max write batch size of ",
+        kMaxWriteBatchSize));
   }
 
   // validate docs
@@ -1830,8 +1830,7 @@ Status CollectionImpl::acquire_file_lock(bool create) {
 
   if (create) {
     if (!lock_file_.create(lock_file_path.c_str(), 0)) {
-      return Status::InternalError("Can't create lock file: ",
-                                   lock_file_path);
+      return Status::InternalError("Can't create lock file: ", lock_file_path);
     }
   } else {
     if (!lock_file_.open(lock_file_path.c_str(), false)) {

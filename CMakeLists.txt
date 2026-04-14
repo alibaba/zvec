@@ -33,7 +33,7 @@ else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror=return-type")
 endif()
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--no-as-needed")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
 endif()
@@ -47,7 +47,19 @@ message(STATUS "PROJECT_ROOT_DIR = ${PROJECT_ROOT_DIR}")
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
-if (NOT ANDROID AND AUTO_DETECT_ARCH AND HOST_ARCH MATCHES "^(x86|x64)$")
+# iOS platform detection
+if(NOT ANDROID AND NOT IOS AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(IOS TRUE)
+endif()
+
+# iOS bundle properties for test executables
+if(IOS)
+  set(MACOSX_BUNDLE_BUNDLE_VERSION "1")
+  set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0")
+  set(CMAKE_MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in")
+endif()
+
+if (NOT ANDROID AND NOT IOS AND AUTO_DETECT_ARCH AND HOST_ARCH MATCHES "^(x86|x64)$")
   setup_compiler_march_for_x86(MATH_MARCH_FLAG_SSE MATH_MARCH_FLAG_AVX2 MATH_MARCH_FLAG_AVX512 MATH_MARCH_FLAG_AVX512FP16)
   message(STATUS "best compiler march, sse: " ${MATH_MARCH_FLAG_SSE} ", avx2: " ${MATH_MARCH_FLAG_AVX2} ", avx512: " ${MATH_MARCH_FLAG_AVX512} ", avx512fp16: " ${MATH_MARCH_FLAG_AVX512FP16})
 endif()
@@ -66,7 +78,7 @@ message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
 option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT ANDROID)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT ANDROID AND NOT IOS)
   include(CheckCCompilerFlag)
 
   check_c_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
@@ -86,6 +98,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64
     add_definitions(-DRABITQ_SUPPORTED=0)
     message(STATUS "RaBitQ support disabled - compiler does not support AVX2 or AVX-512")
   endif()
+elseif(IOS)
+  set(RABITQ_SUPPORTED OFF)
+  add_definitions(-DRABITQ_SUPPORTED=0)
+  message(STATUS "RaBitQ support disabled - not supported on iOS")
 else()
   set(RABITQ_SUPPORTED OFF)
   add_definitions(-DRABITQ_SUPPORTED=0)

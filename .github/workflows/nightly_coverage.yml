@@ -24,7 +24,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: main  # Always use main for nightly
+          ref: main # Always use main for nightly
           submodules: recursive
 
       - name: Set up Python
@@ -45,9 +45,16 @@ jobs:
           echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
         shell: bash
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov
+        shell: bash
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip \
+            pybind11==3.0 \
             cmake==3.30.0 \
             ninja==1.11.1 \
             pytest \
@@ -64,8 +71,7 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
-            --config-settings="cmake.build-type=COVERAGE" \
-            --config-settings='cmake.define.ENABLE_ZEN3="ON"'
+            --config-settings="cmake.build-type=COVERAGE"
         shell: bash
 
       - name: Run Python Tests with Coverage

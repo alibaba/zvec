@@ -25,4 +25,18 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       SRCS ${CC_SRCS} utils.c
       INCS . .. ../../src
     )
+
+  # iOS: embed the shared library inside the .app bundle so the simulator can
+  # find it at runtime, and patch the executable's rpath accordingly.
+  if(IOS AND TARGET ${CC_TARGET})
+    add_custom_command(TARGET ${CC_TARGET} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+              "$<TARGET_BUNDLE_DIR:${CC_TARGET}>/Frameworks"
+      COMMAND ${CMAKE_COMMAND} -E copy
+              "$<TARGET_FILE:zvec_c_api>"
+              "$<TARGET_BUNDLE_DIR:${CC_TARGET}>/Frameworks/"
+      COMMAND install_name_tool -add_rpath "@executable_path/Frameworks"
+              "$<TARGET_BUNDLE_DIR:${CC_TARGET}>/${CC_TARGET}" 2>/dev/null || true
+    )
+  endif()
 endforeach()

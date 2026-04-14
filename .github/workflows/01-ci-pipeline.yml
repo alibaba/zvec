@@ -93,3 +93,8 @@ jobs:
     name: Build & Test (Windows)
     needs: lint
     uses: ./.github/workflows/05-windows-build.yml
+
+  build-ios:
+    name: Build & Test (iOS)
+    needs: lint
+    uses: ./.github/workflows/06-ios-build.yml

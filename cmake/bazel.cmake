@@ -301,7 +301,7 @@
 ##      )
 ##
 
-cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 include(CMakeParseArguments)
 
 # Using AppleClang instead of Clang (Compiler id)
@@ -314,11 +314,16 @@ enable_testing()
 
 # Add unittest target
 if(NOT TARGET unittest)
-  add_custom_target(
-      unittest
-      COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-      --build-config $<CONFIGURATION>
-    )
+  if(IOS)
+    # iOS: build-only target; tests are run on simulator separately
+    add_custom_target(unittest)
+  else()
+    add_custom_target(
+        unittest
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        --build-config $<CONFIGURATION>
+      )
+  endif()
 endif()
 
 # Directories of target output
@@ -458,6 +463,7 @@ set(
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:Clang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:AppleClang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:GNU>:--coverage>>"
+    "$<$<CONFIG:COVERAGE>:-fprofile-update=atomic>"
   )
 
 # C/C++ strict compile flags
@@ -584,9 +590,16 @@ macro(_add_library _NAME _OPTION)
   add_library(
       ${_NAME}_static STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
     )
-  add_library(
-      ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
-    )
+  if(IOS)
+    # iOS: create the main target as static too (no shared libs on iOS)
+    add_library(
+        ${_NAME} STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
+  else()
+    add_library(
+        ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
+  endif()
   add_dependencies(${_NAME} ${_NAME}_static)
   if(NOT MSVC)
     set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
@@ -708,7 +721,7 @@ function(_target_link_libraries _NAME)
     endif()
 
     if(NOT MSVC)
-      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
         list(APPEND LINK_LIBS -Wl,--whole-archive ${LIB} -Wl,--no-whole-archive)
       else()
         list(APPEND LINK_LIBS -Wl,-force_load ${LIB})
@@ -1011,6 +1024,13 @@ function(cc_binary)
   endif()
   add_executable(${CC_ARGS_NAME} ${CC_ARGS_SRCS})
 
+  # iOS: set bundle properties for simulator/device installation
+  if(IOS)
+    set_target_properties(${CC_ARGS_NAME} PROPERTIES
+      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+    )
+  endif()
+
   if(CC_ARGS_PACKED)
     install(
         TARGETS ${CC_ARGS_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -1051,7 +1071,32 @@ function(cc_test)
     string(REPLACE "-" "_" MACRO_PREFIX "${CC_ARGS_NAME}")
     list(APPEND CC_ARGS_DEFS ${MACRO_PREFIX}_VERSION="${CC_ARGS_VERSION}")
   endif()
+  # iOS: add sandbox helper to redirect CWD to writable directory
+  if(IOS)
+    list(APPEND CC_ARGS_SRCS "${PROJECT_ROOT_DIR}/tests/ios_test_sandbox.cc")
+    # Arrow's iOS code references CoreFoundation symbols; link Apple frameworks
+    list(APPEND CC_ARGS_LDFLAGS
+      -framework CoreFoundation
+      -framework CoreGraphics
+      -framework CoreData
+      -framework CoreText
+      -framework Security
+      -framework Foundation
+      -Wl,-U,_MallocExtension_ReleaseFreeMemory
+      -Wl,-U,_ProfilerStart
+      -Wl,-U,_ProfilerStop
+      -Wl,-U,_RegisterThriftProtocol
+    )
+  endif()
+
   add_executable(${CC_ARGS_NAME} EXCLUDE_FROM_ALL ${CC_ARGS_SRCS})
+
+  # iOS: set bundle properties for simulator/device installation
+  if(IOS)
+    set_target_properties(${CC_ARGS_NAME} PROPERTIES
+      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+    )
+  endif()
 
   _cc_target_properties(
       NAME "${CC_ARGS_NAME}"
@@ -2133,7 +2178,7 @@ function(_fetch_content)
 
   set(
       CMAKELISTS_CONTENT
-      "cmake_minimum_required(VERSION 3.1)\n"
+      "cmake_minimum_required(VERSION 3.13)\n"
       "project(${DL_ARGS_NAME})\n"
       "include(ExternalProject)\n"
       "ExternalProject_Add(\n"
