@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
@@ -46,9 +47,7 @@ Index::Pointer create_index(const BaseIndexParam::Pointer &param,
 }
 
 int main() {
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s", index_name.c_str());
-  system(cmd_buf);
+  std::filesystem::remove(index_name);
 
   auto param = HNSWIndexParamBuilder()
                    .WithMetricType(MetricType::kInnerProduct)

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "local_wal_file.h"
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/common/error_code.h"

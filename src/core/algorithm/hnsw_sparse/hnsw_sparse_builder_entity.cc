@@ -170,8 +170,8 @@ int HnswSparseBuilderEntity::get_vector_metas(const node_id_t *ids,
 int HnswSparseBuilderEntity::get_vector_metas(
     const node_id_t *ids, uint32_t count,
     std::vector<IndexStorage::MemoryBlock> &block_vecs) const {
-  const void *vecs[count];
-  get_vector_metas(ids, count, vecs);
+  std::vector<const void *> vecs(count);
+  get_vector_metas(ids, count, vecs.data());
   for (uint32_t i = 0; i < count; ++i) {
     block_vecs.emplace_back(IndexStorage::MemoryBlock((void *)vecs[i]));
   }

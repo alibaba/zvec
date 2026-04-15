@@ -33,3 +33,10 @@ jobs:
       pypi_repository_url: https://test.pypi.org/legacy/
     secrets:
       PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+
+  build_wheels_windows_amd64:
+    name: Build wheels on Windows (amd64) for TestPyPi
+    uses: ./.github/workflows/build_wheel_on_windows.yml
+    with:
+      publish_target: 'testpypi'
+    secrets: inherit

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 from ...common import VectorType
-from . import HnswQueryParam, IVFQueryParam
+from . import HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam
 
 __all__ = ["Query", "VectorQuery"]
 
@@ -56,7 +56,7 @@ class Query:
     field_name: str
     id: Optional[str] = None
     vector: VectorType = None
-    param: Optional[Union[HnswQueryParam, IVFQueryParam]] = None
+    param: Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam]] = None
 
     def has_id(self) -> bool:
         """Check if the query is based on a document ID.

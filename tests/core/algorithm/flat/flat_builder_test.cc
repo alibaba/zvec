@@ -17,6 +17,7 @@
 #include <iostream>
 #include <vector>
 #include <gtest/gtest.h>
+#include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -43,7 +44,7 @@ class FlatBuilderTest : public testing::Test {
   static IndexMeta meta_;
 };
 
-std::string FlatBuilderTest ::dir_("flat_builder_test");
+std::string FlatBuilderTest ::dir_("flat_builder_test/");
 IndexMeta FlatBuilderTest::meta_;
 
 void FlatBuilderTest::SetUp(void) {
@@ -54,9 +55,7 @@ void FlatBuilderTest::SetUp(void) {
 
 //! self-check column-major and row-major search.
 void FlatBuilderTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 void build_process(IndexBuilder::Pointer &builder,
@@ -68,7 +67,7 @@ void build_process(IndexBuilder::Pointer &builder,
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  std::string path = FlatBuilderTest::dir_ + "/TestGeneral";
+  std::string path = FlatBuilderTest::dir_ + "TestGeneral";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -128,7 +127,7 @@ TEST_F(FlatBuilderTest, TestBinaryInvalidColumnMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 }
 
 TEST_F(FlatBuilderTest, TestBuildWithRowMajor) {
@@ -138,7 +137,7 @@ TEST_F(FlatBuilderTest, TestBuildWithRowMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -166,7 +165,7 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithRowMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(DIMENSION);
@@ -195,7 +194,7 @@ TEST_F(FlatBuilderTest, TestBinaryBuildWithRowMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
@@ -223,7 +222,7 @@ TEST_F(FlatBuilderTest, TestBuildWithColumnMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -252,7 +251,7 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithColumnMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder = std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(dim);
   size_t doc_cnt = 128UL;
@@ -280,7 +279,7 @@ TEST_F(FlatBuilderTest, TestBinaryBuildWithColumnMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
@@ -307,7 +306,7 @@ TEST_F(FlatBuilderTest, TestWithRowMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -332,7 +331,7 @@ TEST_F(FlatBuilderTest, TestInt8WithRowMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(DIMENSION);
@@ -358,7 +357,7 @@ TEST_F(FlatBuilderTest, TestBinaryWithRowMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
@@ -383,7 +382,7 @@ TEST_F(FlatBuilderTest, TestWithColumnMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -409,7 +408,7 @@ TEST_F(FlatBuilderTest, TestInt8WithColumnMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder = std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(dim);
   size_t doc_cnt = 128UL;
@@ -434,7 +433,7 @@ TEST_F(FlatBuilderTest, TestBinaryWithColumnMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);

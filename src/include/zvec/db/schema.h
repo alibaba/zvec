@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 #include <zvec/db/index_params.h>
@@ -46,6 +47,9 @@ class FieldSchema {
         nullable_(nullable),
         dimension_(0),
         index_params_(index_params ? index_params->clone() : nullptr) {}
+  FieldSchema(const std::string &name, DataType type, bool nullable,
+              std::nullptr_t)
+      : FieldSchema(name, type, nullable, IndexParams::Ptr(nullptr)) {}
   FieldSchema(const std::string &name, DataType type, uint32_t dimension,
               bool nullable, const IndexParams::Ptr &index_params = nullptr)
       : name_(name),

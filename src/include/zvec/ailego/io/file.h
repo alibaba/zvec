@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/file_helper.h>
 
 namespace zvec {

@@ -392,7 +392,7 @@ TEST_F(IVFSearcherTest, TestSimpleCosine) {
   {
     size_t topk = 33;
     context->set_topk(topk);
-    
+
     std::string new_vec;
     IndexQueryMeta new_meta;
     ASSERT_EQ(0, reformer->convert(query.data(), qmeta, &new_vec, &new_meta));
@@ -3001,7 +3001,7 @@ TEST_F(IVFSearcherTest, TestProvider) {
   } else {
     std::iota(keys.begin(), keys.end(), 0U);
     std::transform(keys.begin(), keys.end(), keys.begin(),
-                   [&](key_t k) { return step * k; });
+                   [&](uint64_t k) { return step * k; });
     if (rand_order) {
       uint32_t seed = Realtime::Seconds();
       std::shuffle(keys.begin(), keys.end(), std::default_random_engine(seed));
@@ -3070,7 +3070,7 @@ TEST_F(IVFSearcherTest, TestProviderInt8) {
   auto holder = make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
       dimension_);
   size_t doc_cnt = 5000UL;
-  std::vector<key_t> keys(doc_cnt);
+  std::vector<uint64_t> keys(doc_cnt);
   srand(Realtime::MilliSeconds());
   bool rand_key = rand() % 2;
   bool rand_order = rand() % 2;
@@ -3086,7 +3086,7 @@ TEST_F(IVFSearcherTest, TestProviderInt8) {
   } else {
     std::iota(keys.begin(), keys.end(), 0U);
     std::transform(keys.begin(), keys.end(), keys.begin(),
-                   [&](key_t k) { return step * k; });
+                   [&](uint64_t k) { return step * k; });
     if (rand_order) {
       uint32_t seed = Realtime::Seconds();
       std::shuffle(keys.begin(), keys.end(), std::default_random_engine(seed));

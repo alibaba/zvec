@@ -49,3 +49,5 @@ yarn-error.log*
 allure-*
 
 !build_android.sh
+!build_ios.sh
+

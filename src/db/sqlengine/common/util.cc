@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "util.h"
+#ifndef _MSC_VER
 #include <sys/time.h>
+#endif
 #include <algorithm>
 #include <cctype>
 #include <iostream>

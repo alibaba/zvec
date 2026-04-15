@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 #include "db/index/column/vector_column/vector_column_params.h"
+#include "tests/test_util.h"
 #include "zvec/ailego/utility/float_helper.h"
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"
@@ -61,9 +62,7 @@ TEST(VectorColumnIndexerTest, General) {
     const std::string index_file_path = "test_indexer.index";
     constexpr idx_t kDocId = 2345;
 
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
 
     // 1. create indexer
     auto indexer = std::make_shared<VectorColumnIndexer>(
@@ -121,15 +120,14 @@ TEST(VectorColumnIndexerTest, General) {
     ASSERT_NEAR(dense_vector[3], 0, 0.1);
 
     // 4. search
-    // https://stackoverflow.com/questions/69009389/how-to-get-away-with-using-designated-initializers-in-c17-or-why-is-it-seemi
     auto query_vector = std::vector<float>{1.0f, 2.0f, 3.0f, 0};
     auto query = vector_column_params::VectorData{
-        vector_column_params::DenseVector{.data = query_vector.data()}};
-    auto indexer_query_params =
-        vector_column_params::QueryParams{.topk = 10,
-                                          .filter = nullptr,
-                                          .fetch_vector = true,
-                                          .query_params = query_params};
+        vector_column_params::DenseVector{query_vector.data()}};
+    vector_column_params::QueryParams indexer_query_params;
+    indexer_query_params.topk = 10;
+    indexer_query_params.filter = nullptr;
+    indexer_query_params.fetch_vector = true;
+    indexer_query_params.query_params = query_params;
     auto results = indexer->Search(query, indexer_query_params);
     ASSERT_TRUE(results.has_value());
 
@@ -173,7 +171,7 @@ TEST(VectorColumnIndexerTest, General) {
 
     indexer->Close();
 
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   func(std::make_shared<FlatIndexParams>(MetricType::IP),
@@ -215,9 +213,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
     constexpr idx_t kDocId = 2345;
     constexpr int dimension = 4;
 
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
 
     // 1. create indexer
     auto indexer = std::make_shared<VectorColumnIndexer>(
@@ -307,12 +303,12 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
                                 buffer.data());
     auto query_vector = buffer;
     auto query = vector_column_params::VectorData{
-        vector_column_params::DenseVector{.data = query_vector.data()}};
-    auto indexer_query_params =
-        vector_column_params::QueryParams{.topk = 10,
-                                          .filter = nullptr,
-                                          .fetch_vector = true,
-                                          .query_params = query_params};
+        vector_column_params::DenseVector{query_vector.data()}};
+    vector_column_params::QueryParams indexer_query_params;
+    indexer_query_params.topk = 10;
+    indexer_query_params.filter = nullptr;
+    indexer_query_params.fetch_vector = true;
+    indexer_query_params.query_params = query_params;
     auto results = indexer->Search(query, indexer_query_params);
     ASSERT_TRUE(results.has_value());
 
@@ -356,7 +352,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeFP16) {
 
     indexer->Close();
 
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   func(std::make_shared<FlatIndexParams>(MetricType::IP),
@@ -372,9 +368,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
     constexpr idx_t kDocId = 2345;
     constexpr int dimension = 4;
 
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
 
     // 1. create indexer
     auto indexer = std::make_shared<VectorColumnIndexer>(
@@ -445,15 +439,14 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
     }
 
     // 4. search
-    // https://stackoverflow.com/questions/69009389/how-to-get-away-with-using-designated-initializers-in-c17-or-why-is-it-seemi
     auto query_vector = std::vector<uint8_t>{1, 2, 3, 0};
     auto query = vector_column_params::VectorData{
-        vector_column_params::DenseVector{.data = query_vector.data()}};
-    auto indexer_query_params =
-        vector_column_params::QueryParams{.topk = 10,
-                                          .filter = nullptr,
-                                          .fetch_vector = true,
-                                          .query_params = query_params};
+        vector_column_params::DenseVector{query_vector.data()}};
+    vector_column_params::QueryParams indexer_query_params;
+    indexer_query_params.topk = 10;
+    indexer_query_params.filter = nullptr;
+    indexer_query_params.fetch_vector = true;
+    indexer_query_params.query_params = query_params;
     auto results = indexer->Search(query, indexer_query_params);
     ASSERT_TRUE(results.has_value());
 
@@ -497,7 +490,7 @@ TEST(VectorColumnIndexerTest, DenseDataTypeINT8) {
 
     indexer->Close();
 
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   func(std::make_shared<FlatIndexParams>(MetricType::IP),
@@ -513,9 +506,7 @@ TEST(VectorColumnIndexerTest, SparseGeneral) {
     const std::string index_file_path = "test_indexer.index";
     constexpr idx_t kDocId = 2345;
 
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
 
     // create indexer
     auto indexer = std::make_shared<VectorColumnIndexer>(
@@ -560,8 +551,10 @@ TEST(VectorColumnIndexerTest, SparseGeneral) {
     auto query =
         vector_column_params::VectorData{vector_column_params::SparseVector{
             kSparseCount, indices.data(), values.data()}};
-    auto query_params = vector_column_params::QueryParams{
-        .topk = 10, .filter = nullptr, .fetch_vector = true};
+    vector_column_params::QueryParams query_params;
+    query_params.topk = 10;
+    query_params.filter = nullptr;
+    query_params.fetch_vector = true;
     auto results = indexer->Search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
@@ -607,7 +600,7 @@ TEST(VectorColumnIndexerTest, SparseGeneral) {
 
     indexer->Close();
 
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   func(std::make_shared<FlatIndexParams>(MetricType::IP));
@@ -623,9 +616,7 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
     const std::string index_file_path = "test_indexer.index";
     constexpr idx_t kDocId = 2345;
 
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
 
     // create indexer
     auto indexer = std::make_shared<VectorColumnIndexer>(
@@ -674,8 +665,10 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
     auto query =
         vector_column_params::VectorData{vector_column_params::SparseVector{
             kSparseCount, indices.data(), values.data()}};
-    auto query_params = vector_column_params::QueryParams{
-        .topk = 10, .filter = nullptr, .fetch_vector = true};
+    vector_column_params::QueryParams query_params;
+    query_params.topk = 10;
+    query_params.filter = nullptr;
+    query_params.fetch_vector = true;
     auto results = indexer->Search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
@@ -721,7 +714,7 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
 
     indexer->Close();
 
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   func(std::make_shared<FlatIndexParams>(MetricType::IP));
@@ -732,9 +725,8 @@ TEST(VectorColumnIndexerTest, Merge) {
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test_indexer.index"};
 
-  auto del_index_file_func = [&](const std::string file_name) {
-    auto cmd_buf = "rm -f " + file_name;
-    system(cmd_buf.c_str());
+  auto del_index_file_func = [](const std::string &file_name) {
+    zvec::test_util::RemoveTestFiles(file_name);
   };
 
   auto create_indexer_func =
@@ -853,8 +845,10 @@ TEST(VectorColumnIndexerTest, Merge) {
         // search with fetch vector
         auto query = vector_column_params::VectorData{
             vector_column_params::DenseVector{vector.data()}};
-        auto query_params = vector_column_params::QueryParams{
-            .topk = 10, .filter = nullptr, .fetch_vector = true};
+        vector_column_params::QueryParams query_params;
+        query_params.topk = 10;
+        query_params.filter = nullptr;
+        query_params.fetch_vector = true;
         auto results = indexer2->Search(query, query_params);
         ASSERT_TRUE(results.has_value());
         auto vector_results =
@@ -999,9 +993,8 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
   constexpr uint32_t kUnitSize = sizeof(float);  // VECTOR_FP32
   const std::string index_name{"test_indexer.index"};
 
-  auto del_index_file_func = [&](const std::string file_name) {
-    auto cmd_buf = "rm -f " + file_name;
-    system(cmd_buf.c_str());
+  auto del_index_file_func = [](const std::string &file_name) {
+    zvec::test_util::RemoveTestFiles(file_name);
   };
 
   auto create_indexer_func =
@@ -1277,9 +1270,7 @@ TEST(VectorColumnIndexerTest, BfPks) {
   auto func = [&](const IndexParams::Ptr index_params) {
     const std::string index_file_path = "test_indexer.index";
 
-    char cmd_buf[100];
-    snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
 
     // 1. create indexer
     auto indexer = std::make_shared<VectorColumnIndexer>(
@@ -1305,14 +1296,14 @@ TEST(VectorColumnIndexerTest, BfPks) {
 
     {
       auto bf_pks = std::vector<uint64_t>{1};
-      auto query =
-          vector_column_params::VectorData{vector_column_params::DenseVector{
-              .data = std::vector<float>{1.0f, 2.0f, 3.0f}.data()}};
-      auto query_params =
-          vector_column_params::QueryParams{.topk = 10,
-                                            .filter = nullptr,
-                                            .fetch_vector = true,
-                                            .bf_pks = {bf_pks}};
+      auto query_vec = std::vector<float>{1.0f, 2.0f, 3.0f};
+      auto query = vector_column_params::VectorData{
+          vector_column_params::DenseVector{query_vec.data()}};
+      vector_column_params::QueryParams query_params;
+      query_params.topk = 10;
+      query_params.filter = nullptr;
+      query_params.fetch_vector = true;
+      query_params.bf_pks = {bf_pks};
       auto results = indexer->Search(query, query_params);
       ASSERT_TRUE(results.has_value());
 
@@ -1334,14 +1325,14 @@ TEST(VectorColumnIndexerTest, BfPks) {
 
     {
       auto bf_pks = std::vector<uint64_t>{1, 2};
-      auto query =
-          vector_column_params::VectorData{vector_column_params::DenseVector{
-              .data = std::vector<float>{1.0f, 2.0f, 3.0f}.data()}};
-      auto query_params =
-          vector_column_params::QueryParams{.topk = 10,
-                                            .filter = nullptr,
-                                            .fetch_vector = true,
-                                            .bf_pks = {bf_pks}};
+      auto query_vec = std::vector<float>{1.0f, 2.0f, 3.0f};
+      auto query = vector_column_params::VectorData{
+          vector_column_params::DenseVector{query_vec.data()}};
+      vector_column_params::QueryParams query_params;
+      query_params.topk = 10;
+      query_params.filter = nullptr;
+      query_params.fetch_vector = true;
+      query_params.bf_pks = {bf_pks};
       auto results = indexer->Search(query, query_params);
       ASSERT_TRUE(results.has_value());
 
@@ -1363,14 +1354,14 @@ TEST(VectorColumnIndexerTest, BfPks) {
 
     {
       auto bf_pks = std::vector<uint64_t>{2};
-      auto query =
-          vector_column_params::VectorData{vector_column_params::DenseVector{
-              .data = std::vector<float>{1.0f, 2.0f, 3.0f}.data()}};
-      auto query_params =
-          vector_column_params::QueryParams{.topk = 10,
-                                            .filter = nullptr,
-                                            .fetch_vector = true,
-                                            .bf_pks = {bf_pks}};
+      auto query_vec = std::vector<float>{1.0f, 2.0f, 3.0f};
+      auto query = vector_column_params::VectorData{
+          vector_column_params::DenseVector{query_vec.data()}};
+      vector_column_params::QueryParams query_params;
+      query_params.topk = 10;
+      query_params.filter = nullptr;
+      query_params.fetch_vector = true;
+      query_params.bf_pks = {bf_pks};
       auto results = indexer->Search(query, query_params);
       ASSERT_TRUE(results.has_value());
 
@@ -1392,7 +1383,7 @@ TEST(VectorColumnIndexerTest, BfPks) {
 
     indexer->Close();
 
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
   };
 
   func(std::make_shared<FlatIndexParams>(MetricType::COSINE));
@@ -1577,14 +1568,12 @@ TEST(VectorColumnIndexerTest, CosineGeneral) {
   const int kDim = 20;
   const int kCount = 20;  // can't set too large, or the qunatization error
                           // will be too large due to float's precision
-  const int kTopk = 10;
+  const uint32_t kTopk = 10;
 
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-  system(cmd_buf);
+  zvec::test_util::RemoveTestFiles(index_file_path);
 
   auto func = [&](const IndexParams::Ptr index_params, DataType data_type) {
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(index_file_path);
     auto indexer = std::make_shared<VectorColumnIndexer>(
         index_file_path,
         FieldSchema("test", data_type, kDim, false, index_params));
@@ -1623,11 +1612,11 @@ TEST(VectorColumnIndexerTest, CosineGeneral) {
           vector_column_params::DenseVector{buffer.data.data()}};
       auto _t = std::make_shared<zvec::HnswQueryParams>(100);
       _t->set_is_linear(true);
-      auto query_params =
-          vector_column_params::QueryParams{.topk = kTopk,
-                                            .filter = nullptr,
-                                            .fetch_vector = true,
-                                            .query_params = _t};
+      vector_column_params::QueryParams query_params;
+      query_params.topk = kTopk;
+      query_params.filter = nullptr;
+      query_params.fetch_vector = true;
+      query_params.query_params = _t;
       auto results = indexer->Search(data, query_params);
       ASSERT_TRUE(results.has_value());
       auto vector_results =
@@ -1725,7 +1714,7 @@ TEST(VectorColumnIndexerTest, CosineGeneral) {
 
 TEST(VectorColumnIndexerTest, Score) {
   const std::string index_file_path = "test_indexer.index";
-  const int kTopk = 10;
+  const uint32_t kTopk = 10;
   constexpr idx_t kDocId1 = 2345;
   constexpr idx_t kDocId2 = 5432;
   auto vector1 = std::vector<float>{3.0f, 4.0f, 5.0f};
@@ -1737,9 +1726,7 @@ TEST(VectorColumnIndexerTest, Score) {
   auto sparse_indices = std::vector<uint32_t>{0, 1, 2};
   auto query_vector = std::vector<float>{1.0f, 2.0f, 3.0f};
 
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-  system(cmd_buf);
+  zvec::test_util::RemoveTestFiles(index_file_path);
 
 
   auto check_score = [&](VectorIndexResults *vector_results,
@@ -1833,9 +1820,11 @@ TEST(VectorColumnIndexerTest, Score) {
                     .ok());
 
     auto query = vector_column_params::VectorData{
-        vector_column_params::DenseVector{.data = query_vector.data()}};
-    auto query_params = vector_column_params::QueryParams{
-        .topk = kTopk, .filter = nullptr, .fetch_vector = true};
+        vector_column_params::DenseVector{query_vector.data()}};
+    vector_column_params::QueryParams query_params;
+    query_params.topk = kTopk;
+    query_params.filter = nullptr;
+    query_params.fetch_vector = true;
     auto results = indexer->Search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
@@ -1884,8 +1873,10 @@ TEST(VectorColumnIndexerTest, Score) {
         vector_column_params::VectorData{vector_column_params::SparseVector{
             3, reinterpret_cast<const void *>(sparse_indices.data()),
             query_vector.data()}};
-    auto query_params = vector_column_params::QueryParams{
-        .topk = 10, .filter = nullptr, .fetch_vector = true};
+    vector_column_params::QueryParams query_params;
+    query_params.topk = 10;
+    query_params.filter = nullptr;
+    query_params.fetch_vector = true;
     auto results = indexer->Search(query, query_params);
     ASSERT_TRUE(results.has_value());
 
@@ -1937,9 +1928,7 @@ TEST(VectorColumnIndexerTest, Failure) {
   constexpr idx_t kDocId = 1234;
   auto vector = std::vector<float>{1.0f, 2.0f, 3.0f};
 
-  char cmd_buf[100];
-  snprintf(cmd_buf, 100, "rm -f %s", index_file_path.c_str());
-  system(cmd_buf);
+  zvec::test_util::RemoveTestFiles(index_file_path);
 
   // Test case 1: Operations on unopened indexer
   {
@@ -1978,9 +1967,11 @@ TEST(VectorColumnIndexerTest, Failure) {
 
     // Test Search on unopened indexer
     auto query = vector_column_params::VectorData{
-        vector_column_params::DenseVector{.data = vector.data()}};
-    auto query_params = vector_column_params::QueryParams{
-        .topk = 10, .filter = nullptr, .fetch_vector = false};
+        vector_column_params::DenseVector{vector.data()}};
+    vector_column_params::QueryParams query_params;
+    query_params.topk = 10;
+    query_params.filter = nullptr;
+    query_params.fetch_vector = false;
     auto search_result = indexer->Search(query, query_params);
     ASSERT_FALSE(search_result.has_value());
     ASSERT_EQ(search_result.error().message(), "Index not opened");
@@ -2115,14 +2106,14 @@ TEST(VectorColumnIndexerTest, Failure) {
 
     // Test search with bf_pks size > 1
     auto query = vector_column_params::VectorData{
-        vector_column_params::DenseVector{.data = vector.data()}};
+        vector_column_params::DenseVector{vector.data()}};
     auto bf_pks1 = std::vector<uint64_t>{1, 2};
     auto bf_pks2 = std::vector<uint64_t>{3, 4};
-    auto query_params =
-        vector_column_params::QueryParams{.topk = 10,
-                                          .filter = nullptr,
-                                          .fetch_vector = false,
-                                          .bf_pks = {bf_pks1, bf_pks2}};
+    vector_column_params::QueryParams query_params;
+    query_params.topk = 10;
+    query_params.filter = nullptr;
+    query_params.fetch_vector = false;
+    query_params.bf_pks = {bf_pks1, bf_pks2};
 
     auto search_result = indexer->Search(query, query_params);
     ASSERT_FALSE(search_result.has_value());
@@ -2304,9 +2295,11 @@ TEST(VectorColumnIndexerTest, Failure) {
   //
   //   // Test search with unsupported index type
   //   auto query = vector_column_params::VectorData{
-  //       vector_column_params::DenseVector{.data = vector.data()}};
-  //   auto query_params = vector_column_params::QueryParams{
-  //       .topk = 10, .filter = nullptr, .fetch_vector = false};
+  //       vector_column_params::DenseVector{vector.data()}};
+  //   vector_column_params::QueryParams query_params;
+  //   query_params.topk = 10;
+  //   query_params.filter = nullptr;
+  //   query_params.fetch_vector = false;
   //
   //   auto search_result = indexer->Search(query, query_params);
   //   ASSERT_FALSE(search_result.has_value());
@@ -2315,16 +2308,15 @@ TEST(VectorColumnIndexerTest, Failure) {
   //   indexer->Close();
   // }
 
-  system(cmd_buf);
+  zvec::test_util::RemoveTestFiles(index_file_path);
 }
 
 TEST(VectorColumnIndexerTest, CosineMerge) {
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test_indexer.index"};
 
-  auto del_index_file_func = [&](const std::string file_name) {
-    auto cmd_buf = "rm -f " + file_name;
-    system(cmd_buf.c_str());
+  auto del_index_file_func = [](const std::string &file_name) {
+    zvec::test_util::RemoveTestFiles(file_name);
   };
 
   auto create_indexer_func =
@@ -2464,8 +2456,10 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
         // search with fetch vector
         auto query = vector_column_params::VectorData{
             vector_column_params::DenseVector{vector.data()}};
-        auto query_params = vector_column_params::QueryParams{
-            .topk = 10, .filter = nullptr, .fetch_vector = true};
+        vector_column_params::QueryParams query_params;
+        query_params.topk = 10;
+        query_params.filter = nullptr;
+        query_params.fetch_vector = true;
         auto results = indexer2->Search(query, query_params);
         ASSERT_TRUE(results.has_value());
         auto vector_results =
@@ -2572,11 +2566,10 @@ TEST(VectorColumnIndexerTest, Refiner) {
   const int kDim = 20;
   const int kCount = 20;  // can't set too large, or the qunatization error
                           // will be too large due to float's precision
-  const int kTopk = 10;
+  const uint32_t kTopk = 10;
 
-  auto del_index_file_func = [&](const std::string &file_name) {
-    auto cmd_buf = "rm -f " + file_name;
-    system(cmd_buf.c_str());
+  auto del_index_file_func = [](const std::string &file_name) {
+    zvec::test_util::RemoveTestFiles(file_name);
   };
 
   auto create_indexer_func =
@@ -2623,15 +2616,14 @@ TEST(VectorColumnIndexerTest, Refiner) {
       auto data = vector_column_params::VectorData{
           vector_column_params::DenseVector{buffer.data.data()}};
       ;
-      auto query_params = vector_column_params::QueryParams{
-          .topk = kTopk,
-          .filter = nullptr,
-          .fetch_vector = true,
-          .query_params = std::make_shared<zvec::HnswQueryParams>(100),
-          .refiner_param = std::make_shared<vector_column_params::RefinerParam>(
-              vector_column_params::RefinerParam{
-                  .scale_factor_ = 10,
-                  .reference_indexer = reference_indexer})};
+      vector_column_params::QueryParams query_params;
+      query_params.topk = kTopk;
+      query_params.filter = nullptr;
+      query_params.fetch_vector = true;
+      query_params.query_params = std::make_shared<zvec::HnswQueryParams>(100);
+      query_params.refiner_param =
+          std::make_shared<vector_column_params::RefinerParam>(
+              vector_column_params::RefinerParam{10, reference_indexer});
       auto results = indexer->Search(data, query_params);
       ASSERT_TRUE(results.has_value());
       auto vector_results =

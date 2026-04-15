@@ -1,0 +1,25 @@
+diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+--- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
++++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+@@ -862,10 +862,18 @@
+ foreach(CONFIG DEBUG MINSIZEREL RELEASE RELWITHDEBINFO)
+   set(EP_CXX_FLAGS_${CONFIG} "${CMAKE_CXX_FLAGS_${CONFIG}}")
+   set(EP_C_FLAGS_${CONFIG} "${CMAKE_C_FLAGS_${CONFIG}}")
+-  if(CONFIG STREQUAL DEBUG)
+-    set(EP_MSVC_RUNTIME_LIBRARY MultiThreadedDebugDLL)
++  if(ARROW_USE_STATIC_CRT)
++    if(CONFIG STREQUAL DEBUG)
++      set(EP_MSVC_RUNTIME_LIBRARY MultiThreadedDebug)
++    else()
++      set(EP_MSVC_RUNTIME_LIBRARY MultiThreaded)
++    endif()
+   else()
+-    set(EP_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
++    if(CONFIG STREQUAL DEBUG)
++      set(EP_MSVC_RUNTIME_LIBRARY MultiThreadedDebugDLL)
++    else()
++      set(EP_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
++    endif()
+   endif()
+   string(APPEND EP_CXX_FLAGS_${CONFIG}
+          " ${CMAKE_CXX_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_${EP_MSVC_RUNTIME_LIBRARY}}")

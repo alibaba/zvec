@@ -3,13 +3,27 @@ name: Main
 on:
   push:
     branches: [ "main" ]
-    paths-ignore:
+    paths-ignore: &paths-ignore
       - '**.md'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/auto-assign-config.yml'
+      - '.github/codecov.yml'
+      - '.github/dependabot.yml'
+      - '.github/workflows/auto-assign.yml'
+      - '.github/workflows/community-pr-handler.yml'
+      - '.github/workflows/issue-auto-assign.yml'
+      - '.github/workflows/build_wheel.yml'
+      - '.github/workflows/build_test_wheel.yml'
+      - '.github/workflows/_build_wheel_job.yml'
+      - '.github/workflows/continuous_bench.yml'
+      - '.github/workflows/nightly_coverage.yml'
+      - '.github/workflows/docker/**'
+      - '.github/workflows/scripts/**'
   merge_group:
   pull_request:
     branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
+    paths-ignore: *paths-ignore
   workflow_dispatch:
 
 concurrency:
@@ -22,6 +36,10 @@ permissions:
 jobs:
   # Code quality checks (fast, run first)
   lint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !contains(github.event.pull_request.title, 'wip'))
     uses: ./.github/workflows/02-lint-check.yml
 
   # Main build and test matrix
@@ -70,3 +88,13 @@ jobs:
     name: Build & Test (android)
     needs: lint
     uses: ./.github/workflows/04-android-build.yml
+
+  build-and-test-on-windows:
+    name: Build & Test (Windows)
+    needs: lint
+    uses: ./.github/workflows/05-windows-build.yml
+
+  build-ios:
+    name: Build & Test (iOS)
+    needs: lint
+    uses: ./.github/workflows/06-ios-build.yml

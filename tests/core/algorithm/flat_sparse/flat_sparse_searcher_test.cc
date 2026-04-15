@@ -20,6 +20,7 @@
 #include <ailego/utility/math_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include "tests/test_util.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_meta.h"
 
@@ -87,15 +88,11 @@ void FlatSparseSearcherTest::SetUp(void) {
                                       IndexMeta::DataType::DT_FP32));
   index_meta_ptr_->set_metric("InnerProductSparse", 0, Params());
 
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 void FlatSparseSearcherTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 TEST_F(FlatSparseSearcherTest, TestGeneral) {
@@ -104,7 +101,7 @@ TEST_F(FlatSparseSearcherTest, TestGeneral) {
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_TRUE(storage != nullptr);
   ASSERT_EQ(0, storage->init(stg_params));
-  ASSERT_EQ(0, storage->open(dir_ + "/TestGeneral", true));
+  ASSERT_EQ(0, storage->open(dir_ + "TestGeneral", true));
 
 
   // init streamer
@@ -165,7 +162,7 @@ TEST_F(FlatSparseSearcherTest, TestGeneral) {
   }
 
   // test dump
-  auto path = dir_ + "/TestGeneral_dump";
+  auto path = dir_ + "TestGeneral_dump";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
   ASSERT_EQ(0, dumper->create(path));
@@ -215,7 +212,7 @@ TEST_F(FlatSparseSearcherTest, TestStreamerDump) {
   Params stg_params;
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, storage->init(stg_params));
-  ASSERT_EQ(0, storage->open(dir_ + "/TestStreamerDump.index", true));
+  ASSERT_EQ(0, storage->open(dir_ + "TestStreamerDump.index", true));
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
@@ -236,7 +233,7 @@ TEST_F(FlatSparseSearcherTest, TestStreamerDump) {
                                     sparse_vec_list[i].data(), qmeta, ctx));
   }
 
-  auto path = dir_ + "/TestStreamerDump";
+  auto path = dir_ + "TestStreamerDump";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
   ASSERT_EQ(0, dumper->create(path));
@@ -301,7 +298,7 @@ TEST_F(FlatSparseSearcherTest, TestLoadClose) {
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_TRUE(storage != nullptr);
   ASSERT_EQ(0, storage->init(stg_params));
-  ASSERT_EQ(0, storage->open(dir_ + "/TestGeneral", true));
+  ASSERT_EQ(0, storage->open(dir_ + "TestGeneral", true));
 
 
   // init streamer
@@ -362,7 +359,7 @@ TEST_F(FlatSparseSearcherTest, TestLoadClose) {
   }
 
   // test dump
-  auto path = dir_ + "/TestGeneral_dump";
+  auto path = dir_ + "TestGeneral_dump";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
   ASSERT_EQ(0, dumper->create(path));
@@ -420,7 +417,7 @@ TEST_F(FlatSparseSearcherTest, TestSearch) {
   Params stg_params;
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, storage->init(stg_params));
-  ASSERT_EQ(0, storage->open(dir_ + "/TestLinearSearch.index", true));
+  ASSERT_EQ(0, storage->open(dir_ + "TestLinearSearch.index", true));
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
@@ -442,7 +439,7 @@ TEST_F(FlatSparseSearcherTest, TestSearch) {
   }
 
   // test dump
-  auto path = dir_ + "/TestGeneral_dump";
+  auto path = dir_ + "TestGeneral_dump";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
   ASSERT_EQ(0, dumper->create(path));
@@ -514,7 +511,7 @@ TEST_F(FlatSparseSearcherTest, TestSearchPKeys) {
   Params stg_params;
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, storage->init(stg_params));
-  ASSERT_EQ(0, storage->open(dir_ + "/TestLinearSearchByKeys.index", true));
+  ASSERT_EQ(0, storage->open(dir_ + "TestLinearSearchByKeys.index", true));
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
   ASSERT_EQ(0, streamer->open(storage));
 
@@ -542,7 +539,7 @@ TEST_F(FlatSparseSearcherTest, TestSearchPKeys) {
   }
 
   // test dump
-  auto path = dir_ + "/TestGeneral_dump";
+  auto path = dir_ + "TestGeneral_dump";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
   ASSERT_EQ(0, dumper->create(path));
@@ -727,7 +724,7 @@ TEST_F(FlatSparseSearcherTest, TestMultiThread) {
   ASSERT_EQ(2999, max);
 
   // test dump
-  auto path = dir_ + "/TestGeneral_dump";
+  auto path = dir_ + "TestGeneral_dump";
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
   ASSERT_EQ(0, dumper->create(path));

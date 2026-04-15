@@ -18,7 +18,7 @@
 
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/common.h"
-#if defined(__AVX512VNNI__)
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
 #endif
 
@@ -38,7 +38,7 @@ namespace zvec::turbo::avx512_vnni {
 
 void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
                                      float *distance) {
-#if defined(__AVX512VNNI__)
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
   const int original_dim = dim - 20;
   if (original_dim <= 0) {
     return;
@@ -77,7 +77,7 @@ void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
 void squared_euclidean_int8_batch_distance(const void *const *vectors,
                                            const void *query, size_t n,
                                            size_t dim, float *distances) {
-#if defined(__AVX512VNNI__)
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
   const int original_dim = dim - 20;
   if (original_dim <= 0) {
     return;
@@ -123,7 +123,7 @@ void squared_euclidean_int8_batch_distance(const void *const *vectors,
 }
 
 void squared_euclidean_int8_query_preprocess(void *query, size_t dim) {
-#if defined(__AVX512VNNI__)
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
   const int original_dim = static_cast<int>(dim) - 20;
   if (original_dim <= 0) {
     return;

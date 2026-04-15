@@ -1,0 +1,250 @@
+name: Build and Test PyPi Wheels on Windows
+
+on:
+  workflow_call:
+    inputs:
+      publish_target:
+        description: 'Publish Destination'
+        required: true
+        default: 'testpypi'
+        type: string
+  workflow_dispatch:
+    inputs:
+      publish_target:
+        description: 'Publish Destination'
+        required: true
+        default: 'testpypi'
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compute_matrix:
+    name: Determine matrix to run on
+    runs-on: linux_x64
+    outputs:
+      matrix: ${{ steps.main.outputs.matrix }}
+    steps:
+      - id: main
+        run: |
+          PLATFORMS=("windows-g9i" "windows-2025" "windows-2022")
+          PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
+          
+          JSON_ARRAY="["
+          for p in "${PLATFORMS[@]}"; do
+          for v in "${PYTHON_VERSIONS[@]}"; do
+          JSON_ARRAY+="{\"platform\":\"$p\",\"python-version\":\"$v\"},"
+          done
+          done
+          # Remove the trailing comma and close the bracket
+          JSON_ARRAY="${JSON_ARRAY%,}]"
+          
+          # Wrap in the "include" key and send to GITHUB_OUTPUT
+          RESULT="{\"include\":$JSON_ARRAY}"
+          echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
+
+  build_wheels_windows_2025:
+    name: Build wheels on windows-2025 (x64)
+    runs-on: windows-g9i
+    outputs:
+      zvec_version: ${{ steps.log_vars.outputs.zvec_version }}
+
+    steps:
+      - name: Show env info
+        run: |
+          Get-CimInstance -ClassName Win32_Processor
+          where cl
+          & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -prerelease -format json
+        shell: powershell
+
+      - name: Enable git long paths
+        shell: powershell
+        run: git config --global core.longpaths true
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Cleanup left marker files
+        run: |
+          git submodule foreach --recursive 'git reset --hard && git clean -ffdx'
+
+      - name: Set up Python (for cibuildwheel controller)
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Add Git bin to PATH
+        run: echo "C:\Program Files\Git\usr\bin" >> $env:GITHUB_PATH
+        shell: powershell
+
+      #      - name: Cache built wheels
+      #        id: cache-wheels
+      #        uses: actions/cache@v4
+      #        with:
+      #          path: wheelhouse
+      #          key: ${{ runner.os }}-wheels-${{ hashFiles('**/pyproject.toml', '**/setup.py', '**/*.py', '**/*.c', '**/*.cpp') }}
+
+      - name: Build wheels using cibuildwheel
+        # if: steps.cache-wheels.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          # 1. Generate and capture the version from setuptools_scm
+          pip install --upgrade pip
+          pip install cibuildwheel==3.4.0
+          pip install setuptools-scm>=8.0
+          
+          $SCM_VERSION = python -m setuptools_scm
+          echo "Detected Version: $SCM_VERSION"
+          
+          # 2. Set it as an environment variable for the current shell and subsequent steps
+          $env:SETUPTOOLS_SCM_PRETEND_VERSION = $SCM_VERSION
+          
+          # 3. Run cibuildwheel
+          python -m cibuildwheel --output-dir wheelhouse
+
+      - name: Install and test wheel
+        shell: powershell
+        run: |
+          $wheels = (Get-ChildItem wheelhouse/zvec-*.whl)[1] # cp311
+          $wheelPath = $wheels.FullName
+
+          python -m venv test_env
+          $venvPython = "test_env/Scripts/python.exe"
+          & $venvPython -m pip install --upgrade pip
+          & $venvPython -m pip install $wheelPath
+          & $venvPython -c "import zvec; print('Import OK:', zvec.__version__)"
+
+      - name: Log wheel variables
+        id: log_vars
+        shell: powershell
+        run: |
+          $wheels = Get-ChildItem wheelhouse/*.whl | Select-Object -ExpandProperty FullName
+          
+          # Extract zvec version from wheel filename
+          $wheel = Get-ChildItem wheelhouse/zvec-*.whl | Select-Object -First 1
+          $filename = $wheel.Name
+          $version = [regex]::Match($filename, '^zvec-([^-]+)-').Groups[1].Value
+          
+          Write-Host "Detected zvec version: $version"
+          
+          # Output version for job outputs
+          "zvec_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          
+          if ($env:GITHUB_STEP_SUMMARY) {
+            "Wheel files:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            $wheels | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "zvec version: $version" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+          
+          "wheels=$($wheels -join ' ')" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload built wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-wheels
+          path: wheelhouse/*.whl
+
+  publish_wheels:
+    name: Publish wheels
+    runs-on: windows-g9i
+    needs: build_wheels_windows_2025
+
+    steps:
+      - name: Download built wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-wheels
+          path: wheelhouse/
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Publish to PyPI/TestPyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ inputs.publish_target == 'pypi' && secrets.PYPI_API_TOKEN || secrets.TEST_PYPI_API_TOKEN }}
+          TWINE_REPOSITORY_URL: ${{ inputs.publish_target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+        run: |
+          pip install twine
+          twine upload --skip-existing --verbose wheelhouse/*.whl
+
+  smoke_test:
+    needs: [ publish_wheels, compute_matrix, build_wheels_windows_2025 ]
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.compute_matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Smoke test from PyPI
+        shell: powershell
+        env:
+          PUBLISH_TARGET: ${{ inputs.publish_target || 'testpypi' }}
+          ZVEC_VERSION: ${{ needs.build_wheels_windows_2025.outputs.zvec_version }}
+        run: |
+          # Check if version is empty
+          if ([string]::IsNullOrWhiteSpace($env:ZVEC_VERSION)) {
+            Write-Host "ERROR: ZVEC_VERSION is empty or not set. Cannot proceed with smoke test."
+            exit 1
+          }
+          
+          $version = $env:ZVEC_VERSION
+          Write-Host "Using zvec version from build job: $version"
+
+          if ($env:PUBLISH_TARGET -eq 'testpypi') {
+            $indexArgs = @("--index-url", "https://test.pypi.org/simple/", "--extra-index-url", "https://pypi.org/simple/")
+            Write-Host "Waiting for zvec==$version to become available on TestPyPI..."
+          } else {
+            $indexArgs = @()
+            Write-Host "Waiting for zvec==$version to become available on PyPI..."
+          }
+
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $found = $false
+          for ($i = 1; $i -le 30; $i++) {
+            python -m pip install --force-reinstall @indexArgs --dry-run "zvec==$version"
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Version $version is available."
+              $found = $true
+              break
+            }
+            Write-Host "Attempt $i/30: not yet available, retrying in 10s..."
+            Start-Sleep -Seconds 10
+          }
+
+          if (-not $found) {
+            Write-Host "ERROR: Timed out waiting for zvec==$version."
+            exit 1
+          }
+
+          python -m venv test_env
+          $venvPython = "test_env/Scripts/python.exe"
+          & $venvPython -m pip install --upgrade pip
+          & $venvPython -m pip install --force-reinstall @indexArgs "zvec==$version"
+          & $venvPython -c "import zvec; print('Import OK:', zvec.__version__)"

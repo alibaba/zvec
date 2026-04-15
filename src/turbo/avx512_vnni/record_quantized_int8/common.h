@@ -22,10 +22,16 @@
 
 #pragma once
 
-#if defined(__AVX512VNNI__)
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
 #include <array>
 #include <cstdint>
+
+#ifdef _MSC_VER
+#define TURBO_ALWAYS_INLINE __forceinline
+#else
+#define TURBO_ALWAYS_INLINE __attribute__((always_inline))
+#endif
 
 namespace zvec::turbo::avx512_vnni::internal {
 
@@ -42,8 +48,9 @@ static inline int32_t HorizontalAdd_INT32_V256(__m256i v) {
 // Compute the raw integer inner product of two int8 vectors of length `size`.
 // The result is written to `*distance` as a float.
 // Both `a` and `b` must point to int8_t arrays.
-static __attribute__((always_inline)) void ip_int8_avx512_vnni(
-    const void *a, const void *b, size_t size, float *distance) {
+static TURBO_ALWAYS_INLINE void ip_int8_avx512_vnni(const void *a,
+                                                    const void *b, size_t size,
+                                                    float *distance) {
   const __m256i ONES_INT16_AVX = _mm256_set1_epi32(0x00010001);
   const __m128i ONES_INT16_SSE = _mm_set1_epi32(0x00010001);
 
@@ -212,7 +219,7 @@ static __attribute__((always_inline)) void ip_int8_avx512_vnni(
 // Shift the first `original_dim` bytes of `query` in-place from int8 to uint8
 // by adding 128 to each element. The metadata tail beyond `original_dim` is
 // left untouched. This prepares the query for use with dpbusd (uint8 * int8).
-static __attribute__((always_inline)) void shift_int8_to_uint8_avx512(
+static TURBO_ALWAYS_INLINE void shift_int8_to_uint8_avx512(
     void *query, size_t original_dim) {
   const int8_t *input = reinterpret_cast<const int8_t *>(query);
   uint8_t *output = reinterpret_cast<uint8_t *>(query);
@@ -237,7 +244,7 @@ static __attribute__((always_inline)) void shift_int8_to_uint8_avx512(
 // single query. Uses AVX512-VNNI dpbusd instruction.
 // `query` is treated as uint8 (preprocessed), `vectors[i]` as int8.
 template <size_t batch_size>
-__attribute__((always_inline)) void ip_int8_batch_avx512_vnni_impl(
+TURBO_ALWAYS_INLINE void ip_int8_batch_avx512_vnni_impl(
     const void *query, const void *const *vectors,
     const std::array<const void *, batch_size> &prefetch_ptrs,
     size_t dimensionality, float *distances) {
@@ -282,7 +289,7 @@ __attribute__((always_inline)) void ip_int8_batch_avx512_vnni_impl(
 }
 
 // Dispatch batched inner product over all `n` vectors with prefetching.
-static __attribute__((always_inline)) void ip_int8_batch_avx512_vnni(
+static TURBO_ALWAYS_INLINE void ip_int8_batch_avx512_vnni(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances) {
   static constexpr size_t batch_size = 2;
@@ -309,4 +316,5 @@ static __attribute__((always_inline)) void ip_int8_batch_avx512_vnni(
 
 }  // namespace zvec::turbo::avx512_vnni::internal
 
-#endif  // defined(__AVX512VNNI__)
+#endif  // defined(__AVX512VNNI__) || (defined(_MSC_VER) &&
+        // defined(__AVX512F__))

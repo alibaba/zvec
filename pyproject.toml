@@ -130,7 +130,7 @@ BUILD_PYTHON_BINDINGS = "ON"
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
 version_scheme = "guess-next-dev"
-fallback_version = "0.2.1b1"
+fallback_version = "0.0.0"
 ######################################################################################################
 # TESTING & QUALITY
 ######################################################################################################
@@ -186,6 +186,17 @@ archs = ["arm64"]
 # Inherits CMAKE_GENERATOR and CMAKE_BUILD_PARALLEL_LEVEL from [tool.cibuildwheel] won't work;
 # platform-level environment overrides the top-level entirely, so all vars must be listed here
 environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16", MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.cibuildwheel.windows]
+archs = ["auto64"]
+test-command = "cd /d {project} && pytest python/tests -v --tb=short --basetemp=./.pytest_tmp"
+environment = { CMAKE_GENERATOR = "Ninja" }
+#config-settings = { build-dir = "build/{wheel_tag}" }
+#&& if exist .pytest_tmp rmdir /s /q .pytest_tmp"
+before-build = [
+    "python -c \"import shutil, glob, os; [shutil.rmtree(p, ignore_errors=True) for p in ['build', '.pytest_tmp']];\""
+]
+
 ######################################################################################################
 # CODE QUALITY & FORMATTING (Ruff)
 ######################################################################################################

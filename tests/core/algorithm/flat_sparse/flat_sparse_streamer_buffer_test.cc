@@ -22,6 +22,7 @@
 #include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "tests/test_util.h"
 
 using namespace std;
 using namespace testing;
@@ -86,15 +87,11 @@ void FlatSparseStreamerTest::SetUp(void) {
                                                 IndexMeta::DataType::DT_FP32));
   index_meta_ptr_->set_metric("InnerProductSparse", 0, ailego::Params());
 
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 void FlatSparseStreamerTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 TEST_F(FlatSparseStreamerTest, TestGeneral) {
@@ -113,7 +110,7 @@ TEST_F(FlatSparseStreamerTest, TestGeneral) {
   ailego::Params stg_params;
   auto write_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, write_storage->init(stg_params));
-  ASSERT_EQ(0, write_storage->open(dir_ + "/Test/FlatSparseSearch", true));
+  ASSERT_EQ(0, write_storage->open(dir_ + "Test/FlatSparseSearch", true));
   ASSERT_EQ(0, write_streamer->init(index_meta, params));
   ASSERT_EQ(0, write_streamer->open(write_storage));
 
@@ -137,6 +134,8 @@ TEST_F(FlatSparseStreamerTest, TestGeneral) {
   write_streamer->flush(0UL);
   write_streamer->close();
   write_streamer.reset();
+  write_storage->close();
+  write_storage.reset();
 
   IndexStreamer::Pointer read_streamer =
       IndexFactory::CreateStreamer("FlatSparseStreamer");
@@ -144,7 +143,7 @@ TEST_F(FlatSparseStreamerTest, TestGeneral) {
   auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, read_storage);
   ASSERT_EQ(0, read_storage->init(stg_params));
-  ASSERT_EQ(0, read_storage->open(dir_ + "/Test/FlatSparseSearch", false));
+  ASSERT_EQ(0, read_storage->open(dir_ + "Test/FlatSparseSearch", false));
   ASSERT_EQ(0, read_streamer->open(read_storage));
 
   auto linearCtx = read_streamer->create_context();
