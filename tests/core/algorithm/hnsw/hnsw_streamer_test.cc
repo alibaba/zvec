@@ -2772,7 +2772,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt8Converter) {
   for (size_t i = 0; i < cnt; i++) {
     float add_on = i * 10;
     for (size_t j = 0; j < dim; ++j) {
-      if (j < dim / 4)
+      if (j < 3 * dim / 4)
         vec[j] = fixed_value;
       else
         vec[j] = fixed_value + add_on;
@@ -2812,7 +2812,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt8Converter) {
   for (size_t i = 0; i < query_cnt; i++) {
     float add_on = i * 10;
     for (size_t j = 0; j < dim; ++j) {
-      if (j < dim / 4)
+      if (j < 3 * dim / 4)
         vec[j] = fixed_value;
       else
         vec[j] = fixed_value + add_on;
