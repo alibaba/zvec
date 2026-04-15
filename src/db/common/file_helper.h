@@ -15,13 +15,11 @@
 
 #include <stdint.h>
 #include <cstdint>
-#include <filesystem>
 #include <string>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
 
-namespace fs = std::filesystem;
 namespace zvec {
 
 /*
