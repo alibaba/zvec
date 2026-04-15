@@ -1,6 +1,12 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
+# Crash recovery tests rely on fork()+execvp()+kill() to spawn helper processes
+# and simulate crashes. These POSIX process APIs are prohibited on iOS.
+if(IOS)
+  return()
+endif()
+
 if(APPLE)
   set(APPLE_FRAMEWORK_LIBS
     -framework CoreFoundation

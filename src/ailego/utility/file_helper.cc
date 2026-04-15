@@ -297,7 +297,11 @@ bool FileHelper::MakePath(const char *path) {
     // Neither root nor double slash in path
     if (sp != pp) {
       *sp = '\0';
-      if (!CreateDirectoryA(pathbuf, nullptr) &&
+      // Skip Windows drive roots like "C:" — CreateDirectoryA on a bare drive
+      // letter returns ERROR_ACCESS_DENIED (not ERROR_ALREADY_EXISTS), which
+      // would cause MakePath to fail even when all parent dirs already exist.
+      bool is_drive_root = (sp - pathbuf == 2 && pathbuf[1] == ':');
+      if (!is_drive_root && !CreateDirectoryA(pathbuf, nullptr) &&
           GetLastError() != ERROR_ALREADY_EXISTS) {
         return false;
       }

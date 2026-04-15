@@ -1,0 +1,158 @@
+name: iOS Cross Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: SIMULATORARM64
+            arch: arm64
+            sdk: iphonesimulator
+            test_on_simulator: true
+          - platform: OS
+            arch: arm64
+            sdk: iphoneos
+            test_on_simulator: false
+
+    name: iOS (${{ matrix.platform }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Cache host protoc build
+        uses: actions/cache@v5
+        with:
+          path: build_host
+          key: macos-host-protoc-${{ hashFiles('src/**', 'CMakeLists.txt') }}
+          restore-keys: |
+            macos-host-protoc-
+
+      - name: Build host protoc
+        run: |
+          if [ ! -f "build_host/bin/protoc" ]; then
+            cmake -S . -B build_host -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            cmake --build build_host --target protoc --parallel $(sysctl -n hw.ncpu)
+          else
+            echo "Using cached host protoc"
+          fi
+
+      - name: Cache iOS build
+        uses: actions/cache@v5
+        with:
+          path: build_ios_${{ matrix.platform }}
+          key: ios-build-${{ matrix.platform }}-${{ hashFiles('src/**', 'CMakeLists.txt', 'cmake/**', 'thirdparty/**') }}
+
+      - name: Configure and Build
+        run: |
+          git submodule foreach --recursive 'git stash --include-untracked' || true
+
+          SDK_PATH=$(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path)
+          NPROC=$(sysctl -n hw.ncpu)
+
+          cmake -S . -B build_ios_${{ matrix.platform }} \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="13.0" \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+            -DCMAKE_OSX_SYSROOT="$SDK_PATH" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_TOOLS=OFF \
+            -DCMAKE_INSTALL_PREFIX="./install" \
+            -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc" \
+            -DIOS=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+          cmake --build build_ios_${{ matrix.platform }} --parallel $NPROC
+
+      - name: Build test targets
+        if: matrix.test_on_simulator
+        run: |
+          NPROC=$(sysctl -n hw.ncpu)
+          cmake --build build_ios_${{ matrix.platform }} --target unittest --parallel $NPROC
+
+      - name: Boot iOS Simulator
+        if: matrix.test_on_simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j \
+            | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in data['devices'].items():
+              if 'iOS' in runtime:
+                  for d in devices:
+                      if 'iPhone' in d['name'] and d['isAvailable']:
+                          print(d['udid'])
+                          sys.exit(0)
+          sys.exit(1)
+          ")
+          echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
+          xcrun simctl boot "$DEVICE_ID"
+          echo "Booted simulator: $DEVICE_ID"
+
+      - name: Run all tests on simulator
+        if: matrix.test_on_simulator
+        run: |
+          FAILED_TESTS=""
+          PASSED=0
+          TOTAL=0
+
+          for APP in build_ios_${{ matrix.platform }}/bin/*_test.app; do
+            [ -d "$APP" ] || continue
+            TEST_NAME=$(basename "$APP" .app)
+            BUNDLE_ID="com.zvec.${TEST_NAME}"
+            TOTAL=$((TOTAL + 1))
+
+            echo "::group::Running ${TEST_NAME}"
+            xcrun simctl install "$DEVICE_ID" "$APP"
+            set +eo pipefail
+            for attempt in 1 2 3; do
+              xcrun simctl launch --console "$DEVICE_ID" "$BUNDLE_ID" 2>&1 | tee /tmp/${TEST_NAME}.log
+              LAUNCH_EXIT=${PIPESTATUS[0]}
+              if ! grep -q "unknown to FrontBoard" /tmp/${TEST_NAME}.log; then
+                break
+              fi
+              echo "::warning::Attempt ${attempt}/3: FrontBoard has not registered ${TEST_NAME} yet, retrying in 3s..."
+              sleep 3
+            done
+            set -eo pipefail
+
+            if grep -q '\[  FAILED  \]' /tmp/${TEST_NAME}.log; then
+              echo "::error::${TEST_NAME} has failing tests"
+              FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
+            elif grep -q '\[  PASSED  \]' /tmp/${TEST_NAME}.log; then
+              PASSED=$((PASSED + 1))
+            elif grep -qE 'Failed: 0$' /tmp/${TEST_NAME}.log; then
+              # c_api_test uses a custom test framework (not GTest)
+              PASSED=$((PASSED + 1))
+            elif [ "$LAUNCH_EXIT" -eq 0 ]; then
+              echo "::warning::${TEST_NAME} exited 0 but produced no recognisable test summary"
+              PASSED=$((PASSED + 1))
+            else
+              echo "::error::${TEST_NAME} exited ${LAUNCH_EXIT} with no test summary"
+              FAILED_TESTS="${FAILED_TESTS} ${TEST_NAME}"
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "Test summary: ${PASSED}/${TOTAL} passed"
+          if [ -n "$FAILED_TESTS" ]; then
+            echo "::error::Failed tests:${FAILED_TESTS}"
+            exit 1
+          fi
+
+      - name: Shutdown Simulator
+        if: matrix.test_on_simulator && always()
+        run: |
+          xcrun simctl shutdown "$DEVICE_ID" || true

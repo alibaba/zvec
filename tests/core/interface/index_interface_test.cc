@@ -1348,12 +1348,11 @@ TEST(IndexInterface, Score) {
 TEST(IndexInterface, HNSWRabitqGeneral) {
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test_rabitq.index"};
-  char cmd_buf[256];
-  snprintf(cmd_buf, sizeof(cmd_buf), "rm -f %s*", index_name.c_str());
+  const std::string cleanup_pattern = index_name + "*";
 
   auto func = [&](const BaseIndexParam::Pointer &param,
                   const BaseIndexQueryParam::Pointer &query_param) {
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(cleanup_pattern);
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
 
@@ -1376,7 +1375,7 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
 
     // Fetch is meaningless for HNSWRabitq
     index->Close();
-    system(cmd_buf);
+    zvec::test_util::RemoveTestFiles(cleanup_pattern);
   };
 
   using namespace zvec::core;

@@ -1,0 +1,29 @@
+diff --git a/port/port_posix.h b/port/port_posix.h
+index 1234567..abcdefg 100644
+--- a/port/port_posix.h
++++ b/port/port_posix.h
+@@ -58,6 +58,15 @@
+ #include <limits>
+ #include <string>
+ 
++// iOS/macOS endianness detection
++#if defined(__APPLE__)
++#include <machine/endian.h>
++#if !defined(__BYTE_ORDER) && defined(BYTE_ORDER)
++#define __BYTE_ORDER BYTE_ORDER
++#define __LITTLE_ENDIAN LITTLE_ENDIAN
++#endif
++#endif
++
+ #ifndef PLATFORM_IS_LITTLE_ENDIAN
+ #define PLATFORM_IS_LITTLE_ENDIAN (__BYTE_ORDER == __LITTLE_ENDIAN)
+ #endif
+@@ -65,7 +74,7 @@
+ 
+ #if defined(OS_MACOSX) || defined(OS_SOLARIS) || defined(OS_FREEBSD) ||      \
+     defined(OS_NETBSD) || defined(OS_OPENBSD) || defined(OS_DRAGONFLYBSD) || \
+-    defined(OS_ANDROID) || defined(CYGWIN) || defined(OS_AIX)
++    defined(OS_ANDROID) || defined(CYGWIN) || defined(OS_AIX) || (defined(__APPLE__) && !defined(OS_MACOSX))
+ // Use fread/fwrite/fflush on platforms without _unlocked variants
+ #define fread_unlocked fread
+ #define fwrite_unlocked fwrite

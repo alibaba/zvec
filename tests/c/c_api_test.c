@@ -25,6 +25,7 @@
 #include <windows.h>
 #else
 #include <sys/time.h>
+#include <glob.h>
 #include <unistd.h>
 #endif
 
@@ -53,15 +54,7 @@ static size_t get_field_count(zvec_collection_schema_t *schema) {
 
 // Cross-platform helper function to clean up temporary directories
 static void cleanup_temp_directory(const char *dir) {
-#ifdef _WIN32
-  char cmd[512];
-  snprintf(cmd, sizeof(cmd), "rmdir /s /q \"%s\" 2>nul", dir);
-  system(cmd);
-#else
-  char cmd[512];
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-  system(cmd);
-#endif
+  zvec_test_delete_dir(dir);
 }
 
 static int test_count = 0;
@@ -909,7 +902,7 @@ void test_collection_basic_operations(void) {
   TEST_START();
 
   // Create temporary directory
-  char temp_dir[] = "/tmp/zvec_test_collection_basic_operations";
+  char temp_dir[] = "./zvec_test_collection_basic_operations";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -1003,7 +996,7 @@ void test_collection_basic_operations(void) {
 void test_collection_edge_cases(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_collection_edge_cases";
+  char temp_dir[] = "./zvec_test_collection_edge_cases";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -1052,7 +1045,7 @@ void test_collection_edge_cases(void) {
 void test_collection_delete_by_filter(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_collection_delete_by_filter";
+  char temp_dir[] = "./zvec_test_collection_delete_by_filter";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -1091,7 +1084,7 @@ void test_collection_delete_by_filter(void) {
 void test_collection_stats(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_collection_stats";
+  char temp_dir[] = "./zvec_test_collection_stats";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -3738,7 +3731,7 @@ void test_query_params_functions(void) {
 void test_collection_stats_functions(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_collection_stats_functions";
+  char temp_dir[] = "./zvec_test_collection_stats_functions";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -3785,7 +3778,7 @@ void test_collection_stats_functions(void) {
 void test_collection_dml_functions(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_collection_dml";
+  char temp_dir[] = "./zvec_test_collection_dml";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -3911,7 +3904,7 @@ void test_collection_dml_functions(void) {
 void test_collection_nullable_roundtrip(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_collection_nullable_roundtrip";
+  char temp_dir[] = "./zvec_test_collection_nullable_roundtrip";
   zvec_test_delete_dir(temp_dir);
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
@@ -4010,7 +4003,7 @@ void test_collection_nullable_roundtrip(void) {
 void test_actual_vector_queries(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_actual_queries";
+  char temp_dir[] = "./zvec_test_actual_queries";
 
   // Create schema with vector field
   zvec_collection_schema_t *schema =
@@ -4136,7 +4129,7 @@ void test_actual_vector_queries(void) {
 void test_index_creation_and_management(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_index_management";
+  char temp_dir[] = "./zvec_test_index_management";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -4192,7 +4185,7 @@ void test_index_creation_and_management(void) {
 void test_collection_ddl_operations(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_collection_ddl";
+  char temp_dir[] = "./zvec_test_collection_ddl";
 
   zvec_collection_schema_t *schema = zvec_test_create_temp_schema();
   TEST_ASSERT(schema != NULL);
@@ -4301,7 +4294,7 @@ void test_field_ddl_operations(void) {
 void test_performance_benchmarks(void) {
   TEST_START();
 
-  char temp_dir[] = "/tmp/zvec_test_performance";
+  char temp_dir[] = "./zvec_test_performance";
 
   zvec_collection_schema_t *schema = zvec_collection_schema_create("perf_test");
   TEST_ASSERT(schema != NULL);
@@ -4554,7 +4547,7 @@ void test_index_params_creation_functions(void) {
 void test_collection_advanced_index_functions(void) {
   TEST_START();
 
-  const char *temp_dir = "/tmp/zvec_test_advanced_index";
+  const char *temp_dir = "./zvec_test_advanced_index";
   zvec_test_delete_dir(temp_dir);
 
   // Create schema
@@ -4642,7 +4635,7 @@ void test_collection_advanced_index_functions(void) {
 void test_collection_query_functions(void) {
   TEST_START();
 
-  const char *temp_dir = "/tmp/zvec_test_query_funcs";
+  const char *temp_dir = "./zvec_test_query_funcs";
   zvec_test_delete_dir(temp_dir);
 
   // Create schema and collection
@@ -4913,7 +4906,7 @@ void test_array_memory_functions(void) {
 void test_collection_open_close(void) {
   TEST_START();
 
-  const char *temp_dir = "/tmp/zvec_test_open_close";
+  const char *temp_dir = "./zvec_test_open_close";
   zvec_test_delete_dir(temp_dir);
 
   // First create a collection
@@ -5081,7 +5074,7 @@ void test_collection_options_getters(void) {
 void test_collection_stats_index_info(void) {
   TEST_START();
 
-  const char *temp_dir = "/tmp/zvec_test_stats_index";
+  const char *temp_dir = "./zvec_test_stats_index";
   zvec_test_delete_dir(temp_dir);
 
   zvec_collection_schema_t *schema =
@@ -5357,7 +5350,15 @@ int main(void) {
   system("rmdir /s /q %TEMP%\\zvec_test_* 2>nul");
   system("del /q %TEMP%\\zvec_test_* 2>nul");
 #else
-  system("rm -rf /tmp/zvec_test_*");
+  {
+    glob_t gl;
+    if (glob("/tmp/zvec_test_*", 0, NULL, &gl) == 0) {
+      for (size_t gi = 0; gi < gl.gl_pathc; gi++) {
+        zvec_test_delete_dir(gl.gl_pathv[gi]);
+      }
+      globfree(&gl);
+    }
+  }
 #endif
   printf("Cleanup completed.\n\n");
 

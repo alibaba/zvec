@@ -39,13 +39,6 @@ from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
 
-_VECTOR_INDEX_TYPES = (
-    HnswIndexParam,
-    HnswRabitqIndexParam,
-    IVFIndexParam,
-    FlatIndexParam,
-)
-
 
 class Collection:
     """Represents an opened collection in Zvec.
@@ -133,15 +126,7 @@ class Collection:
             option (Optional[IndexOption], optional): Index creation options.
                 Defaults to ``IndexOption()``.
 
-        Raises:
-            ValueError: If a vector index is applied to a non-vector field.
         """
-        if index_param in _VECTOR_INDEX_TYPES and not self.schema.vector(field_name):
-            supported_types = ", ".join(cls.__name__ for cls in _VECTOR_INDEX_TYPES)
-            raise ValueError(
-                f"Cannot apply vector index to non-vector field '{field_name}'. "
-                f"The field must be of vector type to use index types like {supported_types}."
-            )
         self._obj.CreateIndex(field_name, index_param, option)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 
