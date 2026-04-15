@@ -89,7 +89,7 @@ size_t MemoryHelper::AvailableRamSize(void) {
   char buf[128];
   while (fgets(buf, sizeof(buf), fp)) {
     if (strncmp(buf, "MemAvailable:", 13) == 0) {
-      avail = (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+      avail = (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
       break;
     }
   }
@@ -103,21 +103,21 @@ size_t MemoryHelper::AvailableRamSize(void) {
       switch (buf[0]) {
         case 'M':
           if (strncmp(buf, "MemFree:", 8) == 0) {
-            avail += (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+            avail += (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
             ++count;
           }
           break;
 
         case 'B':
           if (strncmp(buf, "Buffers:", 8) == 0) {
-            avail += (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+            avail += (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
             ++count;
           }
           break;
 
         case 'C':
           if (strncmp(buf, "Cached:", 7) == 0) {
-            avail += (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+            avail += (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
             ++count;
           }
           break;
@@ -145,31 +145,31 @@ size_t MemoryHelper::UsedRamSize(void) {
     switch (buf[0]) {
       case 'M':
         if (strncmp(buf, "MemTotal:", 9) == 0) {
-          total = (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+          total = (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
           ++count;
         } else if (strncmp(buf, "MemFree:", 8) == 0) {
-          avail += (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+          avail += (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
           ++count;
         }
         break;
 
       case 'B':
         if (strncmp(buf, "Buffers:", 8) == 0) {
-          avail += (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+          avail += (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
           ++count;
         }
         break;
 
       case 'C':
         if (strncmp(buf, "Cached:", 7) == 0) {
-          avail += (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+          avail += (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
           ++count;
         }
         break;
 
       case 'S':
         if (strncmp(buf, "Slab:", 5) == 0) {
-          avail += (size_t)strtoull(strchr(buf, ':') + 1, NULL, 10);
+          avail += (size_t)strtoull(strchr(buf, ':') + 1, nullptr, 10);
           ++count;
         }
         break;

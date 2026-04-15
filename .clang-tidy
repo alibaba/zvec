@@ -2,7 +2,6 @@ Checks: >
   -*,
   modernize-use-nullptr,
 WarningsAsErrors: "*"
-HeaderFilterRegex: "(src|tests|tools)/"
-ExcludeHeaderFilterRegex: "thirdparty/"
+HeaderFilterRegex: "^(src|tests|tools)/"
 FormatStyle: none
 SystemHeaders: false

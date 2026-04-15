@@ -56,8 +56,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DENABLE_HASWELL=ON \
-            -DBUILD_TOOLS=OFF
+            -DBUILD_TOOLS=ON
 
       - name: Collect changed C/C++ files
         id: changed_files
@@ -130,6 +129,12 @@ jobs:
         run: |
           echo "=== Files skipped by clang-tidy ==="
           printf '%s\n' "${{ steps.tidy_files.outputs.skipped_files }}"
+
+      - name: Build
+        if: steps.tidy_files.outputs.any_tidy_files == 'true'
+        run: |
+          # build so that clang-tidy can find the headers
+          ninja -C build zvec_db
 
       - name: Run clang-tidy on changed files
         if: steps.tidy_files.outputs.any_tidy_files == 'true'
