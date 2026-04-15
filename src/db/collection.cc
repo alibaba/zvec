@@ -1725,7 +1725,7 @@ Status CollectionImpl::create() {
   if (path_.empty()) {
     return Status::InvalidArgument("path validate failed: path is empty");
   }
-  if (!FileHelper::ValidatePath(path_)) {
+  if (!FileHelper::PathSimpleValidation(path_)) {
     return Status::InvalidArgument("path validate failed: path[", path_,
                                    "] is not a valid path");
   }

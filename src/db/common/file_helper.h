@@ -233,15 +233,21 @@ class FileHelper {
     return ailego::FileHelper::FileSize(file_path.c_str());
   }
 
-  //! Validate the path is a valid path
-  static bool ValidatePath(const std::string &path) {
+  //! Perform a lightweight sanity check on the path string.
+  //! This only catches obvious invalid inputs (empty string, embedded null
+  //! bytes, and Windows-forbidden characters); it does NOT guarantee the path
+  //! is usable.
+  static bool PathSimpleValidation(const std::string &path) {
     if (path.empty()) return false;
 
-    if (path.find_first_of('\0') != std::string::npos) return false;
+    if (path.find('\0') != std::string::npos) return false;
 
 #ifdef _WIN32
-    // Windows forbidden filename chars
-    if (path.find_first_of("<>:\"|?*") != std::string::npos) return false;
+    // Characters forbidden in Windows path components.
+    if (path.find_first_of("<>\"|?*") != std::string::npos) return false;
+    // ':' is only valid as a drive-letter separator at position 1 (e.g. "C:\").
+    auto colon = path.find(':');
+    if (colon != std::string::npos && colon != 1) return false;
 #endif
 
     return true;

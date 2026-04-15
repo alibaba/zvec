@@ -247,6 +247,9 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
     std::vector<std::string> invalid_paths = {
         "",
         "v\0v"s,  // NUL
+#if _WIN32
+        "v?v"s,
+#endif
     };
     for (auto path : invalid_paths) {
       auto result = Collection::CreateAndOpen(path, *schema, options);
