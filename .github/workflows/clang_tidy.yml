@@ -39,7 +39,7 @@ permissions:
 jobs:
   clang_tidy:
     name: Clang-Tidy Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -52,7 +52,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-tidy cmake ninja-build
+          sudo apt-get install -y clang-tidy=1:18.0-59~exp2 cmake ninja-build
 
       - name: Configure CMake and export compile commands
         run: |
