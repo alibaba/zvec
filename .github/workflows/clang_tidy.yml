@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           # fetch-depth: 0 is required for tj-actions/changed-files to correctly
@@ -60,7 +60,7 @@ jobs:
 
       - name: Collect changed C/C++ files
         id: changed_files
-        uses: tj-actions/changed-files@v46
+        uses: tj-actions/changed-files@v47
         with:
           files: |
             **/*.c
