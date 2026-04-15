@@ -21,7 +21,8 @@
 /**
  * @brief Print error message and return error code
  */
-static ZVecErrorCode handle_error(ZVecErrorCode error, const char *context) {
+static zvec_error_code_t handle_error(zvec_error_code_t error,
+                                      const char *context) {
   if (error != ZVEC_OK) {
     char *error_msg = NULL;
     zvec_get_last_error(&error_msg);
@@ -58,10 +59,10 @@ int main() {
   const char *version = zvec_get_version();
   printf("ZVec Version: %s\n\n", version ? version : "Unknown");
 
-  ZVecErrorCode error;
+  zvec_error_code_t error;
 
   // 1. Create optimized collection schema
-  ZVecCollectionSchema *schema =
+  zvec_collection_schema_t *schema =
       zvec_collection_schema_create("optimized_example_collection");
   if (!schema) {
     fprintf(stderr, "Failed to create collection schema\n");
@@ -70,7 +71,8 @@ int main() {
   printf("✓ Collection schema created\n");
 
   // 2. Create optimized index parameters
-  ZVecIndexParams *hnsw_params = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
   if (!hnsw_params) {
     fprintf(stderr, "Failed to create HNSW index parameters\n");
     zvec_collection_schema_destroy(schema);
@@ -80,11 +82,11 @@ int main() {
   zvec_index_params_set_hnsw_params(hnsw_params, 32, 200);
 
   // 3. Create fields with optimized configuration
-  ZVecFieldSchema *id_field =
+  zvec_field_schema_t *id_field =
       zvec_field_schema_create("id", ZVEC_DATA_TYPE_STRING, false, 0);
-  ZVecFieldSchema *text_field =
+  zvec_field_schema_t *text_field =
       zvec_field_schema_create("text", ZVEC_DATA_TYPE_STRING, true, 0);
-  ZVecFieldSchema *embedding_field = zvec_field_schema_create(
+  zvec_field_schema_t *embedding_field = zvec_field_schema_create(
       "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, 128);
 
   if (!id_field || !text_field || !embedding_field) {
@@ -109,7 +111,7 @@ int main() {
   printf("✓ Fields configured with indexes\n");
 
   // 4. Create collection with optimized options
-  ZVecCollectionOptions *options = zvec_collection_options_create();
+  zvec_collection_options_t *options = zvec_collection_options_create();
   if (!options) {
     fprintf(stderr, "Failed to create collection options\n");
     goto cleanup_fields;
@@ -117,7 +119,7 @@ int main() {
   zvec_collection_options_set_enable_mmap(
       options, true);  // Enable memory mapping for better performance
 
-  ZVecCollection *collection = NULL;
+  zvec_collection_t *collection = NULL;
   error = zvec_collection_create_and_open("./optimized_example_collection",
                                           schema, options, &collection);
   zvec_collection_options_destroy(options);
@@ -141,7 +143,7 @@ int main() {
                                     ? DOC_COUNT - batch_start
                                     : BATCH_SIZE;
 
-    ZVecDoc **batch_docs = malloc(current_batch_size * sizeof(ZVecDoc *));
+    zvec_doc_t **batch_docs = malloc(current_batch_size * sizeof(zvec_doc_t *));
     if (!batch_docs) {
       fprintf(stderr, "Failed to allocate batch documents\n");
       break;
@@ -190,7 +192,7 @@ int main() {
 
     // Insert batch
     size_t success_count, error_count;
-    error = zvec_collection_insert(collection, (const ZVecDoc **)batch_docs,
+    error = zvec_collection_insert(collection, (const zvec_doc_t **)batch_docs,
                                    current_batch_size, &success_count,
                                    &error_count);
     if (handle_error(error, "inserting batch") != ZVEC_OK) {
@@ -233,7 +235,7 @@ int main() {
     goto cleanup_collection;
   }
 
-  ZVecVectorQuery *query = zvec_vector_query_create();
+  zvec_vector_query_t *query = zvec_vector_query_create();
   if (!query) {
     fprintf(stderr, "Failed to create vector query\n");
     free(query_vector);
@@ -250,11 +252,12 @@ int main() {
   start_time = clock();
 
   for (int q = 0; q < QUERY_COUNT; q++) {
-    ZVecDoc **results = NULL;
+    zvec_doc_t **results = NULL;
     size_t result_count = 0;
 
-    error = zvec_collection_query(collection, (const ZVecVectorQuery *)query,
-                                  &results, &result_count);
+    error =
+        zvec_collection_query(collection, (const zvec_vector_query_t *)query,
+                              &results, &result_count);
     if (error != ZVEC_OK) {
       char *error_msg = NULL;
       zvec_get_last_error(&error_msg);
@@ -281,7 +284,7 @@ int main() {
   zvec_vector_query_destroy(query);
 
   // 8. Memory usage information
-  ZVecCollectionStats *stats = NULL;
+  zvec_collection_stats_t *stats = NULL;
   error = zvec_collection_get_stats(collection, &stats);
   if (error == ZVEC_OK && stats) {
     printf("Collection Statistics:\n");

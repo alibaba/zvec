@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <zvec/db/collection.h>
@@ -188,8 +189,7 @@ CollectionSchema::Ptr create_schema() {
 
 int main() {
   std::string path = "./demo";
-  std::string rm_cmd = "rm -rf " + path;
-  system(rm_cmd.c_str());
+  std::filesystem::remove_all(path);
 
   auto schema = create_schema();
   CollectionOptions options{false, true};

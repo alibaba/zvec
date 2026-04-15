@@ -301,7 +301,7 @@
 ##      )
 ##
 
-cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 include(CMakeParseArguments)
 
 # Using AppleClang instead of Clang (Compiler id)
@@ -314,11 +314,16 @@ enable_testing()
 
 # Add unittest target
 if(NOT TARGET unittest)
-  add_custom_target(
-      unittest
-      COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-      --build-config $<CONFIGURATION>
-    )
+  if(IOS)
+    # iOS: build-only target; tests are run on simulator separately
+    add_custom_target(unittest)
+  else()
+    add_custom_target(
+        unittest
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        --build-config $<CONFIGURATION>
+      )
+  endif()
 endif()
 
 # Directories of target output
@@ -392,7 +397,14 @@ if(NOT MSVC)
     )
   unset(_COMPILER_FLAGS)
 else()
-  # Replace the default compiling flags
+  option(ZVEC_USE_STATIC_CRT "Use static CRT (/MT) instead of dynamic CRT (/MD), default=ON" ON)
+
+  if(ZVEC_USE_STATIC_CRT)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+  else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+  endif()
+
   set(
       _COMPILER_FLAGS
       CMAKE_CXX_FLAGS
@@ -406,14 +418,21 @@ else()
       CMAKE_C_FLAGS_RELWITHDEBINFO
       CMAKE_C_FLAGS_MINSIZEREL
     )
-  foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
-    string(REPLACE "/MT" "/MD" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
-    string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
-  endforeach()
+  if(ZVEC_USE_STATIC_CRT)
+    foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
+      string(REPLACE "/MD" "/MT" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+      string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+    endforeach()
+  else()
+    foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
+      string(REPLACE "/MT" "/MD" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+      string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+    endforeach()
+  endif()
   unset(_COMPILER_FLAGS)
+
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-  # Build shared library as default
-  set(BUILD_SHARED_LIBS ON)
+  set(BUILD_SHARED_LIBS OFF)
 endif()
 
 set(CMAKE_C_FLAGS_ASAN ${CMAKE_C_FLAGS_DEBUG})
@@ -444,6 +463,7 @@ set(
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:Clang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:AppleClang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:GNU>:--coverage>>"
+    "$<$<CONFIG:COVERAGE>:-fprofile-update=atomic>"
   )
 
 # C/C++ strict compile flags
@@ -570,9 +590,16 @@ macro(_add_library _NAME _OPTION)
   add_library(
       ${_NAME}_static STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
     )
-  add_library(
-      ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
-    )
+  if(IOS)
+    # iOS: create the main target as static too (no shared libs on iOS)
+    add_library(
+        ${_NAME} STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
+  else()
+    add_library(
+        ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
+  endif()
   add_dependencies(${_NAME} ${_NAME}_static)
   if(NOT MSVC)
     set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
@@ -694,7 +721,7 @@ function(_target_link_libraries _NAME)
     endif()
 
     if(NOT MSVC)
-      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
         list(APPEND LINK_LIBS -Wl,--whole-archive ${LIB} -Wl,--no-whole-archive)
       else()
         list(APPEND LINK_LIBS -Wl,-force_load ${LIB})
@@ -997,6 +1024,13 @@ function(cc_binary)
   endif()
   add_executable(${CC_ARGS_NAME} ${CC_ARGS_SRCS})
 
+  # iOS: set bundle properties for simulator/device installation
+  if(IOS)
+    set_target_properties(${CC_ARGS_NAME} PROPERTIES
+      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+    )
+  endif()
+
   if(CC_ARGS_PACKED)
     install(
         TARGETS ${CC_ARGS_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -1037,7 +1071,32 @@ function(cc_test)
     string(REPLACE "-" "_" MACRO_PREFIX "${CC_ARGS_NAME}")
     list(APPEND CC_ARGS_DEFS ${MACRO_PREFIX}_VERSION="${CC_ARGS_VERSION}")
   endif()
+  # iOS: add sandbox helper to redirect CWD to writable directory
+  if(IOS)
+    list(APPEND CC_ARGS_SRCS "${PROJECT_ROOT_DIR}/tests/ios_test_sandbox.cc")
+    # Arrow's iOS code references CoreFoundation symbols; link Apple frameworks
+    list(APPEND CC_ARGS_LDFLAGS
+      -framework CoreFoundation
+      -framework CoreGraphics
+      -framework CoreData
+      -framework CoreText
+      -framework Security
+      -framework Foundation
+      -Wl,-U,_MallocExtension_ReleaseFreeMemory
+      -Wl,-U,_ProfilerStart
+      -Wl,-U,_ProfilerStop
+      -Wl,-U,_RegisterThriftProtocol
+    )
+  endif()
+
   add_executable(${CC_ARGS_NAME} EXCLUDE_FROM_ALL ${CC_ARGS_SRCS})
+
+  # iOS: set bundle properties for simulator/device installation
+  if(IOS)
+    set_target_properties(${CC_ARGS_NAME} PROPERTIES
+      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+    )
+  endif()
 
   _cc_target_properties(
       NAME "${CC_ARGS_NAME}"
@@ -1215,7 +1274,18 @@ function(_find_gtest)
   else()
     # Find gtest using target names
     set(FIND_GTEST_INCS "" CACHE STRING "GTest includes")
-    set(FIND_GTEST_LIBS "gtest;gtest_main" CACHE STRING "GTest libraries")
+    if(ANDROID)
+      # On Android, use a custom main that calls _exit() to skip static
+      # destructors and avoid glog/gflags teardown crashes.
+      if(NOT TARGET zvec_gtest_main)
+        add_library(zvec_gtest_main STATIC
+          ${PROJECT_ROOT_DIR}/tests/android_gtest_main.cc)
+        target_link_libraries(zvec_gtest_main PUBLIC gtest)
+      endif()
+      set(FIND_GTEST_LIBS "gtest;zvec_gtest_main" CACHE STRING "GTest libraries")
+    else()
+      set(FIND_GTEST_LIBS "gtest;gtest_main" CACHE STRING "GTest libraries")
+    endif()
   endif()
 endfunction()
 
@@ -1262,7 +1332,18 @@ function(_find_gmock)
   else()
     # Find gmock using target names
     set(FIND_GMOCK_INCS "" CACHE STRING "GMock includes")
-    set(FIND_GMOCK_LIBS "gmock;gmock_main" CACHE STRING "GMock libraries")
+    if(ANDROID)
+      # On Android, use a custom main that calls _exit() to skip static
+      # destructors and avoid glog/gflags teardown crashes.
+      if(NOT TARGET zvec_gmock_main)
+        add_library(zvec_gmock_main STATIC
+          ${PROJECT_ROOT_DIR}/tests/android_gmock_main.cc)
+        target_link_libraries(zvec_gmock_main PUBLIC gmock gtest)
+      endif()
+      set(FIND_GMOCK_LIBS "gmock;zvec_gmock_main" CACHE STRING "GMock libraries")
+    else()
+      set(FIND_GMOCK_LIBS "gmock;gmock_main" CACHE STRING "GMock libraries")
+    endif()
   endif()
 endfunction()
 
@@ -2119,7 +2200,7 @@ function(_fetch_content)
 
   set(
       CMAKELISTS_CONTENT
-      "cmake_minimum_required(VERSION 3.1)\n"
+      "cmake_minimum_required(VERSION 3.13)\n"
       "project(${DL_ARGS_NAME})\n"
       "include(ExternalProject)\n"
       "ExternalProject_Add(\n"

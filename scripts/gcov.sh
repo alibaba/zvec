@@ -26,8 +26,8 @@ while getopts t:p:o:zk option; do
 done
 
 # Process sources
-lcov -c -b "$source_base" -d . -o $project_name.lcov.info --gcov-tool=$gcov_tool --no-external || exit 1
-eval $(echo lcov -r $project_name.lcov.info -o $project_name-filtered.lcov.info $filter_list) || exit 1
+lcov -c -b "$source_base" -d . -o $project_name.lcov.info --gcov-tool=$gcov_tool --no-external --keep-going --ignore-errors unused,mismatch || exit 1
+eval $(echo lcov -r $project_name.lcov.info -o $project_name-filtered.lcov.info $filter_list --ignore-errors unused,mismatch) || exit 1
 
 # Gather HTML files
 genhtml -t "$project_name" -o $output_name $project_name-filtered.lcov.info || exit 1

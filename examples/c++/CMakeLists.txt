@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.26)
 cmake_policy(SET CMP0077 NEW)
 project(zvec-example-c++)
 set(CMAKE_CXX_STANDARD 17)
@@ -20,14 +20,31 @@ set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/exter
 include_directories(${ZVEC_INCLUDE_DIR})
 link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
 
+# Support multi-config builds (libs in Release/ or Debug/ subdirectories)
+if (CMAKE_BUILD_TYPE)
+    link_directories(
+            ${ZVEC_LIB_DIR}/${CMAKE_BUILD_TYPE}
+            ${ZVEC_DEPENDENCY_LIB_DIR}/${CMAKE_BUILD_TYPE}
+    )
+endif ()
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # --- Determine debug/release library names ---
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(GLOG_LIB glogd)
-    set(GFLAGS_LIB gflags_nothreads_debug)
+    if (WIN32)
+        set(GFLAGS_LIB gflags_nothreads_static_debug)
+    else ()
+        set(GFLAGS_LIB gflags_nothreads_debug)
+    endif ()
     set(PROTOBUF_LIB protobufd)
 else()
     set(GLOG_LIB glog)
-    set(GFLAGS_LIB gflags_nothreads)
+    if (WIN32)
+        set(GFLAGS_LIB gflags_nothreads_static)
+    else ()
+        set(GFLAGS_LIB gflags_nothreads)
+    endif ()
     set(PROTOBUF_LIB protobuf)
 endif()
 
@@ -47,7 +64,6 @@ if (NOT WIN32)
             ${CMAKE_THREAD_LIBS_INIT}
             ${CMAKE_DL_LIBS}
     )
-
 
     set(zvec_db_deps
             roaring

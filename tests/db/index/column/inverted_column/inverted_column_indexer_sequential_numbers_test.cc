@@ -697,6 +697,9 @@ TEST_F(InvertedIndexTest, SEALED) {
 
 
 TEST_F(InvertedIndexTest, CREATE_SNAPSHOT) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink support (needed by RocksDB checkpoint)";
+#endif
   ASSERT_TRUE(indexer_);
 
   std::string snapshot_dir = working_dir + "snapshot";

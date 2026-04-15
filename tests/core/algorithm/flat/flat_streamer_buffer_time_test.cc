@@ -5,6 +5,7 @@
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 
@@ -38,15 +39,11 @@ void FlatStreamerTest::SetUp(void) {
                             IndexMeta(IndexMeta::DataType::DT_FP32, dim));
   index_meta_ptr_->set_metric("SquaredEuclidean", 0, Params());
 
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::ailego::FileHelper::RemovePath(dir_.c_str());
 }
 
 void FlatStreamerTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::ailego::FileHelper::RemovePath(dir_.c_str());
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearchMMap) {
