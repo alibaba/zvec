@@ -15,11 +15,13 @@
 
 #include <stdint.h>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
 
+namespace fs = std::filesystem;
 namespace zvec {
 
 /*
@@ -229,6 +231,20 @@ class FileHelper {
   //! Return file size
   static size_t FileSize(const std::string &file_path) {
     return ailego::FileHelper::FileSize(file_path.c_str());
+  }
+
+  //! Validate the path is a valid path
+  static bool ValidatePath(const std::string &path) {
+    if (path.empty()) return false;
+
+    if (path.find_first_of('\0') != std::string::npos) return false;
+
+#ifdef _WIN32
+    // Windows forbidden filename chars
+    if (path.find_first_of("<>:\"|?*") != std::string::npos) return false;
+#endif
+
+    return true;
   }
 
   //! Copy file

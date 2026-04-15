@@ -224,6 +224,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
                                             ".hidden",
                                             "file.txt",
                                             "abs_test/nested/path",
+                                            "abs test/nested/path",
                                             "nested/a/b/c",
                                             "_",
                                             "-",
@@ -242,30 +243,12 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
   }
 
   {
-    std::vector<std::string> inalid_paths = {
-        " ",         "",
-        "file name",  // space
-        "file$name",  // $
-        "a&b",        // &
-        "a|b",        // |
-        "a<b",        // <
-        "a>b",        // >
-        "a\"b",       // "
-        "a'b",        // '
-        "a;b",        // ;
-        "a?b",        // ?
-        "a*b",        // *
-        "a[b]",       // []
-        "a{b}",       // {}
-        "a~b",        // ~
-        "a#b",        // #
-        "a\tb",       // tab
-        "a\nb",       // newline
-        "a\rb",       // carriage return
+    using std::string_literals::operator""s;
+    std::vector<std::string> invalid_paths = {
+        "",
+        "v\0v"s,  // NUL
     };
-    for (auto path : inalid_paths) {
-      ailego::FileHelper::RemoveDirectory(path.c_str());
-
+    for (auto path : invalid_paths) {
       auto result = Collection::CreateAndOpen(path, *schema, options);
       if (!result.has_value()) {
         std::cout << result.error().message() << std::endl;

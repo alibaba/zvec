@@ -127,12 +127,11 @@ long_names = [
 valid_path_list = [
     "/tmp/nonexistent/directory/test_collection",
     "test/collection/with/slashes",
+    "test/collection/with/slashes/哈哈",
 ]
 invalid_path_list = [
-    "invalid:path",
+    "invalid\0path",
     "",
-    "test_collection_with_spaces ",
-    "test@#$%collection",
 ]
 
 

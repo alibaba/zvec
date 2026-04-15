@@ -1725,9 +1725,9 @@ Status CollectionImpl::create() {
   if (path_.empty()) {
     return Status::InvalidArgument("path validate failed: path is empty");
   }
-  if (!std::regex_match(path_, COLLECTION_PATH_REGEX)) {
+  if (!FileHelper::ValidatePath(path_)) {
     return Status::InvalidArgument("path validate failed: path[", path_,
-                                   "] cannot pass the regex verification");
+                                   "] is not a valid path");
   }
   if (ailego::FileHelper::IsExist(path_.c_str())) {
     return Status::InvalidArgument("path validate failed: path[", path_,
