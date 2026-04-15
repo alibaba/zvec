@@ -130,6 +130,24 @@ jobs:
           echo "=== Files skipped by clang-tidy ==="
           printf '%s\n' "${{ steps.tidy_files.outputs.skipped_files }}"
 
+      - name: Compute submodule commits hash
+        id: submodule_hash
+        run: |
+          # Collect each submodule's current commit SHA, sort for a stable order,
+          # then SHA-256 the result so the cache key stays a fixed length.
+          hash=$(git submodule status --recursive | awk '{print $1}' | sort | sha256sum | awk '{print $1}')
+          echo "value=${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache third-party build artifacts
+        id: cache_thirdparty
+        uses: actions/cache@v5
+        with:
+          path: build/external
+          # Cache key combines:
+          #   - thirdparty CMakeLists / cmake / patch file contents
+          #   - all submodule commit SHAs (upgrading a submodule busts the cache)
+          key: thirdparty-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch') }}-${{ steps.submodule_hash.outputs.value }}
+
       - name: Build
         if: steps.tidy_files.outputs.any_tidy_files == 'true'
         run: |
