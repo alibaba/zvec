@@ -45,6 +45,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          # fetch-depth: 0 is required for tj-actions/changed-files to correctly
+          # compute the diff against the base branch on pull_request events.
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
@@ -67,11 +70,11 @@ jobs:
             **/*.cc
             **/*.cpp
             **/*.cxx
-            !thirdparty/**
-            !build/**
-          separator: "\n"
+          files_ignore: |
+            thirdparty/**
+            build/**
 
-      - name: Filter changed files to compile database entries
+      - name: Filter changed files against compile_commands.json
         id: tidy_files
         if: steps.changed_files.outputs.any_changed == 'true'
         run: |
@@ -80,67 +83,76 @@ jobs:
           import os
           from pathlib import Path
 
-          changed = [line.strip() for line in """${{ steps.changed_files.outputs.all_changed_files }}""".splitlines() if line.strip()]
-          compile_db_path = Path("build/compile_commands.json")
-          with compile_db_path.open("r", encoding="utf-8") as f:
-              compile_db = json.load(f)
+          # all_changed_files is space-separated when output_format is not set;
+          # tj-actions v46 defaults to space-separated for the env var form.
+          # We read from the file written by the action instead via GITHUB_OUTPUT,
+          # but the safest approach is to use the JSON output format.
+          raw = os.environ.get("ALL_CHANGED_FILES", "")
+          changed = [f for f in raw.split() if f]
 
+          compile_db_path = Path("build/compile_commands.json")
+          with compile_db_path.open("r", encoding="utf-8") as fh:
+              compile_db = json.load(fh)
+
+          # Build a set of absolute, normalised paths from compile_commands.json.
           compile_entries = set()
           for entry in compile_db:
-              file_path = entry.get("file")
-              if not file_path:
-                  continue
-              normalized = os.path.normpath(file_path).replace("\\", "/")
-              compile_entries.add(normalized)
+              file_field = entry.get("file", "")
+              if file_field:
+                  compile_entries.add(os.path.normpath(file_field))
 
+          cwd = Path.cwd().resolve()
           selected = []
           skipped = []
-          cwd = Path.cwd()
-          for file_path in changed:
-              if not Path(file_path).is_file():
-                  skipped.append(f"{file_path} (missing)")
-                  continue
 
-              abs_normalized = os.path.normpath(str((cwd / file_path).resolve())).replace("\\", "/")
-              rel_normalized = os.path.normpath(file_path).replace("\\", "/")
-
-              if abs_normalized in compile_entries or rel_normalized in compile_entries:
-                  selected.append(file_path)
+          for rel_path in changed:
+              abs_path = os.path.normpath(str((cwd / rel_path).resolve()))
+              if abs_path in compile_entries:
+                  selected.append(rel_path)
+              elif not Path(rel_path).is_file():
+                  skipped.append(f"{rel_path} (file not found)")
               else:
-                  skipped.append(f"{file_path} (no compile_commands entry)")
+                  skipped.append(f"{rel_path} (not in compile_commands.json)")
 
-          output_path = os.environ["GITHUB_OUTPUT"]
-          with open(output_path, "a", encoding="utf-8") as out:
+          github_output = os.environ["GITHUB_OUTPUT"]
+          with open(github_output, "a", encoding="utf-8") as out:
               out.write(f"any_tidy_files={'true' if selected else 'false'}\n")
-              out.write("all_tidy_files<<EOF\n")
-              out.write("\n".join(selected))
-              out.write("\nEOF\n")
-              out.write("skipped_files<<EOF\n")
-              out.write("\n".join(skipped))
-              out.write("\nEOF\n")
+              out.write("all_tidy_files<<TIDY_EOF\n")
+              out.write("\n".join(selected) + "\n")
+              out.write("TIDY_EOF\n")
+              out.write("skipped_files<<SKIP_EOF\n")
+              out.write("\n".join(skipped) + "\n")
+              out.write("SKIP_EOF\n")
           PY
+        env:
+          ALL_CHANGED_FILES: ${{ steps.changed_files.outputs.all_changed_files }}
 
       - name: Show skipped files
         if: steps.changed_files.outputs.any_changed == 'true' && steps.tidy_files.outputs.skipped_files != ''
         run: |
-          echo "Skipping files:"
+          echo "=== Files skipped by clang-tidy ==="
           printf '%s\n' "${{ steps.tidy_files.outputs.skipped_files }}"
 
-      - name: Run clang-tidy
+      - name: Run clang-tidy on changed files
         if: steps.tidy_files.outputs.any_tidy_files == 'true'
         run: |
-          mapfile -t changed_files <<'EOF'
+          # Read the newline-delimited file list into an array.
+          mapfile -t files_to_check <<'TIDY_EOF'
           ${{ steps.tidy_files.outputs.all_tidy_files }}
-          EOF
+          TIDY_EOF
 
-          for file in "${changed_files[@]}"; do
+          failed=0
+          for file in "${files_to_check[@]}"; do
+            # Skip blank lines that mapfile may produce.
+            [[ -z "${file// }" ]] && continue
             if [ -f "$file" ]; then
-              echo "Running clang-tidy on $file"
-              clang-tidy -p build --warnings-as-errors='*' "$file"
+              echo "=== clang-tidy: $file ==="
+              clang-tidy -p build --warnings-as-errors='*' "$file" || failed=1
             fi
           done
 
-      - name: No clang-tidy files to analyze
+          exit $failed
+
+      - name: No C/C++ files changed
         if: steps.changed_files.outputs.any_changed != 'true' || steps.tidy_files.outputs.any_tidy_files != 'true'
-        run: |
-          echo "No changed source files with compile_commands entries matched clang-tidy patterns."
+        run: echo "No changed source files with compile_commands entries to analyse."
