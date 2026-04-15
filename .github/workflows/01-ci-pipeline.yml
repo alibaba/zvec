@@ -101,6 +101,9 @@ jobs:
     name: Build & Test (linux-riscv64)
     needs: lint
     uses: ./.github/workflows/07-linux-riscv-build.yml
+    with:
+      platform: linux-riscv64
+      os: ubuntu-24.04-riscv
 
   build-android:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
