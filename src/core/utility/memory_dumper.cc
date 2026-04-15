@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <cerrno>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_format.h>
@@ -48,8 +48,8 @@ struct MemoryDumper : public IndexDumper {
   int create(const std::string &path) override {
     rope_ = IndexMemory::Instance()->create(path);
     if (!rope_) {
-      LOG_ERROR("Failed to create memory block %s, errno %d, %s", path.c_str(),
-                errno, std::strerror(errno));
+      LOG_ERROR("Failed to create memory block %s, %s", path.c_str(),
+                ailego::FileHelper::GetLastErrorString().c_str());
       return IndexError_CreateFile;
     }
     // Append a memory block
@@ -59,8 +59,8 @@ struct MemoryDumper : public IndexDumper {
       return (*this->rope_)[0].append(buf, size);
     };
     if (!packer_.setup(write_data)) {
-      LOG_ERROR("Failed to setup index package, errno %d, %s", errno,
-                std::strerror(errno));
+      LOG_ERROR("Failed to setup index package, %s",
+                ailego::FileHelper::GetLastErrorString().c_str());
       return IndexError_WriteData;
     }
     return 0;

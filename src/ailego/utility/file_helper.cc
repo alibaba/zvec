@@ -227,6 +227,10 @@ bool FileHelper::IsSame(const char *path1, const char *path2) {
   return (!strcmp(real_path1, real_path2));
 }
 
+std::string FileHelper::GetLastErrorString() {
+  return strerror(errno);
+}
+
 #else
 #undef RemoveDirectory
 #undef DeleteFile
@@ -350,6 +354,25 @@ bool FileHelper::IsSymbolicLink(const char *path) {
   DWORD attr = GetFileAttributesA(path);
   return (attr != INVALID_FILE_ATTRIBUTES &&
           (attr & FILE_ATTRIBUTE_REPARSE_POINT));
+}
+
+std::string FileHelper::GetLastErrorString() {
+  DWORD err = GetLastError();
+  if (err == 0) {
+    return "No error";
+  }
+  char buf[256];
+  DWORD len = FormatMessageA(
+      FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, err,
+      MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof(buf), nullptr);
+  if (len > 0) {
+    // Strip trailing newline that FormatMessage often appends
+    while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n')) {
+      buf[--len] = '\0';
+    }
+    return std::string(buf, len);
+  }
+  return "Unknown error " + std::to_string(err);
 }
 
 bool FileHelper::IsSame(const char *path1, const char *path2) {

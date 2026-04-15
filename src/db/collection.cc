@@ -1739,8 +1739,9 @@ Status CollectionImpl::create() {
   CHECK_RETURN_STATUS(s);
 
   if (!ailego::FileHelper::MakePath(path_.c_str())) {
-    return Status::InvalidArgument("create collection path failed: ", path_,
-                                   ", error: ", strerror(errno));
+    return Status::InvalidArgument(
+        "create collection path failed: ", path_,
+        ", error: ", ailego::FileHelper::GetLastErrorString());
   }
 
   // init lock file

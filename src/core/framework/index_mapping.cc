@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <zvec/ailego/io/mmap_file.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_logger.h>
 #include <zvec/core/framework/index_mapping.h>
@@ -60,7 +61,8 @@ static inline bool WritePadding(ailego::File &file, size_t size) {
 static inline int UnpackMappingSize(ailego::File &file, size_t *len) {
   IndexFormat::MetaHeader header;
   if (file.read(&header, sizeof(header)) != sizeof(header)) {
-    LOG_ERROR("Failed to read file, errno %d, %s", errno, std::strerror(errno));
+    LOG_ERROR("Failed to read file, %s",
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_ReadData;
   }
 
@@ -93,13 +95,8 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) {
 
   bool read_only = copy_on_write_ && !full_mode_;
   if (!file_.open(path.c_str(), read_only, false)) {
-#if defined(_WIN32) || defined(_WIN64)
-    LOG_ERROR("Failed to open file %s, win32 error %lu", path.c_str(),
-              GetLastError());
-#else
-    LOG_ERROR("Failed to open file %s, errno %d, %s", path.c_str(), errno,
-              std::strerror(errno));
-#endif
+    LOG_ERROR("Failed to open file %s, %s", path.c_str(),
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_OpenFile;
   }
 
@@ -111,8 +108,8 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) {
   }
 
   if (!file_.seek(0, ailego::File::Origin::End)) {
-    LOG_ERROR("Failed to seek file %s, errno %d, %s", path.c_str(), errno,
-              std::strerror(errno));
+    LOG_ERROR("Failed to seek file %s, %s", path.c_str(),
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_SeekFile;
   }
   return this->init_index_mapping(mapping_size);
@@ -125,8 +122,8 @@ int IndexMapping::create(const std::string &path, size_t seg_meta_capacity) {
 
   // write() & copying to mmap() will auto extend the file size
   if (!file_.create(path.c_str(), 0)) {
-    LOG_ERROR("Failed to create file %s, errno %d, %s", path.c_str(), errno,
-              std::strerror(errno));
+    LOG_ERROR("Failed to create file %s, %s", path.c_str(),
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_CreateFile;
   }
   huge_page_ = Ishugetlbfs(path);
@@ -155,13 +152,13 @@ int IndexMapping::init_meta_section() {
   // Write index header
   IndexFormat::SetupMetaHeader(&meta_header, len - sizeof(meta_footer), len);
   if (!file_.seek(current_header_start_offset_, ailego::File::Origin::Begin)) {
-    LOG_ERROR("Failed to seek file %s, errno %d, %s", path.c_str(), errno,
-              std::strerror(errno));
+    LOG_ERROR("Failed to seek file %s, %s", path.c_str(),
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_SeekFile;
   }
   if (file_.write(&meta_header, sizeof(meta_header)) != sizeof(meta_header)) {
-    LOG_ERROR("Failed to write file: %s, errno %d, %s", path.c_str(), errno,
-              std::strerror(errno));
+    LOG_ERROR("Failed to write file: %s, %s", path.c_str(),
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_WriteData;
   }
 
@@ -169,8 +166,8 @@ int IndexMapping::init_meta_section() {
   uint32_t segments_meta_size =
       static_cast<uint32_t>(len - (sizeof(meta_header) + sizeof(meta_footer)));
   if (!WritePadding(file_, segments_meta_size)) {
-    LOG_ERROR("Failed to write file: %s, errno %d, %s", path.c_str(), errno,
-              std::strerror(errno));
+    LOG_ERROR("Failed to write file: %s, %s", path.c_str(),
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_WriteData;
   }
 
@@ -180,8 +177,8 @@ int IndexMapping::init_meta_section() {
   meta_footer.total_size = len;
   IndexFormat::UpdateMetaFooter(&meta_footer, 0);
   if (file_.write(&meta_footer, sizeof(meta_footer)) != sizeof(meta_footer)) {
-    LOG_ERROR("Failed to write file: %s, errno %d, %s", path.c_str(), errno,
-              std::strerror(errno));
+    LOG_ERROR("Failed to write file: %s, %s", path.c_str(),
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_WriteData;
   }
   return this->init_index_mapping(len);
@@ -310,8 +307,8 @@ int IndexMapping::append(const std::string &id, size_t size) {
   }
 
   if (!copy_on_write_ && !file_.truncate(index_size_ + size)) {
-    LOG_ERROR("Failed to truncate file, errno %d, %s", errno,
-              std::strerror(errno));
+    LOG_ERROR("Failed to truncate file, %s",
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_TruncateFile;
   }
 
@@ -425,8 +422,8 @@ void IndexMapping::unmap_all(void) {
 
 int IndexMapping::flush(void) {
   if ((file_.size() < index_size_) && !file_.truncate(index_size_)) {
-    LOG_ERROR("Failed to truncate file size %zu, errno %d, %s", index_size_,
-              errno, std::strerror(errno));
+    LOG_ERROR("Failed to truncate file size %zu, %s", index_size_,
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_TruncateFile;
   }
 
@@ -443,8 +440,8 @@ int IndexMapping::flush(void) {
                    segment_info.segment_header->content_offset +
                    item->meta()->data_index;
       if (file_.write(off, item->data(), segment_size) != segment_size) {
-        LOG_ERROR("Failed to write segment, size %zu, errno %d, %s",
-                  segment_size, errno, std::strerror(errno));
+        LOG_ERROR("Failed to write segment, size %zu, %s", segment_size,
+                  ailego::FileHelper::GetLastErrorString().c_str());
         return IndexError_WriteData;
       }
     } else {
@@ -464,8 +461,9 @@ int IndexMapping::flush(void) {
       auto header = item.second;
       if (file_.write(header_start_offset, header, header->content_offset) !=
           header->content_offset) {
-        LOG_ERROR("Failed to write segment, size %lu, errno %d, %s",
-                  header->content_offset, errno, std::strerror(errno));
+        LOG_ERROR("Failed to write segment, size %lu, %s",
+                  header->content_offset,
+                  ailego::FileHelper::GetLastErrorString().c_str());
         return IndexError_WriteData;
       }
     }
@@ -487,7 +485,8 @@ int IndexMapping::init_index_mapping(size_t len) {
   uint8_t *start = reinterpret_cast<uint8_t *>(ailego::File::MemoryMap(
       file_.native_handle(), current_header_start_offset_, len, opts));
   if (!start) {
-    LOG_ERROR("Failed to map file, errno %d, %s", errno, std::strerror(errno));
+    LOG_ERROR("Failed to map file, %s",
+              ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_MMapFile;
   }
 

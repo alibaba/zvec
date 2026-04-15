@@ -11,8 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <cerrno>
 #include <zvec/ailego/io/mmap_file.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_format.h>
 #include <zvec/core/framework/index_unpacker.h>
@@ -176,14 +176,14 @@ class MMapFileReadStorage : public IndexStorage {
   int open(const std::string &path, bool) override {
     file_ptr_ = std::make_shared<ailego::MMapFile>();
     if (!file_ptr_) {
-      LOG_ERROR("Failed to create mmap file object, errno %d, %s", errno,
-                std::strerror(errno));
+      LOG_ERROR("Failed to create mmap file object, %s",
+                ailego::FileHelper::GetLastErrorString().c_str());
       return IndexError_NoMemory;
     }
 
     if (!file_ptr_->open(path.c_str(), true, memory_shared_)) {
-      LOG_ERROR("Failed to open file %s, errno %d, %s", path.c_str(), errno,
-                std::strerror(errno));
+      LOG_ERROR("Failed to open file %s, %s", path.c_str(),
+                ailego::FileHelper::GetLastErrorString().c_str());
       return IndexError_OpenFile;
     }
 
@@ -193,8 +193,8 @@ class MMapFileReadStorage : public IndexStorage {
         (footer_offset_ > 0 ? 0 : file_ptr_->size()) + footer_offset_;
     size_t size = end_offset > index_offset_ ? end_offset - index_offset_ : 0;
     if (memory_locked_ && !file_ptr_->lock()) {
-      LOG_WARN("Failed to lock pages with size %zu, errno %d, %s",
-               file_ptr_->size(), errno, std::strerror(errno));
+      LOG_WARN("Failed to lock pages with size %zu, %s", file_ptr_->size(),
+               ailego::FileHelper::GetLastErrorString().c_str());
     }
     if (memory_warmup_ && !checksum_validation_) {
       ailego::File::MemoryWarmup(
