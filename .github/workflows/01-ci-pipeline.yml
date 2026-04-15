@@ -97,6 +97,14 @@ jobs:
       os: ubuntu-24.04
       compiler: clang
 
+  build-and-test-linux-riscv64:
+    name: Build & Test (linux-riscv64)
+    needs: lint
+    uses: ./.github/workflows/03-macos-linux-build.yml
+    with:
+      platform: linux-riscv64
+      os: ubuntu-24.04-riscv
+
   build-android:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (android)
