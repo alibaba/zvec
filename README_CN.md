@@ -75,7 +75,7 @@ npm install @zvec/zvec
 
 ### 🛠️ 源码构建
 
-如果您更倾向于从源码构建 Zvec，请参考[源码构建指南](https://zvec.org/en/docs/build/)。
+如需从源码构建 Zvec，请参考[源码构建指南](https://zvec.org/en/docs/build/)。
 
 ## ⚡ 一分钟上手
 
@@ -113,7 +113,7 @@ Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境
 
 <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec 性能基准测试" />
 
-请参阅我们的[性能报告文档](https://zvec.org/en/docs/benchmarks/)以了解更具体的测试方法，配置，和完整结果。
+有关具体的测试方法、配置及完整结果，请参阅[性能报告](https://zvec.org/en/docs/benchmarks/)。
 
 ## 🤝 加入社区
 
@@ -134,6 +134,6 @@ Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境
 
 ## ❤️ 参与贡献
 
-我们欢迎并感谢来自社区的每一份贡献！无论是修复 Bug、新增功能还是完善文档，您的参与都能让 Zvec 变得更好。
+非常欢迎来自社区的每一份贡献！无论是修复 Bug、新增功能，还是完善文档，都将让 Zvec 变得更好。
 
 请查阅我们的[贡献指南](./CONTRIBUTING.md)开始参与！
