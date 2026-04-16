@@ -32,14 +32,13 @@
   <a href="https://x.com/ZvecAI">🐦 <strong>X (Twitter)</strong> </a>
 </p>
 
-**Zvec** 是一款开源的进程内向量数据库——轻量、极速，可直接嵌入应用程序。基于 **Proxima**（阿里巴巴经过大规模生产验证的向量搜索引擎）构建，以极简的配置即可提供生产级、低延迟、可扩展的相似性搜索能力。
+**Zvec** 是一款开源的嵌入式的 (in-process) 的向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置即可提供生产级、低延迟、可扩展的向量检索能力。
 
-> [!IMPORTANT]
 > **🚀 v0.3.0 已于 2026 年 4 月 3 日发布**
 >
-> - **新平台支持**：初步支持 **Windows (MSVC)** 和 **Android**。发布了官方 Windows **Python** 和 **Node.js** 安装包。
-> - **性能优化**：**RabitQ** 量化以及 **CPU 自动调度**，优化 SIMD 执行。
-> - **生态集成**：提供 **C-API** 用于自定义语言绑定，以及 **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** 集成，支持 AI Agent。
+> - **新平台支持**：支持 **Windows (MSVC)** 和 **Android**。发布了官方 Windows **Python** 和 **Node.js** 安装包。
+> - **性能优化**：集成 **RabitQ** 量化以及 **CPU 指令集自适应检测**，优化 SIMD 执行。
+> - **生态集成**：提供 **C-API** 用于多种编程语言绑定，以及 **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** 集成。
 >
 > 👉 [查看发布说明](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
