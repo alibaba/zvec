@@ -1,0 +1,139 @@
+<p align="right">
+  <a href="./README.md">English</a> | 简体中文
+</p>
+
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://zvec.oss-cn-hongkong.aliyuncs.com/logo/github_log_2.svg" />
+    <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/logo/github_logo_1.svg" width="400" alt="zvec logo" />
+  </picture>
+</div>
+
+<p align="center">
+  <a href="https://codecov.io/github/alibaba/zvec"><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66" alt="代码覆盖率"/></a>
+  <a href="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml/badge.svg?branch=main" alt="Main"/></a>
+  <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="许可证"/></a>
+  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI 版本"/></a>
+  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/badge/python-3.10%20~%203.14-blue.svg" alt="Python 版本"/></a>
+  <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec.svg" alt="npm 版本"/></a>
+</p>
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/20830" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20830" alt="alibaba%2Fzvec | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
+
+<p align="center">
+  <a href="https://zvec.org/en/docs/quickstart/">🚀 <strong>快速开始</strong> </a> |
+  <a href="https://zvec.org/en/">🏠 <strong>主页</strong> </a> |
+  <a href="https://zvec.org/en/docs/">📚 <strong>文档</strong> </a> |
+  <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>基准测试</strong> </a> |
+  <a href="https://deepwiki.com/alibaba/zvec">🔎 <strong>DeepWiki</strong> </a> |
+  <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a> |
+  <a href="https://x.com/ZvecAI">🐦 <strong>X (Twitter)</strong> </a>
+</p>
+
+**Zvec** 是一款开源的进程内向量数据库——轻量、极速，可直接嵌入应用程序。基于 **Proxima**（阿里巴巴经过大规模生产验证的向量搜索引擎）构建，以极简的配置即可提供生产级、低延迟、可扩展的相似性搜索能力。
+
+> [!IMPORTANT]
+> **🚀 v0.3.0 已于 2026 年 4 月 3 日发布**
+>
+> - **新平台支持**：初步支持 **Windows (MSVC)** 和 **Android**。发布了官方 Windows **Python** 和 **Node.js** 安装包。
+> - **性能优化**：**RabitQ** 量化以及 **CPU 自动调度**，优化 SIMD 执行。
+> - **生态集成**：提供 **C-API** 用于自定义语言绑定，以及 **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** 集成，支持 AI Agent。
+>
+> 👉 [查看发布说明](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+
+## 💫 核心特性
+
+- **极致性能**：毫秒级检索数十亿向量。
+- **开箱即用**：[安装](#-安装) 后即刻开始搜索，无需服务器、无需配置、零门槛。
+- **稠密 + 稀疏向量**：同时支持稠密和稀疏嵌入，单次调用即可原生支持多向量查询。
+- **混合检索**：将语义相似性与结构化过滤相结合，获得精确结果。
+- **随处运行**：作为进程内库，Zvec 可以在你的代码运行的任何地方运行——Notebook、服务器、CLI 工具，甚至边缘设备。
+
+## 📦 安装
+
+### [Python](https://pypi.org/project/zvec/)
+
+**环境要求**：Python 3.10 - 3.14
+
+```bash
+pip install zvec
+```
+
+### [Node.js](https://www.npmjs.com/package/@zvec/zvec)
+
+```bash
+npm install @zvec/zvec
+```
+
+### ✅ 支持的平台
+
+- Linux (x86_64, ARM64)
+- macOS (ARM64)
+- Windows (x86_64)
+
+### 🛠️ 从源码构建
+
+如果你更倾向于从源码构建 Zvec，请参考 [从源码构建指南](https://zvec.org/en/docs/build/)。
+
+## ⚡ 一分钟上手示例
+
+```python
+import zvec
+
+# 定义集合 Schema
+schema = zvec.CollectionSchema(
+    name="example",
+    vectors=zvec.VectorSchema("embedding", zvec.DataType.VECTOR_FP32, 4),
+)
+
+# 创建集合
+collection = zvec.create_and_open(path="./zvec_example", schema=schema)
+
+# 插入文档
+collection.insert([
+    zvec.Doc(id="doc_1", vectors={"embedding": [0.1, 0.2, 0.3, 0.4]}),
+    zvec.Doc(id="doc_2", vectors={"embedding": [0.2, 0.3, 0.4, 0.1]}),
+])
+
+# 通过向量相似度搜索
+results = collection.query(
+    zvec.VectorQuery("embedding", vector=[0.4, 0.3, 0.3, 0.1]),
+    topk=10
+)
+
+# 结果：按相关性排序的 {'id': str, 'score': float, ...} 列表
+print(results)
+```
+
+## 📈 大规模性能表现
+
+Zvec 提供卓越的速度和效率，非常适合高要求的生产工作负载。
+
+<img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec 性能基准测试" />
+
+有关详细的基准测试方法、配置和完整结果，请参阅我们的 [基准测试文档](https://zvec.org/en/docs/benchmarks/)。
+
+## 🤝 加入社区
+
+<div align="center">
+
+获取最新动态和技术支持——扫码或点击加入：
+
+<div align="center">
+
+| 💬 钉钉群 | 📱 微信群 | 🎮 Discord | X (Twitter) |
+| :---: | :---: | :---: | :---: |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=4" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| 扫码加入 | 扫码加入 | 点击加入 | 点击关注 |
+
+</div>
+
+</div>
+
+## ❤️ 参与贡献
+
+我们欢迎并感谢来自社区的每一份贡献！无论是修复 Bug、新增功能还是完善文档，你的参与都能让 Zvec 变得更好。
+
+请查阅我们的 [贡献指南](./CONTRIBUTING.md) 开始参与！
