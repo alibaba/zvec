@@ -1203,13 +1203,14 @@ bool Doc::operator==(const Doc &other) const {
 
 Status VectorQuery::validate(const FieldSchema *schema) const {
   if ((uint32_t)topk_ > kMaxQueryTopk) {
-    return Status::InvalidArgument("query validate failed: topk[", topk_,
-                                   "] is too large, max is ", kMaxQueryTopk);
+    return Status::InvalidArgument("Invalid query: topk[", topk_,
+                                   "] exceeds the maximum allowed value of ",
+                                   kMaxQueryTopk);
   }
   if (output_fields_.has_value() &&
       output_fields_->size() > kMaxOutputFieldSize) {
     return Status::InvalidArgument(
-        "query validate failed: output_fields is too large, max is ",
+        "Invalid query: too many output fields, the maximum allowed is ",
         kMaxOutputFieldSize);
   }
 
@@ -1219,9 +1220,8 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
       return Status::OK();
     }
 
-    return Status::InvalidArgument("query validate failed:  vector_field[",
-                                   field_name_,
-                                   "] not defined in the collection schema");
+    return Status::InvalidArgument("Invalid query: vector field[", field_name_,
+                                   "] is not defined in the collection schema");
   }
   // validate dense/sparse vector
   if (schema->is_dense_vector()) {
@@ -1231,25 +1231,29 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
       case DataType::VECTOR_FP16:
         if (dim * sizeof(float16_t) != query_vector_.size()) {
           return Status::InvalidArgument(
-              "query validate failed: dimension is invalid");
+              "Invalid query: dimension mismatch, expected ", dim, " but got ",
+              query_vector_.size() / sizeof(float16_t), " (FP16)");
         }
         break;
       case DataType::VECTOR_FP32:
         if (dim * sizeof(float) != query_vector_.size()) {
           return Status::InvalidArgument(
-              "query validate failed: dimension is invalid");
+              "Invalid query: dimension mismatch, expected ", dim, " but got ",
+              query_vector_.size() / sizeof(float), " (FP32)");
         }
         break;
       case DataType::VECTOR_FP64:
         if (dim * sizeof(double) != query_vector_.size()) {
           return Status::InvalidArgument(
-              "query validate failed: dimension is invalid");
+              "Invalid query: dimension mismatch, expected ", dim, " but got ",
+              query_vector_.size() / sizeof(double), " (FP64)");
         }
         break;
       case DataType::VECTOR_INT8:
         if (dim * sizeof(int8_t) != query_vector_.size()) {
           return Status::InvalidArgument(
-              "query validate failed: dimension is invalid");
+              "Invalid query: dimension mismatch, expected ", dim, " but got ",
+              query_vector_.size() / sizeof(int8_t), " (INT8)");
         }
         break;
       case DataType::VECTOR_INT16:
@@ -1257,22 +1261,22 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
       case DataType::VECTOR_BINARY32:
       case DataType::VECTOR_BINARY64:
         return Status::NotSupported(
-            "query validate failed: unsupported dense vector type");
+            "Invalid query: dense vector type of field[", field_name_,
+            "] is not supported");
       default:
-        return Status::InvalidArgument(
-            "query validate failed: field is not dense vector");
+        return Status::InvalidArgument("Invalid query: field[", field_name_,
+                                       "] is not a dense vector field");
     }
   } else if (schema->is_sparse_vector()) {
     // validate sparse indices size
     if (query_sparse_indices_.size() > kSparseMaxDimSize * sizeof(uint32_t)) {
       return Status::InvalidArgument(
-          "query validate failed: the number of sparse indices exceeds the "
-          "maximum limit ",
+          "Invalid query: too many sparse indices, the maximum allowed is ",
           kSparseMaxDimSize);
     }
   } else {
-    return Status::InvalidArgument(
-        "query validate failed: field is not vector");
+    return Status::InvalidArgument("Invalid query: field[", field_name_,
+                                   "] is not a vector field");
   }
   return Status::OK();
 }
