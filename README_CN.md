@@ -74,7 +74,7 @@ npm install @zvec/zvec
 
 ### 🛠️ 源码构建
 
-如果您更倾向于从源码构建 Zvec，请参考 [源码构建指南](https://zvec.org/en/docs/build/)。
+如果您更倾向于从源码构建 Zvec，请参考[源码构建指南](https://zvec.org/en/docs/build/)。
 
 ## ⚡ 一分钟上手
 
