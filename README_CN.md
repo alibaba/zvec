@@ -26,13 +26,13 @@
   <a href="https://zvec.org/en/docs/quickstart/">🚀 <strong>快速开始</strong> </a> |
   <a href="https://zvec.org/en/">🏠 <strong>主页</strong> </a> |
   <a href="https://zvec.org/en/docs/">📚 <strong>文档</strong> </a> |
-  <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>基准测试</strong> </a> |
+  <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>性能报告</strong> </a> |
   <a href="https://deepwiki.com/alibaba/zvec">🔎 <strong>DeepWiki</strong> </a> |
   <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a> |
   <a href="https://x.com/ZvecAI">🐦 <strong>X (Twitter)</strong> </a>
 </p>
 
-**Zvec** 是一款开源的嵌入式的 (in-process) 的向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置即可提供生产级、低延迟、可扩展的向量检索能力。
+**Zvec** 是一款开源的嵌入式 (进程内) 向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置即可提供生产级、低延迟、可扩展的向量检索能力。
 
 > **🚀 v0.3.0 已于 2026 年 4 月 3 日发布**
 >
@@ -46,9 +46,9 @@
 
 - **极致性能**：毫秒级检索数十亿向量。
 - **开箱即用**：[安装](#-安装) 后即刻开始搜索，无需服务器、无需配置、零门槛。
-- **稠密 + 稀疏向量**：同时支持稠密和稀疏嵌入，单次调用即可原生支持多向量查询。
-- **混合检索**：将语义相似性与结构化过滤相结合，获得精确结果。
-- **随处运行**：作为进程内库，Zvec 可以在你的代码运行的任何地方运行——Notebook、服务器、CLI 工具，甚至边缘设备。
+- **稠密 + 稀疏向量**：支持稠密向量和稀疏向量，提供多向量联合查询的原声支持
+- **混合检索**：向量语义搜索 + 标量条件过滤，获得精确结果。
+- **进程内运行**：无需单独部署服务，纯进程内运行。Notebook、高性能服务器、CLI 工具、边缘设备 — 随处可用
 
 ## 📦 安装
 
@@ -72,53 +72,53 @@ npm install @zvec/zvec
 - macOS (ARM64)
 - Windows (x86_64)
 
-### 🛠️ 从源码构建
+### 🛠️ 源码构建
 
-如果你更倾向于从源码构建 Zvec，请参考 [从源码构建指南](https://zvec.org/en/docs/build/)。
+如果您更倾向于从源码构建 Zvec，请参考 [源码构建指南](https://zvec.org/en/docs/build/)。
 
-## ⚡ 一分钟上手示例
+## ⚡ 一分钟上手
 
 ```python
 import zvec
 
-# 定义集合 Schema
+# 定义 collection Schema
 schema = zvec.CollectionSchema(
     name="example",
     vectors=zvec.VectorSchema("embedding", zvec.DataType.VECTOR_FP32, 4),
 )
 
-# 创建集合
+# 创建 collection
 collection = zvec.create_and_open(path="./zvec_example", schema=schema)
 
-# 插入文档
+# 插入 documents
 collection.insert([
     zvec.Doc(id="doc_1", vectors={"embedding": [0.1, 0.2, 0.3, 0.4]}),
     zvec.Doc(id="doc_2", vectors={"embedding": [0.2, 0.3, 0.4, 0.1]}),
 ])
 
-# 通过向量相似度搜索
+# 向量相似度检索
 results = collection.query(
     zvec.VectorQuery("embedding", vector=[0.4, 0.3, 0.3, 0.1]),
     topk=10
 )
 
-# 结果：按相关性排序的 {'id': str, 'score': float, ...} 列表
+# 查询结果：按相关性排序的 {'id': str, 'score': float, ...} 列表
 print(results)
 ```
 
-## 📈 大规模性能表现
+## 📈 极致性能
 
-Zvec 提供卓越的速度和效率，非常适合高要求的生产工作负载。
+Zvec 提供极致的速度和效率，非常适合高要求的生产工作负载。
 
 <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec 性能基准测试" />
 
-有关详细的基准测试方法、配置和完整结果，请参阅我们的 [基准测试文档](https://zvec.org/en/docs/benchmarks/)。
+请参阅我们的 [性能报告文档](https://zvec.org/en/docs/benchmarks/) 以了解更具体的测试方法，配置，和完整结果。
 
 ## 🤝 加入社区
 
 <div align="center">
 
-获取最新动态和技术支持——扫码或点击加入：
+获取最新动态和技术支持：
 
 <div align="center">
 
@@ -133,6 +133,6 @@ Zvec 提供卓越的速度和效率，非常适合高要求的生产工作负载
 
 ## ❤️ 参与贡献
 
-我们欢迎并感谢来自社区的每一份贡献！无论是修复 Bug、新增功能还是完善文档，你的参与都能让 Zvec 变得更好。
+我们欢迎并感谢来自社区的每一份贡献！无论是修复 Bug、新增功能还是完善文档，您的参与都能让 Zvec 变得更好。
 
 请查阅我们的 [贡献指南](./CONTRIBUTING.md) 开始参与！
