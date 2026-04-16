@@ -44,11 +44,11 @@
 
 ## 💫 核心特性
 
-- **极致性能**：毫秒级检索数十亿向量。
+- **极致性能**：毫秒级响应，轻松检索数十亿级向量。
 - **开箱即用**：[安装](#-安装) 后即刻开始搜索，无需服务器、无需配置、零门槛。
-- **稠密 + 稀疏向量**：支持稠密向量和稀疏向量，提供多向量联合查询的原声支持
+- **稠密 + 稀疏向量**：支持稠密向量和稀疏向量，提供多向量联合查询的原声支持。
 - **混合检索**：向量语义搜索 + 标量条件过滤，获得精确结果。
-- **进程内运行**：无需单独部署服务，纯进程内运行。Notebook、高性能服务器、CLI 工具、边缘设备 — 随处可用
+- **进程内运行**：无需单独部署服务，纯进程内运行。Notebook、高性能服务器、CLI 工具、边缘设备 — 随处可用。
 
 ## 📦 安装
 
@@ -81,7 +81,7 @@ npm install @zvec/zvec
 ```python
 import zvec
 
-# 定义 collection Schema
+# 定义 collection schema
 schema = zvec.CollectionSchema(
     name="example",
     vectors=zvec.VectorSchema("embedding", zvec.DataType.VECTOR_FP32, 4),
@@ -108,7 +108,7 @@ print(results)
 
 ## 📈 极致性能
 
-Zvec 提供极致的速度和效率，非常适合高要求的生产工作负载。
+Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境负载。
 
 <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec 性能基准测试" />
 
