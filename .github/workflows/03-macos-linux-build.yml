@@ -97,6 +97,22 @@ jobs:
           echo "$($PYTHON -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
         shell: bash
 
+      - name: Get pip cache dir
+        if: ${{ contains(inputs.os, 'riscv') }}
+        id: pip-cache
+        run: |
+          echo "dir=$($PYTHON -m pip cache dir)" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Cache pip dependencies for RISC-V
+        if: ${{ contains(inputs.os, 'riscv') }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ runner.os }}-riscv-pip-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-riscv-pip-
+
       - name: Install dependencies
         run: |
 <<<<<<< HEAD
