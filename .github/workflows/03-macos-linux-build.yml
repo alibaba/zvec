@@ -99,6 +99,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+<<<<<<< HEAD
           $PYTHON -m pip install --upgrade pip \
             pybind11==3.0 \
             cmake==3.30.0 \
@@ -107,6 +108,17 @@ jobs:
             pytest-xdist \
             scikit-build-core \
             setuptools_scm
+=======
+          $PYTHON -m pip install --upgrade pip          
+          DEPS="pybind11==3.0 cmake==3.30.0 ninja==1.11.1 pytest scikit-build-core setuptools_scm"
+          
+          if [[ "${{ inputs.os }}" == *"riscv"* ]]; then
+            echo "RISC-V architecture detected. Adding build tools for compiling numpy from source..."
+            DEPS="$DEPS meson-python meson Cython"
+          fi
+          
+          $PYTHON -m pip install $DEPS
+>>>>>>> 61d8516 (ci: add RISC-V numpy dependencies)
         shell: bash
 
       - name: Build from source
