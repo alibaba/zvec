@@ -232,8 +232,7 @@ class FileHelper {
   }
 
   //! Perform a lightweight sanity check on the path string.
-  //! This only catches obvious invalid inputs (empty string, embedded null
-  //! bytes, and Windows-forbidden characters); it does NOT guarantee the path
+  //! This only catches obvious invalid input and does NOT guarantee the path
   //! is usable.
   static bool PathSimpleValidation(const std::string &path) {
     if (path.empty()) return false;
@@ -243,9 +242,6 @@ class FileHelper {
 #ifdef _WIN32
     // Characters forbidden in Windows path components.
     if (path.find_first_of("<>\"|?*") != std::string::npos) return false;
-    // ':' is only valid as a drive-letter separator at position 1 (e.g. "C:\").
-    auto colon = path.find(':');
-    if (colon != std::string::npos && colon != 1) return false;
 #endif
 
     return true;
