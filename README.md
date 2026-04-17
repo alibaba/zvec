@@ -35,7 +35,8 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Built on **Proxima** (Alibaba's battle-tested vector search engine), it delivers production-grade, low-latency, scalable similarity search with minimal setup.
 
 > [!Important]
-> 🔎 **v0.3.1 (Apr 17, 2026)** : Relaxed collection path restrictions and improved Windows path handling. [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.3.1)
+> 🚀 **v0.3.1 (Apr 17, 2026)**
+> - Relaxed collection path restrictions and improved Windows path handling.
 > 
 > 🚀 **v0.3.0 (April 3, 2026)**
 >
