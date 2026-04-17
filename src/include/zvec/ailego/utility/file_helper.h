@@ -41,10 +41,11 @@ struct FileHelper {
   //! Retrieve the final path for the specified file
   static bool GetFilePath(NativeHandle handle, std::string *path);
 
-  //! Retrieve current working directory
+  //! Retrieve current working directory (UTF-8 bytes in \p *path)
   static bool GetWorkingDirectory(std::string *path);
 
-  //! Get the size of a file
+  //! Narrow paths are UTF-8 on all platforms (on Windows, decoded as UTF-8;
+  //! on POSIX, native narrow encoding is typically UTF-8).
   static bool GetFileSize(const char *path, size_t *psz);
 
   //! Delete a name and possibly the file it refers to
@@ -77,8 +78,8 @@ struct FileHelper {
   //! Retrieve non-zero if two paths are pointing to the same file
   static bool IsSame(const char *path1, const char *path2);
 
-  //! Retrieve a human-readable string for the most recent OS error
-  //! (GetLastError() on Windows, strerror(errno) on POSIX)
+  //! Human-readable error: last std::filesystem failure on this thread if any,
+  //! else GetLastError() on Windows or strerror(errno) on POSIX.
   static std::string GetLastErrorString();
 
   //! Retrieve the size of a file
