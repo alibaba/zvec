@@ -696,23 +696,24 @@ Doc::Ptr Doc::deserialize(const uint8_t *data, size_t /*size*/) {
 Status Doc::validate(const CollectionSchema::Ptr &schema,
                      bool is_update) const {
   if (!schema) {
-    return Status::InternalError("doc validate failed: schema is null");
+    return Status::InternalError("schema is null during doc validation");
   }
 
   if (pk_.empty()) {
-    return Status::InvalidArgument("doc validate failed: doc_id is not set");
+    return Status::InvalidArgument("Invalid doc: id (primary key) is not set");
   }
 
   if (!std::regex_match(pk_, DOC_PK_REGEX)) {
-    return Status::InvalidArgument("doc validate failed: doc_id[", pk_,
-                                   "] cannot pass the regex verification");
+    return Status::InvalidArgument("Invalid doc: doc[", pk_,
+                                   "] contains invalid characters");
   }
 
   // check doc fields match schema
   for (auto &[name, value] : fields_) {
     if (!schema->has_field(name)) {
-      return Status::InvalidArgument("doc validate failed: field[", name,
-                                     "] does not exist in collection's schema");
+      return Status::InvalidArgument(
+          "Invalid doc: field[", name,
+          "] does not exist in the collection schema");
     }
   }
 
@@ -724,17 +725,15 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
       if (field_schema->nullable() || is_update) {
         continue;
       }
-      return Status::InvalidArgument(
-          "doc validate failed: field[", field_name,
-          "] is configured not nullable, but doc does not contain this field");
+      return Status::InvalidArgument("Invalid doc: field[", field_name,
+                                     "] is required but not provided");
     } else {
       if (std::holds_alternative<std::monostate>(field_pair->second)) {
         if (field_schema->nullable()) {
           continue;
         }
-        return Status::InvalidArgument(
-            "doc validate failed: field[", field_name,
-            "] is configured not nullable, but doc's field value is empty");
+        return Status::InvalidArgument("Invalid doc: field[", field_name,
+                                       "] is required but its value is null");
       }
     }
 
@@ -864,14 +863,14 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
               field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "doc validate failed: field[", field_name,
-                "]'s sparse vector indices and values size not match");
+                "Invalid doc: sparse vector field[", field_name,
+                "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "doc validate failed: vector[", field_name,
-                "], the number of sparse indices exceeds the maximum limit ",
-                kSparseMaxDimSize);
+                "Invalid doc: sparse vector field[", field_name,
+                "] exceeds the maximum number of sparse indices (",
+                kSparseMaxDimSize, ")");
           }
         }
         break;
@@ -885,38 +884,36 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
                   field_value);
           if (sparse_values.size() != sparse_indices.size()) {
             return Status::InvalidArgument(
-                "doc validate failed: field[", field_name,
-                "]'s sparse vector indices and values size not match");
+                "Invalid doc: sparse vector field[", field_name,
+                "] has mismatched indices and values sizes");
           }
           if (sparse_indices.size() > kSparseMaxDimSize) {
             return Status::InvalidArgument(
-                "doc validate failed: vector[", field_name,
-                "], the number of sparse indices exceeds the maximum limit ",
-                kSparseMaxDimSize);
+                "Invalid doc: sparse vector field[", field_name,
+                "] exceeds the maximum number of sparse indices (",
+                kSparseMaxDimSize, ")");
           }
         }
         break;
       }
       default:
-        return Status::InvalidArgument("doc validate failed: field[",
-                                       field_name,
-                                       "]'s value type is not supported");
+        return Status::InvalidArgument("Invalid doc: field[", field_name,
+                                       "] has unsupported data type");
         break;
     }
 
     if (!type_match) {
       return Status::InvalidArgument(
-          "doc validate failed: field[", field_name,
-          "]'s value type mismatch, it should be ",
-          DataTypeCodeBook::AsString(expected_type), ", but got type: ",
+          "Invalid doc: field[", field_name, "] type mismatch, expected ",
+          DataTypeCodeBook::AsString(expected_type), " but got ",
           get_value_type_name(field_value, field_schema->is_vector_field()));
     }
     if (field_schema->is_dense_vector()) {
       if (value_dimension != field_schema->dimension()) {
-        return Status::InvalidArgument(
-            "doc validate failed: field[", field_name,
-            "]'s dimension mismatch, it should be ", field_schema->dimension(),
-            ", but got dimension: ", value_dimension);
+        return Status::InvalidArgument("Invalid doc: field[", field_name,
+                                       "] dimension mismatch, expected ",
+                                       field_schema->dimension(), " but got ",
+                                       value_dimension);
       }
     }
   }
