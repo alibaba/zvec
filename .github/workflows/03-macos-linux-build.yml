@@ -97,22 +97,6 @@ jobs:
           echo "$($PYTHON -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
         shell: bash
 
-      - name: Get pip cache dir
-        if: ${{ contains(inputs.os, 'riscv') }}
-        id: pip-cache
-        run: |
-          echo "dir=$($PYTHON -m pip cache dir)" >> $GITHUB_OUTPUT
-        shell: bash
-
-      - name: Cache pip dependencies for RISC-V
-        if: ${{ contains(inputs.os, 'riscv') }}
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.pip-cache.outputs.dir }}
-          key: ${{ runner.os }}-riscv-pip-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-riscv-pip-
-
       - name: Install dependencies
         run: |
 <<<<<<< HEAD
@@ -126,13 +110,13 @@ jobs:
             setuptools_scm
 =======
           $PYTHON -m pip install --upgrade pip          
-          DEPS="pybind11==3.0 cmake==3.30.0 ninja==1.11.1 pytest scikit-build-core setuptools_scm"
           
           if [[ "${{ inputs.os }}" == *"riscv"* ]]; then
-            echo "RISC-V architecture detected. Adding build tools for compiling numpy from source..."
-            DEPS="$DEPS meson-python meson Cython"
+            echo "RISC-V architecture detected. Installing pre-built NumPy from RISE..."
+            $PYTHON -m pip install numpy==2.2.2 --index-url https://gitlab.com/api/v4/projects/56254198/packages/pypi/simple
           fi
           
+          DEPS="pybind11==3.0 cmake==3.30.0 ninja==1.11.1 pytest scikit-build-core setuptools_scm"
           $PYTHON -m pip install $DEPS
 >>>>>>> 61d8516 (ci: add RISC-V numpy dependencies)
         shell: bash
