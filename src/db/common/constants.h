@@ -52,7 +52,7 @@ constexpr uint32_t kMaxScalarFieldSize = 1024;
 
 constexpr uint32_t kMaxVectorFieldSize = 5;
 
-constexpr uint32_t kMaxQueryTopk = 1024;
+constexpr uint32_t kMaxQueryTopk = 100000;
 
 constexpr uint32_t kMaxOutputFieldSize = 1024;
 

@@ -2110,7 +2110,8 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
 
 TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
 #ifdef __ANDROID__
-  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink support (needed by RocksDB checkpoint)";
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
 #endif
   auto func = [&](std::string field_name, bool enable_optimize,
                   IndexParams::Ptr scalar_index_params = nullptr) {
@@ -2387,7 +2388,8 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
 
 TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
 #ifdef __ANDROID__
-  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink support (needed by RocksDB checkpoint)";
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
 #endif
   auto func = [&](std::string field_name, bool enable_optimize) {
     FileHelper::RemoveDirectory(col_path);
@@ -3234,7 +3236,7 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
 
   {
     VectorQuery query;
-    query.topk_ = 1024;
+    query.topk_ = 100000;
     query.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);
@@ -3266,7 +3268,7 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
 
   {
     VectorQuery query;
-    query.topk_ = 1025;
+    query.topk_ = 100001;
     query.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);

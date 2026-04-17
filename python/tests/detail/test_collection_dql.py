@@ -13,28 +13,24 @@
 # limitations under the License.
 
 
-from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
+from distance_helper import *
+from doc_helper import *
+from fixture_helper import *
+from params_helper import *
+from zvec import StatusCode
+from zvec.extension import QwenReRanker, RrfReRanker, WeightedReRanker
 from zvec.model import Collection, Doc, VectorQuery
 from zvec.model.param import (
     CollectionOption,
-    InvertIndexParam,
-    HnswIndexParam,
     FlatIndexParam,
-    IVFIndexParam,
+    HnswIndexParam,
     HnswQueryParam,
+    InvertIndexParam,
+    IVFIndexParam,
     IVFQueryParam,
 )
-
-
 from zvec.model.schema import FieldSchema, VectorSchema
-from zvec.extension import RrfReRanker, WeightedReRanker, QwenReRanker
-from distance_helper import *
-
-from zvec import StatusCode
-from distance_helper import *
-from fixture_helper import *
-from doc_helper import *
-from params_helper import *
+from zvec.typing import DataType, MetricType, QuantizeType, StatusCode
 
 
 # ==================== helper ====================
@@ -53,34 +49,34 @@ def batchdoc_and_check(
 
     assert len(result) == len(multiple_docs)
     for item in result:
-        assert item.ok(), (
-            f"result={result},Insert operation failed with code {item.code()}"
-        )
+        assert (
+            item.ok()
+        ), f"result={result},Insert operation failed with code {item.code()}"
 
     stats = collection.stats
     assert stats is not None, "Collection stats should not be None"
-    assert stats.doc_count == len(multiple_docs), (
-        f"Document count should be {len(multiple_docs)} after insert, but got {stats.doc_count}"
-    )
+    assert stats.doc_count == len(
+        multiple_docs
+    ), f"Document count should be {len(multiple_docs)} after insert, but got {stats.doc_count}"
 
     doc_ids = [doc.id for doc in multiple_docs]
     fetched_docs = collection.fetch(doc_ids)
-    assert len(fetched_docs) == len(multiple_docs), (
-        f"fetched_docs={fetched_docs},Expected {len(multiple_docs)} fetched documents, but got {len(fetched_docs)}"
-    )
+    assert len(fetched_docs) == len(
+        multiple_docs
+    ), f"fetched_docs={fetched_docs},Expected {len(multiple_docs)} fetched documents, but got {len(fetched_docs)}"
 
     for original_doc in multiple_docs:
-        assert original_doc.id in fetched_docs, (
-            f"Expected document ID {original_doc.id} in fetched documents"
-        )
+        assert (
+            original_doc.id in fetched_docs
+        ), f"Expected document ID {original_doc.id} in fetched documents"
         fetched_doc = fetched_docs[original_doc.id]
 
         assert is_doc_equal(fetched_doc, original_doc, collection.schema)
 
         assert hasattr(fetched_doc, "score"), "Document should have a score attribute"
-        assert fetched_doc.score == 0.0, (
-            "Fetch operation should return default score of 0.0"
-        )
+        assert (
+            fetched_doc.score == 0.0
+        ), "Fetch operation should return default score of 0.0"
 
     first_doc = multiple_docs[doc_num - 1]
     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
@@ -89,9 +85,9 @@ def batchdoc_and_check(
             topk=1024,
             include_vector=True,
         )
-        assert len(query_result) > 0, (
-            f"Expected at least 1 query result, but got {len(query_result)}"
-        )
+        assert (
+            len(query_result) > 0
+        ), f"Expected at least 1 query result, but got {len(query_result)}"
 
         found_doc = None
 
@@ -99,9 +95,9 @@ def batchdoc_and_check(
             if doc.id == first_doc.id:
                 found_doc = doc
                 break
-        assert found_doc is not None, (
-            f"Inserted document {first_doc.id} not found in query results"
-        )
+        assert (
+            found_doc is not None
+        ), f"Inserted document {first_doc.id} not found in query results"
 
         assert is_doc_equal(found_doc, first_doc, collection.schema)
         assert hasattr(found_doc, "score")
@@ -123,34 +119,34 @@ def batchdoc_and_check_ivf(
 
     assert len(result) == len(multiple_docs)
     for item in result:
-        assert item.ok(), (
-            f"result={result},Insert operation failed with code {item.code()}"
-        )
+        assert (
+            item.ok()
+        ), f"result={result},Insert operation failed with code {item.code()}"
 
     stats = collection.stats
     assert stats is not None, "Collection stats should not be None"
-    assert stats.doc_count == len(multiple_docs), (
-        f"Document count should be {len(multiple_docs)} after insert, but got {stats.doc_count}"
-    )
+    assert stats.doc_count == len(
+        multiple_docs
+    ), f"Document count should be {len(multiple_docs)} after insert, but got {stats.doc_count}"
 
     doc_ids = [doc.id for doc in multiple_docs]
     fetched_docs = collection.fetch(doc_ids)
-    assert len(fetched_docs) == len(multiple_docs), (
-        f"fetched_docs={fetched_docs},Expected {len(multiple_docs)} fetched documents, but got {len(fetched_docs)}"
-    )
+    assert len(fetched_docs) == len(
+        multiple_docs
+    ), f"fetched_docs={fetched_docs},Expected {len(multiple_docs)} fetched documents, but got {len(fetched_docs)}"
 
     for original_doc in multiple_docs:
-        assert original_doc.id in fetched_docs, (
-            f"Expected document ID {original_doc.id} in fetched documents"
-        )
+        assert (
+            original_doc.id in fetched_docs
+        ), f"Expected document ID {original_doc.id} in fetched documents"
         fetched_doc = fetched_docs[original_doc.id]
 
         assert is_doc_equal(fetched_doc, original_doc, collection.schema)
 
         assert hasattr(fetched_doc, "score"), "Document should have a score attribute"
-        assert fetched_doc.score == 0.0, (
-            "Fetch operation should return default score of 0.0"
-        )
+        assert (
+            fetched_doc.score == 0.0
+        ), "Fetch operation should return default score of 0.0"
 
     first_doc = multiple_docs[doc_num - 1]
     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
@@ -160,9 +156,9 @@ def batchdoc_and_check_ivf(
                 topk=1024,
                 include_vector=True,
             )
-            assert len(query_result) > 0, (
-                f"Expected at least 1 query result, but got {len(query_result)}"
-            )
+            assert (
+                len(query_result) > 0
+            ), f"Expected at least 1 query result, but got {len(query_result)}"
 
             found_doc = None
 
@@ -170,9 +166,9 @@ def batchdoc_and_check_ivf(
                 if doc.id == first_doc.id:
                     found_doc = doc
                     break
-            assert found_doc is not None, (
-                f"Inserted document {first_doc.id} not found in query results"
-            )
+            assert (
+                found_doc is not None
+            ), f"Inserted document {first_doc.id} not found in query results"
 
             assert is_doc_equal(found_doc, first_doc, collection.schema)
             assert hasattr(found_doc, "score")
@@ -224,12 +220,12 @@ def single_querydoc_check(
                             full_collection.schema.vector(vector_name).data_type
                             != DataType.VECTOR_FP16
                         ):
-                            assert abs(doc.score - expected_score) < 0.001, (
-                                f"{data_type} {vector_name} :Expected score {expected_score:.6f}, but got {doc.score:.6f} for document {doc.id}"
-                            )
-                        assert doc.score <= prev_score, (
-                            f"{data_type} {vector_name} :Scores should be in descending order. Current: {doc.score}, Previous: {prev_score}"
-                        )
+                            assert (
+                                abs(doc.score - expected_score) < 0.001
+                            ), f"{data_type} {vector_name} :Expected score {expected_score:.6f}, but got {doc.score:.6f} for document {doc.id}"
+                        assert (
+                            doc.score <= prev_score
+                        ), f"{data_type} {vector_name} :Scores should be in descending order. Current: {doc.score}, Previous: {prev_score}"
                         prev_score = doc.score
 
 
@@ -241,12 +237,12 @@ def multi_querydoc_check(multiple_docs, query_result, full_collection):
                 assert is_doc_equal(
                     found_doc, original_doc, full_collection.schema, False, False
                 )
-                assert hasattr(found_doc, "score"), (
-                    "Document should have a score attribute"
-                )
-                assert found_doc.score >= 0.0, (
-                    "Fetch operation should return default score of 0.0"
-                )
+                assert hasattr(
+                    found_doc, "score"
+                ), "Document should have a score attribute"
+                assert (
+                    found_doc.score >= 0.0
+                ), "Fetch operation should return default score of 0.0"
                 for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
                     assert found_doc.vector(v) == {}
 
@@ -273,9 +269,9 @@ class TestCollectionFetch:
 
     def test_fetch_empty_ids(self, full_collection: Collection):
         result = full_collection.fetch(ids=[])
-        assert len(result) == 0, (
-            f"Expected 0 results for empty ID list, but got {len(result)}"
-        )
+        assert (
+            len(result) == 0
+        ), f"Expected 0 results for empty ID list, but got {len(result)}"
 
 
 class TestCollectionQuery:
@@ -474,7 +470,7 @@ class TestCollectionQuery:
             assert "Invalid filter" in str(exc_info.value)
 
     @pytest.mark.parametrize("field_name", ["int32_field"])
-    @pytest.mark.parametrize("topk_value", [1, 5, 10, 50, 100, 500, 1000, 1024])
+    @pytest.mark.parametrize("topk_value", [1, 5, 10, 50, 100, 500, 1000, 1024, 100000])
     def test_query_with_filter_topk_valid(
         self, full_collection: Collection, topk_value: int, field_name
     ):
@@ -656,9 +652,9 @@ class TestCollectionQuery:
                 query_result = full_collection_new.query(
                     VectorQuery(field_name=v, vector=query_vector)
                 )
-            assert len(query_result) > 0, (
-                f"Expected at least 1 query result, but got {len(query_result)}"
-            )
+            assert (
+                len(query_result) > 0
+            ), f"Expected at least 1 query result, but got {len(query_result)}"
             single_querydoc_check(
                 multiple_docs,
                 query_result,
@@ -687,9 +683,9 @@ class TestCollectionQuery:
                     VectorQuery(field_name=v, vector=query_vector),
                     topk=1024,
                 )
-                assert len(query_result) > 0, (
-                    f"Expected at least 1 query result, but got {len(query_result)}"
-                )
+                assert (
+                    len(query_result) > 0
+                ), f"Expected at least 1 query result, but got {len(query_result)}"
                 single_querydoc_check(
                     multiple_docs,
                     query_result,
@@ -723,26 +719,26 @@ class TestCollectionQuery:
             vectors=multi_query_vectors,
             reranker=rrf_reranker,
         )
-        assert len(multi_query_result) > 0, (
-            f"Expected at least 1 result, but got {len(multi_query_result)}"
-        )
+        assert (
+            len(multi_query_result) > 0
+        ), f"Expected at least 1 result, but got {len(multi_query_result)}"
 
         multi_querydoc_check(multiple_docs, multi_query_result, full_collection)
 
         prev_score = float("inf")
         for i, doc in enumerate(multi_query_result):
             doc_id = doc.id
-            assert doc_id in expected_rrf_scores, (
-                f"Document {doc_id} should be in expected RRF scores"
-            )
+            assert (
+                doc_id in expected_rrf_scores
+            ), f"Document {doc_id} should be in expected RRF scores"
             expected_score = expected_rrf_scores[doc_id]
             actual_score = doc.score
-            assert abs(actual_score - expected_score) < 1e-10, (
-                f"RRF score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
-            )
-            assert doc.score <= prev_score, (
-                f"Scores should be in descending order. Current: {doc.score}, Previous: {prev_score}"
-            )
+            assert (
+                abs(actual_score - expected_score) < 1e-10
+            ), f"RRF score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
+            assert (
+                doc.score <= prev_score
+            ), f"Scores should be in descending order. Current: {doc.score}, Previous: {prev_score}"
             prev_score = doc.score
 
     @pytest.mark.parametrize(
@@ -791,26 +787,26 @@ class TestCollectionQuery:
             vectors=multi_query_vectors,
             reranker=weighted_reranker,
         )
-        assert len(multi_query_result) > 0, (
-            f"Expected at least 1 result, but got {len(multi_query_result)}"
-        )
+        assert (
+            len(multi_query_result) > 0
+        ), f"Expected at least 1 result, but got {len(multi_query_result)}"
 
         multi_querydoc_check(multiple_docs, multi_query_result, full_collection)
 
         prev_score = float("inf")
         for i, doc in enumerate(multi_query_result):
             doc_id = doc.id
-            assert doc_id in expected_weighted_scores, (
-                f"Document {doc_id} should be in expected  scores"
-            )
+            assert (
+                doc_id in expected_weighted_scores
+            ), f"Document {doc_id} should be in expected  scores"
             expected_score = expected_weighted_scores[doc_id]
             actual_score = doc.score
-            assert abs(actual_score - expected_score) < 1e-10, (
-                f"score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
-            )
-            assert doc.score <= prev_score, (
-                f"Scores should be in descending order. Current: {doc.score}, Previous: {prev_score}"
-            )
+            assert (
+                abs(actual_score - expected_score) < 1e-10
+            ), f"score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
+            assert (
+                doc.score <= prev_score
+            ), f"Scores should be in descending order. Current: {doc.score}, Previous: {prev_score}"
             prev_score = doc.score
 
     @pytest.mark.parametrize("topk", [5])
@@ -875,9 +871,9 @@ class TestCollectionQuery:
                 ),
                 topk=topk,
             )
-            assert len(query_result) > 0, (
-                f"Expected at least 1 query result, but got {len(query_result)}"
-            )
+            assert (
+                len(query_result) > 0
+            ), f"Expected at least 1 query result, but got {len(query_result)}"
             single_querydoc_check(
                 multiple_docs,
                 query_result,
@@ -1142,26 +1138,26 @@ class TestRRFScoreCalculation:
     def test_rrf_score_calculation_formula(self):
         k = 60
 
-        assert abs(calculate_rrf_score(0, k) - 1.0 / 61) < 1e-10, (
-            "RRF score for rank 0 should be 1/61"
-        )
-        assert abs(calculate_rrf_score(1, k) - 1.0 / 62) < 1e-10, (
-            "RRF score for rank 1 should be 1/62"
-        )
-        assert abs(calculate_rrf_score(2, k) - 1.0 / 63) < 1e-10, (
-            "RRF score for rank 2 should be 1/63"
-        )
-        assert abs(calculate_rrf_score(10, k) - 1.0 / 71) < 1e-10, (
-            "RRF score for rank 10 should be 1/71"
-        )
+        assert (
+            abs(calculate_rrf_score(0, k) - 1.0 / 61) < 1e-10
+        ), "RRF score for rank 0 should be 1/61"
+        assert (
+            abs(calculate_rrf_score(1, k) - 1.0 / 62) < 1e-10
+        ), "RRF score for rank 1 should be 1/62"
+        assert (
+            abs(calculate_rrf_score(2, k) - 1.0 / 63) < 1e-10
+        ), "RRF score for rank 2 should be 1/63"
+        assert (
+            abs(calculate_rrf_score(10, k) - 1.0 / 71) < 1e-10
+        ), "RRF score for rank 10 should be 1/71"
 
         k = 10
-        assert abs(calculate_rrf_score(0, k) - 1.0 / 11) < 1e-10, (
-            "RRF score for rank 0 with k=10 should be 1/11"
-        )
-        assert abs(calculate_rrf_score(1, k) - 1.0 / 12) < 1e-10, (
-            "RRF score for rank 1 with k=10 should be 1/12"
-        )
+        assert (
+            abs(calculate_rrf_score(0, k) - 1.0 / 11) < 1e-10
+        ), "RRF score for rank 0 with k=10 should be 1/11"
+        assert (
+            abs(calculate_rrf_score(1, k) - 1.0 / 12) < 1e-10
+        ), "RRF score for rank 1 with k=10 should be 1/12"
 
     def test_multi_vector_rrf_scores(self):
         query1_results = [self.MockDoc("1"), self.MockDoc("2"), self.MockDoc("3")]
@@ -1175,32 +1171,32 @@ class TestRRFScoreCalculation:
         rrf_scores = calculate_multi_vector_rrf_scores(query_results, k=60)
 
         expected_doc1_score = 1.0 / 61 + 1.0 / 62
-        assert abs(rrf_scores["1"] - expected_doc1_score) < 1e-10, (
-            f"RRF score for doc1 mismatch: expected {expected_doc1_score}, got {rrf_scores['1']}"
-        )
+        assert (
+            abs(rrf_scores["1"] - expected_doc1_score) < 1e-10
+        ), f"RRF score for doc1 mismatch: expected {expected_doc1_score}, got {rrf_scores['1']}"
         expected_doc2_score = 1.0 / 62 + 1.0 / 61
-        assert abs(rrf_scores["2"] - expected_doc2_score) < 1e-10, (
-            f"RRF score for doc2 mismatch: expected {expected_doc2_score}, got {rrf_scores['2']}"
-        )
+        assert (
+            abs(rrf_scores["2"] - expected_doc2_score) < 1e-10
+        ), f"RRF score for doc2 mismatch: expected {expected_doc2_score}, got {rrf_scores['2']}"
         expected_doc3_score = 1.0 / 63 + 1.0 / 61
-        assert abs(rrf_scores["3"] - expected_doc3_score) < 1e-10, (
-            f"RRF score for doc3 mismatch: expected {expected_doc3_score}, got {rrf_scores['3']}"
-        )
+        assert (
+            abs(rrf_scores["3"] - expected_doc3_score) < 1e-10
+        ), f"RRF score for doc3 mismatch: expected {expected_doc3_score}, got {rrf_scores['3']}"
         expected_doc4_score = 1.0 / 63 + 1.0 / 62
-        assert abs(rrf_scores["4"] - expected_doc4_score) < 1e-10, (
-            f"RRF score for doc4 mismatch: expected {expected_doc4_score}, got {rrf_scores['4']}"
-        )
+        assert (
+            abs(rrf_scores["4"] - expected_doc4_score) < 1e-10
+        ), f"RRF score for doc4 mismatch: expected {expected_doc4_score}, got {rrf_scores['4']}"
 
         expected_doc5_score = 1.0 / 63
-        assert abs(rrf_scores["5"] - expected_doc5_score) < 1e-10, (
-            f"RRF score for doc5 mismatch: expected {expected_doc5_score}, got {rrf_scores['5']}"
-        )
+        assert (
+            abs(rrf_scores["5"] - expected_doc5_score) < 1e-10
+        ), f"RRF score for doc5 mismatch: expected {expected_doc5_score}, got {rrf_scores['5']}"
         sorted_scores = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
         expected_order = ["1", "2", "3", "4", "5"]
         actual_order = [item[0] for item in sorted_scores]
-        assert actual_order == expected_order, (
-            f"RRF score ranking mismatch: expected {expected_order}, got {actual_order}"
-        )
+        assert (
+            actual_order == expected_order
+        ), f"RRF score ranking mismatch: expected {expected_order}, got {actual_order}"
 
 
 class TestCollectionConcurrencyOperations:
