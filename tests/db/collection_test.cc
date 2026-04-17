@@ -30,7 +30,6 @@
 #include "db/index/common/type_helper.h"
 #include "index/utils/utils.h"
 #include "zvec/ailego/utility/float_helper.h"
-#include "zvec/db/config.h"
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/options.h"
@@ -3236,7 +3235,7 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
 
   {
     VectorQuery query;
-    query.topk_ = 100000;
+    query.topk_ = 1024;
     query.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);
