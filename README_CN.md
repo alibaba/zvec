@@ -43,7 +43,7 @@
 > - **性能优化**：集成 **RabitQ** 量化以及 **CPU 指令集自适应检测**，优化 SIMD 执行。
 > - **生态集成**：提供 **C-API** 用于多种编程语言绑定，以及 **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** 集成。
 >
-> 👉 [查看发布日志](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [发布日志](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 核心特性
 
