@@ -35,7 +35,7 @@
 **Zvec** 是一款开源的嵌入式(进程内)向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置提供生产级、低延迟、可扩展的向量检索能力。
 
 > [!IMPORTANT]
-> 🔎 **v0.3.1 （2026 年 4 月 17 日）**：放宽 Collection 路径限制并且改进了 Windows 上的路径处理。 [发布日志](https://github.com/alibaba/zvec/releases/tag/v0.3.1)
+> 🔎 **v0.3.1 （2026 年 4 月 17 日）**：放宽 Collection 路径限制；改进 Windows 上的路径处理。 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.3.1)
 > 
 > **🚀 v0.3.0 （2026 年 4 月 3 日）**
 >
@@ -43,7 +43,7 @@
 > - **性能优化**：集成 **RabitQ** 量化以及 **CPU 指令集自适应检测**，优化 SIMD 执行。
 > - **生态集成**：提供 **C-API** 用于多种编程语言绑定，以及 **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** 集成。
 >
-> 👉 [发布日志](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 核心特性
 
