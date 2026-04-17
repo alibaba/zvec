@@ -1216,18 +1216,19 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
 
   if (schema == nullptr) {
     if (query_vector_.empty() && query_sparse_indices_.empty()) {
-      // No vector provided — this is a scalar-only filter query.
+      // Scalar-only filter query
       return Status::OK();
     } else {
       // If a query vector was provided, the field must exist as a vector field
-      // since we are doing vector similarity search.
+      // since we are performing a vector similarity search.
       return Status::InvalidArgument(
           "Invalid query: query vector is provided, but query field[",
           field_name_,
           "] does not exist or is not a vector field in the collection");
     }
   }
-  // validate dense/sparse vector
+
+  // Vector query
   if (schema->is_dense_vector()) {
     // Validate dimension
     auto dim = schema->dimension();
@@ -1281,6 +1282,15 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
   } else {
     return Status::InvalidArgument("Invalid query: field[", field_name_,
                                    "] is not a vector field");
+  }
+  // Validate query_params type
+  if (query_params_ && query_params_->type() != schema->index_type()) {
+    return Status::InvalidArgument(
+        "Invalid query: query params type does not match the index type of "
+        "vector field[",
+        field_name_, "], expected ",
+        IndexTypeCodeBook::AsString(schema->index_type()), " but got ",
+        IndexTypeCodeBook::AsString(query_params_->type()));
   }
   return Status::OK();
 }
