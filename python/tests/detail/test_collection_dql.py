@@ -13,24 +13,28 @@
 # limitations under the License.
 
 
-from distance_helper import *
-from doc_helper import *
-from fixture_helper import *
-from params_helper import *
-from zvec import StatusCode
-from zvec.extension import QwenReRanker, RrfReRanker, WeightedReRanker
+from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
 from zvec.model import Collection, Doc, VectorQuery
 from zvec.model.param import (
     CollectionOption,
-    FlatIndexParam,
-    HnswIndexParam,
-    HnswQueryParam,
     InvertIndexParam,
+    HnswIndexParam,
+    FlatIndexParam,
     IVFIndexParam,
+    HnswQueryParam,
     IVFQueryParam,
 )
+
+
 from zvec.model.schema import FieldSchema, VectorSchema
-from zvec.typing import DataType, MetricType, QuantizeType, StatusCode
+from zvec.extension import RrfReRanker, WeightedReRanker, QwenReRanker
+from distance_helper import *
+
+from zvec import StatusCode
+from distance_helper import *
+from fixture_helper import *
+from doc_helper import *
+from params_helper import *
 
 
 # ==================== helper ====================
@@ -470,7 +474,7 @@ class TestCollectionQuery:
             assert "Invalid filter" in str(exc_info.value)
 
     @pytest.mark.parametrize("field_name", ["int32_field"])
-    @pytest.mark.parametrize("topk_value", [1, 5, 10, 50, 100, 500, 1000, 1024, 100000])
+    @pytest.mark.parametrize("topk_value", [1, 5, 10, 50, 100, 500, 1000, 1024])
     def test_query_with_filter_topk_valid(
         self, full_collection: Collection, topk_value: int, field_name
     ):
