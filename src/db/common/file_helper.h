@@ -15,12 +15,24 @@
 
 #include <stdint.h>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/file_helper.h>
-#include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec {
+
+namespace file_path_detail {
+
+inline std::filesystem::path U8(const std::string &s) {
+  return std::filesystem::u8path(s);
+}
+
+inline std::string ToUtf8(std::filesystem::path p) {
+  return p.u8string();
+}
+
+}  // namespace file_path_detail
 
 /*
  * File type and id
@@ -73,16 +85,21 @@ class FileHelper {
  public:
   static const std::string MakeWalPath(const std::string &path, uint32_t seg_id,
                                        uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/", block_id,
-                                        ".wal");
+    std::filesystem::path p = file_path_detail::U8(path);
+    p /= std::to_string(seg_id);
+    p /= std::to_string(block_id) + std::string(".wal");
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   static std::string MakeSegmentPath(const std::string &path, uint32_t id,
                                      const std::string &suffix = "") {
+    std::filesystem::path p = file_path_detail::U8(path);
     if (suffix.empty()) {
-      return ailego::StringHelper::Concat(path, "/", id);
+      p /= std::to_string(id);
+    } else {
+      p /= std::to_string(id) + std::string(".") + suffix;
     }
-    return ailego::StringHelper::Concat(path, "/", id, ".", suffix);
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   static std::string MakeTempSegmentPath(const std::string &path, uint32_t id) {
@@ -104,89 +121,110 @@ class FileHelper {
                                                 uint32_t seg_id,
                                                 uint32_t block_id,
                                                 const std::string &suffix) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/scalar.", block_id,
-                                        ".", suffix);
+    std::filesystem::path p = file_path_detail::U8(path);
+    p /= std::to_string(seg_id);
+    p /= std::string("scalar.") + std::to_string(block_id) + "." + suffix;
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   static const std::string MakeForwardBlockPath(const std::string &seg_path,
                                                 uint32_t block_id,
                                                 bool use_parquet = false) {
-    return use_parquet ? ailego::StringHelper::Concat(seg_path, "/scalar.",
-                                                      block_id, ".parquet")
-                       : ailego::StringHelper::Concat(seg_path, "/scalar.",
-                                                      block_id, ".ipc");
+    return use_parquet
+               ? MakeForwardBlockPath(seg_path, block_id,
+                                      std::string("parquet"))
+               : MakeForwardBlockPath(seg_path, block_id, std::string("ipc"));
   }
 
   static const std::string MakeForwardBlockPath(const std::string &seg_path,
                                                 uint32_t block_id,
                                                 const std::string &suffix) {
-    return ailego::StringHelper::Concat(seg_path, "/scalar.", block_id, ".",
-                                        suffix);
+    std::filesystem::path p = file_path_detail::U8(seg_path);
+    p /= std::string("scalar.") + std::to_string(block_id) + "." + suffix;
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   // e.g.: **/seg1/scalar.index.block.1.rocksdb
   static const std::string MakeInvertIndexPath(const std::string &path,
                                                uint32_t seg_id,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/scalar.index.",
-                                        block_id, ".rocksdb");
+    std::filesystem::path p = file_path_detail::U8(path);
+    p /= std::to_string(seg_id);
+    p /= std::string("scalar.index.") + std::to_string(block_id) + ".rocksdb";
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   static const std::string MakeInvertIndexPath(const std::string &seg_path,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(seg_path, "/scalar.index.", block_id,
-                                        ".rocksdb");
+    std::filesystem::path p = file_path_detail::U8(seg_path);
+    p /= std::string("scalar.index.") + std::to_string(block_id) + ".rocksdb";
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   static const std::string MakeVectorIndexPath(const std::string &path,
                                                const std::string &column,
                                                uint32_t seg_id,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/", column,
-                                        ".index.", block_id, ".proxima");
+    std::filesystem::path p = file_path_detail::U8(path);
+    p /= std::to_string(seg_id);
+    p /= file_path_detail::U8(column + ".index." + std::to_string(block_id) +
+                              ".proxima");
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   static const std::string MakeVectorIndexPath(const std::string &seg_path,
                                                const std::string &column,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(seg_path, "/", column, ".index.",
-                                        block_id, ".proxima");
+    std::filesystem::path p = file_path_detail::U8(seg_path);
+    p /= file_path_detail::U8(column + ".index." + std::to_string(block_id) +
+                              ".proxima");
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   // e.g.: **/{seg_id}/{column}.index.block.{block_id}.proxima
   static const std::string MakeQuantizeVectorIndexPath(
       const std::string &path, const std::string &column, uint32_t seg_id,
       uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/", column,
-                                        ".qindex.", block_id, ".proxima");
+    std::filesystem::path p = file_path_detail::U8(path);
+    p /= std::to_string(seg_id);
+    p /= file_path_detail::U8(column + ".qindex." + std::to_string(block_id) +
+                              ".proxima");
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   static const std::string MakeQuantizeVectorIndexPath(
       const std::string &seg_path, const std::string &column,
       uint32_t block_id) {
-    return ailego::StringHelper::Concat(seg_path, "/", column, ".qindex.",
-                                        block_id, ".proxima");
+    std::filesystem::path p = file_path_detail::U8(seg_path);
+    p /= file_path_detail::U8(column + ".qindex." + std::to_string(block_id) +
+                              ".proxima");
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   //! Make file path with ${prefix_path}/${file_name}
   static std::string MakeFilePath(const std::string &prefix_path,
                                   FileID file_id) {
-    return ailego::StringHelper::Concat(prefix_path, "/", GetFileName(file_id));
+    std::filesystem::path p = file_path_detail::U8(prefix_path);
+    p /= GetFileName(file_id);
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   //! Make file path with ${prefix_path}/${file_name}.${number}
   static std::string MakeFilePath(const std::string &prefix_path,
                                   FileID file_id, uint32_t number) {
-    return ailego::StringHelper::Concat(prefix_path, "/", GetFileName(file_id),
-                                        ".", number);
+    std::filesystem::path p = file_path_detail::U8(prefix_path);
+    p /= std::string(GetFileName(file_id)) + "." + std::to_string(number);
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   //! Make file path with ${prefix_path}/${file_name}.${suffix_name}.${number}
   static std::string MakeFilePath(const std::string &prefix_path,
                                   FileID file_id, uint32_t number,
                                   const std::string &suffix_name) {
-    return ailego::StringHelper::Concat(prefix_path, "/", GetFileName(file_id),
-                                        ".", suffix_name, ".", number);
+    std::filesystem::path p = file_path_detail::U8(prefix_path);
+    p /= std::string(GetFileName(file_id)) + "." + suffix_name + "." +
+         std::to_string(number);
+    return file_path_detail::ToUtf8(std::move(p));
   }
 
   //! Create directory
