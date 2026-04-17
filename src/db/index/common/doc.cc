@@ -1215,17 +1215,21 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
   }
 
   if (schema == nullptr) {
-    // support query with vector
     if (query_vector_.empty() && query_sparse_indices_.empty()) {
+      // No vector provided — this is a scalar-only filter query.
       return Status::OK();
+    } else {
+      // If a query vector was provided, the field must exist as a vector field
+      // since we are doing vector similarity search.
+      return Status::InvalidArgument(
+          "Invalid query: query vector is provided, but query field[",
+          field_name_,
+          "] does not exist or is not a vector field in the collection");
     }
-
-    return Status::InvalidArgument("Invalid query: vector field[", field_name_,
-                                   "] is not defined in the collection schema");
   }
   // validate dense/sparse vector
   if (schema->is_dense_vector()) {
-    // validate dimension
+    // Validate dimension
     auto dim = schema->dimension();
     switch (schema->data_type()) {
       case DataType::VECTOR_FP16:
@@ -1268,7 +1272,7 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
                                        "] is not a dense vector field");
     }
   } else if (schema->is_sparse_vector()) {
-    // validate sparse indices size
+    // Validate sparse indices size
     if (query_sparse_indices_.size() > kSparseMaxDimSize * sizeof(uint32_t)) {
       return Status::InvalidArgument(
           "Invalid query: too many sparse indices, the maximum allowed is ",
