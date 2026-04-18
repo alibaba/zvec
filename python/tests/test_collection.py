@@ -13,7 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-
 import pytest
 import zvec
 from zvec import (
@@ -23,15 +22,15 @@ from zvec import (
     Doc,
     FieldSchema,
     HnswIndexParam,
+    IndexOption,
+    IndexType,
     InvertIndexParam,
     LogLevel,
     LogType,
-    VectorSchema,
-    StatusCode,
-    IndexOption,
-    IndexType,
-    VectorQuery,
     OptimizeOption,
+    StatusCode,
+    VectorQuery,
+    VectorSchema,
 )
 
 # ==================== Common ====================
@@ -469,10 +468,9 @@ class TestCollectionInsert:
             vectors={"dense": [1 + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
         )
         with pytest.raises(ValueError) as e:
-            # ValueError: doc validate failed: field[id] is configured not nullable,
-            # but doc does not contain this field
+            # ValueError: Invalid doc: field[id] is required but not provided
             test_collection.insert(doc)
-        assert "field[id] is configured not nullable" in str(e.value)
+        assert "field[id] is required but not provided" in str(e.value)
 
         # without name
         doc = Doc(
@@ -484,7 +482,7 @@ class TestCollectionInsert:
         )
         with pytest.raises(ValueError) as e:
             test_collection.insert(doc)
-        assert "field[name] is configured not nullable" in str(e.value)
+        assert "field[name] is required but not provided" in str(e.value)
 
     def test_collection_insert_with_nullable_true_field(self, test_collection):
         # id, name's nullable == False
@@ -591,8 +589,7 @@ class TestCollectionUpdate:
             fields={"id": None},
         )
         with pytest.raises(ValueError) as e:
-            # ValueError: doc validate failed: field[id] is configured not nullable,
-            # but doc does not contain this field
+            # ValueError: Invalid doc: field[id] is required but its value is null
             collection_with_single_doc.update(doc)
 
         doc = Doc(
