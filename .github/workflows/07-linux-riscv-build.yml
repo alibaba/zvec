@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 name: Nightly Linux RISC-V Build
 
 on:
@@ -5,13 +6,22 @@ on:
     - cron: '0 16 * * *'
 
   workflow_dispatch:
+=======
+name: Linux RISC-V Build
+
+on:
+  workflow_call:
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
 
 permissions:
   contents: read
 
 env:
   RISE_PYPI: https://gitlab.com/api/v4/projects/56254198/packages/pypi/simple
+<<<<<<< HEAD
   PIP_BREAK_SYSTEM_PACKAGES: 1
+=======
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
 
 jobs:
   build:
@@ -22,11 +32,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
+<<<<<<< HEAD
           ref: main
+=======
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
           submodules: recursive
 
       - name: Install build dependencies
         run: |
+<<<<<<< HEAD
           sudo mkdir -p /var/lib/dpkg/updates
           sudo mkdir -p /var/lib/apt/lists/
           sudo mkdir -p /var/cache/apt/archives/          
@@ -46,6 +60,12 @@ jobs:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
 
+=======
+          sudo apt-get update
+          sudo apt-get install -y python3-pybind11 pybind11-dev
+        shell: bash
+
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
       - name: Build from source
         run: |
           cd "$GITHUB_WORKSPACE"
@@ -55,6 +75,7 @@ jobs:
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TOOLS=ON \
+<<<<<<< HEAD
             -DBUILD_PYTHON_BINDINGS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -76,10 +97,27 @@ jobs:
 
   cpp-tests:
     name: C++ Tests
+=======
+            -DBUILD_PYTHON_BINDINGS=ON
+          make -C build -j"$NPROC"
+        shell: bash
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+          if-no-files-found: error
+          compression-level: 0
+
+  cpp-tests:
+    name: C++ Tests (linux-riscv64)
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
+<<<<<<< HEAD
       - name: Download workspace artifacts
         uses: actions/download-artifact@v8
         with:
@@ -124,20 +162,46 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
+=======
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
 
       - name: Run C++ Tests
         run: |
           cd "$GITHUB_WORKSPACE/build"
+<<<<<<< HEAD
           NPROC=$(nproc 2>/dev/null || echo 2)
+=======
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
           make unittest -j"$NPROC"
         shell: bash
 
   python-tests:
+<<<<<<< HEAD
     name: Python Tests
+=======
+    name: Python Tests (linux-riscv64)
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
+<<<<<<< HEAD
       - name: Select Python
         run: |
           if command -v python3 >/dev/null 2>&1; then
@@ -209,20 +273,59 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -Dpybind11_DIR="$($PYTHON -c 'import pybind11; print(pybind11.get_cmake_dir())')"
+=======
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Select Python
+        run: |
+          python3.10 --version
+          echo "PYTHON=python3.10" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          echo "$($PYTHON -c 'import site; print(site.USER_BASE)')/bin" >> "$GITHUB_PATH"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+
+      - name: Install dependencies
+        run: |
+          $PYTHON -m pip install --upgrade pip
+          $PYTHON -m pip install numpy==2.2.2 cmake==3.30.0 ninja==1.11.1.1 --index-url "$RISE_PYPI"
+          $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
         shell: bash
 
       - name: Install from existing build directory
         run: |
           cd "$GITHUB_WORKSPACE"
+<<<<<<< HEAD
           NPROC=$(nproc 2>/dev/null || echo 2)
+=======
+
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
           export SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/build"
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           $PYTHON -m pip install -v . \
             --no-build-isolation \
+<<<<<<< HEAD
             --config-settings='cmake.define.BUILD_TOOLS="ON"' \
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
+=======
+            --config-settings='cmake.define.BUILD_TOOLS="ON"'
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
         shell: bash
 
       - name: Run Python Tests
@@ -232,11 +335,16 @@ jobs:
         shell: bash
 
   cpp-examples:
+<<<<<<< HEAD
     name: C++ Examples
+=======
+    name: C++ Examples (linux-riscv64)
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
+<<<<<<< HEAD
       - name: Download workspace artifacts
         uses: actions/download-artifact@v8
         with:
@@ -269,15 +377,38 @@ jobs:
         with:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
+=======
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
 
       - name: Run C++ Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c++"
+<<<<<<< HEAD
           NPROC=$(nproc 2>/dev/null || echo 2)
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+=======
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
           make -j "$NPROC"
           ./db-example
           ./core-example
@@ -285,11 +416,16 @@ jobs:
         shell: bash
 
   c-examples:
+<<<<<<< HEAD
     name: C Examples
+=======
+    name: C Examples (linux-riscv64)
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
+<<<<<<< HEAD
       - name: Download workspace artifacts
         uses: actions/download-artifact@v8
         with:
@@ -322,15 +458,38 @@ jobs:
         with:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
+=======
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
 
       - name: Run C Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c"
+<<<<<<< HEAD
           NPROC=$(nproc 2>/dev/null || echo 2)
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+=======
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
           make -j "$NPROC"
           ./c_api_basic_example
           ./c_api_collection_schema_example
@@ -338,4 +497,8 @@ jobs:
           ./c_api_field_schema_example
           ./c_api_index_example
           ./c_api_optimized_example
+<<<<<<< HEAD
         shell: bash
+=======
+        shell: bash
+>>>>>>> 2079ced (ci: split RISC-V build and test into separate jobs)
