@@ -915,6 +915,9 @@ class TestCollectionQuery:
     @pytest.mark.parametrize("doc_num", [10])
     @pytest.mark.parametrize("topk", [10])
     @pytest.mark.parametrize("filter", ["int32_field >= 3 and int32_field <= 7"])
+    @pytest.mark.parametrize(
+        "full_schema_ivf", [(True, True, IVFIndexParam())], indirect=True
+    )
     def test_query_vector_with_IVFQueryParam_valid(
         self, full_collection_ivf: Collection, nprobe, doc_num, topk, filter
     ):
