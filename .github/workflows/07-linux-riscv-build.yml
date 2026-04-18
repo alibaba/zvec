@@ -8,6 +8,7 @@ permissions:
 
 env:
   RISE_PYPI: https://gitlab.com/api/v4/projects/56254198/packages/pypi/simple
+  PIP_BREAK_SYSTEM_PACKAGES: 1
 
 jobs:
   build:
@@ -39,84 +40,116 @@ jobs:
           make -C build -j"$NPROC"
         shell: bash
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - name: Archive entire workspace
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          tar -cf linux-riscv64-workspace.tar .
+        shell: bash
+
+      - name: Upload workspace artifacts
+        uses: actions/upload-artifact@v7
         with:
-          name: linux-riscv64-build
-          path: build
+          name: linux-riscv64-workspace
+          path: ${{ github.workspace }}/linux-riscv64-workspace.tar
           if-no-files-found: error
-          compression-level: 0
 
   cpp-tests:
-    name: C++ Tests (linux-riscv64)
+    name: C++ Tests
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Set up environment variables
+      - name: Install test dependencies
         run: |
-          NPROC=$(nproc 2>/dev/null || echo 2)
-          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y python3-pybind11 pybind11-dev libgtest-dev liburing-dev
         shell: bash
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - name: Download workspace artifacts
+        uses: actions/download-artifact@v8
         with:
-          name: linux-riscv64-build
-          path: build
+          name: linux-riscv64-workspace
+          path: ${{ github.workspace }}
+
+      - name: Extract workspace
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          tar -xf linux-riscv64-workspace.tar
+        shell: bash
+
+      - name: Reconfigure build directory
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          cmake -S . -B build \
+            -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=ON \
+            -DBUILD_PYTHON_BINDINGS=ON
+        shell: bash
 
       - name: Run C++ Tests
         run: |
           cd "$GITHUB_WORKSPACE/build"
+          NPROC=$(nproc 2>/dev/null || echo 2)
           make unittest -j"$NPROC"
         shell: bash
 
   python-tests:
-    name: Python Tests (linux-riscv64)
+    name: Python Tests
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
       - name: Select Python
         run: |
-          python3.10 --version
-          echo "PYTHON=python3.10" >> "$GITHUB_ENV"
+          if command -v python3 >/dev/null 2>&1; then
+            PYTHON_BIN=python3
+          elif command -v python >/dev/null 2>&1; then
+            PYTHON_BIN=python
+          else
+            echo "No local Python interpreter found on PATH"
+            exit 1
+          fi
+          "$PYTHON_BIN" --version
+          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
         shell: bash
 
-      - name: Set up environment variables
+      - name: Download workspace artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-riscv64-workspace
+          path: ${{ github.workspace }}
+
+      - name: Extract workspace
         run: |
-          NPROC=$(nproc 2>/dev/null || echo 2)
-          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          cd "$GITHUB_WORKSPACE"
+          tar -xf linux-riscv64-workspace.tar
           echo "$($PYTHON -c 'import site; print(site.USER_BASE)')/bin" >> "$GITHUB_PATH"
         shell: bash
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-riscv64-build
-          path: build
-
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtest-dev liburing-dev
           $PYTHON -m pip install --upgrade pip
           $PYTHON -m pip install numpy==2.2.2 cmake==3.30.0 ninja==1.11.1.1 --index-url "$RISE_PYPI"
           $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm
         shell: bash
 
+      - name: Reconfigure build directory
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          cmake -S . -B build \
+            -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=ON \
+            -DBUILD_PYTHON_BINDINGS=ON
+        shell: bash
+
       - name: Install from existing build directory
         run: |
           cd "$GITHUB_WORKSPACE"
-
+          NPROC=$(nproc 2>/dev/null || echo 2)
           export SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/build"
           CMAKE_GENERATOR="Unix Makefiles" \
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
@@ -132,32 +165,28 @@ jobs:
         shell: bash
 
   cpp-examples:
-    name: C++ Examples (linux-riscv64)
+    name: C++ Examples
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - name: Download workspace artifacts
+        uses: actions/download-artifact@v8
         with:
-          submodules: recursive
+          name: linux-riscv64-workspace
+          path: ${{ github.workspace }}
 
-      - name: Set up environment variables
+      - name: Extract workspace
         run: |
-          NPROC=$(nproc 2>/dev/null || echo 2)
-          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          cd "$GITHUB_WORKSPACE"
+          tar -xf linux-riscv64-workspace.tar
         shell: bash
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-riscv64-build
-          path: build
 
       - name: Run C++ Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c++"
-          mkdir build && cd build
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
           make -j "$NPROC"
           ./db-example
@@ -166,32 +195,28 @@ jobs:
         shell: bash
 
   c-examples:
-    name: C Examples (linux-riscv64)
+    name: C Examples
     runs-on: ubuntu-24.04-riscv
     needs: build
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - name: Download workspace artifacts
+        uses: actions/download-artifact@v8
         with:
-          submodules: recursive
+          name: linux-riscv64-workspace
+          path: ${{ github.workspace }}
 
-      - name: Set up environment variables
+      - name: Extract workspace
         run: |
-          NPROC=$(nproc 2>/dev/null || echo 2)
-          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          cd "$GITHUB_WORKSPACE"
+          tar -xf linux-riscv64-workspace.tar
         shell: bash
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-riscv64-build
-          path: build
 
       - name: Run C Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c"
-          mkdir build && cd build
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
           make -j "$NPROC"
           ./c_api_basic_example
