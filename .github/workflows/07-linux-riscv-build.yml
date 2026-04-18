@@ -1,0 +1,203 @@
+name: Linux RISC-V Build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  RISE_PYPI: https://gitlab.com/api/v4/projects/56254198/packages/pypi/simple
+
+jobs:
+  build:
+    name: Build (linux-riscv64)
+    runs-on: ubuntu-24.04-riscv
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pybind11 pybind11-dev
+        shell: bash
+
+      - name: Build from source
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "Using $NPROC parallel jobs for builds"
+          cmake -S . -B build \
+            -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=ON \
+            -DBUILD_PYTHON_BINDINGS=ON
+          make -C build -j"$NPROC"
+        shell: bash
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+          if-no-files-found: error
+          compression-level: 0
+
+  cpp-tests:
+    name: C++ Tests (linux-riscv64)
+    runs-on: ubuntu-24.04-riscv
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+
+      - name: Run C++ Tests
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          make unittest -j"$NPROC"
+        shell: bash
+
+  python-tests:
+    name: Python Tests (linux-riscv64)
+    runs-on: ubuntu-24.04-riscv
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Select Python
+        run: |
+          python3.10 --version
+          echo "PYTHON=python3.10" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          echo "$($PYTHON -c 'import site; print(site.USER_BASE)')/bin" >> "$GITHUB_PATH"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+
+      - name: Install dependencies
+        run: |
+          $PYTHON -m pip install --upgrade pip
+          $PYTHON -m pip install numpy==2.2.2 cmake==3.30.0 ninja==1.11.1.1 --index-url "$RISE_PYPI"
+          $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm
+        shell: bash
+
+      - name: Install from existing build directory
+        run: |
+          cd "$GITHUB_WORKSPACE"
+
+          export SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/build"
+          CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+          $PYTHON -m pip install -v . \
+            --no-build-isolation \
+            --config-settings='cmake.define.BUILD_TOOLS="ON"'
+        shell: bash
+
+      - name: Run Python Tests
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          $PYTHON -m pytest python/tests/
+        shell: bash
+
+  cpp-examples:
+    name: C++ Examples (linux-riscv64)
+    runs-on: ubuntu-24.04-riscv
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+
+      - name: Run C++ Examples
+        run: |
+          cd "$GITHUB_WORKSPACE/examples/c++"
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j "$NPROC"
+          ./db-example
+          ./core-example
+          ./ailego-example
+        shell: bash
+
+  c-examples:
+    name: C Examples (linux-riscv64)
+    runs-on: ubuntu-24.04-riscv
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-riscv64-build
+          path: build
+
+      - name: Run C Examples
+        run: |
+          cd "$GITHUB_WORKSPACE/examples/c"
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j "$NPROC"
+          ./c_api_basic_example
+          ./c_api_collection_schema_example
+          ./c_api_doc_example
+          ./c_api_field_schema_example
+          ./c_api_index_example
+          ./c_api_optimized_example
+        shell: bash
