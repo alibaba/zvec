@@ -13,28 +13,24 @@
 # limitations under the License.
 
 
-from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
+from distance_helper import *
+from doc_helper import *
+from fixture_helper import *
+from params_helper import *
+from zvec import StatusCode
+from zvec.extension import QwenReRanker, RrfReRanker, WeightedReRanker
 from zvec.model import Collection, Doc, VectorQuery
 from zvec.model.param import (
     CollectionOption,
-    InvertIndexParam,
-    HnswIndexParam,
     FlatIndexParam,
-    IVFIndexParam,
+    HnswIndexParam,
     HnswQueryParam,
+    InvertIndexParam,
+    IVFIndexParam,
     IVFQueryParam,
 )
-
-
 from zvec.model.schema import FieldSchema, VectorSchema
-from zvec.extension import RrfReRanker, WeightedReRanker, QwenReRanker
-from distance_helper import *
-
-from zvec import StatusCode
-from distance_helper import *
-from fixture_helper import *
-from doc_helper import *
-from params_helper import *
+from zvec.typing import DataType, MetricType, QuantizeType, StatusCode
 
 
 # ==================== helper ====================
@@ -848,6 +844,9 @@ class TestCollectionQuery:
     @pytest.mark.parametrize("doc_num", [10])
     @pytest.mark.parametrize("topk", [1024])
     @pytest.mark.parametrize("filter", ["int32_field >= 3 and int32_field <= 7"])
+    @pytest.mark.parametrize(
+        "full_schema_new", [(True, True, HnswIndexParam())], indirect=True
+    )
     def test_query_vector_with_HnswQueryParam_valid(
         self,
         full_collection_new: Collection,
