@@ -23,10 +23,10 @@
 </p>
 
 <p align="center">
-  <a href="https://zvec.org/en/docs/db/quickstart/">🚀 <strong>快速开始</strong> </a> |
-  <a href="https://zvec.org/en/">🏠 <strong>主页</strong> </a> |
-  <a href="https://zvec.org/en/docs/db/">📚 <strong>文档</strong> </a> |
-  <a href="https://zvec.org/en/docs/db/benchmarks/">📊 <strong>性能报告</strong> </a> |
+  <a href="https://zvec.org/zh/docs/db/quickstart/">🚀 <strong>快速开始</strong> </a> |
+  <a href="https://zvec.org/zh/">🏠 <strong>主页</strong> </a> |
+  <a href="https://zvec.org/zh/docs/db/">📚 <strong>文档</strong> </a> |
+  <a href="https://zvec.org/zh/docs/db/benchmarks/">📊 <strong>性能报告</strong> </a> |
   <a href="https://deepwiki.com/alibaba/zvec">🔎 <strong>DeepWiki</strong> </a> |
   <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a> |
   <a href="https://x.com/ZvecAI">🐦 <strong>X (Twitter)</strong> </a>
@@ -81,7 +81,7 @@ npm install @zvec/zvec
 
 ### 🛠️ 源码构建
 
-如需从源码构建 Zvec，请参考[源码构建指南](https://zvec.org/en/docs/db/build/)。
+如需从源码构建 Zvec，请参考[源码构建指南](https://zvec.org/zh/docs/db/build/)。
 
 ## ⚡ 一分钟上手
 
@@ -119,13 +119,9 @@ Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境
 
 <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec 性能基准测试" />
 
-有关具体的测试方法、配置及完整结果，请参阅[性能报告](https://zvec.org/en/docs/db/benchmarks/)。
+有关具体的测试方法、配置及完整结果，请参阅[性能报告](https://zvec.org/zh/docs/db/benchmarks/)。
 
 ## 🤝 加入社区
-
-<div align="center">
-
-获取最新动态和技术支持：
 
 <div align="center">
 
@@ -133,8 +129,6 @@ Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境
 | :---: | :---: | :---: | :---: |
 | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=5" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
 | 扫码加入 | 扫码加入 | 点击加入 | 点击关注 |
-
-</div>
 
 </div>
 
