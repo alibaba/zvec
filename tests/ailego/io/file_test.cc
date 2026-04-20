@@ -15,7 +15,6 @@
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/io/file.h>
-#include <zvec/ailego/io/file.h>
 
 using namespace zvec::ailego;
 

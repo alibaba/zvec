@@ -1827,8 +1827,7 @@ Status CollectionImpl::init_writing_segment() {
 }
 
 Status CollectionImpl::acquire_file_lock(bool create) {
-  std::string lock_file_path =
-      ailego::FileHelper::PathJoin(path_, "LOCK");
+  std::string lock_file_path = ailego::FileHelper::PathJoin(path_, "LOCK");
 
   if (create) {
     if (!lock_file_.create(lock_file_path.c_str(), 0)) {

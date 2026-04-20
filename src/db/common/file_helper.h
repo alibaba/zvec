@@ -170,8 +170,7 @@ class FileHelper {
       uint32_t block_id) {
     return ailego::FileHelper::PathJoin(
         seg_path,
-        ailego::StringHelper::Concat(column, ".qindex.", block_id,
-                                     ".proxima"));
+        ailego::StringHelper::Concat(column, ".qindex.", block_id, ".proxima"));
   }
 
   //! Make file path with ${prefix_path}/${file_name}

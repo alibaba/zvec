@@ -85,8 +85,8 @@ int main(int argc, char **argv) {
   // Scope 'result' so its shared_ptr is released before we call _exit().
   zvec::Collection::Ptr collection;
   {
-    auto result =
-        zvec::Collection::Open(config.path, zvec::CollectionOptions{false, true});
+    auto result = zvec::Collection::Open(config.path,
+                                         zvec::CollectionOptions{false, true});
     if (!result) {
       LOG_ERROR("Failed to open collection[%s]: %s", config.path.c_str(),
                 result.error().c_str());

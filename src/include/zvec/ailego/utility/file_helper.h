@@ -129,7 +129,6 @@ struct FileHelper {
   static constexpr const char *kPathSep = "/";
 #endif
  public:
-
 #if defined(_WIN32) || defined(_WIN64)
   //! UTF-8 narrow string -> wide string (Win32 API ready)
   static std::wstring Utf8ToWide(const std::string &utf8);
