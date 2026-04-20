@@ -82,13 +82,6 @@ std::string FileHelper::PathToUtf8(const fs::path &p) {
   return p.u8string();
 }
 
-std::string FileHelper::PathJoin(const std::string &dir,
-                                 const std::string &child) {
-  fs::path p = PathFromUtf8(dir);
-  p /= PathFromUtf8(child);
-  return PathToUtf8(p);
-}
-
 #if defined(_WIN32) || defined(_WIN64)
 std::wstring FileHelper::Utf8ToWide(const std::string &src) {
   if (src.empty()) {

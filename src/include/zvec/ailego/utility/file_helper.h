@@ -19,6 +19,7 @@
 #include <fstream>
 #include <string>
 #include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec {
 namespace ailego {
@@ -107,10 +108,27 @@ struct FileHelper {
   //! Convert std::filesystem::path back to a UTF-8 std::string
   static std::string PathToUtf8(const std::filesystem::path &p);
 
-  //! Concatenate a UTF-8 directory and a filename/child using the proper
-  //! path separator (equivalent to: PathFromUtf8(dir) / child).u8string())
-  static std::string PathJoin(const std::string &dir,
-                              const std::string &child);
+  //! Concatenate path segments with the native separator.
+  //! Accepts strings, c-strings, and numbers (anything Alphameric accepts).
+  //! E.g. PathJoin(dir, seg_id, "file.ext")
+  static std::string PathJoin(const internal::Alphameric &a,
+                              const internal::Alphameric &b) {
+    return StringHelper::Concat(a, kPathSep, b);
+  }
+  template <typename... Rest>
+  static std::string PathJoin(const internal::Alphameric &a,
+                              const internal::Alphameric &b,
+                              const Rest &...rest) {
+    return PathJoin(StringHelper::Concat(a, kPathSep, b), rest...);
+  }
+
+ private:
+#if defined(_WIN32) || defined(_WIN64)
+  static constexpr const char *kPathSep = "\\";
+#else
+  static constexpr const char *kPathSep = "/";
+#endif
+ public:
 
 #if defined(_WIN32) || defined(_WIN64)
   //! UTF-8 narrow string -> wide string (Win32 API ready)
