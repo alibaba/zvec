@@ -114,29 +114,23 @@ struct FileHelper {
 
 #if defined(_WIN32) || defined(_WIN64)
   //! UTF-8 narrow string -> wide string (Win32 API ready)
-  static std::wstring Utf8ToWide(const char *utf8, int len = -1);
   static std::wstring Utf8ToWide(const std::string &utf8);
 
   //! Wide string -> UTF-8 narrow string
-  static std::string WideToUtf8(const wchar_t *ws, size_t wchar_len);
+  static std::string WideToUtf8(const std::wstring &ws);
+#endif
 
   //! Open a std::ifstream from a UTF-8 path
   static void OpenIfstream(std::ifstream &ifs, const std::string &path,
-                           std::ios_base::openmode mode = std::ios_base::in);
+                           std::ios_base::openmode mode = std::ios_base::in) {
+    ifs.open(PathFromUtf8(path), mode);
+  }
 
   //! Open a std::ofstream from a UTF-8 path
   static void OpenOfstream(std::ofstream &ofs, const std::string &path,
-                           std::ios_base::openmode mode = std::ios_base::out);
-#else
-  static void OpenIfstream(std::ifstream &ifs, const std::string &path,
-                           std::ios_base::openmode mode = std::ios_base::in) {
-    ifs.open(path, mode);
-  }
-  static void OpenOfstream(std::ofstream &ofs, const std::string &path,
                            std::ios_base::openmode mode = std::ios_base::out) {
-    ofs.open(path, mode);
+    ofs.open(PathFromUtf8(path), mode);
   }
-#endif
 };
 
 }  // namespace ailego

@@ -90,54 +90,42 @@ std::string FileHelper::PathJoin(const std::string &dir,
 }
 
 #if defined(_WIN32) || defined(_WIN64)
-std::wstring FileHelper::Utf8ToWide(const char *utf8, int len) {
-  if (!utf8) {
-    return L"";
-  }
-  const int nbytes = (len < 0) ? static_cast<int>(std::strlen(utf8)) : len;
-  if (nbytes == 0) {
-    return L"";
-  }
-  int wchars = MultiByteToWideChar(CP_UTF8, 0, utf8, nbytes, nullptr, 0);
-  if (wchars <= 0) {
-    return L"";
-  }
-  std::wstring out(static_cast<size_t>(wchars), L'\0');
-  if (MultiByteToWideChar(CP_UTF8, 0, utf8, nbytes, out.data(), wchars) !=
-      wchars) {
-    return L"";
-  }
-  return out;
-}
-
-std::wstring FileHelper::Utf8ToWide(const std::string &utf8) {
-  return Utf8ToWide(utf8.c_str(), static_cast<int>(utf8.size()));
-}
-
-std::string FileHelper::WideToUtf8(const wchar_t *ws, size_t wchar_len) {
-  if (!ws || wchar_len == 0) {
+std::wstring FileHelper::Utf8ToWide(const std::string &src) {
+  if (src.empty()) {
     return {};
   }
-  int n = WideCharToMultiByte(CP_UTF8, 0, ws, static_cast<int>(wchar_len),
-                              nullptr, 0, nullptr, nullptr);
-  if (n <= 0) {
+  int src_len = static_cast<int>(src.size());
+  int dst_len =
+      MultiByteToWideChar(CP_UTF8, 0, src.data(), src_len, nullptr, 0);
+  if (dst_len <= 0) {
     return {};
   }
-  std::string u8(static_cast<size_t>(n), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, ws, static_cast<int>(wchar_len), u8.data(), n,
-                      nullptr, nullptr);
-  return u8;
+  std::wstring dst(static_cast<size_t>(dst_len), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, 0, src.data(), src_len, dst.data(),
+                          dst_len) != dst_len) {
+    return {};
+  }
+  return dst;
 }
 
-void FileHelper::OpenIfstream(std::ifstream &ifs, const std::string &path,
-                              std::ios_base::openmode mode) {
-  ifs.open(Utf8ToWide(path), mode);
+std::string FileHelper::WideToUtf8(const std::wstring &src) {
+  if (src.empty()) {
+    return {};
+  }
+  int src_len = static_cast<int>(src.size());
+  int dst_len = WideCharToMultiByte(CP_UTF8, 0, src.data(), src_len, nullptr, 0,
+                                    nullptr, nullptr);
+  if (dst_len <= 0) {
+    return {};
+  }
+  std::string dst(static_cast<size_t>(dst_len), '\0');
+  if (WideCharToMultiByte(CP_UTF8, 0, src.data(), src_len, dst.data(), dst_len,
+                          nullptr, nullptr) != dst_len) {
+    return {};
+  }
+  return dst;
 }
 
-void FileHelper::OpenOfstream(std::ofstream &ofs, const std::string &path,
-                              std::ios_base::openmode mode) {
-  ofs.open(Utf8ToWide(path), mode);
-}
 #endif
 
 // ---------- internal helpers ----------
@@ -261,7 +249,7 @@ bool FileHelper::GetSelfPath(std::string *path) {
     return false;
   }
   wbuf.resize(n);
-  *path = WideToUtf8(wbuf.c_str(), wbuf.size());
+  *path = WideToUtf8(wbuf);
   return !path->empty();
 #elif defined(__APPLE__) || defined(__MACH__)
   char buf[PATH_MAX];
@@ -307,7 +295,8 @@ bool FileHelper::GetFilePath(NativeHandle handle, std::string *path) {
   if (got == 0 || got > need) {
     return false;
   }
-  *path = WideToUtf8(wbuf.c_str(), got);
+  wbuf.resize(got);
+  *path = WideToUtf8(wbuf);
   return !path->empty();
 #elif defined(__linux) || defined(__linux__)
   char buf[PATH_MAX];
