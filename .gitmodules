@@ -26,9 +26,6 @@
 	path = thirdparty/glog/glog-0.5.0
 	url = https://github.com/google/glog.git
 	ignore = all
-[submodule "thirdparty/protobuf/protobuf-3.21.12"]
-	path = thirdparty/protobuf/protobuf-3.21.12
-	url = https://github.com/protocolbuffers/protobuf.git
 [submodule "thirdparty/lz4/lz4-1.9.4"]
 	path = thirdparty/lz4/lz4-1.9.4
 	url = https://github.com/lz4/lz4.git

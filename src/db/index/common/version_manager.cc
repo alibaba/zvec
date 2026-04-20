@@ -21,59 +21,76 @@
 #include <mutex>
 #include <regex>
 #include <string>
-#include <proto/zvec.pb.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/db/status.h>
 #include "db/common/file_helper.h"
 #include "db/common/typedef.h"
-#include "db/index/common/proto_converter.h"
-#include "db/index/common/type_helper.h"
+#include "db/index/common/manifest_serializer.h"
 
 namespace zvec {
 
 Status Version::Load(const std::string &path, Version *version) {
-  std::ifstream ifs(path, std::ios::binary);
+  std::ifstream ifs(path, std::ios::binary | std::ios::ate);
   if (!ifs.is_open()) {
     LOG_ERROR("Failed to open file: %s", path.c_str());
     return Status::InternalError("Failed to open file");
   }
 
-  proto::Manifest manifest;
+  auto file_size = ifs.tellg();
+  ifs.seekg(0, std::ios::beg);
 
-  if (!manifest.ParseFromIstream(&ifs)) {
-    LOG_ERROR("Failed to parse manifest from file: %s", path.c_str());
-    return Status::InternalError("Failed to parse manifest");
+  std::vector<uint8_t> buffer(file_size);
+  if (!ifs.read(reinterpret_cast<char *>(buffer.data()), file_size)) {
+    LOG_ERROR("Failed to read manifest file: %s", path.c_str());
+    return Status::InternalError("Failed to read manifest file");
   }
 
-  CollectionSchema::Ptr schema = ProtoConverter::FromPb(manifest.schema());
-  version->set_schema(*schema);
+  CollectionSchema schema;
+  bool enable_mmap = false;
+  uint32_t id_map_suffix = 0;
+  uint32_t delete_suffix = 0;
+  uint32_t next_seg_id = 0;
+  std::vector<SegmentMeta::Ptr> persisted_segments;
+  SegmentMeta::Ptr writing_segment;
 
-  version->set_enable_mmap(manifest.enable_mmap());
+  auto s = ManifestSerializer::Deserialize(
+      buffer.data(), buffer.size(), &schema, &enable_mmap, &id_map_suffix,
+      &delete_suffix, &next_seg_id, &persisted_segments, &writing_segment);
+  if (!s.ok()) {
+    LOG_ERROR("Failed to parse manifest from file: %s, err: %s", path.c_str(),
+              s.message().c_str());
+    return s;
+  }
 
-  for (int i = 0; i < manifest.persisted_segment_metas_size(); ++i) {
-    SegmentMeta::Ptr meta =
-        ProtoConverter::FromPb(manifest.persisted_segment_metas(i));
+  version->set_schema(schema);
+  version->set_enable_mmap(enable_mmap);
+  for (auto &meta : persisted_segments) {
     version->add_persisted_segment_meta(meta);
   }
-
-  if (manifest.has_writing_segment_meta()) {
-    SegmentMeta::Ptr meta =
-        ProtoConverter::FromPb(manifest.writing_segment_meta());
-    version->reset_writing_segment_meta(meta);
+  if (writing_segment) {
+    version->reset_writing_segment_meta(writing_segment);
   }
-
-  version->set_id_map_path_suffix(manifest.id_map_path_suffix());
-  version->set_delete_snapshot_path_suffix(
-      manifest.delete_snapshot_path_suffix());
-
-  version->set_next_segment_id(manifest.next_segment_id());
+  version->set_id_map_path_suffix(id_map_suffix);
+  version->set_delete_snapshot_path_suffix(delete_suffix);
+  version->set_next_segment_id(next_seg_id);
 
   return Status::OK();
 }
 
 Status Version::Save(const std::string &path, const Version &version) {
+  std::vector<uint8_t> buffer;
+  auto s = ManifestSerializer::Serialize(
+      version.schema(), version.enable_mmap(), version.id_map_path_suffix(),
+      version.delete_snapshot_path_suffix(), version.next_segment_id(),
+      version.persisted_segment_metas(), version.writing_segment_meta(),
+      &buffer);
+  if (!s.ok()) {
+    LOG_ERROR("Failed to serialize manifest: %s", s.message().c_str());
+    return s;
+  }
+
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs.is_open()) {
     LOG_ERROR("Failed to open file: %s, err: %s", path.c_str(),
@@ -81,33 +98,10 @@ Status Version::Save(const std::string &path, const Version &version) {
     return Status::InternalError("Failed to open file: %s", path.c_str());
   }
 
-  proto::Manifest manifest;
-
-  // set schema
-  auto schema = ProtoConverter::ToPb(version.schema());
-  manifest.mutable_schema()->Swap(&schema);
-
-  manifest.set_enable_mmap(version.enable_mmap());
-
-  // set segments meta
-  for (auto &meta : version.persisted_segment_metas()) {
-    auto meta_pb = ProtoConverter::ToPb(*meta);
-    manifest.add_persisted_segment_metas()->Swap(&meta_pb);
-  }
-
-  if (version.writing_segment_meta()) {
-    auto meta_pb = ProtoConverter::ToPb(*version.writing_segment_meta());
-    manifest.mutable_writing_segment_meta()->Swap(&meta_pb);
-  }
-
-  manifest.set_id_map_path_suffix(version.id_map_path_suffix());
-  manifest.set_delete_snapshot_path_suffix(
-      version.delete_snapshot_path_suffix());
-  manifest.set_next_segment_id(version.next_segment_id());
-
-  if (!manifest.SerializeToOstream(&ofs)) {
-    LOG_ERROR("Failed to serialize manifest to file: %s", path.c_str());
-    return Status::InternalError("Failed to serialize manifest to file");
+  if (!ofs.write(reinterpret_cast<const char *>(buffer.data()),
+                 buffer.size())) {
+    LOG_ERROR("Failed to write manifest to file: %s", path.c_str());
+    return Status::InternalError("Failed to write manifest to file");
   }
 
   return Status::OK();
@@ -115,7 +109,8 @@ Status Version::Save(const std::string &path, const Version &version) {
 
 std::string Version::to_string() const {
   std::ostringstream oss;
-  oss << "Version{" << "schema:" << (schema_ ? schema_->to_string() : "null")
+  oss << "Version{"
+      << "schema:" << (schema_ ? schema_->to_string() : "null")
       << ",persisted_segment_metas:[";
 
   size_t i = 0;

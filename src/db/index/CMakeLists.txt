@@ -5,7 +5,6 @@ cc_library(
     NAME zvec_index STATIC STRICT
     SRCS *.cc segment/*.cc column/vector_column/*.cc column/inverted_column/*.cc storage/*.cc storage/wal/*.cc common/*.cc
     LIBS zvec_common
-         zvec_proto
          rocksdb
          core_interface
          Arrow::arrow_static

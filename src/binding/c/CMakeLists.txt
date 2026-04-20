@@ -136,7 +136,6 @@ elseif(APPLE)
             Arrow::arrow_acero
             rocksdb
             glog
-            libprotobuf
             antlr4
     )
     

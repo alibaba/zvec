@@ -18,7 +18,6 @@
 #include <gtest/gtest.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/meta.h"
-#include "proto/zvec.pb.h"
 #include "zvec/db/schema.h"
 
 namespace zvec {
@@ -253,27 +252,23 @@ TEST_F(VersionManagerTest, ErrorConditions) {
   EXPECT_FALSE(version_manager->remove_persisted_segment_meta(999).ok());
 }
 
-// Test conversion between protobuf and internal schema
+// Test schema round-trip through Version
 TEST_F(VersionManagerTest, SchemaConversion) {
-  // Create protobuf schema
-  zvec::proto::CollectionSchema pb_schema;
-  pb_schema.set_name("test_collection");
+  CollectionSchema schema;
+  schema.set_name("test_collection");
 
-  auto pb_field = pb_schema.add_fields();
-  pb_field->set_name("vector_field");
-  pb_field->set_data_type(zvec::proto::DataType::DT_VECTOR_FP32);
-  pb_field->set_dimension(128);
+  auto field = std::make_shared<FieldSchema>("vector_field",
+                                             DataType::VECTOR_FP32, 128, false);
+  schema.add_field(field);
 
-  // Convert to internal schema (this would be done in the Load method)
-  CollectionSchema internal_schema;
-  internal_schema.set_name(pb_schema.name());
-  // In a real implementation, fields would be converted here
-
-  // Test that we can set and retrieve the schema
   Version version;
-  version.set_schema(internal_schema);
+  version.set_schema(schema);
 
   EXPECT_EQ(version.schema().name(), "test_collection");
+  EXPECT_EQ(version.schema().fields().size(), 1);
+  EXPECT_EQ(version.schema().fields()[0]->name(), "vector_field");
+  EXPECT_EQ(version.schema().fields()[0]->data_type(), DataType::VECTOR_FP32);
+  EXPECT_EQ(version.schema().fields()[0]->dimension(), 128u);
 }
 
 // Test SegmentMeta functionality

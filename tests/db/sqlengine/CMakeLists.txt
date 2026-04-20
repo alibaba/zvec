@@ -23,7 +23,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   cc_gmock(
     NAME ${CC_TARGET} STRICT
     LIBS zvec_common
-    zvec_proto
     zvec_sqlengine
     zvec_ailego
     core_metric

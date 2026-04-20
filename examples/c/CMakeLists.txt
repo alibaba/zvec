@@ -50,11 +50,9 @@ find_package(Threads REQUIRED)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(GLOG_LIB glogd)
     set(GFLAGS_LIB gflags_nothreads_debug)
-    set(PROTOBUF_LIB protobufd)
 else()
     set(GLOG_LIB glog)
     set(GFLAGS_LIB gflags_nothreads)
-    set(PROTOBUF_LIB protobuf)
 endif()
 
 # --- Dependency groups ---
@@ -71,14 +69,12 @@ if(NOT WIN32)
         antlr4-runtime
         ${GLOG_LIB}
         ${GFLAGS_LIB}
-        ${PROTOBUF_LIB}
         lz4
         ${CMAKE_THREAD_LIBS_INIT}
         ${CMAKE_DL_LIBS}
     )
 else()
     # Windows static libraries use different naming conventions
-    set(PROTOBUF_LIB libprotobuf)
     set(zvec_c_api_deps
         roaring
         rocksdb
@@ -91,7 +87,6 @@ else()
         antlr4-runtime-static
         ${GLOG_LIB}
         ${GFLAGS_LIB}
-        ${PROTOBUF_LIB}
         lz4
         ${CMAKE_THREAD_LIBS_INIT}
         rpcrt4

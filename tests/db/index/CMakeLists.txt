@@ -38,7 +38,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     NAME ${CC_TARGET} STRICT
     LIBS zvec_db
     zvec_ailego
-    zvec_proto
     core_metric_static
     core_utility_static
     core_quantizer_static

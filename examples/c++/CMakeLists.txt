@@ -37,7 +37,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     else ()
         set(GFLAGS_LIB gflags_nothreads_debug)
     endif ()
-    set(PROTOBUF_LIB protobufd)
 else()
     set(GLOG_LIB glog)
     if (WIN32)
@@ -45,7 +44,6 @@ else()
     else ()
         set(GFLAGS_LIB gflags_nothreads)
     endif ()
-    set(PROTOBUF_LIB protobuf)
 endif()
 
 # --- Dependency groups ---
@@ -77,12 +75,10 @@ if (NOT WIN32)
             antlr4-runtime
             ${GLOG_LIB}
             ${GFLAGS_LIB}
-            ${PROTOBUF_LIB}
             lz4
     )
 else ()
     # Windows static libraries use different naming conventions
-    set(PROTOBUF_LIB libprotobuf)
     set(zvec_ailego_deps
             arrow_static
             parquet_static
@@ -102,7 +98,6 @@ else ()
             antlr4-runtime-static
             ${GLOG_LIB}
             ${GFLAGS_LIB}
-            ${PROTOBUF_LIB}
             lz4
             rpcrt4
             shlwapi
