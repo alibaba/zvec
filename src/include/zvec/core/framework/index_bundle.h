@@ -20,6 +20,7 @@
 #include <zvec/ailego/container/blob.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/io/mmap_file.h>
+#include <zvec/ailego/utility/file_helper.h>
 
 namespace zvec {
 namespace core {
@@ -210,7 +211,7 @@ class MMapFileIndexBundle : public IndexBundle {
   //! Create a memory mapping file in bundle
   bool create(const std::string &prefix, const std::string &key, size_t len) {
     ailego::MMapFile file;
-    if (!file.create(prefix + '/' + key, len)) {
+    if (!file.create(ailego::FileHelper::PathJoin(prefix, key), len)) {
       return false;
     }
     map_[key] = std::move(file);
@@ -220,7 +221,7 @@ class MMapFileIndexBundle : public IndexBundle {
   //! Create a memory mapping file in bundle
   bool create(const std::string &prefix, std::string &&key, size_t len) {
     ailego::MMapFile file;
-    if (!file.create(prefix + '/' + key, len)) {
+    if (!file.create(ailego::FileHelper::PathJoin(prefix, key), len)) {
       return false;
     }
     map_[std::move(key)] = std::move(file);
@@ -240,7 +241,7 @@ class MMapFileIndexBundle : public IndexBundle {
   //! Open a memory mapping file in bundle
   bool open(const std::string &prefix, const std::string &key, bool rdonly) {
     ailego::MMapFile file;
-    if (!file.open(prefix + '/' + key, rdonly)) {
+    if (!file.open(ailego::FileHelper::PathJoin(prefix, key), rdonly)) {
       return false;
     }
     map_[key] = std::move(file);
@@ -250,7 +251,7 @@ class MMapFileIndexBundle : public IndexBundle {
   //! Open a memory mapping file in bundle
   bool open(const std::string &prefix, std::string &&key, bool rdonly) {
     ailego::MMapFile file;
-    if (!file.open(prefix + '/' + key, rdonly)) {
+    if (!file.open(ailego::FileHelper::PathJoin(prefix, key), rdonly)) {
       return false;
     }
     map_[std::move(key)] = std::move(file);

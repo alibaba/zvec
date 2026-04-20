@@ -15,6 +15,8 @@
 #pragma once
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <zvec/ailego/internal/platform.h>
 
@@ -97,6 +99,44 @@ struct FileHelper {
     }
     return (output ? output + 1 : path);
   }
+
+  //! Build std::filesystem::path from a UTF-8 string (handles Windows codepage)
+  static std::filesystem::path PathFromUtf8(const std::string &s);
+  static std::filesystem::path PathFromUtf8(const char *s);
+
+  //! Convert std::filesystem::path back to a UTF-8 std::string
+  static std::string PathToUtf8(const std::filesystem::path &p);
+
+  //! Concatenate a UTF-8 directory and a filename/child using the proper
+  //! path separator (equivalent to: PathFromUtf8(dir) / child).u8string())
+  static std::string PathJoin(const std::string &dir,
+                              const std::string &child);
+
+#if defined(_WIN32) || defined(_WIN64)
+  //! UTF-8 narrow string -> wide string (Win32 API ready)
+  static std::wstring Utf8ToWide(const char *utf8, int len = -1);
+  static std::wstring Utf8ToWide(const std::string &utf8);
+
+  //! Wide string -> UTF-8 narrow string
+  static std::string WideToUtf8(const wchar_t *ws, size_t wchar_len);
+
+  //! Open a std::ifstream from a UTF-8 path
+  static void OpenIfstream(std::ifstream &ifs, const std::string &path,
+                           std::ios_base::openmode mode = std::ios_base::in);
+
+  //! Open a std::ofstream from a UTF-8 path
+  static void OpenOfstream(std::ofstream &ofs, const std::string &path,
+                           std::ios_base::openmode mode = std::ios_base::out);
+#else
+  static void OpenIfstream(std::ifstream &ifs, const std::string &path,
+                           std::ios_base::openmode mode = std::ios_base::in) {
+    ifs.open(path, mode);
+  }
+  static void OpenOfstream(std::ofstream &ofs, const std::string &path,
+                           std::ios_base::openmode mode = std::ios_base::out) {
+    ofs.open(path, mode);
+  }
+#endif
 };
 
 }  // namespace ailego

@@ -31,23 +31,23 @@ bool FileHelper::CopyFile(const std::string &src_file_path,
                           const std::string &dst_file_path) {
   std::string dst_file_path_tmp = dst_file_path + ".tmp";
   std::error_code ec;
-  std::filesystem::copy_file(std::filesystem::u8path(src_file_path),
-                             std::filesystem::u8path(dst_file_path_tmp),
+  std::filesystem::copy_file(ailego::FileHelper::PathFromUtf8(src_file_path),
+                             ailego::FileHelper::PathFromUtf8(dst_file_path_tmp),
                              std::filesystem::copy_options::overwrite_existing,
                              ec);
   if (ec) {
     return false;
   }
-  std::filesystem::rename(std::filesystem::u8path(dst_file_path_tmp),
-                          std::filesystem::u8path(dst_file_path), ec);
+  std::filesystem::rename(ailego::FileHelper::PathFromUtf8(dst_file_path_tmp),
+                          ailego::FileHelper::PathFromUtf8(dst_file_path), ec);
   return !ec;
 }
 
 bool FileHelper::CopyDirectory(const std::string &src_dir_path,
                                const std::string &dst_dir_path) {
   std::error_code ec;
-  std::filesystem::copy(std::filesystem::u8path(src_dir_path),
-                        std::filesystem::u8path(dst_dir_path),
+  std::filesystem::copy(ailego::FileHelper::PathFromUtf8(src_dir_path),
+                        ailego::FileHelper::PathFromUtf8(dst_dir_path),
                         std::filesystem::copy_options::recursive |
                             std::filesystem::copy_options::overwrite_existing,
                         ec);
@@ -64,7 +64,7 @@ void FileHelper::CleanupDirectory(const std::string &backup_dir,
   std::vector<std::string> candidates;
   std::error_code ec;
   for (const auto &entry : std::filesystem::directory_iterator(
-           std::filesystem::u8path(backup_dir), ec)) {
+           ailego::FileHelper::PathFromUtf8(backup_dir), ec)) {
     std::string name = entry.path().filename().u8string();
     if (name.compare(0, prefix_len, prefix_name) == 0) {
       candidates.emplace_back(name);
@@ -78,8 +78,8 @@ void FileHelper::CleanupDirectory(const std::string &backup_dir,
   }
   std::sort(candidates.begin(), candidates.end());
   for (size_t i = 0; i < candidates.size() - max_backup_count; ++i) {
-    std::filesystem::path path = std::filesystem::u8path(backup_dir) /
-                                 std::filesystem::u8path(candidates[i]);
+    std::filesystem::path path = ailego::FileHelper::PathFromUtf8(backup_dir) /
+                                 ailego::FileHelper::PathFromUtf8(candidates[i]);
     std::string path_str = path.u8string();
     ailego::FileHelper::RemovePath(path_str.c_str());
   }

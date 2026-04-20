@@ -409,28 +409,6 @@ bool File::MemoryUnlock(void *addr, size_t len) {
 
 namespace {
 
-// Narrow paths are UTF-8; use wide Win32 APIs so non-ASCII paths work on
-// Windows regardless of the process ANSI code page.
-std::wstring Utf8ToWide(const char *utf8) {
-  if (!utf8) {
-    return L"";
-  }
-  const int nbytes = static_cast<int>(std::strlen(utf8));
-  if (nbytes == 0) {
-    return L"";
-  }
-  int wchars = MultiByteToWideChar(CP_UTF8, 0, utf8, nbytes, nullptr, 0);
-  if (wchars <= 0) {
-    return L"";
-  }
-  std::wstring out(static_cast<size_t>(wchars), L'\0');
-  if (MultiByteToWideChar(CP_UTF8, 0, utf8, nbytes, out.data(), wchars) !=
-      wchars) {
-    return L"";
-  }
-  return out;
-}
-
 bool Utf8PathOk(const char *path, const std::wstring &wide) {
   return path && path[0] != '\0' && !wide.empty();
 }
@@ -441,7 +419,7 @@ bool Utf8PathOk(const char *path, const std::wstring &wide) {
 bool File::create(const char *path, size_t len, bool direct) {
   ailego_false_if_false(native_handle_ == File::InvalidHandle && path);
 
-  const std::wstring wpath = Utf8ToWide(path);
+  const std::wstring wpath = FileHelper::Utf8ToWide(path);
   ailego_false_if_false(Utf8PathOk(path, wpath));
 
   // Try opening or creating the file
@@ -483,7 +461,7 @@ bool File::create(const char *path, size_t len, bool direct) {
 bool File::open(const char *path, bool rdonly, bool direct) {
   ailego_false_if_false(native_handle_ == File::InvalidHandle && path);
 
-  const std::wstring wpath = Utf8ToWide(path);
+  const std::wstring wpath = FileHelper::Utf8ToWide(path);
   ailego_false_if_false(Utf8PathOk(path, wpath));
 
   // Try opening the file

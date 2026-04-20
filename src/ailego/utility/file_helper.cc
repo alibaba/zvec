@@ -59,19 +59,62 @@ void SetFsError(std::error_code ec) {
   g_last_fs_error = ec;
 }
 
-inline fs::path PathFromUtf8(const char *path) {
+}  // namespace
+
+// ---------- public UTF-8 / wide helpers ----------
+
+fs::path FileHelper::PathFromUtf8(const char *s) {
 #if defined(_WIN32) || defined(_WIN64)
-  if (!path || !*path) {
+  if (!s || !*s) {
     return fs::path();
   }
-  return fs::u8path(path);
+  return fs::u8path(s);
 #else
-  return fs::path(path ? path : "");
+  return fs::path(s ? s : "");
 #endif
 }
 
+fs::path FileHelper::PathFromUtf8(const std::string &s) {
+  return PathFromUtf8(s.c_str());
+}
+
+std::string FileHelper::PathToUtf8(const fs::path &p) {
+  return p.u8string();
+}
+
+std::string FileHelper::PathJoin(const std::string &dir,
+                                 const std::string &child) {
+  fs::path p = PathFromUtf8(dir);
+  p /= PathFromUtf8(child);
+  return PathToUtf8(p);
+}
+
 #if defined(_WIN32) || defined(_WIN64)
-static std::string WideToUtf8(const wchar_t *ws, size_t wchar_len) {
+std::wstring FileHelper::Utf8ToWide(const char *utf8, int len) {
+  if (!utf8) {
+    return L"";
+  }
+  const int nbytes = (len < 0) ? static_cast<int>(std::strlen(utf8)) : len;
+  if (nbytes == 0) {
+    return L"";
+  }
+  int wchars = MultiByteToWideChar(CP_UTF8, 0, utf8, nbytes, nullptr, 0);
+  if (wchars <= 0) {
+    return L"";
+  }
+  std::wstring out(static_cast<size_t>(wchars), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, 0, utf8, nbytes, out.data(), wchars) !=
+      wchars) {
+    return L"";
+  }
+  return out;
+}
+
+std::wstring FileHelper::Utf8ToWide(const std::string &utf8) {
+  return Utf8ToWide(utf8.c_str(), static_cast<int>(utf8.size()));
+}
+
+std::string FileHelper::WideToUtf8(const wchar_t *ws, size_t wchar_len) {
   if (!ws || wchar_len == 0) {
     return {};
   }
@@ -85,11 +128,21 @@ static std::string WideToUtf8(const wchar_t *ws, size_t wchar_len) {
                       nullptr, nullptr);
   return u8;
 }
+
+void FileHelper::OpenIfstream(std::ifstream &ifs, const std::string &path,
+                              std::ios_base::openmode mode) {
+  ifs.open(Utf8ToWide(path), mode);
+}
+
+void FileHelper::OpenOfstream(std::ofstream &ofs, const std::string &path,
+                              std::ios_base::openmode mode) {
+  ofs.open(Utf8ToWide(path), mode);
+}
 #endif
 
-static std::string PathToUtf8String(const fs::path &p) {
-  return p.u8string();
-}
+// ---------- internal helpers ----------
+
+namespace {
 
 static bool GetFileSizeImpl(const fs::path &p, size_t *psz) {
   ClearFsError();
@@ -286,7 +339,7 @@ bool FileHelper::GetWorkingDirectory(std::string *path) {
     SetFsError(ec);
     return false;
   }
-  *path = PathToUtf8String(cwd);
+  *path = PathToUtf8(cwd);
   return !path->empty();
 }
 
