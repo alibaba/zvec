@@ -69,8 +69,15 @@ class VectorColumnIndexer {
   Status Merge(const std::vector<VectorColumnIndexer::Ptr> &indexers,
                const IndexFilter::Ptr &filter = nullptr,
                const vector_column_params::MergeOptions &merge_options = {});
-  // TODO: should we use this function? or a Reducer?
-  //  TODO: sstatic reduce, optimize; iterator/scan
+
+  //! Merge all indexers into a new one at output_path, automatically reusing
+  //! the best source to avoid rebuilding the graph from scratch.
+  static Status MergeAll(
+      const std::string &output_path, const FieldSchema &field,
+      const std::vector<VectorColumnIndexer::Ptr> &all_indexers,
+      const IndexFilter::Ptr &filter,
+      const vector_column_params::MergeOptions &merge_options,
+      VectorColumnIndexer::Ptr *result);
 
 
   //! Insert vector

@@ -1572,13 +1572,6 @@ Status SegmentImpl::create_all_vector_index(
 Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     const std::string &index_file_path, const std::string &column,
     const FieldSchema &field, int concurrency) {
-  VectorColumnIndexer::Ptr vector_indexer =
-      std::make_shared<VectorColumnIndexer>(index_file_path, field);
-
-  vector_column_params::ReadOptions options{options_.enable_mmap_, true};
-
-  auto s = vector_indexer->Open(options);
-  CHECK_RETURN_STATUS_EXPECTED(s);
   std::vector<VectorColumnIndexer::Ptr> to_merge_indexers =
       vector_indexers_[column];
   vector_column_params::MergeOptions merge_options;
@@ -1589,12 +1582,16 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   } else {
     merge_options.write_concurrency = concurrency;
   }
-  s = vector_indexer->Merge(to_merge_indexers, filter_, merge_options);
+
+  VectorColumnIndexer::Ptr merged;
+  auto s =
+      VectorColumnIndexer::MergeAll(index_file_path, field, to_merge_indexers,
+                                    filter_, merge_options, &merged);
   CHECK_RETURN_STATUS_EXPECTED(s);
-  s = vector_indexer->Flush();
+  s = merged->Flush();
   CHECK_RETURN_STATUS_EXPECTED(s);
 
-  return vector_indexer;
+  return merged;
 }
 
 Status SegmentImpl::create_vector_index(

@@ -90,6 +90,10 @@ class ProximaEngineHelper {
     if (filter != nullptr) {
       engine_filter->set(
           [filter](uint64_t id) { return filter->is_filtered(id); });
+      engine_filter->set_range_count(
+          [filter](uint64_t start, size_t count) -> size_t {
+            return filter->count_filtered_in_range(start, count);
+          });
     }
     return engine_filter;
   }

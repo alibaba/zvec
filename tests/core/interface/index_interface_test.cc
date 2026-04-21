@@ -576,6 +576,313 @@ TEST(IndexInterface, Merge) {
 }
 
 
+TEST(IndexInterface, MergeAllReuseZeroDeletions) {
+  constexpr uint32_t kDimension = 64;
+
+  auto del = [](const std::string &f) { zvec::test_util::RemoveTestFiles(f); };
+  auto create = [&](const BaseIndexParam::Pointer &p,
+                    const std::string &name) -> Index::Pointer {
+    del(name);
+    auto idx = IndexFactory::CreateAndInitIndex(*p);
+    if (!idx ||
+        0 != idx->Open(name, {StorageOptions::StorageType::kMMAP, true}))
+      return nullptr;
+    return idx;
+  };
+
+  auto param = HNSWIndexParamBuilder()
+                   .WithMetricType(MetricType::kInnerProduct)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .WithEFConstruction(100)
+                   .Build();
+
+  auto idx1 = create(param, "mergeall_1.index");
+  ASSERT_NE(nullptr, idx1);
+  auto idx2 = create(param, "mergeall_2.index");
+  ASSERT_NE(nullptr, idx2);
+
+  std::vector<float> v(kDimension, 0.f);
+  v[0] = 1.0f;
+  ASSERT_EQ(0, idx1->Add(VectorData{DenseVector{v.data()}}, 0));
+  v[0] = 2.0f;
+  ASSERT_EQ(0, idx1->Add(VectorData{DenseVector{v.data()}}, 1));
+  idx1->Flush();
+
+  v[0] = 3.0f;
+  ASSERT_EQ(0, idx2->Add(VectorData{DenseVector{v.data()}}, 0));
+  idx2->Flush();
+
+  // MergeAll with no filter (zero deletions) -- should reuse first index
+  del("mergeall_out.index");
+  IndexFilter no_filter;
+  Index::Pointer result = nullptr;
+  ASSERT_EQ(0, Index::MergeAll("mergeall_out.index", {idx1, idx2}, no_filter,
+                               MergeOptions{}, &result));
+  ASSERT_NE(nullptr, result);
+  ASSERT_EQ(3u, result->GetDocCount());
+
+  // Verify all vectors are accessible
+  {
+    VectorDataBuffer buf;
+    ASSERT_EQ(0, result->Fetch(0, &buf));
+    float *fv = reinterpret_cast<float *>(
+        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
+    ASSERT_FLOAT_EQ(1.0f, fv[0]);
+  }
+  {
+    VectorDataBuffer buf;
+    ASSERT_EQ(0, result->Fetch(1, &buf));
+    float *fv = reinterpret_cast<float *>(
+        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
+    ASSERT_FLOAT_EQ(2.0f, fv[0]);
+  }
+  {
+    VectorDataBuffer buf;
+    ASSERT_EQ(0, result->Fetch(2, &buf));
+    float *fv = reinterpret_cast<float *>(
+        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
+    ASSERT_FLOAT_EQ(3.0f, fv[0]);
+  }
+
+  result->Close();
+  idx1->Close();
+  idx2->Close();
+  del("mergeall_1.index");
+  del("mergeall_2.index");
+  del("mergeall_out.index");
+}
+
+TEST(IndexInterface, MergeAllFallbackWithDeletions) {
+  constexpr uint32_t kDimension = 64;
+
+  auto del = [](const std::string &f) { zvec::test_util::RemoveTestFiles(f); };
+  auto create = [&](const BaseIndexParam::Pointer &p,
+                    const std::string &name) -> Index::Pointer {
+    del(name);
+    auto idx = IndexFactory::CreateAndInitIndex(*p);
+    if (!idx ||
+        0 != idx->Open(name, {StorageOptions::StorageType::kMMAP, true}))
+      return nullptr;
+    return idx;
+  };
+
+  auto param = HNSWIndexParamBuilder()
+                   .WithMetricType(MetricType::kInnerProduct)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .WithEFConstruction(100)
+                   .Build();
+
+  auto idx1 = create(param, "mergeall_d1.index");
+  ASSERT_NE(nullptr, idx1);
+  auto idx2 = create(param, "mergeall_d2.index");
+  ASSERT_NE(nullptr, idx2);
+
+  std::vector<float> v(kDimension, 0.f);
+  v[0] = 1.0f;
+  ASSERT_EQ(0, idx1->Add(VectorData{DenseVector{v.data()}}, 0));
+  v[0] = 2.0f;
+  ASSERT_EQ(0, idx1->Add(VectorData{DenseVector{v.data()}}, 1));
+  idx1->Flush();
+
+  v[0] = 3.0f;
+  ASSERT_EQ(0, idx2->Add(VectorData{DenseVector{v.data()}}, 0));
+  idx2->Flush();
+
+  // Filter: delete doc 0 from idx1 (first index has deletions -> no reuse)
+  IndexFilter filter;
+  filter.set([](uint64_t key) { return key == 0; });
+
+  del("mergeall_dout.index");
+  Index::Pointer result = nullptr;
+  ASSERT_EQ(0, Index::MergeAll("mergeall_dout.index", {idx1, idx2}, filter,
+                               MergeOptions{}, &result));
+  ASSERT_NE(nullptr, result);
+  ASSERT_EQ(2u, result->GetDocCount());
+
+  {
+    VectorDataBuffer buf;
+    ASSERT_EQ(0, result->Fetch(0, &buf));
+    float *fv = reinterpret_cast<float *>(
+        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
+    ASSERT_FLOAT_EQ(2.0f, fv[0]);
+  }
+  {
+    VectorDataBuffer buf;
+    ASSERT_EQ(0, result->Fetch(1, &buf));
+    float *fv = reinterpret_cast<float *>(
+        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
+    ASSERT_FLOAT_EQ(3.0f, fv[0]);
+  }
+
+  result->Close();
+  idx1->Close();
+  idx2->Close();
+  del("mergeall_d1.index");
+  del("mergeall_d2.index");
+  del("mergeall_dout.index");
+}
+
+TEST(IndexInterface, MergeAllFlatIndex) {
+  constexpr uint32_t kDimension = 64;
+
+  auto del = [](const std::string &f) { zvec::test_util::RemoveTestFiles(f); };
+  auto create = [&](const BaseIndexParam::Pointer &p,
+                    const std::string &name) -> Index::Pointer {
+    del(name);
+    auto idx = IndexFactory::CreateAndInitIndex(*p);
+    if (!idx ||
+        0 != idx->Open(name, {StorageOptions::StorageType::kMMAP, true}))
+      return nullptr;
+    return idx;
+  };
+
+  auto param = FlatIndexParamBuilder()
+                   .WithMetricType(MetricType::kInnerProduct)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .Build();
+
+  auto idx1 = create(param, "mergeall_f1.index");
+  ASSERT_NE(nullptr, idx1);
+  auto idx2 = create(param, "mergeall_f2.index");
+  ASSERT_NE(nullptr, idx2);
+
+  std::vector<float> v(kDimension, 0.f);
+  v[0] = 10.0f;
+  ASSERT_EQ(0, idx1->Add(VectorData{DenseVector{v.data()}}, 0));
+  idx1->Flush();
+
+  v[0] = 20.0f;
+  ASSERT_EQ(0, idx2->Add(VectorData{DenseVector{v.data()}}, 0));
+  idx2->Flush();
+
+  del("mergeall_fout.index");
+  IndexFilter no_filter;
+  Index::Pointer result = nullptr;
+  ASSERT_EQ(0, Index::MergeAll("mergeall_fout.index", {idx1, idx2}, no_filter,
+                               MergeOptions{}, &result));
+  ASSERT_NE(nullptr, result);
+  ASSERT_EQ(2u, result->GetDocCount());
+
+  result->Close();
+  idx1->Close();
+  idx2->Close();
+  del("mergeall_f1.index");
+  del("mergeall_f2.index");
+  del("mergeall_fout.index");
+}
+
+TEST(IndexInterface, MoveTo) {
+  constexpr uint32_t kDimension = 64;
+
+  auto del = [](const std::string &f) { zvec::test_util::RemoveTestFiles(f); };
+
+  auto param = FlatIndexParamBuilder()
+                   .WithMetricType(MetricType::kInnerProduct)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .Build();
+
+  del("moveto_src.index");
+  del("moveto_dst.index");
+
+  auto idx = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, idx);
+  ASSERT_EQ(0, idx->Open("moveto_src.index",
+                         {StorageOptions::StorageType::kMMAP, true, false}));
+
+  std::vector<float> v(kDimension, 0.f);
+  v[0] = 42.0f;
+  ASSERT_EQ(0, idx->Add(VectorData{DenseVector{v.data()}}, 0));
+  ASSERT_EQ(0, idx->Flush());
+
+  ASSERT_EQ(0, idx->MoveTo("moveto_dst.index"));
+  ASSERT_EQ("moveto_dst.index", idx->storage_path());
+
+  // Data should still be accessible after move
+  {
+    VectorDataBuffer buf;
+    ASSERT_EQ(0, idx->Fetch(0, &buf));
+    float *fv = reinterpret_cast<float *>(
+        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
+    ASSERT_FLOAT_EQ(42.0f, fv[0]);
+  }
+
+  idx->Close();
+  del("moveto_src.index");
+  del("moveto_dst.index");
+}
+
+TEST(IndexInterface, MergeAllSingleIndex) {
+  constexpr uint32_t kDimension = 64;
+
+  auto del = [](const std::string &f) { zvec::test_util::RemoveTestFiles(f); };
+
+  auto param = HNSWIndexParamBuilder()
+                   .WithMetricType(MetricType::kInnerProduct)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .WithEFConstruction(100)
+                   .Build();
+
+  del("mergeall_s.index");
+  auto idx = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, idx);
+  ASSERT_EQ(0, idx->Open("mergeall_s.index",
+                         {StorageOptions::StorageType::kMMAP, true}));
+
+  std::vector<float> v(kDimension, 0.f);
+  v[0] = 7.0f;
+  ASSERT_EQ(0, idx->Add(VectorData{DenseVector{v.data()}}, 0));
+  idx->Flush();
+
+  del("mergeall_sout.index");
+  IndexFilter no_filter;
+  Index::Pointer result = nullptr;
+  ASSERT_EQ(0, Index::MergeAll("mergeall_sout.index", {idx}, no_filter,
+                               MergeOptions{}, &result));
+  ASSERT_NE(nullptr, result);
+  ASSERT_EQ(1u, result->GetDocCount());
+
+  {
+    VectorDataBuffer buf;
+    ASSERT_EQ(0, result->Fetch(0, &buf));
+    float *fv = reinterpret_cast<float *>(
+        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
+    ASSERT_FLOAT_EQ(7.0f, fv[0]);
+  }
+
+  result->Close();
+  idx->Close();
+  del("mergeall_s.index");
+  del("mergeall_sout.index");
+}
+
+TEST(IndexInterface, CountFilteredInRange) {
+  IndexFilter filter;
+  // No filter set -- should return 0
+  ASSERT_EQ(0u, filter.count_filtered_in_range(0, 10));
+
+  // With per-item filter
+  filter.set([](uint64_t key) { return key % 3 == 0; });
+  ASSERT_EQ(4u, filter.count_filtered_in_range(0, 10));  // 0,3,6,9
+  ASSERT_EQ(1u, filter.count_filtered_in_range(1, 5));   // [1,6) -> 3
+  ASSERT_EQ(0u, filter.count_filtered_in_range(0, 0));
+
+  // With efficient range_count override
+  filter.set_range_count(
+      [](uint64_t start, size_t count) -> size_t { return count / 2; });
+  ASSERT_EQ(5u, filter.count_filtered_in_range(0, 10));
+  ASSERT_EQ(3u, filter.count_filtered_in_range(100, 6));
+}
+
 TEST(IndexInterface, Serialize) {
   {
     std::cout << "\n\n----flat index----" << std::endl;

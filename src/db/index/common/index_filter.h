@@ -38,6 +38,19 @@ class IndexFilter {
    * @return false if the document is not filtered (should be included)
    */
   virtual bool is_filtered(uint64_t id) const = 0;
+
+  /**
+   * Count how many items in [start, start+count) are filtered.
+   * Default iterates is_filtered(); subclasses may override for O(1)
+   * (e.g. via Roaring bitmap range_cardinality).
+   */
+  virtual size_t count_filtered_in_range(uint64_t start, size_t count) const {
+    size_t filtered = 0;
+    for (size_t i = 0; i < count; i++) {
+      if (is_filtered(start + i)) filtered++;
+    }
+    return filtered;
+  }
 };
 
 class EasyIndexFilter : public IndexFilter {

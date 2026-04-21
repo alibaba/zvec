@@ -148,6 +148,28 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   // TODO: use id instead of key
   uint32_t id_offset = 0, next_id = 0;
 
+  // If the target already has data (reuse path from MergeAll), skip its range
+  if (target_builder_ == nullptr) {
+    uint32_t existing_count =
+        is_sparse_ ? target_streamer_->create_sparse_provider()->count()
+                   : target_streamer_->create_provider()->count();
+    if (existing_count > 0) {
+      size_t filtered_in_target =
+          filter.count_filtered_in_range(0, existing_count);
+      if (filtered_in_target == 0) {
+        next_id = existing_count;
+        id_offset = existing_count;
+        LOG_INFO("MixedStreamerReducer: reuse mode, starting IDs from %u",
+                 existing_count);
+      } else {
+        LOG_WARN(
+            "MixedStreamerReducer: target has %zu filtered items in "
+            "existing range, falling back to full rebuild",
+            filtered_in_target);
+      }
+    }
+  }
+
   if (is_sparse_) {
     for (size_t i = 0; i < num_of_add_threads_; i++) {
       add_group->submit(ailego::Closure::New(

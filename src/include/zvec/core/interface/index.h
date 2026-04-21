@@ -123,7 +123,16 @@ class Index {
   virtual int Merge(const std::vector<Index::Pointer> &indexes,
                     const IndexFilter &filter,
                     const MergeOptions &options = {});
-  // TODO: static reduce
+
+  //! Merge all indexes into one at output_path, automatically reusing
+  //! the best source index to avoid rebuilding the graph from scratch.
+  static int MergeAll(const std::string &output_path,
+                      const std::vector<Index::Pointer> &all_indexes,
+                      const IndexFilter &filter, const MergeOptions &options,
+                      Index::Pointer *result);
+
+  //! Move the index's storage file to a new path
+  int MoveTo(const std::string &new_path);
 
   virtual int Add(const VectorData &vector, uint32_t doc_id);
   virtual int Fetch(const uint32_t doc_id,
@@ -157,6 +166,10 @@ class Index {
 
   core::IndexProvider::Pointer create_index_provider() const {
     return streamer_->create_provider();
+  }
+
+  std::string storage_path() const {
+    return storage_path_;
   }
 
   static std::string get_metric_name(MetricType metric_type, bool is_sparse);
@@ -226,6 +239,7 @@ class Index {
   bool is_sparse_{false};
   bool is_huge_page_{false};
   bool is_read_only_{false};
+  std::string storage_path_{};
 };
 
 

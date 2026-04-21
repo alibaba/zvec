@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <filesystem>
 #include <magic_enum/magic_enum.hpp>
+#include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include <zvec/core/interface/index_factory.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec::core_interface {
@@ -305,6 +308,7 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
 
   is_open_ = true;
   is_read_only_ = storage_options.read_only;
+  storage_path_ = file_path;
   return 0;
 }
 
@@ -849,6 +853,154 @@ std::string Index::get_metric_name(MetricType metric_type, bool is_sparse) {
         return "";
     }
   }
+}
+
+int Index::MergeAll(const std::string &output_path,
+                    const std::vector<Index::Pointer> &all_indexes,
+                    const IndexFilter &filter, const MergeOptions &options,
+                    Index::Pointer *result) {
+  if (all_indexes.empty()) {
+    LOG_ERROR("MergeAll: no indexes provided");
+    return core::IndexError_InvalidArgument;
+  }
+  if (result == nullptr) {
+    LOG_ERROR("MergeAll: result pointer is null");
+    return core::IndexError_InvalidArgument;
+  }
+
+  // 1. Find the best source to reuse (most surviving docs)
+  size_t best_idx = 0;
+  size_t best_surviving = 0;
+  uint64_t offset = 0;
+  for (size_t i = 0; i < all_indexes.size(); i++) {
+    uint32_t count = all_indexes[i]->GetDocCount();
+    size_t deleted = filter.count_filtered_in_range(offset, count);
+    size_t surviving = count - deleted;
+    if (surviving > best_surviving) {
+      best_surviving = surviving;
+      best_idx = i;
+    }
+    offset += count;
+  }
+
+  // 2. Check reuse feasibility
+  //    V1: only reuse the first index (offset math is trivial)
+  //    Must have zero deletions and no builder (IVF has builder, needs full
+  //    rebuild)
+  bool can_reuse =
+      (best_idx == 0) &&
+      (best_surviving == static_cast<size_t>(all_indexes[0]->GetDocCount())) &&
+      (all_indexes[0]->builder_ == nullptr);
+
+  // 3. Create target index using params from first source
+  //    Round-trip through JSON to preserve the concrete param type
+  auto base_param = all_indexes[0]->GetParam();
+  auto param = IndexFactory::DeserializeIndexParamFromJson(
+      base_param->SerializeToJson());
+  if (param == nullptr) {
+    LOG_ERROR("MergeAll: failed to reconstruct index param from source");
+    return core::IndexError_Runtime;
+  }
+  auto target = IndexFactory::CreateAndInitIndex(*param);
+  if (target == nullptr) {
+    LOG_ERROR("MergeAll: failed to create target index");
+    return core::IndexError_Runtime;
+  }
+
+  int ret = 0;
+  if (can_reuse) {
+    const std::string &src_path = all_indexes[0]->storage_path_;
+    std::error_code ec;
+    std::filesystem::copy_file(
+        src_path, output_path,
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      LOG_ERROR("MergeAll: failed to copy file from %s to %s: %s",
+                src_path.c_str(), output_path.c_str(), ec.message().c_str());
+      return core::IndexError_Runtime;
+    }
+    ret = target->Open(output_path,
+                       {StorageOptions::StorageType::kMMAP, false, false});
+    if (ret != 0) {
+      LOG_ERROR("MergeAll: failed to open copied target at %s",
+                output_path.c_str());
+      return ret;
+    }
+    if (all_indexes.size() > 1) {
+      std::vector<Index::Pointer> remaining(all_indexes.begin() + 1,
+                                            all_indexes.end());
+      ret = target->Merge(remaining, filter, options);
+      if (ret != 0) {
+        LOG_ERROR("MergeAll: merge of remaining indexes failed");
+        return ret;
+      }
+    }
+    LOG_INFO("MergeAll: reused first index (%u docs) as target",
+             all_indexes[0]->GetDocCount());
+  } else {
+    ret = target->Open(output_path,
+                       {StorageOptions::StorageType::kMMAP, true, false});
+    if (ret != 0) {
+      LOG_ERROR("MergeAll: failed to open new target at %s",
+                output_path.c_str());
+      return ret;
+    }
+    ret = target->Merge(all_indexes, filter, options);
+    if (ret != 0) {
+      LOG_ERROR("MergeAll: full merge failed");
+      return ret;
+    }
+  }
+
+  ret = target->Flush();
+  if (ret != 0) {
+    LOG_ERROR("MergeAll: flush failed");
+    return ret;
+  }
+  *result = std::move(target);
+  return 0;
+}
+
+int Index::MoveTo(const std::string &new_path) {
+  if (!is_open_) {
+    LOG_ERROR("MoveTo: index is not open");
+    return core::IndexError_Runtime;
+  }
+  std::string old_path = storage_path_;
+
+  int ret = Flush();
+  if (ret != 0) {
+    LOG_ERROR("MoveTo: flush failed");
+    return ret;
+  }
+
+  // Close streamer (STATE_OPENED -> STATE_INITED) so it can be reopened
+  if (streamer_->close() != 0) {
+    LOG_ERROR("MoveTo: streamer close failed");
+    return core::IndexError_Runtime;
+  }
+  if (storage_->close() != 0) {
+    LOG_ERROR("MoveTo: storage close failed");
+    return core::IndexError_Runtime;
+  }
+
+  if (!ailego::File::Rename(old_path, new_path)) {
+    LOG_ERROR("MoveTo: rename from %s to %s failed", old_path.c_str(),
+              new_path.c_str());
+    return core::IndexError_Runtime;
+  }
+
+  ret = storage_->open(new_path, false);
+  if (ret != 0) {
+    LOG_ERROR("MoveTo: reopen storage at %s failed", new_path.c_str());
+    return ret;
+  }
+  if (streamer_->open(storage_) != 0) {
+    LOG_ERROR("MoveTo: reopen streamer failed");
+    return core::IndexError_Runtime;
+  }
+  storage_path_ = new_path;
+  return 0;
 }
 
 }  // namespace zvec::core_interface

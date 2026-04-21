@@ -26,21 +26,25 @@ class IndexFilter {
   IndexFilter(void) {}
 
   //! Constructor
-  IndexFilter(const IndexFilter &rhs) : filter_(rhs.filter_) {}
+  IndexFilter(const IndexFilter &rhs)
+      : filter_(rhs.filter_), range_count_(rhs.range_count_) {}
 
   //! Constructor
   IndexFilter(IndexFilter &&rhs)
-      : filter_(std::forward<decltype(filter_)>(rhs.filter_)) {}
+      : filter_(std::forward<decltype(filter_)>(rhs.filter_)),
+        range_count_(std::forward<decltype(range_count_)>(rhs.range_count_)) {}
 
   //! Copy assignment operator
   IndexFilter &operator=(const IndexFilter &rhs) {
     filter_ = rhs.filter_;
+    range_count_ = rhs.range_count_;
     return *this;
   }
 
-  //! Copy assignment operator
+  //! Move assignment operator
   IndexFilter &operator=(IndexFilter &&rhs) {
     filter_ = std::forward<decltype(filter_)>(rhs.filter_);
+    range_count_ = std::forward<decltype(range_count_)>(rhs.range_count_);
     return *this;
   }
 
@@ -65,9 +69,27 @@ class IndexFilter {
     return (!!filter_);
   }
 
+  //! Count how many keys in [start, start+count) are filtered
+  size_t count_filtered_in_range(uint64_t start, size_t count) const {
+    if (range_count_) return range_count_(start, count);
+    if (!filter_) return 0;
+    size_t filtered = 0;
+    for (size_t i = 0; i < count; i++) {
+      if (filter_(start + i)) filtered++;
+    }
+    return filtered;
+  }
+
+  //! Set an efficient range-count function (e.g. backed by Roaring bitmap)
+  template <typename T>
+  void set_range_count(T &&func) {
+    range_count_ = std::forward<T>(func);
+  }
+
  private:
   //! Members
   std::function<bool(uint64_t key)> filter_{};
+  std::function<size_t(uint64_t start, size_t count)> range_count_{};
 };
 
 }  // namespace core
