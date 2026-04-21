@@ -50,7 +50,7 @@
 ## 💫 Features
 
 - **Blazing Fast**: Searches billions of vectors in milliseconds.
-- **Simple, Just Works**: [Install](#-installation) and start searching in seconds. No servers, no config, no fuss.
+- **Simple, Just Works**: [Install](#-installation) and start searching in seconds. Pure local, no servers, no config, no fuss.
 - **Dense + Sparse Vectors**: Work with both dense and sparse embeddings, with native support for multi-vector queries in a single call.
 - **Hybrid Search**: Combine semantic similarity with structured filters for precise results.
 - **Durable Storage**: Write-ahead logging (WAL) guarantees persistence — data is never lost, even on process crash or power failure.
