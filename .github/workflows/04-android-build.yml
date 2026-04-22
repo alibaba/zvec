@@ -411,11 +411,22 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build "$EXAMPLES_BUILD" --parallel
 
+          # Reuse the shared-library directory from Step 4; push again in
+          # case Step 4 was skipped or the directory was cleaned.
+          DEVICE_LIB_DIR="/data/local/tmp/zvec_tests/lib"
+          adb shell "mkdir -p $DEVICE_LIB_DIR" 2>/dev/null || true
+          SO_COUNT=0
+          while IFS= read -r so_file; do
+            adb push "$so_file" "$DEVICE_LIB_DIR/$(basename "$so_file")" > /dev/null 2>&1
+            SO_COUNT=$((SO_COUNT + 1))
+          done < <(find "$BUILD_DIR/lib" -name "*.so" -type f 2>/dev/null)
+          echo "Pushed $SO_COUNT shared libraries to $DEVICE_LIB_DIR"
+
           for example in ailego-example core-example db-example; do
             if [ -f "$EXAMPLES_BUILD/$example" ]; then
               echo "=== Running $example ==="
               adb push "$EXAMPLES_BUILD/$example" "/data/local/tmp/$example" > /dev/null 2>&1
-              adb shell "chmod 755 /data/local/tmp/$example && cd /data/local/tmp && ./$example"
+              adb shell "chmod 755 /data/local/tmp/$example && cd /data/local/tmp && LD_LIBRARY_PATH=$DEVICE_LIB_DIR ./$example"
               adb shell "rm -f /data/local/tmp/$example"
             fi
           done

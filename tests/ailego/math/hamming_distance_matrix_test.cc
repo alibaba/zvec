@@ -50,7 +50,7 @@ static inline void MatrixTranspose(uint64_t *dst, const uint64_t *src, size_t M,
 }
 
 TEST(DistanceMatrix, Hamming_General) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   FixedBitset<63936> bitset1;

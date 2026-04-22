@@ -15,7 +15,6 @@
 #include "zvec/db/doc.h"
 #include <cstdint>
 #include <limits>
-#include <random>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include "utils/utils.h"
@@ -786,7 +785,8 @@ TEST_F(DocDetailedTest, Validate) {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     std::vector<std::string> invalid_names = {
         // Too long (>64)
-        std::string(65, 'a'), std::string(64, 'a') + "_",
+        std::string(65, 'a'),
+        std::string(64, 'a') + "_",
 
         // Illegal characters
         "a b",   // space
@@ -1267,6 +1267,33 @@ TEST(VectorQuery, Validate) {
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     query.query_sparse_indices_ = query_indices_str.substr(0, 3);
+    s = query.validate(&schema);
+    EXPECT_TRUE(s.ok());
+  }
+
+  // validate query_params type matches index type
+  {
+    VectorQuery query;
+    query.field_name_ = "embedding";
+    query.topk_ = 10;
+    std::vector<float> query_vector(128, 1.0f);
+    query.query_vector_ =
+        std::string(reinterpret_cast<char *>(query_vector.data()),
+                    query_vector.size() * sizeof(float));
+    FieldSchema schema =
+        FieldSchema("embedding", DataType::VECTOR_FP32, 128, false,
+                    std::make_shared<HnswIndexParams>(MetricType::L2));
+
+    query.query_params_ = std::make_shared<HnswQueryParams>(150);
+    auto s = query.validate(&schema);
+    EXPECT_TRUE(s.ok());
+
+    query.query_params_ = std::make_shared<IVFQueryParams>(50);
+    s = query.validate(&schema);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+
+    query.query_params_ = nullptr;
     s = query.validate(&schema);
     EXPECT_TRUE(s.ok());
   }

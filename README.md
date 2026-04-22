@@ -1,3 +1,7 @@
+<p align="right">
+  English | <a href="./README_CN.md">中文</a>
+</p>
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://zvec.oss-cn-hongkong.aliyuncs.com/logo/github_log_2.svg" />
@@ -19,10 +23,10 @@
 </p>
 
 <p align="center">
-  <a href="https://zvec.org/en/docs/quickstart/">🚀 <strong>Quickstart</strong> </a> |
+  <a href="https://zvec.org/en/docs/db/quickstart/">🚀 <strong>Quickstart</strong> </a> |
   <a href="https://zvec.org/en/">🏠 <strong>Home</strong> </a> |
-  <a href="https://zvec.org/en/docs/">📚 <strong>Docs</strong> </a> |
-  <a href="https://zvec.org/en/docs/benchmarks/">📊 <strong>Benchmarks</strong> </a> |
+  <a href="https://zvec.org/en/docs/db/">📚 <strong>Docs</strong> </a> |
+  <a href="https://zvec.org/en/docs/db/benchmarks/">📊 <strong>Benchmarks</strong> </a> |
   <a href="https://deepwiki.com/alibaba/zvec">🔎 <strong>DeepWiki</strong> </a> |
   <a href="https://discord.gg/rKddFBBu9z">🎮 <strong>Discord</strong> </a> |
   <a href="https://x.com/ZvecAI">🐦 <strong>X (Twitter)</strong> </a>
@@ -30,20 +34,27 @@
 
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Built on **Proxima** (Alibaba's battle-tested vector search engine), it delivers production-grade, low-latency, scalable similarity search with minimal setup.
 
-> [!IMPORTANT]
-> **🚀 v0.3.0 Released on April 3, 2026**
+> [!Important]
+> 🚀 **v0.3.1 (Apr 17, 2026)**
+>
+> - Relaxed collection path restrictions and improved Windows path handling.
+>
+> 🚀 **v0.3.0 (April 3, 2026)**
+>
 > - **New Platforms**: Initial **Windows (MSVC)** and **Android** support. Published official Windows **Python** and **Node.js** packages.
 > - **Efficiency**: **RabitQ** quantization and **CPU Auto-Dispatch** for optimized SIMD execution.
 > - **Ecosystem**: **C-API** for custom language bindings and **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** integration for AI Agents.
-> 
+>
 > 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 
 - **Blazing Fast**: Searches billions of vectors in milliseconds.
-- **Simple, Just Works**: [Install](#-installation) and start searching in seconds. No servers, no config, no fuss.
+- **Simple, Just Works**: [Install](#-installation) and start searching in seconds. Pure local, no servers, no config, no fuss.
 - **Dense + Sparse Vectors**: Work with both dense and sparse embeddings, with native support for multi-vector queries in a single call.
 - **Hybrid Search**: Combine semantic similarity with structured filters for precise results.
+- **Durable Storage**: Write-ahead logging (WAL) guarantees persistence — data is never lost, even on process crash or power failure.
+- **Concurrent Access**: Multiple processes can read the same collection simultaneously; writes are single-process exclusive.
 - **Runs Anywhere**: As an in-process library, Zvec runs wherever your code runs — notebooks, servers, CLI tools, or even edge devices.
 
 ## 📦 Installation
@@ -70,7 +81,7 @@ npm install @zvec/zvec
 
 ### 🛠️ Building from Source
 
-If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/build/) guide.
+If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/db/build/) guide.
 
 ## ⚡ One-Minute Example
 
@@ -108,19 +119,17 @@ Zvec delivers exceptional speed and efficiency, making it ideal for demanding pr
 
 <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qps_10M.svg" width="800" alt="Zvec Performance Benchmarks" />
 
-For detailed benchmark methodology, configurations, and complete results, please see our [Benchmarks documentation](https://zvec.org/en/docs/benchmarks/).
+For detailed benchmark methodology, configurations, and complete results, please see our [Benchmarks documentation](https://zvec.org/en/docs/db/benchmarks/).
 
 ## 🤝 Join Our Community
 
 <div align="center">
 
-Stay updated and get support — scan or click:
-
 <div align="center">
 
 | 💬 DingTalk | 📱 WeChat | 🎮 Discord | X (Twitter) |
 | :---: | :---: | :---: | :---: |
-| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="DingTalk QR Code"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=4" width="150" alt="WeChat QR Code"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="DingTalk QR Code"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=5" width="150" alt="WeChat QR Code"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
 | Scan to join | Scan to join | Click to join | Click to follow |
 
 </div>

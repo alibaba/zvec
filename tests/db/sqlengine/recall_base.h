@@ -153,7 +153,7 @@ inline Doc CreateDoc(const uint64_t doc_id) {
 inline Status InsertDoc(const Segment::Ptr &segment,
                         const uint64_t start_doc_id,
                         const uint64_t end_doc_id) {
-  srand(time(NULL));
+  srand(time(nullptr));
   long long create_total = 0;
   long long insert_total = 0;
   for (auto doc_id = start_doc_id; doc_id < end_doc_id; doc_id++) {

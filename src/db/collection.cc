@@ -1725,9 +1725,9 @@ Status CollectionImpl::create() {
   if (path_.empty()) {
     return Status::InvalidArgument("path validate failed: path is empty");
   }
-  if (!std::regex_match(path_, COLLECTION_PATH_REGEX)) {
+  if (!FileHelper::PathSimpleValidation(path_)) {
     return Status::InvalidArgument("path validate failed: path[", path_,
-                                   "] cannot pass the regex verification");
+                                   "] is not a valid path");
   }
   if (ailego::FileHelper::IsExist(path_.c_str())) {
     return Status::InvalidArgument("path validate failed: path[", path_,
@@ -1739,8 +1739,9 @@ Status CollectionImpl::create() {
   CHECK_RETURN_STATUS(s);
 
   if (!ailego::FileHelper::MakePath(path_.c_str())) {
-    return Status::InvalidArgument("create collection path failed: ", path_,
-                                   ", error: ", strerror(errno));
+    return Status::InvalidArgument(
+        "create collection path failed: ", path_,
+        ", error: ", ailego::FileHelper::GetLastErrorString());
   }
 
   // init lock file

@@ -66,7 +66,7 @@ Doc CreateDoc(const uint64_t doc_id) {
 
 void InsertDoc(const MemForwardStore::Ptr &store, const uint64_t start_doc_id,
                const uint64_t end_doc_id) {
-  srand(time(NULL));
+  srand(time(nullptr));
   for (auto doc_id = start_doc_id; doc_id < end_doc_id; doc_id++) {
     if (store) {
       Doc new_doc = CreateDoc(doc_id);

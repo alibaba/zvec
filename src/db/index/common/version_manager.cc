@@ -77,7 +77,7 @@ Status Version::Save(const std::string &path, const Version &version) {
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs.is_open()) {
     LOG_ERROR("Failed to open file: %s, err: %s", path.c_str(),
-              strerror(errno));
+              ailego::FileHelper::GetLastErrorString().c_str());
     return Status::InternalError("Failed to open file: %s", path.c_str());
   }
 

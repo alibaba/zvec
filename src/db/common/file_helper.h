@@ -231,6 +231,22 @@ class FileHelper {
     return ailego::FileHelper::FileSize(file_path.c_str());
   }
 
+  //! Perform a lightweight sanity check on the path string.
+  //! This only catches obvious invalid input and does NOT guarantee the path
+  //! is usable.
+  static bool PathSimpleValidation(const std::string &path) {
+    if (path.empty()) return false;
+
+    if (path.find('\0') != std::string::npos) return false;
+
+#ifdef _WIN32
+    // Characters forbidden in Windows path components.
+    if (path.find_first_of("<>\"|?*") != std::string::npos) return false;
+#endif
+
+    return true;
+  }
+
   //! Copy file
   //! src_file_path and dst_file_path must be the full path
   //! dst_file_path/.. must exist

@@ -44,11 +44,10 @@ class RecordQuantizer {
         scale = 254 / std::max(max - min, epsilon);
         bias = -min * scale - 127;
         for (size_t i = 0; i < dim; ++i) {
-          float v = vec[i] * scale + bias;
+          float v = std::round(vec[i] * scale + bias);
           squared_sum += v * v;
           sum += v;
-          (reinterpret_cast<int8_t *>(out))[i] =
-              static_cast<int8_t>(std::round(v));
+          (reinterpret_cast<int8_t *>(out))[i] = static_cast<int8_t>(v);
           int8_sum += (reinterpret_cast<int8_t *>(out))[i];
         }
         extras = reinterpret_cast<float *>(static_cast<int8_t *>(out) + dim);

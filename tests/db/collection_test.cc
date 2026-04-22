@@ -30,7 +30,6 @@
 #include "db/index/common/type_helper.h"
 #include "index/utils/utils.h"
 #include "zvec/ailego/utility/float_helper.h"
-#include "zvec/db/config.h"
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/options.h"
@@ -224,6 +223,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
                                             ".hidden",
                                             "file.txt",
                                             "abs_test/nested/path",
+                                            "abs test/nested/path",
                                             "nested/a/b/c",
                                             "_",
                                             "-",
@@ -242,30 +242,15 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
   }
 
   {
-    std::vector<std::string> inalid_paths = {
-        " ",         "",
-        "file name",  // space
-        "file$name",  // $
-        "a&b",        // &
-        "a|b",        // |
-        "a<b",        // <
-        "a>b",        // >
-        "a\"b",       // "
-        "a'b",        // '
-        "a;b",        // ;
-        "a?b",        // ?
-        "a*b",        // *
-        "a[b]",       // []
-        "a{b}",       // {}
-        "a~b",        // ~
-        "a#b",        // #
-        "a\tb",       // tab
-        "a\nb",       // newline
-        "a\rb",       // carriage return
+    using std::string_literals::operator""s;
+    std::vector<std::string> invalid_paths = {
+        "",
+        "v\0v"s,  // NUL
+#if _WIN32
+        "v?v"s,
+#endif
     };
-    for (auto path : inalid_paths) {
-      ailego::FileHelper::RemoveDirectory(path.c_str());
-
+    for (auto path : invalid_paths) {
       auto result = Collection::CreateAndOpen(path, *schema, options);
       if (!result.has_value()) {
         std::cout << result.error().message() << std::endl;
@@ -2124,7 +2109,8 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
 
 TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
 #ifdef __ANDROID__
-  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink support (needed by RocksDB checkpoint)";
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
 #endif
   auto func = [&](std::string field_name, bool enable_optimize,
                   IndexParams::Ptr scalar_index_params = nullptr) {
@@ -2401,7 +2387,8 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
 
 TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
 #ifdef __ANDROID__
-  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink support (needed by RocksDB checkpoint)";
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
 #endif
   auto func = [&](std::string field_name, bool enable_optimize) {
     FileHelper::RemoveDirectory(col_path);
@@ -3280,7 +3267,7 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
 
   {
     VectorQuery query;
-    query.topk_ = 1025;
+    query.topk_ = 100001;
     query.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);

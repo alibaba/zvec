@@ -1,0 +1,7 @@
+Checks: >
+  -*,
+  modernize-use-nullptr,
+WarningsAsErrors: "*"
+HeaderFilterRegex: "^(src|tests|tools)/"
+FormatStyle: none
+SystemHeaders: false

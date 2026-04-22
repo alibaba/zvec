@@ -111,7 +111,6 @@ if(MSVC)
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:roaring>
     )
 
     target_link_libraries(zvec_c_api
@@ -120,34 +119,15 @@ if(MSVC)
             zvec_core
             zvec_ailego
             zvec_turbo
-            roaring
             ${ZVEC_CXX_STD_LIB}
             Threads::Threads
     )
 elseif(APPLE)
-    # Third-party libraries that are dependencies of zvec_db and zvec_ailego
-    # These must be linked before the internal libraries that depend on them
-    target_link_libraries(zvec_c_api
-        PRIVATE
-            Arrow::arrow_static
-            Arrow::parquet_static
-            Arrow::arrow_compute
-            Arrow::arrow_dataset
-            Arrow::arrow_acero
-            rocksdb
-            glog
-            libprotobuf
-            antlr4
-    )
-    
-    # Link zvec internal libraries with -force_load to extract all objects
-    # Use target names directly with -Wl,-force_load flag
     target_link_options(zvec_c_api PRIVATE
-        -Wl,-force_load,$<TARGET_FILE:zvec_db>
-        -Wl,-force_load,$<TARGET_FILE:zvec_core>
-        -Wl,-force_load,$<TARGET_FILE:zvec_ailego>
-        -Wl,-force_load,$<TARGET_FILE:zvec_turbo>
-        -Wl,-force_load,$<TARGET_FILE:roaring>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_db>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
     )
     
     # Link the libraries themselves (without force_load flags)
@@ -157,7 +137,6 @@ elseif(APPLE)
             zvec_core
             zvec_ailego
             zvec_turbo
-            roaring
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
@@ -176,11 +155,6 @@ else()
                 zvec_ailego
                 zvec_turbo  # Required by zvec_core (metric module)
             ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
-            # Most third-party libs are linked via zvec_db
-            # Only roaring needs explicit whole-archive (C library)
-            ${ZVEC_WHOLE_ARCHIVE_PREFIX}
-                roaring
-            ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
@@ -188,7 +162,6 @@ else()
     # Link C++ standard library appropriately for the platform
     # On Linux, we need to explicitly link libstdc++
     # Try static linking first, fall back to dynamic
-    
     set(STATIC_LIBS_FOUND FALSE)
     
     # Try to find static libraries using compiler's built-in search

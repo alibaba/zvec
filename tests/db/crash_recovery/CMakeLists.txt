@@ -50,6 +50,7 @@ cc_binary(
     INCS .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
+set_target_properties(data_generator PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 
 # Build collection_optimizer executable
@@ -60,6 +61,7 @@ cc_binary(
     INCS .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
+set_target_properties(collection_optimizer PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 
 # Build test executables

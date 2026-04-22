@@ -77,6 +77,10 @@ struct FileHelper {
   //! Retrieve non-zero if two paths are pointing to the same file
   static bool IsSame(const char *path1, const char *path2);
 
+  //! Retrieve a human-readable string for the most recent OS error
+  //! (GetLastError() on Windows, strerror(errno) on POSIX)
+  static std::string GetLastErrorString();
+
   //! Retrieve the size of a file
   static size_t FileSize(const char *path) {
     size_t file_size = 0;
