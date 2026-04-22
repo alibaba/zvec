@@ -35,7 +35,6 @@ from zvec import (
     MetricType,
     VectorSchema,
     Query,
-    VectorQuery,
 )
 
 

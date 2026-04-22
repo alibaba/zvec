@@ -16,7 +16,6 @@ from zvec import (
     Collection,
     Doc,
     Query,
-    VectorQuery,
 )
 
 from support_helper import *

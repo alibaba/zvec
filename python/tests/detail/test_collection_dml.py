@@ -12,7 +12,6 @@ from zvec import (
     Collection,
     Doc,
     Query,
-    VectorQuery,
     StatusCode,
 )
 from distance_helper import *

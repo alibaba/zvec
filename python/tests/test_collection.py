@@ -30,7 +30,6 @@ from zvec import (
     OptimizeOption,
     StatusCode,
     Query,
-    VectorQuery,
     VectorSchema,
 )
 

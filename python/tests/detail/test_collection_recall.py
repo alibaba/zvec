@@ -15,7 +15,7 @@
 import pytest
 
 from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
-from zvec.model import Collection, Doc, Query, VectorQuery
+from zvec.model import Collection, Doc, Query
 from zvec.model.param import (
     CollectionOption,
     InvertIndexParam,

@@ -19,7 +19,7 @@ from fixture_helper import *
 from params_helper import *
 from zvec import StatusCode
 from zvec.extension import QwenReRanker, RrfReRanker, WeightedReRanker
-from zvec.model import Collection, Doc, VectorQuery
+from zvec.model import Collection, Doc
 from zvec.model.param import (
     CollectionOption,
     FlatIndexParam,
