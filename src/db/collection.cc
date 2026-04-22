@@ -296,6 +296,7 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
     // create new collection with existing schema
     s = create();
   }
+  CHECK_RETURN_STATUS(s);
 
   auto profiler = std::make_shared<Profiler>();
   sql_engine_ = sqlengine::SQLEngine::create(profiler);
@@ -624,9 +625,10 @@ Status CollectionImpl::execute_tasks(
 
 Status CollectionImpl::DropIndex(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
-  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   std::lock_guard lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
   auto s = new_schema->drop_index(column_name);
@@ -1547,8 +1549,6 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
-
-  auto segments = get_all_segments();
 
   VectorQuery query;
   query.filter_ = filter;

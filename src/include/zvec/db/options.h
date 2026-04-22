@@ -17,11 +17,11 @@
 
 namespace zvec {
 
-const uint32_t DEFAULT_MAX_BUFFER_SIZE = 64 * 1024 * 1024;  // 128M
+const uint32_t DEFAULT_MAX_BUFFER_SIZE = 64 * 1024 * 1024;  // 64M
 
 struct CollectionOptions {
   bool read_only_{false};
-  bool enable_mmap_{true};  // ignnored when load collection
+  bool enable_mmap_{true};  // ignored when load collection
   uint32_t max_buffer_size_{
       DEFAULT_MAX_BUFFER_SIZE};  // ignored when read_only=true
 

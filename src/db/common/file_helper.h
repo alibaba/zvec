@@ -41,7 +41,7 @@ enum class FileID : uint32_t {
 /*
  * File name coresponding to file id
  */
-static const char *GetFileName(FileID t) {
+inline const char *GetFileName(FileID t) {
   switch (t) {
     case FileID::ID_FILE:
       return "idmap";
