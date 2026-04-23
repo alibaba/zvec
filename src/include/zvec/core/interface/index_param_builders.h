@@ -151,6 +151,56 @@ class HNSWIndexParamBuilder
   }
 };
 
+class OmegaIndexParamBuilder
+    : public BaseIndexParamBuilder<OmegaIndexParamBuilder, OmegaIndexParam> {
+ public:
+  OmegaIndexParamBuilder() = default;
+
+  OmegaIndexParamBuilder &WithM(int m) {
+    param->m = m;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &WithEFConstruction(int ef_construction) {
+    param->ef_construction = ef_construction;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &WithMinVectorThreshold(uint32_t min_vector_threshold) {
+    param->min_vector_threshold = min_vector_threshold;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &WithNumTrainingQueries(size_t num_training_queries) {
+    param->num_training_queries = num_training_queries;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &WithEFTraining(int ef_training) {
+    param->ef_training = ef_training;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &WithWindowSize(int window_size) {
+    param->window_size = window_size;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &WithEFGroundTruth(int ef_groundtruth) {
+    param->ef_groundtruth = ef_groundtruth;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &WithKTrain(int k_train) {
+    param->k_train = k_train;
+    return *this;
+  }
+
+  std::shared_ptr<OmegaIndexParam> Build() override {
+    return param;
+  }
+};
+
 class HNSWRabitqIndexParamBuilder
     : public BaseIndexParamBuilder<HNSWRabitqIndexParamBuilder,
                                    HNSWRabitqIndexParam> {

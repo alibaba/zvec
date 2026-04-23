@@ -106,43 +106,11 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
       return param;
     }
     case IndexType::kOMEGA: {
-      HNSWIndexParam::Pointer param = std::make_shared<HNSWIndexParam>();
-      auto deserialize_quantizer = [&](const ailego::JsonObject &obj) -> bool {
-        ailego::JsonValue quantizer_json_value;
-        if (obj.has("quantizer_param")) {
-          if (obj.get("quantizer_param", &quantizer_json_value);
-              quantizer_json_value.is_object()) {
-            if (!param->quantizer_param.DeserializeFromJson(
-                    quantizer_json_value.as_json_string().as_stl_string())) {
-              return false;
-            }
-          }
-        }
-        return true;
-      };
-
-      if (!extract_enum_from_json<MetricType>(
-              json_obj, "metric_type", param->metric_type, tmp_json_value) ||
-          !extract_enum_from_json<DataType>(json_obj, "data_type",
-                                            param->data_type, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "dimension", param->dimension,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "version", param->version,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "is_sparse", param->is_sparse,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "use_id_map", param->use_id_map,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "is_huge_page",
-                                   param->is_huge_page, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "m", param->m, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "ef_construction",
-                                   param->ef_construction, tmp_json_value) ||
-          !deserialize_quantizer(json_obj)) {
+      OmegaIndexParam::Pointer param = std::make_shared<OmegaIndexParam>();
+      if (!param->DeserializeFromJson(json_str)) {
         LOG_ERROR("Failed to deserialize omega index param");
         return nullptr;
       }
-      param->index_type = IndexType::kOMEGA;
       return param;
     }
     case IndexType::kIVF: {

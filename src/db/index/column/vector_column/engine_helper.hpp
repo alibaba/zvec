@@ -377,10 +377,9 @@ class ProximaEngineHelper {
       }
 
       case IndexType::OMEGA: {
-        // OMEGA uses its own index type at core_interface level
         auto index_param_builder_result =
             _build_common_index_param<OmegaIndexParams,
-                                      core_interface::HNSWIndexParamBuilder>(
+                                      core_interface::OmegaIndexParamBuilder>(
                 field_schema);
         if (!index_param_builder_result.has_value()) {
           return tl::make_unexpected(Status::InvalidArgument(
@@ -394,16 +393,16 @@ class ProximaEngineHelper {
         index_param_builder->WithM(db_index_params->m());
         index_param_builder->WithEFConstruction(
             db_index_params->ef_construction());
-
-        // Override index_type to kOMEGA and attach OMEGA-specific config.
-        auto hnsw_param = index_param_builder->Build();
-        hnsw_param->index_type = core_interface::IndexType::kOMEGA;
-        hnsw_param->params.insert("omega.enabled", true);
-        hnsw_param->params.insert("omega.min_vector_threshold",
-                                  db_index_params->min_vector_threshold());
-        hnsw_param->params.insert("omega.window_size",
-                                  db_index_params->window_size());
-        return hnsw_param;
+        index_param_builder->WithMinVectorThreshold(
+            db_index_params->min_vector_threshold());
+        index_param_builder->WithNumTrainingQueries(
+            db_index_params->num_training_queries());
+        index_param_builder->WithEFTraining(db_index_params->ef_training());
+        index_param_builder->WithWindowSize(db_index_params->window_size());
+        index_param_builder->WithEFGroundTruth(
+            db_index_params->ef_groundtruth());
+        index_param_builder->WithKTrain(db_index_params->k_train());
+        return index_param_builder->Build();
       }
 
       case IndexType::HNSW_RABITQ: {

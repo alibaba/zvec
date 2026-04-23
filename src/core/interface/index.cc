@@ -407,7 +407,7 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
-  if (!is_trained_ && this->Train() != 0) {
+  if (!is_trained_ && !is_training_ && this->Train() != 0) {
     LOG_ERROR("Failed to train index");
     return core::IndexError_Runtime;
   }

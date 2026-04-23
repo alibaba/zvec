@@ -20,7 +20,6 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <ailego/parallel/multi_thread_list.h>
@@ -59,9 +58,6 @@
 #include "db/index/storage/mmap_forward_store.h"
 #include "db/index/storage/store_helper.h"
 #include "db/index/storage/wal/wal_file.h"
-#include "db/training/omega_model_trainer.h"
-#include "db/training/omega_training_coordinator.h"
-#include "db/training/training_data_collector.h"
 #include "zvec/ailego/container/params.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_meta.h"
@@ -1618,80 +1614,17 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   s = vector_indexer->Merge(to_merge_indexers, filter_, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
-  // Check if this is a trainable index (OMEGA)
-  auto *training_capable = vector_indexer->GetTrainingCapability();
-  bool needs_training = false;
-  std::string model_output_dir;
-  OmegaTrainingParams omega_training_params;
-
-  if (training_capable != nullptr) {
-    omega_training_params = ResolveOmegaTrainingParams(field.index_params());
-
-    size_t doc_count = vector_indexer->doc_count();
-    if (doc_count >= omega_training_params.min_vector_threshold) {
-      needs_training = true;
-      LOG_INFO(
-          "Trainable index detected after merge for field '%s' in segment %d "
-          "(doc_count=%zu >= min_vector_threshold=%u)",
-          column.c_str(), id(), doc_count,
-          omega_training_params.min_vector_threshold);
-    } else {
-      LOG_INFO(
-          "Skipping OMEGA training for field '%s': doc_count=%zu < "
-          "min_vector_threshold=%u",
-          column.c_str(), doc_count,
-          omega_training_params.min_vector_threshold);
+  if (vector_indexer->GetTrainingCapability() != nullptr) {
+    LOG_INFO("Delegating OMEGA training to core index for field '%s'",
+             column.c_str());
+    if (vector_indexer->core_index()->Train() != 0) {
+      return tl::make_unexpected(
+          Status::InternalError("Failed to train OMEGA model in core"));
     }
+  } else {
+    s = vector_indexer->Flush();
+    CHECK_RETURN_STATUS_EXPECTED(s);
   }
-
-  // OPTIMIZATION: Collect training data BEFORE Flush() while the in-memory
-  // graph still exists. This avoids the expensive disk reload (~2 minutes for
-  // 1M vectors) that was previously needed. The model training itself doesn't
-  // need the graph, only the collected records.
-  std::optional<TrainingDataCollectorResult> training_result_opt;
-
-  if (needs_training) {
-    // Compute model output directory
-    std::string segment_dir =
-        index_file_path.substr(0, index_file_path.rfind('/'));
-    model_output_dir = segment_dir + "/omega_model";
-
-    LOG_INFO(
-        "Starting OMEGA training data collection for field '%s' (using "
-        "in-memory graph before flush)",
-        column.c_str());
-    LOG_INFO(
-        "Using OMEGA index params: num_training_queries=%zu, ef_training=%d, "
-        "ef_groundtruth=%d, k_train=%d",
-        omega_training_params.num_training_queries,
-        omega_training_params.ef_training, omega_training_params.ef_groundtruth,
-        omega_training_params.k_train);
-
-    auto training_result = CollectOmegaTrainingDataBeforeFlush(
-        shared_from_this(), column, vector_indexer, omega_training_params,
-        model_output_dir);
-    if (training_result.has_value()) {
-      training_result_opt = std::move(training_result.value());
-      LOG_INFO("Collected %zu training records (before flush)",
-               training_result_opt->records.size());
-    } else {
-      LOG_WARN("Failed to collect training data: %s",
-               training_result.error().message().c_str());
-    }
-  }
-
-  // Now flush to persist the data (this clears the in-memory graph)
-  s = vector_indexer->Flush();
-  CHECK_RETURN_STATUS_EXPECTED(s);
-
-  // Train the model using the previously collected data (doesn't need the
-  // graph)
-  if (needs_training && training_result_opt.has_value()) {
-    auto s_train = TrainOmegaModelAfterBuild(training_result_opt.value(),
-                                             model_output_dir);
-    CHECK_RETURN_STATUS_EXPECTED(s_train);
-  }
-
 
   return vector_indexer;
 }
@@ -2417,67 +2350,18 @@ Status SegmentImpl::auto_train_omega_index_internal(
     const std::vector<VectorColumnIndexer::Ptr> &indexers) {
   LOG_WARN("Starting auto-training for OMEGA index on field '%s' in segment %d",
            field_name.c_str(), id());
-
-  OmegaTrainingParams omega_training_params;
-  auto field = collection_schema_->get_field(field_name);
-  if (field && field->index_params()) {
-    omega_training_params = ResolveOmegaTrainingParams(field->index_params());
-    LOG_INFO(
-        "Using OMEGA index params: num_training_queries=%zu, ef_training=%d, "
-        "ef_groundtruth=%d, min_vector_threshold=%u, k_train=%d",
-        omega_training_params.num_training_queries,
-        omega_training_params.ef_training, omega_training_params.ef_groundtruth,
-        omega_training_params.min_vector_threshold,
-        omega_training_params.k_train);
-  }
-
-  // Check if we have enough vectors to justify training
-  size_t total_doc_count = 0;
   for (const auto &indexer : indexers) {
-    total_doc_count += indexer->doc_count();
+    if (indexer == nullptr || indexer->core_index() == nullptr) {
+      continue;
+    }
+    if (indexer->GetTrainingCapability() == nullptr) {
+      continue;
+    }
+    if (indexer->core_index()->Train() != 0) {
+      return Status::InternalError("Failed to retrain OMEGA model in core");
+    }
   }
-
-  if (total_doc_count < omega_training_params.min_vector_threshold) {
-    LOG_INFO(
-        "Skipping OMEGA training for field '%s': doc_count=%zu < "
-        "min_vector_threshold=%u",
-        field_name.c_str(), total_doc_count,
-        omega_training_params.min_vector_threshold);
-    return Status::OK();
-  }
-
-  LOG_INFO(
-      "Proceeding with OMEGA training: doc_count=%zu >= "
-      "min_vector_threshold=%u",
-      total_doc_count, omega_training_params.min_vector_threshold);
-
-  // Step 1: Collect training data using the provided indexers
-  LOG_WARN(
-      "OMEGA retrain step 1/2: start collecting training data for field '%s' "
-      "in segment %d",
-      field_name.c_str(), id());
-  const std::string model_output_dir =
-      FileHelper::MakeSegmentPath(path_, id()) + "/omega_model";
-  auto training_records_result =
-      CollectOmegaRetrainingData(shared_from_this(), field_name, indexers,
-                                 omega_training_params, model_output_dir);
-
-  if (!training_records_result.has_value()) {
-    return Status::InternalError("Failed to collect training data: " +
-                                 training_records_result.error().message());
-  }
-
-  LOG_WARN(
-      "OMEGA retrain step 1/2: finished collecting training data for field "
-      "'%s' in segment %d",
-      field_name.c_str(), id());
-
-  auto &training_result = training_records_result.value();
-  LOG_INFO("Collected %zu training records for segment %d",
-           training_result.records.size(), id());
-
-  return TrainOmegaModelAfterRetrainCollect(training_result, model_output_dir,
-                                            id(), field_name);
+  return Status::OK();
 }
 
 Status SegmentImpl::retrain_omega_model() {
@@ -2492,6 +2376,12 @@ Status SegmentImpl::retrain_omega_model() {
     }
 
     auto indexers = get_vector_indexer(field->name());
+    if (indexers.empty()) {
+      auto s = load_vector_index_blocks();
+      CHECK_RETURN_STATUS(s);
+      indexers = get_vector_indexer(field->name());
+    }
+
     if (indexers.empty()) {
       LOG_INFO(
           "Skipping OMEGA retraining for field '%s' in segment %d: no vector "

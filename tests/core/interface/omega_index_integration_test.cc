@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <filesystem>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
 #include "zvec/core/interface/index.h"
@@ -28,16 +29,29 @@ constexpr uint32_t kDimension = 16;
 const std::string kIndexPath = "OmegaIndexIntegrationTest/test.index";
 
 BaseIndexParam::Pointer CreateOmegaIndexParam() {
-  auto param = HNSWIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .WithM(8)
-                   .WithEFConstruction(64)
-                   .Build();
-  param->index_type = IndexType::kOMEGA;
-  return param;
+  return OmegaIndexParamBuilder()
+      .WithMetricType(MetricType::kInnerProduct)
+      .WithDataType(DataType::DT_FP32)
+      .WithDimension(kDimension)
+      .WithIsSparse(false)
+      .WithM(8)
+      .WithEFConstruction(64)
+      .Build();
+}
+
+BaseIndexParam::Pointer CreateTrainableOmegaIndexParam() {
+  return OmegaIndexParamBuilder()
+      .WithMetricType(MetricType::kInnerProduct)
+      .WithDataType(DataType::DT_FP32)
+      .WithDimension(kDimension)
+      .WithIsSparse(false)
+      .WithM(8)
+      .WithEFConstruction(64)
+      .WithMinVectorThreshold(1)
+      .WithNumTrainingQueries(32)
+      .WithEFTraining(64)
+      .WithEFGroundTruth(64)
+      .Build();
 }
 
 void PopulateIndex(const Index::Pointer &index, uint32_t doc_count) {
@@ -151,6 +165,37 @@ TEST_F(OmegaIndexIntegrationTest,
   EXPECT_EQ(consumed.gt_cmps_data.total_cmps[0], result.total_cmps_);
 
   session->Finish();
+  ASSERT_EQ(index->Close(), 0);
+}
+
+TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
+  auto index = IndexFactory::CreateAndInitIndex(*CreateTrainableOmegaIndexParam());
+  ASSERT_NE(index, nullptr);
+  ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
+            0);
+
+  PopulateIndex(index, 128);
+  ASSERT_EQ(index->Train(), 0);
+
+  EXPECT_TRUE(
+      std::filesystem::exists("OmegaIndexIntegrationTest/omega_model/model.txt"));
+  EXPECT_TRUE(std::filesystem::exists(
+      "OmegaIndexIntegrationTest/omega_model/threshold_table.txt"));
+  EXPECT_TRUE(std::filesystem::exists(
+      "OmegaIndexIntegrationTest/omega_model/training_queries.bin"));
+
+  auto query_param = OmegaQueryParamBuilder()
+                         .with_topk(5)
+                         .with_fetch_vector(false)
+                         .with_ef_search(64)
+                         .with_target_recall(0.95f)
+                         .build();
+
+  auto query = MakeQuery(0.0f);
+  SearchResult result;
+  ASSERT_EQ(index->Search(query, query_param, &result), 0);
+  ASSERT_EQ(result.doc_list_.size(), 5U);
+
   ASSERT_EQ(index->Close(), 0);
 }
 

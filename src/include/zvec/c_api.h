@@ -927,6 +927,19 @@ ZVEC_EXPORT int ZVEC_CALL
 zvec_index_params_get_hnsw_ef_construction(const ZVecIndexParams *params);
 
 /**
+ * @brief Set OMEGA training-specific parameters
+ * @param params Index parameters (must be OMEGA type)
+ * @param min_vector_threshold Minimum vector count required to trigger training
+ * @param num_training_queries Number of held-out queries used for training
+ * @param ef_training ef value used during training searches
+ * @param ef_groundtruth ef value used for ground-truth generation
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL zvec_index_params_set_omega_training_params(
+    ZVecIndexParams *params, uint32_t min_vector_threshold,
+    size_t num_training_queries, int ef_training, int ef_groundtruth);
+
+/**
  * @brief Set IVF specific parameters
  * @param params Index parameters (must be IVF type)
  * @param n_list Number of cluster centers
@@ -2556,6 +2569,14 @@ zvec_collection_drop_index(ZVecCollection *collection, const char *field_name);
  */
 ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
 zvec_collection_optimize(ZVecCollection *collection);
+
+/**
+ * @brief Retrain OMEGA models on already-persisted segments without compacting
+ * @param collection Collection handle
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT ZVecErrorCode ZVEC_CALL
+zvec_collection_retrain_omega(ZVecCollection *collection);
 
 // =============================================================================
 // Column Management Interface (DDL)

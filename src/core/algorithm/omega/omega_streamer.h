@@ -60,6 +60,10 @@ class OmegaStreamer : public HnswStreamer {
     training_k_train_ = k_train;
   }
 
+  bool ReloadModel(const std::string &model_dir) {
+    return LoadModel(model_dir);
+  }
+
  protected:
   /**
    * @brief Override search to use OMEGA adaptive search

@@ -233,6 +233,7 @@ class Index {
 
  protected:
   bool is_trained_{false};
+  bool is_training_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};
@@ -362,7 +363,11 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
     return this;
   }
 
+  int Train() override;
   ITrainingSession::Pointer CreateTrainingSession() override;
+  BaseIndexParam::Pointer GetParam() const override {
+    return std::make_shared<OmegaIndexParam>(param_);
+  }
 
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -370,6 +375,9 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) override;
+
+ private:
+  OmegaIndexParam param_{};
 };
 
 

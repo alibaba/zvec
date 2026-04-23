@@ -1,5 +1,7 @@
+#include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <random>
 #include <vector>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
@@ -10,25 +12,49 @@ using namespace zvec::core_interface;
 namespace {
 
 constexpr uint32_t kDimension = 32;
+constexpr uint32_t kNumDocuments = 10000;
+constexpr uint32_t kQueryDocId = 7777;
 const std::string kIndexPath = "omega_example.index";
 
+std::vector<float> MakeRandomUnitVector(std::mt19937& rng) {
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+  std::vector<float> values(kDimension, 0.0f);
+  float norm_sq = 0.0f;
+  for (auto& value : values) {
+    value = dist(rng);
+    norm_sq += value * value;
+  }
+
+  const float norm = std::sqrt(norm_sq);
+  if (norm > 0.0f) {
+    for (auto& value : values) {
+      value /= norm;
+    }
+  }
+  return values;
+}
+
 BaseIndexParam::Pointer CreateOmegaParam() {
-  auto param = HNSWIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .WithM(8)
-                   .WithEFConstruction(64)
-                   .Build();
-  param->index_type = IndexType::kOMEGA;
-  return param;
+  return OmegaIndexParamBuilder()
+      .WithMetricType(MetricType::kInnerProduct)
+      .WithDataType(DataType::DT_FP32)
+      .WithDimension(kDimension)
+      .WithIsSparse(false)
+      .WithM(32)
+      .WithEFConstruction(500)
+      .WithMinVectorThreshold(10000)
+      .WithNumTrainingQueries(1000)
+      .WithEFTraining(500)
+      .WithEFGroundTruth(1000)
+      .Build();
 }
 
 }  // namespace
 
 int main() {
   std::filesystem::remove_all(kIndexPath);
+  std::filesystem::remove_all("omega_model");
 
   auto index = IndexFactory::CreateAndInitIndex(*CreateOmegaParam());
   if (!index) {
@@ -42,11 +68,13 @@ int main() {
     return 1;
   }
 
-  for (uint32_t doc_id = 0; doc_id < 6; ++doc_id) {
-    std::vector<float> values(kDimension, static_cast<float>(doc_id) / 10.0f);
-    values[0] = 1.0f + static_cast<float>(doc_id);
+  std::mt19937 rng(42);
+  std::vector<std::vector<float>> dataset;
+  dataset.reserve(kNumDocuments);
+  for (uint32_t doc_id = 0; doc_id < kNumDocuments; ++doc_id) {
+    dataset.push_back(MakeRandomUnitVector(rng));
     VectorData vector_data;
-    vector_data.vector = DenseVector{values.data()};
+    vector_data.vector = DenseVector{dataset.back().data()};
     if (index->Add(vector_data, doc_id) != 0) {
       std::cerr << "failed to add document " << doc_id << std::endl;
       return 1;
@@ -57,10 +85,12 @@ int main() {
     std::cerr << "failed to train omega index" << std::endl;
     return 1;
   }
+  if (!std::filesystem::exists("omega_model/model.txt")) {
+    std::cerr << "omega model was not generated" << std::endl;
+    return 1;
+  }
 
-  std::vector<float> query_values(kDimension, 0.0f);
-  query_values[0] = 1.0f;
-  VectorData query{DenseVector{query_values.data()}};
+  VectorData query{DenseVector{dataset[kQueryDocId].data()}};
 
   auto query_param = OmegaQueryParamBuilder()
                          .with_topk(3)
@@ -83,6 +113,10 @@ int main() {
 
   std::cout << "top result key=" << result.doc_list_[0].key()
             << " score=" << result.doc_list_[0].score() << std::endl;
+  if (result.doc_list_[0].key() != kQueryDocId) {
+    std::cerr << "unexpected top result key" << std::endl;
+    return 1;
+  }
   if (index->Close() != 0) {
     std::cerr << "failed to close omega index" << std::endl;
     return 1;

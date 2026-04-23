@@ -1570,6 +1570,38 @@ int zvec_index_params_get_hnsw_ef_construction(const ZVecIndexParams *params) {
 }
 
 /**
+ * @brief Set OMEGA training-specific parameters
+ * @param params Index parameters (must be OMEGA type)
+ * @param min_vector_threshold Minimum vector count required to trigger training
+ * @param num_training_queries Number of held-out queries used for training
+ * @param ef_training ef value used during training searches
+ * @param ef_groundtruth ef value used for ground-truth generation
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVecErrorCode zvec_index_params_set_omega_training_params(
+    ZVecIndexParams *params, uint32_t min_vector_threshold,
+    size_t num_training_queries, int ef_training, int ef_groundtruth) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not OMEGA index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  if (auto *omega_params = dynamic_cast<zvec::OmegaIndexParams *>(cpp_params)) {
+    omega_params->set_min_vector_threshold(min_vector_threshold);
+    omega_params->set_num_training_queries(num_training_queries);
+    omega_params->set_ef_training(ef_training);
+    omega_params->set_ef_groundtruth(ef_groundtruth);
+    return ZVEC_OK;
+  }
+
+  SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                 "Invalid params or not OMEGA index type");
+  return ZVEC_ERROR_INVALID_ARGUMENT;
+}
+
+/**
  * @brief Set IVF-specific parameters
  * @param params Index parameters (must be IVF type)
  * @param n_list Number of clusters
@@ -5618,6 +5650,24 @@ ZVecErrorCode zvec_collection_optimize(ZVecCollection *collection) {
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
       zvec::Status status = (*coll_ptr)->Optimize();
+      if (!status.ok()) { set_last_error(status.message()); }
+
+      return status_to_error_code(status);)
+}
+
+ZVecErrorCode zvec_collection_retrain_omega(ZVecCollection *collection) {
+  if (!collection) {
+    set_last_error("Invalid argument: collection cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception occurred",
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+      zvec::OptimizeOptions options;
+      options.retrain_only_ = true;
+      zvec::Status status = (*coll_ptr)->Optimize(options);
       if (!status.ok()) { set_last_error(status.message()); }
 
       return status_to_error_code(status);)
