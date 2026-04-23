@@ -105,7 +105,7 @@ class ConcurrentRoaringBitmap32 {
 
 
   size_t storage_size_in_bytes() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     return roaring_bitmap_portable_size_in_bytes(bitmap_);
   }
 

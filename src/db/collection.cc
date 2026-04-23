@@ -296,7 +296,6 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
     // create new collection with existing schema
     s = create();
   }
-  CHECK_RETURN_STATUS(s);
 
   auto profiler = std::make_shared<Profiler>();
   sql_engine_ = sqlengine::SQLEngine::create(profiler);
