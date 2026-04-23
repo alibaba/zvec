@@ -16,19 +16,19 @@ constexpr uint32_t kNumDocuments = 10000;
 constexpr uint32_t kQueryDocId = 7777;
 const std::string kIndexPath = "omega_example.index";
 
-std::vector<float> MakeRandomUnitVector(std::mt19937& rng) {
+std::vector<float> MakeRandomUnitVector(std::mt19937 &rng) {
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
   std::vector<float> values(kDimension, 0.0f);
   float norm_sq = 0.0f;
-  for (auto& value : values) {
+  for (auto &value : values) {
     value = dist(rng);
     norm_sq += value * value;
   }
 
   const float norm = std::sqrt(norm_sq);
   if (norm > 0.0f) {
-    for (auto& value : values) {
+    for (auto &value : values) {
       value /= norm;
     }
   }

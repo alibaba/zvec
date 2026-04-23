@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
-#include <filesystem>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
 #include "zvec/core/interface/index.h"
@@ -169,7 +169,8 @@ TEST_F(OmegaIndexIntegrationTest,
 }
 
 TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
-  auto index = IndexFactory::CreateAndInitIndex(*CreateTrainableOmegaIndexParam());
+  auto index =
+      IndexFactory::CreateAndInitIndex(*CreateTrainableOmegaIndexParam());
   ASSERT_NE(index, nullptr);
   ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
             0);
@@ -177,8 +178,8 @@ TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
   PopulateIndex(index, 128);
   ASSERT_EQ(index->Train(), 0);
 
-  EXPECT_TRUE(
-      std::filesystem::exists("OmegaIndexIntegrationTest/omega_model/model.txt"));
+  EXPECT_TRUE(std::filesystem::exists(
+      "OmegaIndexIntegrationTest/omega_model/model.txt"));
   EXPECT_TRUE(std::filesystem::exists(
       "OmegaIndexIntegrationTest/omega_model/threshold_table.txt"));
   EXPECT_TRUE(std::filesystem::exists(

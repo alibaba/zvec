@@ -23,9 +23,11 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <ailego/pattern/defer.h>
+#include <omega/ground_truth.h>
+#include <omega/omega_trainer.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/float_helper.h>
-#include <ailego/pattern/defer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_param_builders.h>
@@ -33,8 +35,6 @@
 #include "algorithm/omega/omega_params.h"
 #include "algorithm/omega/omega_streamer.h"
 #include "omega_training_session.h"
-#include <omega/ground_truth.h>
-#include <omega/omega_trainer.h>
 
 namespace zvec::core_interface {
 
@@ -73,9 +73,9 @@ class ScopedTimer {
     }
     const auto end = std::chrono::high_resolution_clock::now();
     stats_->emplace_back(
-        name_, std::chrono::duration_cast<std::chrono::milliseconds>(
-                   end - start_)
-                   .count());
+        name_,
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - start_)
+            .count());
   }
 
  private:
@@ -126,10 +126,9 @@ bool EnsureOmegaModelDir(const std::string &index_path) {
   return true;
 }
 
-bool SaveOmegaTrainingQueryCache(
-    const std::string &index_path,
-    const std::vector<std::vector<float>> &queries,
-    const std::vector<uint64_t> &query_doc_ids) {
+bool SaveOmegaTrainingQueryCache(const std::string &index_path,
+                                 const std::vector<std::vector<float>> &queries,
+                                 const std::vector<uint64_t> &query_doc_ids) {
   if (queries.empty() || queries.size() != query_doc_ids.size()) {
     return false;
   }
@@ -161,15 +160,14 @@ bool SaveOmegaTrainingQueryCache(
     ofs.write(reinterpret_cast<const char *>(&query_doc_ids[i]),
               sizeof(query_doc_ids[i]));
     ofs.write(reinterpret_cast<const char *>(queries[i].data()),
-              static_cast<std::streamsize>(queries[i].size() *
-                                           sizeof(float)));
+              static_cast<std::streamsize>(queries[i].size() * sizeof(float)));
   }
   return ofs.good();
 }
 
-bool LoadOmegaTrainingQueryCache(
-    const std::string &index_path, std::vector<std::vector<float>> *queries,
-    std::vector<uint64_t> *query_doc_ids) {
+bool LoadOmegaTrainingQueryCache(const std::string &index_path,
+                                 std::vector<std::vector<float>> *queries,
+                                 std::vector<uint64_t> *query_doc_ids) {
   std::ifstream ifs(GetOmegaQueryCachePath(index_path), std::ios::binary);
   if (!ifs.is_open()) {
     return false;
@@ -206,7 +204,8 @@ bool LoadOmegaTrainingQueryCache(
 bool DecodeDenseVectorBuffer(const OmegaIndexParam &param,
                              const VectorDataBuffer &vector_data_buffer,
                              std::vector<float> *values) {
-  if (!std::holds_alternative<DenseVectorBuffer>(vector_data_buffer.vector_buffer)) {
+  if (!std::holds_alternative<DenseVectorBuffer>(
+          vector_data_buffer.vector_buffer)) {
     LOG_ERROR("Expected dense vector buffer for OMEGA training");
     return false;
   }
@@ -228,7 +227,7 @@ bool DecodeDenseVectorBuffer(const OmegaIndexParam &param,
     }
     case DataType::DT_FP16: {
       if (dense_buffer.size() != static_cast<size_t>(param.dimension) *
-                                   sizeof(zvec::ailego::Float16)) {
+                                     sizeof(zvec::ailego::Float16)) {
         LOG_ERROR("Unexpected FP16 vector buffer size: %zu",
                   dense_buffer.size());
         return false;
@@ -246,8 +245,8 @@ bool DecodeDenseVectorBuffer(const OmegaIndexParam &param,
   }
 }
 
-bool FetchDenseVector(const OmegaIndexParam &param, Index *index, uint32_t doc_id,
-                      std::vector<float> *values) {
+bool FetchDenseVector(const OmegaIndexParam &param, Index *index,
+                      uint32_t doc_id, std::vector<float> *values) {
   VectorDataBuffer vector_data_buffer;
   if (index->Fetch(doc_id, &vector_data_buffer) != 0) {
     LOG_WARN("Failed to fetch vector %u for OMEGA training", doc_id);
@@ -259,15 +258,15 @@ bool FetchDenseVector(const OmegaIndexParam &param, Index *index, uint32_t doc_i
 std::vector<std::vector<float>> LoadBaseVectors(const OmegaIndexParam &param,
                                                 Index *index,
                                                 uint32_t doc_count,
-                                                size_t num_threads,
-                                                bool *ok) {
+                                                size_t num_threads, bool *ok) {
   std::vector<std::vector<float>> base_vectors(doc_count);
   std::atomic<bool> load_error{false};
-  size_t actual_threads = num_threads == 0 ? std::thread::hardware_concurrency()
-                                           : num_threads;
+  size_t actual_threads =
+      num_threads == 0 ? std::thread::hardware_concurrency() : num_threads;
   actual_threads = std::max<size_t>(1, actual_threads);
   actual_threads = std::min<size_t>(actual_threads, doc_count);
-  const size_t docs_per_thread = (doc_count + actual_threads - 1) / actual_threads;
+  const size_t docs_per_thread =
+      (doc_count + actual_threads - 1) / actual_threads;
 
   std::vector<std::thread> threads;
   for (size_t t = 0; t < actual_threads; ++t) {
@@ -344,10 +343,10 @@ std::vector<std::vector<uint64_t>> ComputeGroundTruthBruteForce(
 
   const bool held_out_mode =
       !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
-  return omega::ComputeGroundTruth(
-      flat_base.data(), flat_queries.data(), doc_count, queries.size(),
-      static_cast<size_t>(param.dimension), topk, metric_type, held_out_mode,
-      query_doc_ids);
+  return omega::ComputeGroundTruth(flat_base.data(), flat_queries.data(),
+                                   doc_count, queries.size(),
+                                   static_cast<size_t>(param.dimension), topk,
+                                   metric_type, held_out_mode, query_doc_ids);
 }
 
 std::vector<std::vector<uint64_t>> ComputeGroundTruthByHnsw(
@@ -372,8 +371,8 @@ std::vector<std::vector<uint64_t>> ComputeGroundTruthByHnsw(
   const bool held_out_mode =
       !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
   const size_t actual_topk = held_out_mode ? topk + 1 : topk;
-  size_t actual_threads = num_threads == 0 ? std::thread::hardware_concurrency()
-                                           : num_threads;
+  size_t actual_threads =
+      num_threads == 0 ? std::thread::hardware_concurrency() : num_threads;
   actual_threads = std::max<size_t>(1, actual_threads);
   actual_threads = std::min(actual_threads, queries.size());
   const size_t queries_per_thread =
@@ -443,9 +442,9 @@ bool CollectTrainingData(
   std::vector<std::vector<uint64_t>> ground_truth;
   {
     ScopedTimer timer(timing_stats, "Step2: ComputeGroundTruth");
-    ground_truth = ComputeGroundTruth(param, index, training_queries,
-                                      kOmegaTrainingTopk, query_doc_ids,
-                                      DefaultOmegaTrainerThreads());
+    ground_truth =
+        ComputeGroundTruth(param, index, training_queries, kOmegaTrainingTopk,
+                           query_doc_ids, DefaultOmegaTrainerThreads());
   }
 
   if (ground_truth.empty()) {
@@ -506,14 +505,14 @@ bool CollectTrainingData(
 
           SearchResult search_result;
           VectorData query{DenseVector{training_queries[q].data()}};
-          auto query_param = OmegaQueryParamBuilder()
-                                 .with_topk(static_cast<uint32_t>(
-                                     kOmegaTrainingTopk))
-                                 .with_fetch_vector(false)
-                                 .with_ef_search(param.ef_training)
-                                 .with_training_query_id(static_cast<int>(q))
-                                 .with_target_recall(0.95f)
-                                 .build();
+          auto query_param =
+              OmegaQueryParamBuilder()
+                  .with_topk(static_cast<uint32_t>(kOmegaTrainingTopk))
+                  .with_fetch_vector(false)
+                  .with_ef_search(param.ef_training)
+                  .with_training_query_id(static_cast<int>(q))
+                  .with_target_recall(0.95f)
+                  .build();
           if (index->Search(query, query_param, &search_result) != 0) {
             LOG_WARN("OMEGA training search failed for query %zu", q);
             continue;
@@ -611,20 +610,20 @@ bool TrainModel(const OmegaTrainingArtifacts &artifacts,
   for (const auto &record : artifacts.records) {
     omega_records.push_back(ConvertTrainingRecord(record));
   }
-  std::sort(omega_records.begin(), omega_records.end(),
-            [](const omega::TrainingRecord &lhs,
-               const omega::TrainingRecord &rhs) {
-              if (lhs.query_id != rhs.query_id) {
-                return lhs.query_id < rhs.query_id;
-              }
-              if (lhs.cmps_visited != rhs.cmps_visited) {
-                return lhs.cmps_visited < rhs.cmps_visited;
-              }
-              if (lhs.hops_visited != rhs.hops_visited) {
-                return lhs.hops_visited < rhs.hops_visited;
-              }
-              return lhs.label < rhs.label;
-            });
+  std::sort(
+      omega_records.begin(), omega_records.end(),
+      [](const omega::TrainingRecord &lhs, const omega::TrainingRecord &rhs) {
+        if (lhs.query_id != rhs.query_id) {
+          return lhs.query_id < rhs.query_id;
+        }
+        if (lhs.cmps_visited != rhs.cmps_visited) {
+          return lhs.cmps_visited < rhs.cmps_visited;
+        }
+        if (lhs.hops_visited != rhs.hops_visited) {
+          return lhs.hops_visited < rhs.hops_visited;
+        }
+        return lhs.label < rhs.label;
+      });
 
   omega::OmegaTrainerOptions trainer_options;
   trainer_options.output_dir = model_output_dir;
@@ -635,13 +634,13 @@ bool TrainModel(const OmegaTrainingArtifacts &artifacts,
   trainer_options.seed = 42;
   trainer_options.deterministic = true;
   trainer_options.verbose = true;
-  trainer_options.topk =
-      artifacts.gt_cmps_data.topk > 0 ? artifacts.gt_cmps_data.topk
-                                      : kOmegaTrainingTopk;
+  trainer_options.topk = artifacts.gt_cmps_data.topk > 0
+                             ? artifacts.gt_cmps_data.topk
+                             : kOmegaTrainingTopk;
 
-  if (omega::OmegaTrainer::TrainModel(
-          omega_records, ConvertGtCmpsData(artifacts.gt_cmps_data),
-          trainer_options) != 0) {
+  if (omega::OmegaTrainer::TrainModel(omega_records,
+                                      ConvertGtCmpsData(artifacts.gt_cmps_data),
+                                      trainer_options) != 0) {
     LOG_ERROR("OMEGA model training failed");
     return false;
   }
@@ -744,7 +743,8 @@ int OmegaIndex::Train() {
     ScopedTimer timer(&timing_stats, "Step1: GenerateHeldOutQueries");
     if (!LoadOmegaTrainingQueryCache(file_path_, &training_queries,
                                      &query_doc_ids)) {
-      if (!SampleHeldOutQueries(param_, this, &training_queries, &query_doc_ids)) {
+      if (!SampleHeldOutQueries(param_, this, &training_queries,
+                                &query_doc_ids)) {
         LOG_ERROR("Failed to generate held-out queries for OMEGA training");
         return core::IndexError_Runtime;
       }
@@ -759,7 +759,8 @@ int OmegaIndex::Train() {
     return core::IndexError_Runtime;
   }
 
-  if (!SaveOmegaTrainingQueryCache(file_path_, training_artifacts.training_queries,
+  if (!SaveOmegaTrainingQueryCache(file_path_,
+                                   training_artifacts.training_queries,
                                    training_artifacts.query_doc_ids)) {
     LOG_WARN("Failed to persist OMEGA training query cache");
   }
@@ -785,9 +786,9 @@ int OmegaIndex::Train() {
     return core::IndexError_Runtime;
   }
 
-  auto *omega_streamer =
-      dynamic_cast<core::OmegaStreamer *>(streamer_.get());
-  if (omega_streamer == nullptr || !omega_streamer->ReloadModel(model_output_dir)) {
+  auto *omega_streamer = dynamic_cast<core::OmegaStreamer *>(streamer_.get());
+  if (omega_streamer == nullptr ||
+      !omega_streamer->ReloadModel(model_output_dir)) {
     LOG_ERROR("Failed to reload trained OMEGA model from %s",
               model_output_dir.c_str());
     return core::IndexError_Runtime;

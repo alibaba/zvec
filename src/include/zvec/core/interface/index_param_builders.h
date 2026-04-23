@@ -166,7 +166,8 @@ class OmegaIndexParamBuilder
     return *this;
   }
 
-  OmegaIndexParamBuilder &WithMinVectorThreshold(uint32_t min_vector_threshold) {
+  OmegaIndexParamBuilder &WithMinVectorThreshold(
+      uint32_t min_vector_threshold) {
     param->min_vector_threshold = min_vector_threshold;
     return *this;
   }

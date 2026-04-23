@@ -89,17 +89,16 @@ ailego::JsonObject HNSWIndexParam::SerializeToJsonObject(
 ailego::JsonObject OmegaIndexParam::SerializeToJsonObject(
     bool omit_empty_value) const {
   auto json_obj = HNSWIndexParam::SerializeToJsonObject(omit_empty_value);
-  json_obj.set("index_type",
-               ailego::JsonValue(magic_enum::enum_name(IndexType::kOMEGA)
-                                     .data()));
+  json_obj.set(
+      "index_type",
+      ailego::JsonValue(magic_enum::enum_name(IndexType::kOMEGA).data()));
   if (!omit_empty_value || min_vector_threshold != 100000) {
     json_obj.set("min_vector_threshold",
                  ailego::JsonValue(min_vector_threshold));
   }
   if (!omit_empty_value || num_training_queries != 1000) {
     json_obj.set("num_training_queries",
-                 ailego::JsonValue(
-                     static_cast<int64_t>(num_training_queries)));
+                 ailego::JsonValue(static_cast<int64_t>(num_training_queries)));
   }
   if (!omit_empty_value || ef_training != 1000) {
     json_obj.set("ef_training", ailego::JsonValue(ef_training));
