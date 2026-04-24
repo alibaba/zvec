@@ -176,7 +176,7 @@ class BufferStorage : public IndexStorage {
   //! Initialize storage
   int init(const ailego::Params &params) override {
     params.get(BUFFER_STORAGE_MEMORY_SIZE, &buffer_size_);
-    LOG_INFO("buffer size: %lu", buffer_size_);
+    LOG_INFO("buffer size: %llu", buffer_size_);
     return 0;
   }
 
