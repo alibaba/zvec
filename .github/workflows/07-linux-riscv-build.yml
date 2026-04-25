@@ -23,8 +23,17 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pybind11 pybind11-dev
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/          
+          sudo touch /var/lib/dpkg/status          
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            python3-pybind11 pybind11-dev
         shell: bash
 
       - name: Build from source
@@ -59,12 +68,6 @@ jobs:
     needs: build
 
     steps:
-      - name: Install test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pybind11 pybind11-dev libgtest-dev liburing-dev
-        shell: bash
-
       - name: Download workspace artifacts
         uses: actions/download-artifact@v8
         with:
@@ -75,6 +78,21 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           tar -xf linux-riscv64-workspace.tar
+        shell: bash
+
+      - name: Install test dependencies
+        run: |
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/
+          sudo touch /var/lib/dpkg/status
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            python3-pybind11 pybind11-dev libgtest-dev liburing-dev
         shell: bash
 
       - name: Reconfigure build directory
@@ -129,11 +147,21 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtest-dev liburing-dev
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/
+          sudo touch /var/lib/dpkg/status
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            libgtest-dev liburing-dev
+            
           $PYTHON -m pip install --upgrade pip
           $PYTHON -m pip install numpy==2.2.2 cmake==3.30.0 ninja==1.11.1.1 --index-url "$RISE_PYPI"
-          $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm
+          $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm pytest-xdist
         shell: bash
 
       - name: Reconfigure build directory
@@ -143,7 +171,8 @@ jobs:
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TOOLS=ON \
-            -DBUILD_PYTHON_BINDINGS=ON
+            -DBUILD_PYTHON_BINDINGS=ON \
+            -Dpybind11_DIR="$($PYTHON -c 'import pybind11; print(pybind11.get_cmake_dir())')"
         shell: bash
 
       - name: Install from existing build directory
