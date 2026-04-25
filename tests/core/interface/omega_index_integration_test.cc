@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <filesystem>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
@@ -26,6 +28,7 @@ namespace zvec::core_interface {
 namespace {
 
 constexpr uint32_t kDimension = 16;
+constexpr uint32_t kTrainQueryDocId = 77;
 const std::string kIndexPath = "OmegaIndexIntegrationTest/test.index";
 
 BaseIndexParam::Pointer CreateOmegaIndexParam() {
@@ -63,6 +66,42 @@ void PopulateIndex(const Index::Pointer &index, uint32_t doc_count) {
     vector_data.vector = DenseVector{values.data()};
     ASSERT_EQ(index->Add(vector_data, doc_id), 0);
   }
+}
+
+std::vector<float> MakeRandomUnitVector(std::mt19937 &rng) {
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+  std::vector<float> values(kDimension, 0.0f);
+  float norm_sq = 0.0f;
+  for (auto &value : values) {
+    value = dist(rng);
+    norm_sq += value * value;
+  }
+
+  const float norm = std::sqrt(norm_sq);
+  if (norm > 0.0f) {
+    for (auto &value : values) {
+      value /= norm;
+    }
+  }
+  return values;
+}
+
+std::vector<std::vector<float>> PopulateRandomIndex(const Index::Pointer &index,
+                                                    uint32_t doc_count) {
+  std::mt19937 rng(42);
+  std::vector<std::vector<float>> dataset;
+  dataset.reserve(doc_count);
+  for (uint32_t doc_id = 0; doc_id < doc_count; ++doc_id) {
+    dataset.push_back(MakeRandomUnitVector(rng));
+    VectorData vector_data;
+    vector_data.vector = DenseVector{dataset.back().data()};
+    if (index->Add(vector_data, doc_id) != 0) {
+      ADD_FAILURE() << "failed to add random training document " << doc_id;
+      return {};
+    }
+  }
+  return dataset;
 }
 
 VectorData MakeQuery(float base) {
@@ -175,7 +214,7 @@ TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
   ASSERT_EQ(index->Open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
             0);
 
-  PopulateIndex(index, 128);
+  auto dataset = PopulateRandomIndex(index, 128);
   ASSERT_EQ(index->Train(), 0);
 
   EXPECT_TRUE(std::filesystem::exists(
@@ -192,7 +231,7 @@ TEST_F(OmegaIndexIntegrationTest, TrainBuildsModelFilesForCoreWorkflow) {
                          .with_target_recall(0.95f)
                          .build();
 
-  auto query = MakeQuery(0.0f);
+  auto query = VectorData{DenseVector{dataset[kTrainQueryDocId].data()}};
   SearchResult result;
   ASSERT_EQ(index->Search(query, query_param, &result), 0);
   ASSERT_EQ(result.doc_list_.size(), 5U);

@@ -19,6 +19,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#if (defined(__GNUC__) || defined(__clang__)) && \
+    (defined(__x86_64__) || defined(__i386__) || defined(__amd64__))
+#include <mm_malloc.h>
+#endif
 #include <random>
 #include <thread>
 #include <utility>
