@@ -11,8 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License
-#include "hnsw_rabitq_builder.h"
-#include "hnsw_rabitq_searcher.h"
 #include "hnsw_rabitq_streamer.h"
 #include "rabitq_converter.h"
 #include "rabitq_reformer.h"
@@ -21,8 +19,6 @@ namespace zvec::core {
 
 INDEX_FACTORY_REGISTER_STREAMER(HnswRabitqStreamer);
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(RabitqReformer, RabitqReformer);
-INDEX_FACTORY_REGISTER_SEARCHER(HnswRabitqSearcher);
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(RabitqConverter, RabitqConverter);
-INDEX_FACTORY_REGISTER_BUILDER(HnswRabitqBuilder);
 
 }  // namespace zvec::core

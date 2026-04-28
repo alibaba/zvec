@@ -323,8 +323,8 @@ class Doc {
  private:
   std::string pk_;
   float score_{0.0f};
-  uint64_t doc_id_;
-  Operator op_;
+  uint64_t doc_id_{0};
+  Operator op_{Operator::INSERT};
 
   template <typename T>
   static constexpr bool is_valid_type_v =
@@ -341,17 +341,17 @@ class Doc {
       std::is_same_v<T, std::vector<int8_t>> ||       // 10
       std::is_same_v<T, std::vector<int16_t>> ||      // 11
       std::is_same_v<T, std::vector<int32_t>> ||      // 12
-      std::is_same_v<T, std::vector<uint32_t>> ||     // 13
-      std::is_same_v<T, std::vector<int64_t>> ||      // 14
+      std::is_same_v<T, std::vector<int64_t>> ||      // 13
+      std::is_same_v<T, std::vector<uint32_t>> ||     // 14
       std::is_same_v<T, std::vector<uint64_t>> ||     // 15
       std::is_same_v<T, std::vector<float16_t>> ||    // 16
       std::is_same_v<T, std::vector<float>> ||        // 17
       std::is_same_v<T, std::vector<double>> ||       // 18
       std::is_same_v<T, std::vector<std::string>> ||  // 19
       std::is_same_v<
-          T, std::pair<std::vector<uint32_t>, std::vector<float16_t>>> ||  // 20
+          T, std::pair<std::vector<uint32_t>, std::vector<float>>> ||  // 20
       std::is_same_v<
-          T, std::pair<std::vector<uint32_t>, std::vector<float>>>;  // 21
+          T, std::pair<std::vector<uint32_t>, std::vector<float16_t>>>;  // 21
 
   std::unordered_map<std::string, Value> fields_;
 };

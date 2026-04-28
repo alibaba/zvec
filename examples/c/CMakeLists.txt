@@ -29,115 +29,32 @@ endif()
 
 set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
 set(ZVEC_GENERATED_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/src/generated)
-
-# On Windows, libraries are in Debug/Release subdirectories
-if(WIN32)
-    set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib/$<CONFIG>)
-    set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib/$<CONFIG>)
-else()
-    set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
-    set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
-endif()
+set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
 
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR} ${ZVEC_GENERATED_INCLUDE_DIR})
-link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
+link_directories(${ZVEC_LIB_DIR})
+
+# Support multi-config builds (MSVC puts libs in Debug/Release subdirectories)
+if(CMAKE_BUILD_TYPE)
+    link_directories(${ZVEC_LIB_DIR}/${CMAKE_BUILD_TYPE})
+endif()
 
 # Find required packages
 find_package(Threads REQUIRED)
 
-# --- Determine debug/release library names ---
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(GLOG_LIB glogd)
-    set(GFLAGS_LIB gflags_nothreads_debug)
-    set(PROTOBUF_LIB protobufd)
-else()
-    set(GLOG_LIB glog)
-    set(GFLAGS_LIB gflags_nothreads)
-    set(PROTOBUF_LIB protobuf)
-endif()
-
-# --- Dependency groups ---
-if(NOT WIN32)
-    set(zvec_c_api_deps
-        roaring
-        rocksdb
-        arrow
-        arrow_acero
-        arrow_bundled_dependencies
-        arrow_compute
-        arrow_dataset
-        parquet
-        antlr4-runtime
-        ${GLOG_LIB}
-        ${GFLAGS_LIB}
-        ${PROTOBUF_LIB}
-        lz4
-        ${CMAKE_THREAD_LIBS_INIT}
-        ${CMAKE_DL_LIBS}
-    )
-else()
-    # Windows static libraries use different naming conventions
-    set(PROTOBUF_LIB libprotobuf)
-    set(zvec_c_api_deps
-        roaring
-        rocksdb
-        arrow_static
-        arrow_acero_static
-        arrow_bundled_dependencies
-        arrow_compute_static
-        arrow_dataset_static
-        parquet_static
-        antlr4-runtime-static
-        ${GLOG_LIB}
-        ${GFLAGS_LIB}
-        ${PROTOBUF_LIB}
-        lz4
-        ${CMAKE_THREAD_LIBS_INIT}
-        rpcrt4
-        shlwapi
-    )
-endif()
-
-# Create INTERFACE target for zvec_c_api with platform-specific linking
+# Create INTERFACE target for zvec_c_api (fat shared library)
+# No whole-archive flags needed — all symbols are already resolved in the .so/.dylib
 add_library(zvec-c-api INTERFACE)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(zvec-c-api INTERFACE
-        -Wl,--whole-archive
-        -lzvec_c_api
-        -Wl,--no-whole-archive
-        -Wl,--start-group
-        ${zvec_c_api_deps}
-        -Wl,--end-group
-    )
-elseif(APPLE)
-    # On macOS, use -Wl,-force_load with full path to ensure all symbols are loaded
-    target_link_libraries(zvec-c-api INTERFACE
-        -Wl,-force_load
-        ${ZVEC_LIB_DIR}/libzvec_c_api.dylib
-        ${zvec_c_api_deps}
-    )
-    # Set rpath so the executable can find the dylib at runtime
-    target_link_options(zvec-c-api INTERFACE
-        -Wl,-rpath,${ZVEC_LIB_DIR}
-    )
-elseif(ANDROID)
-    target_link_libraries(zvec-c-api INTERFACE
-        -Wl,--whole-archive
-        -lzvec_c_api
-        -Wl,--no-whole-archive
-        -Wl,--start-group
-        ${zvec_c_api_deps}
-        -Wl,--end-group
-    )
-elseif(WIN32)
-    target_link_libraries(zvec-c-api INTERFACE
-        zvec_c_api
-        ${zvec_c_api_deps}
-    )
-    target_link_options(zvec-c-api INTERFACE "/WHOLEARCHIVE:zvec_c_api")
-else()
-    message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
+target_link_libraries(zvec-c-api INTERFACE
+    zvec_c_api
+    Threads::Threads
+)
+if(NOT WIN32)
+    target_link_libraries(zvec-c-api INTERFACE ${CMAKE_DL_LIBS})
+endif()
+if(APPLE)
+    target_link_options(zvec-c-api INTERFACE -Wl,-rpath,${ZVEC_LIB_DIR})
 endif()
 
 # Basic example

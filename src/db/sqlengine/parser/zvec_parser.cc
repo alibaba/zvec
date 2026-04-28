@@ -50,7 +50,7 @@ const std::string &ZVecParser::formatted_tree() {
 }
 
 std::string ZVecParser::to_formatted_string_tree(void *tree, void *parser) {
-  if (tree == NULL || parser == NULL) {
+  if (tree == nullptr || parser == nullptr) {
     return "";
   }
 

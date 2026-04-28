@@ -289,7 +289,7 @@ class FileReadStorage : public IndexStorage {
   }
 
   int append(const std::string & /*id*/, size_t /*size*/) override {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   void refresh(uint64_t) override {

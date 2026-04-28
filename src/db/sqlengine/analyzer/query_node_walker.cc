@@ -152,7 +152,7 @@ ControlOp SearchCondCheckWalker::access(const QueryNode::Ptr &query_node,
       return ControlOp::BREAK;
     }
     // more than one vector query check.
-    if (vector_rel_ != NULL) {
+    if (vector_rel_ != nullptr) {
       err_msg_ = ailego::StringHelper::Concat(
           "more than one vector search is not supported. ", vector_rel_->text(),
           " ", query_rel_node->text());

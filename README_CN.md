@@ -50,7 +50,7 @@
 ## 💫 核心特性
 
 - **极致性能**：毫秒级响应，轻松检索数十亿级向量。
-- **开箱即用**：[安装](#-安装)后即刻开始搜索，无需服务器、无需配置、零门槛。
+- **开箱即用**：[安装](#-安装)后即刻开始搜索，纯本地运行，无需服务器、无需配置、零门槛。
 - **稠密 + 稀疏向量**：支持稠密向量和稀疏向量，提供多向量联合查询的原生支持。
 - **混合检索**：向量语义搜索 + 标量条件过滤，获得精确结果。
 - **持久化存储**：WAL 预写日志保障数据持久性 — 即使进程崩溃或意外断电，数据也不会丢失。
@@ -127,7 +127,7 @@ Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境
 
 | 💬 钉钉群 | 📱 微信群 | 🎮 Discord | X (Twitter) |
 | :---: | :---: | :---: | :---: |
-| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=5" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v=6" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
 | 扫码加入 | 扫码加入 | 点击加入 | 点击关注 |
 
 </div>

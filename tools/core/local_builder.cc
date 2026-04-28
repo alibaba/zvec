@@ -1156,8 +1156,6 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
                                    converter_name, &cv_build_holder) != 0) {
       return -1;
     }
-  } else if (builder_class == "HnswRabitqBuilder" && !converter_name.empty()) {
-    cv_build_holder = convert_holder_to_provider(cv_build_holder);
   }
 
   // BUILD
