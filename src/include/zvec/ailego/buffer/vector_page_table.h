@@ -124,7 +124,7 @@ class VecBufferPool {
 #endif
   }
 
-  int init(size_t pool_capacity, size_t block_size, size_t segment_count);
+  int init(size_t segment_count);
 
   VecBufferPoolHandle get_handle();
 
@@ -140,6 +140,7 @@ class VecBufferPool {
  private:
   int fd_;
   size_t file_size_;
+  std::string file_name_;
 
  public:
   VectorPageTable page_table_;

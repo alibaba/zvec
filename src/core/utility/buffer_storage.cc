@@ -175,8 +175,6 @@ class BufferStorage : public IndexStorage {
 
   //! Initialize storage
   int init(const ailego::Params &params) override {
-    params.get(BUFFER_STORAGE_MEMORY_SIZE, &buffer_size_);
-    LOG_DEBUG("BufferStorage configured: buffer_size=%lu", buffer_size_);
     return 0;
   }
 
@@ -196,14 +194,14 @@ class BufferStorage : public IndexStorage {
     if (ret != 0) {
       return ret;
     }
-    ret = buffer_pool_->init(buffer_size_, max_segment_size_, segments_.size());
+    ret = buffer_pool_->init(segments_.size());
     if (ret != 0) {
       return ret;
     }
-    LOG_DEBUG(
-        "BufferStorage opened: file=%s, buffer_size=%lu, "
-        "max_segment_size=%lu, segment_count=%zu",
-        file_name_.c_str(), buffer_size_, max_segment_size_, segments_.size());
+    LOG_INFO(
+        "BufferStorage opened: file=%s, max_segment_size=%lu, "
+        "segment_count=%zu",
+        file_name_.c_str(), max_segment_size_, segments_.size());
     return 0;
   }
 

@@ -55,8 +55,9 @@ struct ParquetBufferID {
   int row_group;
   uint64_t file_id;
   long mtime;
-  ParquetBufferID() {}
+  ParquetBufferID() = default;
   ParquetBufferID(std::string &filename, int column, int row_group);
+  const std::string to_string() const;
 };
 
 class BlockEvictionQueue {

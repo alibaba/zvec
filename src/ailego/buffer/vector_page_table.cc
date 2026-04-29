@@ -147,6 +147,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
 }
 
 VecBufferPool::VecBufferPool(const std::string &filename) {
+  file_name_ = filename;
 #if defined(_MSC_VER)
   fd_ = _open(filename.c_str(), O_RDONLY | _O_BINARY);
 #else
@@ -169,12 +170,7 @@ VecBufferPool::VecBufferPool(const std::string &filename) {
   file_size_ = st.st_size;
 }
 
-int VecBufferPool::init(size_t /*pool_capacity*/, size_t block_size,
-                        size_t segment_count) {
-  if (block_size == 0) {
-    LOG_ERROR("block_size must not be 0");
-    return -1;
-  }
+int VecBufferPool::init(size_t segment_count) {
   size_t block_num = segment_count + 10;
   page_table_.init(block_num);
   // Allocate all mutexes in a single contiguous array so that the cold-path
@@ -216,7 +212,10 @@ char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
       }
     }
     if (!found) {
-      LOG_ERROR("Buffer pool failed to get free buffer");
+      LOG_ERROR(
+          "Buffer pool failed to get free buffer: file[%s], block_id[%zu], "
+          "offset[%zu], size[%zu]",
+          file_name_.c_str(), block_id, offset, size);
       return nullptr;
     }
   }
@@ -227,8 +226,10 @@ char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
   ssize_t read_bytes = pread(fd_, buffer, size, offset);
 #endif
   if (read_bytes != static_cast<ssize_t>(size)) {
-    LOG_ERROR("Buffer pool failed to read file at offset: %zu, size: %zu",
-              offset, size);
+    LOG_ERROR(
+        "Buffer pool failed to read file at offset: file[%s], block_id[%zu], "
+        "offset[%zu], size[%zu]",
+        file_name_.c_str(), block_id, offset, size);
     MemoryLimitPool::get_instance().release_buffer(buffer, size);
     return nullptr;
   }
@@ -242,7 +243,10 @@ int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
   ssize_t read_bytes = pread(fd_, buffer, length, offset);
 #endif
   if (read_bytes != static_cast<ssize_t>(length)) {
-    LOG_ERROR("Buffer pool failed to read file at offset: %zu", offset);
+    LOG_ERROR(
+        "Buffer pool failed to read file at offset: file[%s], offset[%zu], "
+        "length[%zu]",
+        file_name_.c_str(), offset, length);
     return -1;
   }
   return 0;
