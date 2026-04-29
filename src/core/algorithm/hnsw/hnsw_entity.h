@@ -516,8 +516,8 @@ class HnswEntity {
   constexpr static uint32_t kDefaultDocsHardLimit = 1 << 30U;  // 1 billion
   constexpr static float kDefaultDocsSoftLimitRatio = 0.9f;
   constexpr static size_t kMaxChunkSize = 0xFFFFFFFF;
-  constexpr static size_t kDefaultChunkSize = 2 * 1024UL * 1024UL;
-  constexpr static size_t kDefaultMaxChunkCnt = 50000UL;
+  constexpr static size_t kDefaultChunkSize = 16 * 1024UL;
+  constexpr static size_t kDefaultMaxChunkCnt = 128 * 50000UL;
   constexpr static float kDefaultNeighborPruneMultiplier =
       1.0f;  // prune_cnt = upper_max_neighbor_cnt * multiplier
   constexpr static float kDefaultL0MaxNeighborCntMultiplier =

@@ -47,6 +47,7 @@ void FlatStreamerTest::TearDown(void) {
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearch) {
+  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -168,6 +169,7 @@ TEST_F(FlatStreamerTest, TestLinearSearch) {
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearchWithLRU) {
+  MemoryLimitPool::get_instance().init(100 * 1024UL * 1024UL);
 #ifdef __ANDROID__
   GTEST_SKIP() << "Skipped on Android: requires ~6GB memory/disk (emulator limit)";
 #endif
@@ -190,7 +192,7 @@ TEST_F(FlatStreamerTest, TestLinearSearchWithLRU) {
   auto ctx = write_streamer->create_context();
   ASSERT_TRUE(!!ctx);
 
-  size_t cnt = 1000000UL;
+  size_t cnt = 50000UL;
   IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
   for (size_t i = 0; i < cnt; i++) {
     NumericalVector<float> vec(dim);

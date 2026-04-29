@@ -3415,8 +3415,8 @@ Status SegmentImpl::alter_column(const std::string &column_name,
   }
 
   if (!options_.enable_mmap_) {
-    ailego::BufferManager::Instance().init(
-        GlobalConfig::Instance().memory_limit_bytes(), 1);
+    zvec::ailego::MemoryLimitPool::get_instance().init(
+        GlobalConfig::Instance().memory_limit_bytes());
   }
 
   // delete single column store file
@@ -3510,8 +3510,8 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
   }
 
   if (!options_.enable_mmap_) {
-    ailego::BufferManager::Instance().init(
-        GlobalConfig::Instance().memory_limit_bytes(), 1);
+    zvec::ailego::MemoryLimitPool::get_instance().init(
+        GlobalConfig::Instance().memory_limit_bytes());
   }
 
   // delete single column store file

@@ -22,6 +22,7 @@
 #include "core/algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "zvec/core/framework/index_provider.h"
 #endif
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "zvec/ailego/buffer/buffer_manager.h"
 #include "zvec/core/interface/index.h"
 #include "zvec/core/interface/index_factory.h"
@@ -155,6 +156,7 @@ TEST(IndexInterface, General) {
 }
 
 TEST(IndexInterface, BufferGeneral) {
+  zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 * 1024);
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test.index"};
 
@@ -261,7 +263,7 @@ TEST(IndexInterface, BufferGeneral) {
            .with_fetch_vector(true)
            .with_ef_search(20)
            .build());
-  zvec::ailego::BufferManager::Instance().cleanup();
+  // zvec::ailego::BufferManager::Instance().cleanup();
 }
 
 

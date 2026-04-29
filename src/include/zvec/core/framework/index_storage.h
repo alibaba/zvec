@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <zvec/ailego/buffer/buffer_pool.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_module.h>

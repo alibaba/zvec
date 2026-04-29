@@ -14,7 +14,7 @@
 
 #include <algorithm>
 #include <mutex>
-#include <zvec/ailego/buffer/buffer_pool.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -175,8 +175,6 @@ class BufferStorage : public IndexStorage {
 
   //! Initialize storage
   int init(const ailego::Params &params) override {
-    params.get(BUFFER_STORAGE_MEMORY_SIZE, &buffer_size_);
-    LOG_INFO("buffer size: %lu", buffer_size_);
     return 0;
   }
 
@@ -196,16 +194,14 @@ class BufferStorage : public IndexStorage {
     if (ret != 0) {
       return ret;
     }
-    ret = buffer_pool_->init(buffer_size_, max_segment_size_, segments_.size());
-    // for (auto iter = segments_.begin(); iter != segments_.end(); iter++) {
-    //   auto seg = this->get(iter->first, 0);
-    //   MemoryBlock block;
-    //   int len = seg->read(0, block, 1);
-    //   LOG_ERROR("segment %s: %d", iter->first.c_str(), len);
-    // }
+    ret = buffer_pool_->init(segments_.size());
     if (ret != 0) {
       return ret;
     }
+    LOG_INFO(
+        "BufferStorage opened: file=%s, max_segment_size=%lu, "
+        "segment_count=%zu",
+        file_name_.c_str(), max_segment_size_, segments_.size());
     return 0;
   }
 
