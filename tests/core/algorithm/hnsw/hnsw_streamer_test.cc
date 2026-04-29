@@ -2367,6 +2367,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosine) {
 
   auto linearCtx = streamer->create_context();
   auto knnCtx = streamer->create_context();
+  linearCtx->set_fetch_vector(true);
   knnCtx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
@@ -2409,7 +2410,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosine) {
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(float));
-    reformer->revert(knnResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
 
     float vector_value = *(((float *)(denormalized_vec.data()) + dim - 1));
     EXPECT_NEAR(vector_value, fixed_value + add_on, epsilon);
@@ -2505,6 +2506,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineHalfFloatConverter) {
 
   auto linearCtx = streamer->create_context();
   auto knnCtx = streamer->create_context();
+  linearCtx->set_fetch_vector(true);
   knnCtx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
@@ -2542,7 +2544,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineHalfFloatConverter) {
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(uint16_t));
-    reformer->revert(knnResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
 
     uint16_t expected_vec_value = vec[dim - 1];
     uint16_t vector_value =
@@ -2643,6 +2645,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineFp16Converter) {
 
   auto linearCtx = streamer->create_context();
   auto knnCtx = streamer->create_context();
+  linearCtx->set_fetch_vector(true);
   knnCtx->set_fetch_vector(true);
 
   size_t query_cnt = 200U;
@@ -2680,7 +2683,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineFp16Converter) {
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(float));
-    reformer->revert(knnResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
 
     float expected_vec_value = vec[dim - 1];
     float vector_value = *(((float *)(denormalized_vec.data()) + dim - 1));
@@ -2904,6 +2907,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt4Converter) {
 
   auto linearCtx = streamer->create_context();
   auto knnCtx = streamer->create_context();
+  linearCtx->set_fetch_vector(true);
   knnCtx->set_fetch_vector(true);
 
   size_t query_cnt = 100U;
@@ -2946,7 +2950,7 @@ TEST_F(HnswStreamerTest, TestFetchVectorCosineInt4Converter) {
 
     std::string denormalized_vec;
     denormalized_vec.resize(dim * sizeof(float));
-    reformer->revert(knnResult[0].vector(), new_meta, &denormalized_vec);
+    reformer->revert(linearResult[0].vector(), new_meta, &denormalized_vec);
 
     float vector_value = *(((float *)(denormalized_vec.data()) + dim - 1));
     EXPECT_NEAR(vector_value, fixed_value + add_on, epsilon);
