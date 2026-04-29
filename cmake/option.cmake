@@ -1,6 +1,6 @@
-## https://en.wikipedia.org/wiki/List_of_Intel_CPU_microarchitectures  
-## https://en.wikipedia.org/wiki/List_of_AMD_CPU_microarchitectures  
-## https://gcc.gnu.org/onlinedocs/gcc/x86-Options.html  
+## https://en.wikipedia.org/wiki/List_of_Intel_CPU_microarchitectures
+## https://en.wikipedia.org/wiki/List_of_AMD_CPU_microarchitectures
+## https://gcc.gnu.org/onlinedocs/gcc/x86-Options.html
 ## https://gcc.gnu.org/onlinedocs/gcc/RISC-V-Options.html
 
 ## Intel Microarchitectures
@@ -35,6 +35,7 @@ option(ENABLE_ARMV8.6A "Enable ARMv8.6-a architecture" OFF)
 option(ENABLE_RISCV64 "Enable RISC-V 64-bit base architecture" OFF)
 option(ENABLE_RISCV_VECTOR "Enable RISC-V Vector extension" OFF)
 option(ENABLE_RISCV_ZVFH "Enable RISC-V Zvfh extension" OFF)
+option(ENABLE_RISCV_ZIHINTPAUSE "Enable RISC-V Zihintpause extension" OFF)
 
 ## OpenMP option
 option(ENABLE_OPENMP "Enable OpenMP support" OFF)
@@ -48,7 +49,7 @@ set(ARCH_OPTIONS
   ENABLE_ZEN1 ENABLE_ZEN2 ENABLE_ZEN3
   ENABLE_ARMV8A ENABLE_ARMV8.1A ENABLE_ARMV8.2A ENABLE_ARMV8.3A ENABLE_ARMV8.4A
   ENABLE_ARMV8.5A ENABLE_ARMV8.6A
-  ENABLE_RISCV64 ENABLE_RISCV_VECTOR ENABLE_RISCV_ZVFH
+  ENABLE_RISCV64 ENABLE_RISCV_VECTOR ENABLE_RISCV_ZVFH ENABLE_RISCV_ZIHINTPAUSE
   ENABLE_NATIVE
 )
 
@@ -61,8 +62,8 @@ foreach(opt IN LISTS ARCH_OPTIONS)
   endif()
 endforeach()
 
-if((ENABLE_RISCV_VECTOR OR ENABLE_RISCV_ZVFH) AND NOT ENABLE_RISCV64)
-  message(FATAL_ERROR "ENABLE_RISCV_VECTOR and ENABLE_RISCV_ZVFH require ENABLE_RISCV64")
+if((ENABLE_RISCV_VECTOR OR ENABLE_RISCV_ZVFH OR ENABLE_RISCV_ZIHINTPAUSE) AND NOT ENABLE_RISCV64)
+  message(FATAL_ERROR "ENABLE_RISCV_VECTOR, ENABLE_RISCV_ZVFH and ENABLE_RISCV_ZIHINTPAUSE require ENABLE_RISCV64")
 endif()
 
 include(CheckCCompilerFlag)
@@ -106,23 +107,36 @@ endmacro()
 
 function(_build_riscv64_march RESULT_VAR)
   set(_march "rv64gc")
+
   if(ENABLE_RISCV_VECTOR)
     string(APPEND _march "v")
   endif()
+
   if(ENABLE_RISCV_ZVFH)
     if(NOT ENABLE_RISCV_VECTOR)
       message(FATAL_ERROR "ENABLE_RISCV_ZVFH requires ENABLE_RISCV_VECTOR")
     endif()
     string(APPEND _march "_zvfh")
   endif()
+
+  if(ENABLE_RISCV_ZIHINTPAUSE)
+    string(APPEND _march "_zihintpause")
+  endif()
+
   set(${RESULT_VAR} "${_march}" PARENT_SCOPE)
 endfunction()
 
 function(_build_riscv64_rvv_march RESULT_VAR)
   set(_march "rv64gcv")
+
   if(ENABLE_RISCV_ZVFH)
     string(APPEND _march "_zvfh")
   endif()
+
+  if(ENABLE_RISCV_ZIHINTPAUSE)
+    string(APPEND _march "_zihintpause")
+  endif()
+
   set(${RESULT_VAR} "${_march}" PARENT_SCOPE)
 endfunction()
 
@@ -194,10 +208,10 @@ endfunction()
 
 function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512 VAR_NAME_AVX512FP16)
   if(MSVC)
-    #sse
+    # sse
     set(${VAR_NAME_SSE} "" PARENT_SCOPE)
 
-    #avx2
+    # avx2
     check_c_compiler_flag("/arch:AVX2" _COMP_SUPP_MSVC_AVX2)
     if(_COMP_SUPP_MSVC_AVX2)
       set(${VAR_NAME_AVX2} "/arch:AVX2" PARENT_SCOPE)
@@ -205,7 +219,7 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
       set(${VAR_NAME_AVX2} "" PARENT_SCOPE)
     endif()
 
-    #avx512
+    # avx512
     check_c_compiler_flag("/arch:AVX512" _COMP_SUPP_MSVC_AVX512)
     if(_COMP_SUPP_MSVC_AVX512)
       set(${VAR_NAME_AVX512} "/arch:AVX512" PARENT_SCOPE)
@@ -215,7 +229,7 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
       set(${VAR_NAME_AVX512} "" PARENT_SCOPE)
     endif()
 
-    #avx512fp16
+    # avx512fp16
     if(_COMP_SUPP_MSVC_AVX512)
       set(${VAR_NAME_AVX512FP16} "/arch:AVX512" PARENT_SCOPE)
     elseif(_COMP_SUPP_MSVC_AVX2)
@@ -227,13 +241,13 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
     return()
   endif()
 
-  #sse
+  # sse
   set(${VAR_NAME_SSE} "-march=corei7" PARENT_SCOPE)
 
-  #avx 2
+  # avx 2
   set(${VAR_NAME_AVX2} "-march=core-avx2" PARENT_SCOPE)
 
-  #avx512
+  # avx512
   set(_x86_flags_avx512 "icelake-server" "skylake-avx512" "core-avx2" "x86-64")
   foreach(_arch_avx512 IN LISTS _x86_flags_avx512)
     check_c_compiler_flag("-march=${_arch_avx512}" _COMP_SUPP_${_arch_avx512})
@@ -243,7 +257,7 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
     endif()
   endforeach()
 
-  #avx512fp16
+  # avx512fp16
   set(_x86_flags_avx512fp16
     "sapphirerapids" "icelake-server" "skylake-avx512" "core-avx2" "x86-64"
   )
@@ -263,9 +277,9 @@ endif()
 
 if(NOT AUTO_DETECT_ARCH)
   if(ENABLE_NATIVE)
-    if (NOT MSVC)
+    if(NOT MSVC)
       add_arch_flag("-march=native" NATIVE ENABLE_NATIVE)
-    endif ()
+    endif()
   endif()
 
   if(ENABLE_ZEN3)
@@ -324,21 +338,27 @@ if(NOT AUTO_DETECT_ARCH)
   if(ENABLE_ARMV8.6A)
     add_arch_flag("-march=armv8.6-a" ARMV86A ENABLE_ARMV8.6A)
   endif()
+
   if(ENABLE_ARMV8.5A)
     add_arch_flag("-march=armv8.5-a" ARMV85A ENABLE_ARMV8.5A)
   endif()
+
   if(ENABLE_ARMV8.4A)
     add_arch_flag("-march=armv8.4-a" ARMV84A ENABLE_ARMV8.4A)
   endif()
+
   if(ENABLE_ARMV8.3A)
     add_arch_flag("-march=armv8.3-a" ARMV83A ENABLE_ARMV8.3A)
   endif()
+
   if(ENABLE_ARMV8.2A)
     add_arch_flag("-march=armv8.2-a" ARMV82A ENABLE_ARMV8.2A)
   endif()
+
   if(ENABLE_ARMV8.1A)
     add_arch_flag("-march=armv8.1-a" ARMV81A ENABLE_ARMV8.1A)
   endif()
+
   if(ENABLE_ARMV8A)
     add_arch_flag("-march=armv8-a" ARMV8A ENABLE_ARMV8A)
   endif()
@@ -349,6 +369,7 @@ if(NOT AUTO_DETECT_ARCH)
     set(CMAKE_REQUIRED_FLAGS "-mabi=lp64d")
     check_c_compiler_flag("-march=${_riscv_march}" COMPILER_SUPPORT_RISCV64)
     unset(CMAKE_REQUIRED_FLAGS)
+
     if(COMPILER_SUPPORT_RISCV64)
       _AppendFlags(CMAKE_C_FLAGS "-march=${_riscv_march}")
       _AppendFlags(CMAKE_C_FLAGS "-mabi=lp64d")
@@ -381,17 +402,18 @@ else()
     set(HOST_ARCH unknown)
     message(WARNING "unknown host arch: ${CMAKE_SYSTEM_PROCESSOR}")
   endif()
-  #  message(STATUS "host arch: ${HOST_ARCH}")
 
-  if (HOST_ARCH MATCHES "^(arm|arm64)$")
+  # message(STATUS "host arch: ${HOST_ARCH}")
+
+  if(HOST_ARCH MATCHES "^(arm|arm64)$")
     _setup_armv8_march()
-  elseif (HOST_ARCH MATCHES "^(x86|x64)$")
+  elseif(HOST_ARCH MATCHES "^(x86|x64)$")
     _setup_x86_march()
-  elseif (HOST_ARCH STREQUAL "riscv64")
+  elseif(HOST_ARCH STREQUAL "riscv64")
     _setup_riscv64_march()
-  else ()
+  else()
     message(WARNING "unknown host arch - no -march set")
-  endif ()
+  endif()
 endif()
 
 # -----------------------------
@@ -399,9 +421,11 @@ endif()
 # -----------------------------
 if(ENABLE_OPENMP)
   find_package(OpenMP REQUIRED)
+
   if(OpenMP_C_FLAGS)
     _AppendFlags(CMAKE_C_FLAGS "${OpenMP_C_FLAGS}")
   endif()
+
   if(OpenMP_CXX_FLAGS)
     _AppendFlags(CMAKE_CXX_FLAGS "${OpenMP_CXX_FLAGS}")
   endif()

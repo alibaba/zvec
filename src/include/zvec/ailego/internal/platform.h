@@ -283,11 +283,9 @@ static inline int ailego_clz64(uint64_t x) {
 #if !defined(ailego_malloc)
 #if defined(__AVX512F__)
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 64)
-#elif defined(__AVX__) || defined(__riscv_vector)
+#elif defined(__AVX__)
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 32)
-#elif defined(__SSE__)
-#define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 16)
-#elif defined(__ARM_NEON)
+#else
 #define ailego_malloc(SIZE) ailego_aligned_malloc((SIZE), 16)
 #endif
 #endif  // !ailego_malloc
