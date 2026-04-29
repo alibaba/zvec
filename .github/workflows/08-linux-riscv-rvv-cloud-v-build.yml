@@ -1,0 +1,207 @@
+name: Linux RISC-V RVV Cloud-V Build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  RISE_PYPI: https://gitlab.com/api/v4/projects/56254198/packages/pypi/simple
+  PIP_BREAK_SYSTEM_PACKAGES: 1
+  WORKSPACE_ARTIFACT: linux-riscv64-rvv-banana-pi-f3-workspace
+  RISCV_CMAKE_ARGS: >-
+    -DENABLE_RISCV64=ON
+    -DENABLE_RISCV_VECTOR=ON
+    -DENABLE_RISCV_ZVFH=ON
+    -DENABLE_RISCV_ZIHINTPAUSE=ON
+
+jobs:
+  build:
+    name: Build (linux-riscv64-rvv)
+    runs-on: banana-pi-f3
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/
+          sudo touch /var/lib/dpkg/status
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            python3-pybind11 pybind11-dev
+        shell: bash
+
+      - name: Build from source
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "Using $NPROC parallel jobs for builds"
+          cmake -S . -B build \
+            -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=ON \
+            -DBUILD_PYTHON_BINDINGS=ON \
+            $RISCV_CMAKE_ARGS
+          make -C build -j"$NPROC"
+        shell: bash
+
+      - name: Archive entire workspace
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          tar -cf "${WORKSPACE_ARTIFACT}.tar" .
+        shell: bash
+
+      - name: Upload workspace artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: ${{ github.workspace }}/${{ env.WORKSPACE_ARTIFACT }}.tar
+          if-no-files-found: error
+
+  cpp-tests:
+    name: C++ Tests (linux-riscv64-rvv)
+    runs-on: banana-pi-f3
+    needs: build
+
+    steps:
+      - name: Download workspace artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: ${{ github.workspace }}
+
+      - name: Extract workspace
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          tar -xf "${WORKSPACE_ARTIFACT}.tar"
+        shell: bash
+
+      - name: Install test dependencies
+        run: |
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/
+          sudo touch /var/lib/dpkg/status
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            python3-pybind11 pybind11-dev libgtest-dev liburing-dev
+        shell: bash
+
+      - name: Reconfigure build directory
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          cmake -S . -B build \
+            -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=ON \
+            -DBUILD_PYTHON_BINDINGS=ON \
+            $RISCV_CMAKE_ARGS
+        shell: bash
+
+      - name: Run C++ Tests
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          make unittest -j"$NPROC"
+        shell: bash
+
+  python-tests:
+    name: Python Tests (linux-riscv64-rvv)
+    runs-on: banana-pi-f3
+    needs: build
+
+    steps:
+      - name: Select Python
+        run: |
+          if command -v python3 >/dev/null 2>&1; then
+            PYTHON_BIN=python3
+          elif command -v python >/dev/null 2>&1; then
+            PYTHON_BIN=python
+          else
+            echo "No local Python interpreter found on PATH"
+            exit 1
+          fi
+          "$PYTHON_BIN" --version
+          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Download workspace artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: ${{ github.workspace }}
+
+      - name: Extract workspace
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          tar -xf "${WORKSPACE_ARTIFACT}.tar"
+          echo "$($PYTHON -c 'import site; print(site.USER_BASE)')/bin" >> "$GITHUB_PATH"
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/
+          sudo touch /var/lib/dpkg/status
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            libgtest-dev liburing-dev
+
+          $PYTHON -m pip install --upgrade pip
+          $PYTHON -m pip install numpy==2.2.2 cmake==3.30.0 ninja==1.11.1.1 --index-url "$RISE_PYPI"
+          $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm
+        shell: bash
+
+      - name: Reconfigure build directory
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          cmake -S . -B build \
+            -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=ON \
+            -DBUILD_PYTHON_BINDINGS=ON \
+            $RISCV_CMAKE_ARGS \
+            -Dpybind11_DIR="$($PYTHON -c 'import pybind11; print(pybind11.get_cmake_dir())')"
+        shell: bash
+
+      - name: Install from existing build directory
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          export SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/build"
+          CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+          $PYTHON -m pip install -v . \
+            --no-build-isolation \
+            --config-settings='cmake.define.BUILD_TOOLS="ON"' \
+            --config-settings='cmake.define.ENABLE_RISCV64="ON"' \
+            --config-settings='cmake.define.ENABLE_RISCV_VECTOR="ON"' \
+            --config-settings='cmake.define.ENABLE_RISCV_ZVFH="ON"' \
+            --config-settings='cmake.define.ENABLE_RISCV_ZIHINTPAUSE="ON"'
+        shell: bash
+
+      - name: Run Python Tests
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          $PYTHON -m pytest python/tests/
+        shell: bash

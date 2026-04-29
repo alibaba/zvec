@@ -119,3 +119,8 @@ jobs:
     name: Build & Test (iOS)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/06-ios-build.yml
+
+  build-and-test-linux-riscv64-rvv:
+    name: Build & Test (linux-riscv64-rvv)
+    needs: lint
+    uses: ./.github/workflows/08-linux-riscv-rvv-cloud-v-build.yml
