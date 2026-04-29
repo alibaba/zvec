@@ -43,7 +43,7 @@ ParquetBufferContextHandle::ParquetBufferContextHandle(
     const ParquetBufferContextHandle &handle_)
     : buffer_id_(handle_.buffer_id_), arrow_(handle_.arrow_) {
   if (arrow_) {
-    ParquetBufferPool::get_instance().acquire_one(buffer_id_);
+    ParquetBufferPool::get_instance().acquire_lock(buffer_id_);
   }
 }
 
@@ -187,28 +187,10 @@ std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire(
   return nullptr;
 }
 
-std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire_one(
+std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire_lock(
     ParquetBufferID buffer_id) {
   std::shared_lock<std::shared_mutex> lock(table_mutex_);
-  auto iter = table_.find(buffer_id);
-  if (iter == table_.end()) {
-    return nullptr;
-  }
-  ParquetBufferContext &context = table_[buffer_id];
-  while (true) {
-    int current_count = context.ref_count.load(std::memory_order_acquire);
-    if (current_count < 0) {
-      return nullptr;
-    }
-    if (context.ref_count.compare_exchange_weak(
-            current_count, current_count + 1, std::memory_order_acq_rel,
-            std::memory_order_acquire)) {
-      if (current_count == 0) {
-        context.load_count.fetch_add(1, std::memory_order_relaxed);
-      }
-      return context.arrow;
-    }
-  }
+  return acquire(buffer_id);
 }
 
 void ParquetBufferPool::release(ParquetBufferID buffer_id) {

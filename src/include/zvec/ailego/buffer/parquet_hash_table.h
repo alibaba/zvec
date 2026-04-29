@@ -133,7 +133,7 @@ class ParquetBufferPool {
 
   std::shared_ptr<arrow::ChunkedArray> acquire(ParquetBufferID buffer_id);
 
-  std::shared_ptr<arrow::ChunkedArray> acquire_one(ParquetBufferID buffer_id);
+  std::shared_ptr<arrow::ChunkedArray> acquire_lock(ParquetBufferID buffer_id);
 
   void release(ParquetBufferID buffer_id);
 
