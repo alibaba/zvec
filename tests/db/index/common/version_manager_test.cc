@@ -27,7 +27,7 @@ class VersionManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     // Create a temporary directory for testing
-    test_path_ = "./version_manager_test";
+    test_path_ = "./test_version_manager";
     FileHelper::RemoveDirectory(test_path_);
     FileHelper::CreateDirectory(test_path_);
   }
