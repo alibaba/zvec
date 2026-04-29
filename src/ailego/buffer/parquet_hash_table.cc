@@ -43,7 +43,7 @@ ParquetBufferContextHandle::ParquetBufferContextHandle(
     const ParquetBufferContextHandle &handle_)
     : buffer_id_(handle_.buffer_id_), arrow_(handle_.arrow_) {
   if (arrow_) {
-    ParquetBufferPool::get_instance().acquire_lock(buffer_id_);
+    ParquetBufferPool::get_instance().acquire_locked(buffer_id_);
   }
 }
 
@@ -187,7 +187,7 @@ std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire(
   return nullptr;
 }
 
-std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire_lock(
+std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire_locked(
     ParquetBufferID buffer_id) {
   std::shared_lock<std::shared_mutex> lock(table_mutex_);
   return acquire(buffer_id);
