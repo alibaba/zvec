@@ -115,8 +115,14 @@ class HnswDistCalculator {
   //! Return distance between query and node id.
   inline dist_t dist(node_id_t id) {
     compare_cnt_++;
-
-    const void *feat = entity_->get_vector(id);
+    IndexStorage::MemoryBlock vec_block;
+    int ret = entity_->get_vector(id, vec_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Get nullptr vector, id=%u", id);
+      error_ = true;
+      return 0.0f;
+    }
+    const void *feat = vec_block.data();
     if (ailego_unlikely(feat == nullptr)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
@@ -130,8 +136,24 @@ class HnswDistCalculator {
   inline dist_t dist(node_id_t lhs, node_id_t rhs) {
     compare_cnt_++;
 
-    const void *feat = entity_->get_vector(lhs);
-    const void *query = entity_->get_vector(rhs);
+
+    IndexStorage::MemoryBlock vec_block_feat;
+    int ret = entity_->get_vector(lhs, vec_block_feat);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Get nullptr vector, id=%u", lhs);
+      error_ = true;
+      return 0.0f;
+    }
+    const void *feat = vec_block_feat.data();
+
+    IndexStorage::MemoryBlock vec_block_query;
+    ret = entity_->get_vector(rhs, vec_block_query);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Get nullptr vector, id=%u", rhs);
+      error_ = true;
+      return 0.0f;
+    }
+    const void *query = vec_block_query.data();
     if (ailego_unlikely(feat == nullptr || query == nullptr)) {
       LOG_ERROR("Get nullptr vector");
       error_ = true;
@@ -162,7 +184,14 @@ class HnswDistCalculator {
   inline dist_t batch_dist(node_id_t id) {
     compare_cnt_++;
 
-    const void *feat = entity_->get_vector(id);
+    IndexStorage::MemoryBlock vec_block;
+    int ret = entity_->get_vector(id, vec_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Get nullptr vector, id=%u", id);
+      error_ = true;
+      return 0.0f;
+    }
+    const void *feat = vec_block.data();
     if (ailego_unlikely(feat == nullptr)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
