@@ -42,8 +42,8 @@ ParquetBufferID::ParquetBufferID(std::string &filename, int column,
 const std::string ParquetBufferID::to_string() const {
   std::string msg{"Buffer["};
   msg += "parquet: " + filename + "[" + std::to_string(file_id) + "]" +
-          ", column: " + std::to_string(column) +
-          ", row_group: " + std::to_string(row_group);
+         ", column: " + std::to_string(column) +
+         ", row_group: " + std::to_string(row_group);
   msg += ", mtime: " + std::to_string(mtime);
   msg += "]";
   return msg;
@@ -136,7 +136,8 @@ ParquetBufferContextHandle ParquetBufferPool::acquire_buffer(
       }
     }
     if (!found) {
-      LOG_ERROR("Failed to acquire parquet buffer: %s", buffer_id.to_string().c_str());
+      LOG_ERROR("Failed to acquire parquet buffer: %s",
+                buffer_id.to_string().c_str());
       return ParquetBufferContextHandle();
     }
     std::unique_lock<std::shared_mutex> lock(table_mutex_);
@@ -145,7 +146,8 @@ ParquetBufferContextHandle ParquetBufferPool::acquire_buffer(
       arrow = set_block_acquired(buffer_id);
       return ParquetBufferContextHandle(buffer_id, arrow);
     } else {
-      LOG_ERROR("Failed to acquire parquet buffer: %s", buffer_id.to_string().c_str());
+      LOG_ERROR("Failed to acquire parquet buffer: %s",
+                buffer_id.to_string().c_str());
       return ParquetBufferContextHandle();
     }
   }
