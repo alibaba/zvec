@@ -33,6 +33,8 @@ static std::string index_type_to_string(const IndexType type) {
       return "HNSW";
     case IndexType::HNSW_RABITQ:
       return "HNSW_RABITQ";
+    case IndexType::VAMANA:
+      return "VAMANA";
     default:
       return "UNDEFINED";
   }
@@ -325,24 +327,31 @@ Examples:
     ...     metric_type=MetricType.COSINE,
     ...     m=16,
     ...     ef_construction=200,
-    ...     quantize_type=QuantizeType.INT8
+    ...     quantize_type=QuantizeType.INT8,
+    ...     use_contiguous_memory=True,
     ... )
     >>> print(params)
-    {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8'}
+    {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8', 'use_contiguous_memory': True}
 )pbdoc");
   hnsw_params
-      .def(py::init<MetricType, int, int, QuantizeType>(),
+      .def(py::init<MetricType, int, int, QuantizeType, bool>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
                core_interface::kDefaultHnswEfConstruction,
-           py::arg("quantize_type") = QuantizeType::UNDEFINED)
+           py::arg("quantize_type") = QuantizeType::UNDEFINED,
+           py::arg("use_contiguous_memory") = false)
       .def_property_readonly(
           "m", &HnswIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
       .def_property_readonly(
           "ef_construction", &HnswIndexParams::ef_construction,
           "int: Candidate list size during index construction.")
+      .def_property_readonly(
+          "use_contiguous_memory", &HnswIndexParams::use_contiguous_memory,
+          "bool: Whether to allocate a single contiguous memory arena for "
+          "all HNSW graph nodes. Improves cache locality and search "
+          "throughput at the cost of peak memory usage. Defaults to False.")
       .def(
           "to_dict",
           [](const HnswIndexParams &self) -> py::dict {
@@ -353,6 +362,7 @@ Examples:
             dict["ef_construction"] = self.ef_construction();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
+            dict["use_contiguous_memory"] = self.use_contiguous_memory();
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -365,19 +375,22 @@ Examples:
                     ", \"ef_construction\":" +
                     std::to_string(self.ef_construction()) +
                     ", \"quantize_type\":" +
-                    quantize_type_to_string(self.quantize_type()) + "}";
+                    quantize_type_to_string(self.quantize_type()) +
+                    ", \"use_contiguous_memory\":" +
+                    (self.use_contiguous_memory() ? "true" : "false") + "}";
            })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.m(),
-                                  self.ef_construction(), self.quantize_type());
+                                  self.ef_construction(), self.quantize_type(),
+                                  self.use_contiguous_memory());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 5)
               throw std::runtime_error("Invalid state for HnswIndexParams");
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<QuantizeType>());
+                t[3].cast<QuantizeType>(), t[4].cast<bool>());
           }));
 
   // binding hnsw rabitq index params
@@ -477,6 +490,141 @@ Examples:
             return std::make_shared<HnswRabitqIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<int>(), t[4].cast<int>(), t[5].cast<int>());
+          }));
+
+  // binding vamana index params
+  py::class_<VamanaIndexParams, VectorIndexParams,
+             std::shared_ptr<VamanaIndexParams>>
+      vamana_params(m, "VamanaIndexParam", R"pbdoc(
+Parameters for configuring a Vamana (DiskANN) index.
+
+Vamana is a single-layer graph-based approximate nearest neighbor search
+index originally proposed in the DiskANN paper. This class encapsulates
+its construction hyperparameters.
+
+Attributes:
+    metric_type (MetricType): Distance metric used for similarity computation.
+        Default is ``MetricType.IP`` (inner product).
+    max_degree (int): Maximum out-degree (R) of every node in the Vamana
+        graph. Higher values improve recall but increase memory usage and
+        construction time. Default is 64.
+    search_list_size (int): Size of the dynamic candidate list during graph
+        construction (analogous to HNSW's ef_construction). Larger values
+        yield better graph quality at the cost of slower build time.
+        Default is 100.
+    alpha (float): Pruning factor used by Vamana's RobustPrune. Values > 1.0
+        keep more long-range edges and improve recall on hard datasets.
+        Default is 1.2.
+    saturate_graph (bool): If True, force every node to reach max_degree
+        neighbors during construction. Default is False.
+    use_contiguous_memory (bool): If True, allocate a single contiguous
+        memory arena for all graph nodes, improving cache locality and
+        search throughput at the cost of peak memory usage. Default is
+        False.
+    use_id_map (bool): Reserved flag for engine-level id remapping; the
+        db layer always supplies consecutive ids so this is currently
+        ignored by the engine. Default is False.
+    quantize_type (QuantizeType): Optional quantization type for vector
+        compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
+        to disable quantization.
+
+Examples:
+    >>> from zvec.typing import MetricType, QuantizeType
+    >>> params = VamanaIndexParam(
+    ...     metric_type=MetricType.COSINE,
+    ...     max_degree=64,
+    ...     search_list_size=128,
+    ...     alpha=1.2,
+    ...     quantize_type=QuantizeType.INT8,
+    ... )
+)pbdoc");
+  vamana_params
+      .def(py::init<MetricType, int, int, float, bool, bool, bool,
+                    QuantizeType>(),
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
+           py::arg("search_list_size") =
+               core_interface::kDefaultVamanaSearchListSize,
+           py::arg("alpha") = core_interface::kDefaultVamanaAlpha,
+           py::arg("saturate_graph") =
+               core_interface::kDefaultVamanaSaturateGraph,
+           py::arg("use_contiguous_memory") = false,
+           py::arg("use_id_map") = false,
+           py::arg("quantize_type") = QuantizeType::UNDEFINED)
+      .def_property_readonly(
+          "max_degree", &VamanaIndexParams::max_degree,
+          "int: Maximum out-degree (R) of every node in the Vamana graph.")
+      .def_property_readonly(
+          "search_list_size", &VamanaIndexParams::search_list_size,
+          "int: Candidate list size during Vamana graph construction.")
+      .def_property_readonly("alpha", &VamanaIndexParams::alpha,
+                             "float: Vamana RobustPrune alpha factor.")
+      .def_property_readonly(
+          "saturate_graph", &VamanaIndexParams::saturate_graph,
+          "bool: Whether to saturate every node to max_degree neighbors.")
+      .def_property_readonly(
+          "use_contiguous_memory", &VamanaIndexParams::use_contiguous_memory,
+          "bool: Whether to allocate a single contiguous memory arena for "
+          "all Vamana graph nodes. Improves cache locality and search "
+          "throughput at the cost of peak memory usage. Defaults to False.")
+      .def_property_readonly(
+          "use_id_map", &VamanaIndexParams::use_id_map,
+          "bool: Reserved flag for engine-level id remapping. Currently "
+          "ignored by the engine because the db layer always supplies "
+          "consecutive ids.")
+      .def(
+          "to_dict",
+          [](const VamanaIndexParams &self) -> py::dict {
+            py::dict dict;
+            dict["type"] = index_type_to_string(self.type());
+            dict["metric_type"] = metric_type_to_string(self.metric_type());
+            dict["max_degree"] = self.max_degree();
+            dict["search_list_size"] = self.search_list_size();
+            dict["alpha"] = self.alpha();
+            dict["saturate_graph"] = self.saturate_graph();
+            dict["use_contiguous_memory"] = self.use_contiguous_memory();
+            dict["use_id_map"] = self.use_id_map();
+            dict["quantize_type"] =
+                quantize_type_to_string(self.quantize_type());
+            return dict;
+          },
+          "Convert to dictionary with all fields")
+      .def("__repr__",
+           [](const VamanaIndexParams &self) -> std::string {
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"metric_type\":\"" +
+                    metric_type_to_string(self.metric_type()) +
+                    "\", \"max_degree\":" + std::to_string(self.max_degree()) +
+                    ", \"search_list_size\":" +
+                    std::to_string(self.search_list_size()) +
+                    ", \"alpha\":" + std::to_string(self.alpha()) +
+                    ", \"saturate_graph\":" +
+                    std::string(self.saturate_graph() ? "true" : "false") +
+                    ", \"use_contiguous_memory\":" +
+                    std::string(self.use_contiguous_memory() ? "true"
+                                                             : "false") +
+                    ", \"use_id_map\":" +
+                    std::string(self.use_id_map() ? "true" : "false") +
+                    ", \"quantize_type\":\"" +
+                    quantize_type_to_string(self.quantize_type()) + "\"}";
+           })
+      .def(py::pickle(
+          [](const VamanaIndexParams &self) {
+            return py::make_tuple(self.metric_type(), self.max_degree(),
+                                  self.search_list_size(), self.alpha(),
+                                  self.saturate_graph(),
+                                  self.use_contiguous_memory(),
+                                  self.use_id_map(), self.quantize_type());
+          },
+          [](py::tuple t) {
+            if (t.size() != 8)
+              throw std::runtime_error("Invalid state for VamanaIndexParams");
+            return std::make_shared<VamanaIndexParams>(
+                t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
+                t[6].cast<bool>(), t[7].cast<QuantizeType>());
           }));
 
   // FlatIndexParams
@@ -879,6 +1027,76 @@ Args:
                   "Invalid state for HnswRabitqQueryParams");
             auto obj =
                 std::make_shared<HnswRabitqQueryParams>(t[0].cast<int>());
+            obj->set_radius(t[1].cast<float>());
+            obj->set_is_linear(t[2].cast<bool>());
+            obj->set_is_using_refiner(t[3].cast<bool>());
+            return obj;
+          }));
+
+  // binding vamana query params
+  py::class_<VamanaQueryParams, QueryParams, std::shared_ptr<VamanaQueryParams>>
+      vamana_query_params(m, "VamanaQueryParam", R"pbdoc(
+Query parameters for the Vamana (DiskANN) index.
+
+Controls the trade-off between search speed and accuracy via the
+``ef_search`` parameter, which sets the size of the dynamic candidate list
+explored during search.
+
+Attributes:
+    type (IndexType): Always ``IndexType.VAMANA``.
+    ef_search (int): Size of the dynamic candidate list during Vamana
+        search. Larger values improve recall but slow down search.
+        Default is 200.
+    radius (float): Search radius for range queries. Default is 0.0.
+    is_linear (bool): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner for the query.
+        Default is False.
+
+Examples:
+    >>> params = VamanaQueryParam(ef_search=200)
+    >>> print(params.ef_search)
+    200
+)pbdoc");
+  vamana_query_params
+      .def(py::init<int, float, bool, bool>(),
+           py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
+           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("is_using_refiner") = false,
+           R"pbdoc(
+Constructs a VamanaQueryParam instance.
+
+Args:
+    ef_search (int, optional): Search-time candidate list size.
+        Higher values improve accuracy. Defaults to 200.
+    radius (float, optional): Search radius for range queries. Default is 0.0.
+    is_linear (bool, optional): Force linear search. Default is False.
+    is_using_refiner (bool, optional): Whether to use refiner for the query.
+        Default is False.
+)pbdoc")
+      .def_property_readonly(
+          "ef_search",
+          [](const VamanaQueryParams &self) -> int { return self.ef_search(); },
+          "int: Size of the dynamic candidate list during Vamana search.")
+      .def("__repr__",
+           [](const VamanaQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"ef_search\":" + std::to_string(self.ef_search()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) + "}";
+           })
+      .def(py::pickle(
+          [](const VamanaQueryParams &self) {
+            return py::make_tuple(self.ef_search(), self.radius(),
+                                  self.is_linear(), self.is_using_refiner());
+          },
+          [](py::tuple t) {
+            if (t.size() != 4)
+              throw std::runtime_error("Invalid state for VamanaQueryParams");
+            auto obj = std::make_shared<VamanaQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());

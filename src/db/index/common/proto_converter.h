@@ -38,6 +38,11 @@ struct ProtoConverter {
   static IVFIndexParams::OPtr FromPb(const proto::IVFIndexParams &params_pb);
   static proto::IVFIndexParams ToPb(const IVFIndexParams *params);
 
+  // VamanaIndexParams
+  static VamanaIndexParams::OPtr FromPb(
+      const proto::VamanaIndexParams &params_pb);
+  static proto::VamanaIndexParams ToPb(const VamanaIndexParams *params);
+
   // InvertIndexParams
   static InvertIndexParams::OPtr FromPb(
       const proto::InvertIndexParams &params_pb);

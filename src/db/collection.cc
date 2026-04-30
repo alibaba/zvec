@@ -35,6 +35,7 @@
 #include "db/common/file_helper.h"
 #include "db/common/profiler.h"
 #include "db/common/typedef.h"
+#include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/index_filter.h"
@@ -43,6 +44,7 @@
 #include "db/index/segment/segment_helper.h"
 #include "db/index/segment/segment_manager.h"
 #include "db/sqlengine/sqlengine.h"
+#include "zvec/core/interface/index.h"
 
 namespace zvec {
 
@@ -120,6 +122,9 @@ class CollectionImpl : public Collection {
       const GroupByVectorQuery &query) const override;
 
   Result<DocPtrMap> Fetch(const std::vector<std::string> &pks) const override;
+
+  Result<std::string> DebugGetHnswStorageMode(
+      const std::string &column_name) const override;
 
  private:
   void prepare_schema();
@@ -1634,6 +1639,50 @@ Result<DocPtrMap> CollectionImpl::Fetch(
   }
 
   return results;
+}
+
+Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
+    const std::string &column_name) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  // Try all segments (including the writing one). The first segment that has
+  // a fully-built HNSW index wins; if only a building segment exists we still
+  // surface its current storage mode so that tests can observe the entity
+  // type right after Open().
+  auto segments = get_all_segments();
+
+  for (const auto &segment : segments) {
+    if (!segment) {
+      continue;
+    }
+    auto indexers = segment->get_vector_indexer(column_name);
+    for (const auto &indexer : indexers) {
+      if (!indexer) {
+        continue;
+      }
+      auto index = indexer->debug_get_index();
+      if (!index) {
+        continue;
+      }
+      auto *hnsw_index = dynamic_cast<core_interface::HNSWIndex *>(index.get());
+      if (!hnsw_index) {
+        return tl::make_unexpected(Status::InvalidArgument(
+            "Column '", column_name,
+            "' does not have an HNSW index (or index is sparse)"));
+      }
+      auto mode = hnsw_index->storage_mode();
+      if (mode.empty()) {
+        // streamer not initialized yet; skip and look at other segments
+        continue;
+      }
+      return mode;
+    }
+  }
+
+  return tl::make_unexpected(
+      Status::NotFound("No HNSW index found for column '", column_name, "'"));
 }
 
 Status CollectionImpl::recovery() {

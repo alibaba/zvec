@@ -46,7 +46,8 @@ class IndexParams {
 
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
-           type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF;
+           type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
+           type_ == IndexType::VAMANA;
   }
 
   IndexType type() const {
@@ -156,17 +157,20 @@ class HnswIndexParams : public VectorIndexParams {
   HnswIndexParams(
       MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
-      QuantizeType quantize_type = QuantizeType::UNDEFINED)
+      QuantizeType quantize_type = QuantizeType::UNDEFINED,
+      bool use_contiguous_memory = false)
       : VectorIndexParams(IndexType::HNSW, metric_type, quantize_type),
         m_(m),
-        ef_construction_(ef_construction) {}
+        ef_construction_(ef_construction),
+        use_contiguous_memory_(use_contiguous_memory) {}
 
   using OPtr = std::shared_ptr<HnswIndexParams>;
 
  public:
   Ptr clone() const override {
     return std::make_shared<HnswIndexParams>(metric_type_, m_, ef_construction_,
-                                             quantize_type_);
+                                             quantize_type_,
+                                             use_contiguous_memory_);
   }
 
   std::string to_string() const override {
@@ -174,7 +178,8 @@ class HnswIndexParams : public VectorIndexParams {
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
     oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
-        << "}";
+        << ",use_contiguous_memory:"
+        << (use_contiguous_memory_ ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -186,7 +191,9 @@ class HnswIndexParams : public VectorIndexParams {
            ef_construction_ ==
                static_cast<const HnswIndexParams &>(other).ef_construction_ &&
            quantize_type() ==
-               static_cast<const HnswIndexParams &>(other).quantize_type();
+               static_cast<const HnswIndexParams &>(other).quantize_type() &&
+           use_contiguous_memory_ == static_cast<const HnswIndexParams &>(other)
+                                         .use_contiguous_memory_;
   }
 
   void set_m(int m) {
@@ -202,9 +209,21 @@ class HnswIndexParams : public VectorIndexParams {
     return ef_construction_;
   }
 
+  void set_use_contiguous_memory(bool use_contiguous_memory) {
+    use_contiguous_memory_ = use_contiguous_memory;
+  }
+  bool use_contiguous_memory() const {
+    return use_contiguous_memory_;
+  }
+
  protected:
   int m_;
   int ef_construction_;
+  // When enabled, HNSW streamer allocates a single contiguous memory arena
+  // for all graph nodes, improving cache locality and search throughput at
+  // the cost of peak memory usage. Defaults to false for backward
+  // compatibility.
+  bool use_contiguous_memory_{false};
 };
 
 class HnswRabitqIndexParams : public VectorIndexParams {
@@ -426,6 +445,117 @@ class IVFIndexParams : public VectorIndexParams {
   int n_list_;
   int n_iters_;
   bool use_soar_;
+};
+
+/*
+ * Vector: Vamana index params
+ */
+class VamanaIndexParams : public VectorIndexParams {
+ public:
+  VamanaIndexParams(
+      MetricType metric_type,
+      int max_degree = core_interface::kDefaultVamanaMaxDegree,
+      int search_list_size = core_interface::kDefaultVamanaSearchListSize,
+      float alpha = core_interface::kDefaultVamanaAlpha,
+      bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
+      bool use_contiguous_memory = false, bool use_id_map = false,
+      QuantizeType quantize_type = QuantizeType::UNDEFINED)
+      : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
+        max_degree_(max_degree),
+        search_list_size_(search_list_size),
+        alpha_(alpha),
+        saturate_graph_(saturate_graph),
+        use_contiguous_memory_(use_contiguous_memory),
+        use_id_map_(use_id_map) {}
+
+  using OPtr = std::shared_ptr<VamanaIndexParams>;
+
+ public:
+  Ptr clone() const override {
+    return std::make_shared<VamanaIndexParams>(
+        metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
+        use_contiguous_memory_, use_id_map_, quantize_type_);
+  }
+
+  std::string to_string() const override {
+    auto base_str = vector_index_params_to_string("VamanaIndexParams",
+                                                  metric_type_, quantize_type_);
+    std::ostringstream oss;
+    oss << base_str << ",max_degree:" << max_degree_
+        << ",search_list_size:" << search_list_size_ << ",alpha:" << alpha_
+        << ",saturate_graph:" << (saturate_graph_ ? "true" : "false")
+        << ",use_contiguous_memory:"
+        << (use_contiguous_memory_ ? "true" : "false")
+        << ",use_id_map:" << (use_id_map_ ? "true" : "false") << "}";
+    return oss.str();
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    if (type() != other.type()) {
+      return false;
+    }
+    auto &rhs = static_cast<const VamanaIndexParams &>(other);
+    return metric_type() == rhs.metric_type() &&
+           quantize_type() == rhs.quantize_type() &&
+           max_degree_ == rhs.max_degree_ &&
+           search_list_size_ == rhs.search_list_size_ && alpha_ == rhs.alpha_ &&
+           saturate_graph_ == rhs.saturate_graph_ &&
+           use_contiguous_memory_ == rhs.use_contiguous_memory_ &&
+           use_id_map_ == rhs.use_id_map_;
+  }
+
+  int max_degree() const {
+    return max_degree_;
+  }
+  void set_max_degree(int max_degree) {
+    max_degree_ = max_degree;
+  }
+
+  int search_list_size() const {
+    return search_list_size_;
+  }
+  void set_search_list_size(int search_list_size) {
+    search_list_size_ = search_list_size;
+  }
+
+  float alpha() const {
+    return alpha_;
+  }
+  void set_alpha(float alpha) {
+    alpha_ = alpha;
+  }
+
+  bool saturate_graph() const {
+    return saturate_graph_;
+  }
+  void set_saturate_graph(bool saturate_graph) {
+    saturate_graph_ = saturate_graph;
+  }
+
+  bool use_contiguous_memory() const {
+    return use_contiguous_memory_;
+  }
+  void set_use_contiguous_memory(bool use_contiguous_memory) {
+    use_contiguous_memory_ = use_contiguous_memory;
+  }
+
+  bool use_id_map() const {
+    return use_id_map_;
+  }
+  void set_use_id_map(bool use_id_map) {
+    use_id_map_ = use_id_map;
+  }
+
+ private:
+  int max_degree_;
+  int search_list_size_;
+  float alpha_;
+  bool saturate_graph_;
+  // When enabled, Vamana streamer allocates a single contiguous memory arena
+  // for all graph nodes, improving cache locality and search throughput at
+  // the cost of peak memory usage.
+  bool use_contiguous_memory_;
+  bool use_id_map_;
 };
 
 }  // namespace zvec

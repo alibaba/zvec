@@ -27,6 +27,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             $<TARGET_FILE:core_knn_hnsw_rabitq_static>
             $<TARGET_FILE:core_knn_hnsw_sparse_static>
             $<TARGET_FILE:core_knn_ivf_static>
+            $<TARGET_FILE:core_knn_vamana_static>
             $<TARGET_FILE:core_knn_cluster_static>
             $<TARGET_FILE:core_mix_reducer_static>
             $<TARGET_FILE:core_metric_static>
@@ -46,6 +47,7 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_rabitq_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_sparse_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_ivf_static>
+            -Wl,-force_load,$<TARGET_FILE:core_knn_vamana_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_cluster_static>
             -Wl,-force_load,$<TARGET_FILE:core_mix_reducer_static>
             -Wl,-force_load,$<TARGET_FILE:core_metric_static>
@@ -63,6 +65,7 @@ elseif (MSVC)
             core_knn_hnsw_static
             core_knn_hnsw_sparse_static
             core_knn_ivf_static
+            core_knn_vamana_static
             core_knn_cluster_static
             core_mix_reducer_static
             core_metric_static

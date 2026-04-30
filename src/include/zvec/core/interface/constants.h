@@ -23,6 +23,13 @@ constexpr static uint32_t kDefaultHnswNeighborCnt = 50;
 
 constexpr static uint32_t kDefaultHnswEfSearch = 300;
 
+constexpr static uint32_t kDefaultVamanaMaxDegree = 64;
+constexpr static uint32_t kDefaultVamanaSearchListSize = 100;
+constexpr static float kDefaultVamanaAlpha = 1.2f;
+constexpr static uint32_t kDefaultVamanaEfSearch = 200;
+constexpr static uint32_t kDefaultVamanaMaxOcclusionSize = 750;
+constexpr static bool kDefaultVamanaSaturateGraph = false;
+
 constexpr const uint32_t kDefaultRabitqTotalBits = 7;
 constexpr const uint32_t kDefaultRabitqNumClusters = 16;
 

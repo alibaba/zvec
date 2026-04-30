@@ -33,7 +33,7 @@ template <typename ActualIndexParamBuilderType, typename ActualIndexParamType>
 class BaseIndexParamBuilder {  //  : public
                                //  std::enable_shared_from_this<Resource>
  public:
-  BaseIndexParamBuilder() : param(std::make_shared<ActualIndexParamType>()) {};
+  BaseIndexParamBuilder() : param(std::make_shared<ActualIndexParamType>()) {}
   virtual ~BaseIndexParamBuilder() = default;
 
   ActualIndexParamBuilderType &WithVersion(int version) {
@@ -145,6 +145,10 @@ class HNSWIndexParamBuilder
     param->ef_construction = ef_construction;
     return *this;
   }
+  HNSWIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
+    param->use_contiguous_memory = use_contiguous_memory;
+    return *this;
+  }
 
   std::shared_ptr<HNSWIndexParam> Build() override {
     return param;
@@ -187,6 +191,40 @@ class HNSWRabitqIndexParamBuilder
     return *this;
   }
   std::shared_ptr<HNSWRabitqIndexParam> Build() override {
+    return param;
+  }
+};
+
+class VamanaIndexParamBuilder
+    : public BaseIndexParamBuilder<VamanaIndexParamBuilder, VamanaIndexParam> {
+ public:
+  VamanaIndexParamBuilder() = default;
+  VamanaIndexParamBuilder &WithMaxDegree(int max_degree) {
+    param->max_degree = max_degree;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithSearchListSize(int search_list_size) {
+    param->search_list_size = search_list_size;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithAlpha(float alpha) {
+    param->alpha = alpha;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithMaxOcclusionSize(int max_occlusion_size) {
+    param->max_occlusion_size = max_occlusion_size;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithSaturateGraph(bool saturate_graph) {
+    param->saturate_graph = saturate_graph;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
+    param->use_contiguous_memory = use_contiguous_memory;
+    return *this;
+  }
+
+  std::shared_ptr<VamanaIndexParam> Build() override {
     return param;
   }
 };
@@ -346,6 +384,21 @@ class HNSWRabitqQueryParamBuilder
 
   HNSWRabitqQueryParam::Pointer build() {
     return std::make_shared<HNSWRabitqQueryParam>(std::move(m_param));
+  }
+};
+
+// Vamana builder (adds ef_search field)
+class VamanaQueryParamBuilder
+    : public BaseIndexQueryParamBuilder<VamanaQueryParam,
+                                        VamanaQueryParamBuilder> {
+ public:
+  VamanaQueryParamBuilder &with_ef_search(int ef_search) {
+    m_param.ef_search = ef_search;
+    return *this;
+  }
+
+  VamanaQueryParam::Pointer build() {
+    return std::make_shared<VamanaQueryParam>(std::move(m_param));
   }
 };
 

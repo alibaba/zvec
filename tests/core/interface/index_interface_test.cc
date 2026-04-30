@@ -153,6 +153,38 @@ TEST(IndexInterface, General) {
            .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
            .Build(),
        IVFQueryParamBuilder().with_topk(10).with_fetch_vector(true).build());
+
+  func(VamanaIndexParamBuilder()
+           .WithMetricType(MetricType::kInnerProduct)
+           .WithDataType(DataType::DT_FP32)
+           .WithDimension(kDimension)
+           .WithIsSparse(false)
+           .WithMaxDegree(32)
+           .WithSearchListSize(100)
+           .WithAlpha(1.2f)
+           .Build(),
+       VamanaQueryParamBuilder()
+           .with_topk(10)
+           .with_fetch_vector(true)
+           .with_ef_search(50)
+           .build());
+
+  // Vamana with topk > ef_search to exercise _get_coarse_search_topk branch
+  // that picks max(topk, ef_search).
+  func(VamanaIndexParamBuilder()
+           .WithMetricType(MetricType::kInnerProduct)
+           .WithDataType(DataType::DT_FP32)
+           .WithDimension(kDimension)
+           .WithIsSparse(false)
+           .WithMaxDegree(32)
+           .WithSearchListSize(100)
+           .WithAlpha(1.2f)
+           .Build(),
+       VamanaQueryParamBuilder()
+           .with_topk(100)
+           .with_fetch_vector(true)
+           .with_ef_search(10)
+           .build());
 }
 
 TEST(IndexInterface, BufferGeneral) {
@@ -651,6 +683,116 @@ TEST(IndexInterface, Serialize) {
     ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
                 IndexFactory::QueryParamSerializeToJson(*param));
   }
+
+  {
+    std::cout << "\n\n----vamana index----" << std::endl;
+    auto param = VamanaIndexParamBuilder()
+                     .WithMetricType(MetricType::kInnerProduct)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(64)
+                     .WithIsSparse(false)
+                     .WithMaxDegree(32)
+                     .WithSearchListSize(100)
+                     .WithAlpha(1.2f)
+                     .Build();
+
+    std::cout << "vamana index -- omit=true: " << param->SerializeToJson(true)
+              << std::endl;
+    std::cout << "vamana index -- omit=false: " << param->SerializeToJson()
+              << std::endl;
+
+    auto deserialized_param =
+        IndexFactory::DeserializeIndexParamFromJson(param->SerializeToJson());
+    ASSERT_NE(nullptr, deserialized_param.get());
+
+    std::cout << "serialize then de then se:"
+              << deserialized_param->SerializeToJson() << std::endl;
+
+    ASSERT_TRUE(deserialized_param->SerializeToJson() ==
+                param->SerializeToJson());
+    ASSERT_TRUE(deserialized_param->SerializeToJson(true) ==
+                param->SerializeToJson(true));
+  }
+
+  {
+    std::cout << "\n\n----hnsw index with use_contiguous_memory----"
+              << std::endl;
+    auto param = std::make_shared<HNSWIndexParam>();
+    param->metric_type = MetricType::kL2sq;
+    param->data_type = DataType::DT_FP32;
+    param->dimension = 64;
+    param->use_contiguous_memory = true;
+
+    auto json_str = param->SerializeToJson();
+    std::cout << "hnsw contiguous -- json: " << json_str << std::endl;
+    ASSERT_TRUE(json_str.find("use_contiguous_memory") != std::string::npos);
+
+    auto deserialized_param =
+        IndexFactory::DeserializeIndexParamFromJson(json_str);
+    ASSERT_NE(nullptr, deserialized_param.get());
+    auto hnsw_param =
+        std::dynamic_pointer_cast<HNSWIndexParam>(deserialized_param);
+    ASSERT_NE(nullptr, hnsw_param.get());
+    ASSERT_TRUE(hnsw_param->use_contiguous_memory);
+
+    ASSERT_TRUE(deserialized_param->SerializeToJson() == json_str);
+  }
+
+  {
+    std::cout << "\n\n----vamana index with use_contiguous_memory----"
+              << std::endl;
+    auto param = std::make_shared<VamanaIndexParam>();
+    param->metric_type = MetricType::kL2sq;
+    param->data_type = DataType::DT_FP32;
+    param->dimension = 64;
+    param->max_degree = 48;
+    param->search_list_size = 200;
+    param->alpha = 1.5f;
+    param->use_contiguous_memory = true;
+
+    auto json_str = param->SerializeToJson();
+    std::cout << "vamana contiguous -- json: " << json_str << std::endl;
+    ASSERT_TRUE(json_str.find("use_contiguous_memory") != std::string::npos);
+
+    auto deserialized_param =
+        IndexFactory::DeserializeIndexParamFromJson(json_str);
+    ASSERT_NE(nullptr, deserialized_param.get());
+    auto vamana_param =
+        std::dynamic_pointer_cast<VamanaIndexParam>(deserialized_param);
+    ASSERT_NE(nullptr, vamana_param.get());
+    ASSERT_TRUE(vamana_param->use_contiguous_memory);
+    ASSERT_EQ(48, vamana_param->max_degree);
+    ASSERT_EQ(200, vamana_param->search_list_size);
+    ASSERT_FLOAT_EQ(1.5f, vamana_param->alpha);
+
+    ASSERT_TRUE(deserialized_param->SerializeToJson() == json_str);
+  }
+
+  {
+    std::cout << "\n\n----vamana query----" << std::endl;
+    auto param = VamanaQueryParamBuilder()
+                     .with_topk(10)
+                     .with_fetch_vector(true)
+                     .with_ef_search(50)
+                     .build();
+    std::cout << "vamana query -- omit=true: "
+              << IndexFactory::QueryParamSerializeToJson(*param, true)
+              << std::endl;
+    std::cout << "vamana query -- omit=false: "
+              << IndexFactory::QueryParamSerializeToJson(*param) << std::endl;
+
+    auto deserialized_param =
+        IndexFactory::QueryParamDeserializeFromJson<VamanaQueryParam>(
+            IndexFactory::QueryParamSerializeToJson(*param));
+    ASSERT_NE(nullptr, deserialized_param.get());
+
+    std::cout << "serialize then de then se:"
+              << IndexFactory::QueryParamSerializeToJson(*deserialized_param)
+              << std::endl;
+
+    ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
+                IndexFactory::QueryParamSerializeToJson(*param));
+  }
 }
 
 TEST(IndexInterface, Failure) {
@@ -887,6 +1029,110 @@ TEST(IndexInterface, Failure) {
     zvec::test_util::RemoveTestFiles("test1.index");
     zvec::test_util::RemoveTestFiles("test2.index");
     zvec::test_util::RemoveTestFiles("test3.index");
+  }
+
+  // Test Vamana search with ef_search == 0 (invalid, ef_search must be > 0)
+  {
+    auto param = VamanaIndexParamBuilder()
+                     .WithMetricType(MetricType::kInnerProduct)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(64)
+                     .WithIsSparse(false)
+                     .WithMaxDegree(32)
+                     .WithSearchListSize(100)
+                     .WithAlpha(1.2f)
+                     .Build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+
+    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+
+    std::vector<float> vector(64, 1.0f);
+    VectorData vector_data{DenseVector{vector.data()}};
+    ASSERT_EQ(0, index->Add(vector_data, 1));
+
+    VectorData query{DenseVector{vector.data()}};
+    auto query_param = VamanaQueryParamBuilder()
+                           .with_topk(10)
+                           .with_fetch_vector(false)
+                           .with_ef_search(0)
+                           .build();
+    SearchResult result;
+    int ret = index->Search(query, query_param, &result);
+    ASSERT_NE(0, ret);
+
+    index->Close();
+    zvec::test_util::RemoveTestFiles("test.index");
+  }
+
+  // Test Vamana search with ef_search > 2048 (invalid upper bound)
+  {
+    auto param = VamanaIndexParamBuilder()
+                     .WithMetricType(MetricType::kInnerProduct)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(64)
+                     .WithIsSparse(false)
+                     .WithMaxDegree(32)
+                     .WithSearchListSize(100)
+                     .WithAlpha(1.2f)
+                     .Build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+
+    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+
+    std::vector<float> vector(64, 1.0f);
+    VectorData vector_data{DenseVector{vector.data()}};
+    ASSERT_EQ(0, index->Add(vector_data, 1));
+
+    VectorData query{DenseVector{vector.data()}};
+    auto query_param = VamanaQueryParamBuilder()
+                           .with_topk(10)
+                           .with_fetch_vector(false)
+                           .with_ef_search(4096)
+                           .build();
+    SearchResult result;
+    int ret = index->Search(query, query_param, &result);
+    ASSERT_NE(0, ret);
+
+    index->Close();
+    zvec::test_util::RemoveTestFiles("test.index");
+  }
+
+  // Test Vamana search with wrong query param type (HNSWQueryParam instead of
+  // VamanaQueryParam)
+  {
+    auto param = VamanaIndexParamBuilder()
+                     .WithMetricType(MetricType::kInnerProduct)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(64)
+                     .WithIsSparse(false)
+                     .WithMaxDegree(32)
+                     .WithSearchListSize(100)
+                     .WithAlpha(1.2f)
+                     .Build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+
+    index->Open("test.index", {StorageOptions::StorageType::kMMAP, true});
+
+    std::vector<float> vector(64, 1.0f);
+    VectorData vector_data{DenseVector{vector.data()}};
+    ASSERT_EQ(0, index->Add(vector_data, 1));
+
+    VectorData query{DenseVector{vector.data()}};
+    // Intentionally pass an HNSWQueryParam to a Vamana index
+    auto wrong_query_param = HNSWQueryParamBuilder()
+                                 .with_topk(10)
+                                 .with_fetch_vector(false)
+                                 .with_ef_search(50)
+                                 .build();
+    SearchResult result;
+    int ret = index->Search(query, wrong_query_param, &result);
+    ASSERT_NE(0, ret);
+
+    index->Close();
+    zvec::test_util::RemoveTestFiles("test.index");
   }
 }
 
@@ -1172,6 +1418,22 @@ TEST(IndexInterface, Score) {
                  .build(),
              MetricType::kInnerProduct);
 
+  dense_func(VamanaIndexParamBuilder()
+                 .WithMetricType(MetricType::kInnerProduct)
+                 .WithDataType(DataType::DT_FP32)
+                 .WithDimension(kDimension)
+                 .WithIsSparse(false)
+                 .WithMaxDegree(32)
+                 .WithSearchListSize(100)
+                 .WithAlpha(1.2f)
+                 .Build(),
+             VamanaQueryParamBuilder()
+                 .with_topk(kTopk)
+                 .with_fetch_vector(true)
+                 .with_ef_search(50)
+                 .build(),
+             MetricType::kInnerProduct);
+
   LOG_INFO("Test DenseVector, MetricType::kInnerProduct, QuantizerType::kFP16");
   dense_func(
       FlatIndexParamBuilder()
@@ -1454,6 +1716,135 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
            .build());
 }
 #endif
+
+// Verify that enabling use_contiguous_memory on HNSW / Vamana index params at
+// the interface layer is correctly propagated to the underlying streamer and
+// yields a working build -> close -> reopen-for-search pipeline. This guards
+// the interface -> streamer param binding introduced for contiguous memory
+// mode.
+TEST(IndexInterface, ContiguousMemoryEndToEnd) {
+  constexpr uint32_t kDimension = 32;
+  constexpr uint32_t kNumDocs = 500;
+  constexpr int kTopk = 10;
+  const std::string index_name{"test_contiguous.index"};
+
+  // build_then_search builds an index from scratch (with use_contiguous_memory
+  // possibly enabled), closes it, then reopens with the same params and runs a
+  // search for each inserted vector, asserting top-1 is itself.
+  auto build_then_search = [&](const BaseIndexParam::Pointer &param,
+                               const BaseIndexQueryParam::Pointer &query_param) {
+    zvec::test_util::RemoveTestFiles(index_name);
+
+    // Phase 1: build & persist.
+    {
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, index);
+      ASSERT_EQ(0, index->Open(index_name,
+                               {StorageOptions::StorageType::kMMAP, true}));
+
+      std::vector<float> vec(kDimension);
+      for (uint32_t i = 0; i < kNumDocs; ++i) {
+        for (uint32_t d = 0; d < kDimension; ++d) {
+          vec[d] = static_cast<float>(i);
+        }
+        VectorData data{DenseVector{vec.data()}};
+        ASSERT_EQ(0, index->Add(data, i));
+      }
+      ASSERT_EQ(0, index->Train());
+      ASSERT_EQ(0, index->Close());
+    }
+
+    // Phase 2: reopen with same params (contiguous memory takes effect here)
+    // and search.
+    {
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, index);
+      ASSERT_EQ(0, index->Open(index_name,
+                               {StorageOptions::StorageType::kMMAP, false}));
+
+      std::vector<float> q(kDimension);
+      for (uint32_t i = 0; i < kNumDocs; i += 50) {
+        for (uint32_t d = 0; d < kDimension; ++d) {
+          q[d] = static_cast<float>(i);
+        }
+        VectorData query{DenseVector{q.data()}};
+        SearchResult result;
+        ASSERT_EQ(0, index->Search(query, query_param, &result));
+        ASSERT_GT(result.doc_list_.size(), 0UL);
+        ASSERT_EQ(i, result.doc_list_[0].key());
+      }
+      ASSERT_EQ(0, index->Close());
+    }
+
+    zvec::test_util::RemoveTestFiles(index_name);
+  };
+
+  // HNSW + use_contiguous_memory=true
+  build_then_search(HNSWIndexParamBuilder()
+                        .WithMetricType(MetricType::kL2sq)
+                        .WithDataType(DataType::DT_FP32)
+                        .WithDimension(kDimension)
+                        .WithIsSparse(false)
+                        .WithM(16)
+                        .WithEFConstruction(64)
+                        .WithUseContiguousMemory(true)
+                        .Build(),
+                    HNSWQueryParamBuilder()
+                        .with_topk(kTopk)
+                        .with_fetch_vector(false)
+                        .with_ef_search(64)
+                        .build());
+
+  // HNSW + use_contiguous_memory=false (baseline, same harness)
+  build_then_search(HNSWIndexParamBuilder()
+                        .WithMetricType(MetricType::kL2sq)
+                        .WithDataType(DataType::DT_FP32)
+                        .WithDimension(kDimension)
+                        .WithIsSparse(false)
+                        .WithM(16)
+                        .WithEFConstruction(64)
+                        .WithUseContiguousMemory(false)
+                        .Build(),
+                    HNSWQueryParamBuilder()
+                        .with_topk(kTopk)
+                        .with_fetch_vector(false)
+                        .with_ef_search(64)
+                        .build());
+
+  // Vamana + use_contiguous_memory=true
+  build_then_search(VamanaIndexParamBuilder()
+                        .WithMetricType(MetricType::kL2sq)
+                        .WithDataType(DataType::DT_FP32)
+                        .WithDimension(kDimension)
+                        .WithIsSparse(false)
+                        .WithMaxDegree(32)
+                        .WithSearchListSize(100)
+                        .WithAlpha(1.2f)
+                        .WithUseContiguousMemory(true)
+                        .Build(),
+                    VamanaQueryParamBuilder()
+                        .with_topk(kTopk)
+                        .with_fetch_vector(false)
+                        .with_ef_search(64)
+                        .build());
+
+  // Vamana + use_contiguous_memory=false (baseline, same harness)
+  build_then_search(VamanaIndexParamBuilder()
+                        .WithMetricType(MetricType::kL2sq)
+                        .WithDataType(DataType::DT_FP32)
+                        .WithDimension(kDimension)
+                        .WithIsSparse(false)
+                        .WithMaxDegree(32)
+                        .WithSearchListSize(100)
+                        .WithAlpha(1.2f)
+                        .WithUseContiguousMemory(false)
+                        .Build(),
+                    VamanaQueryParamBuilder()
+                        .with_topk(kTopk)
+                        .with_fetch_vector(false)
+                        .with_ef_search(64)
+                        .build());
+}
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop

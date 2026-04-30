@@ -63,6 +63,7 @@ enum class IndexType {
   kIVF,  // it's actual a two-layer index
   kHNSW,
   kHNSWRabitq,
+  kVamana,
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };
@@ -309,6 +310,7 @@ struct HNSWIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<HNSWIndexParam>;
   int m = kDefaultHnswNeighborCnt;
   int ef_construction = kDefaultHnswEfConstruction;
+  bool use_contiguous_memory = false;
 
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}
@@ -327,6 +329,46 @@ struct HNSWIndexParam : public BaseIndexParam {
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
   ailego::JsonObject SerializeToJsonObject(
       bool omit_empty_value = false) const override;
+};
+
+struct VamanaIndexParam : public BaseIndexParam {
+  using Pointer = std::shared_ptr<VamanaIndexParam>;
+  int max_degree = kDefaultVamanaMaxDegree;
+  int search_list_size = kDefaultVamanaSearchListSize;
+  float alpha = kDefaultVamanaAlpha;
+  int max_occlusion_size = kDefaultVamanaMaxOcclusionSize;
+  bool saturate_graph = kDefaultVamanaSaturateGraph;
+  bool use_contiguous_memory = false;
+
+  VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
+
+  VamanaIndexParam(int max_degree, int search_list_size, float alpha)
+      : BaseIndexParam(IndexType::kVamana),
+        max_degree(max_degree),
+        search_list_size(search_list_size),
+        alpha(alpha) {}
+
+  VamanaIndexParam(MetricType metric, int dim, int max_degree,
+                   int search_list_size, float alpha)
+      : BaseIndexParam(IndexType::kVamana, metric, dim),
+        max_degree(max_degree),
+        search_list_size(search_list_size),
+        alpha(alpha) {}
+
+ protected:
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+};
+
+struct VamanaQueryParam : public BaseIndexQueryParam {
+  using Pointer = std::shared_ptr<VamanaQueryParam>;
+
+  uint32_t ef_search = kDefaultVamanaEfSearch;
+
+  BaseIndexQueryParam::Pointer Clone() const override {
+    return std::make_shared<VamanaQueryParam>(*this);
+  }
 };
 
 struct HNSWRabitqIndexParam : public BaseIndexParam {

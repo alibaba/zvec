@@ -70,6 +70,8 @@ from .model.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    VamanaIndexParam,
+    VamanaQueryParam,
 )
 from .model.param.vector_query import VectorQuery
 
@@ -122,6 +124,8 @@ __all__ = [
     "HnswQueryParam",
     "HnswRabitqQueryParam",
     "IVFQueryParam",
+    "VamanaIndexParam",
+    "VamanaQueryParam",
     # Extensions
     "DenseEmbeddingFunction",
     "SparseEmbeddingFunction",

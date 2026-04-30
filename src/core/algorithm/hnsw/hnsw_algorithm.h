@@ -14,41 +14,64 @@
 #pragma once
 
 #include <stdint.h>
+#include <chrono>
+#include <vector>
+#include <ailego/internal/cpu_features.h>
 #include <ailego/parallel/lock.h>
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"
 #include "hnsw_entity.h"
+#include "hnsw_streamer_entity.h"
 
 namespace zvec {
 namespace core {
 
-//! hnsw graph algorithm implement
-class HnswAlgorithm {
+//! Non-template base class for HnswAlgorithm
+class HnswAlgorithmBase {
  public:
-  typedef std::unique_ptr<HnswAlgorithm> UPointer;
+  typedef std::unique_ptr<HnswAlgorithmBase> UPointer;
 
+  virtual ~HnswAlgorithmBase() = default;
+
+  virtual int cleanup() = 0;
+  virtual int add_node(node_id_t id, level_t level, HnswContext *ctx) = 0;
+  virtual int search(HnswContext *ctx) const = 0;
+  virtual int init() = 0;
+  virtual uint32_t get_random_level() const = 0;
+};
+
+//! hnsw graph algorithm implement, templated on EntityType
+template <typename EntityType>
+class HnswAlgorithm : public HnswAlgorithmBase {
  public:
+  using MemBlockType = typename EntityType::MemoryBlock;
+
   //! Constructor
-  explicit HnswAlgorithm(HnswEntity &entity);
+  explicit HnswAlgorithm(EntityType &entity)
+      : entity_(entity),
+        mt_(std::chrono::system_clock::now().time_since_epoch().count()),
+        lock_pool_(kLockCnt) {}
 
   //! Destructor
-  ~HnswAlgorithm() = default;
+  ~HnswAlgorithm() override = default;
 
   //! Cleanup HnswAlgorithm
-  int cleanup();
+  int cleanup() override {
+    return 0;
+  }
 
   //! Add a node to hnsw graph
   //! @id:     the node unique id
   //! @level:  a node will be add to graph in each level [0, level]
   //! return 0 on success, or errCode in failure
-  int add_node(node_id_t id, level_t level, HnswContext *ctx);
+  int add_node(node_id_t id, level_t level, HnswContext *ctx) override;
 
   //! do knn search in graph
   //! return 0 on success, or errCode in failure. results saved in ctx
-  int search(HnswContext *ctx) const;
+  int search(HnswContext *ctx) const override;
 
   //! Initiate HnswAlgorithm
-  int init() {
+  int init() override {
     level_probas_.clear();
     double level_mult =
         1 / std::log(static_cast<double>(entity_.scaling_factor()));
@@ -67,7 +90,7 @@ class HnswAlgorithm {
 
   //! Generate a random level
   //! return graph level
-  uint32_t get_random_level() const {
+  uint32_t get_random_level() const override {
     // gen rand float (0, 1)
     double f = mt_() / static_cast<float>(mt_.max());
     for (size_t level = 0; level < level_probas_.size(); level++) {
@@ -116,7 +139,7 @@ class HnswAlgorithm {
   static constexpr uint32_t kLockCnt{1U << 8};
   static constexpr uint32_t kLockMask{kLockCnt - 1U};
 
-  HnswEntity &entity_;
+  EntityType &entity_;
   mutable std::mt19937 mt_{};
   std::vector<double> level_probas_{};
 

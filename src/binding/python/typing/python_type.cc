@@ -99,6 +99,7 @@ Examples:
       .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
       .value("IVF", IndexType::IVF)
       .value("FLAT", IndexType::FLAT)
+      .value("VAMANA", IndexType::VAMANA)
       .value("INVERT", IndexType::INVERT);
 }
 

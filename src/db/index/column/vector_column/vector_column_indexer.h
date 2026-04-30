@@ -105,6 +105,12 @@ class VectorColumnIndexer {
     return index->GetDocCount();
   }
 
+  //! Debug-only accessor for the underlying core_interface Index.
+  //! Intended for introspection/testing; not part of the stable API.
+  core_interface::Index::Pointer debug_get_index() const {
+    return index;
+  }
+
   // for ut
  protected:
   VectorColumnIndexer() = default;

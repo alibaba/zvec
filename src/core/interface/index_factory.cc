@@ -47,6 +47,8 @@ Index::Pointer IndexFactory::CreateAndInitIndex(const BaseIndexParam &param) {
     ptr = std::make_shared<IVFIndex>();
   } else if (param.index_type == IndexType::kHNSWRabitq) {
     ptr = std::make_shared<HNSWRabitqIndex>();
+  } else if (param.index_type == IndexType::kVamana) {
+    ptr = std::make_shared<VamanaIndex>();
   } else {
     LOG_ERROR("Unsupported index type: ");
     return nullptr;
@@ -115,6 +117,14 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
       }
       return param;
     }
+    case IndexType::kVamana: {
+      VamanaIndexParam::Pointer param = std::make_shared<VamanaIndexParam>();
+      if (!param->DeserializeFromJson(json_str)) {
+        LOG_ERROR("Failed to deserialize vamana index param");
+        return nullptr;
+      }
+      return param;
+    }
     default:
       LOG_ERROR("Unsupported index type: %s",
                 magic_enum::enum_name(index_type).data());
@@ -167,6 +177,11 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
     }
     index_type = IndexType::kHNSWRabitq;
+  } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
+    if (!omit_empty_value || param.ef_search != 0) {
+      json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
+    }
+    index_type = IndexType::kVamana;
   }
 
   json_obj.set("index_type",
@@ -272,6 +287,17 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         return nullptr;
       }
       return param;
+    } else if (index_type == IndexType::kVamana) {
+      auto param = std::make_shared<VamanaQueryParam>();
+      if (!parse_common_fields(param)) {
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize ef_search");
+        return nullptr;
+      }
+      return param;
     } else {
       LOG_ERROR("Unsupported index type: %s",
                 magic_enum::enum_name(index_type).data());
@@ -301,6 +327,12 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize ef_search");
         return nullptr;
       }
+    } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
+      if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize ef_search");
+        return nullptr;
+      }
     } else {
       LOG_ERROR("Unsupported index type: %s",
                 magic_enum::enum_name(index_type).data());
@@ -319,5 +351,9 @@ template HNSWQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
     HNSWQueryParam>(const std::string &json_str);
 template IVFQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
     IVFQueryParam>(const std::string &json_str);
+template std::string IndexFactory::QueryParamSerializeToJson<VamanaQueryParam>(
+    const VamanaQueryParam &param, bool omit_empty_value);
+template VamanaQueryParam::Pointer IndexFactory::QueryParamDeserializeFromJson<
+    VamanaQueryParam>(const std::string &json_str);
 
 }  // namespace zvec::core_interface
