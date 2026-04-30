@@ -533,7 +533,7 @@ TEST_F(DocDetailedTest, MixedDataTypes) {
 
 // Test doc validate with schema
 TEST_F(DocDetailedTest, Validate) {
-  // test schema nullable=false, but doc's field is null
+  // nullable=false: a doc with a null field is rejected
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -547,6 +547,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
+  // nullable=true: a doc with a null field is accepted
   {
     auto schema = test::TestHelper::CreateNormalSchema(true);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -559,7 +560,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_TRUE(s.ok());
   }
 
-  // doc contained another field which not contained in schema
+  // doc has a field that is not declared in the schema
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -572,7 +573,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // doc contained a mismatch scalar field
+  // scalar field value type does not match the schema
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -585,7 +586,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // doc contained a mismatch type vector field
+  // dense vector field element type does not match the schema
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -602,7 +603,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // doc contained a vector field with invalid dimension
+  // dense vector dimension does not match the schema
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -624,7 +625,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // doc contained a sparse vector field with mismatch type
+  // sparse vector field value type does not match the schema
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -641,7 +642,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // doc contained a sparse vector field with indices/values size mismatch
+  // sparse vector indices and values have different lengths
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
@@ -668,26 +669,58 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // doc validate error
+  // sparse vector indices: unsorted are canonicalized, duplicates are rejected
+  {
+    auto schema = test::TestHelper::CreateNormalSchema(false);
+    auto doc = test::TestHelper::CreateDoc(1, *schema);
+
+    // unsorted indices become strictly ascending
+    std::pair<std::vector<uint32_t>, std::vector<float>> unsorted{
+        {2u, 0u, 3u, 1u}, {0.75f, 0.5f, 0.125f, 0.25f}};
+    doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
+                                                                  unsorted);
+    auto s = doc.validate(schema);
+    ASSERT_TRUE(s.ok()) << s.message();
+    auto out = doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+                      "sparse_fp32")
+                   .value();
+    ASSERT_EQ(out.first, (std::vector<uint32_t>{0u, 1u, 2u, 3u}));
+    ASSERT_EQ(out.second.size(), 4u);
+    ASSERT_FLOAT_EQ(out.second[0], 0.5f);
+    ASSERT_FLOAT_EQ(out.second[1], 0.25f);
+    ASSERT_FLOAT_EQ(out.second[2], 0.75f);
+    ASSERT_FLOAT_EQ(out.second[3], 0.125f);
+
+    // duplicate indices are rejected
+    std::pair<std::vector<uint32_t>, std::vector<float>> dup{
+        {5u, 2u, 5u, 1u}, {0.1f, 0.2f, 0.3f, 0.4f}};
+    doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
+                                                                  dup);
+    s = doc.validate(schema);
+    ASSERT_FALSE(s.ok());
+    ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+  }
+
+  // validate rejects: null schema, missing pk, undefined field type
   {
     Doc doc;
-    // schema is null
+    // null schema
     auto s = doc.validate(nullptr);
-    EXPECT_EQ(s.code(), StatusCode::INTERNAL_ERROR);
+    ASSERT_EQ(s.code(), StatusCode::INTERNAL_ERROR);
 
-    // pk is null
+    // doc has no pk field
     auto schema = test::TestHelper::CreateNormalSchema(false);
     s = doc.validate(schema);
-    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+    ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
-    // field type is undefined
+    // schema contains a field with an undefined data type
     schema->add_field(
         std::make_shared<FieldSchema>("undefined", DataType::UNDEFINED, true));
     s = doc.validate(schema);
-    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+    ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // doc validate more data type
+  // validate accepts every supported field data type
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     schema->add_field(
@@ -734,7 +767,8 @@ TEST_F(DocDetailedTest, Validate) {
     auto s = doc.validate(schema);
     ASSERT_TRUE(s.ok());
   }
-  // doc validate pk
+
+  // pk with characters inside the allowed set is accepted
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     std::vector<std::string> valid_names = {
@@ -778,9 +812,12 @@ TEST_F(DocDetailedTest, Validate) {
     for (auto pk : valid_names) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
       auto s = doc.validate(schema);
-      ASSERT_TRUE(s.ok());
+      ASSERT_TRUE(s.ok()) << "expected valid pk: " << pk
+                          << ", got: " << s.message();
     }
   }
+
+  // pk that is too long or uses disallowed characters is rejected
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     std::vector<std::string> invalid_names = {
@@ -818,8 +855,7 @@ TEST_F(DocDetailedTest, Validate) {
     for (auto pk : invalid_names) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
       auto s = doc.validate(schema);
-      if (s.ok()) std::cout << "pk:" << pk << std::endl;
-      ASSERT_FALSE(s.ok());
+      ASSERT_FALSE(s.ok()) << "expected invalid pk: " << pk;
     }
   }
 }
@@ -1183,7 +1219,7 @@ TEST_F(DocDetailedTest, EqualityOperatorCoverage) {
 
 
 TEST(VectorQuery, Validate) {
-  // field schema is null when query without vector
+  // scalar-only query (no query vector): field schema is null
   {
     VectorQuery query;
     query.topk_ = 10;
@@ -1192,7 +1228,7 @@ TEST(VectorQuery, Validate) {
     EXPECT_TRUE(s.ok());
   }
 
-  // field schema is null when query without vector
+  // vector query requires a non-null field schema
   {
     VectorQuery query;
     query.topk_ = 10;
@@ -1206,7 +1242,8 @@ TEST(VectorQuery, Validate) {
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
-  // vector_query exceed topk
+
+  // topk exceeds the allowed maximum
   {
     VectorQuery query;
     query.field_name_ = "field_name";
@@ -1217,7 +1254,8 @@ TEST(VectorQuery, Validate) {
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
-  // vector_query output_fields size exceed
+
+  // output_fields count exceeds the allowed maximum
   {
     VectorQuery query;
     query.field_name_ = "field_name";
@@ -1229,7 +1267,7 @@ TEST(VectorQuery, Validate) {
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // validate dense vector dimension
+  // dense vector query dimension must match the field schema
   {
     VectorQuery query;
     query.field_name_ = "field_name";
@@ -1250,7 +1288,7 @@ TEST(VectorQuery, Validate) {
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // validate sparse indices
+  // sparse query indices count must not exceed the allowed maximum
   {
     VectorQuery query;
     query.field_name_ = "field_name";
@@ -1271,7 +1309,7 @@ TEST(VectorQuery, Validate) {
     EXPECT_TRUE(s.ok());
   }
 
-  // validate query_params type matches index type
+  // query_params type must match the field's index type
   {
     VectorQuery query;
     query.field_name_ = "embedding";
