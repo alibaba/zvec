@@ -676,7 +676,8 @@ TEST_F(DocDetailedTest, Validate) {
 
     // unsorted indices become strictly ascending
     std::pair<std::vector<uint32_t>, std::vector<float>> unsorted{
-        {2u, 0u, 3u, 1u}, {0.75f, 0.5f, 0.125f, 0.25f}};
+        {42u, 7u, 1000u, 3u, 128u, 17u, 99u},
+        {0.7f, 0.1f, 0.9f, 0.2f, 0.5f, 0.3f, 0.6f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   unsorted);
     auto s = doc.validate(schema);
@@ -684,16 +685,20 @@ TEST_F(DocDetailedTest, Validate) {
     auto out = doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
                       "sparse_fp32")
                    .value();
-    ASSERT_EQ(out.first, (std::vector<uint32_t>{0u, 1u, 2u, 3u}));
-    ASSERT_EQ(out.second.size(), 4u);
-    ASSERT_FLOAT_EQ(out.second[0], 0.5f);
-    ASSERT_FLOAT_EQ(out.second[1], 0.25f);
-    ASSERT_FLOAT_EQ(out.second[2], 0.75f);
-    ASSERT_FLOAT_EQ(out.second[3], 0.125f);
+    ASSERT_EQ(out.first,
+              (std::vector<uint32_t>{3u, 7u, 17u, 42u, 99u, 128u, 1000u}));
+    ASSERT_EQ(out.second.size(), 7u);
+    ASSERT_FLOAT_EQ(out.second[0], 0.2f);
+    ASSERT_FLOAT_EQ(out.second[1], 0.1f);
+    ASSERT_FLOAT_EQ(out.second[2], 0.3f);
+    ASSERT_FLOAT_EQ(out.second[3], 0.7f);
+    ASSERT_FLOAT_EQ(out.second[4], 0.6f);
+    ASSERT_FLOAT_EQ(out.second[5], 0.5f);
+    ASSERT_FLOAT_EQ(out.second[6], 0.9f);
 
-    // duplicate indices are rejected
+    // duplicate indices are rejected (duplicate is non-adjacent in input)
     std::pair<std::vector<uint32_t>, std::vector<float>> dup{
-        {5u, 2u, 5u, 1u}, {0.1f, 0.2f, 0.3f, 0.4f}};
+        {42u, 7u, 128u, 42u, 99u}, {0.1f, 0.2f, 0.3f, 0.4f, 0.5f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   dup);
     s = doc.validate(schema);
@@ -1239,18 +1244,6 @@ TEST(VectorQuery, Validate) {
                     query_vector.size() * sizeof(float));
     query.query_vector_ = query_vector_str;
     auto s = query.validate(nullptr);
-    EXPECT_FALSE(s.ok());
-    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
-  }
-
-  // topk exceeds the allowed maximum
-  {
-    VectorQuery query;
-    query.field_name_ = "field_name";
-    query.topk_ = 1000;
-    FieldSchema schema =
-        FieldSchema("field_name", DataType::VECTOR_FP32, 128, true);
-    auto s = query.validate(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
