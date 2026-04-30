@@ -1319,12 +1319,6 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
                                        "] is not a dense vector field");
     }
   } else if (schema->is_sparse_vector()) {
-    // Validate sparse indices size
-    if (query_sparse_indices_.size() > kSparseMaxDimSize * sizeof(uint32_t)) {
-      return Status::InvalidArgument(
-          "Invalid query: too many sparse indices, the maximum allowed is ",
-          kSparseMaxDimSize);
-    }
     size_t value_byte_size = 0;
     switch (schema->data_type()) {
       case DataType::SPARSE_VECTOR_FP32:
@@ -1346,15 +1340,19 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
           "Invalid query: sparse vector query for field[", field_name_,
           "] has mismatched indices and values sizes");
     }
-    // Validate sparse indices are strictly ascending and unique
+    size_t n_indices = query_sparse_indices_.size() / sizeof(uint32_t);
+    if (n_indices > kSparseMaxDimSize) {
+      return Status::InvalidArgument(
+          "Invalid query: too many sparse indices, the maximum allowed is ",
+          kSparseMaxDimSize);
+    }
     const auto *query_indices_ptr =
         reinterpret_cast<const uint32_t *>(query_sparse_indices_.data());
-    size_t query_indices_n = query_sparse_indices_.size() / sizeof(uint32_t);
-    auto check = check_sparse_indices(query_indices_ptr, query_indices_n);
+    auto check = check_sparse_indices(query_indices_ptr, n_indices);
     if (check == SparseIndexCheckResult::kUnsorted) {
       return Status::InvalidArgument(
           "Invalid query: sparse vector query for field[", field_name_,
-          "] indices are not sorted in strictly ascending order");
+          "] indices are not sorted in ascending order");
     }
     if (check == SparseIndexCheckResult::kDuplicate) {
       return Status::InvalidArgument(

@@ -97,6 +97,9 @@ std::pair<std::string, std::string> serialize_sparse_vector(
   const size_t n = sparse_dict.size();
   if (n == 0) return {{}, {}};
 
+  const auto sorted_items = py::module_::import("builtins")
+                                .attr("sorted")(sparse_dict.attr("items")());
+
   std::string indices_buf;
   indices_buf.resize(n * sizeof(uint32_t));
   auto *indices_ptr = reinterpret_cast<uint32_t *>(indices_buf.data());
@@ -106,9 +109,10 @@ std::pair<std::string, std::string> serialize_sparse_vector(
   auto *values_ptr = reinterpret_cast<ValueType *>(values_buf.data());
 
   size_t i = 0;
-  for (const auto &[py_key, py_val] : sparse_dict) {
-    indices_ptr[i] = checked_cast<uint32_t>(py_key, "Sparse indices", "UINT32");
-    values_ptr[i] = value_caster(py_val, i);
+  for (const auto &item : sorted_items) {
+    auto tup = item.cast<py::tuple>();
+    indices_ptr[i] = checked_cast<uint32_t>(tup[0], "Sparse indices", "UINT32");
+    values_ptr[i] = value_caster(tup[1], i);
     ++i;
   }
   return {std::move(indices_buf), std::move(values_buf)};
