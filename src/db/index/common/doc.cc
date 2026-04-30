@@ -114,6 +114,9 @@ std::string get_value_type_name(const Doc::Value &value, bool is_vector) {
       value);
 }
 
+
+namespace {
+
 template <typename T>
 T byte_swap(T value) {
   if constexpr (std::is_same_v<T, float16_t>) {
@@ -158,6 +161,42 @@ T read_value_from_buffer(const uint8_t *&data) {
   }
   return value;
 }
+
+template <typename T>
+std::string vec_to_string(const std::vector<T> &v) {
+  std::ostringstream oss;
+  oss << "[";
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (i > 0) oss << ", ";
+    oss << +v[i];  // + from print as char
+  }
+  oss << "]";
+  return oss.str();
+}
+
+template <class... Ts>
+struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+
+template <class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
+
+enum class SparseIndexCheckResult { kOk, kUnsorted, kDuplicate };
+
+SparseIndexCheckResult check_sparse_indices(const uint32_t *indices, size_t n) {
+  for (size_t i = 1; i < n; ++i) {
+    if (indices[i] == indices[i - 1]) {
+      return SparseIndexCheckResult::kDuplicate;
+    }
+    if (indices[i] < indices[i - 1]) {
+      return SparseIndexCheckResult::kUnsorted;
+    }
+  }
+  return SparseIndexCheckResult::kOk;
+}
+
+}  // namespace
 
 
 void Doc::write_to_buffer(std::vector<uint8_t> &buffer, const void *src,
@@ -874,6 +913,18 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
+          auto check = check_sparse_indices(sparse_indices.data(),
+                                            sparse_indices.size());
+          if (check == SparseIndexCheckResult::kUnsorted) {
+            return Status::InvalidArgument(
+                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "] indices are not sorted in ascending order");
+          }
+          if (check == SparseIndexCheckResult::kDuplicate) {
+            return Status::InvalidArgument(
+                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "] contains duplicate indices");
+          }
         }
         break;
       }
@@ -894,6 +945,18 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
                 "Invalid doc[", pk_, "]: sparse vector field[", field_name,
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
+          }
+          auto check = check_sparse_indices(sparse_indices.data(),
+                                            sparse_indices.size());
+          if (check == SparseIndexCheckResult::kUnsorted) {
+            return Status::InvalidArgument(
+                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "] indices are not sorted in ascending order");
+          }
+          if (check == SparseIndexCheckResult::kDuplicate) {
+            return Status::InvalidArgument(
+                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "] contains duplicate indices");
           }
         }
         break;
@@ -1036,24 +1099,6 @@ size_t Doc::memory_usage() const {
   return usage;
 }
 
-template <typename T>
-std::string vec_to_string(const std::vector<T> &v) {
-  std::ostringstream oss;
-  oss << "[";
-  for (size_t i = 0; i < v.size(); ++i) {
-    if (i > 0) oss << ", ";
-    oss << +v[i];  // + from print as char
-  }
-  oss << "]";
-  return oss.str();
-}
-
-template <class... Ts>
-struct overloaded : Ts... {
-  using Ts::operator()...;
-};
-template <class... Ts>
-overloaded(Ts...) -> overloaded<Ts...>;
 
 std::string Doc::to_detail_string() const {
   std::stringstream oss;
@@ -1279,6 +1324,42 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
       return Status::InvalidArgument(
           "Invalid query: too many sparse indices, the maximum allowed is ",
           kSparseMaxDimSize);
+    }
+    size_t value_byte_size = 0;
+    switch (schema->data_type()) {
+      case DataType::SPARSE_VECTOR_FP32:
+        value_byte_size = sizeof(float);
+        break;
+      case DataType::SPARSE_VECTOR_FP16:
+        value_byte_size = sizeof(float16_t);
+        break;
+      default:
+        return Status::InvalidArgument(
+            "Invalid query: sparse vector type of field[", field_name_,
+            "] is not supported");
+    }
+    if (query_sparse_indices_.size() % sizeof(uint32_t) != 0 ||
+        query_sparse_values_.size() % value_byte_size != 0 ||
+        query_sparse_indices_.size() / sizeof(uint32_t) !=
+            query_sparse_values_.size() / value_byte_size) {
+      return Status::InvalidArgument(
+          "Invalid query: sparse vector query for field[", field_name_,
+          "] has mismatched indices and values sizes");
+    }
+    // Validate sparse indices are strictly ascending and unique
+    const auto *query_indices_ptr =
+        reinterpret_cast<const uint32_t *>(query_sparse_indices_.data());
+    size_t query_indices_n = query_sparse_indices_.size() / sizeof(uint32_t);
+    auto check = check_sparse_indices(query_indices_ptr, query_indices_n);
+    if (check == SparseIndexCheckResult::kUnsorted) {
+      return Status::InvalidArgument(
+          "Invalid query: sparse vector query for field[", field_name_,
+          "] indices are not sorted in strictly ascending order");
+    }
+    if (check == SparseIndexCheckResult::kDuplicate) {
+      return Status::InvalidArgument(
+          "Invalid query: sparse vector query for field[", field_name_,
+          "] contains duplicate indices");
     }
   } else {
     return Status::InvalidArgument("Invalid query: field[", field_name_,

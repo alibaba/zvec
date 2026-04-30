@@ -35,7 +35,6 @@
 #include "db/common/file_helper.h"
 #include "db/common/profiler.h"
 #include "db/common/typedef.h"
-#include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/index_filter.h"
@@ -1458,7 +1457,6 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
         kMaxWriteBatchSize));
   }
 
-  // validate docs
   for (auto &&doc : docs) {
     if (need_switch_to_new_segment()) {
       auto s = switch_to_new_segment_for_writing();
