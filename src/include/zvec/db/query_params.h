@@ -172,4 +172,29 @@ class FlatQueryParams : public QueryParams {
   float scale_factor_{10};
 };
 
+class VamanaQueryParams : public QueryParams {
+ public:
+  VamanaQueryParams(int ef_search = core_interface::kDefaultVamanaEfSearch,
+                    float radius = 0.0f, bool is_linear = false,
+                    bool is_using_refiner = false)
+      : QueryParams(IndexType::VAMANA), ef_search_(ef_search) {
+    set_radius(radius);
+    set_is_linear(is_linear);
+    set_is_using_refiner(is_using_refiner);
+  }
+
+  virtual ~VamanaQueryParams() = default;
+
+  int ef_search() const {
+    return ef_search_;
+  }
+
+  void set_ef_search(int ef_search) {
+    ef_search_ = ef_search;
+  }
+
+ private:
+  int ef_search_;
+};
+
 }  // namespace zvec

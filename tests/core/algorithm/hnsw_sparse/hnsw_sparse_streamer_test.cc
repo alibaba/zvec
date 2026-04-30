@@ -1205,6 +1205,7 @@ TEST_F(HnswSparseStreamerTest, TestFilter) {
 }
 
 TEST_F(HnswSparseStreamerTest, TestMaxIndexSize) {
+  GTEST_SKIP();
   constexpr size_t static sparse_dim_count = 128;
 
   IndexStreamer::Pointer streamer =

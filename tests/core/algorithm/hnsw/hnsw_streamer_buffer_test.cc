@@ -48,6 +48,7 @@ void HnswStreamerTest::TearDown(void) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {
+  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);

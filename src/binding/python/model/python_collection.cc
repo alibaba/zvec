@@ -211,7 +211,19 @@ void ZVecPyCollection::bind_dql_methods(
              const auto result = self.Fetch(pks);
              // return DocPtrMap
              return unwrap_expected(result);
-           });
+           })
+      .def(
+          "_debug_hnsw_storage_mode",
+          [](const Collection &self, const std::string &column_name) {
+            const auto result = self.DebugGetHnswStorageMode(column_name);
+            return unwrap_expected(result);
+          },
+          py::arg("column_name"),
+          "Debug-only: returns the storage mode of the HNSW entity on the "
+          "given vector column. One of 'mmap', 'buffer_pool', 'contiguous'. "
+          "Raises KeyError if no HNSW index exists on the column, or "
+          "ValueError if the column's index is not an HNSW index. Intended "
+          "for introspection and testing only; not part of the stable API.");
 }
 
 }  // namespace zvec

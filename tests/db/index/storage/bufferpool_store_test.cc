@@ -34,7 +34,7 @@ class BufferPoolStoreTest : public testing::Test {
       std::cout << "err: " << s.message() << std::endl;
       exit(1);
     }
-    ailego::BufferManager::Instance().init(10 * 1024 * 1024, 1);
+    zvec::ailego::MemoryLimitPool::get_instance().init(10 * 1024 * 1024);
   }
 
   void TearDown() override {

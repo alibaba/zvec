@@ -17,6 +17,7 @@
 #include <cassert>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "tests/test_util.h"
 #include "zvec/ailego/utility/float_helper.h"
@@ -2136,6 +2137,7 @@ TEST(VectorColumnIndexerTest, Failure) {
 
   // Test case 10: use_mmap = false
   {
+    zvec::ailego::MemoryLimitPool::get_instance().init(10 * 1024UL * 1024UL);
     auto indexer = std::make_shared<VectorColumnIndexer>(
         index_file_path,
         FieldSchema("test", DataType::VECTOR_FP32, 3, false,

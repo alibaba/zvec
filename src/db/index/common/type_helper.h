@@ -33,6 +33,8 @@ struct IndexTypeCodeBook {
         return IndexType::FLAT;
       case proto::IT_IVF:
         return IndexType::IVF;
+      case proto::IT_VAMANA:
+        return IndexType::VAMANA;
       case proto::IT_INVERT:
         return IndexType::INVERT;
       default:
@@ -52,6 +54,8 @@ struct IndexTypeCodeBook {
         return proto::IT_FLAT;
       case IndexType::IVF:
         return proto::IT_IVF;
+      case IndexType::VAMANA:
+        return proto::IT_VAMANA;
       case IndexType::INVERT:
         return proto::IT_INVERT;
       default:
@@ -71,6 +75,8 @@ struct IndexTypeCodeBook {
         return "FLAT";
       case IndexType::IVF:
         return "IVF";
+      case IndexType::VAMANA:
+        return "VAMANA";
       case IndexType::INVERT:
         return "INVERT";
       default:

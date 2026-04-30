@@ -202,6 +202,26 @@ class ProximaEngineHelper {
         }
         return std::move(ivf_query_param);
       }
+
+      case IndexType::VAMANA: {
+        auto vamana_query_param_result =
+            _build_common_query_param<core_interface::VamanaQueryParam>(
+                query_params);
+        if (!vamana_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              vamana_query_param_result.error().message()));
+        }
+        auto &vamana_query_param = vamana_query_param_result.value();
+        if (query_params.query_params) {
+          auto db_vamana_query_params = dynamic_cast<const VamanaQueryParams *>(
+              query_params.query_params.get());
+          vamana_query_param->ef_search =
+              static_cast<uint32_t>(db_vamana_query_params->ef_search());
+        }
+        return std::move(vamana_query_param);
+      }
+
       default:
         return tl::make_unexpected(Status::InvalidArgument("not supported"));
     }
@@ -346,6 +366,8 @@ class ProximaEngineHelper {
         index_param_builder->WithM(db_index_params->m());
         index_param_builder->WithEFConstruction(
             db_index_params->ef_construction());
+        index_param_builder->WithUseContiguousMemory(
+            db_index_params->use_contiguous_memory());
 
         return index_param_builder->Build();
       }
@@ -391,6 +413,37 @@ class ProximaEngineHelper {
         index_param_builder->WithNList(db_index_params->n_list());
         index_param_builder->WithNiters(db_index_params->n_iters());
         index_param_builder->WithUseSoar(db_index_params->use_soar());
+
+        return index_param_builder->Build();
+      }
+
+      case IndexType::VAMANA: {
+        auto index_param_builder_result =
+            _build_common_index_param<VamanaIndexParams,
+                                      core_interface::VamanaIndexParamBuilder>(
+                field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const VamanaIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->WithMaxDegree(db_index_params->max_degree());
+        index_param_builder->WithSearchListSize(
+            db_index_params->search_list_size());
+        index_param_builder->WithAlpha(db_index_params->alpha());
+        index_param_builder->WithSaturateGraph(
+            db_index_params->saturate_graph());
+        index_param_builder->WithUseContiguousMemory(
+            db_index_params->use_contiguous_memory());
+        // db_index_params->use_id_map() is intentionally ignored here:
+        // db ensures id is consecutive (see _build_common_index_param), so
+        // the engine-level use_id_map is forced to false in the common
+        // builder. The flag is preserved on the db-side params for schema
+        // round-trip / introspection only.
 
         return index_param_builder->Build();
       }

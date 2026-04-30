@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <zvec/ailego/buffer/buffer_pool.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_module.h>
@@ -216,6 +216,15 @@ class IndexStorage : public IndexModule {
 
     //! Clone the segment
     virtual Pointer clone(void) = 0;
+
+    //! Retrieve the stable base data pointer if the storage backend supports
+    //! it (e.g. mmap-backed storage). Returns nullptr for backends with
+    //! mutable/evictable buffers (e.g. BufferStorage). When non-null the
+    //! caller may compute element addresses as base_data() + offset directly,
+    //! avoiding the full pointer chain through chunk->read().
+    virtual const uint8_t *base_data(void) const {
+      return nullptr;
+    }
   };
 
   //! Destructor
@@ -263,6 +272,11 @@ class IndexStorage : public IndexModule {
   //! huge page
   virtual bool isHugePage(void) const {
     return false;
+  }
+
+  //! Retrieve the memory block type of this storage
+  virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
+    return MemoryBlock::MBT_MMAP;
   }
 };
 

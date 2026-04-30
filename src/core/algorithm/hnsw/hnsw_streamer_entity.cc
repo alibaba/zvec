@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include "hnsw_streamer_entity.h"
+#if defined(__linux__) || defined(__APPLE__)
+#include <sys/mman.h>
+#endif
 #include <ailego/utility/memory_helper.h>
 
 // #define DEBUG_PRINT
@@ -69,7 +72,9 @@ int HnswStreamerEntity::cleanup() {
     keys_map_->clear();
   }
   node_chunks_.clear();
+  node_chunk_bases_.reset();
   upper_neighbor_chunks_.clear();
+  upper_neighbor_chunk_bases_.reset();
   filter_same_key_ = false;
   get_vector_enabled_ = false;
   broker_.reset();
@@ -102,50 +107,80 @@ int HnswStreamerEntity::update_neighbors(
 
 const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
                                                   node_id_t id) const {
-  Chunk *chunk = nullptr;
   size_t offset = 0UL;
   size_t neighbor_size = neighbor_size_;
+  IndexStorage::MemoryBlock neighbor_block;
+
   if (level == 0UL) {
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     offset =
         (id & node_index_mask_) * node_size() + vector_size() + sizeof(key_t);
 
-    sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx, &node_chunks_);
-    ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
-    chunk = node_chunks_[chunk_idx].get();
+    // Fast path: use pre-cached stable base pointer (mmap backend).
+    // Bounds-check guards against new chunks added after clone() was taken.
+    if (node_chunk_bases_ && chunk_idx < node_chunk_bases_->size() &&
+        (*node_chunk_bases_)[chunk_idx]) {
+      neighbor_block.reset((void *)((*node_chunk_bases_)[chunk_idx] + offset));
+    } else {
+      sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx, &node_chunks_);
+      ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
+      Chunk *chunk = node_chunks_[chunk_idx].get();
+      ailego_assert_with(offset < chunk->data_size(), "invalid chunk offset");
+      size_t size = chunk->read(offset, neighbor_block, neighbor_size);
+      if (ailego_unlikely(size != neighbor_size)) {
+        LOG_ERROR("Read neighbor header failed, ret=%zu", size);
+        return Neighbors();
+      }
+      return Neighbors(neighbor_block);
+    }
   } else {
     auto p = get_upper_neighbor_chunk_loc(level, id);
-    chunk = upper_neighbor_chunks_[p.first].get();
     offset = p.second;
     neighbor_size = upper_neighbor_size_;
+
+    // Fast path: use pre-cached stable base pointer (mmap backend).
+    // Bounds-check guards against new chunks added after clone() was taken.
+    if (upper_neighbor_chunk_bases_ &&
+        p.first < upper_neighbor_chunk_bases_->size() &&
+        (*upper_neighbor_chunk_bases_)[p.first]) {
+      neighbor_block.reset(
+          (void *)((*upper_neighbor_chunk_bases_)[p.first] + offset));
+    } else {
+      Chunk *chunk = upper_neighbor_chunks_[p.first].get();
+      ailego_assert_with(offset < chunk->data_size(), "invalid chunk offset");
+      size_t size = chunk->read(offset, neighbor_block, neighbor_size);
+      if (ailego_unlikely(size != neighbor_size)) {
+        LOG_ERROR("Read neighbor header failed, ret=%zu", size);
+        return Neighbors();
+      }
+      return Neighbors(neighbor_block);
+    }
   }
 
-  ailego_assert_with(offset < chunk->data_size(), "invalid chunk offset");
-  IndexStorage::MemoryBlock neighbor_block;
-  size_t size = chunk->read(offset, neighbor_block, neighbor_size);
-  if (ailego_unlikely(size != neighbor_size)) {
-    LOG_ERROR("Read neighbor header failed, ret=%zu", size);
-    return Neighbors();
-  }
   return Neighbors(neighbor_block);
 }
 
 //! Get vector data by key
 const void *HnswStreamerEntity::get_vector(node_id_t id) const {
   auto loc = get_vector_chunk_loc(id);
-  const void *vec = nullptr;
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+
+  // Fast path: mmap backend — direct pointer arithmetic.
+  // Bounds-check guards against new chunks added after clone() was taken.
+  if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
+      (*node_chunk_bases_)[loc.first]) {
+    return (*node_chunk_bases_)[loc.first] + loc.second;
+  }
+
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                      "invalid chunk offset");
-
+  const void *vec = nullptr;
   size_t read_size = vector_size();
-
   size_t ret = node_chunks_[loc.first]->read(loc.second, &vec, read_size);
   if (ailego_unlikely(ret != read_size)) {
     LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
               loc.second, read_size, ret);
   }
-
   return vec;
 }
 
@@ -154,11 +189,18 @@ int HnswStreamerEntity::get_vector(const node_id_t *ids, uint32_t count,
   for (auto i = 0U; i < count; ++i) {
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+
+    // Fast path: mmap backend.
+    // Bounds-check guards against new chunks added after clone() was taken.
+    if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
+        (*node_chunk_bases_)[loc.first]) {
+      vecs[i] = (*node_chunk_bases_)[loc.first] + loc.second;
+      continue;
+    }
+
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
-
     size_t read_size = vector_size();
-
     size_t ret = node_chunks_[loc.first]->read(loc.second, &vecs[i], read_size);
     if (ailego_unlikely(ret != read_size)) {
       LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
@@ -173,11 +215,18 @@ int HnswStreamerEntity::get_vector(const node_id_t id,
                                    IndexStorage::MemoryBlock &block) const {
   auto loc = get_vector_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+
+  // Fast path: mmap backend.
+  // Bounds-check guards against new chunks added after clone() was taken.
+  if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
+      (*node_chunk_bases_)[loc.first]) {
+    block.reset((void *)((*node_chunk_bases_)[loc.first] + loc.second));
+    return 0;
+  }
+
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                      "invalid chunk offset");
-
   size_t read_size = vector_size();
-
   size_t ret = node_chunks_[loc.first]->read(loc.second, block, read_size);
   if (ailego_unlikely(ret != read_size)) {
     LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
@@ -194,11 +243,19 @@ int HnswStreamerEntity::get_vector(
   for (auto i = 0U; i < count; ++i) {
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+
+    // Fast path: mmap backend.
+    // Bounds-check guards against new chunks added after clone() was taken.
+    if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
+        (*node_chunk_bases_)[loc.first]) {
+      vec_blocks[i].reset(
+          (void *)((*node_chunk_bases_)[loc.first] + loc.second));
+      continue;
+    }
+
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
-
     size_t read_size = vector_size();
-
     size_t ret =
         node_chunks_[loc.first]->read(loc.second, vec_blocks[i], read_size);
     if (ailego_unlikely(ret != read_size)) {
@@ -213,17 +270,25 @@ int HnswStreamerEntity::get_vector(
 key_t HnswStreamerEntity::get_key(node_id_t id) const {
   if (use_key_info_map_) {
     auto loc = get_key_chunk_loc(id);
-    IndexStorage::MemoryBlock key_block;
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+
+    // Fast path: mmap backend.
+    // Bounds-check guards against new chunks added after clone() was taken.
+    if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
+        (*node_chunk_bases_)[loc.first]) {
+      return *reinterpret_cast<const key_t *>((*node_chunk_bases_)[loc.first] +
+                                              loc.second);
+    }
+
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
+    IndexStorage::MemoryBlock key_block;
     size_t ret =
         node_chunks_[loc.first]->read(loc.second, key_block, sizeof(key_t));
     if (ailego_unlikely(ret != sizeof(key_t))) {
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return kInvalidKey;
     }
-
     return *reinterpret_cast<const key_t *>(key_block.data());
   } else {
     return id;
@@ -273,6 +338,8 @@ int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
   }
 
   node_chunks_.resize(broker_->get_chunk_cnt(ChunkBroker::CHUNK_TYPE_NODE));
+  node_chunk_bases_ = std::make_shared<std::vector<const uint8_t *>>(
+      node_chunks_.size(), nullptr);
   for (auto seq = 0UL; seq < node_chunks_.size(); ++seq) {
     node_chunks_[seq] = broker_->get_chunk(ChunkBroker::CHUNK_TYPE_NODE, seq);
     if (!node_chunks_[seq]) {
@@ -280,10 +347,13 @@ int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
                 node_chunks_.size());
       return IndexError_InvalidFormat;
     }
+    (*node_chunk_bases_)[seq] = node_chunks_[seq]->base_data();
   }
 
   upper_neighbor_chunks_.resize(
       broker_->get_chunk_cnt(ChunkBroker::CHUNK_TYPE_UPPER_NEIGHBOR));
+  upper_neighbor_chunk_bases_ = std::make_shared<std::vector<const uint8_t *>>(
+      upper_neighbor_chunks_.size(), nullptr);
   for (auto seq = 0UL; seq < upper_neighbor_chunks_.size(); ++seq) {
     upper_neighbor_chunks_[seq] =
         broker_->get_chunk(ChunkBroker::CHUNK_TYPE_UPPER_NEIGHBOR, seq);
@@ -292,6 +362,8 @@ int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
                 upper_neighbor_chunks_.size());
       return IndexError_InvalidFormat;
     }
+    (*upper_neighbor_chunk_bases_)[seq] =
+        upper_neighbor_chunks_[seq]->base_data();
   }
 
   return 0;
@@ -302,16 +374,18 @@ int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
   std::lock_guard<std::mutex> lock(mutex_);
   bool huge_page = stg->isHugePage();
   LOG_DEBUG("huge_page: %d", (int)huge_page);
-  int ret = init_chunk_params(max_index_size, huge_page);
-  if (ailego_unlikely(ret != 0)) {
-    LOG_ERROR("init_chunk_params failed for %s", IndexError::What(ret));
-    return ret;
-  }
-  ret = broker_->open(std::move(stg), max_index_size_, chunk_size_, check_crc);
+  int ret = broker_->open(std::move(stg), chunk_size_, check_crc);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("Open index failed for %s", IndexError::What(ret));
     return ret;
   }
+  ret = init_chunk_params(max_index_size, huge_page);
+  if (ailego_unlikely(ret != 0)) {
+    LOG_ERROR("init_chunk_params failed for %s", IndexError::What(ret));
+    return ret;
+  }
+  broker_->set_max_chunks_size(max_index_size_);
+
   ret = upper_neighbor_index_->init(broker_, upper_neighbor_chunk_size_,
                                     scaling_factor(), estimate_doc_capacity(),
                                     kUpperHashMemoryInflateRatio);
@@ -394,7 +468,9 @@ int HnswStreamerEntity::close() {
   keys_map_->clear();
   header_.clear();
   node_chunks_.clear();
+  node_chunk_bases_.reset();
   upper_neighbor_chunks_.clear();
+  upper_neighbor_chunk_bases_.reset();
 
   return broker_->close();
 }
@@ -692,11 +768,221 @@ const HnswEntity::Pointer HnswStreamerEntity::clone() const {
       stats_, header(), chunk_size_, node_index_mask_bits_,
       upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
       upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
-      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_);
+      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_,
+      node_chunk_bases_, upper_neighbor_chunk_bases_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswStreamerEntity new failed");
   }
   return HnswEntity::Pointer(entity);
+}
+
+const HnswEntity::Pointer HnswMmapStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> node_chunks;
+  node_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0UL; i < node_chunks_.size(); ++i) {
+    node_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!node_chunks[i])) {
+      LOG_ERROR("HnswMmapStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  std::vector<Chunk::Pointer> upper_neighbor_chunks;
+  upper_neighbor_chunks.reserve(upper_neighbor_chunks_.size());
+  for (size_t i = 0UL; i < upper_neighbor_chunks_.size(); ++i) {
+    upper_neighbor_chunks.emplace_back(upper_neighbor_chunks_[i]->clone());
+    if (ailego_unlikely(!upper_neighbor_chunks[i])) {
+      LOG_ERROR("HnswMmapStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  auto *entity = new (std::nothrow) HnswMmapStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
+      upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
+      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_,
+      nullptr, nullptr);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("HnswMmapStreamerEntity new failed");
+  }
+  return HnswEntity::Pointer(entity);
+}
+
+const HnswEntity::Pointer HnswContiguousStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> node_chunks;
+  node_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0UL; i < node_chunks_.size(); ++i) {
+    node_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!node_chunks[i])) {
+      LOG_ERROR("HnswContiguousStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  std::vector<Chunk::Pointer> upper_neighbor_chunks;
+  upper_neighbor_chunks.reserve(upper_neighbor_chunks_.size());
+  for (size_t i = 0UL; i < upper_neighbor_chunks_.size(); ++i) {
+    upper_neighbor_chunks.emplace_back(upper_neighbor_chunks_[i]->clone());
+    if (ailego_unlikely(!upper_neighbor_chunks[i])) {
+      LOG_ERROR("HnswContiguousStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  auto *entity = new (std::nothrow) HnswContiguousStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
+      upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
+      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_,
+      nullptr, nullptr);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("HnswContiguousStreamerEntity new failed");
+    return HnswEntity::Pointer();
+  }
+
+  // Share contiguous memory with the clone (zero-copy)
+  entity->node_memory_ = node_memory_;
+  entity->node_base_ = node_base_;
+  entity->upper_neighbor_memory_ = upper_neighbor_memory_;
+  entity->upper_neighbor_base_ = upper_neighbor_base_;
+  entity->upper_chunk_offsets_ = upper_chunk_offsets_;
+
+  return HnswEntity::Pointer(entity);
+}
+
+// ============================================================================
+// HnswContiguousStreamerEntity implementation
+// ============================================================================
+
+char *HnswContiguousStreamerEntity::allocate_contiguous(size_t size) {
+  if (size == 0) {
+    return nullptr;
+  }
+#if defined(__linux__)
+  // Use mmap with MAP_ANONYMOUS for contiguous memory
+  void *ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (ptr == MAP_FAILED) {
+    LOG_ERROR("mmap failed for contiguous memory, size=%zu", size);
+    return nullptr;
+  }
+  // Request transparent huge pages
+  ::madvise(ptr, size, MADV_HUGEPAGE);
+  return static_cast<char *>(ptr);
+#elif defined(__APPLE__)
+  // macOS: use mmap with MAP_ANONYMOUS
+  void *ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (ptr == MAP_FAILED) {
+    LOG_ERROR("mmap failed for contiguous memory, size=%zu", size);
+    return nullptr;
+  }
+  return static_cast<char *>(ptr);
+#elif defined(_WIN32)
+  void *ptr = ::_aligned_malloc(size, ailego::MemoryHelper::PageSize());
+  if (!ptr) {
+    LOG_ERROR("_aligned_malloc failed for contiguous memory, size=%zu", size);
+    return nullptr;
+  }
+  return static_cast<char *>(ptr);
+#else
+  // Fallback: aligned allocation
+  void *ptr = std::aligned_alloc(ailego::MemoryHelper::PageSize(), size);
+  if (!ptr) {
+    LOG_ERROR("aligned_alloc failed for contiguous memory, size=%zu", size);
+    return nullptr;
+  }
+  return static_cast<char *>(ptr);
+#endif
+}
+
+int HnswContiguousStreamerEntity::build_contiguous_memory() {
+  node_memory_.reset();
+  node_base_ = nullptr;
+  upper_neighbor_memory_.reset();
+  upper_neighbor_base_ = nullptr;
+  upper_chunk_offsets_.clear();
+
+  const uint32_t total_docs = doc_cnt();
+  if (total_docs == 0) {
+    return 0;
+  }
+
+  // --- Build contiguous node memory ---
+  const size_t per_node = node_size();
+  const size_t total_node_data = static_cast<size_t>(total_docs) * per_node;
+  size_t node_memory_size = AlignHugePageSize(total_node_data);
+  char *raw_node = allocate_contiguous(node_memory_size);
+  if (!raw_node) {
+    return IndexError_Runtime;
+  }
+  node_memory_.reset(raw_node, ContiguousDeleter{node_memory_size});
+  node_base_ = raw_node;
+
+  // Copy node data from chunks into contiguous memory
+  // Each chunk holds node_cnt_per_chunk nodes, laid out at offset
+  // (id & mask) * node_size within the chunk.
+  const auto &chunks = node_chunks_;
+  const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
+  for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
+    const void *chunk_data = nullptr;
+    size_t data_size = chunks[chunk_idx]->data_size();
+    chunks[chunk_idx]->read(0, &chunk_data, data_size);
+
+    // Number of nodes in this chunk
+    uint32_t base_id = chunk_idx * nodes_per_chunk;
+    uint32_t count_in_chunk = std::min(nodes_per_chunk, total_docs - base_id);
+
+    // Copy each node's data
+    const char *src = static_cast<const char *>(chunk_data);
+    char *dst = node_base_ + static_cast<size_t>(base_id) * per_node;
+    std::memcpy(dst, src, static_cast<size_t>(count_in_chunk) * per_node);
+  }
+
+  // --- Build contiguous upper neighbor memory ---
+  const auto &upper_chunks = upper_neighbor_chunks_;
+  if (upper_chunks.empty()) {
+    return 0;
+  }
+
+  // Sync all upper neighbor chunks
+  sync_upper_neighbor_chunks(upper_chunks.size() - 1);
+
+  // Calculate cumulative offsets and total size
+  upper_chunk_offsets_.resize(upper_chunks.size());
+  size_t total_upper_size = 0;
+  for (size_t i = 0; i < upper_chunks.size(); ++i) {
+    upper_chunk_offsets_[i] = total_upper_size;
+    total_upper_size += upper_chunks[i]->data_size();
+  }
+
+  size_t upper_memory_size = AlignHugePageSize(total_upper_size);
+  char *raw_upper = allocate_contiguous(upper_memory_size);
+  if (!raw_upper) {
+    node_memory_.reset();
+    node_base_ = nullptr;
+    return IndexError_Runtime;
+  }
+  upper_neighbor_memory_.reset(raw_upper, ContiguousDeleter{upper_memory_size});
+  upper_neighbor_base_ = raw_upper;
+
+  // Copy upper neighbor data from chunks into contiguous memory
+  for (size_t i = 0; i < upper_chunks.size(); ++i) {
+    const void *chunk_data = nullptr;
+    size_t data_size = upper_chunks[i]->data_size();
+    upper_chunks[i]->read(0, &chunk_data, data_size);
+    std::memcpy(upper_neighbor_base_ + upper_chunk_offsets_[i], chunk_data,
+                data_size);
+  }
+
+  LOG_INFO(
+      "Built contiguous memory: node_size=%zu upper_neighbor_size=%zu "
+      "total_docs=%u node_chunks=%zu upper_chunks=%zu",
+      node_memory_size, upper_memory_size, total_docs, chunks.size(),
+      upper_chunks.size());
+
+  return 0;
 }
 
 }  // namespace core

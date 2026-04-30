@@ -127,6 +127,11 @@ class MMapFileReadStorage : public IndexStorage {
       return shared_from_this();
     }
 
+    //! Stable base data pointer — valid for the lifetime of the mmap.
+    const uint8_t *base_data(void) const override {
+      return data_ptr_;
+    }
+
    private:
     const uint8_t *data_ptr_{nullptr};
     size_t data_size_{0u};

@@ -58,6 +58,8 @@ enum IndexType {
   IT_FLAT = 3;
   // Proxima HNSW RABITQ Index
   IT_HNSW_RABITQ = 4;
+  // Proxima Vamana (DiskANN) Index
+  IT_VAMANA = 5;
   // Invert Index
   IT_INVERT = 10;
 };
@@ -90,6 +92,10 @@ message HnswIndexParams {
   BaseIndexParams base = 1;
   int32 m = 2;
   int32 ef_construction = 3;
+  // When enabled, the HNSW streamer allocates a single contiguous memory
+  // arena for all graph nodes, which improves cache locality / search
+  // throughput at the cost of peak memory usage. Defaults to false.
+  bool use_contiguous_memory = 4;
 }
 
 message HnswRabitqIndexParams {
@@ -112,6 +118,19 @@ message IVFIndexParams {
   bool use_soar = 4;
 }
 
+message VamanaIndexParams {
+  BaseIndexParams base = 1;
+  int32 max_degree = 2;
+  int32 search_list_size = 3;
+  float alpha = 4;
+  bool saturate_graph = 5;
+  // When enabled, the Vamana streamer allocates a single contiguous memory
+  // arena for all graph nodes, which improves cache locality / search
+  // throughput at the cost of peak memory usage. Defaults to false.
+  bool use_contiguous_memory = 6;
+  bool use_id_map = 7;
+}
+
 message IndexParams {
   oneof params {
     InvertIndexParams invert = 1;
@@ -119,6 +138,7 @@ message IndexParams {
     FlatIndexParams flat = 3;
     IVFIndexParams ivf = 4;
     HnswRabitqIndexParams hnsw_rabitq = 5;
+    VamanaIndexParams vamana = 6;
   };
 };
 

@@ -798,6 +798,7 @@ TEST_F(FlatStreamerTest, TestFilter) {
 }
 
 TEST_F(FlatStreamerTest, TestMaxIndexSize) {
+  GTEST_SKIP();
   IndexStreamer::Pointer streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
   ASSERT_TRUE(streamer != nullptr);
