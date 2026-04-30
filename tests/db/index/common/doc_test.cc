@@ -669,36 +669,25 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // sparse vector indices: unsorted are canonicalized, duplicates are rejected
+  // sparse vector indices must be strictly ascending and unique
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    // unsorted indices become strictly ascending
+    // unsorted indices are rejected
     std::pair<std::vector<uint32_t>, std::vector<float>> unsorted{
         {42u, 7u, 1000u, 3u, 128u, 17u, 99u},
         {0.7f, 0.1f, 0.9f, 0.2f, 0.5f, 0.3f, 0.6f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   unsorted);
     auto s = doc.validate(schema);
-    ASSERT_TRUE(s.ok()) << s.message();
-    auto out = doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
-                      "sparse_fp32")
-                   .value();
-    ASSERT_EQ(out.first,
-              (std::vector<uint32_t>{3u, 7u, 17u, 42u, 99u, 128u, 1000u}));
-    ASSERT_EQ(out.second.size(), 7u);
-    ASSERT_FLOAT_EQ(out.second[0], 0.2f);
-    ASSERT_FLOAT_EQ(out.second[1], 0.1f);
-    ASSERT_FLOAT_EQ(out.second[2], 0.3f);
-    ASSERT_FLOAT_EQ(out.second[3], 0.7f);
-    ASSERT_FLOAT_EQ(out.second[4], 0.6f);
-    ASSERT_FLOAT_EQ(out.second[5], 0.5f);
-    ASSERT_FLOAT_EQ(out.second[6], 0.9f);
+    ASSERT_FALSE(s.ok());
+    ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
-    // duplicate indices are rejected (duplicate is non-adjacent in input)
+    // sorted indices with a duplicate are rejected
     std::pair<std::vector<uint32_t>, std::vector<float>> dup{
-        {42u, 7u, 128u, 42u, 99u}, {0.1f, 0.2f, 0.3f, 0.4f, 0.5f}};
+        {3u, 7u, 17u, 42u, 42u, 99u, 128u},
+        {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   dup);
     s = doc.validate(schema);
@@ -1286,20 +1275,88 @@ TEST(VectorQuery, Validate) {
     VectorQuery query;
     query.field_name_ = "field_name";
     query.topk_ = 100;
-    std::vector<uint32_t> query_indices = std::vector<uint32_t>(16385);
-    std::string query_indices_str =
+    std::vector<uint32_t> query_indices(16385);
+    std::vector<float> query_values(16385);
+    query.query_sparse_indices_ =
         std::string(reinterpret_cast<char *>(query_indices.data()),
                     query_indices.size() * sizeof(uint32_t));
-    query.query_sparse_indices_ = query_indices_str;
+    query.query_sparse_values_ =
+        std::string(reinterpret_cast<char *>(query_values.data()),
+                    query_values.size() * sizeof(float));
     FieldSchema schema =
         FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
     auto s = query.validate(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
-    query.query_sparse_indices_ = query_indices_str.substr(0, 3);
+    // one valid index and matching value: accepted
+    uint32_t one_index = 0;
+    float one_value = 0.0f;
+    query.query_sparse_indices_ =
+        std::string(reinterpret_cast<char *>(&one_index), sizeof(uint32_t));
+    query.query_sparse_values_ =
+        std::string(reinterpret_cast<char *>(&one_value), sizeof(float));
     s = query.validate(&schema);
     EXPECT_TRUE(s.ok());
+  }
+
+  // sparse query indices must be strictly ascending and unique
+  {
+    auto pack_idx = [](const std::vector<uint32_t> &v) {
+      return std::string(reinterpret_cast<const char *>(v.data()),
+                         v.size() * sizeof(uint32_t));
+    };
+    auto pack_val = [](const std::vector<float> &v) {
+      return std::string(reinterpret_cast<const char *>(v.data()),
+                         v.size() * sizeof(float));
+    };
+    VectorQuery query;
+    query.field_name_ = "field_name";
+    query.topk_ = 100;
+    FieldSchema schema =
+        FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
+    query.query_sparse_values_ = pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f});
+
+    // unsorted indices are rejected
+    query.query_sparse_indices_ = pack_idx({42u, 7u, 128u, 3u, 99u});
+    auto s = query.validate(&schema);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+
+    // indices with a duplicate are rejected
+    query.query_sparse_indices_ = pack_idx({3u, 7u, 42u, 42u, 99u});
+    s = query.validate(&schema);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+  }
+
+  // sparse query indices and values must have matching counts
+  {
+    auto pack_idx = [](const std::vector<uint32_t> &v) {
+      return std::string(reinterpret_cast<const char *>(v.data()),
+                         v.size() * sizeof(uint32_t));
+    };
+    auto pack_val = [](const std::vector<float> &v) {
+      return std::string(reinterpret_cast<const char *>(v.data()),
+                         v.size() * sizeof(float));
+    };
+    VectorQuery query;
+    query.field_name_ = "field_name";
+    query.topk_ = 100;
+    FieldSchema schema =
+        FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
+
+    // matching counts: accepted
+    query.query_sparse_indices_ = pack_idx({1u, 2u, 3u, 4u});
+    query.query_sparse_values_ = pack_val({0.1f, 0.2f, 0.3f, 0.4f});
+    auto s = query.validate(&schema);
+    EXPECT_TRUE(s.ok()) << s.message();
+
+    // indices and values counts differ: rejected
+    query.query_sparse_values_ = pack_val({0.1f, 0.2f, 0.3f});
+    s = query.validate(&schema);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
   // query_params type must match the field's index type
