@@ -100,39 +100,6 @@ Status VectorColumnIndexer::Destroy() {
   return Status::OK();
 }
 
-Status VectorColumnIndexer::Merge(
-    const std::vector<VectorColumnIndexer::Ptr> &indexers,
-    const IndexFilter::Ptr &filter,
-    const vector_column_params::MergeOptions &merge_options) {
-  if (index == nullptr) {
-    return Status::InvalidArgument("Index not opened");
-  }
-
-  if (indexers.empty()) {
-    return Status::OK();
-  }
-
-  auto engine_indexers = std::vector<core_interface::Index::Pointer>();
-
-  for (auto &indexer : indexers) {
-    if (indexer->index_file_path() == this->index_file_path()) {
-      continue;
-    }
-    engine_indexers.push_back(indexer->index);
-  }
-  auto engine_filter =
-      ProximaEngineHelper::convert_to_engine_filter(filter.get());
-  if (engine_filter == nullptr) {
-    return Status::InvalidArgument("Failed to convert filter");
-  }
-  if (0 !=
-      index->Merge(engine_indexers, *engine_filter,
-                   {merge_options.write_concurrency, merge_options.pool})) {
-    return Status::InternalError("Failed to merge index");
-  }
-  return Status::OK();
-}
-
 Status VectorColumnIndexer::MergeAll(
     const std::string &output_path, const FieldSchema &field,
     const std::vector<VectorColumnIndexer::Ptr> &all_indexers,
@@ -160,7 +127,7 @@ Status VectorColumnIndexer::MergeAll(
 
   core_interface::Index::Pointer merged_index;
   int ret = core_interface::Index::MergeAll(
-      output_path, engine_indexes, *engine_filter,
+      output_path, engine_indexes, engine_filter,
       {merge_options.write_concurrency, merge_options.pool}, &merged_index);
   if (ret != 0) {
     return Status::InternalError("Index::MergeAll failed");

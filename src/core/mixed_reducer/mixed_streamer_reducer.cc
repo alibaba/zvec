@@ -154,19 +154,10 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
         is_sparse_ ? target_streamer_->create_sparse_provider()->count()
                    : target_streamer_->create_provider()->count();
     if (existing_count > 0) {
-      size_t filtered_in_target =
-          filter.count_filtered_in_range(0, existing_count);
-      if (filtered_in_target == 0) {
-        next_id = existing_count;
-        id_offset = existing_count;
-        LOG_INFO("MixedStreamerReducer: reuse mode, starting IDs from %u",
-                 existing_count);
-      } else {
-        LOG_WARN(
-            "MixedStreamerReducer: target has %zu filtered items in "
-            "existing range, falling back to full rebuild",
-            filtered_in_target);
-      }
+      next_id = existing_count;
+      id_offset = existing_count;
+      LOG_DEBUG("MixedStreamerReducer: reuse mode, starting IDs from %u",
+                existing_count);
     }
   }
 

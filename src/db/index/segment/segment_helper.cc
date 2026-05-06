@@ -67,11 +67,6 @@ class RowIdFilter : public IndexFilter {
     return delete_row_id_bitmap_.contains(id);
   }
 
-  size_t count_filtered_in_range(uint64_t start, size_t count) const override {
-    return roaring_bitmap_range_cardinality(&delete_row_id_bitmap_.roaring,
-                                            start, start + count);
-  }
-
  private:
   roaring::Roaring delete_row_id_bitmap_;
 };
@@ -115,8 +110,11 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
     return Status::OK();
   }
 
-  std::shared_ptr<RowIdFilter> row_id_filter =
-      std::make_shared<RowIdFilter>(std::move(delete_row_id_bitmap));
+  std::shared_ptr<RowIdFilter> row_id_filter;
+  if (!delete_row_id_bitmap.isEmpty()) {
+    row_id_filter =
+        std::make_shared<RowIdFilter>(std::move(delete_row_id_bitmap));
+  }
 
   s = ReduceVectorIndex(schema, input_segments, output_segment_path,
                         row_id_filter, block_id_generator, min_doc_id,

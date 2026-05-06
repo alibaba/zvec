@@ -868,32 +868,15 @@ int Index::MergeAll(const std::string &output_path,
     return core::IndexError_InvalidArgument;
   }
 
-  // 1. Find the best source to reuse (most surviving docs)
-  size_t best_idx = 0;
-  size_t best_surviving = 0;
-  uint64_t offset = 0;
-  for (size_t i = 0; i < all_indexes.size(); i++) {
-    uint32_t count = all_indexes[i]->GetDocCount();
-    size_t deleted = filter.count_filtered_in_range(offset, count);
-    size_t surviving = count - deleted;
-    if (surviving > best_surviving) {
-      best_surviving = surviving;
-      best_idx = i;
-    }
-    offset += count;
-  }
-
-  // 2. Check reuse feasibility
-  //    V1: only reuse the first index (offset math is trivial)
+  // Check reuse feasibility
+  //    Current: only reuse the first index (offset math is trivial)
   //    Must have zero deletions and no builder (IVF has builder, needs full
   //    rebuild)
   bool can_reuse =
-      (best_idx == 0) &&
-      (best_surviving == static_cast<size_t>(all_indexes[0]->GetDocCount())) &&
-      (all_indexes[0]->builder_ == nullptr);
+      (!filter.is_valid()) && (all_indexes[0]->builder_ == nullptr);
 
-  // 3. Create target index using params from first source
-  //    Round-trip through JSON to preserve the concrete param type
+  // Create target index using params from first source
+  // Round-trip through JSON to preserve the concrete param type
   auto base_param = all_indexes[0]->GetParam();
   auto param = IndexFactory::DeserializeIndexParamFromJson(
       base_param->SerializeToJson());
@@ -958,48 +941,6 @@ int Index::MergeAll(const std::string &output_path,
     return ret;
   }
   *result = std::move(target);
-  return 0;
-}
-
-int Index::MoveTo(const std::string &new_path) {
-  if (!is_open_) {
-    LOG_ERROR("MoveTo: index is not open");
-    return core::IndexError_Runtime;
-  }
-  std::string old_path = storage_path_;
-
-  int ret = Flush();
-  if (ret != 0) {
-    LOG_ERROR("MoveTo: flush failed");
-    return ret;
-  }
-
-  // Close streamer (STATE_OPENED -> STATE_INITED) so it can be reopened
-  if (streamer_->close() != 0) {
-    LOG_ERROR("MoveTo: streamer close failed");
-    return core::IndexError_Runtime;
-  }
-  if (storage_->close() != 0) {
-    LOG_ERROR("MoveTo: storage close failed");
-    return core::IndexError_Runtime;
-  }
-
-  if (!ailego::File::Rename(old_path, new_path)) {
-    LOG_ERROR("MoveTo: rename from %s to %s failed", old_path.c_str(),
-              new_path.c_str());
-    return core::IndexError_Runtime;
-  }
-
-  ret = storage_->open(new_path, false);
-  if (ret != 0) {
-    LOG_ERROR("MoveTo: reopen storage at %s failed", new_path.c_str());
-    return ret;
-  }
-  if (streamer_->open(storage_) != 0) {
-    LOG_ERROR("MoveTo: reopen streamer failed");
-    return core::IndexError_Runtime;
-  }
-  storage_path_ = new_path;
   return 0;
 }
 

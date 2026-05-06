@@ -777,48 +777,6 @@ TEST(IndexInterface, MergeAllFlatIndex) {
   del("mergeall_fout.index");
 }
 
-TEST(IndexInterface, MoveTo) {
-  constexpr uint32_t kDimension = 64;
-
-  auto del = [](const std::string &f) { zvec::test_util::RemoveTestFiles(f); };
-
-  auto param = FlatIndexParamBuilder()
-                   .WithMetricType(MetricType::kInnerProduct)
-                   .WithDataType(DataType::DT_FP32)
-                   .WithDimension(kDimension)
-                   .WithIsSparse(false)
-                   .Build();
-
-  del("moveto_src.index");
-  del("moveto_dst.index");
-
-  auto idx = IndexFactory::CreateAndInitIndex(*param);
-  ASSERT_NE(nullptr, idx);
-  ASSERT_EQ(0, idx->Open("moveto_src.index",
-                         {StorageOptions::StorageType::kMMAP, true, false}));
-
-  std::vector<float> v(kDimension, 0.f);
-  v[0] = 42.0f;
-  ASSERT_EQ(0, idx->Add(VectorData{DenseVector{v.data()}}, 0));
-  ASSERT_EQ(0, idx->Flush());
-
-  ASSERT_EQ(0, idx->MoveTo("moveto_dst.index"));
-  ASSERT_EQ("moveto_dst.index", idx->storage_path());
-
-  // Data should still be accessible after move
-  {
-    VectorDataBuffer buf;
-    ASSERT_EQ(0, idx->Fetch(0, &buf));
-    float *fv = reinterpret_cast<float *>(
-        std::get<DenseVectorBuffer>(buf.vector_buffer).data.data());
-    ASSERT_FLOAT_EQ(42.0f, fv[0]);
-  }
-
-  idx->Close();
-  del("moveto_src.index");
-  del("moveto_dst.index");
-}
-
 TEST(IndexInterface, MergeAllSingleIndex) {
   constexpr uint32_t kDimension = 64;
 
@@ -863,24 +821,6 @@ TEST(IndexInterface, MergeAllSingleIndex) {
   idx->Close();
   del("mergeall_s.index");
   del("mergeall_sout.index");
-}
-
-TEST(IndexInterface, CountFilteredInRange) {
-  IndexFilter filter;
-  // No filter set -- should return 0
-  ASSERT_EQ(0u, filter.count_filtered_in_range(0, 10));
-
-  // With per-item filter
-  filter.set([](uint64_t key) { return key % 3 == 0; });
-  ASSERT_EQ(4u, filter.count_filtered_in_range(0, 10));  // 0,3,6,9
-  ASSERT_EQ(1u, filter.count_filtered_in_range(1, 5));   // [1,6) -> 3
-  ASSERT_EQ(0u, filter.count_filtered_in_range(0, 0));
-
-  // With efficient range_count override
-  filter.set_range_count(
-      [](uint64_t start, size_t count) -> size_t { return count / 2; });
-  ASSERT_EQ(5u, filter.count_filtered_in_range(0, 10));
-  ASSERT_EQ(3u, filter.count_filtered_in_range(100, 6));
 }
 
 TEST(IndexInterface, Serialize) {
