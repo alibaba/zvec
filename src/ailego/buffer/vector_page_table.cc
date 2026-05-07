@@ -36,6 +36,20 @@ static ssize_t zvec_pread(int fd, void *buf, size_t count, size_t offset) {
   }
   return static_cast<ssize_t>(bytes_read);
 }
+static ssize_t zvec_pwrite(int fd, const void *buf, size_t count,
+                           size_t offset) {
+  HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+  if (handle == INVALID_HANDLE_VALUE) return -1;
+  OVERLAPPED ov = {};
+  ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFF);
+  ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+  DWORD bytes_written = 0;
+  if (!WriteFile(handle, buf, static_cast<DWORD>(count), &bytes_written,
+                 &ov)) {
+    return -1;
+  }
+  return static_cast<ssize_t>(bytes_written);
+}
 #endif
 
 namespace zvec {
@@ -50,7 +64,9 @@ void VectorPageTable::init(size_t entry_num) {
   for (size_t i = 0; i < entry_num_; i++) {
     entries_[i].ref_count.store(std::numeric_limits<int>::min());
     entries_[i].in_evict_queue.store(false);
+    entries_[i].is_dirty.store(false);
     entries_[i].buffer = nullptr;
+    entries_[i].file_offset = 0;
   }
 }
 
@@ -101,6 +117,13 @@ void VectorPageTable::evict_block(block_id_t block_id) {
   int expected = 0;
   if (entry.ref_count.compare_exchange_strong(
           expected, std::numeric_limits<int>::min())) {
+    // If the block is dirty, flush it to disk before freeing the memory so
+    // that no modified data is silently lost during eviction.
+    if (buffer && entry.is_dirty.load(std::memory_order_relaxed) &&
+        flush_callback_) {
+      flush_callback_(block_id, buffer, size, entry.file_offset);
+      entry.is_dirty.store(false, std::memory_order_relaxed);
+    }
     if (buffer) {
       MemoryLimitPool::get_instance().release_buffer(buffer, size);
     }
@@ -114,7 +137,7 @@ void VectorPageTable::evict_block(block_id_t block_id) {
 }
 
 char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
-                                          size_t size) {
+                                          size_t size, size_t file_offset) {
   assert(block_id < entry_num_);
   Entry &entry = entries_[block_id];
   while (true) {
@@ -136,22 +159,33 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
     } else {
       entry.buffer = buffer;
       entry.size = size;
+      entry.file_offset = file_offset;
       // Ensure in_evict_queue is cleared when the block is freshly loaded so
       // that the first release_block() after loading can register it in the
       // eviction queue.
       entry.in_evict_queue.store(false, std::memory_order_relaxed);
+      // A freshly loaded block is clean (data matches disk).
+      entry.is_dirty.store(false, std::memory_order_relaxed);
       entry.ref_count.store(1, std::memory_order_release);
       return entry.buffer;
     }
   }
 }
 
-VecBufferPool::VecBufferPool(const std::string &filename) {
+VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
+                             bool create) {
   file_name_ = filename;
+  writable_ = writable || create;
 #if defined(_MSC_VER)
-  fd_ = _open(filename.c_str(), O_RDONLY | _O_BINARY);
+  int flags = writable_
+                  ? (create ? (O_RDWR | O_CREAT | O_TRUNC | _O_BINARY)
+                            : (O_RDWR | _O_BINARY))
+                  : (O_RDONLY | _O_BINARY);
+  fd_ = _open(filename.c_str(), flags, 0644);
 #else
-  fd_ = open(filename.c_str(), O_RDONLY);
+  int flags = writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC) : O_RDWR)
+                        : O_RDONLY;
+  fd_ = open(filename.c_str(), flags, 0644);
 #endif
   if (fd_ < 0) {
     throw std::runtime_error("Failed to open file: " + filename);
@@ -178,6 +212,26 @@ int VecBufferPool::init(size_t segment_count) {
   // chasing 31K+ independent heap pointers.
   block_mutexes_ = std::make_unique<std::mutex[]>(block_num);
   block_mutexes_count_ = block_num;
+  // In writable mode, inject a flush callback into the page table so that
+  // evict_block() can pwrite dirty blocks back to the backing file.
+  if (writable_) {
+    page_table_.set_flush_callback(
+        [this](block_id_t /*block_id*/, char *buf, size_t sz,
+               size_t off) -> int {
+#if defined(_MSC_VER)
+          ssize_t w = zvec_pwrite(fd_, buf, sz, off);
+#else
+          ssize_t w = pwrite(fd_, buf, sz, off);
+#endif
+          if (w != static_cast<ssize_t>(sz)) {
+            LOG_ERROR(
+                "Buffer pool flush failed: file[%s], offset[%zu], size[%zu]",
+                file_name_.c_str(), off, sz);
+            return -1;
+          }
+          return 0;
+        });
+  }
   LOG_DEBUG("entry num: %zu", page_table_.entry_num());
   return 0;
 }
@@ -233,7 +287,7 @@ char *VecBufferPool::acquire_buffer(block_id_t block_id, size_t offset,
     MemoryLimitPool::get_instance().release_buffer(buffer, size);
     return nullptr;
   }
-  return page_table_.set_block_acquired(block_id, buffer, size);
+  return page_table_.set_block_acquired(block_id, buffer, size, offset);
 }
 
 int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
@@ -250,6 +304,97 @@ int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
     return -1;
   }
   return 0;
+}
+
+int VecBufferPool::write_block(block_id_t block_id, size_t file_offset,
+                               const char *data, size_t size) {
+  if (!writable_) {
+    LOG_ERROR(
+        "write_block called on read-only pool: file[%s], block_id[%zu]",
+        file_name_.c_str(), block_id);
+    return -1;
+  }
+  assert(block_id < block_mutexes_count_);
+  // Persist to disk first so the data is safe regardless of cache eviction.
+#if defined(_MSC_VER)
+  ssize_t written = zvec_pwrite(fd_, data, size, file_offset);
+#else
+  ssize_t written = pwrite(fd_, data, size, file_offset);
+#endif
+  if (written != static_cast<ssize_t>(size)) {
+    LOG_ERROR(
+        "write_block failed to write file: file[%s], block_id[%zu], "
+        "offset[%zu], size[%zu]",
+        file_name_.c_str(), block_id, file_offset, size);
+    return -1;
+  }
+  // Optionally populate the page-table cache so subsequent reads are fast.
+  // If memory is unavailable we skip caching silently; the block can always
+  // be re-read from disk via acquire_buffer().
+  std::lock_guard<std::mutex> lock(block_mutexes_[block_id]);
+  if (page_table_.acquire_block(block_id) == nullptr) {
+    // Block not yet loaded: try to cache it.
+    char *cache_buf = nullptr;
+    if (MemoryLimitPool::get_instance().try_acquire_buffer(size, cache_buf)) {
+      std::memcpy(cache_buf, data, size);
+      // is_dirty is set to false by set_block_acquired because the data is
+      // already on disk.
+      page_table_.set_block_acquired(block_id, cache_buf, size, file_offset);
+    }
+  } else {
+    // Block is already cached; release the extra ref from acquire_block().
+    page_table_.release_block(block_id);
+  }
+  return 0;
+}
+
+int VecBufferPool::write_meta(size_t offset, const char *data, size_t size) {
+  if (!writable_) {
+    LOG_ERROR("write_meta called on read-only pool: file[%s]",
+              file_name_.c_str());
+    return -1;
+  }
+#if defined(_MSC_VER)
+  ssize_t written = zvec_pwrite(fd_, data, size, offset);
+#else
+  ssize_t written = pwrite(fd_, data, size, offset);
+#endif
+  if (written != static_cast<ssize_t>(size)) {
+    LOG_ERROR(
+        "write_meta failed: file[%s], offset[%zu], size[%zu]",
+        file_name_.c_str(), offset, size);
+    return -1;
+  }
+  return 0;
+}
+
+int VecBufferPool::flush_all() {
+  int ret = 0;
+  for (size_t i = 0; i < page_table_.entry_num(); ++i) {
+    if (!page_table_.is_block_dirty(i)) {
+      continue;
+    }
+    char *buf = page_table_.get_buffer_ptr(i);
+    if (!buf) {
+      continue;
+    }
+    size_t sz = page_table_.get_block_size(i);
+    size_t off = page_table_.get_block_file_offset(i);
+#if defined(_MSC_VER)
+    ssize_t written = zvec_pwrite(fd_, buf, sz, off);
+#else
+    ssize_t written = pwrite(fd_, buf, sz, off);
+#endif
+    if (written != static_cast<ssize_t>(sz)) {
+      LOG_ERROR(
+          "flush_all failed: file[%s], block_id[%zu], offset[%zu], size[%zu]",
+          file_name_.c_str(), i, off, sz);
+      ret = -1;
+      continue;
+    }
+    page_table_.clear_dirty(i);
+  }
+  return ret;
 }
 
 char *VecBufferPoolHandle::get_block(size_t offset, size_t size,
@@ -272,6 +417,18 @@ void VecBufferPoolHandle::acquire_one(block_id_t block_id) {
   // ignored here, as a null return would indicate a contract violation.
   pool_.page_table_.acquire_block(block_id);
 }
+
+int VecBufferPoolHandle::write_block(const char *data, size_t size,
+                                     size_t block_id, size_t file_offset) {
+  return pool_.write_block(block_id, file_offset, data, size);
+}
+
+int VecBufferPoolHandle::write_meta(size_t offset, const char *data,
+                                    size_t size) {
+  return pool_.write_meta(offset, data, size);
+}
+
+int VecBufferPoolHandle::flush_all() { return pool_.flush_all(); }
 
 }  // namespace ailego
 }  // namespace zvec

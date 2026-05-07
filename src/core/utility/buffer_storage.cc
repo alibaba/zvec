@@ -138,18 +138,51 @@ class BufferStorage : public IndexStorage {
     }
 
     //! Write data into the storage with offset
-    size_t write(size_t /*offset*/, const void * /*data*/,
-                 size_t len) override {
+    size_t write(size_t offset, const void *data, size_t len) override {
+      size_t data_tail = offset + len;
+      ailego_zero_if_false(data_tail <= capacity_);
+      // In read-only mode the write is a silent no-op so that callers that
+      // unconditionally write (e.g. CRC updates) do not return an error.
+      if (!owner_->buffer_pool_->is_writable()) {
+        return len;
+      }
+      size_t file_offset = segment_header_start_offset_ +
+                           segment_header_->content_offset +
+                           segment_->meta()->data_index;
+      char *raw = owner_->get_buffer(file_offset, capacity_, segment_id_);
+      if (!raw) {
+        return 0;
+      }
+      auto meta = segment_->meta();
+      if (data_tail > meta->data_size) {
+        meta->data_size = data_tail;
+        meta->padding_size = capacity_ - data_tail;
+        owner_->set_as_dirty();
+      }
+      memmove(raw + offset, data, len);
+      // Mark the cached block dirty so flush_index() will persist it to disk.
+      owner_->buffer_pool_->page_table_.mark_dirty(segment_id_);
       return len;
     }
 
     //! Resize size of data
-    size_t resize(size_t /*size*/) override {
-      return 0;
+    size_t resize(size_t size) override {
+      auto meta = segment_->meta();
+      if (meta->data_size != size) {
+        if (size > capacity_) {
+          size = capacity_;
+        }
+        meta->data_size = size;
+        meta->padding_size = capacity_ - size;
+        owner_->set_as_dirty();
+      }
+      return size;
     }
 
     //! Update crc of data
-    void update_data_crc(uint32_t /*crc*/) override {}
+    void update_data_crc(uint32_t crc) override {
+      segment_->meta()->data_crc = crc;
+    }
 
     //! Clone the segment
     IndexStorage::Segment::Pointer clone(void) override {
@@ -190,9 +223,13 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Open storage
-  int open(const std::string &path, bool /*create_if_missing*/) override {
+  int open(const std::string &path, bool create_if_missing) override {
     file_name_ = path;
-    buffer_pool_ = std::make_shared<ailego::VecBufferPool>(path);
+    // Open in writable mode when the caller expects to modify the index
+    // (create_if_missing mirrors the MMapFileStorage convention: true means
+    // the index may need to be written, false means read-only).
+    buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
+        path, /*writable=*/create_if_missing, /*create=*/false);
     buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
         buffer_pool_->get_handle());
     int ret = ParseToMapping();
@@ -205,8 +242,9 @@ class BufferStorage : public IndexStorage {
     }
     LOG_INFO(
         "BufferStorage opened: file=%s, max_segment_size=%lu, "
-        "segment_count=%zu",
-        file_name_.c_str(), max_segment_size_, segments_.size());
+        "segment_count=%zu, writable=%d",
+        file_name_.c_str(), max_segment_size_, segments_.size(),
+        static_cast<int>(create_if_missing));
     return 0;
   }
 
@@ -359,6 +397,12 @@ class BufferStorage : public IndexStorage {
         return ret;
       }
 
+      // Record per-chain metadata offsets so flush_index() can write
+      // updated segment metas and footers back to the backing file.
+      meta_chains_.push_back({current_header_start_offset_, footer_offset,
+                              segment_start_offset,
+                              footer_.segments_meta_size});
+
       if (footer_.next_meta_header_offset == 0) {
         break;
       }
@@ -457,10 +501,71 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Refresh meta information (checksum, update time, etc.)
-  void refresh_index(uint64_t /*chkp*/) {}
+  void refresh_index(uint64_t /*chkp*/) {
+    // In BufferStorage the segment metadata lives in buffer_pool_buffers_.
+    // CRC recomputation and disk write are deferred to flush_index().
+    // Just mark dirty so flush_index() will include the metadata write.
+    index_dirty_ = true;
+  }
 
   //! Flush index storage
   int flush_index(void) {
+    if (!index_dirty_) {
+      return 0;
+    }
+    if (!buffer_pool_->is_writable()) {
+      // Read-only pool: nothing to flush.
+      index_dirty_ = false;
+      return 0;
+    }
+    // Flush all dirty data blocks to the backing file first.
+    if (buffer_pool_handle_->flush_all() != 0) {
+      LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
+      return IndexError_WriteData;
+    }
+    // For each metadata chain, recompute the segment-meta CRC, update the
+    // footer (segments_meta_crc + footer_crc + update_time), and write both
+    // the segment metadata and the footer back to the backing file.
+    std::lock_guard<std::mutex> latch(mapping_mutex_);
+    for (size_t ci = 0;
+         ci < meta_chains_.size() && ci < buffer_pool_buffers_.size(); ++ci) {
+      const MetaChain &chain = meta_chains_[ci];
+      const char *seg_buf = buffer_pool_buffers_[ci].get();
+      // Read the on-disk footer into a local copy so we can update it.
+      IndexFormat::MetaFooter footer;
+      if (buffer_pool_handle_->get_meta(
+              chain.footer_file_offset, sizeof(footer),
+              reinterpret_cast<char *>(&footer)) != 0) {
+        LOG_ERROR(
+            "Failed to read footer for flush: file[%s], chain[%zu]",
+            file_name_.c_str(), ci);
+        return IndexError_Runtime;
+      }
+      // Recompute segment metadata CRC and refresh the footer.
+      footer.segments_meta_crc =
+          ailego::Crc32c::Hash(seg_buf, chain.segment_meta_size, 0u);
+      IndexFormat::UpdateMetaFooter(&footer, 0);
+      // Write segment metadata back to disk.
+      if (buffer_pool_handle_->write_meta(chain.segment_meta_file_offset,
+                                          seg_buf,
+                                          chain.segment_meta_size) != 0) {
+        LOG_ERROR(
+            "Failed to write segment meta: file[%s], chain[%zu]",
+            file_name_.c_str(), ci);
+        return IndexError_WriteData;
+      }
+      // Write the updated footer back to disk.
+      if (buffer_pool_handle_->write_meta(
+              chain.footer_file_offset,
+              reinterpret_cast<const char *>(&footer),
+              sizeof(footer)) != 0) {
+        LOG_ERROR(
+            "Failed to write footer: file[%s], chain[%zu]",
+            file_name_.c_str(), ci);
+        return IndexError_WriteData;
+      }
+    }
+    index_dirty_ = false;
     return 0;
   }
 
@@ -476,6 +581,7 @@ class BufferStorage : public IndexStorage {
     buffer_pool_.reset();
     max_segment_size_ = 0;
     buffer_pool_buffers_.clear();
+    meta_chains_.clear();
   }
 
   //! Append a segment into storage
@@ -516,6 +622,16 @@ class BufferStorage : public IndexStorage {
   ailego::VecBufferPoolHandle::Pointer buffer_pool_handle_{nullptr};
   uint64_t current_header_start_offset_{0u};
   uint64_t buffer_size_{2lu * 1024 * 1024 * 1024};  // 2G
+
+  // Per-header-chain file offsets used by flush_index() to write updated
+  // segment metadata and footer back to the backing file after writes.
+  struct MetaChain {
+    uint64_t header_start_offset;
+    uint64_t footer_file_offset;
+    uint64_t segment_meta_file_offset;
+    uint32_t segment_meta_size;
+  };
+  std::vector<MetaChain> meta_chains_{};
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(BufferStorage);
