@@ -538,11 +538,11 @@ TEST_F(DocDetailedTest, Validate) {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     doc = test::TestHelper::CreateDocNull(1, *schema);
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -552,11 +552,11 @@ TEST_F(DocDetailedTest, Validate) {
     auto schema = test::TestHelper::CreateNormalSchema(true);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     doc = test::TestHelper::CreateDocNull(1, *schema);
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
   }
 
@@ -564,11 +564,11 @@ TEST_F(DocDetailedTest, Validate) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     doc.set("another_field", 1);
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -577,11 +577,11 @@ TEST_F(DocDetailedTest, Validate) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     doc.set("int32", std::string("1"));
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -590,7 +590,7 @@ TEST_F(DocDetailedTest, Validate) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "dense_fp32";
@@ -598,7 +598,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_NE(field_schema, nullptr);
 
     doc.set(field, std::vector<int16_t>(field_schema->dimension(), 1));
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -607,7 +607,7 @@ TEST_F(DocDetailedTest, Validate) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "dense_fp32";
@@ -615,12 +615,12 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_NE(field_schema, nullptr);
 
     doc.set(field, std::vector<float>(field_schema->dimension() - 1, 1.0));
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     doc.set(field, std::vector<float>());
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -629,7 +629,7 @@ TEST_F(DocDetailedTest, Validate) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "sparse_fp32";
@@ -637,7 +637,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_NE(field_schema, nullptr);
 
     doc.set(field, std::vector<int16_t>(field_schema->dimension(), 1));
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -646,7 +646,7 @@ TEST_F(DocDetailedTest, Validate) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "sparse_fp32";
@@ -664,25 +664,32 @@ TEST_F(DocDetailedTest, Validate) {
         indices, values};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>(
         field, sparse_float_vec);
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // sparse vector indices must be strictly ascending and unique
+  // sparse vector: validate() sorts indices in place; duplicates are rejected
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    // unsorted indices are rejected
+    // unsorted indices are accepted and sorted in place
     std::pair<std::vector<uint32_t>, std::vector<float>> unsorted{
         {42u, 7u, 1000u, 3u, 128u, 17u, 99u},
         {0.7f, 0.1f, 0.9f, 0.2f, 0.5f, 0.3f, 0.6f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   unsorted);
-    auto s = doc.validate(schema);
-    ASSERT_FALSE(s.ok());
-    ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+    auto s = doc.validate_and_sanitize(schema);
+    ASSERT_TRUE(s.ok()) << s.message();
+    const auto sorted_opt =
+        doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+            "sparse_fp32");
+    ASSERT_TRUE(sorted_opt.has_value());
+    const std::vector<uint32_t> expected_sorted_indices{3u,  7u,   17u,  42u,
+                                                        99u, 128u, 1000u};
+    ASSERT_EQ(sorted_opt->first, expected_sorted_indices);
+    ASSERT_EQ(sorted_opt->second.size(), expected_sorted_indices.size());
 
     // sorted indices with a duplicate are rejected
     std::pair<std::vector<uint32_t>, std::vector<float>> dup{
@@ -690,7 +697,7 @@ TEST_F(DocDetailedTest, Validate) {
         {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   dup);
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -699,18 +706,18 @@ TEST_F(DocDetailedTest, Validate) {
   {
     Doc doc;
     // null schema
-    auto s = doc.validate(nullptr);
+    auto s = doc.validate_and_sanitize(nullptr);
     ASSERT_EQ(s.code(), StatusCode::INTERNAL_ERROR);
 
     // doc has no pk field
     auto schema = test::TestHelper::CreateNormalSchema(false);
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     // schema contains a field with an undefined data type
     schema->add_field(
         std::make_shared<FieldSchema>("undefined", DataType::UNDEFINED, true));
-    s = doc.validate(schema);
+    s = doc.validate_and_sanitize(schema);
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
@@ -758,7 +765,7 @@ TEST_F(DocDetailedTest, Validate) {
 
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    auto s = doc.validate(schema);
+    auto s = doc.validate_and_sanitize(schema);
     ASSERT_TRUE(s.ok());
   }
 
@@ -805,7 +812,7 @@ TEST_F(DocDetailedTest, Validate) {
     };
     for (auto pk : valid_names) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
-      auto s = doc.validate(schema);
+      auto s = doc.validate_and_sanitize(schema);
       ASSERT_TRUE(s.ok()) << "expected valid pk: " << pk
                           << ", got: " << s.message();
     }
@@ -848,7 +855,7 @@ TEST_F(DocDetailedTest, Validate) {
     };
     for (auto pk : invalid_names) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
-      auto s = doc.validate(schema);
+      auto s = doc.validate_and_sanitize(schema);
       ASSERT_FALSE(s.ok()) << "expected invalid pk: " << pk;
     }
   }
@@ -1218,7 +1225,7 @@ TEST(VectorQuery, Validate) {
     VectorQuery query;
     query.topk_ = 10;
     query.field_name_ = "field_name";
-    auto s = query.validate(nullptr);
+    auto s = query.validate_and_sanitize(nullptr);
     EXPECT_TRUE(s.ok());
   }
 
@@ -1232,7 +1239,7 @@ TEST(VectorQuery, Validate) {
         std::string(reinterpret_cast<char *>(query_vector.data()),
                     query_vector.size() * sizeof(float));
     query.query_vector_ = query_vector_str;
-    auto s = query.validate(nullptr);
+    auto s = query.validate_and_sanitize(nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1244,7 +1251,7 @@ TEST(VectorQuery, Validate) {
     query.topk_ = 10;
     query.output_fields_ = std::vector<std::string>(1025);
     FieldSchema schema = FieldSchema("field_name", DataType::INT32);
-    auto s = query.validate(&schema);
+    auto s = query.validate_and_sanitize(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1261,11 +1268,11 @@ TEST(VectorQuery, Validate) {
     query.query_vector_ = query_vector_str;
     FieldSchema schema =
         FieldSchema("field_name", DataType::VECTOR_FP32, 4, true);
-    auto s = query.validate(&schema);
+    auto s = query.validate_and_sanitize(&schema);
     EXPECT_TRUE(s.ok());
 
     query.query_vector_ = query_vector_str.substr(0, 3);
-    s = query.validate(&schema);
+    s = query.validate_and_sanitize(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1285,7 +1292,7 @@ TEST(VectorQuery, Validate) {
                     query_values.size() * sizeof(float));
     FieldSchema schema =
         FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
-    auto s = query.validate(&schema);
+    auto s = query.validate_and_sanitize(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
@@ -1296,7 +1303,7 @@ TEST(VectorQuery, Validate) {
         std::string(reinterpret_cast<char *>(&one_index), sizeof(uint32_t));
     query.query_sparse_values_ =
         std::string(reinterpret_cast<char *>(&one_value), sizeof(float));
-    s = query.validate(&schema);
+    s = query.validate_and_sanitize(&schema);
     EXPECT_TRUE(s.ok());
   }
 
@@ -1317,15 +1324,18 @@ TEST(VectorQuery, Validate) {
         FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
     query.query_sparse_values_ = pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f});
 
-    // unsorted indices are rejected
+    // unsorted indices are accepted and sorted in place
     query.query_sparse_indices_ = pack_idx({42u, 7u, 128u, 3u, 99u});
-    auto s = query.validate(&schema);
-    EXPECT_FALSE(s.ok());
-    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+    auto s = query.validate_and_sanitize(&schema);
+    EXPECT_TRUE(s.ok()) << s.message();
+    const auto *sorted_ptr =
+        reinterpret_cast<const uint32_t *>(query.query_sparse_indices_.data());
+    const std::vector<uint32_t> sorted_after(sorted_ptr, sorted_ptr + 5);
+    EXPECT_EQ(sorted_after, (std::vector<uint32_t>{3u, 7u, 42u, 99u, 128u}));
 
     // indices with a duplicate are rejected
     query.query_sparse_indices_ = pack_idx({3u, 7u, 42u, 42u, 99u});
-    s = query.validate(&schema);
+    s = query.validate_and_sanitize(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1349,12 +1359,12 @@ TEST(VectorQuery, Validate) {
     // matching counts: accepted
     query.query_sparse_indices_ = pack_idx({1u, 2u, 3u, 4u});
     query.query_sparse_values_ = pack_val({0.1f, 0.2f, 0.3f, 0.4f});
-    auto s = query.validate(&schema);
+    auto s = query.validate_and_sanitize(&schema);
     EXPECT_TRUE(s.ok()) << s.message();
 
     // indices and values counts differ: rejected
     query.query_sparse_values_ = pack_val({0.1f, 0.2f, 0.3f});
-    s = query.validate(&schema);
+    s = query.validate_and_sanitize(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1373,16 +1383,16 @@ TEST(VectorQuery, Validate) {
                     std::make_shared<HnswIndexParams>(MetricType::L2));
 
     query.query_params_ = std::make_shared<HnswQueryParams>(150);
-    auto s = query.validate(&schema);
+    auto s = query.validate_and_sanitize(&schema);
     EXPECT_TRUE(s.ok());
 
     query.query_params_ = std::make_shared<IVFQueryParams>(50);
-    s = query.validate(&schema);
+    s = query.validate_and_sanitize(&schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     query.query_params_ = nullptr;
-    s = query.validate(&schema);
+    s = query.validate_and_sanitize(&schema);
     EXPECT_TRUE(s.ok());
   }
 }

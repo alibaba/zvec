@@ -260,8 +260,10 @@ class Doc {
     fields_.erase(field_name);
   }
 
-  Status validate(const CollectionSchema::Ptr &schema,
-                  bool is_update = false) const;
+  // Not const: sorts sparse vector indices in place (with their values
+  // permuted in lockstep) before checking for duplicates.
+  Status validate_and_sanitize(const CollectionSchema::Ptr &schema,
+                               bool is_update = false);
 
   size_t memory_usage() const;
 
@@ -378,7 +380,9 @@ struct VectorQuery {
   std::optional<std::vector<std::string>> output_fields_;
   QueryParams::Ptr query_params_;
 
-  Status validate(const FieldSchema *schema) const;
+  // Not const: sorts sparse query indices in place (with their values
+  // permuted in lockstep) before checking for duplicates.
+  Status validate_and_sanitize(const FieldSchema *schema);
 };
 
 struct GroupByVectorQuery {

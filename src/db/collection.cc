@@ -1442,7 +1442,8 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
   for (auto &&doc : docs) {
-    auto validate = doc.validate(schema_, mode == WriteMode::UPDATE);
+    auto validate =
+        doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
     CHECK_RETURN_STATUS_EXPECTED(validate);
   }
 
@@ -1581,7 +1582,11 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
-  auto s = query.validate(schema_->get_vector_field(query.field_name_));
+  // validate_and_sanitize() sorts sparse query indices in place, so work on
+  // a local mutable copy to preserve the caller's const VectorQuery reference.
+  VectorQuery sanitized = query;
+  auto s = sanitized.validate_and_sanitize(
+      schema_->get_vector_field(sanitized.field_name_));
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();
@@ -1589,7 +1594,7 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
     return DocPtrList();
   }
 
-  return sql_engine_->execute(schema_, query, segments);
+  return sql_engine_->execute(schema_, sanitized, segments);
 }
 
 Result<GroupResults> CollectionImpl::GroupByQuery(

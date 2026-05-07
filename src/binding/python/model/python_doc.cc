@@ -165,18 +165,14 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
           case DataType::SPARSE_VECTOR_FP32: {
             const auto sparse_dict =
                 checked_cast<py::dict>(obj, field, "SPARSE_VECTOR_FP32 (dict)");
-            const auto sorted_items =
-                py::module_::import("builtins")
-                    .attr("sorted")(sparse_dict.attr("items")());
             std::vector<uint32_t> indices;
             std::vector<float> values;
             indices.reserve(sparse_dict.size());
             values.reserve(sparse_dict.size());
-            for (const auto &item : sorted_items) {
+            for (const auto &item : sparse_dict) {
               try {
-                auto tup = item.cast<py::tuple>();
-                indices.push_back(tup[0].cast<uint32_t>());
-                values.push_back(tup[1].cast<float>());
+                indices.push_back(item.first.cast<uint32_t>());
+                values.push_back(item.second.cast<float>());
               } catch (const py::cast_error &e) {
                 throw py::type_error(
                     "Vector '" + field +
@@ -190,18 +186,14 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
           case DataType::SPARSE_VECTOR_FP16: {
             const auto sparse_dict =
                 checked_cast<py::dict>(obj, field, "SPARSE_VECTOR_FP16 (dict)");
-            const auto sorted_items =
-                py::module_::import("builtins")
-                    .attr("sorted")(sparse_dict.attr("items")());
             std::vector<uint32_t> indices;
             std::vector<ailego::Float16> values;
             indices.reserve(sparse_dict.size());
             values.reserve(sparse_dict.size());
-            for (const auto &item : sorted_items) {
+            for (const auto &item : sparse_dict) {
               try {
-                auto tup = item.cast<py::tuple>();
-                indices.push_back(tup[0].cast<uint32_t>());
-                values.push_back(ailego::Float16(tup[1].cast<float>()));
+                indices.push_back(item.first.cast<uint32_t>());
+                values.push_back(ailego::Float16(item.second.cast<float>()));
               } catch (const py::cast_error &e) {
                 throw py::type_error(
                     "Field '" + field +

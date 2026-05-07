@@ -4327,8 +4327,8 @@ zvec_error_code_t zvec_doc_validate(const zvec_doc_t *doc,
         return status_to_error_code(status);
       }
 
-      auto doc_ptr = reinterpret_cast<const zvec::Doc *>(doc);
-      status = doc_ptr->validate(schema_ptr, is_update); if (!status.ok()) {
+      auto doc_ptr = reinterpret_cast<zvec::Doc *>(const_cast<zvec_doc_t *>(doc));
+      status = doc_ptr->validate_and_sanitize(schema_ptr, is_update); if (!status.ok()) {
         if (error_msg) {
           *error_msg = copy_string(status.message());
         }
