@@ -856,8 +856,10 @@ std::string Index::get_metric_name(MetricType metric_type, bool is_sparse) {
 }
 
 int Index::MergeAll(const std::string &output_path,
+                    const BaseIndexParam &target_index_param,
                     const std::vector<Index::Pointer> &all_indexes,
                     const IndexFilter &filter, const MergeOptions &options,
+                    StorageOptions::StorageType storage_type,
                     Index::Pointer *result) {
   if (all_indexes.empty()) {
     LOG_ERROR("MergeAll: no indexes provided");
@@ -872,19 +874,13 @@ int Index::MergeAll(const std::string &output_path,
   //    Current: only reuse the first index (offset math is trivial)
   //    Must have zero deletions and no builder (IVF has builder, needs full
   //    rebuild)
+  auto first_param = all_indexes[0]->GetParam();
   bool can_reuse =
-      (!filter.is_valid()) && (all_indexes[0]->builder_ == nullptr);
+      (!filter.is_valid()) && (all_indexes[0]->builder_ == nullptr) &&
+      first_param != nullptr &&
+      target_index_param.SerializeToJson() == first_param->SerializeToJson();
 
-  // Create target index using params from first source
-  // Round-trip through JSON to preserve the concrete param type
-  auto base_param = all_indexes[0]->GetParam();
-  auto param = IndexFactory::DeserializeIndexParamFromJson(
-      base_param->SerializeToJson());
-  if (param == nullptr) {
-    LOG_ERROR("MergeAll: failed to reconstruct index param from source");
-    return core::IndexError_Runtime;
-  }
-  auto target = IndexFactory::CreateAndInitIndex(*param);
+  auto target = IndexFactory::CreateAndInitIndex(target_index_param);
   if (target == nullptr) {
     LOG_ERROR("MergeAll: failed to create target index");
     return core::IndexError_Runtime;
@@ -892,7 +888,12 @@ int Index::MergeAll(const std::string &output_path,
 
   int ret = 0;
   if (can_reuse) {
-    const std::string &src_path = all_indexes[0]->storage_path_;
+    auto &first_index = all_indexes[0];
+    if (first_index->is_open_ && !first_index->is_read_only_) {
+      first_index->Flush();
+    }
+    const std::string &src_path = first_index->storage_path_;
+    // TODO: use FileHelper
     std::error_code ec;
     std::filesystem::copy_file(
         src_path, output_path,
@@ -902,8 +903,7 @@ int Index::MergeAll(const std::string &output_path,
                 src_path.c_str(), output_path.c_str(), ec.message().c_str());
       return core::IndexError_Runtime;
     }
-    ret = target->Open(output_path,
-                       {StorageOptions::StorageType::kMMAP, false, false});
+    ret = target->Open(output_path, {storage_type, false, false});
     if (ret != 0) {
       LOG_ERROR("MergeAll: failed to open copied target at %s",
                 output_path.c_str());
@@ -919,10 +919,9 @@ int Index::MergeAll(const std::string &output_path,
       }
     }
     LOG_INFO("MergeAll: reused first index (%u docs) as target",
-             all_indexes[0]->GetDocCount());
+             first_index->GetDocCount());
   } else {
-    ret = target->Open(output_path,
-                       {StorageOptions::StorageType::kMMAP, true, false});
+    ret = target->Open(output_path, {storage_type, true, false});
     if (ret != 0) {
       LOG_ERROR("MergeAll: failed to open new target at %s",
                 output_path.c_str());

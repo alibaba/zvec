@@ -1583,12 +1583,16 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     merge_options.write_concurrency = concurrency;
   }
 
-  VectorColumnIndexer::Ptr merged;
-  auto s =
-      VectorColumnIndexer::MergeAll(index_file_path, field, to_merge_indexers,
-                                    filter_, merge_options, &merged);
-  CHECK_RETURN_STATUS_EXPECTED(s);
-  s = merged->Flush();
+
+  auto merged_result = VectorColumnIndexer::MergeAll(
+      index_file_path, field,
+      vector_column_params::ReadOptions{options_.enable_mmap_, true},
+      to_merge_indexers, filter_, merge_options);
+  if (!merged_result.has_value()) {
+    return tl::make_unexpected(merged_result.error());
+  }
+  auto merged = std::move(merged_result.value());
+  auto s = merged->Flush();
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   return merged;

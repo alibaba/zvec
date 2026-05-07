@@ -127,8 +127,10 @@ class Index {
   //! Merge all indexes into one at output_path, automatically reusing
   //! the best source index to avoid rebuilding the graph from scratch.
   static int MergeAll(const std::string &output_path,
+                      const BaseIndexParam &index_param,
                       const std::vector<Index::Pointer> &all_indexes,
                       const IndexFilter &filter, const MergeOptions &options,
+                      StorageOptions::StorageType storage_type,
                       Index::Pointer *result);
 
   //! Move the index's storage file to a new path
@@ -249,6 +251,9 @@ class FlatIndex : public Index {
   // FlatIndex(const FlatIndexParam &param) : param_(param) {}
   // FlatIndex(FlatIndexParam &&param) : param(std::move(param)) {}
 
+  BaseIndexParam::Pointer GetParam() const override {
+    return std::make_shared<FlatIndexParam>(param_);
+  }
 
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -264,6 +269,10 @@ class FlatIndex : public Index {
 class IVFIndex : public Index {
  public:
   IVFIndex() = default;
+
+  BaseIndexParam::Pointer GetParam() const override {
+    return std::make_shared<IVFIndexParam>(param_);
+  }
 
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -306,6 +315,10 @@ class HNSWIndex : public Index {
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
 
+  BaseIndexParam::Pointer GetParam() const override {
+    return std::make_shared<HNSWIndexParam>(param_);
+  }
+
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
@@ -323,6 +336,10 @@ class VamanaIndex : public Index {
  public:
   VamanaIndex() = default;
 
+  BaseIndexParam::Pointer GetParam() const override {
+    return std::make_shared<VamanaIndexParam>(param_);
+  }
+
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
@@ -339,6 +356,10 @@ class VamanaIndex : public Index {
 class HNSWRabitqIndex : public Index {
  public:
   HNSWRabitqIndex() = default;
+
+  BaseIndexParam::Pointer GetParam() const override {
+    return std::make_shared<HNSWRabitqIndexParam>(param_);
+  }
 
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;

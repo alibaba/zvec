@@ -24,6 +24,7 @@
 #endif
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "zvec/ailego/buffer/buffer_manager.h"
+#include "zvec/core/framework/index_logger.h"
 #include "zvec/core/interface/index.h"
 #include "zvec/core/interface/index_factory.h"
 #include "zvec/core/interface/index_param.h"
@@ -416,6 +417,7 @@ TEST(IndexInterface, SparseGeneral) {
 
 
 TEST(IndexInterface, Merge) {
+  zvec::ailego::LoggerBroker::SetLevel(zvec::ailego::Logger::LEVEL_INFO);
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test.index"};
 
@@ -442,6 +444,11 @@ TEST(IndexInterface, Merge) {
     ASSERT_NE(nullptr, index1);
     auto index2 = create_index_func(param_source, index_name + "2");
     ASSERT_NE(nullptr, index2);
+
+    LOG_INFO("param: target(%s) = index1(%s) + index2(%s)",
+             param_target->SerializeToJson(true).c_str(),
+             index1->GetParam()->SerializeToJson(true).c_str(),
+             index2->GetParam()->SerializeToJson(true).c_str());
 
 
     std::vector<float> vector(kDimension);
@@ -528,6 +535,37 @@ TEST(IndexInterface, Merge) {
       }
       index3->Close();
       del_index_file_func(index_name + "3");
+    }
+
+    {  // test MergeAll
+      del_index_file_func(index_name + "4");
+      Index::Pointer merged = nullptr;
+      ASSERT_EQ(
+          0, Index::MergeAll(index_name + "4", *param_target, {index1, index2},
+                             IndexFilter(), MergeOptions{},
+                             StorageOptions::StorageType::kMMAP, &merged));
+      ASSERT_NE(nullptr, merged);
+      ASSERT_EQ(3u, merged->GetDocCount());
+      {
+        VectorDataBuffer fetched_vector_data;
+        ASSERT_EQ(0, merged->Fetch(0, &fetched_vector_data));
+        float *fetched_vector = reinterpret_cast<float *>(
+            std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
+                .data.data());
+        ASSERT_FLOAT_EQ(1.0f, fetched_vector[1]);
+        ASSERT_FLOAT_EQ(123.0f, fetched_vector[2]);
+      }
+      {
+        VectorDataBuffer fetched_vector_data;
+        ASSERT_EQ(0, merged->Fetch(2, &fetched_vector_data));
+        float *fetched_vector = reinterpret_cast<float *>(
+            std::get<DenseVectorBuffer>(fetched_vector_data.vector_buffer)
+                .data.data());
+        ASSERT_FLOAT_EQ(3.0f, fetched_vector[1]);
+        ASSERT_FLOAT_EQ(123.0f, fetched_vector[2]);
+      }
+      merged->Close();
+      del_index_file_func(index_name + "4");
     }
 
     index1->Close();
@@ -618,8 +656,9 @@ TEST(IndexInterface, MergeAllReuseZeroDeletions) {
   del("mergeall_out.index");
   IndexFilter no_filter;
   Index::Pointer result = nullptr;
-  ASSERT_EQ(0, Index::MergeAll("mergeall_out.index", {idx1, idx2}, no_filter,
-                               MergeOptions{}, &result));
+  ASSERT_EQ(0, Index::MergeAll("mergeall_out.index", *param, {idx1, idx2},
+                               no_filter, MergeOptions{},
+                               StorageOptions::StorageType::kMMAP, &result));
   ASSERT_NE(nullptr, result);
   ASSERT_EQ(3u, result->GetDocCount());
 
@@ -698,8 +737,9 @@ TEST(IndexInterface, MergeAllFallbackWithDeletions) {
 
   del("mergeall_dout.index");
   Index::Pointer result = nullptr;
-  ASSERT_EQ(0, Index::MergeAll("mergeall_dout.index", {idx1, idx2}, filter,
-                               MergeOptions{}, &result));
+  ASSERT_EQ(0, Index::MergeAll("mergeall_dout.index", *param, {idx1, idx2},
+                               filter, MergeOptions{},
+                               StorageOptions::StorageType::kMMAP, &result));
   ASSERT_NE(nullptr, result);
   ASSERT_EQ(2u, result->GetDocCount());
 
@@ -764,8 +804,9 @@ TEST(IndexInterface, MergeAllFlatIndex) {
   del("mergeall_fout.index");
   IndexFilter no_filter;
   Index::Pointer result = nullptr;
-  ASSERT_EQ(0, Index::MergeAll("mergeall_fout.index", {idx1, idx2}, no_filter,
-                               MergeOptions{}, &result));
+  ASSERT_EQ(0, Index::MergeAll("mergeall_fout.index", *param, {idx1, idx2},
+                               no_filter, MergeOptions{},
+                               StorageOptions::StorageType::kMMAP, &result));
   ASSERT_NE(nullptr, result);
   ASSERT_EQ(2u, result->GetDocCount());
 
@@ -804,8 +845,9 @@ TEST(IndexInterface, MergeAllSingleIndex) {
   del("mergeall_sout.index");
   IndexFilter no_filter;
   Index::Pointer result = nullptr;
-  ASSERT_EQ(0, Index::MergeAll("mergeall_sout.index", {idx}, no_filter,
-                               MergeOptions{}, &result));
+  ASSERT_EQ(0, Index::MergeAll("mergeall_sout.index", *param, {idx}, no_filter,
+                               MergeOptions{},
+                               StorageOptions::StorageType::kMMAP, &result));
   ASSERT_NE(nullptr, result);
   ASSERT_EQ(1u, result->GetDocCount());
 

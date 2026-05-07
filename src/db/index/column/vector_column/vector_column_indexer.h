@@ -63,15 +63,20 @@ class VectorColumnIndexer {
   // Destroy will call Close() and remove index file
   Status Destroy();
 
+  // If HNSWIndexer.merge([FlatIndexer1, FlatIndexer2])
+  // then the merged indexer is a HNSWIndexer
+  Status Merge(const std::vector<VectorColumnIndexer::Ptr> &indexers,
+               const IndexFilter::Ptr &filter = nullptr,
+               const vector_column_params::MergeOptions &merge_options = {});
 
   //! Merge all indexers into a new one at output_path, automatically reusing
   //! the first segment to avoid rebuilding the graph from scratch if possible.
-  static Status MergeAll(
-      const std::string &output_path, const FieldSchema &field,
+  static Result<VectorColumnIndexer::Ptr> MergeAll(
+      const std::string &output_path, const FieldSchema &field_schema,
+      const vector_column_params::ReadOptions &read_options,
       const std::vector<VectorColumnIndexer::Ptr> &all_indexers,
       const IndexFilter::Ptr &filter,
-      const vector_column_params::MergeOptions &merge_options,
-      VectorColumnIndexer::Ptr *result);
+      const vector_column_params::MergeOptions &merge_options);
 
 
   //! Insert vector

@@ -100,18 +100,56 @@ Status VectorColumnIndexer::Destroy() {
   return Status::OK();
 }
 
-Status VectorColumnIndexer::MergeAll(
-    const std::string &output_path, const FieldSchema &field,
+Status VectorColumnIndexer::Merge(
+    const std::vector<VectorColumnIndexer::Ptr> &indexers,
+    const IndexFilter::Ptr &filter,
+    const vector_column_params::MergeOptions &merge_options) {
+  if (index == nullptr) {
+    return Status::InvalidArgument("Index not opened");
+  }
+
+  if (indexers.empty()) {
+    return Status::OK();
+  }
+
+  auto engine_indexers = std::vector<core_interface::Index::Pointer>();
+
+  for (auto &indexer : indexers) {
+    if (indexer->index_file_path() == this->index_file_path()) {
+      continue;
+    }
+    engine_indexers.push_back(indexer->index);
+  }
+  auto engine_filter =
+      ProximaEngineHelper::convert_to_engine_filter(filter.get());
+  if (engine_filter == nullptr) {
+    return Status::InvalidArgument("Failed to convert filter");
+  }
+  if (0 !=
+      index->Merge(engine_indexers, *engine_filter,
+                   {merge_options.write_concurrency, merge_options.pool})) {
+    return Status::InternalError("Failed to merge index");
+  }
+  return Status::OK();
+}
+
+Result<VectorColumnIndexer::Ptr> VectorColumnIndexer::MergeAll(
+    const std::string &output_path, const FieldSchema &field_schema,
+    const vector_column_params::ReadOptions &read_options,
     const std::vector<VectorColumnIndexer::Ptr> &all_indexers,
     const IndexFilter::Ptr &filter,
-    const vector_column_params::MergeOptions &merge_options,
-    VectorColumnIndexer::Ptr *result) {
+    const vector_column_params::MergeOptions &merge_options) {
   if (all_indexers.empty()) {
-    return Status::InvalidArgument("No indexers to merge");
+    return tl::make_unexpected(Status::InvalidArgument("No indexers to merge"));
   }
-  if (result == nullptr) {
-    return Status::InvalidArgument("Result pointer is null");
+
+  auto index_param_result =
+      ProximaEngineHelper::convert_to_engine_index_param(field_schema);
+  if (!index_param_result.has_value()) {
+    return tl::make_unexpected(
+        Status::InvalidArgument(index_param_result.error().message()));
   }
+  auto &index_param = index_param_result.value();
 
   std::vector<core_interface::Index::Pointer> engine_indexes;
   engine_indexes.reserve(all_indexers.size());
@@ -122,22 +160,28 @@ Status VectorColumnIndexer::MergeAll(
   auto engine_filter =
       ProximaEngineHelper::convert_to_engine_filter(filter.get());
   if (engine_filter == nullptr) {
-    return Status::InvalidArgument("Failed to convert filter");
+    return tl::make_unexpected(
+        Status::InvalidArgument("Failed to convert filter"));
   }
+
+  auto storage_type =
+      read_options.use_mmap
+          ? core_interface::StorageOptions::StorageType::kMMAP
+          : core_interface::StorageOptions::StorageType::kBufferPool;
 
   core_interface::Index::Pointer merged_index;
   int ret = core_interface::Index::MergeAll(
-      output_path, engine_indexes, engine_filter,
-      {merge_options.write_concurrency, merge_options.pool}, &merged_index);
+      output_path, *index_param, engine_indexes, *engine_filter,
+      {merge_options.write_concurrency, merge_options.pool}, storage_type,
+      &merged_index);
   if (ret != 0) {
-    return Status::InternalError("Index::MergeAll failed");
+    return tl::make_unexpected(Status::InternalError("Index::MergeAll failed"));
   }
 
   auto merged_indexer =
-      std::make_shared<VectorColumnIndexer>(output_path, field);
+      std::make_shared<VectorColumnIndexer>(output_path, field_schema);
   merged_indexer->index = std::move(merged_index);
-  *result = std::move(merged_indexer);
-  return Status::OK();
+  return merged_indexer;
 }
 
 Status VectorColumnIndexer::Insert(

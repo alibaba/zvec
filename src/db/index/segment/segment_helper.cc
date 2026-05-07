@@ -111,6 +111,7 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
   }
 
   std::shared_ptr<RowIdFilter> row_id_filter;
+  // filter=nullptr( create_compaction_task rebuild=false ) or no deletion
   if (!delete_row_id_bitmap.isEmpty()) {
     row_id_filter =
         std::make_shared<RowIdFilter>(std::move(delete_row_id_bitmap));
@@ -613,14 +614,6 @@ Status SegmentHelper::ReduceVectorIndex(
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
 
     auto vector_block_id = block_id_generator();
-
-    vector_column_params::MergeOptions merge_options;
-    if (concurrency == 0) {
-      merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
-    } else {
-      merge_options.write_concurrency = concurrency;
-    }
-
     if (vector_index_params->quantize_type() == QuantizeType::UNDEFINED) {
       auto vector_index_path = FileHelper::MakeVectorIndexPath(
           output_segment_path, field->name(), vector_block_id);
@@ -633,11 +626,21 @@ Status SegmentHelper::ReduceVectorIndex(
                               to_merge_indexers.end());
       }
 
-      VectorColumnIndexer::Ptr merged;
-      s = VectorColumnIndexer::MergeAll(vector_index_path, *field,
-                                        merge_indexers, filter, merge_options,
-                                        &merged);
-      CHECK_RETURN_STATUS(s);
+      vector_column_params::MergeOptions merge_options;
+      if (concurrency == 0) {
+        merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
+      } else {
+        merge_options.write_concurrency = concurrency;
+      }
+
+      auto merged_result = VectorColumnIndexer::MergeAll(
+          vector_index_path, *field,
+          vector_column_params::ReadOptions{true, true}, merge_indexers, filter,
+          merge_options);
+      if (!merged_result.has_value()) {
+        return merged_result.error();
+      }
+      auto merged = std::move(merged_result.value());
 
       s = merged->Flush();
       CHECK_RETURN_STATUS(s);
@@ -670,11 +673,21 @@ Status SegmentHelper::ReduceVectorIndex(
                               to_merge_indexers.end());
       }
 
-      VectorColumnIndexer::Ptr merged;
-      s = VectorColumnIndexer::MergeAll(vector_index_path,
-                                        *field_without_quantize, merge_indexers,
-                                        filter, merge_options, &merged);
-      CHECK_RETURN_STATUS(s);
+      vector_column_params::MergeOptions merge_options;
+      if (concurrency == 0) {
+        merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
+      } else {
+        merge_options.write_concurrency = concurrency;
+      }
+
+      auto merged_result = VectorColumnIndexer::MergeAll(
+          vector_index_path, *field_without_quantize,
+          vector_column_params::ReadOptions{true, true}, merge_indexers, filter,
+          merge_options);
+      if (!merged_result.has_value()) {
+        return merged_result.error();
+      }
+      auto merged = std::move(merged_result.value());
 
       s = merged->Flush();
       CHECK_RETURN_STATUS(s);
@@ -703,11 +716,14 @@ Status SegmentHelper::ReduceVectorIndex(
                                     to_merge_indexers.end());
       }
 
-      VectorColumnIndexer::Ptr merged_quant;
-      s = VectorColumnIndexer::MergeAll(vector_quan_index_path, *field,
-                                        quant_merge_indexers, filter,
-                                        merge_options, &merged_quant);
-      CHECK_RETURN_STATUS(s);
+      auto merged_quant_result = VectorColumnIndexer::MergeAll(
+          vector_quan_index_path, *field,
+          vector_column_params::ReadOptions{true, true}, quant_merge_indexers,
+          filter, merge_options);
+      if (!merged_quant_result.has_value()) {
+        return merged_quant_result.error();
+      }
+      auto merged_quant = std::move(merged_quant_result.value());
 
       s = merged_quant->Flush();
       CHECK_RETURN_STATUS(s);
