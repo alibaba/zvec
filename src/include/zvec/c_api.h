@@ -3044,9 +3044,9 @@ ZVEC_EXPORT size_t ZVEC_CALL zvec_doc_memory_usage(const zvec_doc_t *doc);
  * @param[out] error_msg Error message (needs manual release)
  * @return zvec_error_code_t Error code
  */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_doc_validate(const zvec_doc_t *doc, const zvec_collection_schema_t *schema,
-                  bool is_update, char **error_msg);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_doc_validate_and_sanitize(
+    zvec_doc_t *doc, const zvec_collection_schema_t *schema, bool is_update,
+    char **error_msg);
 
 /**
  * @brief Get detailed string representation of document

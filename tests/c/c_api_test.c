@@ -4784,7 +4784,8 @@ void test_doc_advanced_functions(void) {
                               &(int32_t){42}, sizeof(int32_t));
 
   char *error_msg = NULL;
-  zvec_error_code_t err = zvec_doc_validate(val_doc, schema, false, &error_msg);
+  zvec_error_code_t err =
+      zvec_doc_validate_and_sanitize(val_doc, schema, false, &error_msg);
   TEST_ASSERT(err == ZVEC_OK);
   if (error_msg) {
     zvec_free(error_msg);

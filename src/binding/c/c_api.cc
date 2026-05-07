@@ -4307,7 +4307,7 @@ size_t zvec_doc_memory_usage(const zvec_doc_t *doc) {
       return doc_ptr->memory_usage();)
 }
 
-zvec_error_code_t zvec_doc_validate(const zvec_doc_t *doc,
+zvec_error_code_t zvec_doc_validate_and_sanitize(zvec_doc_t *doc,
                                 const zvec_collection_schema_t *schema,
                                 bool is_update, char **error_msg) {
   if (!doc || !schema) {
@@ -4327,7 +4327,7 @@ zvec_error_code_t zvec_doc_validate(const zvec_doc_t *doc,
         return status_to_error_code(status);
       }
 
-      auto doc_ptr = reinterpret_cast<zvec::Doc *>(const_cast<zvec_doc_t *>(doc));
+      auto doc_ptr = reinterpret_cast<zvec::Doc *>(doc);
       status = doc_ptr->validate_and_sanitize(schema_ptr, is_update); if (!status.ok()) {
         if (error_msg) {
           *error_msg = copy_string(status.message());
@@ -4335,7 +4335,7 @@ zvec_error_code_t zvec_doc_validate(const zvec_doc_t *doc,
         return status_to_error_code(status);
       }
 
-      if (error_msg) { *error_msg = nullptr; } 
+      if (error_msg) { *error_msg = nullptr; }
       return ZVEC_OK;)
 }
 

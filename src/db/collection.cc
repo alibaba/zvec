@@ -1581,8 +1581,6 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
-  // validate_and_sanitize() sorts sparse query indices in place, so work on
-  // a local mutable copy to preserve the caller's const VectorQuery reference.
   VectorQuery sanitized = query;
   auto s = sanitized.validate_and_sanitize(
       schema_->get_vector_field(sanitized.field_name_));
