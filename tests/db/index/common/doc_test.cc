@@ -532,7 +532,7 @@ TEST_F(DocDetailedTest, MixedDataTypes) {
 }
 
 // Test doc validation and sanitization
-TEST_F(DocDetailedTest, Validate) {
+TEST_F(DocDetailedTest, ValidateAndSanitization) {
   // nullable=false: a doc with a null field is rejected
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
@@ -669,7 +669,7 @@ TEST_F(DocDetailedTest, Validate) {
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // sparse vector: validate() sorts indices in place; duplicates are rejected
+  // sparse vector indices are sorted in place; duplicates are rejected
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
