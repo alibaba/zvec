@@ -1442,9 +1442,8 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
   for (auto &&doc : docs) {
-    auto validate =
-        doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
-    CHECK_RETURN_STATUS_EXPECTED(validate);
+    auto s = doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
+    CHECK_RETURN_STATUS_EXPECTED(s);
   }
 
   // TODO: The granularity of the write_lock is too coarse.

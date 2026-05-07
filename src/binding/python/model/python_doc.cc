@@ -167,8 +167,6 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
                 checked_cast<py::dict>(obj, field, "SPARSE_VECTOR_FP32 (dict)");
             std::vector<uint32_t> indices;
             std::vector<float> values;
-            indices.reserve(sparse_dict.size());
-            values.reserve(sparse_dict.size());
             for (const auto &item : sparse_dict) {
               try {
                 indices.push_back(item.first.cast<uint32_t>());
@@ -176,7 +174,11 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
               } catch (const py::cast_error &e) {
                 throw py::type_error(
                     "Vector '" + field +
-                    "': sparse vector key/value must be (uint32, float)");
+                    "': sparse vector key/value must be (uint32, float), "
+                    "got key=" +
+                    std::string(py::str(py::type::of(item.first))) +
+                    ", value=" +
+                    std::string(py::str(py::type::of(item.second))));
               }
             }
             const std::pair<std::vector<uint32_t>, std::vector<float>>
@@ -188,8 +190,6 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
                 checked_cast<py::dict>(obj, field, "SPARSE_VECTOR_FP16 (dict)");
             std::vector<uint32_t> indices;
             std::vector<ailego::Float16> values;
-            indices.reserve(sparse_dict.size());
-            values.reserve(sparse_dict.size());
             for (const auto &item : sparse_dict) {
               try {
                 indices.push_back(item.first.cast<uint32_t>());
@@ -197,7 +197,11 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
               } catch (const py::cast_error &e) {
                 throw py::type_error(
                     "Field '" + field +
-                    "': sparse vector key/value must be (uint32, float)");
+                    "': sparse vector key/value must be (uint32, float), "
+                    "got key=" +
+                    std::string(py::str(py::type::of(item.first))) +
+                    ", value=" +
+                    std::string(py::str(py::type::of(item.second))));
               }
             }
             const std::pair<std::vector<uint32_t>, std::vector<ailego::Float16>>
