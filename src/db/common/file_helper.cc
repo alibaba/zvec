@@ -78,10 +78,8 @@ void FileHelper::CleanupDirectory(const std::string &backup_dir,
   }
   std::sort(candidates.begin(), candidates.end());
   for (size_t i = 0; i < candidates.size() - max_backup_count; ++i) {
-    std::filesystem::path path =
-        ailego::FileHelper::PathFromUtf8(backup_dir) /
-        ailego::FileHelper::PathFromUtf8(candidates[i]);
-    std::string path_str = path.u8string();
+    std::string path_str =
+        ailego::FileHelper::PathJoin(backup_dir, candidates[i]);
     ailego::FileHelper::RemovePath(path_str.c_str());
   }
 }
