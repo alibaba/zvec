@@ -871,9 +871,8 @@ int Index::MergeAll(const std::string &output_path,
   }
 
   // Check reuse feasibility
-  //    Current: only reuse the first index (offset math is trivial)
-  //    Must have zero deletions and no builder (IVF has builder, needs full
-  //    rebuild)
+  // Current: only reuse the first index (offset math is trivial)
+  // Must have zero deletions & no builder (IVF has builder, needs full rebuild)
   auto first_param = all_indexes[0]->GetParam();
   bool can_reuse =
       (!filter.is_valid()) && (all_indexes[0]->builder_ == nullptr) &&
