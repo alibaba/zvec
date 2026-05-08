@@ -723,6 +723,7 @@ TEST(VectorColumnIndexerTest, SparseDataTypeFP16) {
 }
 
 TEST(VectorColumnIndexerTest, Merge) {
+  zvec::ailego::LoggerBroker::SetLevel(zvec::ailego::Logger::LEVEL_INFO);
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test_indexer.index"};
 
@@ -742,6 +743,19 @@ TEST(VectorColumnIndexerTest, Merge) {
       return nullptr;
     }
     return indexer;
+  };
+
+  auto assert_dense_doc = [&](const VectorColumnIndexer::Ptr &indexer,
+                              uint32_t doc_id, float expected_v1,
+                              float expected_v2) {
+    auto fetched_data = indexer->Fetch(doc_id);
+    ASSERT_TRUE(fetched_data.has_value());
+    const float *fetched_vector = reinterpret_cast<const float *>(
+        std::get<vector_column_params::DenseVectorBuffer>(
+            fetched_data->vector_buffer)
+            .data.data());
+    ASSERT_NEAR(expected_v1, fetched_vector[1], 0.1);
+    ASSERT_NEAR(expected_v2, fetched_vector[2], 0.1);
   };
 
   auto func = [&](const IndexParams::Ptr &param1,
@@ -764,63 +778,35 @@ TEST(VectorColumnIndexerTest, Merge) {
     vector[1] = 3.0f;
     ASSERT_TRUE(indexer2->Insert(vector_data, 1).ok());
 
-    {
-      auto fetched_data = indexer1->Fetch(0);
-      ASSERT_TRUE(fetched_data.has_value());
-      const float *fetched_vector = reinterpret_cast<const float *>(
-          std::get<vector_column_params::DenseVectorBuffer>(
-              fetched_data->vector_buffer)
-              .data.data());
-      ASSERT_NEAR(1.0f, fetched_vector[1], 0.1);
-      ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
-    }
-    {
-      auto fetched_data = indexer2->Fetch(0);
-      ASSERT_TRUE(fetched_data.has_value());
-      const float *fetched_vector = reinterpret_cast<const float *>(
-          std::get<vector_column_params::DenseVectorBuffer>(
-              fetched_data->vector_buffer)
-              .data.data());
-      ASSERT_NEAR(2.0f, fetched_vector[1], 0.1);
-      ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
-    }
-    {
-      auto fetched_data = indexer2->Fetch(1);
-      ASSERT_TRUE(fetched_data.has_value());
-      const float *fetched_vector = reinterpret_cast<const float *>(
-          std::get<vector_column_params::DenseVectorBuffer>(
-              fetched_data->vector_buffer)
-              .data.data());
-      ASSERT_NEAR(3.0f, fetched_vector[1], 0.1);
-      ASSERT_FLOAT_EQ(123.0f, fetched_vector[2]);
-    }
+    assert_dense_doc(indexer1, 0, 1.0f, 123.0f);
+    assert_dense_doc(indexer2, 0, 2.0f, 123.0f);
+    assert_dense_doc(indexer2, 1, 3.0f, 123.0f);
 
     {  // test reduce
       auto indexer3 = create_indexer_func(param3, index_name + "3");
       ASSERT_NE(nullptr, indexer3);
       ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, nullptr).ok());
-      {
-        auto fetched_data = indexer3->Fetch(0);
-        ASSERT_TRUE(fetched_data.has_value());
-        const float *fetched_vector = reinterpret_cast<const float *>(
-            std::get<vector_column_params::DenseVectorBuffer>(
-                fetched_data->vector_buffer)
-                .data.data());
-        ASSERT_NEAR(1.0f, fetched_vector[1], 0.1);
-        ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
-      }
-      {
-        auto fetched_data = indexer3->Fetch(1);
-        ASSERT_TRUE(fetched_data.has_value());
-        const float *fetched_vector = reinterpret_cast<const float *>(
-            std::get<vector_column_params::DenseVectorBuffer>(
-                fetched_data->vector_buffer)
-                .data.data());
-        ASSERT_NEAR(2.0f, fetched_vector[1], 0.1);
-        ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
-      }
+      assert_dense_doc(indexer3, 0, 1.0f, 123.0f);
+      assert_dense_doc(indexer3, 1, 2.0f, 123.0f);
       indexer3->Close();
       del_index_file_func(index_name + "3");
+    }
+
+    {  // test merge all
+      const std::string merged_index_name = index_name + "3";
+      del_index_file_func(merged_index_name);
+      auto merged_result = VectorColumnIndexer::MergeAll(
+          merged_index_name,
+          FieldSchema("test", DataType::VECTOR_FP32, kDimension, false, param3),
+          vector_column_params::ReadOptions{true, true}, {indexer1, indexer2},
+          nullptr, {});
+      ASSERT_TRUE(merged_result.has_value());
+      auto indexer3 = merged_result.value();
+      ASSERT_NE(nullptr, indexer3);
+      assert_dense_doc(indexer3, 0, 1.0f, 123.0f);
+      assert_dense_doc(indexer3, 1, 2.0f, 123.0f);
+      indexer3->Close();
+      del_index_file_func(merged_index_name);
     }
 
     {  // test reduce with filter
@@ -831,16 +817,7 @@ TEST(VectorColumnIndexerTest, Merge) {
       ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter).ok());
       // 0.0 -> x ; 1.0 -> 0 ; 1.1 -> 1
       ASSERT_TRUE(indexer3->doc_count() == 2);
-      {
-        auto fetched_data = indexer3->Fetch(0);
-        ASSERT_TRUE(fetched_data.has_value());
-        const float *fetched_vector = reinterpret_cast<const float *>(
-            std::get<vector_column_params::DenseVectorBuffer>(
-                fetched_data->vector_buffer)
-                .data.data());
-        ASSERT_NEAR(2.0f, fetched_vector[1], 0.1);
-        ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
-      }
+      assert_dense_doc(indexer3, 0, 2.0f, 123.0f);
 
       {
         // search with fetch vector
@@ -904,17 +881,7 @@ TEST(VectorColumnIndexerTest, Merge) {
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
       ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter, {3}).ok());
-
-      {
-        auto fetched_data = indexer3->Fetch(0);
-        ASSERT_TRUE(fetched_data.has_value());
-        const float *fetched_vector = reinterpret_cast<const float *>(
-            std::get<vector_column_params::DenseVectorBuffer>(
-                fetched_data->vector_buffer)
-                .data.data());
-        ASSERT_NEAR(2.0f, fetched_vector[1], 0.1);
-        ASSERT_NEAR(123.0f, fetched_vector[2], 0.1);
-      }
+      assert_dense_doc(indexer3, 0, 2.0f, 123.0f);
       indexer3->Close();
       del_index_file_func(index_name + "3");
     }
@@ -1012,6 +979,29 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
     return indexer;
   };
 
+  auto assert_sparse_doc = [&](const VectorColumnIndexer::Ptr &indexer,
+                               uint32_t doc_id, float expected_v0,
+                               float expected_v1, float expected_v2) {
+    auto fetched_data = indexer->Fetch(doc_id);
+    ASSERT_TRUE(fetched_data.has_value());
+    auto fetched_sparse_vector =
+        std::get<vector_column_params::SparseVectorBuffer>(
+            fetched_data->vector_buffer);
+    ASSERT_EQ(kSparseCount,
+              fetched_sparse_vector.indices.size() / sizeof(uint32_t));
+    ASSERT_EQ(kSparseCount, fetched_sparse_vector.values.size() / kUnitSize);
+    auto fetched_indices = reinterpret_cast<const uint32_t *>(
+        fetched_sparse_vector.indices.data());
+    auto fetched_values =
+        reinterpret_cast<const float *>(fetched_sparse_vector.values.data());
+    for (uint32_t i = 0; i < kSparseCount; ++i) {
+      ASSERT_EQ(i, fetched_indices[i]);
+    }
+    ASSERT_EQ(expected_v0, fetched_values[0]);
+    ASSERT_EQ(expected_v1, fetched_values[1]);
+    ASSERT_EQ(expected_v2, fetched_values[2]);
+  };
+
   auto func = [&](const IndexParams::Ptr &param1,
                   const IndexParams::Ptr &param2,
                   const IndexParams::Ptr &param3) {
@@ -1036,118 +1026,35 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
     values[1] = 3.0f;
     ASSERT_TRUE(indexer2->Insert(vector_data, 1).ok());
 
-    {
-      auto fetched_data = indexer1->Fetch(0);
-      ASSERT_TRUE(fetched_data.has_value());
-      auto fetched_sparse_vector =
-          std::get<vector_column_params::SparseVectorBuffer>(
-              fetched_data->vector_buffer);
-      ASSERT_EQ(kSparseCount,
-                fetched_sparse_vector.indices.size() / sizeof(uint32_t));
-      ASSERT_EQ(kSparseCount, fetched_sparse_vector.values.size() / kUnitSize);
-
-      auto fetched_indices = reinterpret_cast<const uint32_t *>(
-          fetched_sparse_vector.indices.data());
-      auto fetched_values =
-          reinterpret_cast<const float *>(fetched_sparse_vector.values.data());
-      for (uint32_t i = 0; i < kSparseCount; ++i) {
-        ASSERT_EQ(i, fetched_indices[i]);
-      }
-      ASSERT_EQ(0.0f, fetched_values[0]);
-      ASSERT_EQ(1.0f, fetched_values[1]);
-      ASSERT_EQ(2.0f, fetched_values[2]);
-    }
-    {
-      auto fetched_data = indexer2->Fetch(0);
-      ASSERT_TRUE(fetched_data.has_value());
-      auto fetched_sparse_vector =
-          std::get<vector_column_params::SparseVectorBuffer>(
-              fetched_data->vector_buffer);
-      ASSERT_EQ(kSparseCount,
-                fetched_sparse_vector.indices.size() / sizeof(uint32_t));
-      ASSERT_EQ(kSparseCount, fetched_sparse_vector.values.size() / kUnitSize);
-
-      auto fetched_indices = reinterpret_cast<const uint32_t *>(
-          fetched_sparse_vector.indices.data());
-      auto fetched_values =
-          reinterpret_cast<const float *>(fetched_sparse_vector.values.data());
-      for (uint32_t i = 0; i < kSparseCount; ++i) {
-        ASSERT_EQ(i, fetched_indices[i]);
-      }
-      ASSERT_EQ(0.0f, fetched_values[0]);
-      ASSERT_EQ(2.0f, fetched_values[1]);
-      ASSERT_EQ(2.0f, fetched_values[2]);
-    }
-    {
-      auto fetched_data = indexer2->Fetch(1);
-      ASSERT_TRUE(fetched_data.has_value());
-      auto fetched_sparse_vector =
-          std::get<vector_column_params::SparseVectorBuffer>(
-              fetched_data->vector_buffer);
-      ASSERT_EQ(kSparseCount,
-                fetched_sparse_vector.indices.size() / sizeof(uint32_t));
-      ASSERT_EQ(kSparseCount, fetched_sparse_vector.values.size() / kUnitSize);
-
-      auto fetched_indices = reinterpret_cast<const uint32_t *>(
-          fetched_sparse_vector.indices.data());
-      auto fetched_values =
-          reinterpret_cast<const float *>(fetched_sparse_vector.values.data());
-      for (uint32_t i = 0; i < kSparseCount; ++i) {
-        ASSERT_EQ(i, fetched_indices[i]);
-      }
-      ASSERT_EQ(0.0f, fetched_values[0]);
-      ASSERT_EQ(3.0f, fetched_values[1]);
-      ASSERT_EQ(2.0f, fetched_values[2]);
-    }
+    assert_sparse_doc(indexer1, 0, 0.0f, 1.0f, 2.0f);
+    assert_sparse_doc(indexer2, 0, 0.0f, 2.0f, 2.0f);
+    assert_sparse_doc(indexer2, 1, 0.0f, 3.0f, 2.0f);
 
     {  // test reduce
       auto indexer3 = create_indexer_func(param3, index_name + "3");
       ASSERT_NE(nullptr, indexer3);
       ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, nullptr).ok());
-      {
-        auto fetched_data = indexer3->Fetch(0);
-        ASSERT_TRUE(fetched_data.has_value());
-        auto fetched_sparse_vector =
-            std::get<vector_column_params::SparseVectorBuffer>(
-                fetched_data->vector_buffer);
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.indices.size() / sizeof(uint32_t));
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.values.size() / kUnitSize);
-        auto fetched_indices = reinterpret_cast<const uint32_t *>(
-            fetched_sparse_vector.indices.data());
-        auto fetched_values = reinterpret_cast<const float *>(
-            fetched_sparse_vector.values.data());
-        for (uint32_t i = 0; i < kSparseCount; ++i) {
-          ASSERT_EQ(i, fetched_indices[i]);
-        }
-        ASSERT_EQ(0.0f, fetched_values[0]);
-        ASSERT_EQ(1.0f, fetched_values[1]);
-        ASSERT_EQ(2.0f, fetched_values[2]);
-      }
-      {
-        auto fetched_data = indexer3->Fetch(1);
-        ASSERT_TRUE(fetched_data.has_value());
-        auto fetched_sparse_vector =
-            std::get<vector_column_params::SparseVectorBuffer>(
-                fetched_data->vector_buffer);
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.indices.size() / sizeof(uint32_t));
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.values.size() / kUnitSize);
-        auto fetched_indices = reinterpret_cast<const uint32_t *>(
-            fetched_sparse_vector.indices.data());
-        auto fetched_values = reinterpret_cast<const float *>(
-            fetched_sparse_vector.values.data());
-        for (uint32_t i = 0; i < kSparseCount; ++i) {
-          ASSERT_EQ(i, fetched_indices[i]);
-        }
-        ASSERT_EQ(0.0f, fetched_values[0]);
-        ASSERT_EQ(2.0f, fetched_values[1]);
-        ASSERT_EQ(2.0f, fetched_values[2]);
-      }
+      assert_sparse_doc(indexer3, 0, 0.0f, 1.0f, 2.0f);
+      assert_sparse_doc(indexer3, 1, 0.0f, 2.0f, 2.0f);
       indexer3->Close();
       del_index_file_func(index_name + "3");
+    }
+
+    {  // test merge all
+      const std::string merged_index_name = index_name + "3";
+      del_index_file_func(merged_index_name);
+      auto merged_result = VectorColumnIndexer::MergeAll(
+          merged_index_name,
+          FieldSchema("test", DataType::SPARSE_VECTOR_FP32, false, param3),
+          vector_column_params::ReadOptions{true, true}, {indexer1, indexer2},
+          nullptr, {});
+      ASSERT_TRUE(merged_result.has_value());
+      auto indexer3 = merged_result.value();
+      ASSERT_NE(nullptr, indexer3);
+      assert_sparse_doc(indexer3, 0, 0.0f, 1.0f, 2.0f);
+      assert_sparse_doc(indexer3, 1, 0.0f, 2.0f, 2.0f);
+      indexer3->Close();
+      del_index_file_func(merged_index_name);
     }
 
     {  // test reduce with filter
@@ -1156,27 +1063,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
       ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter).ok());
-      {
-        auto fetched_data = indexer3->Fetch(0);
-        ASSERT_TRUE(fetched_data.has_value());
-        auto fetched_sparse_vector =
-            std::get<vector_column_params::SparseVectorBuffer>(
-                fetched_data->vector_buffer);
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.indices.size() / sizeof(uint32_t));
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.values.size() / kUnitSize);
-        auto fetched_indices = reinterpret_cast<const uint32_t *>(
-            fetched_sparse_vector.indices.data());
-        auto fetched_values = reinterpret_cast<const float *>(
-            fetched_sparse_vector.values.data());
-        for (uint32_t i = 0; i < kSparseCount; ++i) {
-          ASSERT_EQ(i, fetched_indices[i]);
-        }
-        ASSERT_EQ(0.0f, fetched_values[0]);
-        ASSERT_EQ(2.0f, fetched_values[1]);
-        ASSERT_EQ(2.0f, fetched_values[2]);
-      }
+      assert_sparse_doc(indexer3, 0, 0.0f, 2.0f, 2.0f);
       indexer3->Close();
       del_index_file_func(index_name + "3");
     }
@@ -1187,27 +1074,7 @@ TEST(VectorColumnIndexerTest, SparseMerge) {
       auto filter = std::make_shared<EasyIndexFilter>(
           [](uint64_t key) { return key == 0; });
       ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter, {3}).ok());
-      {
-        auto fetched_data = indexer3->Fetch(0);
-        ASSERT_TRUE(fetched_data.has_value());
-        auto fetched_sparse_vector =
-            std::get<vector_column_params::SparseVectorBuffer>(
-                fetched_data->vector_buffer);
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.indices.size() / sizeof(uint32_t));
-        ASSERT_EQ(kSparseCount,
-                  fetched_sparse_vector.values.size() / kUnitSize);
-        auto fetched_indices = reinterpret_cast<const uint32_t *>(
-            fetched_sparse_vector.indices.data());
-        auto fetched_values = reinterpret_cast<const float *>(
-            fetched_sparse_vector.values.data());
-        for (uint32_t i = 0; i < kSparseCount; ++i) {
-          ASSERT_EQ(i, fetched_indices[i]);
-        }
-        ASSERT_EQ(0.0f, fetched_values[0]);
-        ASSERT_EQ(2.0f, fetched_values[1]);
-        ASSERT_EQ(2.0f, fetched_values[2]);
-      }
+      assert_sparse_doc(indexer3, 0, 0.0f, 2.0f, 2.0f);
       indexer3->Close();
       del_index_file_func(index_name + "3");
     }
@@ -2335,6 +2202,23 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
     return indexer;
   };
 
+
+  auto assert_dense_doc = [&](const VectorColumnIndexer::Ptr &indexer,
+                              uint32_t doc_id, float expected_v1,
+                              float expected_v2) {
+    auto fetched_data = indexer->Fetch(doc_id);
+    ASSERT_TRUE(fetched_data.has_value());
+    const float *fetched_vector = reinterpret_cast<const float *>(
+        std::get<vector_column_params::DenseVectorBuffer>(
+            fetched_data->vector_buffer)
+            .data.data());
+    LOG_INFO(
+        "fetched_vector doc_id:%u:%s", doc_id,
+        print_dense_vector(fetched_vector, 3, DataType::VECTOR_FP32).c_str());
+    ASSERT_TRUE(fetched_vector[1] - expected_v1 < 1e-2);
+    ASSERT_TRUE(fetched_vector[2] - expected_v2 < 1);
+  };
+
   auto func = [&](const IndexParams::Ptr &param1,
                   const IndexParams::Ptr &param2,
                   const IndexParams::Ptr &param3) {
@@ -2355,45 +2239,9 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
     vector[1] = 3.0f;
     ASSERT_TRUE(indexer2->Insert(vector_data, 1).ok());
 
-    {
-      auto fetched_data = indexer1->Fetch(0);
-      ASSERT_TRUE(fetched_data.has_value());
-      const float *fetched_vector = reinterpret_cast<const float *>(
-          std::get<vector_column_params::DenseVectorBuffer>(
-              fetched_data->vector_buffer)
-              .data.data());
-      LOG_INFO(
-          "indexer1 fetched_vector doc_id:0:%s",
-          print_dense_vector(fetched_vector, 3, DataType::VECTOR_FP32).c_str());
-      ASSERT_TRUE(fetched_vector[1] - 1.0f < 1e-2);
-      ASSERT_TRUE(fetched_vector[2] - 123.0f < 1);
-    }
-    {
-      auto fetched_data = indexer2->Fetch(0);
-      ASSERT_TRUE(fetched_data.has_value());
-      const float *fetched_vector = reinterpret_cast<const float *>(
-          std::get<vector_column_params::DenseVectorBuffer>(
-              fetched_data->vector_buffer)
-              .data.data());
-      LOG_INFO(
-          "indexer2 fetched_vector doc_id:0:%s",
-          print_dense_vector(fetched_vector, 3, DataType::VECTOR_FP32).c_str());
-      ASSERT_TRUE(fetched_vector[1] - 2.0f < 1e-2);
-      ASSERT_TRUE(fetched_vector[2] - 123.0f < 1);
-    }
-    {
-      auto fetched_data = indexer2->Fetch(1);
-      ASSERT_TRUE(fetched_data.has_value());
-      const float *fetched_vector = reinterpret_cast<const float *>(
-          std::get<vector_column_params::DenseVectorBuffer>(
-              fetched_data->vector_buffer)
-              .data.data());
-      LOG_INFO(
-          "indexer2 fetched_vector doc_id:1:%s",
-          print_dense_vector(fetched_vector, 3, DataType::VECTOR_FP32).c_str());
-      ASSERT_TRUE(fetched_vector[1] - 3.0f < 1e-2);
-      ASSERT_TRUE(fetched_vector[2] - 123.0f < 1);
-    }
+    assert_dense_doc(indexer1, 0, 1.0f, 123.0f);
+    assert_dense_doc(indexer2, 0, 2.0f, 123.0f);
+    assert_dense_doc(indexer2, 1, 3.0f, 123.0f);
 
     // {  // test reduce
     //   auto indexer3 = create_indexer_func(param3, index_name + "3");
@@ -2431,6 +2279,23 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
     //   del_index_file_func(index_name + "3");
     // }
     //
+    {  // test merge all
+      const std::string merged_index_name = index_name + "3";
+      del_index_file_func(merged_index_name);
+      auto merged_result = VectorColumnIndexer::MergeAll(
+          merged_index_name,
+          FieldSchema("test", DataType::VECTOR_FP32, kDimension, false, param3),
+          vector_column_params::ReadOptions{true, true}, {indexer1, indexer2},
+          nullptr, {});
+      ASSERT_TRUE(merged_result.has_value());
+      auto indexer3 = merged_result.value();
+      ASSERT_NE(nullptr, indexer3);
+      assert_dense_doc(indexer3, 0, 1.0f, 123.0f);
+      assert_dense_doc(indexer3, 1, 2.0f, 123.0f);
+      indexer3->Close();
+      del_index_file_func(merged_index_name);
+    }
+
     {  // test reduce with filter
       auto indexer3 = create_indexer_func(param3, index_name + "3");
       ASSERT_NE(nullptr, indexer3);
@@ -2439,19 +2304,7 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
       ASSERT_TRUE(indexer3->Merge({indexer1, indexer2}, filter).ok());
       // 0.0 -> x ; 1.0 -> 0 ; 1.1 -> 1
       ASSERT_TRUE(indexer3->doc_count() == 2);
-      {
-        auto fetched_data = indexer3->Fetch(0);
-        ASSERT_TRUE(fetched_data.has_value());
-        const float *fetched_vector = reinterpret_cast<const float *>(
-            std::get<vector_column_params::DenseVectorBuffer>(
-                fetched_data->vector_buffer)
-                .data.data());
-        LOG_INFO("indexer3 fetched_vector doc_id:0:%s",
-                 print_dense_vector(fetched_vector, 3, DataType::VECTOR_FP32)
-                     .c_str());
-        ASSERT_TRUE(fetched_vector[1] - 2.0f < 1e-2);
-        ASSERT_TRUE(fetched_vector[2] - 123.0f < 1);
-      }
+      assert_dense_doc(indexer3, 0, 2.0f, 123.0f);
 
       {
         vector[1] = 3.0f;
