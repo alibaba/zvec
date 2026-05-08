@@ -4307,37 +4307,6 @@ size_t zvec_doc_memory_usage(const zvec_doc_t *doc) {
       return doc_ptr->memory_usage();)
 }
 
-zvec_error_code_t zvec_doc_validate_and_sanitize(zvec_doc_t *doc,
-                                const zvec_collection_schema_t *schema,
-                                bool is_update, char **error_msg) {
-  if (!doc || !schema) {
-    set_last_error("Document or schema pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-
-  ZVEC_TRY_RETURN_ERROR(
-      "Failed to validate document",
-      std::shared_ptr<zvec::CollectionSchema> schema_ptr = nullptr;
-      auto status =
-          convert_zvec_collection_schema_to_internal(schema, schema_ptr);
-      if (!status.ok()) {
-        if (error_msg) {
-          *error_msg = copy_string(status.message());
-        }
-        return status_to_error_code(status);
-      }
-
-      auto doc_ptr = reinterpret_cast<zvec::Doc *>(doc);
-      status = doc_ptr->validate_and_sanitize(schema_ptr, is_update); if (!status.ok()) {
-        if (error_msg) {
-          *error_msg = copy_string(status.message());
-        }
-        return status_to_error_code(status);
-      }
-
-      if (error_msg) { *error_msg = nullptr; }
-      return ZVEC_OK;)
-}
 
 zvec_error_code_t zvec_doc_to_detail_string(const zvec_doc_t *doc, char **detail_str) {
   if (!doc || !detail_str) {
