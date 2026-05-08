@@ -16,9 +16,31 @@
 #include <string>
 #include <zvec/core/interface/index.h>
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/hnsw/hnsw_streamer.h"
+#include "algorithm/hnsw/hnsw_streamer_entity.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
 
 namespace zvec::core_interface {
+
+std::string HNSWIndex::storage_mode() const {
+  if (!streamer_) {
+    return "";
+  }
+  auto *hnsw_streamer = dynamic_cast<core::HnswStreamer *>(streamer_.get());
+  if (!hnsw_streamer) {
+    // e.g. sparse branch uses HnswSparseStreamer which is a different type
+    return "";
+  }
+  switch (hnsw_streamer->storage_mode()) {
+    case core::HnswStorageMode::kMmap:
+      return "mmap";
+    case core::HnswStorageMode::kBufferPool:
+      return "buffer_pool";
+    case core::HnswStorageMode::kContiguous:
+      return "contiguous";
+  }
+  return "";
+}
 
 int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const HNSWIndexParam &>(param);
@@ -57,6 +79,8 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                               kDefaultHnswEfSearch);
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_ID_MAP,
                               param_.use_id_map);
+    proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
+                              param_.use_contiguous_memory);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
   }
 

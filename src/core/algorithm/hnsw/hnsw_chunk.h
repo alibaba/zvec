@@ -42,6 +42,7 @@ class ChunkBroker {
     CHUNK_TYPE_UPPER_NEIGHBOR = 4,
     CHUNK_TYPE_NEIGHBOR_INDEX = 5,
     CHUNK_TYPE_SPARSE_NODE = 6,
+    CHUNK_TYPE_NEIGHBOR_DIST = 7,  // Vamana: per-node neighbor distances
     CHUNK_TYPE_MAX = 8
   };
   static constexpr size_t kDefaultChunkSeqId = 0UL;

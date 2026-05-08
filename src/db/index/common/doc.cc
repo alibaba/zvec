@@ -11,10 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
 #include <regex>
 #include <stdexcept>
 #include <zvec/ailego/internal/platform.h>
@@ -114,6 +117,9 @@ std::string get_value_type_name(const Doc::Value &value, bool is_vector) {
       value);
 }
 
+
+namespace {
+
 template <typename T>
 T byte_swap(T value) {
   if constexpr (std::is_same_v<T, float16_t>) {
@@ -158,6 +164,68 @@ T read_value_from_buffer(const uint8_t *&data) {
   }
   return value;
 }
+
+template <typename T>
+std::string vec_to_string(const std::vector<T> &v) {
+  std::ostringstream oss;
+  oss << "[";
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (i > 0) oss << ", ";
+    oss << +v[i];  // + from print as char
+  }
+  oss << "]";
+  return oss.str();
+}
+
+template <class... Ts>
+struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+
+template <class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
+
+
+bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,
+                              size_t value_byte_size) {
+  if (n <= 1) {
+    return false;
+  }
+  bool already_sorted = true;
+  for (size_t i = 1; i < n; ++i) {
+    if (indices[i] == indices[i - 1]) {
+      return true;
+    }
+    if (indices[i] < indices[i - 1]) {
+      already_sorted = false;
+      break;
+    }
+  }
+  if (already_sorted) {
+    return false;
+  }
+  std::vector<size_t> perm(n);
+  std::iota(perm.begin(), perm.end(), size_t{0});
+  std::sort(perm.begin(), perm.end(),
+            [&](size_t a, size_t b) { return indices[a] < indices[b]; });
+  std::vector<uint32_t> sorted_indices(n);
+  std::vector<char> sorted_values(n * value_byte_size);
+  for (size_t i = 0; i < n; ++i) {
+    sorted_indices[i] = indices[perm[i]];
+    std::memcpy(sorted_values.data() + i * value_byte_size,
+                values + perm[i] * value_byte_size, value_byte_size);
+  }
+  std::memcpy(indices, sorted_indices.data(), n * sizeof(uint32_t));
+  std::memcpy(values, sorted_values.data(), n * value_byte_size);
+  for (size_t i = 1; i < n; ++i) {
+    if (indices[i] == indices[i - 1]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 
 void Doc::write_to_buffer(std::vector<uint8_t> &buffer, const void *src,
@@ -693,8 +761,8 @@ Doc::Ptr Doc::deserialize(const uint8_t *data, size_t /*size*/) {
   return doc;
 }
 
-Status Doc::validate(const CollectionSchema::Ptr &schema,
-                     bool is_update) const {
+Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
+                                  bool is_update) {
   if (!schema) {
     return Status::InternalError("schema is null during doc validation");
   }
@@ -739,7 +807,7 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
       }
     }
 
-    const Value &field_value = field_pair->second;
+    Value &field_value = field_pair->second;
     DataType expected_type = field_schema->data_type();
     bool type_match = true;
     uint32_t value_dimension = 0;
@@ -860,7 +928,7 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
             std::pair<std::vector<uint32_t>, std::vector<float16_t>>>(
             field_value);
         if (type_match) {
-          auto [sparse_indices, sparse_values] = std::get<
+          auto &[sparse_indices, sparse_values] = std::get<
               std::pair<std::vector<uint32_t>, std::vector<float16_t>>>(
               field_value);
           if (sparse_values.size() != sparse_indices.size()) {
@@ -873,6 +941,14 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
                 "Invalid doc[", pk_, "]: sparse vector field[", field_name,
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
+          }
+          if (sort_and_find_duplicates(
+                  sparse_indices.data(),
+                  reinterpret_cast<char *>(sparse_values.data()),
+                  sparse_indices.size(), sizeof(float16_t))) {
+            return Status::InvalidArgument(
+                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "] contains duplicate indices");
           }
         }
         break;
@@ -894,6 +970,14 @@ Status Doc::validate(const CollectionSchema::Ptr &schema,
                 "Invalid doc[", pk_, "]: sparse vector field[", field_name,
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
+          }
+          if (sort_and_find_duplicates(
+                  sparse_indices.data(),
+                  reinterpret_cast<char *>(sparse_values.data()),
+                  sparse_indices.size(), sizeof(float))) {
+            return Status::InvalidArgument(
+                "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                "] contains duplicate indices");
           }
         }
         break;
@@ -1036,24 +1120,6 @@ size_t Doc::memory_usage() const {
   return usage;
 }
 
-template <typename T>
-std::string vec_to_string(const std::vector<T> &v) {
-  std::ostringstream oss;
-  oss << "[";
-  for (size_t i = 0; i < v.size(); ++i) {
-    if (i > 0) oss << ", ";
-    oss << +v[i];  // + from print as char
-  }
-  oss << "]";
-  return oss.str();
-}
-
-template <class... Ts>
-struct overloaded : Ts... {
-  using Ts::operator()...;
-};
-template <class... Ts>
-overloaded(Ts...) -> overloaded<Ts...>;
 
 std::string Doc::to_detail_string() const {
   std::stringstream oss;
@@ -1202,7 +1268,7 @@ bool Doc::operator==(const Doc &other) const {
   return true;
 }
 
-Status VectorQuery::validate(const FieldSchema *schema) const {
+Status VectorQuery::validate_and_sanitize(const FieldSchema *schema) {
   if ((uint32_t)topk_ > kMaxQueryTopk) {
     return Status::InvalidArgument("Invalid query: topk[", topk_,
                                    "] exceeds the maximum allowed value of ",
@@ -1274,11 +1340,39 @@ Status VectorQuery::validate(const FieldSchema *schema) const {
                                        "] is not a dense vector field");
     }
   } else if (schema->is_sparse_vector()) {
-    // Validate sparse indices size
-    if (query_sparse_indices_.size() > kSparseMaxDimSize * sizeof(uint32_t)) {
+    size_t value_byte_size = 0;
+    switch (schema->data_type()) {
+      case DataType::SPARSE_VECTOR_FP32:
+        value_byte_size = sizeof(float);
+        break;
+      case DataType::SPARSE_VECTOR_FP16:
+        value_byte_size = sizeof(float16_t);
+        break;
+      default:
+        return Status::InvalidArgument(
+            "Invalid query: sparse vector type of field[", field_name_,
+            "] is not supported");
+    }
+    if (query_sparse_indices_.size() % sizeof(uint32_t) != 0 ||
+        query_sparse_values_.size() % value_byte_size != 0 ||
+        query_sparse_indices_.size() / sizeof(uint32_t) !=
+            query_sparse_values_.size() / value_byte_size) {
+      return Status::InvalidArgument(
+          "Invalid query: sparse vector query for field[", field_name_,
+          "] has mismatched indices and values sizes");
+    }
+    size_t n_indices = query_sparse_indices_.size() / sizeof(uint32_t);
+    if (n_indices > kSparseMaxDimSize) {
       return Status::InvalidArgument(
           "Invalid query: too many sparse indices, the maximum allowed is ",
           kSparseMaxDimSize);
+    }
+    if (sort_and_find_duplicates(
+            reinterpret_cast<uint32_t *>(query_sparse_indices_.data()),
+            query_sparse_values_.data(), n_indices, value_byte_size)) {
+      return Status::InvalidArgument(
+          "Invalid query: sparse vector query for field[", field_name_,
+          "] contains duplicate indices");
     }
   } else {
     return Status::InvalidArgument("Invalid query: field[", field_name_,

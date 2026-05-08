@@ -26,6 +26,8 @@ from .model.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    VamanaIndexParam,
+    VamanaQueryParam,
 )
 from .model.param.vector_query import VectorQuery
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
@@ -73,6 +75,8 @@ __all__: list = [
     "RrfReRanker",
     "Status",
     "StatusCode",
+    "VamanaIndexParam",
+    "VamanaQueryParam",
     "VectorQuery",
     "VectorSchema",
     "WeightedReRanker",
@@ -122,6 +126,13 @@ class _Collection:
     def Stats(self) -> schema.CollectionStats: ...
     def Update(self, arg0: collections.abc.Sequence[_Doc]) -> list[typing.Status]: ...
     def Upsert(self, arg0: collections.abc.Sequence[_Doc]) -> list[typing.Status]: ...
+    def _debug_hnsw_storage_mode(self, column_name: str) -> str:
+        """Debug-only: returns the storage mode of the HNSW entity on the
+        given vector column. One of 'mmap', 'buffer_pool', 'contiguous'.
+        Raises KeyError if no HNSW index exists on the column, or
+        ValueError if the column's index is not an HNSW index. Intended
+        for introspection and testing only; not part of the stable API."""
+
     def __getstate__(self) -> tuple: ...
     def __setstate__(self, arg0: tuple) -> None: ...
 

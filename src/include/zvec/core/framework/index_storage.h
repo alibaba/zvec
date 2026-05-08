@@ -273,6 +273,11 @@ class IndexStorage : public IndexModule {
   virtual bool isHugePage(void) const {
     return false;
   }
+
+  //! Retrieve the memory block type of this storage
+  virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
+    return MemoryBlock::MBT_MMAP;
+  }
 };
 
 }  // namespace core

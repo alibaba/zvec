@@ -3772,6 +3772,213 @@ TEST_F(HnswStreamerTest, TestBasicRefiner) {
 
 #endif
 
+TEST_F(HnswStreamerTest, TestContiguousMemorySearch) {
+  // Build index with mmap mode
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ailego::Params stg_params;
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguous.index", true));
+
+  {
+    auto builder = IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, builder);
+    ailego::Params build_params;
+    build_params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16U);
+    build_params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 5U);
+    build_params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 32U);
+    build_params.set(PARAM_HNSW_STREAMER_EF, 16U);
+    build_params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 2000U);
+    ASSERT_EQ(0, builder->init(*index_meta_ptr_, build_params));
+    ASSERT_EQ(0, builder->open(storage));
+
+    auto ctx = builder->create_context();
+    ASSERT_TRUE(!!ctx);
+    IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+    NumericalVector<float> vec(dim);
+    size_t cnt = 3000UL;
+    for (size_t i = 0; i < cnt; i++) {
+      for (size_t j = 0; j < dim; ++j) {
+        vec[j] = static_cast<float>(i);
+      }
+      ASSERT_EQ(0, builder->add_impl(i, vec.data(), qmeta, ctx));
+    }
+    ASSERT_EQ(0, builder->flush(0UL));
+    ASSERT_EQ(0, builder->close());
+  }
+
+  // Re-open with contiguous memory mode
+  auto searcher = IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_NE(nullptr, searcher);
+  ailego::Params search_params;
+  search_params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16U);
+  search_params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 5U);
+  search_params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 32U);
+  search_params.set(PARAM_HNSW_STREAMER_EF, 16U);
+  search_params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 2000U);
+  search_params.set(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+  ASSERT_EQ(0, searcher->init(*index_meta_ptr_, search_params));
+  ASSERT_EQ(0, searcher->open(storage));
+
+  size_t cnt = 3000UL;
+  size_t topk = 50;
+  NumericalVector<float> vec(dim);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+  auto linearCtx = searcher->create_context();
+  auto knnCtx = searcher->create_context();
+  linearCtx->set_topk(topk);
+  knnCtx->set_topk(topk);
+  int totalHits = 0;
+  int totalCnts = 0;
+  for (size_t i = 0; i < cnt; i++) {
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = static_cast<float>(i) + 0.1f;
+    }
+    ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+    auto &knnResult = knnCtx->result();
+    ASSERT_EQ(topk, knnResult.size());
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(topk, linearResult.size());
+    ASSERT_EQ(i, linearResult[0].key());
+    for (size_t k = 0; k < topk; ++k) {
+      totalCnts++;
+      for (size_t j = 0; j < topk; ++j) {
+        if (linearResult[j].key() == knnResult[k].key()) {
+          totalHits++;
+          break;
+        }
+      }
+    }
+  }
+  float recall = totalHits * 1.0f / totalCnts;
+  EXPECT_GT(recall, 0.90f);
+}
+
+TEST_F(HnswStreamerTest, TestContiguousMultiThreadSearch) {
+  constexpr size_t dim_mt = 32;
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, dim_mt);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+
+  // Build with mmap mode
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ailego::Params stg_params;
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguousMT", true));
+
+  {
+    ailego::Params build_params;
+    build_params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 128);
+    build_params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 10);
+    build_params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 64);
+    build_params.set(PARAM_HNSW_STREAMER_MAX_INDEX_SIZE, 30 * 1024 * 1024U);
+    build_params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 1000U);
+    build_params.set(PARAM_HNSW_STREAMER_EF, 32);
+    build_params.set(PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE, true);
+
+    auto builder = IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, builder);
+    ASSERT_EQ(0, builder->init(meta, build_params));
+    ASSERT_EQ(0, builder->open(storage));
+
+    auto addVector = [&builder, dim_mt](int baseKey, size_t addCnt) {
+      NumericalVector<float> vec(dim_mt);
+      IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim_mt);
+      size_t succAdd = 0;
+      auto ctx = builder->create_context();
+      for (size_t i = 0; i < addCnt; i++) {
+        for (size_t j = 0; j < dim_mt; ++j) {
+          vec[j] = static_cast<float>(i + baseKey);
+        }
+        succAdd += !builder->add_impl(baseKey + i, vec.data(), qmeta, ctx);
+      }
+      builder->flush(0UL);
+      return succAdd;
+    };
+    auto t1 = std::async(std::launch::async, addVector, 0, 1000);
+    auto t2 = std::async(std::launch::async, addVector, 1000, 1000);
+    auto t3 = std::async(std::launch::async, addVector, 2000, 1000);
+    ASSERT_EQ(1000U, t1.get());
+    ASSERT_EQ(1000U, t2.get());
+    ASSERT_EQ(1000U, t3.get());
+    ASSERT_EQ(0, builder->close());
+  }
+
+  // Re-open with contiguous memory
+  ailego::Params search_params;
+  search_params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 128);
+  search_params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 10);
+  search_params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 64);
+  search_params.set(PARAM_HNSW_STREAMER_MAX_INDEX_SIZE, 30 * 1024 * 1024U);
+  search_params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 1000U);
+  search_params.set(PARAM_HNSW_STREAMER_EF, 32);
+  search_params.set(PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE, true);
+  search_params.set(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+
+  auto searcher = IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_NE(nullptr, searcher);
+  ASSERT_EQ(0, searcher->init(meta, search_params));
+  ASSERT_EQ(0, searcher->open(storage));
+
+  // Verify data via provider
+  auto provider = searcher->create_provider();
+  auto iter = provider->create_iterator();
+  ASSERT_TRUE(!!iter);
+  size_t total = 0;
+  while (iter->is_valid()) {
+    float *data = (float *)iter->data();
+    for (size_t d = 0; d < dim_mt; ++d) {
+      ASSERT_FLOAT_EQ(static_cast<float>(iter->key()), data[d]);
+    }
+    total++;
+    iter->next();
+  }
+  ASSERT_EQ(3000, total);
+
+  // Multi-thread search on contiguous memory
+  size_t topk = 100;
+  size_t cnt = 3000;
+  auto knnSearch = [&]() {
+    NumericalVector<float> vec(dim_mt);
+    auto linearCtx = searcher->create_context();
+    auto knnCtx = searcher->create_context();
+    IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim_mt);
+    linearCtx->set_topk(topk);
+    knnCtx->set_topk(topk);
+    size_t totalCnts = 0;
+    size_t totalHits = 0;
+    for (size_t i = 0; i < cnt; i += 1) {
+      for (size_t j = 0; j < dim_mt; ++j) {
+        vec[j] = static_cast<float>(i) + 0.1f;
+      }
+      ASSERT_EQ(0, searcher->search_impl(vec.data(), qmeta, knnCtx));
+      ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, linearCtx));
+      auto &knnResult = knnCtx->result();
+      ASSERT_EQ(topk, knnResult.size());
+      auto &linearResult = linearCtx->result();
+      ASSERT_EQ(topk, linearResult.size());
+      ASSERT_EQ(i, linearResult[0].key());
+      for (size_t k = 0; k < topk; ++k) {
+        totalCnts++;
+        for (size_t j = 0; j < topk; ++j) {
+          if (linearResult[j].key() == knnResult[k].key()) {
+            totalHits++;
+            break;
+          }
+        }
+      }
+    }
+    ASSERT_TRUE((totalHits * 1.0f / totalCnts) > 0.80f);
+  };
+  auto s1 = std::async(std::launch::async, knnSearch);
+  auto s2 = std::async(std::launch::async, knnSearch);
+  auto s3 = std::async(std::launch::async, knnSearch);
+  s1.wait();
+  s2.wait();
+  s3.wait();
+}
+
 }  // namespace core
 }  // namespace zvec
 

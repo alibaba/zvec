@@ -21,7 +21,8 @@ HnswIndexParams::OPtr ProtoConverter::FromPb(
   auto params = std::make_shared<HnswIndexParams>(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()), params_pb.m(),
       params_pb.ef_construction(),
-      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()));
+      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
+      params_pb.use_contiguous_memory());
 
   return params;
 }
@@ -34,6 +35,7 @@ proto::HnswIndexParams ProtoConverter::ToPb(const HnswIndexParams *params) {
       QuantizeTypeCodeBook::Get(params->quantize_type()));
   params_pb.set_ef_construction(params->ef_construction());
   params_pb.set_m(params->m());
+  params_pb.set_use_contiguous_memory(params->use_contiguous_memory());
   return params_pb;
 }
 
@@ -98,6 +100,32 @@ proto::IVFIndexParams ProtoConverter::ToPb(const IVFIndexParams *params) {
   params_pb.set_n_list(params->n_list());
   params_pb.set_n_iters(params->n_iters());
   params_pb.set_use_soar(params->use_soar());
+  return params_pb;
+}
+
+// VamanaIndexParams
+VamanaIndexParams::OPtr ProtoConverter::FromPb(
+    const proto::VamanaIndexParams &params_pb) {
+  return std::make_shared<VamanaIndexParams>(
+      MetricTypeCodeBook::Get(params_pb.base().metric_type()),
+      params_pb.max_degree(), params_pb.search_list_size(), params_pb.alpha(),
+      params_pb.saturate_graph(), params_pb.use_contiguous_memory(),
+      params_pb.use_id_map(),
+      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()));
+}
+
+proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
+  proto::VamanaIndexParams params_pb;
+  params_pb.mutable_base()->set_metric_type(
+      MetricTypeCodeBook::Get(params->metric_type()));
+  params_pb.mutable_base()->set_quantize_type(
+      QuantizeTypeCodeBook::Get(params->quantize_type()));
+  params_pb.set_max_degree(params->max_degree());
+  params_pb.set_search_list_size(params->search_list_size());
+  params_pb.set_alpha(params->alpha());
+  params_pb.set_saturate_graph(params->saturate_graph());
+  params_pb.set_use_contiguous_memory(params->use_contiguous_memory());
+  params_pb.set_use_id_map(params->use_id_map());
   return params_pb;
 }
 
@@ -185,6 +213,8 @@ IndexParams::Ptr ProtoConverter::FromPb(const proto::IndexParams &params_pb) {
     return ProtoConverter::FromPb(params_pb.flat());
   } else if (params_pb.has_hnsw_rabitq()) {
     return ProtoConverter::FromPb(params_pb.hnsw_rabitq());
+  } else if (params_pb.has_vamana()) {
+    return ProtoConverter::FromPb(params_pb.vamana());
   }
 
   return nullptr;
@@ -246,6 +276,15 @@ proto::IndexParams ProtoConverter::ToPb(const IndexParams *params) {
         params_pb.mutable_hnsw_rabitq()->CopyFrom(
             ProtoConverter::ToPb(hnsw_rabitq_params));
       }
+      break;
+    }
+    case IndexType::VAMANA: {
+      auto vamana_params = dynamic_cast<const VamanaIndexParams *>(params);
+      if (vamana_params) {
+        params_pb.mutable_vamana()->CopyFrom(
+            ProtoConverter::ToPb(vamana_params));
+      }
+      break;
     }
     default:
       break;
