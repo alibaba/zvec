@@ -27,9 +27,10 @@ class VersionManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     // Create a temporary directory for testing
-    test_path_ = "./version_manager_test";
+    test_path_ = "./test_version_manager";
     FileHelper::RemoveDirectory(test_path_);
-    FileHelper::CreateDirectory(test_path_);
+    ASSERT_TRUE(FileHelper::CreateDirectory(test_path_))
+        << ailego::FileHelper::GetLastErrorString();
   }
 
   void TearDown() override {
@@ -131,7 +132,7 @@ TEST_F(VersionManagerTest, VersionManagerCreateAndRecover) {
 
   // Create VersionManager
   auto create_result = VersionManager::Create(version_path, initial_version);
-  EXPECT_TRUE(create_result.has_value());
+  ASSERT_TRUE(create_result.has_value());
 
   auto version_manager = create_result.value();
 
@@ -149,7 +150,7 @@ TEST_F(VersionManagerTest, VersionManagerCreateAndRecover) {
 
   // Recover VersionManager
   auto recover_result = VersionManager::Recovery(version_path);
-  EXPECT_TRUE(recover_result.has_value());
+  ASSERT_TRUE(recover_result.has_value());
 
   auto recovered_manager = recover_result.value();
   auto recovered_version = recovered_manager->get_current_version();

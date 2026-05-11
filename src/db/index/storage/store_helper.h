@@ -40,7 +40,8 @@
 namespace zvec {
 
 inline FileFormat InferFileFormat(const std::string &file_path) {
-  std::string ext = std::filesystem::path(file_path).extension().string();
+  std::string ext =
+      ailego::FileHelper::PathFromUtf8(file_path).extension().u8string();
   std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
   if (ext == ".parquet") {
     return FileFormat::PARQUET;

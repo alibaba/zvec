@@ -24,6 +24,8 @@
 #include <unistd.h>
 #else
 #include <Windows.h>
+#include <cstring>
+#include <string>
 #endif
 
 namespace zvec {
@@ -405,15 +407,26 @@ bool File::MemoryUnlock(void *addr, size_t len) {
 
 #else
 
+namespace {
+
+bool Utf8PathOk(const char *path, const std::wstring &wide) {
+  return path && path[0] != '\0' && !wide.empty();
+}
+
+}  // namespace
+
 //! Create a local file
 bool File::create(const char *path, size_t len, bool direct) {
   ailego_false_if_false(native_handle_ == File::InvalidHandle && path);
 
+  const std::wstring wpath = FileHelper::Utf8ToWide(path);
+  ailego_false_if_false(Utf8PathOk(path, wpath));
+
   // Try opening or creating the file
   HANDLE file_handle =
-      CreateFileA(path, GENERIC_WRITE | GENERIC_READ,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      ::CreateFileW(wpath.c_str(), GENERIC_WRITE | GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   ailego_false_if_false(file_handle != INVALID_HANDLE_VALUE);
 
   // Truncate the file to the specified size
@@ -432,8 +445,8 @@ bool File::create(const char *path, size_t len, bool direct) {
   } else {
     // Close and reopen file
     CloseHandle(file_handle);
-    file_handle = CreateFileA(
-        path, GENERIC_WRITE | GENERIC_READ,
+    file_handle = ::CreateFileW(
+        wpath.c_str(), GENERIC_WRITE | GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING, nullptr);
     ailego_false_if_false(file_handle != INVALID_HANDLE_VALUE);
@@ -448,15 +461,18 @@ bool File::create(const char *path, size_t len, bool direct) {
 bool File::open(const char *path, bool rdonly, bool direct) {
   ailego_false_if_false(native_handle_ == File::InvalidHandle && path);
 
+  const std::wstring wpath = FileHelper::Utf8ToWide(path);
+  ailego_false_if_false(Utf8PathOk(path, wpath));
+
   // Try opening the file
   DWORD flags = FILE_ATTRIBUTE_NORMAL;
   if (direct) {
     flags |= FILE_FLAG_NO_BUFFERING;
   }
-  HANDLE file_handle =
-      CreateFileA(path, (rdonly ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE),
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, flags, nullptr);
+  HANDLE file_handle = ::CreateFileW(
+      wpath.c_str(), (rdonly ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE),
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, flags, nullptr);
   ailego_false_if_false(file_handle != INVALID_HANDLE_VALUE);
 
   read_only_ = rdonly;

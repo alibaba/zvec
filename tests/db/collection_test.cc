@@ -216,7 +216,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
   auto schema = TestHelper::CreateNormalSchema();
 
   {
-    std::vector<std::string> valid_paths = {"abc",
+    std::vector<std::string> valid_paths = {"你好",
                                             "data123",
                                             "my_collection",
                                             "v1.2_alpha-beta",
@@ -234,6 +234,8 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
       auto result = Collection::CreateAndOpen(path, *schema, options);
       if (!result.has_value()) {
         std::cout << result.error().message() << std::endl;
+        std::cout << "File error:" << ailego::FileHelper::GetLastErrorString()
+                  << std::endl;
       }
       ASSERT_TRUE(result.has_value());
 

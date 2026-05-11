@@ -15,8 +15,11 @@
 #pragma once
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <zvec/ailego/internal/platform.h>
+#include <zvec/ailego/utility/string_helper.h>
 
 namespace zvec {
 namespace ailego {
@@ -41,10 +44,11 @@ struct FileHelper {
   //! Retrieve the final path for the specified file
   static bool GetFilePath(NativeHandle handle, std::string *path);
 
-  //! Retrieve current working directory
+  //! Retrieve current working directory (UTF-8 bytes in \p *path)
   static bool GetWorkingDirectory(std::string *path);
 
-  //! Get the size of a file
+  //! Narrow paths are UTF-8 on all platforms (on Windows, decoded as UTF-8;
+  //! on POSIX, native narrow encoding is typically UTF-8).
   static bool GetFileSize(const char *path, size_t *psz);
 
   //! Delete a name and possibly the file it refers to
@@ -77,8 +81,8 @@ struct FileHelper {
   //! Retrieve non-zero if two paths are pointing to the same file
   static bool IsSame(const char *path1, const char *path2);
 
-  //! Retrieve a human-readable string for the most recent OS error
-  //! (GetLastError() on Windows, strerror(errno) on POSIX)
+  //! Human-readable error: last std::filesystem failure on this thread if any,
+  //! else GetLastError() on Windows or strerror(errno) on POSIX.
   static std::string GetLastErrorString();
 
   //! Retrieve the size of a file
@@ -95,6 +99,54 @@ struct FileHelper {
       output = std::strrchr(path, '\\');
     }
     return (output ? output + 1 : path);
+  }
+
+  //! Build std::filesystem::path from a UTF-8 string (handles Windows codepage)
+  static std::filesystem::path PathFromUtf8(const std::string &s);
+  static std::filesystem::path PathFromUtf8(const char *s);
+
+  //! Convert std::filesystem::path back to a UTF-8 std::string
+  static std::string PathToUtf8(const std::filesystem::path &p);
+
+  //! Concatenate path segments with the native separator.
+  //! Accepts strings, c-strings, and numbers (anything Alphameric accepts).
+  //! E.g. PathJoin(dir, seg_id, "file.ext")
+  static std::string PathJoin(const internal::Alphameric &a,
+                              const internal::Alphameric &b) {
+    return StringHelper::Concat(a, kPathSep, b);
+  }
+  template <typename... Rest>
+  static std::string PathJoin(const internal::Alphameric &a,
+                              const internal::Alphameric &b,
+                              const Rest &...rest) {
+    return PathJoin(StringHelper::Concat(a, kPathSep, b), rest...);
+  }
+
+ private:
+#if defined(_WIN32) || defined(_WIN64)
+  static constexpr const char *kPathSep = "\\";
+#else
+  static constexpr const char *kPathSep = "/";
+#endif
+ public:
+#if defined(_WIN32) || defined(_WIN64)
+  //! UTF-8 narrow string -> wide string (Win32 API ready)
+  static std::wstring Utf8ToWide(const std::string &utf8);
+
+  //! Wide string -> UTF-8 narrow string
+  static std::string WideToUtf8(const std::wstring &ws);
+#endif
+
+  //! Open a std::ifstream from a UTF-8 path
+  static void OpenIfstream(std::ifstream &ifs, const std::string &path,
+                           std::ios_base::openmode mode = std::ios_base::in) {
+    ifs.open(PathFromUtf8(path), mode);
+  }
+
+  //! Open a std::ofstream from a UTF-8 path
+  static void OpenOfstream(std::ofstream &ofs, const std::string &path,
+                           std::ios_base::openmode mode = std::ios_base::out) {
+    ofs.open(PathFromUtf8(path), mode);
   }
 };
 

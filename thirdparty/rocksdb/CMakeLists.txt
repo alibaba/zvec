@@ -37,6 +37,7 @@ set(WITH_CORE_TOOLS OFF CACHE BOOL "build with ldb and sst_dump" FORCE)
 set(WITH_TOOLS OFF CACHE BOOL "build with tools" FORCE)
 set(WITH_LZ4 ON CACHE BOOL "build with lz4" FORCE)
 set(USE_RTTI ON CACHE BOOL "build with RTTI" FORCE)
+set(WITH_WINDOWS_UTF8_FILENAMES ON CACHE BOOL "use UTF8 as characterset for opening files, regardles of the system code page" FORCE)
 # TODO(windows): verify
 set(ROCKSDB_SKIP_THIRDPARTY ON CACHE BOOL "skip thirdparty.inc" FORCE)
 set(FAIL_ON_WARNINGS OFF CACHE BOOL "build with no Werror" FORCE)
