@@ -89,7 +89,8 @@ void VectorPageTable::release_block(block_id_t block_id) {
   assert(block_id < entry_num_);
   Entry &entry = entries_[block_id];
 
-  if (entry.ref_count.fetch_sub(1, std::memory_order_release) == 1) {
+  int prev = entry.ref_count.fetch_sub(1, std::memory_order_release);
+  if (prev == 1) {
     std::atomic_thread_fence(std::memory_order_acquire);
     // Attempt to transition in_evict_queue from false -> true.  The CAS ensures
     // only one thread enqueues this block even if multiple threads race here.

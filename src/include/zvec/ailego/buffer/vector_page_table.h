@@ -183,6 +183,12 @@ class VecBufferPool {
       // A positive ref_count means a VecBufferPoolHandle is still alive,
       // which is a contract violation: all handles must be destroyed before
       // the pool itself is destroyed.
+      if (!page_table_.is_released(i)) {
+        LOG_ERROR(
+            "VecBufferPool dtor: block %zu not released, file[%s], "
+            "entry_num=%zu",
+            i, file_name_.c_str(), page_table_.entry_num());
+      }
       assert(page_table_.is_released(i));
       page_table_.evict_block(i);
     }
