@@ -290,7 +290,7 @@ TEST_F(FlatStreamerTest, TestLinearSearchBuffer) {
   read_streamer.reset();
 }
 
-TEST_F(FlatStreamerTest, TestLinearSearchBuffer) {
+TEST_F(FlatStreamerTest, TestLinearSearchBufferMMap) {
   MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
