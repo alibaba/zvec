@@ -225,6 +225,17 @@ class BufferStorage : public IndexStorage {
   //! Open storage
   int open(const std::string &path, bool create_if_missing) override {
     file_name_ = path;
+    if (!ailego::File::IsExist(path) && create_if_missing) {
+      size_t last_slash = path.rfind('/');
+      if (last_slash != std::string::npos) {
+        ailego::File::MakePath(path.substr(0, last_slash));
+      }
+
+      int error_code = this->init_index(path);
+      if (error_code != 0) {
+        return error_code;
+      }
+    }
     // Open in writable mode when the caller expects to modify the index
     // (create_if_missing mirrors the MMapFileStorage convention: true means
     // the index may need to be written, false means read-only).
@@ -329,15 +340,22 @@ class BufferStorage : public IndexStorage {
       if (iter->segment_id_offset < segment_ids_offset) {
         segment_ids_offset = iter->segment_id_offset;
       }
-      id_hash_.emplace(
-          std::string(reinterpret_cast<const char *>(segment_start) +
-                      iter->segment_id_offset),
-          segments_.size());
-      segments_.emplace(
-          std::string(reinterpret_cast<const char *>(segment_start) +
-                      iter->segment_id_offset),
+      // Assign a stable numeric ID (block_id in the page table) to this
+      // segment.  We use id_hash_.size() rather than segments_.size() because
+      // segments_ is intentionally NOT cleared between appends (to keep
+      // existing WrappedSegment pointers valid), so segments_.size() would
+      // reflect stale entries and produce wrong IDs on re-parse.
+      const std::string seg_name(
+          reinterpret_cast<const char *>(segment_start) +
+          iter->segment_id_offset);
+      id_hash_[seg_name] = id_hash_.size();
+      // Update the segments_ entry in-place so that any WrappedSegment
+      // instances that already hold a pointer to this entry (via
+      // &segments_[name].segment) continue to use the refreshed meta_ptr_
+      // after the re-parse.
+      segments_[seg_name] =
           IndexMapping::SegmentInfo{IndexMapping::Segment{iter},
-                                    current_header_start_offset_, &header_});
+                                    current_header_start_offset_, &header_};
       max_segment_size_ =
           std::max(max_segment_size_, iter->data_size + iter->padding_size);
       if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
@@ -459,40 +477,58 @@ class BufferStorage : public IndexStorage {
   }
 
  protected:
-  //! Initialize index version segment
-  int init_version_segment(void) {
-    size_t data_size = std::strlen(IndexVersion::Details());
-    int error_code =
-        this->append_segment(INDEX_VERSION_SEGMENT_NAME, data_size);
-    if (error_code != 0) {
-      return error_code;
+  //! Create the initial on-disk index structure and write the mandatory
+  //! version segment.  Uses IndexMapping (the same engine as MMapFileStorage)
+  //! so the produced file is fully compatible with both storage backends.
+  int init_index(const std::string &path) {
+    IndexMapping mapping;
+    // Create file + write MetaHeader / padding / MetaFooter.
+    int ret = mapping.create(path, segment_meta_capacity_);
+    if (ret != 0) {
+      LOG_ERROR(
+          "BufferStorage failed to create index file: path[%s], errno[%d]",
+          path.c_str(), ret);
+      return ret;
     }
 
-    auto segment = &get_segment_info(INDEX_VERSION_SEGMENT_NAME)->segment;
-    if (!segment) {
+    // Append and populate the mandatory version segment.
+    size_t data_size = std::strlen(IndexVersion::Details());
+    ret = mapping.append(INDEX_VERSION_SEGMENT_NAME, data_size);
+    if (ret != 0) {
+      LOG_ERROR(
+          "BufferStorage failed to append version segment: path[%s], errno[%d]",
+          path.c_str(), ret);
+      mapping.close();
+      return ret;
+    }
+    IndexMapping::Segment *seg =
+        mapping.map(INDEX_VERSION_SEGMENT_NAME, false, false);
+    if (!seg) {
+      LOG_ERROR(
+          "BufferStorage failed to map version segment: path[%s]",
+          path.c_str());
+      mapping.close();
       return IndexError_MMapFile;
     }
-    auto meta = segment->meta();
-    size_t capacity = static_cast<size_t>(meta->padding_size + meta->data_size);
-    memcpy(segment->data(), IndexVersion::Details(), data_size);
-    segment->set_dirty();
-    meta->data_crc = ailego::Crc32c::Hash(segment->data(), data_size, 0);
+    auto meta = seg->meta();
+    size_t capacity = meta->data_size + meta->padding_size;
+    memcpy(seg->data(), IndexVersion::Details(), data_size);
+    seg->set_dirty();
+    meta->data_crc = ailego::Crc32c::Hash(seg->data(), data_size, 0);
     meta->data_size = data_size;
     meta->padding_size = capacity - data_size;
-    return 0;
-  }
 
-  //! Initialize index file
-  int init_index(const std::string & /*path*/) {
-    // Add index version
-    int error_code = this->init_version_segment();
-    if (error_code != 0) {
-      return error_code;
+    // Refresh checksums, flush to disk, then release the mapping so the
+    // VecBufferPool can open the completed file.
+    mapping.refresh(0);
+    ret = mapping.flush();
+    mapping.close();
+    if (ret != 0) {
+      LOG_ERROR(
+          "BufferStorage failed to flush new index file: path[%s], errno[%d]",
+          path.c_str(), ret);
     }
-
-    // Refresh mapping
-    this->refresh_index(0);
-    return 0;
+    return ret;
   }
 
   //! Set the index file as dirty
@@ -571,6 +607,12 @@ class BufferStorage : public IndexStorage {
 
   //! Close index storage
   void close_index(void) {
+    // Flush any outstanding dirty metadata (segment data_size / CRC) to disk
+    // before tearing down the buffer pool.  MMapFileStorage does the same via
+    // mapping_.close() which triggers an munmap-flush; here we must be
+    // explicit because the pool destructor only flushes dirty data blocks,
+    // not the segment-meta area stored in buffer_pool_buffers_.
+    this->flush_index();
     std::lock_guard<std::mutex> latch(mapping_mutex_);
     file_name_.clear();
     id_hash_.clear();
@@ -585,8 +627,89 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Append a segment into storage
-  int append_segment(const std::string & /*id*/, size_t /*size*/) {
-    return 0;
+  int append_segment(const std::string &id, size_t size) {
+    // Flush any in-memory metadata changes (data_size, padding_size, CRC)
+    // accumulated by prior write()/resize() calls BEFORE we reset the buffer
+    // pool below.  Without this flush, those changes would be lost when
+    // buffer_pool_buffers_ is cleared and re-populated from disk.
+    // Example: init_storage() writes to FLAT_LINEAR_META_SEG_ID (sets
+    // data_size=4379), then calls append("IndexMeta").  Without this flush
+    // the 4379 is never written to disk and the subsequent re-parse reads
+    // the original on-disk value (0 / 128), causing a format error on reload.
+    this->flush_index();
+
+    // Flush and release the buffer pool so IndexMapping can safely open
+    // and structurally modify (meta section + content area) the same file.
+    {
+      std::lock_guard<std::mutex> latch(mapping_mutex_);
+      if (buffer_pool_handle_) {
+        buffer_pool_handle_->flush_all();
+      }
+      buffer_pool_handle_.reset();
+      buffer_pool_.reset();
+      // Reset parse-time state EXCEPT for segments_: WrappedSegment instances
+      // held by callers (e.g. FlatStreamerEntity::segments_[]) store raw
+      // pointers into segments_' mapped values (IndexMapping::Segment).  The
+      // C++ standard guarantees that unordered_map references/pointers to
+      // mapped values are never invalidated by insertions, so we can safely
+      // leave segments_ intact and update entries in-place during re-parse.
+      // Clearing segments_ here would make those pointers dangle and cause a
+      // use-after-free crash during the next read or search.
+      id_hash_.clear();
+      buffer_pool_buffers_.clear();
+      meta_chains_.clear();
+      current_header_start_offset_ = 0u;
+      max_segment_size_ = 0u;
+      memset(&header_, 0, sizeof(header_));
+      memset(&footer_, 0, sizeof(footer_));
+    }
+
+    // Delegate the structural append to IndexMapping (same engine used by
+    // MMapFileStorage) so the on-disk format stays consistent.
+    IndexMapping mapping;
+    int ret = mapping.open(file_name_, /*cow=*/false, /*full_mode=*/false);
+    if (ret != 0) {
+      LOG_ERROR(
+          "BufferStorage::append_segment failed to open IndexMapping: "
+          "file[%s], id[%s], errno[%d]",
+          file_name_.c_str(), id.c_str(), ret);
+      return ret;
+    }
+    ret = mapping.append(id, size);
+    if (ret != 0) {
+      LOG_ERROR(
+          "BufferStorage::append_segment failed to append segment: "
+          "file[%s], id[%s], errno[%d]",
+          file_name_.c_str(), id.c_str(), ret);
+      mapping.close();
+      return ret;
+    }
+    mapping.refresh(0);
+    ret = mapping.flush();
+    mapping.close();
+    if (ret != 0) {
+      LOG_ERROR(
+          "BufferStorage::append_segment failed to flush: "
+          "file[%s], id[%s], errno[%d]",
+          file_name_.c_str(), id.c_str(), ret);
+      return ret;
+    }
+
+    // Reopen the buffer pool and reload the mapping so the new segment is
+    // accessible via get_segment_info() / get().
+    buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
+        file_name_, /*writable=*/true, /*create=*/false);
+    buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
+        buffer_pool_->get_handle());
+    ret = ParseToMapping();
+    if (ret != 0) {
+      LOG_ERROR(
+          "BufferStorage::append_segment failed to re-parse mapping: "
+          "file[%s], errno[%d]",
+          file_name_.c_str(), ret);
+      return ret;
+    }
+    return buffer_pool_->init(segments_.size());
   }
 
   //! Test if a segment exists
@@ -622,6 +745,12 @@ class BufferStorage : public IndexStorage {
   ailego::VecBufferPoolHandle::Pointer buffer_pool_handle_{nullptr};
   uint64_t current_header_start_offset_{0u};
   uint64_t buffer_size_{2lu * 1024 * 1024 * 1024};  // 2G
+
+  // Capacity (in bytes) of the segment metadata section written by init_index().
+  // Sized to hold ~128 SegmentMeta entries (128 × 32 B = 4096 B).  Mirrors the
+  // default used by MMapFileStorage; the section auto-expands via header
+  // chaining when more segments are needed.
+  uint32_t segment_meta_capacity_{4096u};
 
   // Per-header-chain file offsets used by flush_index() to write updated
   // segment metadata and footer back to the backing file after writes.
