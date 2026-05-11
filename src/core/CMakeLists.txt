@@ -21,6 +21,27 @@ if(RABITQ_SUPPORTED AND AUTO_DETECT_ARCH)
   endforeach()
 endif()
 
+# utility/block_heap.cc uses AVX2 intrinsics guarded by __AVX2__. When the
+# host toolchain supports it, compile this source with an AVX2-capable
+# -march so AVX2 codegen is emitted. zvec_core glob-collects this source
+# too, so per-file flags must be set here as well (in addition to the
+# core_utility target in utility/CMakeLists.txt). Callers runtime-gate
+# invocation of BlockHeap paths on CpuFeatures::AVX2.
+if(NOT ANDROID AND AUTO_DETECT_ARCH)
+  if(HOST_ARCH MATCHES "^(x86|x64)$")
+    setup_compiler_march_for_x86(
+        _BLOCK_HEAP_MARCH_SSE _BLOCK_HEAP_MARCH_AVX2
+        _BLOCK_HEAP_MARCH_AVX512 _BLOCK_HEAP_MARCH_AVX512FP16)
+    if(_BLOCK_HEAP_MARCH_AVX2)
+      set_source_files_properties(
+          utility/block_heap.cc
+          PROPERTIES
+          COMPILE_FLAGS "${_BLOCK_HEAP_MARCH_AVX2}"
+      )
+    endif()
+  endif()
+endif()
+
 cc_directory(framework)
 cc_directory(algorithm)
 cc_directory(metric)
