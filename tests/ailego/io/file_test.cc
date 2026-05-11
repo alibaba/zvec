@@ -45,7 +45,9 @@ TEST(File, General) {
 }
 
 TEST(File, MakePath) {
-  EXPECT_TRUE(File::MakePath(""));
+  EXPECT_FALSE(File::MakePath(""));
+  std::cout << FileHelper::GetLastErrorString() << std::endl;
+
   EXPECT_TRUE(File::MakePath("."));
   EXPECT_TRUE(File::MakePath(".."));
   EXPECT_TRUE(File::MakePath("../"));

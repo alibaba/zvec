@@ -73,16 +73,17 @@ class FileHelper {
  public:
   static const std::string MakeWalPath(const std::string &path, uint32_t seg_id,
                                        uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/", block_id,
-                                        ".wal");
+    return ailego::FileHelper::PathJoin(
+        path, seg_id, ailego::StringHelper::Concat(block_id, ".wal"));
   }
 
   static std::string MakeSegmentPath(const std::string &path, uint32_t id,
                                      const std::string &suffix = "") {
     if (suffix.empty()) {
-      return ailego::StringHelper::Concat(path, "/", id);
+      return ailego::FileHelper::PathJoin(path, id);
     }
-    return ailego::StringHelper::Concat(path, "/", id, ".", suffix);
+    return ailego::FileHelper::PathJoin(
+        path, ailego::StringHelper::Concat(id, ".", suffix));
   }
 
   static std::string MakeTempSegmentPath(const std::string &path, uint32_t id) {
@@ -94,99 +95,105 @@ class FileHelper {
                                                 uint32_t seg_id,
                                                 uint32_t block_id,
                                                 bool use_parquet = false) {
-    return use_parquet ? MakeForwardBlockPath(path, seg_id, block_id,
-                                              std::string("parquet"))
-                       : MakeForwardBlockPath(path, seg_id, block_id,
-                                              std::string("ipc"));
+    return MakeForwardBlockPath(path, seg_id, block_id,
+                                std::string(use_parquet ? "parquet" : "ipc"));
   }
 
   static const std::string MakeForwardBlockPath(const std::string &path,
                                                 uint32_t seg_id,
                                                 uint32_t block_id,
                                                 const std::string &suffix) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/scalar.", block_id,
-                                        ".", suffix);
+    return ailego::FileHelper::PathJoin(
+        path, seg_id,
+        ailego::StringHelper::Concat("scalar.", block_id, ".", suffix));
   }
 
   static const std::string MakeForwardBlockPath(const std::string &seg_path,
                                                 uint32_t block_id,
                                                 bool use_parquet = false) {
-    return use_parquet ? ailego::StringHelper::Concat(seg_path, "/scalar.",
-                                                      block_id, ".parquet")
-                       : ailego::StringHelper::Concat(seg_path, "/scalar.",
-                                                      block_id, ".ipc");
+    return MakeForwardBlockPath(seg_path, block_id,
+                                std::string(use_parquet ? "parquet" : "ipc"));
   }
 
   static const std::string MakeForwardBlockPath(const std::string &seg_path,
                                                 uint32_t block_id,
                                                 const std::string &suffix) {
-    return ailego::StringHelper::Concat(seg_path, "/scalar.", block_id, ".",
-                                        suffix);
+    return ailego::FileHelper::PathJoin(
+        seg_path,
+        ailego::StringHelper::Concat("scalar.", block_id, ".", suffix));
   }
 
   // e.g.: **/seg1/scalar.index.block.1.rocksdb
   static const std::string MakeInvertIndexPath(const std::string &path,
                                                uint32_t seg_id,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/scalar.index.",
-                                        block_id, ".rocksdb");
+    return ailego::FileHelper::PathJoin(
+        path, seg_id,
+        ailego::StringHelper::Concat("scalar.index.", block_id, ".rocksdb"));
   }
 
   static const std::string MakeInvertIndexPath(const std::string &seg_path,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(seg_path, "/scalar.index.", block_id,
-                                        ".rocksdb");
+    return ailego::FileHelper::PathJoin(
+        seg_path,
+        ailego::StringHelper::Concat("scalar.index.", block_id, ".rocksdb"));
   }
 
   static const std::string MakeVectorIndexPath(const std::string &path,
                                                const std::string &column,
                                                uint32_t seg_id,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/", column,
-                                        ".index.", block_id, ".proxima");
+    return ailego::FileHelper::PathJoin(
+        path, seg_id,
+        ailego::StringHelper::Concat(column, ".index.", block_id, ".proxima"));
   }
 
   static const std::string MakeVectorIndexPath(const std::string &seg_path,
                                                const std::string &column,
                                                uint32_t block_id) {
-    return ailego::StringHelper::Concat(seg_path, "/", column, ".index.",
-                                        block_id, ".proxima");
+    return ailego::FileHelper::PathJoin(
+        seg_path,
+        ailego::StringHelper::Concat(column, ".index.", block_id, ".proxima"));
   }
 
   // e.g.: **/{seg_id}/{column}.index.block.{block_id}.proxima
   static const std::string MakeQuantizeVectorIndexPath(
       const std::string &path, const std::string &column, uint32_t seg_id,
       uint32_t block_id) {
-    return ailego::StringHelper::Concat(path, "/", seg_id, "/", column,
-                                        ".qindex.", block_id, ".proxima");
+    return ailego::FileHelper::PathJoin(
+        path, seg_id,
+        ailego::StringHelper::Concat(column, ".qindex.", block_id, ".proxima"));
   }
 
   static const std::string MakeQuantizeVectorIndexPath(
       const std::string &seg_path, const std::string &column,
       uint32_t block_id) {
-    return ailego::StringHelper::Concat(seg_path, "/", column, ".qindex.",
-                                        block_id, ".proxima");
+    return ailego::FileHelper::PathJoin(
+        seg_path,
+        ailego::StringHelper::Concat(column, ".qindex.", block_id, ".proxima"));
   }
 
   //! Make file path with ${prefix_path}/${file_name}
   static std::string MakeFilePath(const std::string &prefix_path,
                                   FileID file_id) {
-    return ailego::StringHelper::Concat(prefix_path, "/", GetFileName(file_id));
+    return ailego::FileHelper::PathJoin(prefix_path, GetFileName(file_id));
   }
 
   //! Make file path with ${prefix_path}/${file_name}.${number}
   static std::string MakeFilePath(const std::string &prefix_path,
                                   FileID file_id, uint32_t number) {
-    return ailego::StringHelper::Concat(prefix_path, "/", GetFileName(file_id),
-                                        ".", number);
+    return ailego::FileHelper::PathJoin(
+        prefix_path,
+        ailego::StringHelper::Concat(GetFileName(file_id), ".", number));
   }
 
   //! Make file path with ${prefix_path}/${file_name}.${suffix_name}.${number}
   static std::string MakeFilePath(const std::string &prefix_path,
                                   FileID file_id, uint32_t number,
                                   const std::string &suffix_name) {
-    return ailego::StringHelper::Concat(prefix_path, "/", GetFileName(file_id),
-                                        ".", suffix_name, ".", number);
+    return ailego::FileHelper::PathJoin(
+        prefix_path, ailego::StringHelper::Concat(GetFileName(file_id), ".",
+                                                  suffix_name, ".", number));
   }
 
   //! Create directory

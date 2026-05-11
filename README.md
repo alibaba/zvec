@@ -35,17 +35,14 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.3.1 (Apr 17, 2026)**
+> 🚀 **v0.4.0 (May 9, 2026)**
 >
-> - Relaxed collection path restrictions and improved Windows path handling.
+> - **Dart/Flutter SDK**: Published the official [zvec](https://github.com/zvec-ai/zvec-dart) Flutter package with FFI bindings. Supports Android (arm64-v8a) and iOS (arm64) — no manual native compilation required.
+> - **iOS Build Support**: Added support for building on iOS platforms, expanding cross-platform coverage.
+> - **Enlarged topK Limit**: Relaxed the upper bound on topK to support larger-scale recall scenarios.
+> - **Bug Fixes**: SQ8 quantizer recall drop; Windows path handling; sparse vector index ordering.
 >
-> 🚀 **v0.3.0 (April 3, 2026)**
->
-> - **New Platforms**: Initial **Windows (MSVC)** and **Android** support. Published official Windows **Python** and **Node.js** packages.
-> - **Efficiency**: **RabitQ** quantization and **CPU Auto-Dispatch** for optimized SIMD execution.
-> - **Ecosystem**: **C-API** for custom language bindings and **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** integration for AI Agents.
->
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.4.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 

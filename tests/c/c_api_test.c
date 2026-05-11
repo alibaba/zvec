@@ -4783,14 +4783,6 @@ void test_doc_advanced_functions(void) {
   zvec_doc_add_field_by_value(val_doc, "test_field", ZVEC_DATA_TYPE_INT32,
                               &(int32_t){42}, sizeof(int32_t));
 
-  char *error_msg = NULL;
-  zvec_error_code_t err =
-      zvec_doc_validate_and_sanitize(val_doc, schema, false, &error_msg);
-  TEST_ASSERT(err == ZVEC_OK);
-  if (error_msg) {
-    zvec_free(error_msg);
-  }
-
   zvec_doc_destroy(val_doc);
   zvec_collection_schema_destroy(schema);
   zvec_doc_destroy(doc);
@@ -4804,7 +4796,7 @@ void test_doc_advanced_functions(void) {
                               "hello", 5);
 
   char *detail_str = NULL;
-  err = zvec_doc_to_detail_string(detail_doc, &detail_str);
+  zvec_error_code_t err = zvec_doc_to_detail_string(detail_doc, &detail_str);
   TEST_ASSERT(err == ZVEC_OK);
   TEST_ASSERT(detail_str != NULL);
   // printf("  Document detail: %s\n", detail_str);

@@ -18,6 +18,7 @@
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/factory.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
 #include "error_code.h"
@@ -50,7 +51,8 @@ class LogUtil {
     if (logger_type == FILE_LOG_TYPE_NAME) {
       params.set("proxima.file.logger.log_dir", log_dir);
       params.set("proxima.file.logger.log_file", log_file);
-      params.set("proxima.file.logger.path", log_dir + "/" + log_file);
+      params.set("proxima.file.logger.path",
+                 ailego::FileHelper::PathJoin(log_dir, log_file));
       std::string program_name = ailego::File::BaseName(gflags::GetArgv0());
       params.set("proxima.program.program_name", program_name);
       params.set("proxima.file.logger.file_size", log_file_size);

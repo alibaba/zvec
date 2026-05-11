@@ -164,7 +164,7 @@ class Version {
 
  private:
   CollectionSchema::Ptr schema_;
-  bool enable_mmap_;
+  bool enable_mmap_{false};
 
   std::unordered_map<SegmentID, SegmentMeta::Ptr> persisted_segment_metas_map_;
 

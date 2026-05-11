@@ -12,34 +12,238 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <system_error>
 #include <zvec/ailego/utility/file_helper.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <Windows.h>
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+#ifdef GetFileSize
+#undef GetFileSize
+#endif
 #else
 #if defined(__APPLE__) || defined(__MACH__)
 #include <mach-o/dyld.h>
 #endif
-#include <sys/stat.h>
-#include <dirent.h>
-#include <errno.h>
+#if defined(__FreeBSD__)
+#include <sys/sysctl.h>
+#endif
 #include <fcntl.h>
-#include <string.h>
 #include <unistd.h>
 #endif
 
-
-#include <filesystem>
 namespace fs = std::filesystem;
-// TODO: refactor all file operations by std::filesystem;
 
 namespace zvec {
 namespace ailego {
 
+namespace {
+
+thread_local std::error_code g_last_fs_error;
+
+void ClearFsError() {
+  g_last_fs_error.clear();
+}
+
+void SetFsError(std::error_code ec) {
+  g_last_fs_error = ec;
+}
+
+}  // namespace
+
+// ---------- public UTF-8 / wide helpers ----------
+
+fs::path FileHelper::PathFromUtf8(const char *s) {
+#if defined(_WIN32) || defined(_WIN64)
+  if (!s || !*s) {
+    return fs::path();
+  }
+  return fs::u8path(s);
+#else
+  return fs::path(s ? s : "");
+#endif
+}
+
+fs::path FileHelper::PathFromUtf8(const std::string &s) {
+  return PathFromUtf8(s.c_str());
+}
+
+std::string FileHelper::PathToUtf8(const fs::path &p) {
+  return p.u8string();
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+std::wstring FileHelper::Utf8ToWide(const std::string &src) {
+  if (src.empty()) {
+    return {};
+  }
+  int src_len = static_cast<int>(src.size());
+  int dst_len =
+      MultiByteToWideChar(CP_UTF8, 0, src.data(), src_len, nullptr, 0);
+  if (dst_len <= 0) {
+    return {};
+  }
+  std::wstring dst(static_cast<size_t>(dst_len), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, 0, src.data(), src_len, dst.data(),
+                          dst_len) != dst_len) {
+    return {};
+  }
+  return dst;
+}
+
+std::string FileHelper::WideToUtf8(const std::wstring &src) {
+  if (src.empty()) {
+    return {};
+  }
+  int src_len = static_cast<int>(src.size());
+  int dst_len = WideCharToMultiByte(CP_UTF8, 0, src.data(), src_len, nullptr, 0,
+                                    nullptr, nullptr);
+  if (dst_len <= 0) {
+    return {};
+  }
+  std::string dst(static_cast<size_t>(dst_len), '\0');
+  if (WideCharToMultiByte(CP_UTF8, 0, src.data(), src_len, dst.data(), dst_len,
+                          nullptr, nullptr) != dst_len) {
+    return {};
+  }
+  return dst;
+}
+
+#endif
+
+// ---------- internal helpers ----------
+
+namespace {
+
+static bool GetFileSizeImpl(const fs::path &p, size_t *psz) {
+  ClearFsError();
+  std::error_code ec;
+  auto sz = fs::file_size(p, ec);
+  if (ec) {
+    SetFsError(ec);
+    return false;
+  }
+  *psz = static_cast<size_t>(sz);
+  return true;
+}
+
+static bool DeleteFileImpl(const fs::path &p) {
+  ClearFsError();
+  std::error_code ec;
+  fs::file_status st = fs::symlink_status(p, ec);
+  if (ec) {
+    SetFsError(ec);
+    return false;
+  }
+  if (fs::is_directory(st) && !fs::is_symlink(st)) {
+    ec = std::make_error_code(std::errc::is_a_directory);
+    SetFsError(ec);
+    return false;
+  }
+  if (!fs::remove(p, ec)) {
+    SetFsError(ec ? ec
+                  : std::make_error_code(std::errc::no_such_file_or_directory));
+    return false;
+  }
+  return true;
+}
+
+static bool RenameFileImpl(const fs::path &from, const fs::path &to) {
+  ClearFsError();
+  std::error_code ec;
+  fs::rename(from, to, ec);
+  if (ec) {
+    SetFsError(ec);
+    return false;
+  }
+  return true;
+}
+
+static bool MakePathImpl(const fs::path &p) {
+  ClearFsError();
+  std::error_code ec;
+  fs::create_directories(p, ec);
+  if (ec) {
+    SetFsError(ec);
+    return false;
+  }
+  return true;
+}
+
+static bool RemoveDirectoryImpl(const fs::path &p) {
+  ClearFsError();
+  std::error_code ec;
+  if (!fs::is_directory(p, ec)) {
+    if (ec) {
+      SetFsError(ec);
+    }
+    return false;
+  }
+  std::uintmax_t n = fs::remove_all(p, ec);
+  if (ec) {
+    SetFsError(ec);
+    return false;
+  }
+  (void)n;
+  return true;
+}
+
+static bool IsExistImpl(const fs::path &p) {
+  std::error_code ec;
+  return fs::exists(p, ec);
+}
+
+static bool IsRegularImpl(const fs::path &p) {
+  std::error_code ec;
+  return fs::is_regular_file(p, ec);
+}
+
+static bool IsDirectoryImpl(const fs::path &p) {
+  std::error_code ec;
+  return fs::is_directory(p, ec);
+}
+
+static bool IsSymbolicLinkImpl(const fs::path &p) {
+  std::error_code ec;
+  return fs::is_symlink(p, ec);
+}
+
+static bool IsSameImpl(const fs::path &a, const fs::path &b) {
+  std::error_code ec;
+  return fs::equivalent(a, b, ec);
+}
+
+}  // namespace
+
 bool FileHelper::GetSelfPath(std::string *path) {
 #if defined(_WIN32) || defined(_WIN64)
-  char buf[MAX_PATH];
-  DWORD len = GetModuleFileNameA(NULL, buf, MAX_PATH);
+  std::wstring wbuf(4096, L'\0');
+  DWORD n =
+      GetModuleFileNameW(nullptr, wbuf.data(), static_cast<DWORD>(wbuf.size()));
+  while (n >= wbuf.size() - 1) {
+    if (wbuf.size() > 65536) {
+      return false;
+    }
+    wbuf.resize(wbuf.size() * 2);
+    n = GetModuleFileNameW(nullptr, wbuf.data(),
+                           static_cast<DWORD>(wbuf.size()));
+  }
+  if (n == 0) {
+    return false;
+  }
+  wbuf.resize(n);
+  *path = WideToUtf8(wbuf);
+  return !path->empty();
 #elif defined(__APPLE__) || defined(__MACH__)
   char buf[PATH_MAX];
   size_t len = 0;
@@ -62,18 +266,31 @@ bool FileHelper::GetSelfPath(std::string *path) {
   ssize_t len = readlink("/proc/self/exe", buf, PATH_MAX);
 #endif
 
+#if !defined(_WIN32) && !defined(_WIN64)
   if (len <= 0) {
     return false;
   }
   path->assign(buf, len);
   return true;
+#endif
 }
 
 bool FileHelper::GetFilePath(NativeHandle handle, std::string *path) {
 #if defined(_WIN32) || defined(_WIN64)
-  char buf[MAX_PATH];
-  DWORD len =
-      GetFinalPathNameByHandleA(handle, buf, MAX_PATH, FILE_NAME_OPENED);
+  DWORD need = GetFinalPathNameByHandleW(static_cast<HANDLE>(handle), nullptr,
+                                         0, FILE_NAME_OPENED);
+  if (need == 0) {
+    return false;
+  }
+  std::wstring wbuf(static_cast<size_t>(need) + 1, L'\0');
+  DWORD got = GetFinalPathNameByHandleW(
+      static_cast<HANDLE>(handle), wbuf.data(), need + 1, FILE_NAME_OPENED);
+  if (got == 0 || got > need) {
+    return false;
+  }
+  wbuf.resize(got);
+  *path = WideToUtf8(wbuf);
+  return !path->empty();
 #elif defined(__linux) || defined(__linux__)
   char buf[PATH_MAX];
   char src[32];
@@ -87,276 +304,75 @@ bool FileHelper::GetFilePath(NativeHandle handle, std::string *path) {
   }
 #endif
 
+#if !defined(_WIN32) && !defined(_WIN64)
   if (len <= 0) {
     return false;
   }
   path->assign(buf, len);
   return true;
-}
-
-#if !defined(_WIN32) && !defined(_WIN64)
-
-static inline char *JoinFilePath(const char *prefix, const char *suffix) {
-  size_t prefix_len = strlen(prefix);
-  size_t suffix_len = strlen(suffix);
-
-  char *path = (char *)malloc(prefix_len + suffix_len + 2);
-  if (path) {
-    memcpy(path, prefix, prefix_len);
-    memcpy(path + prefix_len + 1, suffix, suffix_len);
-    path[prefix_len] = '/';
-    path[prefix_len + suffix_len + 1] = '\0';
-  }
-  return path;
+#endif
 }
 
 bool FileHelper::GetWorkingDirectory(std::string *path) {
-  char buf[PATH_MAX];
-
-  if (!getcwd(buf, PATH_MAX)) {
+  ClearFsError();
+  std::error_code ec;
+  fs::path cwd = fs::current_path(ec);
+  if (ec) {
+    SetFsError(ec);
     return false;
   }
-  path->assign(buf);
+  *path = PathToUtf8(cwd);
   return !path->empty();
 }
 
 bool FileHelper::GetFileSize(const char *path, size_t *psz) {
-  struct stat buf;
-  if (stat(path, &buf) != 0) {
-    return false;
-  }
-  *psz = buf.st_size;
-  return true;
+  return GetFileSizeImpl(PathFromUtf8(path), psz);
 }
 
 bool FileHelper::DeleteFile(const char *path) {
-  // Delete a file by the path
-  return (unlink(path) == 0);
+  return DeleteFileImpl(PathFromUtf8(path));
 }
 
 bool FileHelper::RenameFile(const char *oldpath, const char *newpath) {
-  return (rename(oldpath, newpath) == 0);
+  return RenameFileImpl(PathFromUtf8(oldpath), PathFromUtf8(newpath));
 }
 
 bool FileHelper::MakePath(const char *path) {
-  char pathbuf[PATH_MAX];
-  char *sp, *pp;
-
-  strncpy(pathbuf, path, sizeof(pathbuf) - 1);
-  pathbuf[PATH_MAX - 1] = '\0';
-
-  pp = pathbuf;
-  while ((sp = strchr(pp, '/')) != nullptr) {
-    // Neither root nor double slash in path
-    if (sp != pp) {
-      *sp = '\0';
-      if (mkdir(pathbuf, 0755) == -1 && errno != EEXIST) {
-        return false;
-      }
-      *sp = '/';
-    }
-    pp = sp + 1;
-  }
-  return !(*pp != '\0' && mkdir(pathbuf, 0755) == -1 && errno != EEXIST);
-}
-
-bool FileHelper::RemoveDirectory(const char *path) {
-  DIR *dir = opendir(path);
-  if (!dir) {
-    return false;
-  }
-
-  struct dirent *dent;
-  while ((dent = readdir(dir)) != nullptr) {
-    if (!strcmp(dent->d_name, ".") || !strcmp(dent->d_name, "..")) {
-      continue;
-    }
-    char *fullpath = JoinFilePath(path, dent->d_name);
-    if (!fullpath) {
-      continue;
-    }
-
-    if (FileHelper::IsDirectory(fullpath)) {
-      FileHelper::RemoveDirectory(fullpath);
-    } else {
-      FileHelper::DeleteFile(fullpath);
-    }
-    free(fullpath);
-  }
-  closedir(dir);
-  return (rmdir(path) == 0);
-}
-
-bool FileHelper::IsExist(const char *path) {
-  return (access(path, F_OK) == 0);
-}
-
-bool FileHelper::IsRegular(const char *path) {
-  struct stat buf;
-  if (stat(path, &buf) != 0) {
-    return false;
-  }
-  return ((buf.st_mode & S_IFREG) != 0);
-}
-
-bool FileHelper::IsDirectory(const char *path) {
-  struct stat buf;
-  if (stat(path, &buf) != 0) {
-    return false;
-  }
-  return ((buf.st_mode & S_IFDIR) != 0);
-}
-
-bool FileHelper::IsSymbolicLink(const char *path) {
-  struct stat buf;
-  if (stat(path, &buf) != 0) {
-    return false;
-  }
-  return ((buf.st_mode & S_IFLNK) != 0);
-}
-
-bool FileHelper::IsSame(const char *path1, const char *path2) {
-  char real_path1[PATH_MAX];
-  char real_path2[PATH_MAX];
-  if (!realpath(path1, real_path1)) {
-    return false;
-  }
-  if (!realpath(path2, real_path2)) {
-    return false;
-  }
-  return (!strcmp(real_path1, real_path2));
-}
-
-std::string FileHelper::GetLastErrorString() {
-  return strerror(errno);
-}
-
-#else
-#undef RemoveDirectory
-#undef DeleteFile
-#undef GetFileSize
-
-static inline char *JoinFilePath(const char *prefix, const char *suffix) {
-  size_t prefix_len = strlen(prefix);
-  size_t suffix_len = strlen(suffix);
-
-  char *path = (char *)malloc(prefix_len + suffix_len + 2);
-  if (path) {
-    memcpy(path, prefix, prefix_len);
-    memcpy(path + prefix_len + 1, suffix, suffix_len);
-    path[prefix_len] = '\\';
-    path[prefix_len + suffix_len + 1] = '\0';
-  }
-  return path;
-}
-
-bool FileHelper::GetWorkingDirectory(std::string *path) {
-  char buf[MAX_PATH];
-  DWORD len = GetCurrentDirectoryA(MAX_PATH, buf);
-
-  if (len <= 0) {
-    return false;
-  }
-  path->assign(buf, len);
-  return true;
-}
-
-bool FileHelper::GetFileSize(const char *path, size_t *psz) {
-  HANDLE handle =
-      CreateFileA(path, GENERIC_READ,
-                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) {
-    return false;
-  }
-
-  LARGE_INTEGER file_size;
-  if (!GetFileSizeEx(handle, &file_size)) {
-    CloseHandle(handle);
-    return false;
-  }
-  CloseHandle(handle);
-  *psz = (size_t)file_size.QuadPart;
-  return true;
-}
-
-bool FileHelper::DeleteFile(const char *path) {
-  // Delete a file by the path
-  return (DeleteFileA(path));
-}
-
-bool FileHelper::RenameFile(const char *oldpath, const char *newpath) {
-  return (MoveFileA(oldpath, newpath));
-}
-
-bool FileHelper::MakePath(const char *path) {
-  char pathbuf[MAX_PATH];
-  char *sp, *pp;
-
-  strncpy(pathbuf, path, sizeof(pathbuf) - 1);
-  pathbuf[MAX_PATH - 1] = '\0';
-
-  pp = pathbuf;
-  while ((sp = strpbrk(pp, "/\\")) != nullptr) {
-    // Neither root nor double slash in path
-    if (sp != pp) {
-      *sp = '\0';
-      // Skip Windows drive roots like "C:" — CreateDirectoryA on a bare drive
-      // letter returns ERROR_ACCESS_DENIED (not ERROR_ALREADY_EXISTS), which
-      // would cause MakePath to fail even when all parent dirs already exist.
-      bool is_drive_root = (sp - pathbuf == 2 && pathbuf[1] == ':');
-      if (!is_drive_root && !CreateDirectoryA(pathbuf, nullptr) &&
-          GetLastError() != ERROR_ALREADY_EXISTS) {
-        return false;
-      }
-      *sp = '\\';
-    }
-    pp = sp + 1;
-  }
-  return !(*pp != '\0' && !CreateDirectoryA(pathbuf, nullptr) &&
-           GetLastError() != ERROR_ALREADY_EXISTS);
+  return MakePathImpl(PathFromUtf8(path));
 }
 
 bool FileHelper::RemoveDirectory(const char *path) {
   if (path == nullptr || *path == '\0') {
     return false;
   }
-
-  if (!FileHelper::IsDirectory(path)) {
-    return false;
-  }
-
-  std::error_code ec;
-  fs::remove_all(path, ec);
-  if (ec) {
-    return false;
-  }
-  return true;
+  return RemoveDirectoryImpl(PathFromUtf8(path));
 }
 
 bool FileHelper::IsExist(const char *path) {
-  DWORD attr = GetFileAttributesA(path);
-  return (attr != INVALID_FILE_ATTRIBUTES);
+  return IsExistImpl(PathFromUtf8(path));
 }
 
 bool FileHelper::IsRegular(const char *path) {
-  DWORD attr = GetFileAttributesA(path);
-  return (attr != INVALID_FILE_ATTRIBUTES &&
-          !(attr & FILE_ATTRIBUTE_DIRECTORY));
+  return IsRegularImpl(PathFromUtf8(path));
 }
 
 bool FileHelper::IsDirectory(const char *path) {
-  DWORD attr = GetFileAttributesA(path);
-  return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY));
+  return IsDirectoryImpl(PathFromUtf8(path));
 }
 
 bool FileHelper::IsSymbolicLink(const char *path) {
-  DWORD attr = GetFileAttributesA(path);
-  return (attr != INVALID_FILE_ATTRIBUTES &&
-          (attr & FILE_ATTRIBUTE_REPARSE_POINT));
+  return IsSymbolicLinkImpl(PathFromUtf8(path));
+}
+
+bool FileHelper::IsSame(const char *path1, const char *path2) {
+  return IsSameImpl(PathFromUtf8(path1), PathFromUtf8(path2));
 }
 
 std::string FileHelper::GetLastErrorString() {
+  if (g_last_fs_error) {
+    return g_last_fs_error.message();
+  }
+#if defined(_WIN32) || defined(_WIN64)
   DWORD err = GetLastError();
   if (err == 0) {
     return "No error";
@@ -366,33 +382,16 @@ std::string FileHelper::GetLastErrorString() {
       FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, err,
       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof(buf), nullptr);
   if (len > 0) {
-    // Strip trailing newline that FormatMessage often appends
     while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n')) {
       buf[--len] = '\0';
     }
     return std::string(buf, len);
   }
   return "Unknown error " + std::to_string(err);
+#else
+  return strerror(errno);
+#endif
 }
-
-bool FileHelper::IsSame(const char *path1, const char *path2) {
-  char real_path1[MAX_PATH];
-  char real_path2[MAX_PATH];
-  char **part_path1 = nullptr;
-  char **part_path2 = nullptr;
-  DWORD path1_size =
-      GetFullPathNameA(path1, sizeof(real_path1), real_path1, part_path1);
-  DWORD path2_size =
-      GetFullPathNameA(path2, sizeof(real_path2), real_path2, part_path2);
-
-  if ((part_path1 && *part_path1 != 0) || (part_path2 && *part_path2 != 0) ||
-      (path1_size != path2_size)) {
-    return false;
-  }
-  return (!strcmp(real_path1, real_path2));
-}
-
-#endif  // !_WIN32 && !_WIN64
 
 bool FileHelper::RemovePath(const char *path) {
   if (FileHelper::IsDirectory(path)) {

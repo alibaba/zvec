@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -25,7 +26,6 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/file_helper.h>
-#include <zvec/ailego/utility/string_helper.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/options.h>
@@ -1875,7 +1875,7 @@ Status CollectionImpl::init_writing_segment() {
 }
 
 Status CollectionImpl::acquire_file_lock(bool create) {
-  std::string lock_file_path = ailego::StringHelper::Concat(path_, "/", "LOCK");
+  std::string lock_file_path = ailego::FileHelper::PathJoin(path_, "LOCK");
 
   if (create) {
     if (!lock_file_.create(lock_file_path.c_str(), 0)) {

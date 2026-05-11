@@ -35,17 +35,14 @@
 **Zvec** 是一款开源的嵌入式(进程内)向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置提供生产级、低延迟、可扩展的向量检索能力。
 
 > [!IMPORTANT]
-> 🚀  **v0.3.1 （2026 年 4 月 17 日）**
+> 🚀  **v0.4.0（2026 年 5 月 9 日）**
 >
-> - 放宽 Collection 路径限制；改进 Windows 上的路径处理。
+> - **Dart/Flutter SDK**：发布官方 [zvec](https://github.com/zvec-ai/zvec-dart) Flutter 包，提供 Dart/Flutter FFI 绑定，支持 Android（arm64-v8a）和 iOS（arm64），无需手动编译原生库。
+> - **iOS 构建支持**：新增 iOS 平台构建支持，进一步扩展跨平台覆盖范围。
+> - **扩大 topK 上限**：放宽 topK 结果数量上限，支持更大规模的召回场景。
+> - **修复**：SQ8 量化器召回率下降问题；Windows 路径处理修复；稀疏向量索引顺序修复。
 >
-> 🚀  **v0.3.0 （2026 年 4 月 3 日）**
->
-> - **新平台支持**：支持 **Windows (MSVC)** 和 **Android**。发布了官方 Windows **Python** 和 **Node.js** 安装包。
-> - **性能优化**：集成 **RabitQ** 量化以及 **CPU 指令集自适应检测**，优化 SIMD 执行。
-> - **生态集成**：提供 **C-API** 用于多种编程语言绑定，以及 **[MCP](https://github.com/zvec-ai/zvec-mcp-server) / [Skill](https://github.com/zvec-ai/zvec-agent-skills)** 集成。
->
-> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.3.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.4.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 核心特性
 
