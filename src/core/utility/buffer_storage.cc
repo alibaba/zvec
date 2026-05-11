@@ -345,17 +345,15 @@ class BufferStorage : public IndexStorage {
       // segments_ is intentionally NOT cleared between appends (to keep
       // existing WrappedSegment pointers valid), so segments_.size() would
       // reflect stale entries and produce wrong IDs on re-parse.
-      const std::string seg_name(
-          reinterpret_cast<const char *>(segment_start) +
-          iter->segment_id_offset);
+      const std::string seg_name(reinterpret_cast<const char *>(segment_start) +
+                                 iter->segment_id_offset);
       id_hash_[seg_name] = id_hash_.size();
       // Update the segments_ entry in-place so that any WrappedSegment
       // instances that already hold a pointer to this entry (via
       // &segments_[name].segment) continue to use the refreshed meta_ptr_
       // after the re-parse.
-      segments_[seg_name] =
-          IndexMapping::SegmentInfo{IndexMapping::Segment{iter},
-                                    current_header_start_offset_, &header_};
+      segments_[seg_name] = IndexMapping::SegmentInfo{
+          IndexMapping::Segment{iter}, current_header_start_offset_, &header_};
       max_segment_size_ =
           std::max(max_segment_size_, iter->data_size + iter->padding_size);
       if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
@@ -504,9 +502,8 @@ class BufferStorage : public IndexStorage {
     IndexMapping::Segment *seg =
         mapping.map(INDEX_VERSION_SEGMENT_NAME, false, false);
     if (!seg) {
-      LOG_ERROR(
-          "BufferStorage failed to map version segment: path[%s]",
-          path.c_str());
+      LOG_ERROR("BufferStorage failed to map version segment: path[%s]",
+                path.c_str());
       mapping.close();
       return IndexError_MMapFile;
     }
@@ -572,9 +569,8 @@ class BufferStorage : public IndexStorage {
       if (buffer_pool_handle_->get_meta(
               chain.footer_file_offset, sizeof(footer),
               reinterpret_cast<char *>(&footer)) != 0) {
-        LOG_ERROR(
-            "Failed to read footer for flush: file[%s], chain[%zu]",
-            file_name_.c_str(), ci);
+        LOG_ERROR("Failed to read footer for flush: file[%s], chain[%zu]",
+                  file_name_.c_str(), ci);
         return IndexError_Runtime;
       }
       // Recompute segment metadata CRC and refresh the footer.
@@ -585,19 +581,16 @@ class BufferStorage : public IndexStorage {
       if (buffer_pool_handle_->write_meta(chain.segment_meta_file_offset,
                                           seg_buf,
                                           chain.segment_meta_size) != 0) {
-        LOG_ERROR(
-            "Failed to write segment meta: file[%s], chain[%zu]",
-            file_name_.c_str(), ci);
+        LOG_ERROR("Failed to write segment meta: file[%s], chain[%zu]",
+                  file_name_.c_str(), ci);
         return IndexError_WriteData;
       }
       // Write the updated footer back to disk.
       if (buffer_pool_handle_->write_meta(
-              chain.footer_file_offset,
-              reinterpret_cast<const char *>(&footer),
+              chain.footer_file_offset, reinterpret_cast<const char *>(&footer),
               sizeof(footer)) != 0) {
-        LOG_ERROR(
-            "Failed to write footer: file[%s], chain[%zu]",
-            file_name_.c_str(), ci);
+        LOG_ERROR("Failed to write footer: file[%s], chain[%zu]",
+                  file_name_.c_str(), ci);
         return IndexError_WriteData;
       }
     }
@@ -746,10 +739,10 @@ class BufferStorage : public IndexStorage {
   uint64_t current_header_start_offset_{0u};
   uint64_t buffer_size_{2lu * 1024 * 1024 * 1024};  // 2G
 
-  // Capacity (in bytes) of the segment metadata section written by init_index().
-  // Sized to hold ~128 SegmentMeta entries (128 × 32 B = 4096 B).  Mirrors the
-  // default used by MMapFileStorage; the section auto-expands via header
-  // chaining when more segments are needed.
+  // Capacity (in bytes) of the segment metadata section written by
+  // init_index(). Sized to hold ~128 SegmentMeta entries (128 × 32 B = 4096 B).
+  // Mirrors the default used by MMapFileStorage; the section auto-expands via
+  // header chaining when more segments are needed.
   uint32_t segment_meta_capacity_{4096u};
 
   // Per-header-chain file offsets used by flush_index() to write updated

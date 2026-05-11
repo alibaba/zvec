@@ -44,8 +44,7 @@ static ssize_t zvec_pwrite(int fd, const void *buf, size_t count,
   ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFF);
   ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
   DWORD bytes_written = 0;
-  if (!WriteFile(handle, buf, static_cast<DWORD>(count), &bytes_written,
-                 &ov)) {
+  if (!WriteFile(handle, buf, static_cast<DWORD>(count), &bytes_written, &ov)) {
     return -1;
   }
   return static_cast<ssize_t>(bytes_written);
@@ -177,14 +176,13 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
   file_name_ = filename;
   writable_ = writable || create;
 #if defined(_MSC_VER)
-  int flags = writable_
-                  ? (create ? (O_RDWR | O_CREAT | O_TRUNC | _O_BINARY)
-                            : (O_RDWR | _O_BINARY))
-                  : (O_RDONLY | _O_BINARY);
+  int flags = writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC | _O_BINARY)
+                                  : (O_RDWR | _O_BINARY))
+                        : (O_RDONLY | _O_BINARY);
   fd_ = _open(filename.c_str(), flags, 0644);
 #else
-  int flags = writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC) : O_RDWR)
-                        : O_RDONLY;
+  int flags =
+      writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC) : O_RDWR) : O_RDONLY;
   fd_ = open(filename.c_str(), flags, 0644);
 #endif
   if (fd_ < 0) {
@@ -215,22 +213,20 @@ int VecBufferPool::init(size_t segment_count) {
   // In writable mode, inject a flush callback into the page table so that
   // evict_block() can pwrite dirty blocks back to the backing file.
   if (writable_) {
-    page_table_.set_flush_callback(
-        [this](block_id_t /*block_id*/, char *buf, size_t sz,
-               size_t off) -> int {
+    page_table_.set_flush_callback([this](block_id_t /*block_id*/, char *buf,
+                                          size_t sz, size_t off) -> int {
 #if defined(_MSC_VER)
-          ssize_t w = zvec_pwrite(fd_, buf, sz, off);
+      ssize_t w = zvec_pwrite(fd_, buf, sz, off);
 #else
-          ssize_t w = pwrite(fd_, buf, sz, off);
+      ssize_t w = pwrite(fd_, buf, sz, off);
 #endif
-          if (w != static_cast<ssize_t>(sz)) {
-            LOG_ERROR(
-                "Buffer pool flush failed: file[%s], offset[%zu], size[%zu]",
-                file_name_.c_str(), off, sz);
-            return -1;
-          }
-          return 0;
-        });
+      if (w != static_cast<ssize_t>(sz)) {
+        LOG_ERROR("Buffer pool flush failed: file[%s], offset[%zu], size[%zu]",
+                  file_name_.c_str(), off, sz);
+        return -1;
+      }
+      return 0;
+    });
   }
   LOG_DEBUG("entry num: %zu", page_table_.entry_num());
   return 0;
@@ -309,9 +305,8 @@ int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
 int VecBufferPool::write_block(block_id_t block_id, size_t file_offset,
                                const char *data, size_t size) {
   if (!writable_) {
-    LOG_ERROR(
-        "write_block called on read-only pool: file[%s], block_id[%zu]",
-        file_name_.c_str(), block_id);
+    LOG_ERROR("write_block called on read-only pool: file[%s], block_id[%zu]",
+              file_name_.c_str(), block_id);
     return -1;
   }
   assert(block_id < block_mutexes_count_);
@@ -360,9 +355,8 @@ int VecBufferPool::write_meta(size_t offset, const char *data, size_t size) {
   ssize_t written = pwrite(fd_, data, size, offset);
 #endif
   if (written != static_cast<ssize_t>(size)) {
-    LOG_ERROR(
-        "write_meta failed: file[%s], offset[%zu], size[%zu]",
-        file_name_.c_str(), offset, size);
+    LOG_ERROR("write_meta failed: file[%s], offset[%zu], size[%zu]",
+              file_name_.c_str(), offset, size);
     return -1;
   }
   return 0;
@@ -428,7 +422,9 @@ int VecBufferPoolHandle::write_meta(size_t offset, const char *data,
   return pool_.write_meta(offset, data, size);
 }
 
-int VecBufferPoolHandle::flush_all() { return pool_.flush_all(); }
+int VecBufferPoolHandle::flush_all() {
+  return pool_.flush_all();
+}
 
 }  // namespace ailego
 }  // namespace zvec
