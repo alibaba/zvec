@@ -89,6 +89,10 @@ class BufferStorage : public IndexStorage {
       }
       auto *data = raw + offset;
       memmove(buf, data, len);
+      // Release the buffer-pool ref count acquired by get_buffer(); the data
+      // has already been copied into the caller's buffer so the block no
+      // longer needs to be pinned in memory.
+      owner_->buffer_pool_handle_->release_one(segment_id_);
       return len;
     }
 
@@ -109,6 +113,13 @@ class BufferStorage : public IndexStorage {
         return 0;
       }
       *data = raw + offset;
+      // Release the buffer-pool ref count acquired by get_buffer().
+      // NOTE: this makes the returned raw pointer only safe to use before
+      // any subsequent acquire_buffer() call that might trigger eviction
+      // (i.e. single-threaded or with external locking). Callers that need
+      // a stable pin across potential eviction points should use the
+      // read(MemoryBlock&) overload instead.
+      owner_->buffer_pool_handle_->release_one(segment_id_);
       return len;
     }
 
@@ -162,6 +173,12 @@ class BufferStorage : public IndexStorage {
       memmove(raw + offset, data, len);
       // Mark the cached block dirty so flush_index() will persist it to disk.
       owner_->buffer_pool_->page_table_.mark_dirty(segment_id_);
+      // Release the buffer-pool ref count acquired by get_buffer().
+      // write() does not create a MemoryBlock so there is no automatic
+      // release_one(); without this the block's ref count would remain > 0
+      // until the pool is destroyed, triggering the is_released() assert in
+      // VecBufferPool::~VecBufferPool().
+      owner_->buffer_pool_handle_->release_one(segment_id_);
       return len;
     }
 
