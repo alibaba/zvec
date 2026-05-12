@@ -303,47 +303,6 @@ int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
   return 0;
 }
 
-int VecBufferPool::write_block(block_id_t block_id, size_t file_offset,
-                               const char *data, size_t size) {
-  if (!writable_) {
-    LOG_ERROR("write_block called on read-only pool: file[%s], block_id[%zu]",
-              file_name_.c_str(), block_id);
-    return -1;
-  }
-  assert(block_id < block_mutexes_count_);
-  // Persist to disk first so the data is safe regardless of cache eviction.
-#if defined(_MSC_VER)
-  ssize_t written = zvec_pwrite(fd_, data, size, file_offset);
-#else
-  ssize_t written = pwrite(fd_, data, size, file_offset);
-#endif
-  if (written != static_cast<ssize_t>(size)) {
-    LOG_ERROR(
-        "write_block failed to write file: file[%s], block_id[%zu], "
-        "offset[%zu], size[%zu]",
-        file_name_.c_str(), block_id, file_offset, size);
-    return -1;
-  }
-  // Optionally populate the page-table cache so subsequent reads are fast.
-  // If memory is unavailable we skip caching silently; the block can always
-  // be re-read from disk via acquire_buffer().
-  std::lock_guard<std::mutex> lock(block_mutexes_[block_id]);
-  if (page_table_.acquire_block(block_id) == nullptr) {
-    // Block not yet loaded: try to cache it.
-    char *cache_buf = nullptr;
-    if (MemoryLimitPool::get_instance().try_acquire_buffer(size, cache_buf)) {
-      std::memcpy(cache_buf, data, size);
-      // is_dirty is set to false by set_block_acquired because the data is
-      // already on disk.
-      page_table_.set_block_acquired(block_id, cache_buf, size, file_offset);
-    }
-  } else {
-    // Block is already cached; release the extra ref from acquire_block().
-    page_table_.release_block(block_id);
-  }
-  return 0;
-}
-
 int VecBufferPool::write_meta(size_t offset, const char *data, size_t size) {
   if (!writable_) {
     LOG_ERROR("write_meta called on read-only pool: file[%s]",
@@ -411,11 +370,6 @@ void VecBufferPoolHandle::acquire_one(block_id_t block_id) {
   // acquire_one(). The return value of acquire_block() is intentionally
   // ignored here, as a null return would indicate a contract violation.
   pool_.page_table_.acquire_block(block_id);
-}
-
-int VecBufferPoolHandle::write_block(const char *data, size_t size,
-                                     size_t block_id, size_t file_offset) {
-  return pool_.write_block(block_id, file_offset, data, size);
 }
 
 int VecBufferPoolHandle::write_meta(size_t offset, const char *data,

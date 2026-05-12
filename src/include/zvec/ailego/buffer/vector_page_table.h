@@ -208,12 +208,6 @@ class VecBufferPool {
 
   int get_meta(size_t offset, size_t length, char *buffer);
 
-  // Write data to the backing file at file_offset via pwrite, then register
-  // the block in the page-table cache (if memory is available).
-  // Requires writable mode; returns -1 if the pool was opened read-only.
-  int write_block(block_id_t block_id, size_t file_offset, const char *data,
-                  size_t size);
-
   // Direct pwrite of metadata (e.g. segment header) at a given file offset.
   // Bypasses the page table.  Requires writable mode.
   int write_meta(size_t offset, const char *data, size_t size);
@@ -265,11 +259,6 @@ class VecBufferPoolHandle {
   void release_one(block_id_t block_id);
 
   void acquire_one(block_id_t block_id);
-
-  // Write data into the backing file at file_offset and register the block
-  // in the pool's page-table cache.  Requires the pool to be writable.
-  int write_block(const char *data, size_t size, size_t block_id,
-                  size_t file_offset);
 
   // Direct pwrite of metadata at a given file offset (bypasses page table).
   int write_meta(size_t offset, const char *data, size_t size);

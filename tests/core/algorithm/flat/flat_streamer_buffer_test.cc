@@ -595,7 +595,6 @@ TEST_F(FlatStreamerTest, TestLinearSearchMMap) {
     ASSERT_EQ(topk, result1.size());
     IndexStorage::MemoryBlock block;
     ASSERT_EQ(0, provider->get_vector(result1[0].key(), block));
-    const float *data = (float *)block.data();
     for (size_t j = 0; j < dim; ++j) {
       const float *data = (float *)provider->get_vector(result1[0].key());
       EXPECT_FLOAT_EQ(data[j], i);
