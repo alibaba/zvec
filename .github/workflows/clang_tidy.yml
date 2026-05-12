@@ -16,32 +16,11 @@ jobs:
     name: Clang-Tidy Checks
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout code
+      - name: Shallow checkout (no submodules)
         uses: actions/checkout@v6
         with:
-          submodules: recursive
-          # fetch-depth: 0 is required for tj-actions/changed-files to correctly
-          # compute the diff against the base branch on pull_request events.
+          submodules: false
           fetch-depth: 0
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-tidy=1:18.0-59~exp2 cmake ninja-build libomp-dev
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: clang-tidy
-          max-size: 100M
-
-      - name: Configure CMake and export compile commands
-        run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DBUILD_TOOLS=ON \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Collect changed C/C++ files
         id: changed_files
@@ -56,6 +35,36 @@ jobs:
             thirdparty/**
             build/**
 
+      - name: No C/C++ files changed - skip
+        if: steps.changed_files.outputs.any_changed != 'true'
+        run: echo "No C/C++ files changed. Skipping clang-tidy."
+
+      - name: Checkout submodules
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: git submodule update --init --recursive
+
+      - name: Install dependencies
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy=1:18.0-59~exp2 cmake ninja-build libomp-dev
+
+      - name: Setup ccache
+        if: steps.changed_files.outputs.any_changed == 'true'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: clang-tidy
+          max-size: 100M
+
+      - name: Configure CMake and export compile commands
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DBUILD_TOOLS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
       - name: Filter changed files against compile_commands.json
         id: tidy_files
         if: steps.changed_files.outputs.any_changed == 'true'
@@ -65,10 +74,6 @@ jobs:
           import os
           from pathlib import Path
 
-          # all_changed_files is space-separated when output_format is not set;
-          # tj-actions v46 defaults to space-separated for the env var form.
-          # We read from the file written by the action instead via GITHUB_OUTPUT,
-          # but the safest approach is to use the JSON output format.
           raw = os.environ.get("ALL_CHANGED_FILES", "")
           changed = [f for f in raw.split() if f]
 
@@ -76,7 +81,6 @@ jobs:
           with compile_db_path.open("r", encoding="utf-8") as fh:
               compile_db = json.load(fh)
 
-          # Build a set of absolute, normalised paths from compile_commands.json.
           compile_entries = set()
           for entry in compile_db:
               file_field = entry.get("file", "")
@@ -117,39 +121,33 @@ jobs:
 
       - name: Compute submodule commits hash
         id: submodule_hash
+        if: steps.changed_files.outputs.any_changed == 'true'
         run: |
-          # Collect each submodule's current commit SHA, sort for a stable order,
-          # then SHA-256 the result so the cache key stays a fixed length.
           hash=$(git submodule status --recursive | awk '{print $1}' | sort | sha256sum | awk '{print $1}')
           echo "value=${hash}" >> "$GITHUB_OUTPUT"
 
       - name: Cache third-party build artifacts
         id: cache_thirdparty
+        if: steps.changed_files.outputs.any_changed == 'true'
         uses: actions/cache@v5
         with:
           path: build/external
-          # Cache key combines:
-          #   - thirdparty CMakeLists / cmake / patch file contents
-          #   - all submodule commit SHAs (upgrading a submodule busts the cache)
           key: thirdparty-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch') }}-${{ steps.submodule_hash.outputs.value }}
 
       - name: Build
         if: steps.tidy_files.outputs.any_tidy_files == 'true'
         run: |
-          # build so that clang-tidy can find the headers
           ninja -C build zvec_db
 
       - name: Run clang-tidy on changed files
         if: steps.tidy_files.outputs.any_tidy_files == 'true'
         run: |
-          # Read the newline-delimited file list into an array.
           mapfile -t files_to_check <<'TIDY_EOF'
           ${{ steps.tidy_files.outputs.all_tidy_files }}
           TIDY_EOF
 
           failed=0
           for file in "${files_to_check[@]}"; do
-            # Skip blank lines that mapfile may produce.
             [[ -z "${file// }" ]] && continue
             if [ -f "$file" ]; then
               echo "=== clang-tidy: $file ==="
@@ -159,6 +157,6 @@ jobs:
 
           exit $failed
 
-      - name: No C/C++ files changed
-        if: steps.changed_files.outputs.any_changed != 'true' || steps.tidy_files.outputs.any_tidy_files != 'true'
-        run: echo "No changed source files with compile_commands entries to analyse."
+      - name: No files to analyse
+        if: steps.changed_files.outputs.any_changed == 'true' && steps.tidy_files.outputs.any_tidy_files != 'true'
+        run: echo "Changed C/C++ files not in compile_commands.json. Nothing to analyse."
