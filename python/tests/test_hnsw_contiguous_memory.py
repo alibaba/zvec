@@ -46,7 +46,7 @@ from zvec import (
     HnswIndexParam,
     HnswQueryParam,
     InvertIndexParam,
-    VectorQuery,
+    Query,
     VectorSchema,
 )
 from zvec.typing import DataType, IndexType, MetricType, QuantizeType
@@ -115,12 +115,12 @@ def _generate_docs(rng: np.random.Generator, num: int = NUM_DOCS) -> list[Doc]:
 
 def _assert_query_matches(coll: Collection, query_vec: list[float]) -> list[str]:
     """Run a top-k vector query and return the returned ids in order."""
-    vector_query = VectorQuery(
+    vector_query = Query(
         field_name="dense",
         vector=query_vec,
         param=HnswQueryParam(ef=128),
     )
-    hits = coll.query(vectors=vector_query, topk=TOPK)
+    hits = coll.query(vector_query, topk=TOPK)
     # Expect a single result group for the single vector query.
     assert hits is not None, "query returned None"
     assert len(hits) >= 1, f"expected at least one hit, got {hits!r}"

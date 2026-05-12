@@ -46,7 +46,7 @@ from zvec import (
     InvertIndexParam,
     VamanaIndexParam,
     VamanaQueryParam,
-    VectorQuery,
+    Query,
     VectorSchema,
 )
 from zvec.typing import DataType, IndexType, MetricType, QuantizeType
@@ -125,12 +125,12 @@ def _query_topk(
     coll: Collection, query_vec: list[float], *, ef_search: int = 64
 ) -> list[str]:
     """Run a top-k vector query and return the returned ids in order."""
-    vector_query = VectorQuery(
+    vector_query = Query(
         field_name="dense",
         vector=query_vec,
         param=VamanaQueryParam(ef_search=ef_search),
     )
-    hits = coll.query(vectors=vector_query, topk=TOPK)
+    hits = coll.query(vector_query, topk=TOPK)
     assert hits is not None, "query returned None"
     assert len(hits) >= 1, f"expected at least one hit, got {hits!r}"
     return [doc.id for doc in hits]
