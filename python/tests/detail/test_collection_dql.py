@@ -465,7 +465,7 @@ class TestCollectionQuery:
         with pytest.raises(Exception) as exc_info:
             full_collection.query(filter=filter)
         if filter in ["int32_field = 'string'", "nonexistent_field = 5"]:
-            assert "Analyze sql info failed" in str(exc_info.value)
+            assert "Analyze SQL info failed" in str(exc_info.value)
         else:
             assert "Invalid filter" in str(exc_info.value)
 
