@@ -31,28 +31,30 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ios-${{ matrix.platform }}
+          max-size: 150M
+
       - name: Cache host protoc build
         uses: actions/cache@v5
         with:
           path: build_host
-          key: macos-host-protoc-${{ hashFiles('src/**', 'CMakeLists.txt') }}
+          key: macos-host-protoc-${{ hashFiles('thirdparty/protobuf/**', 'CMakeLists.txt') }}
           restore-keys: |
             macos-host-protoc-
 
       - name: Build host protoc
         run: |
           if [ ! -f "build_host/bin/protoc" ]; then
-            cmake -S . -B build_host -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            cmake -S . -B build_host -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
             cmake --build build_host --target protoc --parallel $(sysctl -n hw.ncpu)
           else
             echo "Using cached host protoc"
           fi
-
-      - name: Cache iOS build
-        uses: actions/cache@v5
-        with:
-          path: build_ios_${{ matrix.platform }}
-          key: ios-build-${{ matrix.platform }}-${{ hashFiles('src/**', 'CMakeLists.txt', 'cmake/**', 'thirdparty/**') }}
 
       - name: Configure and Build
         run: |
@@ -72,7 +74,9 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="./install" \
             -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc" \
             -DIOS=ON \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
           cmake --build build_ios_${{ matrix.platform }} --parallel $NPROC
 

@@ -51,6 +51,7 @@ test = [
     "pytest >=8.0",
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
+    "pytest-xdist >=3.5",
     "cibuildwheel == 3.4.0",
 ]
 docs = [
@@ -142,6 +143,7 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "--tb=short",
+    "-n=auto",
 ]
 xfail_strict = true
 log_cli_level = "INFO"
@@ -169,7 +171,7 @@ build = [
     "cp314-*",
 ]
 build-frontend = "build"
-test-requires = ["pytest", "numpy"]
+test-requires = ["pytest", "pytest-xdist", "numpy"]
 test-command = "cd {project} && pytest python/tests -v --tb=short"
 build-verbosity = 1
 

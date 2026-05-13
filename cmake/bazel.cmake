@@ -318,10 +318,20 @@ if(NOT TARGET unittest)
     # iOS: build-only target; tests are run on simulator separately
     add_custom_target(unittest)
   else()
+    include(ProcessorCount)
+    ProcessorCount(NPROC)
+    if(NPROC EQUAL 0)
+      set(NPROC 1)
+    endif()
+    math(EXPR PARALLEL_JOBS "${NPROC} - 1")
+    if(PARALLEL_JOBS LESS 1)
+      set(PARALLEL_JOBS 1)
+    endif()
     add_custom_target(
         unittest
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         --build-config $<CONFIGURATION>
+        --parallel ${PARALLEL_JOBS}
       )
   endif()
 endif()
@@ -1110,16 +1120,18 @@ function(cc_test)
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
     )
   add_dependencies(unittest ${CC_ARGS_NAME})
+  set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CC_ARGS_NAME}")
+  file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(
       unittest.${CC_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
       DEPENDS ${CC_ARGS_NAME}
     )
   add_test(
       NAME ${CC_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
     )
 endfunction()
 
@@ -1925,16 +1937,18 @@ function(cuda_test)
       "${CUDA_ARGS_UNPARSED_ARGUMENTS}"
     )
   add_dependencies(unittest ${CUDA_ARGS_NAME})
+  set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CUDA_ARGS_NAME}")
+  file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(
       unittest.${CUDA_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CUDA_ARGS_NAME}> "${CUDA_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
       DEPENDS ${CUDA_ARGS_NAME}
     )
   add_test(
       NAME ${CUDA_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CUDA_ARGS_NAME}> "${CUDA_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
     )
 endfunction()
 
