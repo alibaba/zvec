@@ -649,9 +649,8 @@ class BufferStorage : public IndexStorage {
     // torn-down state (reset but not yet reopened, or reopen failed).  Fail
     // fast instead of dereferencing a null buffer_pool_ / buffer_pool_handle_.
     if (!buffer_pool_ || !buffer_pool_handle_) {
-      LOG_ERROR(
-          "BufferStorage::flush_index skipped: pool not ready, file[%s]",
-          file_name_.c_str());
+      LOG_ERROR("BufferStorage::flush_index skipped: pool not ready, file[%s]",
+                file_name_.c_str());
       return IndexError_Runtime;
     }
     if (!buffer_pool_->is_writable()) {
