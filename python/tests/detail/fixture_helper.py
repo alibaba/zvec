@@ -15,7 +15,7 @@ from zvec import (
     CollectionSchema,
     Collection,
     Doc,
-    VectorQuery,
+    Query,
 )
 
 from support_helper import *

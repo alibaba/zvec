@@ -64,6 +64,7 @@ jobs:
             cmake==3.30.0 `
             ninja==1.11.1 `
             pytest `
+            pytest-xdist `
             scikit-build-core `
             setuptools_scm
         shell: powershell

@@ -11,7 +11,7 @@ from zvec import (
     CollectionSchema,
     Collection,
     Doc,
-    VectorQuery,
+    Query,
     StatusCode,
 )
 from distance_helper import *
@@ -456,7 +456,7 @@ def singledoc_and_check(
     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
         if v != {}:
             query_result = collection.query(
-                VectorQuery(field_name=v, vector=insert_doc.vectors[v]),
+                Query(field_name=v, vector=insert_doc.vectors[v]),
                 topk=10,
             )
             assert len(query_result) > 0, (
@@ -512,7 +512,7 @@ def updatedoc_partial_check(
     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
         if v != {}:
             query_result = collection.query(
-                VectorQuery(field_name=v, vector=update_doc_full.vectors[v]),
+                Query(field_name=v, vector=update_doc_full.vectors[v]),
                 topk=10,
             )
             assert len(query_result) > 0, (
@@ -580,7 +580,7 @@ def batchdoc_and_check(collection, multiple_docs, doc_num, operator="insert"):
     first_doc = multiple_docs[doc_num - 1]
     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
         query_result = collection.query(
-            VectorQuery(field_name=v, vector=first_doc.vectors[v]),
+            Query(field_name=v, vector=first_doc.vectors[v]),
             topk=1024,
         )
         assert len(query_result) > 0, (

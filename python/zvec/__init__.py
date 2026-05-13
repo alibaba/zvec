@@ -73,7 +73,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.vector_query import VectorQuery
+from .model.param.query import Query, VectorQuery
 
 # —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
@@ -110,6 +110,7 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
+    "Query",
     "VectorQuery",
     "InvertIndexParam",
     "HnswIndexParam",

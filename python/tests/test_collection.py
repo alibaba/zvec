@@ -29,7 +29,7 @@ from zvec import (
     LogType,
     OptimizeOption,
     StatusCode,
-    VectorQuery,
+    Query,
     VectorSchema,
 )
 
@@ -934,7 +934,7 @@ class TestCollectionQuery:
     ):
         with pytest.raises(ValueError):
             collection_with_single_doc.query(
-                VectorQuery(
+                Query(
                     field_name="dense",
                     id=single_doc.id,
                     vector=single_doc.vector("dense"),
@@ -950,19 +950,19 @@ class TestCollectionQuery:
     def test_collection_with_error_query_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        query = VectorQuery(
+        query = Query(
             field_name="dense", vector=multiple_docs[0].vector("dense"), param=[1, 2, 3]
         )
         with pytest.raises(TypeError):
             result = collection_with_multiple_docs.query(
-                filter="id in (1)", topk=100, vectors=query
+                query, filter="id in (1)", topk=100
             )
 
     def test_collection_query_by_id(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         result = collection_with_multiple_docs.query(
-            VectorQuery(field_name="dense", id=multiple_docs[0].id)
+            Query(field_name="dense", id=multiple_docs[0].id)
         )
         assert len(result) == 10
 
@@ -972,12 +972,8 @@ class TestCollectionQuery:
         with pytest.raises(ValueError):
             collection_with_multiple_docs.query(
                 [
-                    VectorQuery(
-                        field_name="dense", vector=multiple_docs[0].vector("dense")
-                    ),
-                    VectorQuery(
-                        field_name="dense", vector=multiple_docs[0].vector("dense")
-                    ),
+                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
                 ]
             )
 

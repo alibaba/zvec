@@ -59,6 +59,7 @@ jobs:
             ninja==1.11.1 \
             pytest \
             pytest-cov \
+            pytest-xdist \
             scikit-build-core \
             setuptools_scm
         shell: bash

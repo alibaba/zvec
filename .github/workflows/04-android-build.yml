@@ -25,11 +25,6 @@ jobs:
       matrix:
         abi: [x86_64]
         api: ${{ github.event.inputs.api && fromJSON(format('["{0}"]', github.event.inputs.api)) || fromJSON('["34"]') }}
-    env:
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      CCACHE_NOHASHDIR: '1'
-      CCACHE_SLOPPINESS: clang_index_store,file_stat_matches,include_file_mtime,locale,time_macros
-
     steps:
       # ── Environment setup ──────────────────────────────────────────────
       - name: Checkout
@@ -42,15 +37,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build git ca-certificates python3 \
-            build-essential make ccache unzip curl
+            build-essential make unzip curl
 
-      - name: Cache ccache
-        uses: actions/cache@v5
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          path: ~/.ccache
-          key: ${{ runner.os }}-ccache-android-${{ matrix.abi }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-ccache-android-${{ matrix.abi }}-
+          key: android-${{ matrix.abi }}
+          max-size: 300M
 
       - name: Setup Java 17
         uses: actions/setup-java@v5

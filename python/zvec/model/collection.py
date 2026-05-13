@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import warnings
 from typing import Optional, Union, overload
 
 from _zvec import _Collection
@@ -34,7 +35,7 @@ from .param import (
     IVFIndexParam,
     OptimizeOption,
 )
-from .param.vector_query import VectorQuery
+from .param.query import Query
 from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
@@ -357,8 +358,9 @@ class Collection:
 
     def query(
         self,
-        vectors: Optional[Union[VectorQuery, list[VectorQuery]]] = None,
+        queries: Optional[Union[Query, list[Query]]] = None,
         *,
+        vectors: Optional[Union[Query, list[Query]]] = None,
         topk: int = 10,
         filter: Optional[str] = None,
         include_vector: bool = False,
@@ -367,11 +369,13 @@ class Collection:
     ) -> list[Doc]:
         """Perform vector similarity search with optional filtering and re-ranking.
 
-        At least one `VectorQuery` must be provided.
+        At least one `Query` must be provided via `queries`.
 
         Args:
-            vectors (Optional[Union[VectorQuery, list[VectorQuery]]], optional):
+            queries (Optional[Union[Query, list[Query]]], optional):
                 One or more vector queries. Defaults to None.
+            vectors (Optional[Union[Query, list[Query]]], optional):
+                Deprecated. Use `queries` instead.
             topk (int, optional): Number of nearest neighbors to return.
                 Defaults to 10.
             filter (Optional[str], optional): Boolean expression to pre-filter candidates.
@@ -387,18 +391,29 @@ class Collection:
             list[Doc]: Top-k matching documents, sorted by relevance score.
 
         Examples:
-            >>> from zvec import VectorQuery
+            >>> from zvec import Query
             >>> results = collection.query(
-            ...     vectors=VectorQuery("embedding", vector=[0.1, 0.2]),
+            ...     queries=Query(field_name="embedding", vector=[0.1, 0.2]),
             ...     topk=5,
             ...     filter="category == 'tech'",
             ...     output_fields=["title", "url"]
             ... )
         """
+        if vectors is not None:
+            warnings.warn(
+                "The 'vectors' parameter is deprecated and will be removed in a future version. "
+                "Use 'queries' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if queries is not None:
+                raise ValueError("Cannot specify both 'queries' and 'vectors'.")
+            queries = vectors
+
         ctx = QueryContext(
             topk=topk,
             filter=filter,
-            queries=[vectors] if isinstance(vectors, VectorQuery) else vectors,
+            queries=[queries] if isinstance(queries, Query) else queries,
             include_vector=include_vector,
             output_fields=output_fields,
             reranker=reranker,
