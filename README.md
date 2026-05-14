@@ -80,6 +80,19 @@ npm install @zvec/zvec
 
 If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/db/build/) guide.
 
+### Java (Preview)
+
+Java preview bindings live in [`java/zvec-java`](./java/zvec-java).
+
+Current validation target:
+
+- Java 25
+- macOS ARM64
+
+The recommended Java API is the fluent layer (`ZvecSchemas`, `ZvecSearch`), while advanced users can still use the compatibility layer for direct `CollectionSchema`, `VectorSchema`, and `VectorQuery` control.
+
+See [`java/zvec-java/README.md`](./java/zvec-java/README.md) for build and usage instructions.
+
 ## ⚡ One-Minute Example
 
 ```python
