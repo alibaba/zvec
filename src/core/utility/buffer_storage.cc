@@ -80,15 +80,13 @@ class BufferStorage : public IndexStorage {
         }
         len = meta->data_size - offset;
       }
-      size_t buffer_offset = segment_header_start_offset_ +
-                             segment_header_->content_offset +
-                             segment_->meta()->data_index;
-      auto *raw = owner_->get_buffer(buffer_offset, capacity_, segment_id_);
-      if (!raw) {
+      size_t abs_offset = segment_header_start_offset_ +
+                          segment_header_->content_offset +
+                          segment_->meta()->data_index + offset;
+      if (!owner_->buffer_pool_handle_->read_range(abs_offset, len,
+                                                   static_cast<char *>(buf))) {
         return 0;
       }
-      auto *data = raw + offset;
-      memmove(buf, data, len);
       return len;
     }
 
@@ -101,14 +99,33 @@ class BufferStorage : public IndexStorage {
         }
         len = meta->data_size - offset;
       }
-      size_t buffer_offset = segment_header_start_offset_ +
-                             segment_header_->content_offset +
-                             segment_->meta()->data_index;
-      auto *raw = owner_->get_buffer(buffer_offset, capacity_, segment_id_);
-      if (!raw) {
+      size_t abs_offset = segment_header_start_offset_ +
+                          segment_header_->content_offset +
+                          segment_->meta()->data_index + offset;
+      size_t first_page = abs_offset / ailego::kVectorPageSize;
+      size_t last_page = (len == 0)
+                             ? first_page
+                             : (abs_offset + len - 1) / ailego::kVectorPageSize;
+      if (first_page == last_page) {
+        size_t page_id = 0;
+        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
+                                                                 len, page_id);
+        if (!raw) {
+          return 0;
+        }
+        *data = raw;
+        return len;
+      }
+      char *tmp = static_cast<char *>(ailego_aligned_malloc(len, 4096));
+      if (!tmp) {
         return 0;
       }
-      *data = raw + offset;
+      if (!owner_->buffer_pool_handle_->read_range(abs_offset, len, tmp)) {
+        ailego_free(tmp);
+        return 0;
+      }
+      owner_->register_tmp_buffer(tmp);
+      *data = tmp;
       return len;
     }
 
@@ -120,21 +137,36 @@ class BufferStorage : public IndexStorage {
         }
         len = meta->data_size - offset;
       }
-      size_t buffer_offset = segment_header_start_offset_ +
-                             segment_header_->content_offset +
-                             segment_->meta()->data_index;
-      auto *raw = owner_->get_buffer(buffer_offset, capacity_, segment_id_);
-      if (!raw) {
-        return 0;
-      }
-
-      data.reset(owner_->buffer_pool_handle_.get(), segment_id_, raw + offset);
-      if (data.data()) {
+      size_t abs_offset = segment_header_start_offset_ +
+                          segment_header_->content_offset +
+                          segment_->meta()->data_index + offset;
+      size_t first_page = abs_offset / ailego::kVectorPageSize;
+      size_t last_page = (len == 0)
+                             ? first_page
+                             : (abs_offset + len - 1) / ailego::kVectorPageSize;
+      if (first_page == last_page) {
+        size_t page_id = 0;
+        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
+                                                                 len, page_id);
+        if (!raw) {
+          LOG_ERROR("read error (single-page acquire failed).");
+          return -1;
+        }
+        data.reset(owner_->buffer_pool_handle_.get(), page_id, raw);
         return len;
-      } else {
-        LOG_ERROR("read error.");
+      }
+      char *tmp = static_cast<char *>(ailego_aligned_malloc(len, 4096));
+      if (!tmp) {
+        LOG_ERROR("read error (alloc cross-page temp buffer failed).");
         return -1;
       }
+      if (!owner_->buffer_pool_handle_->read_range(abs_offset, len, tmp)) {
+        ailego_free(tmp);
+        LOG_ERROR("read error (cross-page read_range failed).");
+        return -1;
+      }
+      data = MemoryBlock::MakeOwned(tmp);
+      return len;
     }
 
     //! Write data into the storage with offset
@@ -199,7 +231,7 @@ class BufferStorage : public IndexStorage {
     if (ret != 0) {
       return ret;
     }
-    ret = buffer_pool_->init(segments_.size());
+    ret = buffer_pool_->init();
     if (ret != 0) {
       return ret;
     }
@@ -210,8 +242,22 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  char *get_buffer(size_t offset, size_t length, size_t block_id) {
-    return buffer_pool_handle_->get_block(offset, length, block_id);
+  void register_tmp_buffer(char *buf) {
+    std::lock_guard<std::mutex> latch(tmp_buffers_mutex_);
+    tmp_buffers_.push_back(buf);
+  }
+
+  char *get_buffer(size_t offset, size_t length, size_t /*block_id*/) {
+    char *tmp = static_cast<char *>(ailego_aligned_malloc(length, 4096));
+    if (!tmp) {
+      return nullptr;
+    }
+    if (!buffer_pool_handle_->read_range(offset, length, tmp)) {
+      ailego_free(tmp);
+      return nullptr;
+    }
+    register_tmp_buffer(tmp);
+    return tmp;
   }
 
   int get_meta(size_t offset, size_t length, char *out) {
@@ -472,6 +518,15 @@ class BufferStorage : public IndexStorage {
     segments_.clear();
     memset(&header_, 0, sizeof(header_));
     memset(&footer_, 0, sizeof(footer_));
+    {
+      std::lock_guard<std::mutex> tmp_latch(tmp_buffers_mutex_);
+      for (char *p : tmp_buffers_) {
+        if (p) {
+          ailego_free(p);
+        }
+      }
+      tmp_buffers_.clear();
+    }
     buffer_pool_handle_.reset();
     buffer_pool_.reset();
     max_segment_size_ = 0;
@@ -502,6 +557,9 @@ class BufferStorage : public IndexStorage {
  private:
   bool index_dirty_{false};
   mutable std::mutex mapping_mutex_{};
+
+  std::vector<char *> tmp_buffers_{};
+  mutable std::mutex tmp_buffers_mutex_{};
 
   // buffer manager
   std::string file_name_;

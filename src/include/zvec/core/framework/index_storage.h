@@ -34,6 +34,7 @@ class IndexStorage : public IndexModule {
       MBT_UNKNOWN = 0,
       MBT_MMAP = 1,
       MBT_BUFFERPOOL = 2,
+      MBT_HEAP_SCRATCH = 3,
     };
 
     MemoryBlock() {}
@@ -46,9 +47,17 @@ class IndexStorage : public IndexModule {
     }
     MemoryBlock(void *data) : type_(MemoryBlockType::MBT_MMAP), data_(data) {}
 
+    static MemoryBlock MakeOwned(void *owned) {
+      MemoryBlock mb;
+      mb.type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+      mb.data_ = owned;
+      return mb;
+    }
+
     MemoryBlock(const MemoryBlock &rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
           this->reset(rhs.data_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
@@ -71,6 +80,12 @@ class IndexStorage : public IndexModule {
           rhs.buffer_pool_handle_ = nullptr;
           rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
           break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+          data_ = rhs.data_;
+          rhs.data_ = nullptr;
+          rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+          break;
         default:
           break;
       }
@@ -86,6 +101,9 @@ class IndexStorage : public IndexModule {
             this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
                         rhs.data_);
             buffer_pool_handle_->acquire_one(buffer_block_id_);
+            break;
+          case MemoryBlockType::MBT_HEAP_SCRATCH:
+            this->reset(rhs.data_);
             break;
           default:
             break;
@@ -106,6 +124,13 @@ class IndexStorage : public IndexModule {
             rhs.buffer_pool_handle_ = nullptr;
             rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
             break;
+          case MemoryBlockType::MBT_HEAP_SCRATCH:
+            release_owned();
+            type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+            data_ = rhs.data_;
+            rhs.data_ = nullptr;
+            rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+            break;
           default:
             break;
         }
@@ -122,6 +147,9 @@ class IndexStorage : public IndexModule {
             buffer_pool_handle_->release_one(buffer_block_id_);
           }
           break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          release_owned();
+          break;
         default:
           break;
       }
@@ -136,6 +164,8 @@ class IndexStorage : public IndexModule {
                void *data) {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
         buffer_pool_handle_->release_one(buffer_block_id_);
+      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
+        release_owned();
       }
       type_ = MemoryBlockType::MBT_BUFFERPOOL;
       buffer_pool_handle_ = buffer_pool_handle;
@@ -147,6 +177,8 @@ class IndexStorage : public IndexModule {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
         buffer_pool_handle_->release_one(buffer_block_id_);
         buffer_pool_handle_ = nullptr;
+      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
+        release_owned();
       }
       type_ = MemoryBlockType::MBT_MMAP;
       data_ = data;
@@ -156,6 +188,14 @@ class IndexStorage : public IndexModule {
     void *data_{nullptr};
     mutable ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
     size_t buffer_block_id_{0};
+
+   private:
+    void release_owned() {
+      if (data_) {
+        ailego_free(data_);
+        data_ = nullptr;
+      }
+    }
   };
 
   struct SegmentData {
