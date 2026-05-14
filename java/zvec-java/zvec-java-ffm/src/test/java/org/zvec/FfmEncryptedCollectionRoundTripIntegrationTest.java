@@ -1,0 +1,3 @@
+package org.zvec;
+
+final class FfmEncryptedCollectionRoundTripIntegrationTest extends AbstractEncryptedCollectionRoundTripIntegrationTest {}
