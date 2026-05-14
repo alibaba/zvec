@@ -7,7 +7,10 @@ endif()
 
 if(MSVC)
     set(SPARSEHASH_WINDOWS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/sparsehash.windows.patch)
-    apply_patch_once("sparsehash.windows.patch" "${DESTINATION_DIR}" "${SPARSEHASH_WINDOWS_PATCH}")
+    apply_patch_once(
+      "sparsehash.windows.patch"
+      "${CMAKE_CURRENT_SOURCE_DIR}/sparsehash-2.0.4"
+      "${SPARSEHASH_WINDOWS_PATCH}")
 endif()
 
 add_library(sparsehash INTERFACE)
