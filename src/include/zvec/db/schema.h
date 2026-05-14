@@ -310,7 +310,7 @@ class CollectionSchema {
 
   std::string to_string_formatted(int indent_level = 0) const;
 
-  std::string name() const {
+  const std::string &name() const {
     return name_;
   }
 

@@ -1948,8 +1948,7 @@ const char *zvec_collection_schema_get_name(
     return nullptr;
   }
   auto *cpp_schema = reinterpret_cast<const zvec::CollectionSchema *>(schema);
-  // Use strdup to create a persistent copy since name() returns by value
-  return strdup(cpp_schema->name().c_str());
+  return cpp_schema->name().c_str();
 }
 
 zvec_error_code_t zvec_collection_schema_set_name(zvec_collection_schema_t *schema,

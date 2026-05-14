@@ -2057,7 +2057,7 @@ zvec_collection_schema_destroy(zvec_collection_schema_t *schema);
  *
  * @note Returns a pointer to internal memory. Caller does NOT own the memory
  *       and should NOT free it. The pointer is valid as long as the schema
- *       exists.
+ *       exists and its name is not modified.
  */
 ZVEC_EXPORT const char *ZVEC_CALL
 zvec_collection_schema_get_name(const zvec_collection_schema_t *schema);
