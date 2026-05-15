@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -48,10 +49,17 @@ class VectorPageTable {
   struct Entry {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
+    std::atomic<bool> is_dirty;
     char *buffer;
+    size_t file_offset;
   };
 
  public:
+  // Callback invoked by evict_block() to persist a dirty block before its
+  // memory is released. Signature: (block_id, buffer, size, file_offset).
+  using FlushCallback =
+      std::function<int(block_id_t, char *, size_t, size_t)>;
+
   VectorPageTable() : entry_num_(0), entries_(nullptr) {
     BlockEvictionQueue::get_instance().set_valid(this);
   }
@@ -73,7 +81,43 @@ class VectorPageTable {
 
   void evict_block(block_id_t block_id);
 
-  char *set_block_acquired(block_id_t block_id, char *buffer);
+  char *set_block_acquired(block_id_t block_id, char *buffer,
+                           size_t file_offset);
+
+  void set_flush_callback(FlushCallback cb) {
+    flush_callback_ = std::move(cb);
+  }
+
+  //! Mark a loaded block as dirty so that it is persisted on eviction.
+  void mark_dirty(block_id_t block_id) {
+    assert(block_id < entry_num_);
+    entries_[block_id].is_dirty.store(true, std::memory_order_relaxed);
+  }
+
+  bool is_block_dirty(block_id_t block_id) const {
+    assert(block_id < entry_num_);
+    return entries_[block_id].is_dirty.load(std::memory_order_relaxed);
+  }
+
+  //! Flush a single dirty block without evicting it. Caller guarantees the
+  //! block is currently loaded (buffer != nullptr).
+  int flush_block(block_id_t block_id) {
+    assert(block_id < entry_num_);
+    Entry &entry = entries_[block_id];
+    char *buffer = entry.buffer;
+    if (!buffer || !flush_callback_) {
+      return 0;
+    }
+    if (!entry.is_dirty.load(std::memory_order_relaxed)) {
+      return 0;
+    }
+    int rc = flush_callback_(block_id, buffer, kVectorPageSize,
+                             entry.file_offset);
+    if (rc == 0) {
+      entry.is_dirty.store(false, std::memory_order_relaxed);
+    }
+    return rc;
+  }
 
   size_t entry_num() const {
     return entry_num_;
@@ -92,6 +136,7 @@ class VectorPageTable {
  private:
   size_t entry_num_{0};
   Entry *entries_{nullptr};
+  FlushCallback flush_callback_{};
 };
 
 class VecBufferPoolHandle;
@@ -102,8 +147,12 @@ class VecBufferPool {
 
   static constexpr size_t kMutexBucketCount = 64UL * 1024UL;
 
-  VecBufferPool(const std::string &filename);
+  VecBufferPool(const std::string &filename, bool writable = false,
+                bool create = false);
   ~VecBufferPool() {
+    // Flush any remaining dirty blocks before tearing down memory/fd so that
+    // writes are not silently lost. Safe to call even in read-only mode.
+    (void)this->flush_all();
     for (size_t i = 0; i < page_table_.entry_num(); ++i) {
       assert(page_table_.is_released(i));
       page_table_.evict_block(i);
@@ -123,6 +172,23 @@ class VecBufferPool {
 
   int get_meta(size_t offset, size_t length, char *buffer);
 
+  //! Write a contiguous range via the page cache; marks touched pages dirty.
+  //! Returns 0 on success, -1 on failure (e.g. read-only pool or I/O error).
+  int write_range(size_t file_offset, size_t length, const char *src);
+
+  //! Write raw bytes directly via pwrite, bypassing the page cache. Used for
+  //! metadata regions (header/footer/segments_meta) which are only read via
+  //! get_meta() and never cached.
+  int write_meta(size_t offset, size_t length, const char *buffer);
+
+  //! Iterate all entries and persist any dirty blocks to disk. Safe to call
+  //! repeatedly; no-op in read-only mode.
+  int flush_all();
+
+  bool writable() const {
+    return writable_;
+  }
+
   size_t file_size() const {
     return file_size_;
   }
@@ -131,6 +197,7 @@ class VecBufferPool {
   int fd_;
   size_t file_size_;
   std::string file_name_;
+  bool writable_{false};
 
  public:
   VectorPageTable page_table_;
@@ -153,6 +220,14 @@ class VecBufferPoolHandle {
   bool read_range(size_t file_offset, size_t len, char *out);
 
   int get_meta(size_t offset, size_t length, char *buffer);
+
+  int write_range(size_t file_offset, size_t len, const char *src);
+
+  int write_meta(size_t offset, size_t length, const char *buffer);
+
+  int flush_all();
+
+  bool writable() const;
 
   void release_one(block_id_t block_id);
 
