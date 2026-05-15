@@ -1281,21 +1281,45 @@ Status VectorQuery::validate_and_sanitize(const FieldSchema *schema) {
         kMaxOutputFieldSize);
   }
 
-  if (schema == nullptr) {
-    if (query_vector_.empty() && query_sparse_indices_.empty()) {
-      // Scalar-only filter query
-      return Status::OK();
-    } else {
-      // If a query vector was provided, the field must exist as a vector field
-      // since we are performing a vector similarity search.
+  // Mutual exclusion: fts_query_ and vector fields cannot be set together.
+  if (fts_query_.has_value()) {
+    if (!query_vector_.empty() || !query_sparse_indices_.empty()) {
       return Status::InvalidArgument(
-          "Invalid query: query vector is provided, but query field[",
-          field_name_,
-          "] does not exist or is not a vector field in the collection");
+          "Invalid query: fts_query and vector query fields "
+          "(query_vector/query_sparse_indices) are mutually exclusive");
     }
   }
 
-  // Vector query
+  if (schema == nullptr) {
+    if (fts_query_.has_value()) {
+      // FTS query requires a valid field_name_ that resolves to an FTS field.
+      return Status::InvalidArgument(
+          "Invalid query: fts_query requires a valid FTS field, but field[",
+          field_name_, "] does not exist in the collection");
+    }
+    if (query_vector_.empty() && query_sparse_indices_.empty()) {
+      // Scalar-only filter query (no field_name_ needed)
+      return Status::OK();
+    }
+    // If a query vector was provided, the field must exist as a vector field.
+    return Status::InvalidArgument(
+        "Invalid query: query vector is provided, but query field[",
+        field_name_,
+        "] does not exist or is not a vector field in the collection");
+  }
+
+  // FTS query: field must be an FTS-indexed field.
+  if (fts_query_.has_value()) {
+    if (schema->index_type() != IndexType::FTS) {
+      return Status::InvalidArgument(
+          "Invalid query: fts_query requires an FTS-indexed field, but field[",
+          field_name_, "] has index type ",
+          IndexTypeCodeBook::AsString(schema->index_type()));
+    }
+    return Status::OK();
+  }
+
+  // Vector query: field must be a vector field.
   if (schema->is_dense_vector()) {
     // Validate dimension
     auto dim = schema->dimension();

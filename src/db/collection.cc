@@ -1585,8 +1585,13 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
   VectorQuery sanitized = query;
-  auto s = sanitized.validate_and_sanitize(
-      schema_->get_vector_field(sanitized.field_name_));
+  // When field_name_ is set, use get_field to retrieve the schema uniformly.
+  // validate_and_sanitize checks that the field type matches the query type
+  // (FTS query requires an FTS field, vector query requires a vector field).
+  const FieldSchema *field_schema =
+      sanitized.field_name_.empty() ? nullptr
+                                    : schema_->get_field(sanitized.field_name_);
+  auto s = sanitized.validate_and_sanitize(field_schema);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();

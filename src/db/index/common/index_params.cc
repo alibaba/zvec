@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <mutex>
+#include <new>
 #include <sstream>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/db/index_params.h>
+#include "db/index/column/fts_column/fts_types.h"
+#include "db/index/column/fts_column/tokenizer_pipeline_manager.h"
 #include "type_helper.h"
 
 namespace zvec {
@@ -36,6 +41,98 @@ std::string VectorIndexParams::vector_index_params_to_string(
       << "metric:" << MetricTypeCodeBook::AsString(metric_type)
       << ",quantize:" << QuantizeTypeCodeBook::AsString(quantize_type);
   return oss.str();
+}
+
+// ============================================================
+// FtsIndexParams — helpers
+// ============================================================
+
+static fts::FtsIndexParams to_internal(const FtsIndexParams &params) {
+  fts::FtsIndexParams p;
+  p.tokenizer_name = params.tokenizer_name();
+  p.filters = params.filters();
+  p.extra_params = params.extra_params();
+  return p;
+}
+
+// ============================================================
+// FtsIndexParams — destructor
+// ============================================================
+
+FtsIndexParams::~FtsIndexParams() {
+  if (pipeline_created_) {
+    auto internal = to_internal(*this);
+    fts::TokenizerPipelineManager::Instance().release(internal);
+  }
+}
+
+// ============================================================
+// FtsIndexParams — move semantics
+// ============================================================
+
+FtsIndexParams::FtsIndexParams(FtsIndexParams &&other) noexcept
+    : IndexParams(IndexType::FTS),
+      tokenizer_name_(std::move(other.tokenizer_name_)),
+      filters_(std::move(other.filters_)),
+      extra_params_(std::move(other.extra_params_)),
+      pipeline_(std::move(other.pipeline_)),
+      pipeline_created_(other.pipeline_created_) {
+  other.pipeline_created_ = false;
+  other.pipeline_.reset();
+  // std::once_flag is not movable; default-initialise ours (already done by
+  // the member initialiser) and leave other's in a valid but used state.
+  // If the source had already called create_pipeline(), we inherit the
+  // cached result.  If not, our fresh once_flag will allow a future call.
+  if (pipeline_created_) {
+    // Mark our once_flag as "already called" by running a no-op through it.
+    std::call_once(pipeline_once_, [] {});
+  }
+}
+
+FtsIndexParams &FtsIndexParams::operator=(FtsIndexParams &&other) noexcept {
+  if (this != &other) {
+    // Release our own pipeline first.
+    if (pipeline_created_) {
+      auto internal = to_internal(*this);
+      fts::TokenizerPipelineManager::Instance().release(internal);
+    }
+
+    tokenizer_name_ = std::move(other.tokenizer_name_);
+    filters_ = std::move(other.filters_);
+    extra_params_ = std::move(other.extra_params_);
+    pipeline_ = std::move(other.pipeline_);
+    pipeline_created_ = other.pipeline_created_;
+
+    other.pipeline_created_ = false;
+    other.pipeline_.reset();
+
+    // Reconstruct once_flag via placement new.
+    pipeline_once_.~once_flag();
+    new (&pipeline_once_) std::once_flag();
+    if (pipeline_created_) {
+      std::call_once(pipeline_once_, [] {});
+    }
+  }
+  return *this;
+}
+
+// ============================================================
+// FtsIndexParams — create_pipeline
+// ============================================================
+
+Result<FtsIndexParams::PipelinePtr> FtsIndexParams::create_pipeline() {
+  std::call_once(pipeline_once_, [this]() {
+    auto internal = to_internal(*this);
+    pipeline_ = fts::TokenizerPipelineManager::Instance().acquire(internal);
+    if (pipeline_) {
+      pipeline_created_ = true;
+    }
+  });
+  if (!pipeline_) {
+    return tl::make_unexpected(
+        Status::InternalError("Failed to create tokenizer pipeline"));
+  }
+  return pipeline_;
 }
 
 }  // namespace zvec

@@ -26,6 +26,8 @@ cc_library(
     rocksdb
     antlr4
     libprotobuf
+    FastPFOR
+    cppjieba
     Arrow::arrow_static
     Arrow::arrow_compute
     Arrow::arrow_dataset

@@ -16,7 +16,12 @@
 #pragma once
 
 
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include <rocksdb/db.h>
+#include <rocksdb/write_batch.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/db/status.h>
 
@@ -37,6 +42,9 @@ struct RocksdbContext {
   rocksdb::FlushOptions flush_opts_;
   rocksdb::CompactRangeOptions compact_range_opts_;
   std::mutex mutex_;
+  // Per-CF merge operators (keyed by CF name)
+  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+      per_cf_merge_ops_;
 
 
  public:
@@ -79,7 +87,7 @@ struct RocksdbContext {
   rocksdb::ColumnFamilyHandle *get_cf(const std::string &cf_name);
 
 
-  // Create a column family
+  // Create a column family (uses per_cf_merge_ops_ if set for cf_name)
   Status create_cf(const std::string &cf_name);
 
 
@@ -101,6 +109,26 @@ struct RocksdbContext {
 
   // Get the estimated number of keys in the database
   size_t count();
+
+
+  // --- FTS extensions: per-CF merge operators ---
+
+  // Create a Rocksdb instance with per-CF merge operators
+  Status create(const std::string &db_path,
+                const std::vector<std::string> &column_names,
+                std::shared_ptr<rocksdb::MergeOperator> merge_op,
+                const std::unordered_map<
+                    std::string, std::shared_ptr<rocksdb::MergeOperator>>
+                    &per_cf_merge_ops);
+
+
+  // Open an existing Rocksdb instance with per-CF merge operators
+  Status open(const std::string &db_path,
+              const std::vector<std::string> &column_names, bool read_only,
+              std::shared_ptr<rocksdb::MergeOperator> merge_op,
+              const std::unordered_map<std::string,
+                                       std::shared_ptr<rocksdb::MergeOperator>>
+                  &per_cf_merge_ops);
 
 
  private:

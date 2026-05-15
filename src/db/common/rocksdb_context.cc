@@ -443,8 +443,13 @@ Status RocksdbContext::create_cf(const std::string &cf_name) {
   }
 
   rocksdb::ColumnFamilyHandle *cf_handle{nullptr};
-  auto s = db_->CreateColumnFamily(rocksdb::ColumnFamilyOptions(create_opts_),
-                                   cf_name, &cf_handle);
+  rocksdb::ColumnFamilyOptions cf_options(create_opts_);
+  // Apply per-CF merge operator if one was registered for this CF name
+  auto it = per_cf_merge_ops_.find(cf_name);
+  if (it != per_cf_merge_ops_.end() && it->second) {
+    cf_options.merge_operator = it->second;
+  }
+  auto s = db_->CreateColumnFamily(cf_options, cf_name, &cf_handle);
   if (s.ok()) {
     cf_handles_.push_back(cf_handle);
     LOG_DEBUG("Created cf[%s] in RocksDB[%s]", cf_name.c_str(),
@@ -589,6 +594,172 @@ size_t RocksdbContext::count() {
   } else {
     return 0;
   }
+}
+
+
+// --- FTS extensions: per-CF merge operators ---
+
+Status RocksdbContext::create(
+    const std::string &db_path, const std::vector<std::string> &column_names,
+    std::shared_ptr<rocksdb::MergeOperator> merge_op,
+    const std::unordered_map<std::string,
+                             std::shared_ptr<rocksdb::MergeOperator>>
+        &per_cf_merge_ops) {
+  per_cf_merge_ops_ = per_cf_merge_ops;
+
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (db_) {
+    LOG_ERROR("RocksDB[%s] is already opened", db_path_.c_str());
+    return Status::PermissionDenied();
+  }
+
+  if (auto s = validate_and_set_db_path(db_path, false); !s.ok()) {
+    return s;
+  }
+
+  create_opts_.create_if_missing = true;
+  prepare_options(merge_op);
+
+  rocksdb::DB *db;
+  rocksdb::Status s = rocksdb::DB::Open(create_opts_, db_path, &db);
+  if (!s.ok()) {
+    LOG_ERROR("Failed to create RocksDB[%s], code[%d], reason[%s]",
+              db_path.c_str(), s.code(), s.ToString().c_str());
+    return Status::InternalError();
+  }
+  db_.reset(db);
+
+  bool has_default = false;
+  for (const auto &column_name : column_names) {
+    if (column_name == rocksdb::kDefaultColumnFamilyName) {
+      cf_handles_.push_back(db->DefaultColumnFamily());
+      has_default = true;
+      continue;
+    }
+    rocksdb::ColumnFamilyHandle *cf_handle{nullptr};
+    rocksdb::ColumnFamilyOptions cf_options(create_opts_);
+    auto it = per_cf_merge_ops_.find(column_name);
+    if (it != per_cf_merge_ops_.end() && it->second) {
+      cf_options.merge_operator = it->second;
+    }
+    s = db->CreateColumnFamily(cf_options, column_name, &cf_handle);
+    if (!s.ok()) {
+      LOG_ERROR("Failed to create cf[%s] in RocksDB[%s], code[%d], reason[%s]",
+                column_name.c_str(), db_path.c_str(), s.code(),
+                s.ToString().c_str());
+      delete_cf_handles();
+      db->Close();
+      db_.reset();
+      return Status::InternalError();
+    }
+    cf_handles_.push_back(cf_handle);
+  }
+  if (!has_default) {
+    cf_handles_.push_back(db->DefaultColumnFamily());
+  }
+
+  read_only_ = false;
+  write_opts_.disableWAL = true;
+  LOG_DEBUG("Created RocksDB[%s] with per-CF merge ops", db_path.c_str());
+  return Status::OK();
+}
+
+
+Status RocksdbContext::open(
+    const std::string &db_path, const std::vector<std::string> &column_names,
+    bool read_only, std::shared_ptr<rocksdb::MergeOperator> merge_op,
+    const std::unordered_map<std::string,
+                             std::shared_ptr<rocksdb::MergeOperator>>
+        &per_cf_merge_ops) {
+  per_cf_merge_ops_ = per_cf_merge_ops;
+
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (db_) {
+    LOG_ERROR("RocksDB[%s] is already opened", db_path_.c_str());
+    return Status::PermissionDenied();
+  }
+
+  if (auto s = validate_and_set_db_path(db_path, true); !s.ok()) {
+    return s;
+  }
+
+  create_opts_.create_if_missing = false;
+  prepare_options(merge_op);
+
+  rocksdb::Status s;
+  std::vector<std::string> existing_cf_names{};
+  std::vector<rocksdb::ColumnFamilyDescriptor> cf_descriptors{};
+  s = rocksdb::DB::ListColumnFamilies(create_opts_, db_path,
+                                      &existing_cf_names);
+  if (!s.ok()) {
+    LOG_ERROR("Failed to list cf in RocksDB[%s], code[%d], reason[%s]",
+              db_path.c_str(), s.code(), s.ToString().c_str());
+    return Status::InternalError();
+  }
+
+  auto make_cf_options = [&](const std::string &cf_name) {
+    rocksdb::ColumnFamilyOptions cf_options(create_opts_);
+    auto it = per_cf_merge_ops_.find(cf_name);
+    if (it != per_cf_merge_ops_.end() && it->second) {
+      cf_options.merge_operator = it->second;
+    }
+    return cf_options;
+  };
+
+  if (column_names.empty()) {
+    for (const auto &column_name : existing_cf_names) {
+      cf_descriptors.emplace_back(column_name, make_cf_options(column_name));
+    }
+  } else {
+    bool has_default = false;
+    for (const auto &column_name : column_names) {
+      if (std::find(existing_cf_names.begin(), existing_cf_names.end(),
+                    column_name) == existing_cf_names.end()) {
+        LOG_ERROR("Column family[%s] does not exist in RocksDB[%s]",
+                  column_name.c_str(), db_path.c_str());
+        return Status::InvalidArgument();
+      }
+      if (column_name == rocksdb::kDefaultColumnFamilyName) {
+        has_default = true;
+      }
+    }
+    if (read_only) {
+      for (const auto &column_name : column_names) {
+        cf_descriptors.emplace_back(column_name, make_cf_options(column_name));
+      }
+      if (!has_default) {
+        cf_descriptors.emplace_back(
+            rocksdb::kDefaultColumnFamilyName,
+            make_cf_options(rocksdb::kDefaultColumnFamilyName));
+      }
+    } else {
+      for (const auto &column_name : existing_cf_names) {
+        cf_descriptors.emplace_back(column_name, make_cf_options(column_name));
+      }
+    }
+  }
+
+  rocksdb::DB *db;
+  if (read_only) {
+    s = rocksdb::DB::OpenForReadOnly(create_opts_, db_path, cf_descriptors,
+                                     &cf_handles_, &db);
+  } else {
+    s = rocksdb::DB::Open(create_opts_, db_path, cf_descriptors, &cf_handles_,
+                          &db);
+  }
+  if (!s.ok()) {
+    LOG_ERROR("Failed to open RocksDB[%s], code[%d], reason[%s]",
+              db_path.c_str(), s.code(), s.ToString().c_str());
+    return Status::InternalError();
+  }
+
+  db_.reset(db);
+  read_only_ = read_only;
+  write_opts_.disableWAL = true;
+  LOG_DEBUG("Opened RocksDB[%s] with per-CF merge ops", db_path.c_str());
+  return Status::OK();
 }
 
 

@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include "utils/utils.h"
+#include "zvec/db/index_params.h"
 #include "zvec/db/status.h"
 #include "zvec/db/type.h"
 
@@ -823,8 +824,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     std::vector<std::string> invalid_names = {
         // Too long (>64)
-        std::string(65, 'a'),
-        std::string(64, 'a') + "_",
+        std::string(65, 'a'), std::string(64, 'a') + "_",
 
         // Illegal characters
         "a b",   // space
@@ -1408,6 +1408,51 @@ TEST(VectorQuery, ValidateAndSanitize) {
     query.query_params_ = nullptr;
     s = query.validate_and_sanitize(&schema);
     EXPECT_TRUE(s.ok());
+  }
+
+  // fts_query_ and vector fields are mutually exclusive
+  {
+    auto fts_params = std::make_shared<FtsIndexParams>();
+    FieldSchema fts_schema("content", DataType::STRING, false, fts_params);
+
+    VectorQuery query;
+    query.field_name_ = "embedding";
+    query.topk_ = 10;
+    std::vector<float> query_vector(128, 1.0f);
+    query.query_vector_ =
+        std::string(reinterpret_cast<char *>(query_vector.data()),
+                    query_vector.size() * sizeof(float));
+    query.fts_query_ = FtsQuery{.query_string_ = "hello"};
+
+    // Should fail: both vector and fts_query_ set
+    auto s = query.validate_and_sanitize(&fts_schema);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+
+    // Clear vector, should pass with FTS schema
+    query.query_vector_.clear();
+    s = query.validate_and_sanitize(&fts_schema);
+    EXPECT_TRUE(s.ok());
+
+    // FTS query with proper FTS field schema -> OK
+    VectorQuery fts_only;
+    fts_only.field_name_ = "content";
+    fts_only.topk_ = 10;
+    fts_only.fts_query_ = FtsQuery{.query_string_ = "test"};
+    s = fts_only.validate_and_sanitize(&fts_schema);
+    EXPECT_TRUE(s.ok());
+
+    // FTS query with nullptr schema -> fail (field not found)
+    s = fts_only.validate_and_sanitize(nullptr);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+
+    // FTS query with vector field schema -> fail (type mismatch)
+    FieldSchema vec_schema("embedding", DataType::VECTOR_FP32, 128, false,
+                           std::make_shared<HnswIndexParams>(MetricType::L2));
+    s = fts_only.validate_and_sanitize(&vec_schema);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 }
 

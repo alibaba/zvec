@@ -549,6 +549,25 @@ FieldSchemaPtrList CollectionSchema::vector_fields() const {
   return vector_fields;
 }
 
+bool CollectionSchema::has_fts_field() const {
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::FTS) {
+      return true;
+    }
+  }
+  return false;
+}
+
+FieldSchemaPtrList CollectionSchema::fts_fields() const {
+  FieldSchemaPtrList fts;
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::FTS) {
+      fts.push_back(field);
+    }
+  }
+  return fts;
+}
+
 uint64_t CollectionSchema::max_doc_count_per_segment() const {
   return max_doc_count_per_segment_;
 }

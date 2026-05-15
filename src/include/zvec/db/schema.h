@@ -359,6 +359,10 @@ class CollectionSchema {
 
   FieldSchemaPtrList vector_fields() const;
 
+  bool has_fts_field() const;
+
+  FieldSchemaPtrList fts_fields() const;
+
   uint64_t max_doc_count_per_segment() const;
 
   void set_max_doc_count_per_segment(uint64_t max_doc_count_per_segment);
