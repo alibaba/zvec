@@ -41,32 +41,37 @@ class BufferStorage : public IndexStorage {
     typedef std::shared_ptr<Segment> Pointer;
 
     //! Constructor
-    WrappedSegment(BufferStorage *owner, IndexMapping::Segment *segment,
-                   uint64_t segment_header_start_offset,
-                   IndexFormat::MetaHeader *segment_header, size_t segment_id)
-        : segment_(segment),
+    //!
+    //! `info` MUST be a pointer into BufferStorage::segments_ (an
+    //! unordered_map mapped value).  C++ guarantees those pointers stay
+    //! valid across insertions, so the WrappedSegment can safely fetch
+    //! the LATEST segment_header / segment_header_start_offset / Segment
+    //! after a re-parse caused by append_segment().  Storing the pointer
+    //! (rather than copying header_/offset into local fields) is what
+    //! prevents use-after-free when chain_headers_ is rebuilt.
+    WrappedSegment(BufferStorage *owner, IndexMapping::SegmentInfo *info,
+                   size_t segment_id)
+        : segment_info_(info),
           owner_(owner),
           segment_id_(segment_id),
-          capacity_(static_cast<size_t>(segment->meta()->data_size +
-                                        segment->meta()->padding_size)),
-          segment_header_start_offset_(segment_header_start_offset),
-          segment_header_(segment_header) {}
+          capacity_(static_cast<size_t>(info->segment.meta()->data_size +
+                                        info->segment.meta()->padding_size)) {}
     //! Destructor
     virtual ~WrappedSegment(void) {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
-      return static_cast<size_t>(segment_->meta()->data_size);
+      return static_cast<size_t>(segment_info_->segment.meta()->data_size);
     }
 
     //! Retrieve crc of data
     uint32_t data_crc(void) const override {
-      return segment_->meta()->data_crc;
+      return segment_info_->segment.meta()->data_crc;
     }
 
     //! Retrieve size of padding
     size_t padding_size(void) const override {
-      return static_cast<size_t>(segment_->meta()->padding_size);
+      return static_cast<size_t>(segment_info_->segment.meta()->padding_size);
     }
 
     //! Retrieve capacity of segment
@@ -85,16 +90,17 @@ class BufferStorage : public IndexStorage {
                   owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      if (ailego_unlikely(offset + len > segment_->meta()->data_size)) {
-        auto meta = segment_->meta();
+      if (ailego_unlikely(offset + len >
+                          segment_info_->segment.meta()->data_size)) {
+        auto meta = segment_info_->segment.meta();
         if (offset > meta->data_size) {
           offset = meta->data_size;
         }
         len = meta->data_size - offset;
       }
-      size_t abs_offset = segment_header_start_offset_ +
-                          segment_header_->content_offset +
-                          segment_->meta()->data_index + offset;
+      size_t abs_offset = segment_info_->segment_header_start_offset +
+                          segment_info_->segment_header->content_offset +
+                          segment_info_->segment.meta()->data_index + offset;
       if (!owner_->buffer_pool_handle_->read_range(abs_offset, len,
                                                    static_cast<char *>(buf))) {
         return 0;
@@ -112,16 +118,17 @@ class BufferStorage : public IndexStorage {
         *data = nullptr;
         return 0;
       }
-      if (ailego_unlikely(offset + len > segment_->meta()->data_size)) {
-        auto meta = segment_->meta();
+      if (ailego_unlikely(offset + len >
+                          segment_info_->segment.meta()->data_size)) {
+        auto meta = segment_info_->segment.meta();
         if (offset > meta->data_size) {
           offset = meta->data_size;
         }
         len = meta->data_size - offset;
       }
-      size_t abs_offset = segment_header_start_offset_ +
-                          segment_header_->content_offset +
-                          segment_->meta()->data_index + offset;
+      size_t abs_offset = segment_info_->segment_header_start_offset +
+                          segment_info_->segment_header->content_offset +
+                          segment_info_->segment.meta()->data_index + offset;
       size_t first_page = abs_offset / ailego::kVectorPageSize;
       size_t last_page = (len == 0)
                              ? first_page
@@ -168,16 +175,17 @@ class BufferStorage : public IndexStorage {
             owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      if (ailego_unlikely(offset + len > segment_->meta()->data_size)) {
-        auto meta = segment_->meta();
+      if (ailego_unlikely(offset + len >
+                          segment_info_->segment.meta()->data_size)) {
+        auto meta = segment_info_->segment.meta();
         if (offset > meta->data_size) {
           offset = meta->data_size;
         }
         len = meta->data_size - offset;
       }
-      size_t abs_offset = segment_header_start_offset_ +
-                          segment_header_->content_offset +
-                          segment_->meta()->data_index + offset;
+      size_t abs_offset = segment_info_->segment_header_start_offset +
+                          segment_info_->segment_header->content_offset +
+                          segment_info_->segment.meta()->data_index + offset;
       size_t first_page = abs_offset / ailego::kVectorPageSize;
       size_t last_page = (len == 0)
                              ? first_page
@@ -203,7 +211,7 @@ class BufferStorage : public IndexStorage {
         LOG_ERROR("read error (cross-page read_range failed).");
         return -1;
       }
-      data = MemoryBlock::MakeOwned(tmp);
+      data = MemoryBlock::MakeOwned(tmp, len);
       return len;
     }
 
@@ -227,27 +235,37 @@ class BufferStorage : public IndexStorage {
                   offset, len, capacity_);
         return 0;
       }
-      auto meta = segment_->meta();
+      auto meta = segment_info_->segment.meta();
       if (offset + len > meta->data_size) {
         meta->data_size = offset + len;
         meta->padding_size = capacity_ - meta->data_size;
-        owner_->set_as_dirty();
       }
-      size_t abs_offset = segment_header_start_offset_ +
-                          segment_header_->content_offset +
-                          segment_->meta()->data_index + offset;
+      size_t abs_offset = segment_info_->segment_header_start_offset +
+                          segment_info_->segment_header->content_offset +
+                          segment_info_->segment.meta()->data_index + offset;
       if (owner_->buffer_pool_handle_->write_range(
               abs_offset, len, static_cast<const char *>(data)) != 0) {
         LOG_ERROR("write() page-cache write_range failed at abs_offset=%zu",
                   abs_offset);
         return 0;
       }
+      // ALWAYS mark dirty after a successful page-cache write so that the
+      // next flush_index() does NOT take the `if (!index_dirty_) return 0;`
+      // short-circuit and skip flush_all().  Previously this was only set
+      // when `data_size` grew, which meant fixed-size segments (e.g.
+      // chunk_meta_segment writing HnswChunkMeta in place) never raised
+      // the dirty flag -- their 4K page-cache pages were not flushed before
+      // append_segment() / reopen_pool(), so the freshly-rebuilt page table
+      // pread'd stale content from disk and chunk_cnts[NODE] lagged the
+      // real segment count, eventually causing sync_chunks() to see a
+      // mid-state segment and crash with a NULL Chunk::Pointer.
+      owner_->set_as_dirty();
       return len;
     }
 
     //! Resize size of data
     size_t resize(size_t size) override {
-      auto meta = segment_->meta();
+      auto meta = segment_info_->segment.meta();
       if (meta->data_size != size) {
         if (size > capacity_) {
           size = capacity_;
@@ -261,7 +279,7 @@ class BufferStorage : public IndexStorage {
 
     //! Update crc of data
     void update_data_crc(uint32_t crc) override {
-      segment_->meta()->data_crc = crc;
+      segment_info_->segment.meta()->data_crc = crc;
       owner_->set_as_dirty();
     }
 
@@ -272,14 +290,17 @@ class BufferStorage : public IndexStorage {
 
    protected:
     friend BufferStorage;
-    IndexMapping::Segment *segment_{};
+    // Pointer into BufferStorage::segments_ (an unordered_map mapped value).
+    // C++ guarantees the address stays valid across map insertions.  All
+    // header / start-offset / segment-meta accesses go through this pointer
+    // so that re-parses (append_segment -> reopen_pool) are observed without
+    // needing to recreate WrappedSegment instances held by callers.
+    IndexMapping::SegmentInfo *segment_info_{nullptr};
 
    private:
     BufferStorage *owner_{nullptr};
     size_t segment_id_{};
     size_t capacity_{};
-    uint64_t segment_header_start_offset_;
-    IndexFormat::MetaHeader *segment_header_;
   };
 
   //! Destructor
@@ -374,24 +395,23 @@ class BufferStorage : public IndexStorage {
     return tmp;
   }
 
-  int ParseHeader(size_t offset) {
-    std::unique_ptr<char[]> buffer(new char[sizeof(header_)]);
+  int ParseHeader(size_t offset, IndexFormat::MetaHeader *out) {
+    std::unique_ptr<char[]> buffer(new char[sizeof(*out)]);
     // NOTE: bypass a wrapper get_meta() -- ParseHeader is called from
     // reopen_pool() which already holds a unique_lock on mapping_mutex_
     // (std::shared_mutex is not reentrant -> deadlock).
-    if (buffer_pool_handle_->get_meta(offset, sizeof(header_), buffer.get()) !=
+    if (buffer_pool_handle_->get_meta(offset, sizeof(*out), buffer.get()) !=
         0) {
       LOG_ERROR("Get segment header failed.");
       return IndexError_Runtime;
     }
-    uint8_t *header_ptr = reinterpret_cast<uint8_t *>(buffer.get());
-    memcpy(&header_, header_ptr, sizeof(header_));
-    if (header_.meta_header_size != sizeof(IndexFormat::MetaHeader)) {
+    memcpy(out, buffer.get(), sizeof(*out));
+    if (out->meta_header_size != sizeof(IndexFormat::MetaHeader)) {
       LOG_ERROR("Header meta size is invalid.");
       return IndexError_InvalidLength;
     }
-    if (ailego::Crc32c::Hash(&header_, sizeof(header_), header_.header_crc) !=
-        header_.header_crc) {
+    if (ailego::Crc32c::Hash(out, sizeof(*out), out->header_crc) !=
+        out->header_crc) {
       LOG_ERROR("Header meta checksum is invalid.");
       return IndexError_InvalidChecksum;
     }
@@ -420,7 +440,7 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  int ParseSegment(size_t offset) {
+  int ParseSegment(size_t offset, IndexFormat::MetaHeader *chain_header) {
     // NOTE: this function is only called from ParseToMapping(), which is
     // itself called from either open() (single-threaded construction) or
     // reopen_pool() (always invoked under the unique_lock held by
@@ -470,8 +490,16 @@ class BufferStorage : public IndexStorage {
       // instances that already hold a pointer to this entry (via
       // &segments_[name].segment) continue to use the refreshed meta_ptr_
       // after the re-parse.
+      //
+      // IMPORTANT: chain_header points into chain_headers_ which is a
+      // std::vector<std::unique_ptr<MetaHeader>>; each chain owns its OWN
+      // MetaHeader copy.  Do NOT use a shared &header_ here -- when there
+      // are multiple meta-header chains in the file, the next ParseHeader()
+      // would overwrite that single instance and break content_offset for
+      // all earlier-chain segments.
       segments_[seg_name] = IndexMapping::SegmentInfo{
-          IndexMapping::Segment{iter}, current_header_start_offset_, &header_};
+          IndexMapping::Segment{iter}, current_header_start_offset_,
+          chain_header};
       max_segment_size_ =
           std::max(max_segment_size_, iter->data_size + iter->padding_size);
       if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
@@ -486,30 +514,37 @@ class BufferStorage : public IndexStorage {
   int ParseToMapping() {
     while (true) {
       int ret;
-      ret = ParseHeader(current_header_start_offset_);
+      // Allocate an OWN MetaHeader for this chain so that subsequent chains
+      // never overwrite earlier-chain headers (prior implementation used a
+      // single header_ member, which corrupted content_offset for chain-0
+      // segments once chain-1 was parsed).
+      chain_headers_.emplace_back(
+          std::make_unique<IndexFormat::MetaHeader>());
+      IndexFormat::MetaHeader *chain_header = chain_headers_.back().get();
+      ret = ParseHeader(current_header_start_offset_, chain_header);
       if (ret != 0) {
         LOG_ERROR("Failed to parse header, errno %d, %s", ret,
                   IndexError::What(ret));
         return ret;
       }
 
-      switch (header_.version) {
+      switch (chain_header->version) {
         case IndexFormat::FORMAT_VERSION:
           break;
         default:
-          LOG_ERROR("Unsupported index version: %u", header_.version);
+          LOG_ERROR("Unsupported index version: %u", chain_header->version);
           return IndexError_Unsupported;
       }
 
       // Unpack footer
-      if (header_.meta_footer_size != sizeof(IndexFormat::MetaFooter)) {
+      if (chain_header->meta_footer_size != sizeof(IndexFormat::MetaFooter)) {
         return IndexError_InvalidLength;
       }
-      if ((int32_t)header_.meta_footer_offset < 0) {
+      if ((int32_t)chain_header->meta_footer_offset < 0) {
         return IndexError_Unsupported;
       }
       uint64_t footer_offset =
-          header_.meta_footer_offset + current_header_start_offset_;
+          chain_header->meta_footer_offset + current_header_start_offset_;
       ret = ParseFooter(footer_offset);
       if (ret != 0) {
         LOG_ERROR("Failed to parse footer, errno %d, %s", ret,
@@ -524,7 +559,7 @@ class BufferStorage : public IndexStorage {
       }
       const uint64_t segment_start_offset =
           footer_offset - footer_.segments_meta_size;
-      ret = ParseSegment(segment_start_offset);
+      ret = ParseSegment(segment_start_offset, chain_header);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -577,9 +612,7 @@ class BufferStorage : public IndexStorage {
     if (!segment_info) {
       return WrappedSegment::Pointer{};
     }
-    return std::make_shared<WrappedSegment>(
-        this, &segment_info->segment, segment_info->segment_header_start_offset,
-        segment_info->segment_header, id_hash_[id]);
+    return std::make_shared<WrappedSegment>(this, segment_info, id_hash_[id]);
   }
 
   //! Test if it a segment exists
@@ -589,7 +622,10 @@ class BufferStorage : public IndexStorage {
 
   //! Retrieve magic number of index
   uint32_t magic(void) const override {
-    return header_.magic;
+    if (chain_headers_.empty()) {
+      return 0u;
+    }
+    return chain_headers_.front()->magic;
   }
 
  protected:
@@ -741,7 +777,7 @@ class BufferStorage : public IndexStorage {
     file_name_.clear();
     id_hash_.clear();
     segments_.clear();
-    memset(&header_, 0, sizeof(header_));
+    chain_headers_.clear();
     memset(&footer_, 0, sizeof(footer_));
     {
       std::lock_guard<std::mutex> tmp_latch(tmp_buffers_mutex_);
@@ -864,9 +900,9 @@ class BufferStorage : public IndexStorage {
     id_hash_.clear();
     buffer_pool_buffers_.clear();
     meta_chains_.clear();
+    chain_headers_.clear();
     current_header_start_offset_ = 0u;
     max_segment_size_ = 0u;
-    memset(&header_, 0, sizeof(header_));
     memset(&footer_, 0, sizeof(footer_));
 
     // Delegate the structural append to IndexMapping (same engine used by
@@ -933,7 +969,11 @@ class BufferStorage : public IndexStorage {
 
   // buffer manager
   std::string file_name_;
-  IndexFormat::MetaHeader header_{};
+  // Per-chain owning copies of MetaHeader.  segments_[name].segment_header
+  // points into one of these, so each chain's content_offset stays stable
+  // across re-parses (a single shared header_ would be overwritten by the
+  // next chain's ParseHeader and corrupt earlier-chain segment reads).
+  std::vector<std::unique_ptr<IndexFormat::MetaHeader>> chain_headers_{};
   IndexFormat::MetaFooter footer_{};
   std::unordered_map<std::string, IndexMapping::SegmentInfo> segments_{};
   std::unordered_map<std::string, size_t> id_hash_{};
