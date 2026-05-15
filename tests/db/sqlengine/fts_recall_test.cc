@@ -62,7 +62,9 @@ class FtsRecallTest : public ::testing::Test {
     VectorQuery vq;
     vq.topk_ = topk;
     vq.field_name_ = "content";
-    vq.fts_query_ = FtsQuery{.query_string_ = query_string};
+    FtsQuery fts_query;
+    fts_query.query_string_ = query_string;
+    vq.fts_query_ = fts_query;
     return engine_->execute(schema_, vq, segments_);
   }
 
@@ -73,7 +75,9 @@ class FtsRecallTest : public ::testing::Test {
     VectorQuery vq;
     vq.topk_ = topk;
     vq.field_name_ = "content";
-    vq.fts_query_ = FtsQuery{.match_string_ = match_string};
+    FtsQuery fts_query;
+    fts_query.match_string_ = match_string;
+    vq.fts_query_ = fts_query;
     if (!default_op.empty()) {
       auto fts_qp = std::make_shared<zvec::FtsQueryParams>();
       fts_qp->set_default_operator(default_op);
@@ -89,7 +93,9 @@ class FtsRecallTest : public ::testing::Test {
     VectorQuery vq;
     vq.topk_ = topk;
     vq.field_name_ = "content";
-    vq.fts_query_ = FtsQuery{.query_string_ = query_string};
+    FtsQuery fts_query;
+    fts_query.query_string_ = query_string;
+    vq.fts_query_ = fts_query;
     auto fts_qp = std::make_shared<zvec::FtsQueryParams>();
     fts_qp->set_default_operator(default_op);
     vq.query_params_ = fts_qp;
@@ -104,7 +110,9 @@ class FtsRecallTest : public ::testing::Test {
     vq.topk_ = topk;
     vq.field_name_ = "content";
     vq.filter_ = filter;
-    vq.fts_query_ = FtsQuery{.query_string_ = query_string};
+    FtsQuery fts_query;
+    fts_query.query_string_ = query_string;
+    vq.fts_query_ = fts_query;
     return engine_->execute(schema_, vq, segments_);
   }
 
@@ -351,7 +359,10 @@ TEST_F(FtsRecallTest, BothSetReturnsError) {
   VectorQuery vq;
   vq.topk_ = 10;
   vq.field_name_ = "content";
-  vq.fts_query_ = FtsQuery{.query_string_ = "apple", .match_string_ = "banana"};
+  FtsQuery fts_query;
+  fts_query.query_string_ = "apple";
+  fts_query.match_string_ = "banana";
+  vq.fts_query_ = fts_query;
   auto result = engine_->execute(schema_, vq, segments_);
   EXPECT_FALSE(result.has_value());
 }
@@ -468,7 +479,9 @@ TEST_F(FtsRecallTest, EmptyFieldNameReturnsError) {
   VectorQuery vq;
   vq.topk_ = 10;
   vq.field_name_ = "";
-  vq.fts_query_ = FtsQuery{.query_string_ = "apple"};
+  FtsQuery fts_query;
+  fts_query.query_string_ = "apple";
+  vq.fts_query_ = fts_query;
   auto result = engine_->execute(schema_, vq, segments_);
   EXPECT_FALSE(result.has_value());
 }

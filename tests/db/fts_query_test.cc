@@ -92,7 +92,9 @@ TEST_F(FtsQueryTest, BasicFtsQuery) {
   VectorQuery vq;
   vq.field_name_ = "content";
   vq.topk_ = 10;
-  vq.fts_query_ = FtsQuery{.query_string_ = "hello"};
+  FtsQuery fts_query;
+  fts_query.query_string_ = "hello";
+  vq.fts_query_ = fts_query;
 
   auto query_res = col->Query(vq);
   ASSERT_TRUE(query_res.has_value()) << query_res.error().message();
@@ -115,7 +117,9 @@ TEST_F(FtsQueryTest, FtsQueryEmptyField) {
   VectorQuery vq;
   vq.field_name_ = "";  // empty
   vq.topk_ = 10;
-  vq.fts_query_ = FtsQuery{.query_string_ = "hello"};
+  FtsQuery fts_query;
+  fts_query.query_string_ = "hello";
+  vq.fts_query_ = fts_query;
 
   auto query_res = col->Query(vq);
   ASSERT_FALSE(query_res.has_value());
@@ -138,7 +142,9 @@ TEST_F(FtsQueryTest, FtsQueryNoMatch) {
   VectorQuery vq;
   vq.field_name_ = "content";
   vq.topk_ = 10;
-  vq.fts_query_ = FtsQuery{.query_string_ = "nonexistent_term_xyz"};
+  FtsQuery fts_query;
+  fts_query.query_string_ = "nonexistent_term_xyz";
+  vq.fts_query_ = fts_query;
 
   auto query_res = col->Query(vq);
   ASSERT_TRUE(query_res.has_value());

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "db/index/column/fts_column/fts_column_indexer.h"
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -485,6 +486,12 @@ TEST_F(FtsColumnIndexerTest, MultipleInsertsAndSearches) {
 
 static const std::string kJiebaDictDir{JIEBA_DICT_DIR};
 
+static bool jieba_dict_available() {
+  std::string path = kJiebaDictDir + "/jieba.dict.utf8";
+  std::ifstream ifs(path);
+  return ifs.good();
+}
+
 static std::string make_jieba_extra_params() {
   return std::string(R"({"dict_path":")") + kJiebaDictDir +
          R"(/jieba.dict.utf8","model_path":")" + kJiebaDictDir +
@@ -493,6 +500,12 @@ static std::string make_jieba_extra_params() {
 
 class FtsColumnIndexerJiebaTest : public FtsColumnIndexerTest {
  protected:
+  void SetUp() override {
+    if (!jieba_dict_available()) {
+      GTEST_SKIP() << "Jieba dict not available at: " << kJiebaDictDir;
+    }
+    FtsColumnIndexerTest::SetUp();
+  }
   // Create and open a fresh indexer with jieba tokenizer.
   std::unique_ptr<FtsColumnIndexer> make_jieba_indexer(
       const std::string &field_name = "content") {

@@ -1422,7 +1422,9 @@ TEST(VectorQuery, ValidateAndSanitize) {
     query.query_vector_ =
         std::string(reinterpret_cast<char *>(query_vector.data()),
                     query_vector.size() * sizeof(float));
-    query.fts_query_ = FtsQuery{.query_string_ = "hello"};
+    FtsQuery fts_query_hello;
+    fts_query_hello.query_string_ = "hello";
+    query.fts_query_ = fts_query_hello;
 
     // Should fail: both vector and fts_query_ set
     auto s = query.validate_and_sanitize(&fts_schema);
@@ -1438,7 +1440,9 @@ TEST(VectorQuery, ValidateAndSanitize) {
     VectorQuery fts_only;
     fts_only.field_name_ = "content";
     fts_only.topk_ = 10;
-    fts_only.fts_query_ = FtsQuery{.query_string_ = "test"};
+    FtsQuery fts_query_test;
+    fts_query_test.query_string_ = "test";
+    fts_only.fts_query_ = fts_query_test;
     s = fts_only.validate_and_sanitize(&fts_schema);
     EXPECT_TRUE(s.ok());
 

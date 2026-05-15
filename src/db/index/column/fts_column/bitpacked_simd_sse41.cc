@@ -14,7 +14,8 @@
 
 #include "bitpacked_simd_sse41.h"
 
-#if defined(__SSE4_1__)
+#if defined(__SSE4_1__) || \
+    (defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86)))
 
 #include <bitpackinghelpers.h>
 #include <emmintrin.h>  // SSE2
@@ -22,6 +23,19 @@
 #include <smmintrin.h>  // SSE4.1
 #include <cstring>
 #include "bitpacked_posting_list.h"
+
+#ifdef _MSC_VER
+#include <intrin.h>
+static inline int ctz_u32(unsigned int v) {
+  unsigned long index;
+  _BitScanForward(&index, v);
+  return static_cast<int>(index);
+}
+#else
+static inline int ctz_u32(unsigned int v) {
+  return __builtin_ctz(v);
+}
+#endif
 
 namespace zvec::fts::simd {
 
@@ -97,7 +111,7 @@ void sse41_unpack_uint32_128(const uint8_t *in, uint8_t bitwidth,
 // ------------------------------------------------------------
 
 void sse41_prefix_sum_128(const uint32_t *deltas, uint32_t min_doc_id,
-                          uint32_t count, uint32_t *out) {
+                          uint32_t /*count*/, uint32_t *out) {
   __m128i carry = _mm_set1_epi32(static_cast<int>(min_doc_id) -
                                  static_cast<int>(deltas[0]));
 
@@ -143,7 +157,7 @@ size_t sse41_find_first_ge(const uint32_t *arr, uint32_t size, uint32_t target,
     __m128i cmp = _mm_cmplt_epi32(sv, starget);
     int mask = _mm_movemask_ps(_mm_castsi128_ps(cmp));
     if (mask != 0xF) {
-      int first = __builtin_ctz(~mask);
+      int first = ctz_u32(static_cast<unsigned int>(~mask));
       return i + first;
     }
   }
@@ -156,7 +170,8 @@ size_t sse41_find_first_ge(const uint32_t *arr, uint32_t size, uint32_t target,
 
 }  // namespace zvec::fts::simd
 
-#else  // !defined(__SSE4_1__)
+#else  // !defined(__SSE4_1__) && !(defined(_MSC_VER) && (defined(_M_X64) ||
+       // defined(_M_IX86)))
 
 // Stub implementations when SSE4.1 is not available at compile time.
 // The runtime dispatch layer (bitpacked_simd_dispatch.cc) will never call

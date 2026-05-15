@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -28,7 +29,6 @@
 #include <gflags/gflags.h>
 #include <roaring/roaring.h>
 #include <zvec/ailego/encoding/json.h>
-#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
@@ -105,8 +105,6 @@ DEFINE_string(mode, "raw",
               "Execution mode: 'raw' (default) operates directly on RocksDB "
               "via FtsColumnIndexer; 'db' operates through "
               "the zvec Collection API (CreateAndOpen / Insert / Query).");
-DEFINE_string(log_level, "info",
-              "Log level: debug, info, warn, error, fatal. Default: info.");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -193,8 +191,8 @@ static bool open_fts_store(RocksdbContext *store, const std::string &field_name,
     status = store->create(data_dir, cf_names, nullptr, per_cf_merge_ops);
   }
   if (!status.ok()) {
-    LOG_ERROR("Failed to open RocksdbStore at [%s], status[%s]",
-              data_dir.c_str(), status.message().c_str());
+    fprintf(stderr, "ERROR: Failed to open RocksdbStore at [%s], status[%s]\n",
+            data_dir.c_str(), status.message().c_str());
     return false;
   }
   return true;
@@ -218,8 +216,9 @@ static void drop_fts_side_cfs(RocksdbContext *store,
   for (const auto &cf_name : side_cf_names) {
     Status drop_status = store->drop_cf(cf_name);
     if (!drop_status.ok()) {
-      LOG_WARN("Drop column family[%s] failed, status[%s] (ignored)",
-               cf_name.c_str(), drop_status.message().c_str());
+      fprintf(stderr,
+              "WARN: Drop column family[%s] failed, status[%s] (ignored)\n",
+              cf_name.c_str(), drop_status.message().c_str());
     }
   }
 }
@@ -307,8 +306,8 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
   // Create destination directory
   if (!zvec::FileHelper::DirectoryExists(dst_index_path)) {
     if (!zvec::FileHelper::CreateDirectory(dst_index_path)) {
-      LOG_ERROR("Failed to create reduce output directory: %s",
-                dst_index_path.c_str());
+      fprintf(stderr, "ERROR: Failed to create reduce output directory: %s\n",
+              dst_index_path.c_str());
       return -1;
     }
   }
@@ -320,7 +319,7 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
   RocksdbContext src_store;
   if (!open_fts_store(&src_store, FLAGS_field, /*existing=*/true,
                       src_index_path, /*with_side_cfs=*/false)) {
-    LOG_ERROR("Failed to open source store for reduce");
+    fprintf(stderr, "ERROR: Failed to open source store for reduce\n");
     return -1;
   }
 
@@ -329,7 +328,7 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
   RocksdbContext dst_store;
   if (!open_fts_store(&dst_store, FLAGS_field, /*existing=*/false,
                       dst_index_path, /*with_side_cfs=*/false)) {
-    LOG_ERROR("Failed to open destination store for reduce");
+    fprintf(stderr, "ERROR: Failed to open destination store for reduce\n");
     src_store.close();
     return -1;
   }
@@ -350,7 +349,7 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
 
   if (!src_postings || !src_positions || !src_stat || !dst_postings ||
       !dst_positions || !dst_stat) {
-    LOG_ERROR("Failed to get column families for reduce");
+    fprintf(stderr, "ERROR: Failed to get column families for reduce\n");
     src_store.close();
     dst_store.close();
     return -1;
@@ -365,8 +364,8 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
   auto init_result = reducer.init(FLAGS_field, &dst_store, dst_postings,
                                   dst_positions, dst_stat);
   if (!init_result.has_value()) {
-    LOG_ERROR("FtsRocksdbReducer init failed, status[%s]",
-              init_result.error().message().c_str());
+    fprintf(stderr, "ERROR: FtsRocksdbReducer init failed, status[%s]\n",
+            init_result.error().message().c_str());
     src_store.close();
     dst_store.close();
     return -1;
@@ -380,8 +379,8 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
   auto feed_result =
       reducer.feed(seg_stats, &src_store, src_postings, src_positions);
   if (!feed_result.has_value()) {
-    LOG_ERROR("FtsRocksdbReducer feed failed, status[%s]",
-              feed_result.error().message().c_str());
+    fprintf(stderr, "ERROR: FtsRocksdbReducer feed failed, status[%s]\n",
+            feed_result.error().message().c_str());
     src_store.close();
     dst_store.close();
     return -1;
@@ -395,8 +394,8 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
   std::cout << "  Running reduce..." << std::endl;
   auto reduce_result = reducer.reduce(no_delete_filter);
   if (!reduce_result.has_value()) {
-    LOG_ERROR("FtsRocksdbReducer reduce failed, status[%s]",
-              reduce_result.error().message().c_str());
+    fprintf(stderr, "ERROR: FtsRocksdbReducer reduce failed, status[%s]\n",
+            reduce_result.error().message().c_str());
     src_store.close();
     dst_store.close();
     return -1;
@@ -477,7 +476,7 @@ static int do_build() {
 
   if (!postings_cf || !positions_cf || !term_freq_cf || !max_tf_cf ||
       !doc_len_cf || !stat_cf || !forward_cf) {
-    LOG_ERROR("Failed to get column families");
+    fprintf(stderr, "ERROR: Failed to get column families\n");
     return -1;
   }
 
@@ -487,7 +486,8 @@ static int do_build() {
   {
     std::ifstream corpus_file(FLAGS_corpus);
     if (!corpus_file.is_open()) {
-      LOG_ERROR("Failed to open corpus file: %s", FLAGS_corpus.c_str());
+      fprintf(stderr, "ERROR: Failed to open corpus file: %s\n",
+              FLAGS_corpus.c_str());
       return -1;
     }
 
@@ -498,7 +498,8 @@ static int do_build() {
 
       std::unordered_map<std::string, std::string> fields;
       if (!parse_jsonl_line(line, &fields)) {
-        LOG_WARN("Failed to parse line: %s", line.substr(0, 100).c_str());
+        fprintf(stderr, "WARN: Failed to parse line: %s\n",
+                line.substr(0, 100).c_str());
         ++parse_failed_count;
         continue;
       }
@@ -535,8 +536,8 @@ static int do_build() {
   auto open_result = indexer.open(field_meta, &store, postings_cf, positions_cf,
                                   term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
   if (!open_result.has_value()) {
-    LOG_ERROR("Failed to open FtsColumnIndexer, status[%s]",
-              open_result.error().message().c_str());
+    fprintf(stderr, "ERROR: Failed to open FtsColumnIndexer, status[%s]\n",
+            open_result.error().message().c_str());
     return -1;
   }
 
@@ -567,11 +568,11 @@ static int do_build() {
 
       auto insert_result = indexer.insert(entry.doc_id, entry.content);
       if (!insert_result.has_value()) {
-        LOG_WARN(
-            "Thread[%d] failed to insert doc_id[%u] corpus_id[%s], "
-            "status[%s]",
-            thread_id, entry.doc_id, entry.corpus_id.c_str(),
-            insert_result.error().message().c_str());
+        fprintf(stderr,
+                "WARN: Thread[%d] failed to insert doc_id[%u] corpus_id[%s], "
+                "status[%s]\n",
+                thread_id, entry.doc_id, entry.corpus_id.c_str(),
+                insert_result.error().message().c_str());
         ++result.failed_count;
         continue;
       }
@@ -627,8 +628,8 @@ static int do_build() {
             << std::endl;
   auto flush_result = indexer.flush();
   if (!flush_result.has_value()) {
-    LOG_WARN("FtsColumnIndexer flush failed, status[%s]",
-             flush_result.error().message().c_str());
+    fprintf(stderr, "WARN: FtsColumnIndexer flush failed, status[%s]\n",
+            flush_result.error().message().c_str());
   }
 
   // Convert Roaring postings to BitPacked before close/dump, mirroring
@@ -639,9 +640,10 @@ static int do_build() {
   zvec::ailego::ElapsedTime bitpacked_timer2;
   auto bitpacked_result = indexer.convert_postings_to_bitpacked();
   if (!bitpacked_result.has_value()) {
-    LOG_WARN(
-        "FtsColumnIndexer convert_postings_to_bitpacked failed, status[%s]",
-        bitpacked_result.error().message().c_str());
+    fprintf(stderr,
+            "WARN: FtsColumnIndexer convert_postings_to_bitpacked failed, "
+            "status[%s]\n",
+            bitpacked_result.error().message().c_str());
   }
   std::cout << "convert_postings_to_bitpacked took "
             << bitpacked_timer2.micro_seconds() / 1000.0 << " ms" << std::endl;
@@ -676,7 +678,8 @@ static int do_build() {
     std::cout << "  SST size    : " << store.sst_file_size() / 1024 / 1024
               << " MB" << std::endl;
   } else {
-    LOG_WARN("Checkpoint failed: %s", ckpt_status.message().c_str());
+    fprintf(stderr, "WARN: Checkpoint failed: %s\n",
+            ckpt_status.message().c_str());
   }
 
   uint64_t dump_ms = dump_timer.milli_seconds();
@@ -700,7 +703,7 @@ static int do_build() {
   if (FLAGS_reduce) {
     int reduce_ret = do_reduce(FLAGS_index, total_indexed);
     if (reduce_ret != 0) {
-      LOG_ERROR("Reduce step failed, ret[%d]", reduce_ret);
+      fprintf(stderr, "ERROR: Reduce step failed, ret[%d]\n", reduce_ret);
       return reduce_ret;
     }
   }
@@ -747,8 +750,8 @@ static int do_build_db() {
 
   auto create_result = Collection::CreateAndOpen(FLAGS_index, schema, options);
   if (!create_result.has_value()) {
-    LOG_ERROR("Failed to create collection at [%s]: %s", FLAGS_index.c_str(),
-              create_result.error().message().c_str());
+    fprintf(stderr, "ERROR: Failed to create collection at [%s]: %s\n",
+            FLAGS_index.c_str(), create_result.error().message().c_str());
     return -1;
   }
   auto collection = create_result.value();
@@ -759,7 +762,8 @@ static int do_build_db() {
   {
     std::ifstream corpus_file(FLAGS_corpus);
     if (!corpus_file.is_open()) {
-      LOG_ERROR("Failed to open corpus file: %s", FLAGS_corpus.c_str());
+      fprintf(stderr, "ERROR: Failed to open corpus file: %s\n",
+              FLAGS_corpus.c_str());
       return -1;
     }
     uint32_t doc_id = 0;
@@ -818,8 +822,8 @@ static int do_build_db() {
     }
     auto insert_result = collection->Insert(docs);
     if (!insert_result.has_value()) {
-      LOG_WARN("Batch insert failed at offset[%zu]: %s", offset,
-               insert_result.error().message().c_str());
+      fprintf(stderr, "WARN: Batch insert failed at offset[%zu]: %s\n", offset,
+              insert_result.error().message().c_str());
       total_failed += (end - offset);
     } else {
       total_indexed += (end - offset);
@@ -835,7 +839,8 @@ static int do_build_db() {
   // Flush collection
   auto flush_status = collection->Flush();
   if (!flush_status.ok()) {
-    LOG_WARN("Collection flush failed: %s", flush_status.message().c_str());
+    fprintf(stderr, "WARN: Collection flush failed: %s\n",
+            flush_status.message().c_str());
   }
 
   // Optimize triggers segment dump which converts Roaring postings to
@@ -844,8 +849,8 @@ static int do_build_db() {
   // side CFs (_tf/_doc_len/_max_tf) are not opened for read-only segments.
   auto optimize_status = collection->Optimize();
   if (!optimize_status.ok()) {
-    LOG_WARN("Collection optimize failed: %s",
-             optimize_status.message().c_str());
+    fprintf(stderr, "WARN: Collection optimize failed: %s\n",
+            optimize_status.message().c_str());
   }
 
   std::cout << "\r  Inserted " << total_indexed << " docs total." << std::endl;
@@ -886,7 +891,8 @@ load_qrels(const std::string &qrels_dir) {
   }
 
   if (qrels_file.empty()) {
-    LOG_ERROR("No qrels file found in directory: %s", qrels_dir.c_str());
+    fprintf(stderr, "ERROR: No qrels file found in directory: %s\n",
+            qrels_dir.c_str());
     return qrels;
   }
 
@@ -894,7 +900,8 @@ load_qrels(const std::string &qrels_dir) {
 
   std::ifstream f(qrels_file);
   if (!f.is_open()) {
-    LOG_ERROR("Failed to open qrels file: %s", qrels_file.c_str());
+    fprintf(stderr, "ERROR: Failed to open qrels file: %s\n",
+            qrels_file.c_str());
     return qrels;
   }
 
@@ -956,8 +963,9 @@ struct RecallCounter {
 
 static int do_search() {
   if (!validate_default_operator(FLAGS_default_operator)) {
-    LOG_ERROR("Invalid -default_operator[%s]. Must be 'or' or 'and'.",
-              FLAGS_default_operator.c_str());
+    fprintf(stderr,
+            "ERROR: Invalid -default_operator[%s]. Must be 'or' or 'and'.\n",
+            FLAGS_default_operator.c_str());
     return -1;
   }
 
@@ -992,7 +1000,7 @@ static int do_search() {
   rocksdb::ColumnFamilyHandle *forward_cf = store.get_cf(kForwardCfName);
 
   if (!postings_cf || !positions_cf || !stat_cf || !forward_cf) {
-    LOG_ERROR("Failed to get column families");
+    fprintf(stderr, "ERROR: Failed to get column families\n");
     return -1;
   }
 
@@ -1005,7 +1013,8 @@ static int do_search() {
   {
     std::ifstream query_file(FLAGS_query);
     if (!query_file.is_open()) {
-      LOG_ERROR("Failed to open query file: %s", FLAGS_query.c_str());
+      fprintf(stderr, "ERROR: Failed to open query file: %s\n",
+              FLAGS_query.c_str());
       return -1;
     }
     std::string line;
@@ -1039,9 +1048,11 @@ static int do_search() {
   auto query_fts_params = build_fts_index_params(FLAGS_extra_params);
   auto pipeline_result = query_fts_params->create_pipeline();
   if (!pipeline_result.has_value()) {
-    LOG_ERROR("Failed to create tokenizer pipeline for extra_params[%s]: %s",
-              FLAGS_extra_params.c_str(),
-              pipeline_result.error().message().c_str());
+    fprintf(stderr,
+            "ERROR: Failed to create tokenizer pipeline for "
+            "extra_params[%s]: %s\n",
+            FLAGS_extra_params.c_str(),
+            pipeline_result.error().message().c_str());
     return -1;
   }
   auto &query_pipeline = pipeline_result.value();
@@ -1062,8 +1073,8 @@ static int do_search() {
                                    /*max_tf_cf=*/nullptr,
                                    /*doc_len_cf=*/nullptr, stat_cf);
     if (!open_result.has_value()) {
-      LOG_ERROR("Failed to open FtsColumnIndexer, status[%s]",
-                open_result.error().message().c_str());
+      fprintf(stderr, "ERROR: Failed to open FtsColumnIndexer, status[%s]\n",
+              open_result.error().message().c_str());
       return -1;
     }
   }
@@ -1093,9 +1104,11 @@ static int do_search() {
           query_params.topk = static_cast<uint32_t>(FLAGS_topk);
           auto search_result = reader.search(*ast_root, query_params, &results);
           if (!search_result.has_value()) {
-            LOG_WARN("Thread[%d] search failed for query_id[%s], status[%s]",
-                     thread_id, entry.query_id.c_str(),
-                     search_result.error().message().c_str());
+            fprintf(stderr,
+                    "WARN: Thread[%d] search failed for query_id[%s], "
+                    "status[%s]\n",
+                    thread_id, entry.query_id.c_str(),
+                    search_result.error().message().c_str());
             search_ok = false;
           }
         }
@@ -1252,8 +1265,8 @@ static int do_search_db() {
 
   auto open_result = Collection::Open(FLAGS_index, options);
   if (!open_result.has_value()) {
-    LOG_ERROR("Failed to open collection at [%s]: %s", FLAGS_index.c_str(),
-              open_result.error().message().c_str());
+    fprintf(stderr, "ERROR: Failed to open collection at [%s]: %s\n",
+            FLAGS_index.c_str(), open_result.error().message().c_str());
     return -1;
   }
   auto collection = open_result.value();
@@ -1266,7 +1279,8 @@ static int do_search_db() {
   {
     std::ifstream query_file(FLAGS_query);
     if (!query_file.is_open()) {
-      LOG_ERROR("Failed to open query file: %s", FLAGS_query.c_str());
+      fprintf(stderr, "ERROR: Failed to open query file: %s\n",
+              FLAGS_query.c_str());
       return -1;
     }
     std::string line;
@@ -1314,7 +1328,9 @@ static int do_search_db() {
       VectorQuery vq;
       vq.field_name_ = FLAGS_field;
       vq.topk_ = FLAGS_topk;
-      vq.fts_query_ = FtsQuery{.match_string_ = entry.match_text};
+      FtsQuery fts_query;
+      fts_query.match_string_ = entry.match_text;
+      vq.fts_query_ = fts_query;
 
       uint64_t elapsed_us = 0;
       std::vector<std::string> retrieved_corpus_ids;
@@ -1330,9 +1346,10 @@ static int do_search_db() {
             retrieved_corpus_ids.push_back(doc_ptr->pk());
           }
         } else {
-          LOG_ERROR("Thread[%d] FtsQuery failed for query_id[%s]: %s",
-                    thread_id, entry.query_id.c_str(),
-                    query_result.error().message().c_str());
+          fprintf(stderr,
+                  "ERROR: Thread[%d] FtsQuery failed for query_id[%s]: %s\n",
+                  thread_id, entry.query_id.c_str(),
+                  query_result.error().message().c_str());
           fatal_error.store(true, std::memory_order_relaxed);
           break;
         }
@@ -1381,7 +1398,7 @@ static int do_search_db() {
   }
 
   if (fatal_error.load()) {
-    LOG_ERROR("Aborting: FtsQuery failed during search");
+    fprintf(stderr, "ERROR: Aborting: FtsQuery failed during search\n");
     return -1;
   }
 
@@ -1475,7 +1492,7 @@ static int do_stats() {
   rocksdb::ColumnFamilyHandle *doc_len_cf = nullptr;
 
   if (!postings_cf || !stat_cf) {
-    LOG_ERROR("Failed to get required column families");
+    fprintf(stderr, "ERROR: Failed to get required column families\n");
     return -1;
   }
 
@@ -1753,20 +1770,10 @@ static int do_stats() {
   return 0;
 }
 
-static int parse_log_level(const std::string &level) {
-  if (level == "debug") return zvec::ailego::Logger::LEVEL_DEBUG;
-  if (level == "info") return zvec::ailego::Logger::LEVEL_INFO;
-  if (level == "warn") return zvec::ailego::Logger::LEVEL_WARN;
-  if (level == "error") return zvec::ailego::Logger::LEVEL_ERROR;
-  if (level == "fatal") return zvec::ailego::Logger::LEVEL_FATAL;
-  return zvec::ailego::Logger::LEVEL_INFO;
-}
 
 int main(int argc, char *argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, false);
 
-  // Set log level before any logging occurs.
-  zvec::ailego::LoggerBroker::SetLevel(parse_log_level(FLAGS_log_level));
 
   if (FLAGS_index.empty()) {
     std::cerr << "Error: -index is required." << std::endl;

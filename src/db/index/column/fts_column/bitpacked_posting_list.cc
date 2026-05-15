@@ -19,6 +19,10 @@
 #include <zvec/ailego/logger/logger.h>
 #include "bitpacked_simd_dispatch.h"
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#include <malloc.h>
+#endif
 
 namespace zvec::fts {
 
@@ -44,11 +48,17 @@ constexpr size_t align_up(size_t value, size_t alignment) {
 }
 
 /// Allocate 16-byte-aligned memory for \p count uint32_t values, returned as
-/// a unique_ptr with a custom deleter that calls std::free.
+/// a unique_ptr with a custom deleter.
 inline auto make_aligned_uint32_array(size_t count) {
   const size_t num_bytes = align_up(count * sizeof(uint32_t), 16);
+#ifdef _MSC_VER
+  auto *ptr = static_cast<uint32_t *>(_aligned_malloc(num_bytes, 16));
+  return std::unique_ptr<uint32_t[], decltype(&_aligned_free)>(ptr,
+                                                               _aligned_free);
+#else
   auto *ptr = static_cast<uint32_t *>(std::aligned_alloc(16, num_bytes));
   return std::unique_ptr<uint32_t[], decltype(&std::free)>(ptr, std::free);
+#endif
 }
 
 }  // namespace
@@ -58,8 +68,14 @@ inline auto make_aligned_uint32_array(size_t count) {
 // ============================================================
 
 uint8_t BitPackedPostingList::bits_needed(uint32_t max_value) {
-  return max_value == 0 ? 0
-                        : static_cast<uint8_t>(32 - __builtin_clz(max_value));
+  if (max_value == 0) return 0;
+#ifdef _MSC_VER
+  unsigned long index = 0;
+  _BitScanReverse(&index, max_value);
+  return static_cast<uint8_t>(index + 1);
+#else
+  return static_cast<uint8_t>(32 - __builtin_clz(max_value));
+#endif
 }
 
 void BitPackedPostingList::pack_uint32(const uint32_t *in, uint8_t bitwidth,
