@@ -381,6 +381,32 @@ int VecBufferPool::flush_all() {
   return rc;
 }
 
+bool VecBufferPool::extend_file(size_t new_size) {
+  if (!writable_) {
+    LOG_ERROR("extend_file called on read-only pool: file[%s]",
+              file_name_.c_str());
+    return false;
+  }
+  if (new_size <= file_size_) {
+    return true;
+  }
+#if defined(_MSC_VER)
+  if (_chsize_s(fd_, static_cast<int64_t>(new_size)) != 0) {
+    LOG_ERROR("extend_file _chsize_s failed: file[%s], new_size[%zu]",
+              file_name_.c_str(), new_size);
+    return false;
+  }
+#else
+  if (::ftruncate(fd_, static_cast<off_t>(new_size)) != 0) {
+    LOG_ERROR("extend_file ftruncate failed: file[%s], new_size[%zu]",
+              file_name_.c_str(), new_size);
+    return false;
+  }
+#endif
+  file_size_ = new_size;
+  return true;
+}
+
 char *VecBufferPoolHandle::get_single_page(size_t file_offset, size_t len,
                                            size_t &out_page_id) {
   size_t first_page = file_offset / kVectorPageSize;

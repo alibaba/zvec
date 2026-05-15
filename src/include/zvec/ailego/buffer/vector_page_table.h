@@ -185,6 +185,15 @@ class VecBufferPool {
   //! repeatedly; no-op in read-only mode.
   int flush_all();
 
+  //! Extend the backing file to `new_size` bytes via ftruncate (no-op if
+  //! already >= new_size) and refresh the cached file_size_.
+  //! NOTE: page_table_.entry_num() is NOT updated here -- it stays at the
+  //! value computed by init().  Callers that need the page_table to cover
+  //! the extended range must reinitialize the pool (see BufferStorage's
+  //! append_segment retire-and-reopen flow).  Returns true on success,
+  //! false on a read-only pool or I/O failure.
+  bool extend_file(size_t new_size);
+
   bool writable() const {
     return writable_;
   }

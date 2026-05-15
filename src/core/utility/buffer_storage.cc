@@ -440,7 +440,8 @@ class BufferStorage : public IndexStorage {
     return 0;
   }
 
-  int ParseSegment(size_t offset, IndexFormat::MetaHeader *chain_header) {
+  int ParseSegment(size_t offset, IndexFormat::MetaHeader *chain_header,
+                   uint32_t *out_segment_ids_offset) {
     // NOTE: this function is only called from ParseToMapping(), which is
     // itself called from either open() (single-threaded construction) or
     // reopen_pool() (always invoked under the unique_lock held by
@@ -508,6 +509,9 @@ class BufferStorage : public IndexStorage {
       }
     }
     buffer_pool_buffers_.push_back(std::move(segment_buffer));
+    if (out_segment_ids_offset) {
+      *out_segment_ids_offset = segment_ids_offset;
+    }
     return 0;
   }
 
@@ -559,7 +563,9 @@ class BufferStorage : public IndexStorage {
       }
       const uint64_t segment_start_offset =
           footer_offset - footer_.segments_meta_size;
-      ret = ParseSegment(segment_start_offset, chain_header);
+      uint32_t segment_ids_offset = footer_.segments_meta_size;
+      ret = ParseSegment(segment_start_offset, chain_header,
+                         &segment_ids_offset);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -570,7 +576,8 @@ class BufferStorage : public IndexStorage {
       // updated segment metas and footers back to the backing file.
       meta_chains_.push_back({current_header_start_offset_, footer_offset,
                               segment_start_offset,
-                              footer_.segments_meta_size});
+                              footer_.segments_meta_size,
+                              segment_ids_offset});
 
       if (footer_.next_meta_header_offset == 0) {
         break;
@@ -833,28 +840,49 @@ class BufferStorage : public IndexStorage {
     return buffer_pool_->init();
   }
 
-  //! Append a segment into storage
+  //! Append a segment into storage.
+  //!
+  //! Stage 1 implementation: bypass IndexMapping entirely.  We compute the
+  //! new chain layout in memory, persist only the touched bytes via
+  //! `write_meta` (a few pwrites), and rotate to a fresh VecBufferPool so
+  //! its page_table_ covers the extended file.  ParseToMapping() is NOT
+  //! re-run because the in-memory state (segments_/chain_headers_/
+  //! buffer_pool_buffers_/footer_/meta_chains_) is already authoritative.
   int append_segment(const std::string &id, size_t size) {
     // Flush any in-memory metadata changes (data_size, padding_size, CRC)
-    // accumulated by prior write()/resize() calls BEFORE we reset the buffer
-    // pool below.  Without this flush, those changes would be lost when
-    // buffer_pool_buffers_ is cleared and re-populated from disk.
-    // IMPORTANT: call flush_index() BEFORE taking the unique_lock below;
-    // flush_index() internally takes a shared_lock on the same mutex and
-    // std::shared_mutex is NOT reentrant.
+    // accumulated by prior write()/resize() calls BEFORE we take the
+    // unique_lock.  flush_index() takes a shared_lock on the same mutex
+    // and std::shared_mutex is NOT reentrant.
     this->flush_index();
 
-    // UNIQUE LOCK: hold the mutex for the entire structural modification
-    // (reset -> IndexMapping.open/append/flush -> reopen_pool).  Concurrent
-    // readers/writers taking shared_lock will block here.
     std::unique_lock<std::shared_mutex> latch(mapping_mutex_);
 
-    // RETIRE the old pool instead of immediately destroying it.  MemoryBlock
-    // objects held by other threads carry a ref_count on a block inside this
-    // pool but store only a RAW VecBufferPoolHandle*; if we reset() the
-    // shared_ptr here, the pool destructor fires while those ref_counts are
-    // still > 0 and the is_released() assert trips.  By parking in
-    // retired_pools_ the pool survives until all external refs are gone.
+    if (!buffer_pool_ || !buffer_pool_handle_) {
+      LOG_ERROR("append_segment: pool not ready, file[%s]",
+                file_name_.c_str());
+      return IndexError_Runtime;
+    }
+    if (!buffer_pool_->writable()) {
+      LOG_ERROR("append_segment: pool is read-only, file[%s]",
+                file_name_.c_str());
+      return IndexError_Runtime;
+    }
+    if (size == 0) {
+      return IndexError_InvalidArgument;
+    }
+    if (segments_.find(id) != segments_.end()) {
+      return IndexError_Duplicate;
+    }
+    if (meta_chains_.empty() || chain_headers_.empty() ||
+        buffer_pool_buffers_.empty()) {
+      LOG_ERROR("append_segment: invalid state, file[%s]",
+                file_name_.c_str());
+      return IndexError_Runtime;
+    }
+
+    // Retire stale pools whose blocks are no longer referenced.  Reused
+    // from the prior implementation so MemoryBlock instances held by other
+    // threads keep their raw VecBufferPoolHandle* alive.
     auto prune_retired = [&]() {
       size_t w = 0;
       for (size_t r = 0; r < retired_pools_.size(); ++r) {
@@ -879,12 +907,161 @@ class BufferStorage : public IndexStorage {
     };
     prune_retired();
 
-    // Flush and release the buffer pool so IndexMapping can safely open
-    // and structurally modify the same file.
+    // Page-aligned padded size for the new segment.  Matches IndexMapping's
+    // CalcPageAlignedSize() so the on-disk layout stays identical.
+    const size_t page_size = ailego::kVectorPageSize;
+    const size_t padded_size = (size + page_size - 1) / page_size * page_size;
+
+    // The "current last chain" is meta_chains_.back() / chain_headers_.back();
+    // footer_ is always the last chain's footer (overwritten by ParseFooter
+    // during ParseToMapping).
+    size_t id_size = id.length() + 1;
+    size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
+    MetaChain *chain = &meta_chains_.back();
+    IndexFormat::MetaHeader *header = chain_headers_.back().get();
+    char *meta_buf = buffer_pool_buffers_.back().get();
+
+    // ---- Step 1: chain split if current chain has no meta capacity left.
+    if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count + need_size >
+        chain->segment_ids_offset) {
+      size_t new_chain_start = buffer_pool_->file_size();
+      new_chain_start =
+          (new_chain_start + page_size - 1) / page_size * page_size;
+      size_t new_meta_total =
+          (segment_meta_capacity_ + sizeof(IndexFormat::MetaHeader) +
+           sizeof(IndexFormat::MetaFooter) + page_size - 1) /
+          page_size * page_size;
+      uint32_t new_segments_meta_size = static_cast<uint32_t>(
+          new_meta_total - sizeof(IndexFormat::MetaHeader) -
+          sizeof(IndexFormat::MetaFooter));
+
+      // Update OLD footer in memory + on disk so it links to the new chain.
+      footer_.next_meta_header_offset = new_chain_start;
+      IndexFormat::UpdateMetaFooter(&footer_, 0);
+      if (buffer_pool_handle_->write_meta(
+              chain->footer_file_offset, sizeof(footer_),
+              reinterpret_cast<const char *>(&footer_)) != 0) {
+        LOG_ERROR("append_segment: write old footer failed, file[%s]",
+                  file_name_.c_str());
+        return IndexError_WriteData;
+      }
+
+      // Extend the file and write the new chain's header + (zero) footer.
+      // The segment_meta region is implicitly zero-filled by ftruncate,
+      // matching the empty `new_meta_buf` we keep in memory.
+      if (!buffer_pool_->extend_file(new_chain_start + new_meta_total)) {
+        return IndexError_Runtime;
+      }
+
+      auto new_header = std::make_unique<IndexFormat::MetaHeader>();
+      IndexFormat::SetupMetaHeader(
+          new_header.get(),
+          static_cast<uint32_t>(new_meta_total -
+                                sizeof(IndexFormat::MetaFooter)),
+          static_cast<uint32_t>(new_meta_total));
+
+      auto new_meta_buf = std::make_unique<char[]>(new_segments_meta_size);
+      std::memset(new_meta_buf.get(), 0, new_segments_meta_size);
+
+      IndexFormat::MetaFooter new_footer;
+      IndexFormat::SetupMetaFooter(&new_footer);
+      new_footer.segments_meta_size = new_segments_meta_size;
+      new_footer.total_size = new_meta_total;
+      new_footer.segments_meta_crc = ailego::Crc32c::Hash(
+          new_meta_buf.get(), new_segments_meta_size, 0u);
+      IndexFormat::UpdateMetaFooter(&new_footer, 0);
+
+      if (buffer_pool_handle_->write_meta(
+              new_chain_start, sizeof(IndexFormat::MetaHeader),
+              reinterpret_cast<const char *>(new_header.get())) != 0) {
+        return IndexError_WriteData;
+      }
+      uint64_t new_segment_meta_file_offset =
+          new_chain_start + sizeof(IndexFormat::MetaHeader);
+      uint64_t new_footer_file_offset =
+          new_chain_start + new_header->meta_footer_offset;
+      if (buffer_pool_handle_->write_meta(
+              new_footer_file_offset, sizeof(new_footer),
+              reinterpret_cast<const char *>(&new_footer)) != 0) {
+        return IndexError_WriteData;
+      }
+
+      // Mirror to in-memory state.
+      chain_headers_.push_back(std::move(new_header));
+      buffer_pool_buffers_.push_back(std::move(new_meta_buf));
+      meta_chains_.push_back(MetaChain{new_chain_start, new_footer_file_offset,
+                                       new_segment_meta_file_offset,
+                                       new_segments_meta_size,
+                                       new_segments_meta_size});
+      footer_ = new_footer;
+      current_header_start_offset_ = new_chain_start;
+
+      chain = &meta_chains_.back();
+      header = chain_headers_.back().get();
+      meta_buf = buffer_pool_buffers_.back().get();
+    }
+
+    // ---- Step 2: append SegmentMeta + ID into the (possibly new) last
+    //              chain, then persist meta_buf and footer.
+    uint64_t new_data_index = footer_.content_size;
+    uint64_t new_seg_abs_offset =
+        chain->header_start_offset + header->content_offset + new_data_index;
+    uint64_t new_file_size = new_seg_abs_offset + padded_size;
+    if (new_file_size > buffer_pool_->file_size()) {
+      if (!buffer_pool_->extend_file(new_file_size)) {
+        return IndexError_Runtime;
+      }
+    }
+
+    chain->segment_ids_offset -= static_cast<uint32_t>(id_size);
+    IndexFormat::SegmentMeta *new_seg =
+        reinterpret_cast<IndexFormat::SegmentMeta *>(meta_buf) +
+        footer_.segment_count;
+    new_seg->segment_id_offset = chain->segment_ids_offset;
+    new_seg->data_index = new_data_index;
+    new_seg->data_size = 0;
+    new_seg->data_crc = 0;
+    new_seg->padding_size = padded_size;
+    std::memcpy(meta_buf + chain->segment_ids_offset, id.c_str(), id_size);
+
+    footer_.segment_count += 1;
+    footer_.content_size += padded_size;
+    footer_.total_size += padded_size;
+    footer_.segments_meta_crc =
+        ailego::Crc32c::Hash(meta_buf, chain->segment_meta_size, 0u);
+    IndexFormat::UpdateMetaFooter(&footer_, 0);
+
+    if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset,
+                                        chain->segment_meta_size,
+                                        meta_buf) != 0) {
+      LOG_ERROR("append_segment: write segment_meta failed, file[%s]",
+                file_name_.c_str());
+      return IndexError_WriteData;
+    }
+    if (buffer_pool_handle_->write_meta(
+            chain->footer_file_offset, sizeof(footer_),
+            reinterpret_cast<const char *>(&footer_)) != 0) {
+      LOG_ERROR("append_segment: write footer failed, file[%s]",
+                file_name_.c_str());
+      return IndexError_WriteData;
+    }
+
+    // Mirror to in-memory mapping.  WrappedSegment instances already held
+    // by callers reference &segments_[name], whose address is stable across
+    // unordered_map insertions, so existing references stay valid.
+    segments_[id] = IndexMapping::SegmentInfo{
+        IndexMapping::Segment{new_seg}, chain->header_start_offset, header};
+    id_hash_[id] = id_hash_.size();
+    max_segment_size_ = std::max<uint64_t>(max_segment_size_, padded_size);
+
+    // ---- Step 3: rotate the buffer pool so its page_table_ covers the
+    //              freshly extended file.  The OLD pool is parked in
+    //              retired_pools_ to keep MemoryBlock ref counts safe; we
+    //              do NOT re-run ParseToMapping() because the in-memory
+    //              state is already authoritative.
     if (buffer_pool_handle_) {
       buffer_pool_handle_->flush_all();
     }
-    // Park the old pool + handle.
     if (buffer_pool_) {
       retired_pools_.push_back(std::move(buffer_pool_));
       retired_handles_.push_back(std::move(buffer_pool_handle_));
@@ -892,56 +1069,21 @@ class BufferStorage : public IndexStorage {
       buffer_pool_handle_.reset();
     }
     buffer_pool_.reset();
-    // Reset parse-time state EXCEPT for segments_: WrappedSegment instances
-    // held by callers store raw pointers into segments_' mapped values.
-    // The C++ standard guarantees that unordered_map references/pointers to
-    // mapped values are never invalidated by insertions, so we can safely
-    // leave segments_ intact and update entries in-place during re-parse.
-    id_hash_.clear();
-    buffer_pool_buffers_.clear();
-    meta_chains_.clear();
-    chain_headers_.clear();
-    current_header_start_offset_ = 0u;
-    max_segment_size_ = 0u;
-    memset(&footer_, 0, sizeof(footer_));
 
-    // Delegate the structural append to IndexMapping (same engine used by
-    // MMapFileStorage) so the on-disk format stays consistent.
-    IndexMapping mapping;
-    int ret = mapping.open(file_name_, /*cow=*/false, /*full_mode=*/false);
-    if (ret != 0) {
+    try {
+      buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
+          file_name_, /*writable=*/true, /*create=*/false);
+      buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
+          buffer_pool_->get_handle());
+    } catch (const std::exception &e) {
       LOG_ERROR(
-          "BufferStorage::append_segment failed to open IndexMapping: "
-          "file[%s], id[%s], errno[%d]",
-          file_name_.c_str(), id.c_str(), ret);
-      reopen_pool();
-      return ret;
+          "append_segment: failed to reopen pool: file[%s], what[%s]",
+          file_name_.c_str(), e.what());
+      buffer_pool_.reset();
+      buffer_pool_handle_.reset();
+      return IndexError_Runtime;
     }
-    ret = mapping.append(id, size);
-    if (ret != 0) {
-      LOG_ERROR(
-          "BufferStorage::append_segment failed to append segment: "
-          "file[%s], id[%s], errno[%d]",
-          file_name_.c_str(), id.c_str(), ret);
-      mapping.close();
-      reopen_pool();
-      return ret;
-    }
-    mapping.refresh(0);
-    ret = mapping.flush();
-    mapping.close();
-    if (ret != 0) {
-      LOG_ERROR(
-          "BufferStorage::append_segment failed to flush: "
-          "file[%s], id[%s], errno[%d]",
-          file_name_.c_str(), id.c_str(), ret);
-      reopen_pool();
-      return ret;
-    }
-
-    // Reopen the buffer pool and reload the mapping so the new segment is
-    // accessible via get_segment_info() / get().
-    return reopen_pool();
+    return buffer_pool_->init();
   }
 
   //! Test if a segment exists
@@ -1001,6 +1143,12 @@ class BufferStorage : public IndexStorage {
     uint64_t footer_file_offset;
     uint64_t segment_meta_file_offset;
     uint32_t segment_meta_size;
+    // Lowest offset of segment ID strings within the segment_meta region.
+    // Equals segment_meta_size when no IDs have been written yet, and
+    // decreases by `strlen(id)+1` for each appended segment.  Used by
+    // append_segment() to detect when the chain runs out of meta capacity
+    // and a new chain must be split off.
+    uint32_t segment_ids_offset;
   };
   std::vector<MetaChain> meta_chains_{};
 };
