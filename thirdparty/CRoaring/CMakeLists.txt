@@ -31,7 +31,7 @@ set_target_properties(roaring PROPERTIES
 # Two include roots:
 #   - CRoaring-2.0.4/         -> <roaring.h>, <roaring.hh>, <roaring64map.hh>
 #   - CRoaring-2.0.4/include/ -> <roaring/roaring.h>  (legacy path used in code)
-target_include_directories(roaring PUBLIC
+target_include_directories(roaring SYSTEM PUBLIC
     $<BUILD_INTERFACE:${_ROARING_AMAL_DIR}>
     $<BUILD_INTERFACE:${_ROARING_AMAL_DIR}/include>
 )

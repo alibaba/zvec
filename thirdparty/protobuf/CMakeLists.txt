@@ -10,6 +10,8 @@ add_subdirectory(protobuf-3.21.12/cmake protobuf-3.21.12)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
+mark_target_includes_system(libprotobuf libprotobuf-lite libprotoc)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(libprotobuf PRIVATE 
         -Wno-deprecated-declarations 

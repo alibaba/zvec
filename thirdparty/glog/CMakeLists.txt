@@ -24,6 +24,8 @@ unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
 add_dependencies(glog gflags)
 
+mark_target_includes_system(glog)
+
 if(MSVC)
     # Modern MSVC (1900+/VS2015+) provides snprintf in the CRT.
     # Suppress glog's own declaration which conflicts with the SDK header.
