@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <shared_mutex>
 #include <sys/stat.h>
@@ -577,7 +578,7 @@ class BufferStorage : public IndexStorage {
       meta_chains_.push_back({current_header_start_offset_, footer_offset,
                               segment_start_offset,
                               footer_.segments_meta_size,
-                              segment_ids_offset});
+                              segment_ids_offset, footer_});
 
       if (footer_.next_meta_header_offset == 0) {
         break;
@@ -691,9 +692,21 @@ class BufferStorage : public IndexStorage {
     return ret;
   }
 
-  //! Set the index file as dirty
+  //! Set the index file as dirty.
+  //!
+  //! HOT PATH: called once per WrappedSegment::write() / resize() /
+  //! update_data_crc().  Under 16-thread build (~100k writes total) every
+  //! unconditional store(true) on this shared cache line triggers MESI
+  //! invalidation across all cores -- classic cache-line ping-pong even
+  //! for relaxed atomics.  Since the flag is true the vast majority of
+  //! the time (only flush_index() / refresh_index() reset it), guard the
+  //! store with a load: when the line is already in Shared/Modified=true
+  //! state on this core, the load is essentially free and we skip the
+  //! invalidating store.
   void set_as_dirty(void) {
-    index_dirty_ = true;
+    if (!index_dirty_.load(std::memory_order_relaxed)) {
+      index_dirty_.store(true, std::memory_order_relaxed);
+    }
   }
 
   //! Refresh meta information (checksum, update time, etc.)
@@ -701,14 +714,16 @@ class BufferStorage : public IndexStorage {
     // In BufferStorage the segment metadata lives in buffer_pool_buffers_.
     // CRC recomputation and disk write are deferred to flush_index().
     // Just mark dirty so flush_index() will include the metadata write.
-    index_dirty_ = true;
+    if (!index_dirty_.load(std::memory_order_relaxed)) {
+      index_dirty_.store(true, std::memory_order_relaxed);
+    }
   }
 
   //! Flush index storage: persists any pending meta changes (segments_meta +
   //! footer) for each header chain, then asks the page cache to write back
   //! dirty data pages.
   int flush_index(void) {
-    if (!index_dirty_) {
+    if (!index_dirty_.load(std::memory_order_relaxed)) {
       return 0;
     }
     // SHARED LOCK: keep mapping_mutex_ held for the whole flush so that the
@@ -724,7 +739,7 @@ class BufferStorage : public IndexStorage {
     }
     if (!buffer_pool_->writable()) {
       // Read-only pool: nothing to flush.
-      index_dirty_ = false;
+      index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
     }
     // Flush all dirty data blocks to the backing file first.
@@ -733,28 +748,20 @@ class BufferStorage : public IndexStorage {
       return IndexError_WriteData;
     }
     // For each metadata chain, recompute the segment-meta CRC, update the
-    // footer (segments_meta_crc + footer_crc + update_time), and write both
-    // the segment metadata and the footer back to the backing file.
+    // in-memory footer (segments_meta_crc + footer_crc + update_time), and
+    // write both the segment metadata and the footer back to the backing
+    // file.  Uses the per-chain in-memory footer copy, avoiding a pread.
     for (size_t ci = 0;
          ci < meta_chains_.size() && ci < buffer_pool_buffers_.size(); ++ci) {
-      const MetaChain &chain = meta_chains_[ci];
+      MetaChain &mchain = meta_chains_[ci];
       const char *seg_buf = buffer_pool_buffers_[ci].get();
-      // Read the on-disk footer into a local copy so we can update it.
-      IndexFormat::MetaFooter footer;
-      if (buffer_pool_handle_->get_meta(
-              chain.footer_file_offset, sizeof(footer),
-              reinterpret_cast<char *>(&footer)) != 0) {
-        LOG_ERROR("Failed to read footer for flush: file[%s], chain[%zu]",
-                  file_name_.c_str(), ci);
-        return IndexError_Runtime;
-      }
-      // Recompute segment metadata CRC and refresh the footer.
-      footer.segments_meta_crc =
-          ailego::Crc32c::Hash(seg_buf, chain.segment_meta_size, 0u);
-      IndexFormat::UpdateMetaFooter(&footer, 0);
+      // Recompute segment metadata CRC and refresh the per-chain footer.
+      mchain.footer.segments_meta_crc =
+          ailego::Crc32c::Hash(seg_buf, mchain.segment_meta_size, 0u);
+      IndexFormat::UpdateMetaFooter(&mchain.footer, 0);
       // Write segment metadata back to disk.
-      if (buffer_pool_handle_->write_meta(chain.segment_meta_file_offset,
-                                          chain.segment_meta_size,
+      if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset,
+                                          mchain.segment_meta_size,
                                           seg_buf) != 0) {
         LOG_ERROR("Failed to write segment meta: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
@@ -762,14 +769,18 @@ class BufferStorage : public IndexStorage {
       }
       // Write the updated footer back to disk.
       if (buffer_pool_handle_->write_meta(
-              chain.footer_file_offset, sizeof(footer),
-              reinterpret_cast<const char *>(&footer)) != 0) {
+              mchain.footer_file_offset, sizeof(mchain.footer),
+              reinterpret_cast<const char *>(&mchain.footer)) != 0) {
         LOG_ERROR("Failed to write footer: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
         return IndexError_WriteData;
       }
     }
-    index_dirty_ = false;
+    // Keep the convenience alias in sync with the last chain.
+    if (!meta_chains_.empty()) {
+      footer_ = meta_chains_.back().footer;
+    }
+    index_dirty_.store(false, std::memory_order_relaxed);
     return 0;
   }
 
@@ -945,6 +956,7 @@ class BufferStorage : public IndexStorage {
                   file_name_.c_str());
         return IndexError_WriteData;
       }
+      chain->footer = footer_;  // sync in-memory copy for flush_index
 
       // Extend the file and write the new chain's header + (zero) footer.
       // The segment_meta region is implicitly zero-filled by ftruncate,
@@ -992,7 +1004,7 @@ class BufferStorage : public IndexStorage {
       meta_chains_.push_back(MetaChain{new_chain_start, new_footer_file_offset,
                                        new_segment_meta_file_offset,
                                        new_segments_meta_size,
-                                       new_segments_meta_size});
+                                       new_segments_meta_size, new_footer});
       footer_ = new_footer;
       current_header_start_offset_ = new_chain_start;
 
@@ -1030,6 +1042,7 @@ class BufferStorage : public IndexStorage {
     footer_.segments_meta_crc =
         ailego::Crc32c::Hash(meta_buf, chain->segment_meta_size, 0u);
     IndexFormat::UpdateMetaFooter(&footer_, 0);
+    chain->footer = footer_;  // sync in-memory copy for flush_index
 
     if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset,
                                         chain->segment_meta_size,
@@ -1059,6 +1072,12 @@ class BufferStorage : public IndexStorage {
     //              retired_pools_ to keep MemoryBlock ref counts safe; we
     //              do NOT re-run ParseToMapping() because the in-memory
     //              state is already authoritative.
+    //
+    // flush_all() is REQUIRED here despite the entry-point flush_index()
+    // having already flushed: between flush_index()'s shared_lock release
+    // and this function's unique_lock acquisition, other build threads may
+    // have produced new dirty pages via WrappedSegment::write().  Without
+    // this flush, the freshly opened pool would pread stale data from disk.
     if (buffer_pool_handle_) {
       buffer_pool_handle_->flush_all();
     }
@@ -1103,7 +1122,7 @@ class BufferStorage : public IndexStorage {
   }
 
  private:
-  bool index_dirty_{false};
+  std::atomic<bool> index_dirty_{false};
   mutable std::shared_mutex mapping_mutex_{};
 
   std::vector<char *> tmp_buffers_{};
@@ -1149,6 +1168,10 @@ class BufferStorage : public IndexStorage {
     // append_segment() to detect when the chain runs out of meta capacity
     // and a new chain must be split off.
     uint32_t segment_ids_offset;
+    // In-memory copy of this chain's MetaFooter.  Kept in sync with disk
+    // by flush_index() and append_segment(), avoiding a pread per chain
+    // on every flush.
+    IndexFormat::MetaFooter footer;
   };
   std::vector<MetaChain> meta_chains_{};
 };
