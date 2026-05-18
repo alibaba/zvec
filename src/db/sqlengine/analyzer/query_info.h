@@ -126,7 +126,6 @@ class QueryInfo {
     bool reverse_sort_{false};
   };
 
-  using QueryFtsCondInfoPtr = FtsCondInfo::Ptr;
 
  public:
   QueryInfo() = default;
@@ -164,11 +163,11 @@ class QueryInfo {
     return vector_cond_info_;
   }
 
-  void set_fts_cond_info(QueryFtsCondInfoPtr value) {
+  void set_fts_cond_info(FtsCondInfo::Ptr value) {
     fts_cond_info_ = std::move(value);
   }
 
-  const QueryFtsCondInfoPtr &fts_cond_info() const {
+  const FtsCondInfo::Ptr &fts_cond_info() const {
     return fts_cond_info_;
   }
 
@@ -351,7 +350,7 @@ class QueryInfo {
   QueryNode::Ptr filter_cond_{nullptr};
 
   QueryVectorCondInfo::Ptr vector_cond_info_{nullptr};
-  QueryFtsCondInfoPtr fts_cond_info_{nullptr};
+  FtsCondInfo::Ptr fts_cond_info_{nullptr};
 
   // these two are for post filtering only
   QueryNode::Ptr post_invert_cond_{nullptr};

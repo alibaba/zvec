@@ -50,7 +50,7 @@ class TokenizerFactory {
   /*! Create tokenizer pipeline from FtsIndexParams.
    *  \param params  FTS index parameters containing tokenizer_name, filters,
    *                 and extra_params (JSON string for tokenizer-specific
-   *                 configuration, e.g. SCWS dict_path/rule_path/charset).
+   *                 configuration).
    *  \return        Tokenizer pipeline, returns nullptr on failure
    */
   static TokenizerPipelinePtr create(const FtsIndexParams &params);

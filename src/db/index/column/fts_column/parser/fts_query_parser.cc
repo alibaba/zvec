@@ -14,6 +14,7 @@
 
 #include "fts_query_parser.h"
 #include <cctype>
+#include <zvec/ailego/utility/string_helper.h>
 #include "db/index/column/fts_column/gen/FtsLexer.h"
 #include "db/index/column/fts_column/gen/FtsParser.h"
 #include "antlr4-runtime.h"
@@ -33,8 +34,8 @@ class FtsErrorListener : public BaseErrorListener {
                    const std::string &msg,
                    std::exception_ptr /*exception*/) override {
     if (err_msg_.empty()) {
-      err_msg_ = "[" + std::to_string(line) + " " +
-                 std::to_string(char_position_in_line) + " " + msg + "]";
+      err_msg_ = ailego::StringHelper::Concat(
+          "[", line, " ", char_position_in_line, " ", msg, "]");
     }
   }
 

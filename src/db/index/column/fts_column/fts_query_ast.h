@@ -29,7 +29,7 @@ enum class FtsNodeType {
   OR,      // OR combination node (union)
 };
 
-/*! AST 节点基类
+/*! AST node base class
  *  All FTS AST nodes carry must/must_not modifiers so that the +/- prefix
  *  (and AND NOT semantics) can be applied uniformly to terms, phrases and
  *  composite (AND/OR) sub-expressions.
@@ -96,7 +96,9 @@ struct PhraseNode : public FtsAstNode {
   std::string text() const override {
     std::string result = modifier_prefix() + "\"";
     for (size_t i = 0; i < terms.size(); ++i) {
-      if (i > 0) result += " ";
+      if (i > 0) {
+        result += " ";
+      }
       result += terms[i];
     }
     result += "\"";
@@ -117,7 +119,9 @@ struct AndNode : public FtsAstNode {
   std::string text() const override {
     std::string result = modifier_prefix() + "AND(";
     for (size_t i = 0; i < children.size(); ++i) {
-      if (i > 0) result += " ";
+      if (i > 0) {
+        result += " ";
+      }
       result += children[i]->text();
     }
     result += ")";
@@ -138,7 +142,9 @@ struct OrNode : public FtsAstNode {
   std::string text() const override {
     std::string result = modifier_prefix() + "OR(";
     for (size_t i = 0; i < children.size(); ++i) {
-      if (i > 0) result += " ";
+      if (i > 0) {
+        result += " ";
+      }
       result += children[i]->text();
     }
     result += ")";

@@ -28,6 +28,7 @@
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
 // meta.h not needed in zvec
+#include "db/common/constants.h"
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/fts_column/fts_utils.h"
 
@@ -49,8 +50,12 @@ static bool search_str_ok(Reader &reader, const std::string &query_str,
   }
   zvec::fts::FtsQueryParams qp;
   qp.topk = topk;
-  auto ret = reader.search(*ast, qp, results);
-  return ret.has_value();
+  auto ret = reader.search(*ast, qp);
+  if (!ret.has_value()) {
+    return false;
+  }
+  *results = std::move(ret.value());
+  return true;
 }
 
 // ============================================================
@@ -65,12 +70,12 @@ static const std::string kMid0Dir{kTestDir + "/mid0"};
 static const std::string kMid1Dir{kTestDir + "/mid1"};
 static const std::string kDst2Dir{kTestDir + "/dst2"};
 
-static const std::string kPostingsCf{"fts_postings"};
-static const std::string kMaxTfCf{"fts_max_tf"};
-static const std::string kPositionsCf{"fts_positions"};
-static const std::string kTermFreqCf{"fts_tf"};
-static const std::string kDocLenCf{"fts_doc_len"};
-static const std::string kStatCf{"fts_stat"};
+static const std::string kPostingsCf{"fts"};
+static const std::string kMaxTfCf{kPostingsCf + zvec::kFtsMaxTfSuffix};
+static const std::string kPositionsCf{kPostingsCf + zvec::kFtsPositionsSuffix};
+static const std::string kTermFreqCf{kPostingsCf + zvec::kFtsTfSuffix};
+static const std::string kDocLenCf{kPostingsCf + zvec::kFtsDocLenSuffix};
+static const std::string kStatCf{zvec::kFtsStatCfName};
 
 static const std::string kFieldName{"content"};
 
@@ -99,7 +104,8 @@ static Status OpenFtsStoreWithSideCfs(RocksdbContext &db,
           {kPostingsCf, std::make_shared<FtsPostingsMerge>()},
           {kMaxTfCf, std::make_shared<FtsMaxTfMerge>()},
       };
-  return db.create(data_dir, cf_names, nullptr, per_cf_ops);
+  return db.create(
+      RocksdbContext::Args{data_dir, cf_names, nullptr, per_cf_ops});
 }
 
 // Build RocksDB args for destination/reader stores (immutable stage: no side
@@ -110,7 +116,8 @@ static Status OpenFtsStore(RocksdbContext &db, const std::string &data_dir) {
       per_cf_ops = {
           {kPostingsCf, std::make_shared<FtsPostingsMerge>()},
       };
-  return db.create(data_dir, cf_names, nullptr, per_cf_ops);
+  return db.create(
+      RocksdbContext::Args{data_dir, cf_names, nullptr, per_cf_ops});
 }
 
 // Open an existing RocksDB FTS store (immutable stage: no side CFs).
@@ -121,7 +128,8 @@ static Status OpenExistingFtsStore(RocksdbContext &db,
       per_cf_ops = {
           {kPostingsCf, std::make_shared<FtsPostingsMerge>()},
       };
-  return db.open(data_dir, cf_names, false, nullptr, per_cf_ops);
+  return db.open(RocksdbContext::Args{data_dir, cf_names, nullptr, per_cf_ops},
+                 false);
 }
 
 
@@ -252,9 +260,10 @@ class FtsRocksdbReducerTest : public ::testing::Test {
   std::unique_ptr<FtsColumnIndexer> MakeDstReader() {
     auto reader = std::make_unique<FtsColumnIndexer>();
     EXPECT_TRUE(reader
-                    ->open(kFieldName, &dst_db_, dst_postings_, dst_positions_,
-                           /*term_freq_cf=*/nullptr, /*max_tf_cf=*/nullptr,
-                           /*doc_len_cf=*/nullptr, dst_stat_)
+                    ->open_reader(kFieldName, &dst_db_, dst_postings_,
+                                  dst_positions_, /*term_freq_cf=*/nullptr,
+                                  /*max_tf_cf=*/nullptr,
+                                  /*doc_len_cf=*/nullptr, dst_stat_)
                     .has_value());
     return reader;
   }

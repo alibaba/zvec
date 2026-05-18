@@ -15,7 +15,6 @@
 #include "tokenizer_pipeline_manager.h"
 #include <mutex>
 #include <shared_mutex>
-#include <sstream>
 #include <zvec/ailego/logger/logger.h>
 
 namespace zvec::fts {

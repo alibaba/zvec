@@ -1,12 +1,3 @@
-##
-##  Copyright (C) The Software Authors. All rights reserved.
-##
-##  \file     CMakeLists.txt
-##  \date     May 2026
-##  \version  1.0
-##  \brief    Detail cmake build script for cppjieba (thirdparty, header-only)
-##
-
 set(cppjieba_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cppjieba-5.6.7")
 
 if(NOT TARGET cppjieba)

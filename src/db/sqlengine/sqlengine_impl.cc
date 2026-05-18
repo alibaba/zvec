@@ -134,22 +134,22 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
         "Exactly one of query_string or match_string must be provided"));
   }
 
-  FtsQueryParams *fts_qp = nullptr;
-  if (query_params) {
-    fts_qp = dynamic_cast<FtsQueryParams *>(query_params.get());
+  auto *fts_query_param = dynamic_cast<FtsQueryParams *>(query_params.get());
+
+  // Determine default operator once, shared by both query_string and
+  // match_string paths.
+  fts::FtsDefaultOperator default_op = fts::FtsDefaultOperator::OR;
+  if (fts_query_param) {
+    auto &op_str = fts_query_param->default_operator();
+    if (op_str == "AND" || op_str == "and") {
+      default_op = fts::FtsDefaultOperator::AND;
+    }
   }
 
   fts::FtsAstNodePtr ast;
   if (has_query) {
     // Structured query expression: parse via ANTLR grammar.
     fts::FtsQueryParser fts_parser;
-    fts::FtsDefaultOperator default_op = fts::FtsDefaultOperator::OR;
-    if (fts_qp) {
-      auto &op_str = fts_qp->default_operator();
-      if (op_str == "AND" || op_str == "and") {
-        default_op = fts::FtsDefaultOperator::AND;
-      }
-    }
     ast = fts_parser.parse(fts_query.query_string_, default_op);
     if (!ast) {
       LOG_ERROR("FTS query parse failed: %s", fts_parser.err_msg().c_str());
@@ -164,13 +164,13 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
       return tl::make_unexpected(
           Status::InvalidArgument("FTS field not found: ", field_name));
     }
-    auto fts_ip =
+    auto fts_idx_param =
         std::dynamic_pointer_cast<FtsIndexParams>(field_schema->index_params());
-    if (!fts_ip) {
-      // Field has no FtsIndexParams; create a default one.
-      fts_ip = std::make_shared<FtsIndexParams>();
+    if (!fts_idx_param) {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "FTS field has no FtsIndexParams: ", field_name));
     }
-    auto pipeline_result = fts_ip->create_pipeline();
+    auto pipeline_result = fts_idx_param->create_pipeline();
     if (!pipeline_result.has_value()) {
       return tl::make_unexpected(Status::InternalError(
           "Failed to create tokenizer pipeline for field: ", field_name, " ",
@@ -185,14 +185,7 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     if (tokens.size() == 1) {
       ast = std::make_unique<fts::TermNode>(std::move(tokens[0].text));
     } else {
-      bool use_and = false;
-      if (fts_qp) {
-        auto &op_str = fts_qp->default_operator();
-        if (op_str == "AND" || op_str == "and") {
-          use_and = true;
-        }
-      }
-      if (use_and) {
+      if (default_op == fts::FtsDefaultOperator::AND) {
         auto and_node = std::make_unique<fts::AndNode>();
         for (auto &token : tokens) {
           and_node->children.push_back(

@@ -526,7 +526,7 @@ DocFilter::Ptr QueryPlanner::build_doc_filter(
   std::unique_ptr<ac::Declaration> forward_filter_plan;
   // if single stage search is not enabled, first run acero plan to get
   // forward bitmap, then filter during search. otherwise, filter forward
-  // during forward search.
+  // during search.
   if (forward_filter && !single_stage_search) {
     ac::RecordBatchReaderSourceNodeOptions source_options{
         seg->scan(query_info->get_forward_filter_field_names())};

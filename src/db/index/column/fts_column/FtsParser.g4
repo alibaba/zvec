@@ -75,7 +75,7 @@ fts_boost
     ;
 
 fts_natural_term
-    : DEFAULT+   // 一个或多个默认字符组成自然语言 term
+    : DEFAULT+   // One or more default characters forming a natural language term
     ;
 
 // ── Term: identifier, number, or generic token ───────────────────────────────

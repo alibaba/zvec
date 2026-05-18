@@ -153,11 +153,7 @@ FtsIndexParams::Ptr ProtoConverter::FromPb(
     filters.push_back(filter);
   }
   return std::make_shared<FtsIndexParams>(
-      params_pb.tokenizer_name().empty() ? "standard"
-                                         : params_pb.tokenizer_name(),
-      filters.empty() ? std::vector<std::string>{"lowercase"}
-                      : std::move(filters),
-      params_pb.extra_params());
+      params_pb.tokenizer_name(), std::move(filters), params_pb.extra_params());
 }
 
 proto::FtsIndexParams ProtoConverter::ToPb(const FtsIndexParams *params) {

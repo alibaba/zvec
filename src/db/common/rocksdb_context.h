@@ -32,6 +32,13 @@ namespace zvec {
 // A very thin wrapper around RocksDB
 struct RocksdbContext {
  public:
+  struct Args {
+    std::string db_path;
+    std::vector<std::string> column_names;
+    std::shared_ptr<rocksdb::MergeOperator> merge_op;
+    std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+        per_cf_merge_ops;
+  };
   std::unique_ptr<rocksdb::DB> db_{nullptr};
   std::string db_path_;
   bool read_only_;
@@ -111,24 +118,11 @@ struct RocksdbContext {
   size_t count();
 
 
-  // --- FTS extensions: per-CF merge operators ---
+  // Create a Rocksdb instance from Args
+  Status create(Args args);
 
-  // Create a Rocksdb instance with per-CF merge operators
-  Status create(const std::string &db_path,
-                const std::vector<std::string> &column_names,
-                std::shared_ptr<rocksdb::MergeOperator> merge_op,
-                const std::unordered_map<
-                    std::string, std::shared_ptr<rocksdb::MergeOperator>>
-                    &per_cf_merge_ops);
-
-
-  // Open an existing Rocksdb instance with per-CF merge operators
-  Status open(const std::string &db_path,
-              const std::vector<std::string> &column_names, bool read_only,
-              std::shared_ptr<rocksdb::MergeOperator> merge_op,
-              const std::unordered_map<std::string,
-                                       std::shared_ptr<rocksdb::MergeOperator>>
-                  &per_cf_merge_ops);
+  // Open an existing Rocksdb instance from Args
+  Status open(Args args, bool read_only);
 
 
  private:

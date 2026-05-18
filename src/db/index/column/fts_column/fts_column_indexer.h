@@ -59,7 +59,7 @@ class FtsColumnIndexer {
   // Initialization
   // -----------------------------------------------------------------
 
-  /*! Initialize for read+write (mutable segment path).
+  /*! Initialize for read+write (mutable path).
    *  \param field_meta    Field meta describing this FTS field; provides both
    *                       the field name and the tokenizer extra params used
    *                       to acquire/release the shared pipeline.
@@ -80,27 +80,27 @@ class FtsColumnIndexer {
                     rocksdb::ColumnFamilyHandle *doc_len_cf,
                     rocksdb::ColumnFamilyHandle *stat_cf);
 
-  /*! Initialize for read-only (immutable segment / standalone reader path).
+  /*! Initialize for read-only (immutable / standalone reader path).
    *  No tokenizer is acquired; insert() will fail if called.
    *  \param field_name   Field name
    *  \param ctx          RocksdbContext pointer
    *  \param postings_cf  postings CF
    *  \param positions_cf $POS CF
-   *  \param term_freq_cf $TF CF  (may be nullptr for immutable segments)
+   *  \param term_freq_cf $TF CF  (may be nullptr for immutable)
    *  \param max_tf_cf    $MAX_TF CF (may be nullptr)
    *  \param doc_len_cf   $DOC_LEN CF (may be nullptr)
    *  \param stat_cf      $SEGMENT_STAT CF
    *  \param bm25_params  BM25 parameters (k1, b)
    *  \return Result<void> on success, or Status on failure
    */
-  Result<void> open(const std::string &field_name, RocksdbContext *ctx,
-                    rocksdb::ColumnFamilyHandle *postings_cf,
-                    rocksdb::ColumnFamilyHandle *positions_cf,
-                    rocksdb::ColumnFamilyHandle *term_freq_cf,
-                    rocksdb::ColumnFamilyHandle *max_tf_cf,
-                    rocksdb::ColumnFamilyHandle *doc_len_cf,
-                    rocksdb::ColumnFamilyHandle *stat_cf,
-                    BM25Params bm25_params = BM25Params{});
+  Result<void> open_reader(const std::string &field_name, RocksdbContext *ctx,
+                           rocksdb::ColumnFamilyHandle *postings_cf,
+                           rocksdb::ColumnFamilyHandle *positions_cf,
+                           rocksdb::ColumnFamilyHandle *term_freq_cf,
+                           rocksdb::ColumnFamilyHandle *max_tf_cf,
+                           rocksdb::ColumnFamilyHandle *doc_len_cf,
+                           rocksdb::ColumnFamilyHandle *stat_cf,
+                           BM25Params bm25_params = BM25Params{});
 
   /*! Release all CF pointers and reset internal state.
    *  Thread-safe: waits for in-flight search() calls to drain before
@@ -118,11 +118,10 @@ class FtsColumnIndexer {
   /*! Execute FTS query and return result list with BM25 scores
    *  \param ast          Pre-parsed FTS AST (caller owns the parse step)
    *  \param query_params Query parameters (topk, filter, etc.)
-   *  \param results      Output result list, sorted by score descending
-   *  \return Result<void> on success, or Status on failure
+   *  \return Result containing sorted results (descending score), or Status
    */
-  Result<void> search(const FtsAstNode &ast, const FtsQueryParams &query_params,
-                      std::vector<FtsResult> *results) const;
+  Result<std::vector<FtsResult>> search(
+      const FtsAstNode &ast, const FtsQueryParams &query_params) const;
 
   /*! Atomically reset $TF/$MAX_TF/$DOC_LEN CF pointers to nullptr.
    *  Called before dropping these CFs so that concurrent search() calls
@@ -135,11 +134,11 @@ class FtsColumnIndexer {
   // -----------------------------------------------------------------
 
   /*! Insert FTS field content for a document
-   *  \param doc_id     Document ID
-   *  \param text       UTF-8 encoded text content
+   *  \param seg_doc_id  Segment-local document ID
+   *  \param text        UTF-8 encoded text content
    *  \return Result<void> on success, or Status on failure
    */
-  Result<void> insert(uint64_t doc_id, const std::string &text);
+  Result<void> insert(uint64_t seg_doc_id, const std::string &text);
 
   /*! Flush in-memory statistics to RocksDB (called before segment dump)
    *  \return Result<void> on success, or Status on failure
@@ -175,29 +174,20 @@ class FtsColumnIndexer {
 
  private:
   // --- Iterator tree construction (search internals) ---
-  DocIteratorPtr build_iterator(const FtsAstNode &node) const;
-  DocIteratorPtr build_term_iterator(const TermNode &term_node) const;
-  DocIteratorPtr build_phrase_iterator(const PhraseNode &phrase_node) const;
-  DocIteratorPtr build_and_iterator(const AndNode &and_node) const;
-  DocIteratorPtr build_or_iterator(const OrNode &or_node) const;
-  DocIteratorPtr create_term_iterator_from_raw(const std::string &term,
-                                               std::string raw_data) const;
+  Result<DocIteratorPtr> build_iterator(const FtsAstNode &node) const;
+  Result<DocIteratorPtr> build_term_iterator(const TermNode &term_node) const;
+  Result<DocIteratorPtr> build_phrase_iterator(
+      const PhraseNode &phrase_node) const;
+  Result<DocIteratorPtr> build_and_iterator(const AndNode &and_node) const;
+  Result<DocIteratorPtr> build_or_iterator(const OrNode &or_node) const;
+  Result<DocIteratorPtr> create_term_iterator_from_raw(
+      const std::string &term, std::string raw_data) const;
   void batch_get_postings(const std::vector<std::string> &terms,
                           std::vector<std::string> *raw_postings) const;
 
   // --- Write helpers ---
   static void encode_varint(uint32_t value, std::string *output);
   static std::string encode_positions(const std::vector<uint32_t> &positions);
-
-  // --- Internal open helper shared by both open() overloads ---
-  Result<void> open_reader(const std::string &field_name, RocksdbContext *ctx,
-                           rocksdb::ColumnFamilyHandle *postings_cf,
-                           rocksdb::ColumnFamilyHandle *positions_cf,
-                           rocksdb::ColumnFamilyHandle *term_freq_cf,
-                           rocksdb::ColumnFamilyHandle *max_tf_cf,
-                           rocksdb::ColumnFamilyHandle *doc_len_cf,
-                           rocksdb::ColumnFamilyHandle *stat_cf,
-                           BM25Params bm25_params = BM25Params{});
 
   // --- Tokenizer (write path only) ---
   FieldSchema::Ptr field_meta_{};

@@ -22,7 +22,7 @@
 
 namespace zvec::fts {
 
-/*! 分词结果中的单个 token
+/*! A single token in the tokenization result
  */
 struct Token {
   // token text content

@@ -1,8 +1,3 @@
-##
-##  \file     CMakeLists.txt
-##  \brief    Build script for FastPFOR SIMD bitpacking library (thirdparty)
-##
-
 include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
 
 # On ARM platforms, FastPFOR uses SIMDe to emulate SSE intrinsics.

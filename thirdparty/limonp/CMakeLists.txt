@@ -1,10 +1,3 @@
-##
-##  Copyright (C) The Software Authors. All rights reserved.
-##
-##  \file     CMakeLists.txt
-##  \brief    Detail cmake build script for limonp (thirdparty, header-only)
-##
-
 set(limonp_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/limonp-v1.0.2")
 
 if(NOT TARGET limonp)

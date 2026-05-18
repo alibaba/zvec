@@ -29,17 +29,4 @@ std::vector<Token> LowercaseTokenFilter::filter(
   return tokens;
 }
 
-std::vector<Token> StopwordTokenFilter::filter(
-    std::vector<Token> tokens) const {
-  if (stopwords_.empty()) {
-    return tokens;
-  }
-  tokens.erase(std::remove_if(tokens.begin(), tokens.end(),
-                              [this](const Token &token) {
-                                return stopwords_.count(token.text) > 0;
-                              }),
-               tokens.end());
-  return tokens;
-}
-
 }  // namespace zvec::fts

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include "tokenizer.h"
 
@@ -31,14 +32,6 @@ namespace zvec::fts {
  *
  *  The cppjieba::Jieba instance is thread-safe for concurrent Cut* calls
  *  after construction, so tokenize() can be called from multiple threads.
- *
- *  JSON configuration keys (passed to init()):
- *    "dict_path"      – path to jieba.dict.utf8 (optional, has default)
- *    "model_path"     – path to hmm_model.utf8 (optional, has default)
- *    "user_dict_path" – path to user.dict.utf8 (optional, has default)
- *    "idf_path"       – path to idf.utf8 (optional, has default)
- *    "stop_word_path" – path to stop_words.utf8 (optional, has default)
- *    "cut_mode"       – "search" (default) | "mix" | "full" | "hmm"
  */
 class JiebaTokenizer : public Tokenizer {
  public:
@@ -49,6 +42,15 @@ class JiebaTokenizer : public Tokenizer {
   JiebaTokenizer(const JiebaTokenizer &) = delete;
   JiebaTokenizer &operator=(const JiebaTokenizer &) = delete;
 
+  /*! Initialise from JSON config.
+   *  Supported keys:
+   *    "dict_path"      – path to jieba.dict.utf8 (required)
+   *    "model_path"     – path to hmm_model.utf8 (required)
+   *    "user_dict_path" – path to user.dict.utf8 (optional)
+   *    "idf_path"       – path to idf.utf8 (optional)
+   *    "stop_word_path" – path to stop_words.utf8 (optional)
+   *    "cut_mode"       – "search" (default) | "mix" | "full" | "hmm"
+   */
   bool init(const ailego::JsonObject &config) override;
 
   std::vector<Token> tokenize(const std::string &text) const override;
@@ -61,10 +63,14 @@ class JiebaTokenizer : public Tokenizer {
     return jieba_ != nullptr;
   }
 
+  // Move-only (unique_ptr member)
+  JiebaTokenizer(JiebaTokenizer &&) = default;
+  JiebaTokenizer &operator=(JiebaTokenizer &&) = default;
+
  private:
   enum class CutMode { kSearch, kMix, kFull, kHmm };
 
-  cppjieba::Jieba *jieba_{nullptr};
+  std::unique_ptr<cppjieba::Jieba> jieba_;
   CutMode cut_mode_{CutMode::kSearch};
 };
 

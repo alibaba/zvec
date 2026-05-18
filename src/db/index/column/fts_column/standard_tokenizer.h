@@ -23,15 +23,13 @@ namespace zvec::fts {
  *  Splits text on non-alphanumeric characters (punctuation, whitespace, etc.)
  *  and discards the delimiters. Produces lowercase-ready tokens composed of
  *  letters and digits only.
- *
- *  Supported configuration keys (via init JSON):
- *    - "max_token_length" (uint32, default 255): tokens longer than this limit
- *      are silently discarded.
  */
 class StandardTokenizer : public Tokenizer {
  public:
   /*! Initialise from JSON config.
-   *  Reads optional "max_token_length" (positive integer, default 255).
+   *  Supported keys:
+   *    "max_token_length" (uint32, default 255): tokens longer than this limit
+   *      are silently discarded.
    *  Always returns true.
    */
   bool init(const ailego::JsonObject &config) override;

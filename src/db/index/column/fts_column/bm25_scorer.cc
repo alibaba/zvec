@@ -56,10 +56,10 @@ int BM25Scorer::load_segment_stats(const std::string &field_name,
 
   // Read total_tokens
   std::string total_tokens_value;
-  auto ret2 =
+  auto status =
       ctx->db_->Get(ctx->read_opts_, stat_cf, make_total_tokens_key(field_name),
                     &total_tokens_value);
-  if (!ret2.ok()) {
+  if (!status.ok()) {
     LOG_ERROR(
         "BM25Scorer::load_segment_stats: failed to read total_tokens. "
         "field[%s]",

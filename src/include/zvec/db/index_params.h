@@ -590,7 +590,7 @@ class FtsIndexParams : public IndexParams {
 
   // Movable (transfers pipeline ownership).
   FtsIndexParams(FtsIndexParams &&other) noexcept;
-  FtsIndexParams &operator=(FtsIndexParams &&other) noexcept;
+  FtsIndexParams &operator=(FtsIndexParams &&) = delete;
 
   ~FtsIndexParams() override;
 

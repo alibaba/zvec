@@ -35,6 +35,7 @@
 #include <zvec/db/index_params.h>
 #include <zvec/db/options.h>
 #include <zvec/db/schema.h>
+#include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/fts_column/bitpacked_posting_list.h"
@@ -43,6 +44,7 @@
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/fts_rocksdb_reducer.h"
 #include "db/index/column/fts_column/fts_types.h"
+#include "db/index/column/fts_column/fts_utils.h"
 #include "db/index/common/index_filter.h"
 
 namespace {
@@ -160,20 +162,20 @@ static bool open_fts_store(RocksdbContext *store, const std::string &field_name,
                            bool with_side_cfs = true,
                            bool with_forward_cf = true) {
   const std::string &data_dir = index_path.empty() ? FLAGS_index : index_path;
-  const std::string max_tf_cf = field_name + "_max_tf";
+  const std::string max_tf_cf = field_name + zvec::kFtsMaxTfSuffix;
 
   std::vector<std::string> cf_names = {
       field_name,
-      field_name + "_positions",
-      "fts_stat",
+      field_name + zvec::kFtsPositionsSuffix,
+      zvec::kFtsStatCfName,
   };
   if (with_forward_cf) {
     cf_names.push_back(kForwardCfName);
   }
   if (with_side_cfs) {
-    cf_names.push_back(field_name + "_tf");
+    cf_names.push_back(field_name + zvec::kFtsTfSuffix);
     cf_names.push_back(max_tf_cf);
-    cf_names.push_back(field_name + "_doc_len");
+    cf_names.push_back(field_name + zvec::kFtsDocLenSuffix);
   }
 
   // Build per-CF merge operators map
@@ -186,9 +188,12 @@ static bool open_fts_store(RocksdbContext *store, const std::string &field_name,
 
   Status status;
   if (existing) {
-    status = store->open(data_dir, cf_names, false, nullptr, per_cf_merge_ops);
+    status = store->open(
+        RocksdbContext::Args{data_dir, cf_names, nullptr, per_cf_merge_ops},
+        false);
   } else {
-    status = store->create(data_dir, cf_names, nullptr, per_cf_merge_ops);
+    status = store->create(
+        RocksdbContext::Args{data_dir, cf_names, nullptr, per_cf_merge_ops});
   }
   if (!status.ok()) {
     fprintf(stderr, "ERROR: Failed to open RocksdbStore at [%s], status[%s]\n",
@@ -209,9 +214,9 @@ static bool open_fts_store(RocksdbContext *store, const std::string &field_name,
 static void drop_fts_side_cfs(RocksdbContext *store,
                               const std::string &field_name) {
   const std::vector<std::string> side_cf_names = {
-      field_name + "_tf",
-      field_name + "_max_tf",
-      field_name + "_doc_len",
+      field_name + zvec::kFtsTfSuffix,
+      field_name + zvec::kFtsMaxTfSuffix,
+      field_name + zvec::kFtsDocLenSuffix,
   };
   for (const auto &cf_name : side_cf_names) {
     Status drop_status = store->drop_cf(cf_name);
@@ -223,17 +228,6 @@ static void drop_fts_side_cfs(RocksdbContext *store,
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: encode/decode uint32_t key for forward CF
-// ---------------------------------------------------------------------------
-static std::string encode_doc_id_key(uint32_t doc_id) {
-  std::string key(sizeof(uint32_t), '\0');
-  key[0] = static_cast<char>((doc_id >> 24) & 0xFF);
-  key[1] = static_cast<char>((doc_id >> 16) & 0xFF);
-  key[2] = static_cast<char>((doc_id >> 8) & 0xFF);
-  key[3] = static_cast<char>(doc_id & 0xFF);
-  return key;
-}
 
 // ---------------------------------------------------------------------------
 // Helper: parse a JSONL line and extract a string field
@@ -336,15 +330,17 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
   // Get source column families
   rocksdb::ColumnFamilyHandle *src_postings = src_store.get_cf(FLAGS_field);
   rocksdb::ColumnFamilyHandle *src_positions =
-      src_store.get_cf(FLAGS_field + "_positions");
-  rocksdb::ColumnFamilyHandle *src_stat = src_store.get_cf("fts_stat");
+      src_store.get_cf(FLAGS_field + zvec::kFtsPositionsSuffix);
+  rocksdb::ColumnFamilyHandle *src_stat =
+      src_store.get_cf(zvec::kFtsStatCfName);
   rocksdb::ColumnFamilyHandle *src_forward = src_store.get_cf(kForwardCfName);
 
   // Get destination column families
   rocksdb::ColumnFamilyHandle *dst_postings = dst_store.get_cf(FLAGS_field);
   rocksdb::ColumnFamilyHandle *dst_positions =
-      dst_store.get_cf(FLAGS_field + "_positions");
-  rocksdb::ColumnFamilyHandle *dst_stat = dst_store.get_cf("fts_stat");
+      dst_store.get_cf(FLAGS_field + zvec::kFtsPositionsSuffix);
+  rocksdb::ColumnFamilyHandle *dst_stat =
+      dst_store.get_cf(zvec::kFtsStatCfName);
   rocksdb::ColumnFamilyHandle *dst_forward = dst_store.get_cf(kForwardCfName);
 
   if (!src_postings || !src_positions || !src_stat || !dst_postings ||
@@ -462,16 +458,17 @@ static int do_build() {
   }
 
   // Get column families
-  const std::string max_tf_cf_name = FLAGS_field + "_max_tf";
+  const std::string max_tf_cf_name = FLAGS_field + zvec::kFtsMaxTfSuffix;
 
   rocksdb::ColumnFamilyHandle *postings_cf = store.get_cf(FLAGS_field);
   rocksdb::ColumnFamilyHandle *positions_cf =
-      store.get_cf(FLAGS_field + "_positions");
-  rocksdb::ColumnFamilyHandle *term_freq_cf = store.get_cf(FLAGS_field + "_tf");
+      store.get_cf(FLAGS_field + zvec::kFtsPositionsSuffix);
+  rocksdb::ColumnFamilyHandle *term_freq_cf =
+      store.get_cf(FLAGS_field + zvec::kFtsTfSuffix);
   rocksdb::ColumnFamilyHandle *max_tf_cf = store.get_cf(max_tf_cf_name);
   rocksdb::ColumnFamilyHandle *doc_len_cf =
-      store.get_cf(FLAGS_field + "_doc_len");
-  rocksdb::ColumnFamilyHandle *stat_cf = store.get_cf("fts_stat");
+      store.get_cf(FLAGS_field + zvec::kFtsDocLenSuffix);
+  rocksdb::ColumnFamilyHandle *stat_cf = store.get_cf(zvec::kFtsStatCfName);
   rocksdb::ColumnFamilyHandle *forward_cf = store.get_cf(kForwardCfName);
 
   if (!postings_cf || !positions_cf || !term_freq_cf || !max_tf_cf ||
@@ -578,7 +575,8 @@ static int do_build() {
       }
 
       // Write forward mapping: doc_id -> corpus_id
-      const std::string doc_id_key = encode_doc_id_key(entry.doc_id);
+      std::string doc_id_key;
+      fts::encode_uint32_big_endian(entry.doc_id, &doc_id_key);
       store.db_->Put(store.write_opts_, forward_cf, doc_id_key,
                      entry.corpus_id);
 
@@ -995,8 +993,8 @@ static int do_search() {
 
   rocksdb::ColumnFamilyHandle *postings_cf = store.get_cf(FLAGS_field);
   rocksdb::ColumnFamilyHandle *positions_cf =
-      store.get_cf(FLAGS_field + "_positions");
-  rocksdb::ColumnFamilyHandle *stat_cf = store.get_cf("fts_stat");
+      store.get_cf(FLAGS_field + zvec::kFtsPositionsSuffix);
+  rocksdb::ColumnFamilyHandle *stat_cf = store.get_cf(zvec::kFtsStatCfName);
   rocksdb::ColumnFamilyHandle *forward_cf = store.get_cf(kForwardCfName);
 
   if (!postings_cf || !positions_cf || !stat_cf || !forward_cf) {
@@ -1068,10 +1066,11 @@ static int do_search() {
     // $TF/$MAX_TF/$DOC_LEN are dropped at build time; pass nullptr — the
     // BitPacked path doesn't need them and the Roaring fallback degrades
     // to default tf=1/doc_len=1 when these pointers are null.
-    auto open_result = reader.open(FLAGS_field, &store, postings_cf,
-                                   positions_cf, /*term_freq_cf=*/nullptr,
-                                   /*max_tf_cf=*/nullptr,
-                                   /*doc_len_cf=*/nullptr, stat_cf);
+    auto open_result =
+        reader.open_reader(FLAGS_field, &store, postings_cf, positions_cf,
+                           /*term_freq_cf=*/nullptr,
+                           /*max_tf_cf=*/nullptr,
+                           /*doc_len_cf=*/nullptr, stat_cf);
     if (!open_result.has_value()) {
       fprintf(stderr, "ERROR: Failed to open FtsColumnIndexer, status[%s]\n",
               open_result.error().message().c_str());
@@ -1102,7 +1101,7 @@ static int do_search() {
         if (ast_root) {
           fts::FtsQueryParams query_params;
           query_params.topk = static_cast<uint32_t>(FLAGS_topk);
-          auto search_result = reader.search(*ast_root, query_params, &results);
+          auto search_result = reader.search(*ast_root, query_params);
           if (!search_result.has_value()) {
             fprintf(stderr,
                     "WARN: Thread[%d] search failed for query_id[%s], "
@@ -1110,6 +1109,8 @@ static int do_search() {
                     thread_id, entry.query_id.c_str(),
                     search_result.error().message().c_str());
             search_ok = false;
+          } else {
+            results = std::move(search_result.value());
           }
         }
         elapsed_us = timer.micro_seconds();
@@ -1131,7 +1132,8 @@ static int do_search() {
       retrieved_corpus_ids.reserve(results.size());
       for (const auto &r : results) {
         std::string corpus_id;
-        const std::string doc_id_key = encode_doc_id_key(r.doc_id);
+        std::string doc_id_key;
+        fts::encode_uint32_big_endian(r.doc_id, &doc_id_key);
         if (!store.db_
                  ->Get(store.read_opts_, forward_cf, doc_id_key, &corpus_id)
                  .ok()) {
@@ -1485,7 +1487,7 @@ static int do_stats() {
   }
 
   rocksdb::ColumnFamilyHandle *postings_cf = store.get_cf(FLAGS_field);
-  rocksdb::ColumnFamilyHandle *stat_cf = store.get_cf("fts_stat");
+  rocksdb::ColumnFamilyHandle *stat_cf = store.get_cf(zvec::kFtsStatCfName);
   // $MAX_TF/$DOC_LEN are not opened above; keep nullptrs so the
   // doc-length / max-tf scan sections degrade gracefully.
   rocksdb::ColumnFamilyHandle *max_tf_cf = nullptr;

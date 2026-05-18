@@ -32,8 +32,6 @@ static std::string get_string_or_default(const ailego::JsonObject &config,
 }
 
 bool JiebaTokenizer::init(const ailego::JsonObject &config) {
-  static const std::string kDefaultDictDir = "conf.d/jieba";
-
   std::string dict_path = get_string_or_default(config, "dict_path", "");
   if (dict_path.empty()) {
     LOG_ERROR("JiebaTokenizer: 'dict_path' is required but not provided");
@@ -61,23 +59,19 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
   } else if (mode_str == "hmm") {
     cut_mode_ = CutMode::kHmm;
   } else {
-    LOG_WARN("JiebaTokenizer: unknown cut_mode '%s', fallback to 'search'",
-             mode_str.c_str());
-    cut_mode_ = CutMode::kSearch;
+    LOG_ERROR("JiebaTokenizer: unknown cut_mode '%s'", mode_str.c_str());
+    return false;
   }
 
   // Release any previously initialised handle
-  if (jieba_ != nullptr) {
-    delete jieba_;
-    jieba_ = nullptr;
-  }
+  jieba_.reset();
 
   try {
-    jieba_ = new cppjieba::Jieba(dict_path, model_path, user_dict_path,
-                                 idf_path, stop_word_path);
+    jieba_ = std::make_unique<cppjieba::Jieba>(
+        dict_path, model_path, user_dict_path, idf_path, stop_word_path);
   } catch (const std::exception &e) {
     LOG_ERROR("JiebaTokenizer init failed: %s", e.what());
-    jieba_ = nullptr;
+    jieba_.reset();
     return false;
   }
 
@@ -88,12 +82,7 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
   return true;
 }
 
-JiebaTokenizer::~JiebaTokenizer() {
-  if (jieba_ != nullptr) {
-    delete jieba_;
-    jieba_ = nullptr;
-  }
-}
+JiebaTokenizer::~JiebaTokenizer() = default;
 
 std::vector<Token> JiebaTokenizer::tokenize(const std::string &text) const {
   std::vector<Token> tokens;
@@ -115,6 +104,10 @@ std::vector<Token> JiebaTokenizer::tokenize(const std::string &text) const {
     case CutMode::kHmm:
       jieba_->CutHMM(text, words);
       break;
+    default:
+      LOG_ERROR("JiebaTokenizer: unexpected cut_mode %d",
+                static_cast<int>(cut_mode_));
+      return tokens;
   }
 
   tokens.reserve(words.size());

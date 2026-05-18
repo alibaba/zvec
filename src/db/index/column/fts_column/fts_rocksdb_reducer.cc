@@ -86,9 +86,6 @@ Result<void> FtsRocksdbReducer::init(
     rocksdb::ColumnFamilyHandle *dst_positions_cf,
     rocksdb::ColumnFamilyHandle *dst_stat_cf) {
   if (!dst_postings_cf || !dst_positions_cf || !dst_stat_cf) {
-    LOG_ERROR(
-        "FtsRocksdbReducer init failed: null destination CF for field[%s]",
-        field_name.c_str());
     return tl::make_unexpected(Status::InvalidArgument(
         "FtsRocksdbReducer: null destination CF. field=", field_name));
   }
@@ -118,14 +115,11 @@ Result<void> FtsRocksdbReducer::feed(
     rocksdb::ColumnFamilyHandle *src_postings_cf,
     rocksdb::ColumnFamilyHandle *src_positions_cf) {
   if (state_ != STATE_INITED && state_ != STATE_FEED) {
-    LOG_ERROR("FtsRocksdbReducer: call init() before feed()");
     return tl::make_unexpected(Status::InternalError(
         "FtsRocksdbReducer: call init() before feed(). field=", field_name_));
   }
 
   if (!src_postings_cf || !src_positions_cf) {
-    LOG_ERROR("FtsRocksdbReducer feed failed: null source CF for field[%s]",
-              field_name_.c_str());
     return tl::make_unexpected(Status::InvalidArgument(
         "FtsRocksdbReducer: null source CF. field=", field_name_));
   }
@@ -136,11 +130,6 @@ Result<void> FtsRocksdbReducer::feed(
     min_doc_id_ = segment_stats.min_doc_id;
   } else {
     if (segment_stats.min_doc_id != segment_stats_.back().max_doc_id + 1) {
-      LOG_ERROR(
-          "FtsRocksdbReducer feed failed: segments must be fed in consecutive "
-          "doc_id order. field[%s] expected_min[%zu] got[%zu]",
-          field_name_.c_str(), (size_t)(segment_stats_.back().max_doc_id + 1),
-          (size_t)segment_stats.min_doc_id);
       return tl::make_unexpected(Status::InternalError(
           "FtsRocksdbReducer: segments not in consecutive doc_id order. field=",
           field_name_));
@@ -159,8 +148,6 @@ Result<void> FtsRocksdbReducer::feed(
 
 Result<void> FtsRocksdbReducer::reduce(const IndexFilter &filter) {
   if (state_ != STATE_FEED || num_segments_ == 0) {
-    LOG_ERROR("FtsRocksdbReducer: call feed() before reduce(). field[%s]",
-              field_name_.c_str());
     return tl::make_unexpected(Status::InternalError(
         "FtsRocksdbReducer: call feed() before reduce(). field=", field_name_));
   }
@@ -219,7 +206,9 @@ Result<void> FtsRocksdbReducer::reduce(const IndexFilter &filter) {
 Result<void> FtsRocksdbReducer::reduce_postings(const IndexFilter &filter) {
   // Pass 1: collect effective stats (no PostingEntry storage).
   auto ret = collect_effective_stats(filter);
-  if (!ret) return ret;
+  if (!ret) {
+    return ret;
+  }
 
   // Initialize BM25 scorer with final effective stats.
   scorer_ = std::make_shared<BM25Scorer>();
@@ -271,10 +260,6 @@ Result<void> FtsRocksdbReducer::collect_effective_stats(
 
       if (!BitPackedPostingList::is_bitpacked_format(posting_data.data(),
                                                      posting_data.size())) {
-        LOG_ERROR(
-            "FtsRocksdbReducer: source postings is not BitPacked. "
-            "field[%s] segment[%u]",
-            field_name_.c_str(), seg);
         return tl::make_unexpected(Status::InternalError(
             "FtsRocksdbReducer: source postings is not BitPacked. field=",
             field_name_));
@@ -282,10 +267,6 @@ Result<void> FtsRocksdbReducer::collect_effective_stats(
 
       BitPackedPostingIterator bp_iter;
       if (bp_iter.open(posting_data.data(), posting_data.size()) != 0) {
-        LOG_ERROR(
-            "FtsRocksdbReducer: failed to open bitpacked postings. "
-            "field[%s] segment[%u]",
-            field_name_.c_str(), seg);
         return tl::make_unexpected(Status::InternalError(
             "FtsRocksdbReducer: failed to open bitpacked postings. field=",
             field_name_));
@@ -378,10 +359,6 @@ Result<void> FtsRocksdbReducer::merge_and_flush_postings(
       const std::string posting_data = c.iter->value().ToString();
       if (!BitPackedPostingList::is_bitpacked_format(posting_data.data(),
                                                      posting_data.size())) {
-        LOG_ERROR(
-            "FtsRocksdbReducer: source postings is not BitPacked. "
-            "field[%s] segment[%u] term[%s]",
-            field_name_.c_str(), c.segment_index, min_term.c_str());
         return tl::make_unexpected(Status::InternalError(
             "FtsRocksdbReducer: source postings is not BitPacked. field=",
             field_name_, " term=", min_term));
@@ -389,10 +366,6 @@ Result<void> FtsRocksdbReducer::merge_and_flush_postings(
 
       BitPackedPostingIterator bp_iter;
       if (bp_iter.open(posting_data.data(), posting_data.size()) != 0) {
-        LOG_ERROR(
-            "FtsRocksdbReducer: failed to open bitpacked postings. "
-            "field[%s] segment[%u] term[%s]",
-            field_name_.c_str(), c.segment_index, min_term.c_str());
         return tl::make_unexpected(Status::InternalError(
             "FtsRocksdbReducer: failed to open bitpacked postings. field=",
             field_name_, " term=", min_term));
@@ -462,11 +435,8 @@ Result<void> FtsRocksdbReducer::reduce_positions(uint32_t segment_index,
     std::string term;
     uint32_t local_doc_id = 0;
     if (!parse_doc_term_key(key, &term, &local_doc_id)) {
-      LOG_WARN(
-          "FtsRocksdbReducer::reduce_positions: malformed key, skip. "
-          "field[%s] segment[%u] key_size[%zu]",
-          field_name_.c_str(), segment_index, key.size());
-      continue;
+      return tl::make_unexpected(Status::InternalError(
+          "FtsRocksdbReducer: malformed positions key. field=", field_name_));
     }
 
     const uint64_t global_doc_id =
@@ -483,9 +453,6 @@ Result<void> FtsRocksdbReducer::reduce_positions(uint32_t segment_index,
              ->Put(ctx_->write_opts_, dst_positions_cf_, new_key,
                    iter->value().ToString())
              .ok()) {
-      LOG_ERROR(
-          "FtsRocksdbReducer: failed to write positions. field[%s] term[%s]",
-          field_name_.c_str(), term.c_str());
       return tl::make_unexpected(Status::InternalError(
           "FtsRocksdbReducer: failed to write positions. field=", field_name_));
     }
@@ -501,8 +468,6 @@ Result<void> FtsRocksdbReducer::flush_stat(uint64_t total_docs,
                  make_total_docs_key(field_name_),
                  encode_uint64_value(total_docs))
            .ok()) {
-    LOG_ERROR("FtsRocksdbReducer: failed to write total_docs. field[%s]",
-              field_name_.c_str());
     return tl::make_unexpected(Status::InternalError(
         "FtsRocksdbReducer: failed to write total_docs. field=", field_name_));
   }
@@ -512,8 +477,6 @@ Result<void> FtsRocksdbReducer::flush_stat(uint64_t total_docs,
                  make_total_tokens_key(field_name_),
                  encode_uint64_value(total_tokens))
            .ok()) {
-    LOG_ERROR("FtsRocksdbReducer: failed to write total_tokens. field[%s]",
-              field_name_.c_str());
     return tl::make_unexpected(Status::InternalError(
         "FtsRocksdbReducer: failed to write total_tokens. field=",
         field_name_));

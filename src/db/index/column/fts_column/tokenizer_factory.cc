@@ -15,6 +15,7 @@
 #include "tokenizer_factory.h"
 #include <zvec/ailego/encoding/json/mod_json_plus.h>
 #include <zvec/ailego/logger/logger.h>
+#include "cppjieba/Jieba.hpp"
 #include "jieba_tokenizer.h"
 #include "standard_tokenizer.h"
 #include "whitespace_tokenizer.h"
@@ -77,8 +78,6 @@ TokenizerPtr TokenizerFactory::create_tokenizer(
     tokenizer = std::make_shared<StandardTokenizer>();
   } else if (tokenizer_name == "jieba") {
     tokenizer = std::make_shared<JiebaTokenizer>();
-  } else if (tokenizer_name == "standard") {
-    tokenizer = std::make_shared<StandardTokenizer>();
   } else if (tokenizer_name == "whitespace") {
     tokenizer = std::make_shared<WhitespaceTokenizer>();
   } else {

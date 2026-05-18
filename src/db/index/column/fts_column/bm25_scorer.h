@@ -38,7 +38,9 @@ struct SegmentStatsSnapshot {
   uint64_t total_tokens{0};
 
   float avg_doc_len() const {
-    if (total_docs == 0) return 1.0f;
+    if (total_docs == 0) {
+      return 1.0f;
+    }
     return static_cast<float>(total_tokens) / static_cast<float>(total_docs);
   }
 };

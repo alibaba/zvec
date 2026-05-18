@@ -26,6 +26,7 @@
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
 #include "db/index/column/fts_column/tokenizer_factory.h"
 // meta.h not needed in zvec
+#include "db/common/constants.h"
 #include "db/common/rocksdb_context.h"
 
 using namespace zvec;
@@ -62,8 +63,12 @@ static bool search_ok(Reader &reader, const std::string &query_str,
   }
   zvec::fts::FtsQueryParams qp;
   qp.topk = topk;
-  auto ret = reader.search(*ast, qp, results);
-  return ret.has_value();
+  auto ret = reader.search(*ast, qp);
+  if (!ret.has_value()) {
+    return false;
+  }
+  *results = std::move(ret.value());
+  return true;
 }
 
 // ============================================================
@@ -72,12 +77,12 @@ static bool search_ok(Reader &reader, const std::string &query_str,
 
 static const std::string kDbPath{"./test_fts_db"};
 
-static const std::string kPostingsCf{"fts_postings"};
-static const std::string kMaxTfCf{"fts_max_tf"};
-static const std::string kPositionsCf{"fts_positions"};
-static const std::string kTermFreqCf{"fts_tf"};
-static const std::string kDocLenCf{"fts_doc_len"};
-static const std::string kStatCf{"fts_stat"};
+static const std::string kPostingsCf{"fts"};
+static const std::string kMaxTfCf{kPostingsCf + zvec::kFtsMaxTfSuffix};
+static const std::string kPositionsCf{kPostingsCf + zvec::kFtsPositionsSuffix};
+static const std::string kTermFreqCf{kPostingsCf + zvec::kFtsTfSuffix};
+static const std::string kDocLenCf{kPostingsCf + zvec::kFtsDocLenSuffix};
+static const std::string kStatCf{zvec::kFtsStatCfName};
 
 class FtsColumnIndexerTest : public ::testing::Test {
  protected:
@@ -92,7 +97,9 @@ class FtsColumnIndexerTest : public ::testing::Test {
             {kPostingsCf, std::make_shared<FtsPostingsMerge>()},
             {kMaxTfCf, std::make_shared<FtsMaxTfMerge>()},
         };
-    ASSERT_TRUE(db_.create(kDbPath, cf_names, nullptr, per_cf_ops).ok());
+    ASSERT_TRUE(
+        db_.create(RocksdbContext::Args{kDbPath, cf_names, nullptr, per_cf_ops})
+            .ok());
 
     postings_cf_ = db_.get_cf(kPostingsCf);
     max_tf_cf_ = db_.get_cf(kMaxTfCf);
@@ -215,9 +222,9 @@ TEST_F(FtsColumnIndexerTest, FlushPersistsStats) {
   // Verify stats were written to stat_cf by opening a standalone reader.
   // Pass doc_len_cf as nullptr so the reader loads stats from stat_cf.
   FtsColumnIndexer reader;
-  auto ret =
-      reader.open("content", &db_, postings_cf_, positions_cf_, term_freq_cf_,
-                  max_tf_cf_, /*doc_len_cf=*/nullptr, stat_cf_);
+  auto ret = reader.open_reader("content", &db_, postings_cf_, positions_cf_,
+                                term_freq_cf_, max_tf_cf_,
+                                /*doc_len_cf=*/nullptr, stat_cf_);
   EXPECT_TRUE(ret.has_value());
   // Reader loads stats from stat_cf on open; search should succeed
   std::vector<FtsResult> results;
@@ -407,7 +414,7 @@ TEST_F(FtsColumnIndexerTest, SearchTopLevelMustNotIsRejected) {
   std::vector<FtsResult> results;
   FtsQueryParams query_params;
   query_params.topk = 10;
-  EXPECT_FALSE(indexer->search(*ast, query_params, &results).has_value());
+  EXPECT_FALSE(indexer->search(*ast, query_params).has_value());
 }
 
 // ============================================================
@@ -638,19 +645,19 @@ TEST_F(FtsColumnIndexerJiebaTest, FlushAndReloadWithJiebaTokenizer) {
   // Reload via a standalone reader (no tokenizer needed for reading).
   // Pass doc_len_cf as nullptr so the reader loads stats from stat_cf.
   FtsColumnIndexer reader;
-  auto ret =
-      reader.open("content", &db_, postings_cf_, positions_cf_, term_freq_cf_,
-                  max_tf_cf_, /*doc_len_cf=*/nullptr, stat_cf_);
+  auto ret = reader.open_reader("content", &db_, postings_cf_, positions_cf_,
+                                term_freq_cf_, max_tf_cf_,
+                                /*doc_len_cf=*/nullptr, stat_cf_);
   EXPECT_TRUE(ret.has_value());
 
   // Search with a term that jieba produces from "深度学习模型":
   // jieba CutForSearch segments it into [深度, 学习, 深度学习, 模型].
-  std::vector<FtsResult> results;
   TermNode term_node("模型");
   FtsQueryParams query_params;
   query_params.topk = 10;
-  EXPECT_TRUE(reader.search(term_node, query_params, &results).has_value());
-  EXPECT_GE(results.size(), 1u);
+  auto search_ret = reader.search(term_node, query_params);
+  EXPECT_TRUE(search_ret.has_value());
+  EXPECT_GE(search_ret.value().size(), 1u);
 }
 
 // ============================================================
@@ -834,9 +841,9 @@ TEST_F(FtsColumnIndexerTest, SearchAfterConvertPostingsToBitpacked) {
   // them.
   FtsColumnIndexer reader;
   ASSERT_TRUE(reader
-                  .open("content", &db_, postings_cf_, positions_cf_,
-                        /*term_freq_cf=*/nullptr, /*max_tf_cf=*/nullptr,
-                        /*doc_len_cf=*/nullptr, stat_cf_)
+                  .open_reader("content", &db_, postings_cf_, positions_cf_,
+                               /*term_freq_cf=*/nullptr, /*max_tf_cf=*/nullptr,
+                               /*doc_len_cf=*/nullptr, stat_cf_)
                   .has_value());
   std::vector<FtsResult> results;
   EXPECT_TRUE(search_ok(reader, "quick", 10, &results));
@@ -867,7 +874,6 @@ TEST_F(FtsColumnIndexerTest, SearchAfterConvertPostingsToBitpacked) {
 // ============================================================
 
 static const std::string kMultiDbPath{"./test_fts_multi_db"};
-static const std::string kSharedStatCf{"fts_stat"};
 
 class FtsMultiColumnSharedDbTest : public ::testing::Test {
  protected:
@@ -885,34 +891,36 @@ class FtsMultiColumnSharedDbTest : public ::testing::Test {
 
     for (size_t i = 0; i < kNumFields; ++i) {
       std::string f{kFields[i]};
-      cf_names.push_back(f);                 // postings
-      cf_names.push_back(f + "_positions");  // positions
-      cf_names.push_back(f + "_tf");         // term freq
-      cf_names.push_back(f + "_max_tf");     // max tf
-      cf_names.push_back(f + "_doc_len");    // doc len
+      cf_names.push_back(f);                        // postings
+      cf_names.push_back(f + kFtsPositionsSuffix);  // positions
+      cf_names.push_back(f + kFtsTfSuffix);         // term freq
+      cf_names.push_back(f + kFtsMaxTfSuffix);      // max tf
+      cf_names.push_back(f + kFtsDocLenSuffix);     // doc len
 
       per_cf_ops[f] = std::make_shared<FtsPostingsMerge>();
-      per_cf_ops[f + "_max_tf"] = std::make_shared<FtsMaxTfMerge>();
+      per_cf_ops[f + kFtsMaxTfSuffix] = std::make_shared<FtsMaxTfMerge>();
     }
-    cf_names.push_back(kSharedStatCf);
+    cf_names.push_back(zvec::kFtsStatCfName);
 
-    ASSERT_TRUE(db_.create(kMultiDbPath, cf_names, nullptr, per_cf_ops).ok());
+    ASSERT_TRUE(db_.create(RocksdbContext::Args{kMultiDbPath, cf_names, nullptr,
+                                                per_cf_ops})
+                    .ok());
 
     // Resolve CF handles per field.
     for (size_t i = 0; i < kNumFields; ++i) {
       std::string f{kFields[i]};
       postings_cf_[i] = db_.get_cf(f);
-      positions_cf_[i] = db_.get_cf(f + "_positions");
-      term_freq_cf_[i] = db_.get_cf(f + "_tf");
-      max_tf_cf_[i] = db_.get_cf(f + "_max_tf");
-      doc_len_cf_[i] = db_.get_cf(f + "_doc_len");
+      positions_cf_[i] = db_.get_cf(f + kFtsPositionsSuffix);
+      term_freq_cf_[i] = db_.get_cf(f + kFtsTfSuffix);
+      max_tf_cf_[i] = db_.get_cf(f + kFtsMaxTfSuffix);
+      doc_len_cf_[i] = db_.get_cf(f + kFtsDocLenSuffix);
       ASSERT_NE(postings_cf_[i], nullptr) << "field=" << f;
       ASSERT_NE(positions_cf_[i], nullptr) << "field=" << f;
       ASSERT_NE(term_freq_cf_[i], nullptr) << "field=" << f;
       ASSERT_NE(max_tf_cf_[i], nullptr) << "field=" << f;
       ASSERT_NE(doc_len_cf_[i], nullptr) << "field=" << f;
     }
-    stat_cf_ = db_.get_cf(kSharedStatCf);
+    stat_cf_ = db_.get_cf(zvec::kFtsStatCfName);
     ASSERT_NE(stat_cf_, nullptr);
   }
 
@@ -1018,16 +1026,16 @@ TEST_F(FtsMultiColumnSharedDbTest, MultiColumnFlushAndReload) {
 
   FtsColumnIndexer title_reader;
   ASSERT_TRUE(title_reader
-                  .open("title", &db_, postings_cf_[ti], positions_cf_[ti],
-                        term_freq_cf_[ti], max_tf_cf_[ti],
-                        /*doc_len_cf=*/nullptr, stat_cf_)
+                  .open_reader("title", &db_, postings_cf_[ti],
+                               positions_cf_[ti], term_freq_cf_[ti],
+                               max_tf_cf_[ti], /*doc_len_cf=*/nullptr, stat_cf_)
                   .has_value());
 
   FtsColumnIndexer body_reader;
   ASSERT_TRUE(body_reader
-                  .open("body", &db_, postings_cf_[bi], positions_cf_[bi],
-                        term_freq_cf_[bi], max_tf_cf_[bi],
-                        /*doc_len_cf=*/nullptr, stat_cf_)
+                  .open_reader("body", &db_, postings_cf_[bi],
+                               positions_cf_[bi], term_freq_cf_[bi],
+                               max_tf_cf_[bi], /*doc_len_cf=*/nullptr, stat_cf_)
                   .has_value());
 
   // title reader: "alpha" -> doc 0 only

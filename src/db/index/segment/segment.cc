@@ -71,6 +71,7 @@
 
 namespace zvec {
 
+
 void global_init() {
   static std::once_flag once;
   // run once
@@ -312,6 +313,7 @@ class SegmentImpl : public Segment,
   // FTS helpers
   Status open_fts_indexers(bool create);
   Status close_fts_indexers();
+  Status flush_fts_indexers();
   Status dump_fts_indexers();
 
   Status insert_array_to_invert_indexer(
@@ -2212,19 +2214,8 @@ Status SegmentImpl::flush() {
 
   // flush FTS indexers
   if (has_fts_) {
-    for (const auto &[name, indexer] : fts_indexers_) {
-      if (indexer) {
-        auto ret = indexer->flush();
-        if (!ret.has_value()) {
-          return Status::InternalError("FTS flush failed: ", name, " ",
-                                       ret.error().message());
-        }
-      }
-    }
-    if (fts_ctx_) {
-      s = fts_ctx_->flush();
-      CHECK_RETURN_STATUS(s);
-    }
+    s = flush_fts_indexers();
+    CHECK_RETURN_STATUS(s);
   }
 
   // flush vector indexer
@@ -4485,15 +4476,14 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_);
 
   // Collect CF names and per-CF merge operators
-  const std::string stat_cf_name = "fts_stat";
   std::vector<std::string> cf_names;
   std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
       per_cf_merge_ops;
 
   for (const auto &field : fts_fields) {
     const auto &name = field->name();
-    cf_names.push_back(name);                 // postings
-    cf_names.push_back(name + "_positions");  // positions
+    cf_names.push_back(name);                        // postings
+    cf_names.push_back(name + kFtsPositionsSuffix);  // positions
 
     per_cf_merge_ops[name] = std::make_shared<fts::FtsPostingsMerge>();
 
@@ -4508,14 +4498,14 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     // the Roaring posting path.  If the CFs were already dropped (post-dump
     // immutable segment), the open will fail and we retry without them.
     if (create) {
-      cf_names.push_back(name + "_tf");
-      cf_names.push_back(name + "_max_tf");
-      cf_names.push_back(name + "_doc_len");
-      per_cf_merge_ops[name + "_max_tf"] =
+      cf_names.push_back(name + kFtsTfSuffix);
+      cf_names.push_back(name + kFtsMaxTfSuffix);
+      cf_names.push_back(name + kFtsDocLenSuffix);
+      per_cf_merge_ops[name + kFtsMaxTfSuffix] =
           std::make_shared<fts::FtsMaxTfMerge>();
     }
   }
-  cf_names.push_back(stat_cf_name);
+  cf_names.push_back(kFtsStatCfName);
 
   fts_ctx_ = std::make_shared<RocksdbContext>();
   Status s;
@@ -4524,7 +4514,8 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   bool has_side_cfs = create;
 
   if (create) {
-    s = fts_ctx_->create(fts_path, cf_names, nullptr, per_cf_merge_ops);
+    s = fts_ctx_->create(
+        RocksdbContext::Args{fts_path, cf_names, nullptr, per_cf_merge_ops});
   } else {
     // Try opening with side CFs first (un-dumped mutable segment).
     // If they don't exist (post-dump), retry without them.
@@ -4532,21 +4523,24 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     auto per_cf_merge_ops_with_side = per_cf_merge_ops;
     for (const auto &field : fts_fields) {
       const auto &name = field->name();
-      cf_names_with_side.push_back(name + "_tf");
-      cf_names_with_side.push_back(name + "_max_tf");
-      cf_names_with_side.push_back(name + "_doc_len");
-      per_cf_merge_ops_with_side[name + "_max_tf"] =
+      cf_names_with_side.push_back(name + kFtsTfSuffix);
+      cf_names_with_side.push_back(name + kFtsMaxTfSuffix);
+      cf_names_with_side.push_back(name + kFtsDocLenSuffix);
+      per_cf_merge_ops_with_side[name + kFtsMaxTfSuffix] =
           std::make_shared<fts::FtsMaxTfMerge>();
     }
-    s = fts_ctx_->open(fts_path, cf_names_with_side, options_.read_only_,
-                       nullptr, per_cf_merge_ops_with_side);
+    s = fts_ctx_->open(
+        RocksdbContext::Args{fts_path, cf_names_with_side, nullptr,
+                             per_cf_merge_ops_with_side},
+        options_.read_only_);
     if (s.ok()) {
       has_side_cfs = true;
     } else {
       // Side CFs not found (immutable segment after dump) — retry without.
       fts_ctx_ = std::make_shared<RocksdbContext>();
-      s = fts_ctx_->open(fts_path, cf_names, options_.read_only_, nullptr,
-                         per_cf_merge_ops);
+      s = fts_ctx_->open(
+          RocksdbContext::Args{fts_path, cf_names, nullptr, per_cf_merge_ops},
+          options_.read_only_);
     }
   }
   if (!s.ok()) {
@@ -4556,22 +4550,22 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     return s;
   }
 
-  auto *stat_cf = fts_ctx_->get_cf(stat_cf_name);
+  auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
 
   for (const auto &field : fts_fields) {
     const auto &name = field->name();
     auto *postings_cf = fts_ctx_->get_cf(name);
-    auto *positions_cf = fts_ctx_->get_cf(name + "_positions");
+    auto *positions_cf = fts_ctx_->get_cf(name + kFtsPositionsSuffix);
     // Side CF handles are available when the segment has not been dumped
     // (side CFs still exist).  For dumped immutable segments the handles
     // are nullptr and FtsColumnIndexer falls back to BitPacked inline
     // payloads or tf=1/doc_len=1 defaults.
     auto *term_freq_cf =
-        has_side_cfs ? fts_ctx_->get_cf(name + "_tf") : nullptr;
+        has_side_cfs ? fts_ctx_->get_cf(name + kFtsTfSuffix) : nullptr;
     auto *max_tf_cf =
-        has_side_cfs ? fts_ctx_->get_cf(name + "_max_tf") : nullptr;
+        has_side_cfs ? fts_ctx_->get_cf(name + kFtsMaxTfSuffix) : nullptr;
     auto *doc_len_cf =
-        has_side_cfs ? fts_ctx_->get_cf(name + "_doc_len") : nullptr;
+        has_side_cfs ? fts_ctx_->get_cf(name + kFtsDocLenSuffix) : nullptr;
 
     auto indexer = std::make_shared<fts::FtsColumnIndexer>();
 
@@ -4593,6 +4587,19 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   return Status::OK();
 }
 
+Status SegmentImpl::flush_fts_indexers() {
+  for (const auto &[name, indexer] : fts_indexers_) {
+    auto ret = indexer->flush();
+    if (!ret.has_value()) {
+      return Status::InternalError("FTS flush failed: ", name, " ",
+                                   ret.error().message());
+    }
+  }
+  auto s = fts_ctx_->flush();
+  CHECK_RETURN_STATUS(s);
+  return Status::OK();
+}
+
 Status SegmentImpl::close_fts_indexers() {
   fts_indexers_.clear();
   if (fts_ctx_) {
@@ -4604,7 +4611,9 @@ Status SegmentImpl::close_fts_indexers() {
 }
 
 Status SegmentImpl::insert_fts_indexer(Doc &doc) {
-  if (!has_fts_) return Status::OK();
+  if (!has_fts_) {
+    return Status::OK();
+  }
   for (const auto &field : collection_schema_->fts_fields()) {
     auto it = fts_indexers_.find(field->name());
     if (it == fts_indexers_.end()) {
@@ -4624,7 +4633,9 @@ Status SegmentImpl::insert_fts_indexer(Doc &doc) {
 }
 
 Status SegmentImpl::dump_fts_indexers() {
-  if (!has_fts_) return Status::OK();
+  if (!has_fts_) {
+    return Status::OK();
+  }
 
   // flush all indexers
   for (const auto &[name, indexer] : fts_indexers_) {
@@ -4650,9 +4661,9 @@ Status SegmentImpl::dump_fts_indexers() {
   }
   for (const auto &field : collection_schema_->fts_fields()) {
     const auto &name = field->name();
-    fts_ctx_->drop_cf(name + "_tf");
-    fts_ctx_->drop_cf(name + "_max_tf");
-    fts_ctx_->drop_cf(name + "_doc_len");
+    fts_ctx_->drop_cf(name + kFtsTfSuffix);
+    fts_ctx_->drop_cf(name + kFtsMaxTfSuffix);
+    fts_ctx_->drop_cf(name + kFtsDocLenSuffix);
   }
 
   // create checkpoint for persistence
@@ -4682,14 +4693,13 @@ Result<std::vector<fts::FtsResult>> SegmentImpl::fts_search(
         Status::NotFound("FTS indexer not found: ", field_name));
   }
 
-  std::vector<fts::FtsResult> results;
-  auto ret = indexer->search(ast, params, &results);
+  auto ret = indexer->search(ast, params);
   if (!ret.has_value()) {
     return tl::make_unexpected(Status::InternalError(
         "FTS search failed: ", field_name, " ", ret.error().message()));
   }
 
-  return results;
+  return std::move(ret.value());
 }
 
 }  // namespace zvec

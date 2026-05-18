@@ -72,15 +72,11 @@ Result<void> FtsColumnIndexer::open_reader(
 
   scorer_ = std::make_shared<BM25Scorer>(bm25_params);
 
-  // doc_len_cf == nullptr → immutable reader path, load persisted stats.
-  // doc_len_cf != nullptr → mutable indexer path, stats maintained in-memory.
+  // doc_len_cf == nullptr → immutable path, load persisted stats.
+  // doc_len_cf != nullptr → mutable path, stats maintained in-memory.
   if (doc_len_cf == nullptr) {
     int ret = scorer_->load_segment_stats(field_name, ctx, stat_cf);
     if (ret != 0) {
-      LOG_ERROR(
-          "FtsColumnIndexer::open_reader: failed to load segment stats. "
-          "field[%s] err[%d]",
-          field_name.c_str(), ret);
       return tl::make_unexpected(Status::InternalError(
           "FtsColumnIndexer failed to load segment stats. field=", field_name));
     }
@@ -91,7 +87,7 @@ Result<void> FtsColumnIndexer::open_reader(
 }
 
 // ============================================================
-// Initialization — read+write (mutable segment)
+// Initialization — read+write (mutable)
 // ============================================================
 
 Result<void> FtsColumnIndexer::open(FieldSchema::Ptr field_meta,
@@ -103,28 +99,22 @@ Result<void> FtsColumnIndexer::open(FieldSchema::Ptr field_meta,
                                     rocksdb::ColumnFamilyHandle *doc_len_cf,
                                     rocksdb::ColumnFamilyHandle *stat_cf) {
   if (!field_meta || !ctx) {
-    LOG_ERROR("FtsColumnIndexer null arguments");
     return tl::make_unexpected(
         Status::InvalidArgument("FtsColumnIndexer: null field_meta or ctx"));
   }
 
   // Obtain FtsIndexParams from field_meta's index_params.
   auto index_params = field_meta->index_params();
-  auto fts_ip = std::dynamic_pointer_cast<zvec::FtsIndexParams>(index_params);
-  if (!fts_ip) {
-    LOG_ERROR("FtsColumnIndexer open failed: field[%s] has no FtsIndexParams",
-              field_meta->name().c_str());
+  auto fts_param =
+      std::dynamic_pointer_cast<zvec::FtsIndexParams>(index_params);
+  if (!fts_param) {
     return tl::make_unexpected(Status::InvalidArgument(
         "FtsColumnIndexer: field has no FtsIndexParams. field=",
         field_meta->name()));
   }
 
-  auto pipeline_result = fts_ip->create_pipeline();
+  auto pipeline_result = fts_param->create_pipeline();
   if (!pipeline_result.has_value()) {
-    LOG_ERROR(
-        "FtsColumnIndexer open failed: failed to create tokenizer pipeline "
-        "for field[%s]: %s",
-        field_meta->name().c_str(), pipeline_result.error().message().c_str());
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer: failed to create tokenizer pipeline. field=",
         field_meta->name(), " err=", pipeline_result.error().message()));
@@ -132,28 +122,15 @@ Result<void> FtsColumnIndexer::open(FieldSchema::Ptr field_meta,
 
   field_meta_ = std::move(field_meta);
   tokenizer_pipeline_ = std::move(pipeline_result.value());
-  fts_params_ = fts_ip;
+  fts_params_ = fts_param;
 
   return open_reader(field_meta_->name(), ctx, postings_cf, positions_cf,
                      term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
 }
 
 // ============================================================
-// Initialization — read-only (immutable segment / standalone)
+// Initialization — read-only (immutable / standalone)
 // ============================================================
-
-Result<void> FtsColumnIndexer::open(const std::string &field_name,
-                                    RocksdbContext *ctx,
-                                    rocksdb::ColumnFamilyHandle *postings_cf,
-                                    rocksdb::ColumnFamilyHandle *positions_cf,
-                                    rocksdb::ColumnFamilyHandle *term_freq_cf,
-                                    rocksdb::ColumnFamilyHandle *max_tf_cf,
-                                    rocksdb::ColumnFamilyHandle *doc_len_cf,
-                                    rocksdb::ColumnFamilyHandle *stat_cf,
-                                    BM25Params bm25_params) {
-  return open_reader(field_name, ctx, postings_cf, positions_cf, term_freq_cf,
-                     max_tf_cf, doc_len_cf, stat_cf, bm25_params);
-}
 
 // ============================================================
 // Close
@@ -181,9 +158,8 @@ Result<void> FtsColumnIndexer::close() {
 // Query entry point
 // ============================================================
 
-Result<void> FtsColumnIndexer::search(const FtsAstNode &ast,
-                                      const FtsQueryParams &query_params,
-                                      std::vector<FtsResult> *results) const {
+Result<std::vector<FtsResult>> FtsColumnIndexer::search(
+    const FtsAstNode &ast, const FtsQueryParams &query_params) const {
   if (!scorer_) {
     LOG_ERROR("FtsColumnIndexer::search: not opened. field[%s]",
               field_name_.c_str());
@@ -200,9 +176,16 @@ Result<void> FtsColumnIndexer::search(const FtsAstNode &ast,
         field_name_));
   }
 
-  DocIteratorPtr root_iter = build_iterator(ast);
+  auto iter_result = build_iterator(ast);
+  if (!iter_result.has_value()) {
+    LOG_ERROR("FtsColumnIndexer::search: build_iterator failed. field[%s] %s",
+              field_name_.c_str(), iter_result.error().message().c_str());
+    return tl::make_unexpected(iter_result.error());
+  }
+  DocIteratorPtr root_iter = std::move(iter_result.value());
   if (!root_iter) {
-    return {};
+    // No matching terms found — valid empty result, not an error.
+    return std::vector<FtsResult>{};
   }
 
   const uint32_t topk = query_params.topk;
@@ -238,13 +221,13 @@ Result<void> FtsColumnIndexer::search(const FtsAstNode &ast,
     doc_id = root_iter->next_doc();
   }
 
-  results->resize(min_heap.size());
-  for (auto it = results->rbegin(); it != results->rend(); ++it) {
+  std::vector<FtsResult> results(min_heap.size());
+  for (auto it = results.rbegin(); it != results.rend(); ++it) {
     *it = min_heap.top();
     min_heap.pop();
   }
 
-  return {};
+  return results;
 }
 
 // ============================================================
@@ -265,7 +248,8 @@ void FtsColumnIndexer::reset_side_cfs() {
 // Iterator tree construction
 // ============================================================
 
-DocIteratorPtr FtsColumnIndexer::build_iterator(const FtsAstNode &node) const {
+Result<DocIteratorPtr> FtsColumnIndexer::build_iterator(
+    const FtsAstNode &node) const {
   switch (node.type()) {
     case FtsNodeType::TERM:
       return build_term_iterator(static_cast<const TermNode &>(node));
@@ -276,25 +260,25 @@ DocIteratorPtr FtsColumnIndexer::build_iterator(const FtsAstNode &node) const {
     case FtsNodeType::OR:
       return build_or_iterator(static_cast<const OrNode &>(node));
     default:
-      return nullptr;
+      return tl::make_unexpected(Status::InternalError(
+          "FtsColumnIndexer::build_iterator: unknown node type. field=",
+          field_name_));
   }
 }
 
-DocIteratorPtr FtsColumnIndexer::create_term_iterator_from_raw(
+Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
     const std::string &term, std::string raw_data) const {
   if (BitPackedPostingList::is_bitpacked_format(raw_data.data(),
                                                 raw_data.size())) {
     BitPackedPostingIterator probe;
     if (probe.open(raw_data.data(), raw_data.size()) != 0) {
-      LOG_ERROR(
-          "FtsColumnIndexer::create_term_iterator_from_raw: failed to open "
-          "BitPacked postings. field[%s] term[%s] data_size[%zu]",
-          field_name_.c_str(), term.c_str(), raw_data.size());
-      return nullptr;
+      return tl::make_unexpected(Status::InternalError(
+          "FtsColumnIndexer: failed to open BitPacked postings. field=",
+          field_name_, " term=", term));
     }
     const uint64_t df = probe.cost();
     if (df == 0) {
-      return nullptr;
+      return DocIteratorPtr{nullptr};
     }
     const float max_score_val = probe.max_score();
     return std::make_unique<TermDocIterator>(term, std::move(raw_data), df,
@@ -304,11 +288,9 @@ DocIteratorPtr FtsColumnIndexer::create_term_iterator_from_raw(
   roaring_bitmap_t *bitmap = roaring_bitmap_portable_deserialize_safe(
       raw_data.data(), raw_data.size());
   if (!bitmap) {
-    LOG_ERROR(
-        "FtsColumnIndexer::create_term_iterator_from_raw: failed to "
-        "deserialize roaring bitmap. field[%s] term[%s] data_size[%zu]",
-        field_name_.c_str(), term.c_str(), raw_data.size());
-    return nullptr;
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer: failed to deserialize roaring bitmap. field=",
+        field_name_, " term=", term));
   }
 
   const uint64_t df = roaring_bitmap_get_cardinality(bitmap);
@@ -348,14 +330,14 @@ DocIteratorPtr FtsColumnIndexer::create_term_iterator_from_raw(
                                            doc_len_cf, cf_counter);
 }
 
-DocIteratorPtr FtsColumnIndexer::build_term_iterator(
+Result<DocIteratorPtr> FtsColumnIndexer::build_term_iterator(
     const TermNode &term_node) const {
   const std::string &term = term_node.term;
 
   std::string raw_data;
   auto s = ctx_->db_->Get(ctx_->read_opts_, postings_cf_, term, &raw_data);
   if (!s.ok() || raw_data.empty()) {
-    return nullptr;
+    return DocIteratorPtr{nullptr};
   }
 
   return create_term_iterator_from_raw(term, std::move(raw_data));
@@ -370,38 +352,29 @@ void FtsColumnIndexer::batch_get_postings(
     return;
   }
 
-  std::vector<std::string> values;
-  {
-    std::vector<rocksdb::Slice> key_slices;
-    key_slices.reserve(terms.size());
-    for (const auto &k : terms) {
-      key_slices.emplace_back(k);
-    }
-    std::vector<rocksdb::ColumnFamilyHandle *> cfs(terms.size(), postings_cf_);
-    std::vector<rocksdb::PinnableSlice> pinnable_values(terms.size());
-    std::vector<rocksdb::Status> statuses(terms.size());
-    ctx_->db_->MultiGet(ctx_->read_opts_, terms.size(), cfs.data(),
-                        key_slices.data(), pinnable_values.data(),
-                        statuses.data());
-    values.resize(terms.size());
-    for (size_t i = 0; i < terms.size(); ++i) {
-      if (statuses[i].ok()) {
-        values[i].assign(pinnable_values[i].data(), pinnable_values[i].size());
-      }
-    }
+  std::vector<rocksdb::Slice> key_slices;
+  key_slices.reserve(terms.size());
+  for (const auto &k : terms) {
+    key_slices.emplace_back(k);
   }
-
-  for (size_t i = 0; i < terms.size() && i < values.size(); ++i) {
-    if (!values[i].empty()) {
-      (*raw_postings)[i] = std::move(values[i]);
+  std::vector<rocksdb::ColumnFamilyHandle *> cfs(terms.size(), postings_cf_);
+  std::vector<rocksdb::PinnableSlice> pinnable_values(terms.size());
+  std::vector<rocksdb::Status> statuses(terms.size());
+  ctx_->db_->MultiGet(ctx_->read_opts_, terms.size(), cfs.data(),
+                      key_slices.data(), pinnable_values.data(),
+                      statuses.data());
+  for (size_t i = 0; i < terms.size(); ++i) {
+    if (statuses[i].ok()) {
+      (*raw_postings)[i].assign(pinnable_values[i].data(),
+                                pinnable_values[i].size());
     }
   }
 }
 
-DocIteratorPtr FtsColumnIndexer::build_phrase_iterator(
+Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
     const PhraseNode &phrase_node) const {
   if (phrase_node.terms.empty()) {
-    return nullptr;
+    return DocIteratorPtr{nullptr};
   }
 
   const std::vector<std::string> &terms = phrase_node.terms;
@@ -413,18 +386,21 @@ DocIteratorPtr FtsColumnIndexer::build_phrase_iterator(
 
   for (size_t i = 0; i < terms.size(); ++i) {
     if (raw_postings[i].empty()) {
-      return nullptr;
+      return DocIteratorPtr{nullptr};
     }
-    auto iter =
+    auto iter_result =
         create_term_iterator_from_raw(terms[i], std::move(raw_postings[i]));
-    if (!iter) {
-      return nullptr;
+    if (!iter_result.has_value()) {
+      return iter_result;
     }
-    term_iterators.push_back(std::move(iter));
+    if (!iter_result.value()) {
+      return DocIteratorPtr{nullptr};
+    }
+    term_iterators.push_back(std::move(iter_result.value()));
   }
 
   if (term_iterators.empty()) {
-    return nullptr;
+    return DocIteratorPtr{nullptr};
   }
 
   auto conjunction = std::make_unique<ConjunctionIterator>(
@@ -434,10 +410,10 @@ DocIteratorPtr FtsColumnIndexer::build_phrase_iterator(
                                              ctx_, positions_cf_);
 }
 
-DocIteratorPtr FtsColumnIndexer::build_and_iterator(
+Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     const AndNode &and_node) const {
   if (and_node.children.empty()) {
-    return nullptr;
+    return DocIteratorPtr{nullptr};
   }
 
   std::vector<std::string> term_keys;
@@ -472,16 +448,24 @@ DocIteratorPtr FtsColumnIndexer::build_and_iterator(
       std::string &raw = term_raw_postings[batched_cursor];
       const std::string &term = static_cast<const TermNode &>(*child).term;
       if (!raw.empty()) {
-        iter = create_term_iterator_from_raw(term, std::move(raw));
+        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
+        if (!iter_result.has_value()) {
+          return iter_result;
+        }
+        iter = std::move(iter_result.value());
       }
       ++batched_cursor;
     } else {
-      iter = build_iterator(*child);
+      auto iter_result = build_iterator(*child);
+      if (!iter_result.has_value()) {
+        return iter_result;
+      }
+      iter = std::move(iter_result.value());
     }
 
     if (!iter) {
       if (!is_must_not) {
-        return nullptr;
+        return DocIteratorPtr{nullptr};
       }
       continue;
     }
@@ -494,7 +478,7 @@ DocIteratorPtr FtsColumnIndexer::build_and_iterator(
   }
 
   if (must_iterators.empty()) {
-    return nullptr;
+    return DocIteratorPtr{nullptr};
   }
 
   if (must_iterators.size() == 1 && must_not_iterators.empty()) {
@@ -505,10 +489,10 @@ DocIteratorPtr FtsColumnIndexer::build_and_iterator(
                                                std::move(must_not_iterators));
 }
 
-DocIteratorPtr FtsColumnIndexer::build_or_iterator(
+Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     const OrNode &or_node) const {
   if (or_node.children.empty()) {
-    return nullptr;
+    return DocIteratorPtr{nullptr};
   }
 
   std::vector<DocIteratorPtr> positive_iterators;
@@ -517,20 +501,23 @@ DocIteratorPtr FtsColumnIndexer::build_or_iterator(
   for (const auto &child : or_node.children) {
     const bool is_must_not = child->must_not;
 
-    auto iter = build_iterator(*child);
-    if (!iter) {
+    auto iter_result = build_iterator(*child);
+    if (!iter_result.has_value()) {
+      return iter_result;
+    }
+    if (!iter_result.value()) {
       continue;
     }
 
     if (is_must_not) {
-      must_not_iterators.push_back(std::move(iter));
+      must_not_iterators.push_back(std::move(iter_result.value()));
     } else {
-      positive_iterators.push_back(std::move(iter));
+      positive_iterators.push_back(std::move(iter_result.value()));
     }
   }
 
   if (positive_iterators.empty()) {
-    return nullptr;
+    return DocIteratorPtr{nullptr};
   }
 
   DocIteratorPtr or_iter;
@@ -555,13 +542,11 @@ DocIteratorPtr FtsColumnIndexer::build_or_iterator(
 // Write operations
 // ============================================================
 
-Result<void> FtsColumnIndexer::insert(uint64_t doc_id,
+Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
                                       const std::string &text) {
   // safe access check
 
   if (!tokenizer_pipeline_ || !ctx_) {
-    LOG_ERROR("FtsColumnIndexer::insert: not opened. field[%s] doc_id[%zu]",
-              field_name_.c_str(), (size_t)doc_id);
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer::insert: not opened. field=", field_name_));
   }
@@ -576,8 +561,8 @@ Result<void> FtsColumnIndexer::insert(uint64_t doc_id,
     term_positions[token.text].push_back(token.position);
   }
 
-  // Store global doc_id in RocksDB directly, similar to invert indexer
-  const uint32_t doc_id_32 = static_cast<uint32_t>(doc_id);
+  // Store seg_doc_id in RocksDB directly, similar to invert indexer
+  const uint32_t doc_id_32 = static_cast<uint32_t>(seg_doc_id);
 
   // Pre-serialize a single-element Roaring Bitmap for this doc_id once,
   // reused across all terms to avoid repeated create/serialize/free overhead.
@@ -619,8 +604,6 @@ Result<void> FtsColumnIndexer::insert(uint64_t doc_id,
   batch.Put(doc_len_cf_.load(), doc_id_key, doc_len_value);
 
   if (!ctx_->db_->Write(ctx_->write_opts_, &batch).ok()) {
-    LOG_ERROR("FtsColumnIndexer::insert: write batch failed. field[%s]",
-              field_name_.c_str());
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer::insert: write batch failed. field=", field_name_));
   }
@@ -679,10 +662,6 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
   // safe access check
 
   if (!postings_cf_ || !term_freq_cf_ || !doc_len_cf_ || !scorer_) {
-    LOG_ERROR(
-        "FtsColumnIndexer::convert_postings_to_bitpacked: not opened. "
-        "field[%s]",
-        field_name_.c_str());
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer::convert_postings_to_bitpacked: not opened. field=",
         field_name_));
@@ -762,10 +741,6 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
         /*df=*/doc_ids.size(), *scorer_);
     if (!ctx_->db_->Put(ctx_->write_opts_, postings_cf_, current_term, packed)
              .ok()) {
-      LOG_ERROR(
-          "FtsColumnIndexer::convert_postings_to_bitpacked: put failed. "
-          "field[%s] term[%s]",
-          field_name_.c_str(), current_term.c_str());
       return tl::make_unexpected(Status::InternalError(
           "FtsColumnIndexer::convert_postings_to_bitpacked: put failed. field=",
           field_name_, " term=", current_term));
@@ -841,10 +816,6 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
     }
     if (!ctx_->db_->DeleteRange(ctx_->write_opts_, cf, kClearBegin, kClearEnd)
              .ok()) {
-      LOG_ERROR(
-          "FtsColumnIndexer::convert_postings_to_bitpacked: failed to "
-          "clear %s CF. field[%s]",
-          cf_name, field_name_.c_str());
       return tl::make_unexpected(Status::InternalError(
           "FtsColumnIndexer::convert_postings_to_bitpacked: failed to clear ",
           cf_name, " CF. field=", field_name_));

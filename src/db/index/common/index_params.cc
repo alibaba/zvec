@@ -89,32 +89,6 @@ FtsIndexParams::FtsIndexParams(FtsIndexParams &&other) noexcept
   }
 }
 
-FtsIndexParams &FtsIndexParams::operator=(FtsIndexParams &&other) noexcept {
-  if (this != &other) {
-    // Release our own pipeline first.
-    if (pipeline_created_) {
-      auto internal = to_internal(*this);
-      fts::TokenizerPipelineManager::Instance().release(internal);
-    }
-
-    tokenizer_name_ = std::move(other.tokenizer_name_);
-    filters_ = std::move(other.filters_);
-    extra_params_ = std::move(other.extra_params_);
-    pipeline_ = std::move(other.pipeline_);
-    pipeline_created_ = other.pipeline_created_;
-
-    other.pipeline_created_ = false;
-    other.pipeline_.reset();
-
-    // Reconstruct once_flag via placement new.
-    pipeline_once_.~once_flag();
-    new (&pipeline_once_) std::once_flag();
-    if (pipeline_created_) {
-      std::call_once(pipeline_once_, [] {});
-    }
-  }
-  return *this;
-}
 
 // ============================================================
 // FtsIndexParams — create_pipeline

@@ -150,3 +150,81 @@ TEST_F(FtsQueryTest, FtsQueryNoMatch) {
   ASSERT_TRUE(query_res.has_value());
   ASSERT_EQ(query_res.value().size(), 0u);
 }
+
+// Verify that FTS fields do NOT support add/alter/drop column operations.
+// The schema change validation only allows basic numeric types [INT32..DOUBLE].
+TEST_F(FtsQueryTest, FtsFieldUnsupportedAddColumn) {
+  auto schema = CreateFtsSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(kTestPath, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto col = result.value();
+
+  // Insert a document so the collection is non-empty
+  std::vector<Doc> docs;
+  docs.push_back(MakeDoc(0, "intro", "hello world"));
+  auto insert_res = col->Insert(docs);
+  ASSERT_TRUE(insert_res.has_value());
+  ASSERT_TRUE(col->Flush().ok());
+
+  // Attempt to add a new FTS column — should fail
+  auto fts_field = std::make_shared<FieldSchema>(
+      "new_fts", DataType::STRING, true, std::make_shared<FtsIndexParams>());
+  auto status = col->AddColumn(fts_field, "", AddColumnOptions());
+  ASSERT_FALSE(status.ok());
+  ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+}
+
+TEST_F(FtsQueryTest, FtsFieldUnsupportedDropColumn) {
+  auto schema = CreateFtsSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(kTestPath, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto col = result.value();
+
+  // Insert a document so the collection is non-empty
+  std::vector<Doc> docs;
+  docs.push_back(MakeDoc(0, "intro", "hello world"));
+  auto insert_res = col->Insert(docs);
+  ASSERT_TRUE(insert_res.has_value());
+  ASSERT_TRUE(col->Flush().ok());
+
+  // Attempt to drop an existing FTS column — should fail
+  auto status = col->DropColumn("content");
+  ASSERT_FALSE(status.ok());
+  ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+}
+
+TEST_F(FtsQueryTest, FtsFieldUnsupportedAlterColumn) {
+  auto schema = CreateFtsSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(kTestPath, *schema, options);
+  ASSERT_TRUE(result.has_value());
+  auto col = result.value();
+
+  // Insert a document so the collection is non-empty
+  std::vector<Doc> docs;
+  docs.push_back(MakeDoc(0, "intro", "hello world"));
+  auto insert_res = col->Insert(docs);
+  ASSERT_TRUE(insert_res.has_value());
+  ASSERT_TRUE(col->Flush().ok());
+
+  // Attempt to alter (rename) the FTS column — should fail
+  auto status = col->AlterColumn("content", "content_renamed", nullptr,
+                                 AlterColumnOptions());
+  ASSERT_FALSE(status.ok());
+  ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+
+  // Attempt to alter the FTS column with a new schema — should also fail
+  auto new_fts_field = std::make_shared<FieldSchema>(
+      "content", DataType::STRING, true, std::make_shared<FtsIndexParams>());
+  status = col->AlterColumn("content", "", new_fts_field, AlterColumnOptions());
+  ASSERT_FALSE(status.ok());
+  ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+}
