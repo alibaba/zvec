@@ -40,6 +40,21 @@ struct FtsAstNode {
 
   virtual ~FtsAstNode() = default;
   virtual FtsNodeType type() const = 0;
+
+  // Return a human-readable text representation for debugging / logging
+  virtual std::string text() const = 0;
+
+ protected:
+  // Helper: prepend +/- modifier prefix
+  std::string modifier_prefix() const {
+    if (must) {
+      return "+";
+    }
+    if (must_not) {
+      return "-";
+    }
+    return "";
+  }
 };
 
 using FtsAstNodePtr = std::unique_ptr<FtsAstNode>;
@@ -61,6 +76,10 @@ struct TermNode : public FtsAstNode {
   FtsNodeType type() const override {
     return FtsNodeType::TERM;
   }
+
+  std::string text() const override {
+    return modifier_prefix() + term;
+  }
 };
 
 /*! Phrase node
@@ -73,6 +92,16 @@ struct PhraseNode : public FtsAstNode {
   FtsNodeType type() const override {
     return FtsNodeType::PHRASE;
   }
+
+  std::string text() const override {
+    std::string result = modifier_prefix() + "\"";
+    for (size_t i = 0; i < terms.size(); ++i) {
+      if (i > 0) result += " ";
+      result += terms[i];
+    }
+    result += "\"";
+    return result;
+  }
 };
 
 /*! AND combination node
@@ -84,6 +113,16 @@ struct AndNode : public FtsAstNode {
   FtsNodeType type() const override {
     return FtsNodeType::AND;
   }
+
+  std::string text() const override {
+    std::string result = modifier_prefix() + "AND(";
+    for (size_t i = 0; i < children.size(); ++i) {
+      if (i > 0) result += " ";
+      result += children[i]->text();
+    }
+    result += ")";
+    return result;
+  }
 };
 
 /*! OR combination node
@@ -94,6 +133,16 @@ struct OrNode : public FtsAstNode {
 
   FtsNodeType type() const override {
     return FtsNodeType::OR;
+  }
+
+  std::string text() const override {
+    std::string result = modifier_prefix() + "OR(";
+    for (size_t i = 0; i < children.size(); ++i) {
+      if (i > 0) result += " ";
+      result += children[i]->text();
+    }
+    result += ")";
+    return result;
   }
 };
 

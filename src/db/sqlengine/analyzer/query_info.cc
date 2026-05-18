@@ -85,6 +85,12 @@ std::string QueryInfo::to_string() const {
         ")\n");
   }
 
+  str += "fts_cond:\n";
+  if (fts_cond_info_ != nullptr) {
+    str += fts_cond_info_->to_string();
+    str += "\n";
+  }
+
   str += "filter_cond:\n";
   if (filter_cond_ != nullptr) {
     str += filter_cond_->text();

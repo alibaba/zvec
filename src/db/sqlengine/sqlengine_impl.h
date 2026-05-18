@@ -69,8 +69,8 @@ class SQLEngineImpl : public SQLEngine {
   Result<GroupResults> fill_group_by_result(const QueryInfo &query_info,
                                             arrow::RecordBatchReader *reader);
 
-  //! Parse FTS query into a QueryFtsCondInfo (AST + field name).
-  Result<QueryInfo::QueryFtsCondInfo::Ptr> parse_fts_query(
+  //! Parse FTS query into a FtsCondInfo (AST + field name).
+  Result<FtsCondInfo::Ptr> parse_fts_query(
       CollectionSchema::Ptr collection, const std::string &field_name,
       const FtsQuery &fts_query, const QueryParams::Ptr &query_params);
 

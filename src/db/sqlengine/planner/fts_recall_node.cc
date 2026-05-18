@@ -88,8 +88,8 @@ Result<FtsIndexResults::Ptr> FtsRecallNode::prepare() {
   // during scoring, ensuring we always return up to topk results.
   params.filter = doc_filter_->empty() ? nullptr : doc_filter_;
 
-  auto results = segment_->fts_search(fts_cond->field_name(),
-                                      *fts_cond->fts_ast(), params);
+  auto results =
+      segment_->fts_search(fts_cond->field_name, *fts_cond->fts_ast, params);
   if (!results) {
     return tl::make_unexpected(results.error());
   }

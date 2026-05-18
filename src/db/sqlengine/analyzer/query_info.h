@@ -22,7 +22,7 @@
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/db/schema.h>
 #include "db/common/constants.h"
-#include "db/index/column/fts_column/fts_query_ast.h"
+#include "db/sqlengine/common/fts_cond_info.h"
 #include "db/sqlengine/common/group_by.h"
 #include "query_field_info.h"
 #include "query_node.h"
@@ -126,25 +126,7 @@ class QueryInfo {
     bool reverse_sort_{false};
   };
 
-  class QueryFtsCondInfo {
-   public:
-    using Ptr = std::shared_ptr<QueryFtsCondInfo>;
-
-    QueryFtsCondInfo(const std::string &field_name, fts::FtsAstNodePtr ast)
-        : field_name_(field_name), fts_ast_(std::move(ast)) {}
-
-    const std::string &field_name() const {
-      return field_name_;
-    }
-
-    const fts::FtsAstNodePtr &fts_ast() const {
-      return fts_ast_;
-    }
-
-   private:
-    std::string field_name_;
-    fts::FtsAstNodePtr fts_ast_;
-  };
+  using QueryFtsCondInfoPtr = FtsCondInfo::Ptr;
 
  public:
   QueryInfo() = default;
@@ -182,11 +164,11 @@ class QueryInfo {
     return vector_cond_info_;
   }
 
-  void set_fts_cond_info(QueryFtsCondInfo::Ptr value) {
+  void set_fts_cond_info(QueryFtsCondInfoPtr value) {
     fts_cond_info_ = std::move(value);
   }
 
-  const QueryFtsCondInfo::Ptr &fts_cond_info() const {
+  const QueryFtsCondInfoPtr &fts_cond_info() const {
     return fts_cond_info_;
   }
 
@@ -369,7 +351,7 @@ class QueryInfo {
   QueryNode::Ptr filter_cond_{nullptr};
 
   QueryVectorCondInfo::Ptr vector_cond_info_{nullptr};
-  QueryFtsCondInfo::Ptr fts_cond_info_{nullptr};
+  QueryFtsCondInfoPtr fts_cond_info_{nullptr};
 
   // these two are for post filtering only
   QueryNode::Ptr post_invert_cond_{nullptr};

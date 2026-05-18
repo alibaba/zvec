@@ -21,6 +21,7 @@
 #include "db/common/constants.h"
 #include "db/index/column/fts_column/fts_query_ast.h"
 #include "db/sqlengine/analyzer/query_analyzer.h"
+#include "db/sqlengine/parser/select_info.h"
 #include "db/sqlengine/parser/sql_info_helper.h"
 #include "db/sqlengine/parser/zvec_parser.h"
 #include "db/sqlengine/planner/op_register.h"
@@ -122,7 +123,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
   return fill_group_by_result(*query_info.value(), reader.value().get());
 }
 
-Result<QueryInfo::QueryFtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
+Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     CollectionSchema::Ptr collection, const std::string &field_name,
     const FtsQuery &fts_query, const QueryParams::Ptr &query_params) {
   // Exactly one of query_string_ or match_string_ must be provided.
@@ -209,8 +210,7 @@ Result<QueryInfo::QueryFtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     }
   }
 
-  return std::make_shared<QueryInfo::QueryFtsCondInfo>(field_name,
-                                                       std::move(ast));
+  return std::make_shared<FtsCondInfo>(field_name, std::move(ast));
 }
 
 Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
@@ -265,13 +265,9 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     return tl::make_unexpected(Status::InvalidArgument(
         "Convert message to SQL info failed: ", err_msg));
   }
-  LOG_DEBUG("Sql info is %s", sql_info->to_string().c_str());
-  auto query_info = parse_sql_info(*collection, std::move(sql_info));
-  if (!query_info) {
-    return query_info;
-  }
 
-  // If the request carries an FTS query, parse it and attach fts_cond_info.
+  // If the request carries an FTS query, parse it and attach to SelectInfo
+  // so that query_analyzer can propagate it to QueryInfo.
   if (request.fts_query_.has_value()) {
     auto fts_result =
         parse_fts_query(collection, request.field_name_,
@@ -279,9 +275,13 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     if (!fts_result) {
       return tl::make_unexpected(fts_result.error());
     }
-    query_info.value()->set_fts_cond_info(std::move(fts_result.value()));
+    auto select_info =
+        std::dynamic_pointer_cast<SelectInfo>(sql_info->base_info());
+    select_info->set_fts_cond_info(std::move(fts_result.value()));
   }
-  return query_info;
+
+  LOG_DEBUG("Sql info is %s", sql_info->to_string().c_str());
+  return parse_sql_info(*collection, std::move(sql_info));
 }
 
 Result<std::unique_ptr<arrow::RecordBatchReader>>
