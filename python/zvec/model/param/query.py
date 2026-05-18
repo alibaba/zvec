@@ -13,20 +13,21 @@
 # limitations under the License.
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Optional, Union
 
 from ...common import VectorType
 from . import HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam
 
-__all__ = ["VectorQuery"]
+__all__ = ["Query", "VectorQuery"]
 
 
 @dataclass(frozen=True)
-class VectorQuery:
-    """Represents a vector search query for a specific field in a collection.
+class Query:
+    """Represents a search query for a specific field in a collection.
 
-    A `VectorQuery` can be constructed using either a document ID (to look up
+    A `Query` can be constructed using either a document ID (to look up
     its vector) or an explicit vector. It may optionally include index-specific
     query parameters to control search behavior (e.g., `ef` for HNSW, `nprobe` for IVF).
 
@@ -34,7 +35,7 @@ class VectorQuery:
     behavior is implementation-defined (typically `id` takes precedence).
 
     Attributes:
-        field_name (str): Name of the vector field to query.
+        field_name (str): Name of the field to query.
         id (Optional[str], optional): Document ID to fetch vector from. Default is None.
         vector (VectorType, optional): Explicit query vector. Default is None.
         param (Optional[Union[HnswQueryParam, IVFQueryParam]], optional):
@@ -43,9 +44,9 @@ class VectorQuery:
     Examples:
         >>> import zvec
         >>> # Query by ID
-        >>> q1 = zvec.VectorQuery(field_name="embedding", id="doc123")
+        >>> q1 = zvec.Query(field_name="embedding", id="doc123")
         >>> # Query by vector
-        >>> q2 = zvec.VectorQuery(
+        >>> q2 = zvec.Query(
         ...     field_name="embedding",
         ...     vector=[0.1, 0.2, 0.3],
         ...     param=HnswQueryParam(ef=300)
@@ -78,3 +79,16 @@ class VectorQuery:
             raise ValueError("Field name cannot be empty")
         if self.id and self.vector:
             raise ValueError("Cannot provide both id and vector")
+
+
+class VectorQuery(Query):
+    """Deprecated alias for Query. Use Query instead."""
+
+    def __new__(cls, *args, **kwargs):  # noqa : ARG004
+        warnings.warn(
+            "VectorQuery is deprecated and will be removed in a future version. "
+            "Use Query instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return super().__new__(cls)

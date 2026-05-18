@@ -16,6 +16,13 @@
 #pragma once
 
 
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 
@@ -148,5 +155,51 @@ inline Doc CreateTestDoc(uint64_t doc_id, int version) {
   return doc;
 }
 
+
+
+/**
+ * @brief Locate a binary by name, searching common paths and TEST_BINARY_DIR.
+ *
+ * @param binary_name The base name of the binary (e.g. "data_generator")
+ * @return std::string The canonical path to the found binary
+ * @throws std::runtime_error if the binary is not found
+ */
+inline std::string LocateBinary(const std::string &binary_name) {
+  namespace fs = std::filesystem;
+  std::cout << "Current path: " << fs::current_path() << std::endl;
+
+  std::vector<std::string> candidates;
+  const std::vector<std::string> search_paths = {"./", "./bin/"};
+
+  for (const auto &p : search_paths) {
+    candidates.push_back(p);
+  }
+#ifdef _WIN32
+  for (const auto &p : search_paths) {
+    candidates.push_back(p + "Debug/");
+    candidates.push_back(p + "Release/");
+  }
+#endif
+
+  const char *test_binary_dir = std::getenv("TEST_BINARY_DIR");
+  if (test_binary_dir != nullptr) {
+    candidates.push_back(std::string(test_binary_dir) + "/");
+    candidates.push_back(std::string(test_binary_dir) + "/bin/");
+  }
+
+  for (auto &p : candidates) {
+    p += binary_name;
+#ifdef _WIN32
+    p += ".exe";
+#endif
+  }
+
+  for (const auto &p : candidates) {
+    if (fs::exists(p)) {
+      return fs::canonical(p).string();
+    }
+  }
+  throw std::runtime_error(binary_name + " binary not found");
+}
 
 }  // namespace zvec

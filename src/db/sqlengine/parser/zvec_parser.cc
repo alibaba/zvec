@@ -22,6 +22,7 @@
 #include <typeinfo>
 #include <zvec/ailego/encoding/json.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include "db/sqlengine/common/util.h"
 #include "tree/ParseTree.h"
@@ -118,7 +119,8 @@ std::string ZVecParser::to_formatted_string_tree(void *tree, void *parser) {
 
 void ZVecParser::save_to_file(const std::string &file_name,
                               const std::string &formatted) {
-  std::ofstream outfile(file_name);
+  std::ofstream outfile;
+  ailego::FileHelper::OpenOfstream(outfile, file_name);
   outfile << formatted;
   outfile << std::endl;
   outfile.close();

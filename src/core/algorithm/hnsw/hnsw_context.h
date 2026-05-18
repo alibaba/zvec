@@ -174,8 +174,9 @@ class HnswContext : public IndexContext {
 
       node_id_t id = topk_heap_[i].first;
       if (fetch_vector_) {
-        results_[idx].emplace_back(entity_->get_key(id), score, id,
-                                   entity_->get_vector(id));
+        IndexStorage::MemoryBlock block;
+        entity_->get_vector(id, block);
+        results_[idx].emplace_back(entity_->get_key(id), score, id, block);
       } else {
         results_[idx].emplace_back(entity_->get_key(id), score, id);
       }
@@ -237,8 +238,10 @@ class HnswContext : public IndexContext {
         node_id_t id = group_topk_list[i].second[j].first;
 
         if (fetch_vector_) {
+          IndexStorage::MemoryBlock block;
+          entity_->get_vector(id, block);
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score, id, entity_->get_vector(id));
+              entity_->get_key(id), score, id, block);
         } else {
           group_results_[idx][i].mutable_docs()->emplace_back(
               entity_->get_key(id), score, id);

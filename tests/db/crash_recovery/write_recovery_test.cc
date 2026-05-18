@@ -44,38 +44,7 @@ const zvec::CollectionOptions options_{false, true, 256 * 1024};
 
 
 static std::string LocateDataGenerator() {
-  namespace fs = std::filesystem;
-  std::cout << "Current path: " << fs::current_path() << std::endl;
-
-  const std::string base_name = "data_generator";
-  std::vector<std::string> candidates;
-  // Define potential search locations relative to the current working directory
-  const std::vector<std::string> search_paths = {"./", "./bin/"};
-
-  for (const auto &p : search_paths) {
-    candidates.push_back(p);
-  }
-#ifdef _WIN32
-  for (const auto &p : search_paths) {
-    candidates.push_back(p + "Debug/");
-    candidates.push_back(p + "Release/");
-  }
-#endif
-
-
-  for (auto &p : candidates) {
-    p += base_name;
-#ifdef _WIN32
-    p += ".exe";  // Append .exe suffix for Windows compatibility
-#endif
-  }
-
-  for (const auto &p : candidates) {
-    if (fs::exists(p)) {
-      return fs::canonical(p).string();
-    }
-  }
-  throw std::runtime_error("data_generator binary not found");
+  return LocateBinary("data_generator");
 }
 
 

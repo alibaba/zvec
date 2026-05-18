@@ -77,5 +77,8 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     )
     add_dependencies(${CC_TARGET} data_generator)
     add_dependencies(${CC_TARGET} collection_optimizer)
+    set_tests_properties(${CC_TARGET} PROPERTIES
+        ENVIRONMENT "TEST_BINARY_DIR=${PROJECT_BINARY_DIR}"
+    )
     cc_test_suite(zvec_crash_recovery ${CC_TARGET})
 endforeach()

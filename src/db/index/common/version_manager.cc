@@ -34,7 +34,8 @@
 namespace zvec {
 
 Status Version::Load(const std::string &path, Version *version) {
-  std::ifstream ifs(path, std::ios::binary);
+  std::ifstream ifs;
+  ailego::FileHelper::OpenIfstream(ifs, path, std::ios::binary);
   if (!ifs.is_open()) {
     LOG_ERROR("Failed to open file: %s", path.c_str());
     return Status::InternalError("Failed to open file");
@@ -74,7 +75,8 @@ Status Version::Load(const std::string &path, Version *version) {
 }
 
 Status Version::Save(const std::string &path, const Version &version) {
-  std::ofstream ofs(path, std::ios::binary);
+  std::ofstream ofs;
+  ailego::FileHelper::OpenOfstream(ofs, path, std::ios::binary);
   if (!ofs.is_open()) {
     LOG_ERROR("Failed to open file: %s, err: %s", path.c_str(),
               ailego::FileHelper::GetLastErrorString().c_str());
@@ -187,12 +189,13 @@ std::string Version::to_string_formatted(int indent_level) const {
 
 Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path) {
   namespace fs = std::filesystem;
-  if (!fs::exists(path)) {
+  auto u8path = ailego::FileHelper::PathFromUtf8(path);
+  if (!fs::exists(u8path)) {
     LOG_ERROR("VersionManager::Recovery: path %s does not exist", path.c_str());
     return tl::make_unexpected(
         Status::NotFound("path ", path, " does not exist"));
   }
-  if (!fs::is_directory(path)) {
+  if (!fs::is_directory(u8path)) {
     LOG_ERROR("VersionManager::Recovery: path %s is not a directory",
               path.c_str());
     return tl::make_unexpected(
@@ -207,14 +210,14 @@ Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path) {
   uint64_t max_id = UINT64_MAX;
   std::string version_path;
 
-  for (const auto &entry : fs::directory_iterator(path)) {
+  for (const auto &entry : fs::directory_iterator(u8path)) {
     if (entry.is_regular_file()) {
-      std::string filename = entry.path().filename().string();
+      std::string filename = entry.path().filename().u8string();
       if (std::regex_match(filename, match, regex)) {
         uint64_t id = std::stoull(match[1].str());
         if (id > max_id || max_id == UINT64_MAX) {
           max_id = id;
-          version_path = entry.path().string();
+          version_path = entry.path().u8string();
         }
       }
     }

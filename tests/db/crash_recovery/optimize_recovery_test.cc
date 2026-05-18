@@ -46,38 +46,7 @@ const int num_batches{1000};
 
 
 static std::string LocateOptimizeGenerator() {
-  namespace fs = std::filesystem;
-  std::cout << "Current path: " << fs::current_path() << std::endl;
-
-  const std::string base_name = "collection_optimizer";
-  std::vector<std::string> candidates;
-  const std::vector<std::string> search_paths = {"./", "./bin/"};
-
-  for (const auto &p : search_paths) {
-    candidates.push_back(p);
-  }
-
-// TODO(windows): unify _WIN32/_WIN64/MSCV_VER
-#ifdef _WIN32
-  for (const auto &p : search_paths) {
-    candidates.push_back(p + "Debug/");
-    candidates.push_back(p + "Release/");
-  }
-#endif
-
-  for (auto &p : candidates) {
-    p += base_name;
-#ifdef _WIN32
-    p += ".exe";
-#endif
-  }
-
-  for (const auto &p : candidates) {
-    if (fs::exists(p)) {
-      return fs::canonical(p).string();
-    }
-  }
-  throw std::runtime_error("collection_optimizer binary not found");
+  return LocateBinary("collection_optimizer");
 }
 
 
