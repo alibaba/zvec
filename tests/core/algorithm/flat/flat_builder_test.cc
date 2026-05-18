@@ -118,18 +118,6 @@ TEST_F(FlatBuilderTest, TestInt8WithRandomDimension) {
   ASSERT_EQ(0, builder->init(meta_, params));
 }
 
-TEST_F(FlatBuilderTest, TestBinaryInvalidColumnMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim + 2);
-  meta_.set_major_order(IndexMeta::MO_COLUMN);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "TestGeneral";
-}
-
 TEST_F(FlatBuilderTest, TestBuildWithRowMajor) {
   meta_.set_metric("SquaredEuclidean", 0, Params());
   meta_.set_major_order(IndexMeta::MO_ROW);
@@ -174,35 +162,6 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithRowMajor) {
     NumericalVector<int8_t> vec(DIMENSION);
     for (size_t j = 0; j < DIMENSION; ++j) {
       vec[j] = (int8_t)(i % 128);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-
-  int ret = builder->train(holder);
-  EXPECT_EQ(0, ret);
-
-  ret = builder->build(holder);
-  EXPECT_EQ(0, ret);
-}
-
-TEST_F(FlatBuilderTest, TestBinaryBuildWithRowMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_ROW);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
     }
     ASSERT_TRUE(holder->emplace(i, vec));
   }
@@ -270,35 +229,6 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithColumnMajor) {
   EXPECT_EQ(0, ret);
 }
 
-TEST_F(FlatBuilderTest, TestBinaryBuildWithColumnMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_COLUMN);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-
-  int ret = builder->train(holder);
-  EXPECT_EQ(0, ret);
-
-  ret = builder->build(holder);
-  EXPECT_EQ(0, ret);
-}
-
 TEST_F(FlatBuilderTest, TestWithRowMajor) {
   meta_.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta_.set_metric("SquaredEuclidean", 0, Params());
@@ -349,32 +279,6 @@ TEST_F(FlatBuilderTest, TestInt8WithRowMajor) {
   ASSERT_EQ(0, builder->cleanup());
 }
 
-TEST_F(FlatBuilderTest, TestBinaryWithRowMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_ROW);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  std::string path = dir_ + "TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-  build_process(builder, holder);
-
-  // cleanup and rebuild
-  ASSERT_EQ(0, builder->cleanup());
-}
-
 TEST_F(FlatBuilderTest, TestWithColumnMajor) {
   meta_.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta_.set_metric("SquaredEuclidean", 0, Params());
@@ -416,32 +320,6 @@ TEST_F(FlatBuilderTest, TestInt8WithColumnMajor) {
     NumericalVector<int8_t> vec(dim);
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = (int8_t)(i % 128);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-  build_process(builder, holder);
-
-  // cleanup and rebuild
-  ASSERT_EQ(0, builder->cleanup());
-}
-
-TEST_F(FlatBuilderTest, TestBinaryWithColumnMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_COLUMN);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  std::string path = dir_ + "TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
     }
     ASSERT_TRUE(holder->emplace(i, vec));
   }

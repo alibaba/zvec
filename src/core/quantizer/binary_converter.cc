@@ -159,7 +159,7 @@ class BinaryConverter : public IndexConverter {
     size_t dim =
         ailego::BinaryQuantizer::EncodedSizeInBinary32(dimension_) * 32u;
 
-    meta_.set_metric("Hamming", 0, ailego::Params());
+    meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
     meta_.set_converter("BinaryConverter", 0, params);
     meta_.set_meta(IndexMeta::DataType::DT_BINARY32, dim);
 

@@ -29,7 +29,7 @@ DEFINE_string(input_second_sep, " ", "input second sep");
 DEFINE_string(output, "output.vecs", "vecs output file");
 DEFINE_string(type, "float",
               "available type: float, double, int16, int8, binary");
-DEFINE_string(method, "L2", "available method: L2, IP, HAMMING");
+DEFINE_string(method, "L2", "available method: L2, IP");
 DEFINE_int32(dimension, 256, "data dimension");
 DEFINE_string(vector_type, "dense", "available type: dense, hybrid, sparse");
 

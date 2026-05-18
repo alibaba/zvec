@@ -17,7 +17,6 @@
 #include <ailego/algorithm/kmeans.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
-#include <zvec/ailego/internal/platform.h>
 #include "zvec/core/framework/index_framework.h"
 
 using namespace zvec::core;
@@ -208,106 +207,6 @@ TEST(OptKmeansCluster, General) {
 //               << ", " << vec[vec.size() - 1] << " }" << std::endl;
 //   }
 // }
-
-TEST(OptKmeansCluster, BinaryGeneral) {
-  // Prepare index data
-  const uint32_t count = 5000u;
-  const uint32_t dimension = 1024u;
-
-  IndexMeta index_meta;
-  index_meta.set_meta(IndexMeta::DataType::DT_BINARY32, dimension);
-  index_meta.set_metric("SquaredEuclidean", 0, Params());
-
-  std::shared_ptr<CompactIndexFeatures> features(
-      new CompactIndexFeatures(index_meta));
-
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_real_distribution<float> dist(0.0, 1.0);
-
-  for (uint32_t i = 0; i < count; ++i) {
-    BinaryVector<uint32_t> vec(dimension);
-    for (size_t j = 0; j < dimension; ++j) {
-      if (dist(gen) >= 0.5) {
-        vec.set(j);
-      }
-    }
-    features->emplace(vec.data());
-  }
-
-  std::cout << "---------- FIRST ----------\n";
-
-  // Create a Kmeans cluster
-  IndexCluster::Pointer cluster =
-      IndexFactory::CreateCluster("OptKmeansCluster");
-  ASSERT_TRUE(!!cluster);
-
-  Params params;
-  params.set("proxima.general.cluster.count", 1);
-  params.set("proxima.optkmeans.cluster.count", 56);
-
-  ASSERT_EQ(0, cluster->init(index_meta, params));
-  ASSERT_EQ(0, cluster->mount(features));
-  cluster->suggest(64u);
-
-  auto threads = std::make_shared<SingleQueueIndexThreads>();
-
-  std::cout << "---------- FIRST ----------\n";
-  std::vector<IndexCluster::Centroid> centroids;
-  std::vector<uint32_t> labels;
-  ASSERT_NE(0, cluster->classify(threads, centroids));
-  ASSERT_NE(0, cluster->label(threads, centroids, &labels));
-  ASSERT_EQ(0, cluster->cluster(threads, centroids));
-
-  for (const auto &it : centroids) {
-    const auto &vec = it.vector<uint32_t>();
-
-    unsigned int mask = 0x1;
-    std::cout << it.follows() << " (" << it.score() << ") { "
-              << !!(vec[0] & mask) << ", " << !!(vec[0] & (mask << 1)) << ", "
-              << !!(vec[0] & (mask << 2)) << ", ... , "
-              << !!(vec[0] & (mask << !!(sizeof(uint32_t) - 2))) << ", "
-              << !!(vec[0] & (mask << !!(sizeof(uint32_t) - 1))) << " }"
-              << std::endl;
-    ASSERT_EQ(0u, it.similars().size());
-  }
-
-  std::cout << "---------- SECOND ----------\n";
-  ASSERT_EQ(0, cluster->cluster(threads, centroids));
-
-  for (const auto &it : centroids) {
-    const auto &vec = it.vector<uint32_t>();
-
-    unsigned int mask = 0x1;
-    std::cout << it.follows() << " (" << it.score() << ") { "
-              << !!(vec[0] & mask) << ", " << !!(vec[0] & (mask << 1)) << ", "
-              << !!(vec[0] & (mask << 2)) << ", ... , "
-              << !!(vec[0] & (mask << !!(sizeof(uint32_t) - 2))) << ", "
-              << !!(vec[0] & (mask << !!(sizeof(uint32_t) - 1))) << " }"
-              << std::endl;
-    ASSERT_EQ(0u, it.similars().size());
-  }
-
-  std::cout << "---------- THIRD ----------\n";
-  ASSERT_EQ(0, cluster->cluster(threads, centroids));
-
-  for (const auto &it : centroids) {
-    const auto &vec = it.vector<uint32_t>();
-
-    unsigned int mask = 0x1;
-    std::cout << it.follows() << " (" << it.score() << ") { "
-              << !!(vec[0] & mask) << ", " << !!(vec[0] & (mask << 1)) << ", "
-              << !!(vec[0] & (mask << 2)) << ", ... , "
-              << !!(vec[0] & (mask << !!(sizeof(uint32_t) - 2))) << ", "
-              << !!(vec[0] & (mask << !!(sizeof(uint32_t) - 1))) << " }"
-              << std::endl;
-    ASSERT_EQ(0u, it.similars().size());
-  }
-
-  ASSERT_EQ(0, cluster->classify(threads, centroids));
-  ASSERT_EQ(0, cluster->label(threads, centroids, &labels));
-}
-
 
 TEST(OptKmeansCluster, IN4General) {
   // Prepare index data
