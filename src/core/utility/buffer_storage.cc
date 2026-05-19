@@ -746,15 +746,33 @@ class BufferStorage : public IndexStorage {
       index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
     }
-    // Snapshot the pending checkpoint at the start of the flush.  We will
-    // use CAS at the end to reset it to 0 only if no concurrent
-    // refresh_index() has stored a newer value during the flush; otherwise
-    // the newer value (and dirty=true) must be preserved so the next
-    // flush_index() picks it up.
+    // Atomically claim the dirty flag at the START of the flush, not at the
+    // end.  This prevents a TOCTOU race against the lock-free hot path:
+    // any WrappedSegment::write() that happens between flush_all() and the
+    // end of this function will simply re-set dirty=true (its set_as_dirty
+    // observes our cleared flag), and the next flush_index() will pick up
+    // those new dirty pages.  An unconditional store(false) at the end
+    // would silently swallow that concurrent write.
+    bool expected_dirty = true;
+    if (!index_dirty_.compare_exchange_strong(expected_dirty, false,
+                                              std::memory_order_relaxed)) {
+      // Another thread already claimed and is performing the flush; treat
+      // this call as a no-op.  The previous design (no CAS) allowed
+      // duplicate concurrent flushers; bailing out here is strictly safer
+      // because both flushers would otherwise race on per-chain footer
+      // mutation in the loop below.
+      return 0;
+    }
+    // Snapshot the pending checkpoint AFTER claiming dirty so that we
+    // observe at least every refresh_index() that happened before we
+    // claimed.  The CAS-reset at the end will preserve any newer chkp
+    // stored by a concurrent refresh_index() during this flush.
     const uint64_t consumed_chkp =
         pending_check_point_.load(std::memory_order_relaxed);
     // Flush all dirty data blocks to the backing file first.
     if (buffer_pool_handle_->flush_all() != 0) {
+      // Restore dirty so the next flush_index() retries.
+      index_dirty_.store(true, std::memory_order_relaxed);
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
       return IndexError_WriteData;
     }
@@ -776,6 +794,7 @@ class BufferStorage : public IndexStorage {
                                           seg_buf) != 0) {
         LOG_ERROR("Failed to write segment meta: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
+        index_dirty_.store(true, std::memory_order_relaxed);
         return IndexError_WriteData;
       }
       // Write the updated footer back to disk.
@@ -784,6 +803,7 @@ class BufferStorage : public IndexStorage {
               reinterpret_cast<const char *>(&mchain.footer)) != 0) {
         LOG_ERROR("Failed to write footer: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
+        index_dirty_.store(true, std::memory_order_relaxed);
         return IndexError_WriteData;
       }
     }
@@ -791,16 +811,15 @@ class BufferStorage : public IndexStorage {
     if (!meta_chains_.empty()) {
       footer_ = meta_chains_.back().footer;
     }
-    // CAS-reset: only consume the checkpoint we observed at the start.
-    // If a concurrent refresh_index() stored a newer value mid-flush, CAS
-    // fails and the newer value remains in pending_check_point_ along with
-    // dirty=true, so the next flush_index() will persist it.
-    uint64_t expected = consumed_chkp;
-    const bool consumed = pending_check_point_.compare_exchange_strong(
-        expected, 0, std::memory_order_relaxed);
-    if (consumed) {
-      index_dirty_.store(false, std::memory_order_relaxed);
-    }
+    // CAS-reset pending: only consume the checkpoint we observed at the
+    // start.  If a concurrent refresh_index() stored a newer value during
+    // the flush, CAS fails and the newer value remains in
+    // pending_check_point_; refresh_index() also re-set dirty=true (since
+    // we cleared it at the top), so the next flush_index() will persist
+    // the newer chkp.
+    uint64_t expected_chkp = consumed_chkp;
+    pending_check_point_.compare_exchange_strong(expected_chkp, 0,
+                                                 std::memory_order_relaxed);
     return 0;
   }
 
