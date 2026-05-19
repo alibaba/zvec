@@ -16,6 +16,7 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <thread>
 #include <sys/stat.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
@@ -85,7 +86,8 @@ class BufferStorage : public IndexStorage {
     //! LOCKING: takes a shared_lock on owner_->mapping_mutex_ so that
     //! append_segment() / close_index() cannot tear down the pool mid-call.
     size_t fetch(size_t offset, void *buf, size_t len) const override {
-      std::shared_lock<std::shared_mutex> latch(owner_->mapping_mutex_);
+      std::shared_lock<std::shared_mutex> latch(
+          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR("WrappedSegment::fetch: handle is null, file[%s], id[%zu]",
                   owner_->file_name_.c_str(), segment_id_);
@@ -112,7 +114,8 @@ class BufferStorage : public IndexStorage {
     //! Read data from segment
     //! LOCKING: see fetch() above for rationale.
     size_t read(size_t offset, const void **data, size_t len) override {
-      std::shared_lock<std::shared_mutex> latch(owner_->mapping_mutex_);
+      std::shared_lock<std::shared_mutex> latch(
+          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR("WrappedSegment::read: handle is null, file[%s], id[%zu]",
                   owner_->file_name_.c_str(), segment_id_);
@@ -168,7 +171,8 @@ class BufferStorage : public IndexStorage {
     //! MemoryBlock carries its own ref_count (raised by get_single_page())
     //! and will release it via its destructor.
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
-      std::shared_lock<std::shared_mutex> latch(owner_->mapping_mutex_);
+      std::shared_lock<std::shared_mutex> latch(
+          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR(
             "WrappedSegment::read(MemoryBlock&): handle is null, file[%s], "
@@ -219,7 +223,8 @@ class BufferStorage : public IndexStorage {
     //! Write data into the storage with offset
     //! LOCKING: see fetch() above for rationale.
     size_t write(size_t offset, const void *data, size_t len) override {
-      std::shared_lock<std::shared_mutex> latch(owner_->mapping_mutex_);
+      std::shared_lock<std::shared_mutex> latch(
+          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_ ||
                           !owner_->buffer_pool_)) {
         LOG_ERROR("WrappedSegment::write: pool is null, file[%s], id[%zu]",
@@ -726,10 +731,11 @@ class BufferStorage : public IndexStorage {
     if (!index_dirty_.load(std::memory_order_relaxed)) {
       return 0;
     }
-    // SHARED LOCK: keep mapping_mutex_ held for the whole flush so that the
+    // SHARED LOCK: keep one shard locked for the whole flush so that the
     // pool/handle cannot be torn down by append_segment()/close_index()
     // mid-flush.
-    std::shared_lock<std::shared_mutex> latch(mapping_mutex_);
+    std::shared_lock<std::shared_mutex> latch(
+        mapping_shards_[mapping_shard_id()].mtx);
     // NULL GUARD: a previous append_segment() may have left the pool in a
     // torn-down state.
     if (!buffer_pool_ || !buffer_pool_handle_) {
@@ -791,7 +797,7 @@ class BufferStorage : public IndexStorage {
     // flush_index() internally takes a shared_lock on the same mutex and
     // std::shared_mutex is NOT reentrant.
     this->flush_index();
-    std::unique_lock<std::shared_mutex> latch(mapping_mutex_);
+    AllShardsExclusiveLatch latch(mapping_shards_);
     file_name_.clear();
     id_hash_.clear();
     segments_.clear();
@@ -866,7 +872,7 @@ class BufferStorage : public IndexStorage {
     // and std::shared_mutex is NOT reentrant.
     this->flush_index();
 
-    std::unique_lock<std::shared_mutex> latch(mapping_mutex_);
+    AllShardsExclusiveLatch latch(mapping_shards_);
 
     if (!buffer_pool_ || !buffer_pool_handle_) {
       LOG_ERROR("append_segment: pool not ready, file[%s]",
@@ -1107,13 +1113,15 @@ class BufferStorage : public IndexStorage {
 
   //! Test if a segment exists
   bool has_segment(const std::string &id) const {
-    std::shared_lock<std::shared_mutex> latch(mapping_mutex_);
+    std::shared_lock<std::shared_mutex> latch(
+        mapping_shards_[mapping_shard_id()].mtx);
     return (segments_.find(id) != segments_.end());
   }
 
   //! Get a segment from storage
   IndexMapping::SegmentInfo *get_segment_info(const std::string &id) {
-    std::shared_lock<std::shared_mutex> latch(mapping_mutex_);
+    std::shared_lock<std::shared_mutex> latch(
+        mapping_shards_[mapping_shard_id()].mtx);
     auto iter = segments_.find(id);
     if (iter == segments_.end()) {
       return nullptr;
@@ -1123,7 +1131,37 @@ class BufferStorage : public IndexStorage {
 
  private:
   std::atomic<bool> index_dirty_{false};
-  mutable std::shared_mutex mapping_mutex_{};
+
+  // Sharded reader-writer lock to eliminate cache-line ping-pong on the
+  // reader counter.  16 concurrent readers each hash to their own shard,
+  // avoiding cross-core contention.  Writers (append_segment/close_index)
+  // lock ALL shards to achieve exclusive access.
+  static constexpr size_t kMappingMutexShards = 32;
+  struct alignas(64) MutexShard {
+    std::shared_mutex mtx;
+  };
+  mutable MutexShard mapping_shards_[kMappingMutexShards]{};
+
+  // Per-thread shard selection (stable hash, no syscall).
+  size_t mapping_shard_id() const {
+    thread_local const size_t id =
+        std::hash<std::thread::id>()(std::this_thread::get_id()) %
+        kMappingMutexShards;
+    return id;
+  }
+
+  // RAII guard that locks ALL shards exclusively (for writers).
+  struct AllShardsExclusiveLatch {
+    MutexShard *shards_;
+    AllShardsExclusiveLatch(MutexShard *shards) : shards_(shards) {
+      for (size_t i = 0; i < kMappingMutexShards; ++i) shards_[i].mtx.lock();
+    }
+    ~AllShardsExclusiveLatch() {
+      for (size_t i = 0; i < kMappingMutexShards; ++i) shards_[i].mtx.unlock();
+    }
+    AllShardsExclusiveLatch(const AllShardsExclusiveLatch &) = delete;
+    AllShardsExclusiveLatch &operator=(const AllShardsExclusiveLatch &) = delete;
+  };
 
   std::vector<char *> tmp_buffers_{};
   mutable std::mutex tmp_buffers_mutex_{};
