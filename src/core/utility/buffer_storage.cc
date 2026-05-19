@@ -777,6 +777,16 @@ class BufferStorage : public IndexStorage {
     // and produce a checksum that mismatches the on-disk segment_meta
     // bytes, causing IndexError_InvalidChecksum on the next open().
     AllShardsExclusiveLatch latch(mapping_shards_);
+    return flush_index_locked();
+  }
+
+  //! Internal flush implementation. PRECONDITION: caller MUST already hold
+  //! AllShardsExclusiveLatch on mapping_shards_.  Used by flush_index()
+  //! (which acquires the latch itself) and by close_index() (which must
+  //! flush and tear down under a SINGLE continuous latch hold so that no
+  //! writer can slip in between flush and pool reset and lose its dirty
+  //! pages).
+  int flush_index_locked(void) {
     // NULL GUARD: a previous append_segment() may have left the pool in a
     // torn-down state.
     if (!buffer_pool_ || !buffer_pool_handle_) {
@@ -868,12 +878,19 @@ class BufferStorage : public IndexStorage {
 
   //! Close index storage
   void close_index(void) {
-    // Flush any outstanding dirty metadata to disk before tearing down.
-    // IMPORTANT: call flush_index() BEFORE taking the all-shards exclusive
-    // latch below; flush_index() now also takes an all-shards exclusive
-    // latch and std::shared_mutex is NOT reentrant.
-    this->flush_index();
+    // Take the all-shards exclusive latch BEFORE flushing, and hold it for
+    // the entire teardown sequence.  Earlier code released the latch
+    // between flush and teardown, opening a window in which a writer could
+    // grab a shared lock, mutate meta_buf via WrappedSegment::write() and
+    // call set_as_dirty(true).  After this close_index() reacquired the
+    // latch and reset buffer_pool_handle_, those dirty pages would be
+    // dropped on the floor with no chance to flush.  Holding a SINGLE
+    // latch instance across flush_index_locked() and the reset eliminates
+    // that window: writers can only enter once we have fully torn down
+    // (and at that point segments_/buffer_pool_handle_ are gone, so they
+    // would fail the null/state guards in WrappedSegment).
     AllShardsExclusiveLatch latch(mapping_shards_);
+    flush_index_locked();
     file_name_.clear();
     id_hash_.clear();
     segments_.clear();
