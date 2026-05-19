@@ -60,46 +60,66 @@ namespace ailego {
 const size_t kVectorPageSize = MemoryHelper::PageSize();
 
 void VectorPageTable::init(size_t entry_num) {
-  if (entries_) {
-    delete[] entries_;
+  // Free old segments if any.
+  for (size_t i = 0; i < segment_count_; ++i) {
+    delete[] segments_[i];
+    segments_[i] = nullptr;
   }
   entry_num_ = entry_num;
-  entries_ = new Entry[entry_num_];
-  for (size_t i = 0; i < entry_num_; i++) {
-    entries_[i].ref_count.store(std::numeric_limits<int>::min());
-    entries_[i].in_evict_queue.store(false);
-    entries_[i].is_dirty.store(false);
-    entries_[i].buffer = nullptr;
-    entries_[i].file_offset = 0;
+  segment_count_ = (entry_num + kSegmentSize - 1) / kSegmentSize;
+  for (size_t s = 0; s < segment_count_; ++s) {
+    segments_[s] = new Entry[kSegmentSize];
+    for (size_t i = 0; i < kSegmentSize; ++i) {
+      segments_[s][i].ref_count.store(std::numeric_limits<int>::min());
+      segments_[s][i].in_evict_queue.store(false);
+      segments_[s][i].is_dirty.store(false);
+      segments_[s][i].buffer = nullptr;
+      segments_[s][i].file_offset = 0;
+    }
   }
+}
+
+void VectorPageTable::extend(size_t new_entry_num) {
+  if (new_entry_num <= entry_num_) return;
+  size_t new_segment_count = (new_entry_num + kSegmentSize - 1) / kSegmentSize;
+  for (size_t s = segment_count_; s < new_segment_count; ++s) {
+    segments_[s] = new Entry[kSegmentSize];
+    for (size_t i = 0; i < kSegmentSize; ++i) {
+      segments_[s][i].ref_count.store(std::numeric_limits<int>::min());
+      segments_[s][i].in_evict_queue.store(false);
+      segments_[s][i].is_dirty.store(false);
+      segments_[s][i].buffer = nullptr;
+      segments_[s][i].file_offset = 0;
+    }
+  }
+  segment_count_ = new_segment_count;
+  entry_num_ = new_entry_num;
 }
 
 char *VectorPageTable::acquire_block(block_id_t block_id) {
   assert(block_id < entry_num_);
-  Entry &entry = entries_[block_id];
+  Entry &e = entry_at(block_id);
   while (true) {
-    int current_count = entry.ref_count.load(std::memory_order_acquire);
+    int current_count = e.ref_count.load(std::memory_order_acquire);
     if (current_count < 0) {
       return nullptr;
     }
-    if (entry.ref_count.compare_exchange_weak(current_count, current_count + 1,
-                                              std::memory_order_acq_rel,
-                                              std::memory_order_acquire)) {
-      return entry.buffer;
+    if (e.ref_count.compare_exchange_weak(current_count, current_count + 1,
+                                          std::memory_order_acq_rel,
+                                          std::memory_order_acquire)) {
+      return e.buffer;
     }
   }
 }
 
 void VectorPageTable::release_block(block_id_t block_id) {
   assert(block_id < entry_num_);
-  Entry &entry = entries_[block_id];
+  Entry &e = entry_at(block_id);
 
-  if (entry.ref_count.fetch_sub(1, std::memory_order_release) == 1) {
+  if (e.ref_count.fetch_sub(1, std::memory_order_release) == 1) {
     std::atomic_thread_fence(std::memory_order_acquire);
-    // Attempt to transition in_evict_queue from false -> true.  The CAS ensures
-    // only one thread enqueues this block even if multiple threads race here.
     bool expected = false;
-    if (entry.in_evict_queue.compare_exchange_strong(
+    if (e.in_evict_queue.compare_exchange_strong(
             expected, true, std::memory_order_acq_rel,
             std::memory_order_relaxed)) {
       BlockEvictionQueue::BlockType block;
@@ -108,58 +128,48 @@ void VectorPageTable::release_block(block_id_t block_id) {
       block.vector_block.second = 0;
       BlockEvictionQueue::get_instance().add_single_block(block, 0);
     }
-    // else: block is already in the eviction queue; do not add a duplicate
-    // entry.
   }
 }
 
 void VectorPageTable::evict_block(block_id_t block_id) {
   assert(block_id < entry_num_);
-  Entry &entry = entries_[block_id];
-  char *buffer = entry.buffer;
+  Entry &e = entry_at(block_id);
+  char *buffer = e.buffer;
   int expected = 0;
-  if (entry.ref_count.compare_exchange_strong(
+  if (e.ref_count.compare_exchange_strong(
           expected, std::numeric_limits<int>::min())) {
-    // If the block is dirty, flush it to disk before freeing the memory so
-    // that no modified data is silently lost during eviction.
-    if (buffer && entry.is_dirty.load(std::memory_order_relaxed) &&
+    if (buffer && e.is_dirty.load(std::memory_order_relaxed) &&
         flush_callback_) {
-      flush_callback_(block_id, buffer, kVectorPageSize, entry.file_offset);
-      entry.is_dirty.store(false, std::memory_order_relaxed);
+      flush_callback_(block_id, buffer, kVectorPageSize, e.file_offset);
+      e.is_dirty.store(false, std::memory_order_relaxed);
     }
     if (buffer) {
       MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
   }
-  // Always reset in_evict_queue regardless of whether the CAS succeeded:
-  //  - On success: the block is evicted; future releases should re-register it.
-  //  - On failure: the block was re-acquired by another thread between the
-  //    ref-count check and this call.  Clearing in_evict_queue lets the next
-  //    release_block() re-enqueue it so it is not silently lost.
-  entry.in_evict_queue.store(false, std::memory_order_relaxed);
+  e.in_evict_queue.store(false, std::memory_order_relaxed);
 }
 
 char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
                                           size_t file_offset) {
   assert(block_id < entry_num_);
-  Entry &entry = entries_[block_id];
+  Entry &e = entry_at(block_id);
   while (true) {
-    int current_count = entry.ref_count.load(std::memory_order_relaxed);
+    int current_count = e.ref_count.load(std::memory_order_relaxed);
     if (current_count >= 0) {
-      if (entry.ref_count.compare_exchange_weak(
+      if (e.ref_count.compare_exchange_weak(
               current_count, current_count + 1, std::memory_order_acq_rel,
               std::memory_order_acquire)) {
         MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
-        return entry.buffer;
+        return e.buffer;
       }
     } else {
-      entry.buffer = buffer;
-      entry.file_offset = file_offset;
-      entry.in_evict_queue.store(false, std::memory_order_relaxed);
-      // A freshly loaded block is clean (memory matches disk).
-      entry.is_dirty.store(false, std::memory_order_relaxed);
-      entry.ref_count.store(1, std::memory_order_release);
-      return entry.buffer;
+      e.buffer = buffer;
+      e.file_offset = file_offset;
+      e.in_evict_queue.store(false, std::memory_order_relaxed);
+      e.is_dirty.store(false, std::memory_order_relaxed);
+      e.ref_count.store(1, std::memory_order_release);
+      return e.buffer;
     }
   }
 }
@@ -404,6 +414,12 @@ bool VecBufferPool::extend_file(size_t new_size) {
   }
 #endif
   file_size_ = new_size;
+  // Extend the page table to cover the new file range.  Existing entries
+  // stay at their original addresses so concurrent readers are unaffected.
+  size_t new_entry_num = (file_size_ + kVectorPageSize - 1) / kVectorPageSize;
+  if (new_entry_num > page_table_.entry_num()) {
+    page_table_.extend(new_entry_num);
+  }
   return true;
 }
 

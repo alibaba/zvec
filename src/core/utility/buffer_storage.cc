@@ -83,11 +83,9 @@ class BufferStorage : public IndexStorage {
 
     //! Fetch data from segment (with own buffer)
     //!
-    //! LOCKING: takes a shared_lock on owner_->mapping_mutex_ so that
-    //! append_segment() / close_index() cannot tear down the pool mid-call.
+    //! C1: pool/handle are stable for the lifetime of the index
+    //! (no retire/rebuild), so no lock is needed on the hot path.
     size_t fetch(size_t offset, void *buf, size_t len) const override {
-      std::shared_lock<std::shared_mutex> latch(
-          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR("WrappedSegment::fetch: handle is null, file[%s], id[%zu]",
                   owner_->file_name_.c_str(), segment_id_);
@@ -112,10 +110,8 @@ class BufferStorage : public IndexStorage {
     }
 
     //! Read data from segment
-    //! LOCKING: see fetch() above for rationale.
+    //! C1: lock-free hot path (pool/handle never change during operation).
     size_t read(size_t offset, const void **data, size_t len) override {
-      std::shared_lock<std::shared_mutex> latch(
-          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR("WrappedSegment::read: handle is null, file[%s], id[%zu]",
                   owner_->file_name_.c_str(), segment_id_);
@@ -167,12 +163,8 @@ class BufferStorage : public IndexStorage {
       return len;
     }
 
-    //! LOCKING: shared_lock held only while wiring the MemoryBlock.  The
-    //! MemoryBlock carries its own ref_count (raised by get_single_page())
-    //! and will release it via its destructor.
+    //! C1: lock-free hot path (pool/handle never change during operation).
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
-      std::shared_lock<std::shared_mutex> latch(
-          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
         LOG_ERROR(
             "WrappedSegment::read(MemoryBlock&): handle is null, file[%s], "
@@ -221,10 +213,8 @@ class BufferStorage : public IndexStorage {
     }
 
     //! Write data into the storage with offset
-    //! LOCKING: see fetch() above for rationale.
+    //! C1: lock-free hot path (pool/handle never change during operation).
     size_t write(size_t offset, const void *data, size_t len) override {
-      std::shared_lock<std::shared_mutex> latch(
-          owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
       if (ailego_unlikely(!owner_->buffer_pool_handle_ ||
                           !owner_->buffer_pool_)) {
         LOG_ERROR("WrappedSegment::write: pool is null, file[%s], id[%zu]",
@@ -859,17 +849,11 @@ class BufferStorage : public IndexStorage {
 
   //! Append a segment into storage.
   //!
-  //! Stage 1 implementation: bypass IndexMapping entirely.  We compute the
-  //! new chain layout in memory, persist only the touched bytes via
-  //! `write_meta` (a few pwrites), and rotate to a fresh VecBufferPool so
-  //! its page_table_ covers the extended file.  ParseToMapping() is NOT
-  //! re-run because the in-memory state (segments_/chain_headers_/
-  //! buffer_pool_buffers_/footer_/meta_chains_) is already authoritative.
+  //! C1: the page table extends in-place (no pool rotation).  The exclusive
+  //! latch is held only briefly to protect segments_/id_hash_ insertion.
   int append_segment(const std::string &id, size_t size) {
     // Flush any in-memory metadata changes (data_size, padding_size, CRC)
-    // accumulated by prior write()/resize() calls BEFORE we take the
-    // unique_lock.  flush_index() takes a shared_lock on the same mutex
-    // and std::shared_mutex is NOT reentrant.
+    // accumulated by prior write()/resize() calls.
     this->flush_index();
 
     AllShardsExclusiveLatch latch(mapping_shards_);
@@ -1073,42 +1057,11 @@ class BufferStorage : public IndexStorage {
     id_hash_[id] = id_hash_.size();
     max_segment_size_ = std::max<uint64_t>(max_segment_size_, padded_size);
 
-    // ---- Step 3: rotate the buffer pool so its page_table_ covers the
-    //              freshly extended file.  The OLD pool is parked in
-    //              retired_pools_ to keep MemoryBlock ref counts safe; we
-    //              do NOT re-run ParseToMapping() because the in-memory
-    //              state is already authoritative.
-    //
-    // flush_all() is REQUIRED here despite the entry-point flush_index()
-    // having already flushed: between flush_index()'s shared_lock release
-    // and this function's unique_lock acquisition, other build threads may
-    // have produced new dirty pages via WrappedSegment::write().  Without
-    // this flush, the freshly opened pool would pread stale data from disk.
-    if (buffer_pool_handle_) {
-      buffer_pool_handle_->flush_all();
-    }
-    if (buffer_pool_) {
-      retired_pools_.push_back(std::move(buffer_pool_));
-      retired_handles_.push_back(std::move(buffer_pool_handle_));
-    } else {
-      buffer_pool_handle_.reset();
-    }
-    buffer_pool_.reset();
-
-    try {
-      buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
-          file_name_, /*writable=*/true, /*create=*/false);
-      buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
-          buffer_pool_->get_handle());
-    } catch (const std::exception &e) {
-      LOG_ERROR(
-          "append_segment: failed to reopen pool: file[%s], what[%s]",
-          file_name_.c_str(), e.what());
-      buffer_pool_.reset();
-      buffer_pool_handle_.reset();
-      return IndexError_Runtime;
-    }
-    return buffer_pool_->init();
+    // ---- Step 3: With the segmented page table (C1), extend_file()
+    //              already extended the page table in-place.  No pool
+    //              rotation or flush_all is needed — the same pool/handle
+    //              continues to serve both old and new pages.
+    return 0;
   }
 
   //! Test if a segment exists

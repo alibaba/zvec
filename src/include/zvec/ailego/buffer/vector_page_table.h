@@ -60,12 +60,14 @@ class VectorPageTable {
   using FlushCallback =
       std::function<int(block_id_t, char *, size_t, size_t)>;
 
-  VectorPageTable() : entry_num_(0), entries_(nullptr) {
+  VectorPageTable() {
     BlockEvictionQueue::get_instance().set_valid(this);
   }
   ~VectorPageTable() {
     BlockEvictionQueue::get_instance().set_invalid(this);
-    delete[] entries_;
+    for (size_t i = 0; i < segment_count_; ++i) {
+      delete[] segments_[i];
+    }
   }
 
   VectorPageTable(const VectorPageTable &) = delete;
@@ -74,6 +76,11 @@ class VectorPageTable {
   VectorPageTable &operator=(VectorPageTable &&) = delete;
 
   void init(size_t entry_num);
+
+  //! Extend the page table to cover at least `new_entry_num` entries.
+  //! Existing entries stay at their original addresses (no invalidation).
+  //! Safe to call while readers operate on existing pages.
+  void extend(size_t new_entry_num);
 
   char *acquire_block(block_id_t block_id);
 
@@ -91,30 +98,30 @@ class VectorPageTable {
   //! Mark a loaded block as dirty so that it is persisted on eviction.
   void mark_dirty(block_id_t block_id) {
     assert(block_id < entry_num_);
-    entries_[block_id].is_dirty.store(true, std::memory_order_relaxed);
+    entry_at(block_id).is_dirty.store(true, std::memory_order_relaxed);
   }
 
   bool is_block_dirty(block_id_t block_id) const {
     assert(block_id < entry_num_);
-    return entries_[block_id].is_dirty.load(std::memory_order_relaxed);
+    return entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
   }
 
   //! Flush a single dirty block without evicting it. Caller guarantees the
   //! block is currently loaded (buffer != nullptr).
   int flush_block(block_id_t block_id) {
     assert(block_id < entry_num_);
-    Entry &entry = entries_[block_id];
-    char *buffer = entry.buffer;
+    Entry &e = entry_at(block_id);
+    char *buffer = e.buffer;
     if (!buffer || !flush_callback_) {
       return 0;
     }
-    if (!entry.is_dirty.load(std::memory_order_relaxed)) {
+    if (!e.is_dirty.load(std::memory_order_relaxed)) {
       return 0;
     }
     int rc = flush_callback_(block_id, buffer, kVectorPageSize,
-                             entry.file_offset);
+                             e.file_offset);
     if (rc == 0) {
-      entry.is_dirty.store(false, std::memory_order_relaxed);
+      e.is_dirty.store(false, std::memory_order_relaxed);
     }
     return rc;
   }
@@ -125,17 +132,33 @@ class VectorPageTable {
 
   bool is_released(block_id_t block_id) const {
     assert(block_id < entry_num_);
-    return entries_[block_id].ref_count.load(std::memory_order_relaxed) <= 0;
+    return entry_at(block_id).ref_count.load(std::memory_order_relaxed) <= 0;
   }
 
   inline bool is_dead_block(BlockEvictionQueue::BlockType block) const {
-    Entry &entry = entries_[block.vector_block.first];
-    return !entry.in_evict_queue.load(std::memory_order_relaxed);
+    const Entry &e = entry_at(block.vector_block.first);
+    return !e.in_evict_queue.load(std::memory_order_relaxed);
   }
 
  private:
+  // Segmented page table: entries are split across fixed-size segments so
+  // that extend() can grow the table without moving existing entries.
+  static constexpr size_t kSegmentShift = 16;  // 65536 entries per segment
+  static constexpr size_t kSegmentSize = size_t{1} << kSegmentShift;
+  static constexpr size_t kSegmentMask = kSegmentSize - 1;
+  static constexpr size_t kMaxSegments = 2048;  // up to 128M entries (512GB @ 4K)
+
   size_t entry_num_{0};
-  Entry *entries_{nullptr};
+  size_t segment_count_{0};
+  Entry *segments_[kMaxSegments]{};
+
+  Entry &entry_at(size_t idx) {
+    return segments_[idx >> kSegmentShift][idx & kSegmentMask];
+  }
+  const Entry &entry_at(size_t idx) const {
+    return segments_[idx >> kSegmentShift][idx & kSegmentMask];
+  }
+
   FlushCallback flush_callback_{};
 };
 
@@ -186,12 +209,9 @@ class VecBufferPool {
   int flush_all();
 
   //! Extend the backing file to `new_size` bytes via ftruncate (no-op if
-  //! already >= new_size) and refresh the cached file_size_.
-  //! NOTE: page_table_.entry_num() is NOT updated here -- it stays at the
-  //! value computed by init().  Callers that need the page_table to cover
-  //! the extended range must reinitialize the pool (see BufferStorage's
-  //! append_segment retire-and-reopen flow).  Returns true on success,
-  //! false on a read-only pool or I/O failure.
+  //! already >= new_size), refresh the cached file_size_, and extend the
+  //! page_table to cover the new range.  Returns true on success, false on
+  //! a read-only pool or I/O failure.
   bool extend_file(size_t new_size);
 
   bool writable() const {
