@@ -113,13 +113,12 @@ class BufferStorage : public IndexStorage {
                   owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      if (ailego_unlikely(offset + len >
-                          segment_info_->segment.meta()->data_size)) {
-        auto meta = segment_info_->segment.meta();
-        if (offset > meta->data_size) {
-          offset = meta->data_size;
+      const size_t data_size = segment_info_->segment.meta()->data_size;
+      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
+        if (offset > data_size) {
+          offset = data_size;
         }
-        len = meta->data_size - offset;
+        len = data_size - offset;
       }
       size_t abs_offset = segment_info_->segment_header_start_offset +
                           segment_info_->segment_header->content_offset +
@@ -140,13 +139,12 @@ class BufferStorage : public IndexStorage {
         *data = nullptr;
         return 0;
       }
-      if (ailego_unlikely(offset + len >
-                          segment_info_->segment.meta()->data_size)) {
-        auto meta = segment_info_->segment.meta();
-        if (offset > meta->data_size) {
-          offset = meta->data_size;
+      const size_t data_size = segment_info_->segment.meta()->data_size;
+      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
+        if (offset > data_size) {
+          offset = data_size;
         }
-        len = meta->data_size - offset;
+        len = data_size - offset;
       }
       size_t abs_offset = segment_info_->segment_header_start_offset +
                           segment_info_->segment_header->content_offset +
@@ -196,13 +194,12 @@ class BufferStorage : public IndexStorage {
             owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      if (ailego_unlikely(offset + len >
-                          segment_info_->segment.meta()->data_size)) {
-        auto meta = segment_info_->segment.meta();
-        if (offset > meta->data_size) {
-          offset = meta->data_size;
+      const size_t data_size = segment_info_->segment.meta()->data_size;
+      if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
+        if (offset > data_size) {
+          offset = data_size;
         }
-        len = meta->data_size - offset;
+        len = data_size - offset;
       }
       size_t abs_offset = segment_info_->segment_header_start_offset +
                           segment_info_->segment_header->content_offset +
@@ -250,7 +247,7 @@ class BufferStorage : public IndexStorage {
       if (!owner_->buffer_pool_->writable()) {
         return len;
       }
-      if (ailego_unlikely(offset + len > capacity_)) {
+      if (ailego_unlikely(offset > capacity_ || len > capacity_ - offset)) {
         LOG_ERROR("write() exceeds segment capacity: offset=%zu len=%zu cap=%zu",
                   offset, len, capacity_);
         return 0;
@@ -372,10 +369,12 @@ class BufferStorage : public IndexStorage {
         buffer_pool_->get_handle());
     int ret = ParseToMapping();
     if (ret != 0) {
+      this->close_index();
       return ret;
     }
     ret = buffer_pool_->init();
     if (ret != 0) {
+      this->close_index();
       return ret;
     }
     LOG_INFO(
@@ -457,7 +456,7 @@ class BufferStorage : public IndexStorage {
     for (IndexFormat::SegmentMeta *iter = segment_start,
                                   *end = segment_start + footer_.segment_count;
          iter != end; ++iter) {
-      if (iter->segment_id_offset > footer_.segments_meta_size) {
+      if (iter->segment_id_offset >= footer_.segments_meta_size) {
         return IndexError_InvalidValue;
       }
       if (iter->data_index > footer_.content_size) {
@@ -708,7 +707,11 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Refresh meta information (checksum, update time, etc.)
-  void refresh_index(uint64_t /*chkp*/) {
+  void refresh_index(uint64_t chkp) {
+    // Store the checkpoint so flush_index() can persist it.
+    if (chkp != 0) {
+      pending_check_point_ = chkp;
+    }
     // In BufferStorage the segment metadata lives in buffer_pool_buffers_.
     // CRC recomputation and disk write are deferred to flush_index().
     // Just mark dirty so flush_index() will include the metadata write.
@@ -757,7 +760,7 @@ class BufferStorage : public IndexStorage {
       // Recompute segment metadata CRC and refresh the per-chain footer.
       mchain.footer.segments_meta_crc =
           ailego::Crc32c::Hash(seg_buf, mchain.segment_meta_size, 0u);
-      IndexFormat::UpdateMetaFooter(&mchain.footer, 0);
+      IndexFormat::UpdateMetaFooter(&mchain.footer, pending_check_point_);
       // Write segment metadata back to disk.
       if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset,
                                           mchain.segment_meta_size,
@@ -779,6 +782,7 @@ class BufferStorage : public IndexStorage {
     if (!meta_chains_.empty()) {
       footer_ = meta_chains_.back().footer;
     }
+    pending_check_point_ = 0;
     index_dirty_.store(false, std::memory_order_relaxed);
     return 0;
   }
@@ -802,6 +806,8 @@ class BufferStorage : public IndexStorage {
     buffer_pool_buffers_.clear();
     meta_chains_.clear();
     current_header_start_offset_ = 0;
+    pending_check_point_ = 0;
+    index_dirty_.store(false, std::memory_order_relaxed);
   }
 
   //! Append a segment into storage.
@@ -1052,6 +1058,7 @@ class BufferStorage : public IndexStorage {
 
  private:
   std::atomic<bool> index_dirty_{false};
+  uint64_t pending_check_point_{0};
 
   // Sharded reader-writer lock to eliminate cache-line ping-pong on the
   // reader counter.  Each concurrent reader hashes to its own shard,
