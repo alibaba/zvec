@@ -708,9 +708,11 @@ class BufferStorage : public IndexStorage {
 
   //! Refresh meta information (checksum, update time, etc.)
   void refresh_index(uint64_t chkp) {
-    // Store the checkpoint so flush_index() can persist it.
+    // Store the checkpoint so flush_index() can persist it.  Use relaxed
+    // atomics to avoid a data race with flush_index() readers/resetters
+    // (they may run concurrently on different threads).
     if (chkp != 0) {
-      pending_check_point_ = chkp;
+      pending_check_point_.store(chkp, std::memory_order_relaxed);
     }
     // In BufferStorage the segment metadata lives in buffer_pool_buffers_.
     // CRC recomputation and disk write are deferred to flush_index().
@@ -760,7 +762,9 @@ class BufferStorage : public IndexStorage {
       // Recompute segment metadata CRC and refresh the per-chain footer.
       mchain.footer.segments_meta_crc =
           ailego::Crc32c::Hash(seg_buf, mchain.segment_meta_size, 0u);
-      IndexFormat::UpdateMetaFooter(&mchain.footer, pending_check_point_);
+      IndexFormat::UpdateMetaFooter(
+          &mchain.footer,
+          pending_check_point_.load(std::memory_order_relaxed));
       // Write segment metadata back to disk.
       if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset,
                                           mchain.segment_meta_size,
@@ -782,7 +786,7 @@ class BufferStorage : public IndexStorage {
     if (!meta_chains_.empty()) {
       footer_ = meta_chains_.back().footer;
     }
-    pending_check_point_ = 0;
+    pending_check_point_.store(0, std::memory_order_relaxed);
     index_dirty_.store(false, std::memory_order_relaxed);
     return 0;
   }
@@ -806,7 +810,7 @@ class BufferStorage : public IndexStorage {
     buffer_pool_buffers_.clear();
     meta_chains_.clear();
     current_header_start_offset_ = 0;
-    pending_check_point_ = 0;
+    pending_check_point_.store(0, std::memory_order_relaxed);
     index_dirty_.store(false, std::memory_order_relaxed);
   }
 
@@ -1058,7 +1062,7 @@ class BufferStorage : public IndexStorage {
 
  private:
   std::atomic<bool> index_dirty_{false};
-  uint64_t pending_check_point_{0};
+  std::atomic<uint64_t> pending_check_point_{0};
 
   // Sharded reader-writer lock to eliminate cache-line ping-pong on the
   // reader counter.  Each concurrent reader hashes to its own shard,
