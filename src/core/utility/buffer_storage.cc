@@ -746,6 +746,13 @@ class BufferStorage : public IndexStorage {
       index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
     }
+    // Snapshot the pending checkpoint at the start of the flush.  We will
+    // use CAS at the end to reset it to 0 only if no concurrent
+    // refresh_index() has stored a newer value during the flush; otherwise
+    // the newer value (and dirty=true) must be preserved so the next
+    // flush_index() picks it up.
+    const uint64_t consumed_chkp =
+        pending_check_point_.load(std::memory_order_relaxed);
     // Flush all dirty data blocks to the backing file first.
     if (buffer_pool_handle_->flush_all() != 0) {
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
@@ -762,9 +769,7 @@ class BufferStorage : public IndexStorage {
       // Recompute segment metadata CRC and refresh the per-chain footer.
       mchain.footer.segments_meta_crc =
           ailego::Crc32c::Hash(seg_buf, mchain.segment_meta_size, 0u);
-      IndexFormat::UpdateMetaFooter(
-          &mchain.footer,
-          pending_check_point_.load(std::memory_order_relaxed));
+      IndexFormat::UpdateMetaFooter(&mchain.footer, consumed_chkp);
       // Write segment metadata back to disk.
       if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset,
                                           mchain.segment_meta_size,
@@ -786,8 +791,16 @@ class BufferStorage : public IndexStorage {
     if (!meta_chains_.empty()) {
       footer_ = meta_chains_.back().footer;
     }
-    pending_check_point_.store(0, std::memory_order_relaxed);
-    index_dirty_.store(false, std::memory_order_relaxed);
+    // CAS-reset: only consume the checkpoint we observed at the start.
+    // If a concurrent refresh_index() stored a newer value mid-flush, CAS
+    // fails and the newer value remains in pending_check_point_ along with
+    // dirty=true, so the next flush_index() will persist it.
+    uint64_t expected = consumed_chkp;
+    const bool consumed = pending_check_point_.compare_exchange_strong(
+        expected, 0, std::memory_order_relaxed);
+    if (consumed) {
+      index_dirty_.store(false, std::memory_order_relaxed);
+    }
     return 0;
   }
 
