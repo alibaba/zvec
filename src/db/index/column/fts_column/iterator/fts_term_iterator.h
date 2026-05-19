@@ -18,9 +18,9 @@
 #include <string>
 #include <roaring/roaring.h>
 #include "db/common/rocksdb_context.h"
-#include "bitpacked_posting_list.h"
-#include "bm25_scorer.h"
 #include "fts_doc_iterator.h"
+#include "../bm25_scorer.h"
+#include "../posting/bitpacked_posting_list.h"
 
 namespace zvec::fts {
 

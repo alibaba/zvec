@@ -17,8 +17,8 @@
 #include <vector>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/status.h>
-#include "db/index/column/fts_column/bitpacked_posting_list.h"
 #include "db/index/column/fts_column/fts_utils.h"
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 
 namespace zvec::fts {
 

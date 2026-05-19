@@ -23,10 +23,10 @@
 #include <zvec/db/index_params.h>
 #include "db/common/file_helper.h"
 // FtsSegmentStats defined below
-#include "db/index/column/fts_column/bitpacked_posting_list.h"
 #include "db/index/column/fts_column/fts_column_indexer.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 // meta.h not needed in zvec
 #include "db/common/constants.h"
 #include "db/common/rocksdb_context.h"

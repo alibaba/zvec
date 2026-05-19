@@ -15,7 +15,7 @@
 #include "fts_phrase_iterator.h"
 #include <algorithm>
 #include <cstring>
-#include "fts_utils.h"
+#include "../fts_utils.h"
 
 namespace zvec::fts {
 

@@ -18,7 +18,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/index_params.h>
 #include "db/index/column/fts_column/fts_types.h"
-#include "db/index/column/fts_column/tokenizer_pipeline_manager.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_pipeline_manager.h"
 #include "type_helper.h"
 
 namespace zvec {

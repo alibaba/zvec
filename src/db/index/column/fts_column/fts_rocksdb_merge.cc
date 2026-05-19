@@ -16,7 +16,7 @@
 #include <cstring>
 #include <roaring/roaring.h>
 #include <zvec/ailego/logger/logger.h>
-#include "db/index/column/fts_column/bitpacked_posting_list.h"
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 
 namespace zvec::fts {
 

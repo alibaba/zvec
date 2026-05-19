@@ -19,9 +19,9 @@
 #include <string>
 #include <vector>
 #include "db/common/rocksdb_context.h"
-#include "bm25_scorer.h"
 #include "fts_conjunction_iterator.h"
 #include "fts_doc_iterator.h"
+#include "../bm25_scorer.h"
 
 namespace zvec::fts {
 

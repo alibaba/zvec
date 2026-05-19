@@ -23,13 +23,13 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/status.h>
 #include "db/common/typedef.h"
-#include "bitpacked_posting_list.h"
-#include "fts_conjunction_iterator.h"
-#include "fts_disjunction_iterator.h"
-#include "fts_phrase_iterator.h"
-#include "fts_term_iterator.h"
+#include "iterator/fts_conjunction_iterator.h"
+#include "iterator/fts_disjunction_iterator.h"
+#include "iterator/fts_phrase_iterator.h"
+#include "iterator/fts_term_iterator.h"
+#include "posting/bitpacked_posting_list.h"
+#include "tokenizer/tokenizer_pipeline_manager.h"
 #include "fts_utils.h"
-#include "tokenizer_pipeline_manager.h"
 
 namespace zvec::fts {
 

@@ -24,7 +24,7 @@
 // FtsQueryParams defined below
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
-#include "db/index/column/fts_column/tokenizer_factory.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 // meta.h not needed in zvec
 #include "db/common/constants.h"
 #include "db/common/rocksdb_context.h"
@@ -670,7 +670,7 @@ TEST_F(FtsColumnIndexerJiebaTest, FlushAndReloadWithJiebaTokenizer) {
 // to verify that postings have been re-encoded, and iterate $TF / $DOC_LEN
 // CFs to verify the DeleteRange tombstones effectively removed all entries.
 
-#include "db/index/column/fts_column/bitpacked_posting_list.h"  // NOLINT: in-test include
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"  // NOLINT: in-test include
 
 namespace {
 

@@ -38,13 +38,13 @@
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/rocksdb_context.h"
-#include "db/index/column/fts_column/bitpacked_posting_list.h"
 #include "db/index/column/fts_column/fts_column_indexer.h"
 #include "db/index/column/fts_column/fts_query_ast.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/fts_rocksdb_reducer.h"
 #include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/fts_column/fts_utils.h"
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 #include "db/index/common/index_filter.h"
 
 namespace {

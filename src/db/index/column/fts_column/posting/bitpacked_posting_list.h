@@ -17,7 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
-#include "bm25_scorer.h"
+#include "../bm25_scorer.h"
 
 namespace zvec::fts {
 

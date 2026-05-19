@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/index/column/fts_column/bitpacked_posting_list.h"
+#include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 #include <algorithm>
 #include <cstdint>
 #include <numeric>

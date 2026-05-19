@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "db/index/column/fts_column/tokenizer_pipeline_manager.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_pipeline_manager.h"
 #include <atomic>
 #include <memory>
 #include <string>

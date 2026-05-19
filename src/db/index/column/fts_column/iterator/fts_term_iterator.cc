@@ -16,7 +16,7 @@
 #include <cstring>
 #include <roaring/roaring.h>
 #include <zvec/ailego/logger/logger.h>
-#include "fts_utils.h"
+#include "../fts_utils.h"
 
 namespace zvec::fts {
 

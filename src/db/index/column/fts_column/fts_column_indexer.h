@@ -24,10 +24,10 @@
 #include <zvec/db/status.h>
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/fts_column/fts_types.h"
+#include "iterator/fts_doc_iterator.h"
+#include "tokenizer/tokenizer_factory.h"
 #include "bm25_scorer.h"
-#include "fts_doc_iterator.h"
 #include "fts_query_ast.h"
-#include "tokenizer_factory.h"
 
 
 namespace zvec::fts {

@@ -17,9 +17,9 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "fts_types.h"
 #include "token_filter.h"
 #include "tokenizer.h"
+#include "../fts_types.h"
 
 namespace zvec::fts {
 
