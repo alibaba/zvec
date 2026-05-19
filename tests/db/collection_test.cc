@@ -4341,3 +4341,58 @@ TEST_F(CollectionTest, CornerCase_CreateIndex) {
   ASSERT_FALSE(s.ok());
   ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 }
+
+TEST_F(CollectionTest, Feature_Query_NullableFilter_WithoutIndex) {
+  auto run_test = [&](bool with_scalar_index) {
+    FileHelper::RemoveDirectory(col_path);
+    IndexParams::Ptr scalar_idx =
+        with_scalar_index ? std::make_shared<InvertIndexParams>(false) : nullptr;
+    auto schema =
+        TestHelper::CreateNormalSchema(/*nullable=*/true, "demo", scalar_idx);
+    CollectionOptions options{false, true, 100 * 1024 * 1024};
+    auto result = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(result.has_value());
+    auto collection = result.value();
+
+    int non_null_count = 50;
+    int null_count = 50;
+    int total = non_null_count + null_count;
+
+    auto s = TestHelper::CollectionInsertDoc(collection, 0, non_null_count,
+                                             /*nullable=*/false);
+    ASSERT_TRUE(s.ok());
+    s = TestHelper::CollectionInsertDoc(collection, non_null_count, total,
+                                        /*nullable=*/true);
+    ASSERT_TRUE(s.ok());
+    collection->Flush();
+
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, total);
+
+    auto query_doc = TestHelper::CreateDoc(1, *schema);
+    VectorQuery query;
+    query.topk_ = total;
+    query.field_name_ = "dense_fp32";
+    auto vec = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vec.has_value());
+    query.query_vector_.assign((char *)vec.value().data(),
+                               vec.value().size() * sizeof(float));
+    query.filter_ = "int32 > 0";
+    query.output_fields_ = std::vector<std::string>{"int32"};
+
+    auto query_result = collection->Query(query);
+    ASSERT_TRUE(query_result.has_value());
+    for (auto &doc : query_result.value()) {
+      auto int32_val = doc->get<int32_t>("int32");
+      ASSERT_TRUE(int32_val.has_value())
+          << "Null doc leaked through filter: " << doc->pk()
+          << " (with_scalar_index=" << with_scalar_index << ")";
+      ASSERT_GT(int32_val.value(), 0);
+    }
+    ASSERT_EQ(query_result.value().size(), non_null_count - 1)
+        << "with_scalar_index=" << with_scalar_index;
+  };
+
+  run_test(false);
+  run_test(true);
+}
