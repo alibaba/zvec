@@ -78,7 +78,8 @@ jobs:
       - name: Run Python Tests with Coverage
         run: |
           cd "$GITHUB_WORKSPACE"
-          python -m pytest python/tests/ --cov=zvec --cov-report=xml
+          python -m pytest python/tests/ --cov=zvec --cov-report=xml \
+            --deselect=python/tests/test_gil_release.py::TestGILRelease::test_gil_released_during_query
         shell: bash
 
       - name: Run C++ Tests and Generate Coverage

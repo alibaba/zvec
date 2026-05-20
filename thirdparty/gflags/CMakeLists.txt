@@ -15,6 +15,8 @@ add_subdirectory(gflags-2.2.2)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
+mark_target_includes_system(gflags gflags_static gflags_nothreads_static)
+
 get_target_property(gflags_OUTPUT_NAME gflags OUTPUT_NAME)
 get_target_property(gflags_BINARY_DIR gflags BINARY_DIR)
 get_target_property(gflags_SOURCE_DIR gflags SOURCE_DIR)

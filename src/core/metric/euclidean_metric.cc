@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/hamming_distance_matrix.h>
 #include <ailego/math_batch/distance_batch.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -504,240 +503,6 @@ static inline IndexMetric::MatrixDistanceHandle EuclideanDistanceMatrixInt4(
   return distance_table[ailego_ctz(m)][ailego_ctz(n)];
 }
 
-//! Retrieve distance function for index features
-static inline IndexMetric::MatrixDistanceHandle HammingDistanceMatrix32(
-    size_t m, size_t n) {
-  static const IndexMetric::MatrixDistanceHandle distance_table[6][6] = {
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 1, 1>::Compute),
-       nullptr, nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 2, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 2, 2>::Compute),
-       nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 4, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 4, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 4, 4>::Compute),
-       nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 8, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 8, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 8, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 8, 8>::Compute),
-       nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 16, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 16, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 16, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 16, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 16, 16>::Compute),
-       nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 32, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 32, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 32, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 32, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 32, 16>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint32_t, 32, 32>::Compute)},
-  };
-  if (m > 32 || n > 32 || ailego_popcount(m) != 1 || ailego_popcount(n) != 1) {
-    return nullptr;
-  }
-  return distance_table[ailego_ctz(m)][ailego_ctz(n)];
-}
-
-#if defined(AILEGO_M64)
-static inline IndexMetric::MatrixDistanceHandle HammingDistanceMatrix64(
-    size_t m, size_t n) {
-  static const IndexMetric::MatrixDistanceHandle distance_table[6][6] = {
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 1, 1>::Compute),
-       nullptr, nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 2, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 2, 2>::Compute),
-       nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 4, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 4, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 4, 4>::Compute),
-       nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 8, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 8, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 8, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 8, 8>::Compute),
-       nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 16, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 16, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 16, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 16, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 16, 16>::Compute),
-       nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 32, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 32, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 32, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 32, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 32, 16>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingDistanceMatrix<uint64_t, 32, 32>::Compute)},
-  };
-  if (m > 32 || n > 32 || ailego_popcount(m) != 1 || ailego_popcount(n) != 1) {
-    return nullptr;
-  }
-  return distance_table[ailego_ctz(m)][ailego_ctz(n)];
-}
-#endif  // AILEGO_M64
-
-//! Retrieve distance function for index features
-static inline IndexMetric::MatrixDistanceHandle
-HammingSquareRootDistanceMatrix32(size_t m, size_t n) {
-  static const IndexMetric::MatrixDistanceHandle distance_table[6][6] = {
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 1, 1>::Compute),
-       nullptr, nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 2, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 2, 2>::Compute),
-       nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 4, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 4, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 4, 4>::Compute),
-       nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 8, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 8, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 8, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 8, 8>::Compute),
-       nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 16, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 16, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 16, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 16, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 16, 16>::Compute),
-       nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 32, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 32, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 32, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 32, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 32, 16>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint32_t, 32, 32>::Compute)},
-  };
-  if (m > 32 || n > 32 || ailego_popcount(m) != 1 || ailego_popcount(n) != 1) {
-    return nullptr;
-  }
-  return distance_table[ailego_ctz(m)][ailego_ctz(n)];
-}
-
-#if defined(AILEGO_M64)
-static inline IndexMetric::MatrixDistanceHandle
-HammingSquareRootDistanceMatrix64(size_t m, size_t n) {
-  static const IndexMetric::MatrixDistanceHandle distance_table[6][6] = {
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 1, 1>::Compute),
-       nullptr, nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 2, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 2, 2>::Compute),
-       nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 4, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 4, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 4, 4>::Compute),
-       nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 8, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 8, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 8, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 8, 8>::Compute),
-       nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 16, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 16, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 16, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 16, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 16, 16>::Compute),
-       nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 32, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 32, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 32, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 32, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 32, 16>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::HammingSquareRootDistanceMatrix<uint64_t, 32, 32>::Compute)},
-  };
-  if (m > 32 || n > 32 || ailego_popcount(m) != 1 || ailego_popcount(n) != 1) {
-    return nullptr;
-  }
-  return distance_table[ailego_ctz(m)][ailego_ctz(n)];
-}
-#endif  // AILEGO_M64
-
 /*! Squared Euclidean Distance Metric
  */
 class SquaredEuclideanMetric : public IndexMetric {
@@ -748,9 +513,7 @@ class SquaredEuclideanMetric : public IndexMetric {
     if (dt != IndexMeta::DataType::DT_FP16 &&
         dt != IndexMeta::DataType::DT_FP32 &&
         dt != IndexMeta::DataType::DT_INT8 &&
-        dt != IndexMeta::DataType::DT_INT4 &&
-        dt != IndexMeta::DataType::DT_BINARY32 &&
-        dt != IndexMeta::DataType::DT_BINARY64) {
+        dt != IndexMeta::DataType::DT_INT4) {
       return IndexError_Unsupported;
     }
     if (IndexMeta::UnitSizeof(dt) != meta.unit_size()) {
@@ -784,16 +547,6 @@ class SquaredEuclideanMetric : public IndexMetric {
   //! Retrieve distance function for query
   MatrixDistance distance(void) const override {
     switch (data_type_) {
-      case IndexMeta::DataType::DT_BINARY32:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::HammingDistanceMatrix<uint32_t, 1, 1>::Compute);
-
-#if defined(AILEGO_M64)
-      case IndexMeta::DataType::DT_BINARY64:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::HammingDistanceMatrix<uint64_t, 1, 1>::Compute);
-#endif  // AILEGO_M64
-
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<MatrixDistanceHandle>(
             ailego::SquaredEuclideanDistanceMatrix<ailego::Float16, 1,
@@ -825,14 +578,6 @@ class SquaredEuclideanMetric : public IndexMetric {
   //! Retrieve distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     switch (data_type_) {
-      case IndexMeta::DataType::DT_BINARY32:
-        return HammingDistanceMatrix32(m, n);
-
-#if defined(AILEGO_M64)
-      case IndexMeta::DataType::DT_BINARY64:
-        return HammingDistanceMatrix64(m, n);
-#endif  // AILEGO_M64
-
       case IndexMeta::DataType::DT_FP16:
         return SquaredEuclideanDistanceMatrixFp16(m, n);
 
@@ -903,9 +648,7 @@ class EuclideanMetric : public IndexMetric {
     if (dt != IndexMeta::DataType::DT_FP16 &&
         dt != IndexMeta::DataType::DT_FP32 &&
         dt != IndexMeta::DataType::DT_INT8 &&
-        dt != IndexMeta::DataType::DT_INT4 &&
-        dt != IndexMeta::DataType::DT_BINARY32 &&
-        dt != IndexMeta::DataType::DT_BINARY64) {
+        dt != IndexMeta::DataType::DT_INT4) {
       return IndexError_Unsupported;
     }
     if (IndexMeta::UnitSizeof(dt) != meta.unit_size()) {
@@ -938,16 +681,6 @@ class EuclideanMetric : public IndexMetric {
   //! Retrieve distance function for query
   MatrixDistance distance(void) const override {
     switch (data_type_) {
-      case IndexMeta::DataType::DT_BINARY32:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::HammingSquareRootDistanceMatrix<uint32_t, 1, 1>::Compute);
-
-#if defined(AILEGO_M64)
-      case IndexMeta::DataType::DT_BINARY64:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::HammingSquareRootDistanceMatrix<uint64_t, 1, 1>::Compute);
-#endif  // AILEGO_M64
-
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<MatrixDistanceHandle>(
             ailego::EuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute);
@@ -972,14 +705,6 @@ class EuclideanMetric : public IndexMetric {
   //! Retrieve distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     switch (data_type_) {
-      case IndexMeta::DataType::DT_BINARY32:
-        return HammingSquareRootDistanceMatrix32(m, n);
-
-#if defined(AILEGO_M64)
-      case IndexMeta::DataType::DT_BINARY64:
-        return HammingSquareRootDistanceMatrix64(m, n);
-#endif  // AILEGO_M64
-
       case IndexMeta::DataType::DT_FP16:
         return EuclideanDistanceMatrixFp16(m, n);
 
