@@ -79,7 +79,8 @@ class ConcurrentRoaringBitmap32 {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     uint64_t max_rank{0}, min_rank{0};
     max_rank = roaring_bitmap_rank(bitmap_, max_doc_id);
-    min_rank = roaring_bitmap_rank(bitmap_, min_doc_id - 1);
+    min_rank =
+        min_doc_id == 0 ? 0 : roaring_bitmap_rank(bitmap_, min_doc_id - 1);
     return max_rank - min_rank;
   }
 

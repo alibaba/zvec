@@ -11,6 +11,7 @@ set(ZVEC_TOOL_CORE_INTERFACE_LIBS
     core_knn_hnsw
     core_knn_hnsw_sparse
     core_knn_hnsw_rabitq
+    core_knn_vamana
     core_knn_cluster
     core_knn_ivf
     core_interface
@@ -74,6 +75,5 @@ cc_binary(
         STRICT PACKED
         SRCS local_builder_original.cc
         INCS ${PROJECT_ROOT_DIR}/src/core/
-        LIBS gflags yaml-cpp magic_enum ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
         LIBS gflags yaml-cpp magic_enum ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )

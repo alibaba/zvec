@@ -35,6 +35,7 @@ from zvec import (
     HnswQueryParam,
     OmegaQueryParam,
     IVFQueryParam,
+    Query,
     VectorQuery,
     IndexType,
     MetricType,
@@ -499,9 +500,9 @@ class TestOmegaQueryParam:
 #         assert param.scale_factor == 40
 
 
-class TestVectorQuery:
+class TestQuery:
     def test_init_with_valid_id(self):
-        vq = VectorQuery(field_name="embedding", id="doc123")
+        vq = Query(field_name="embedding", id="doc123")
         assert vq.field_name == "embedding"
         assert vq.id == "doc123"
         assert vq.vector is None
@@ -510,7 +511,7 @@ class TestVectorQuery:
     def test_init_with_valid_vector(self):
         vec = [0.1, 0.2, 0.3]
         param = HnswQueryParam(ef=300)
-        vq = VectorQuery(field_name="embedding", vector=vec, param=param)
+        vq = Query(field_name="embedding", vector=vec, param=param)
         assert vq.field_name == "embedding"
         assert vq.vector == vec
         assert vq.param == param
@@ -519,7 +520,7 @@ class TestVectorQuery:
     def test_init_with_valid_omega_param(self):
         vec = [0.1, 0.2, 0.3]
         param = OmegaQueryParam(ef=256, target_recall=0.91)
-        vq = VectorQuery(field_name="embedding", vector=vec, param=param)
+        vq = Query(field_name="embedding", vector=vec, param=param)
         assert vq.field_name == "embedding"
         assert vq.vector == vec
         assert vq.param == param
@@ -527,26 +528,26 @@ class TestVectorQuery:
 
     def test_init_both_id_and_vector_raises_error(self):
         with pytest.raises(ValueError):
-            VectorQuery(field_name="embedding", id="doc123", vector=[0.1])._validate()
+            Query(field_name="embedding", id="doc123", vector=[0.1])._validate()
 
     def test_init_without_field_name_raises_error(self):
         with pytest.raises(ValueError):
-            VectorQuery(field_name=None)._validate()
+            Query(field_name=None)._validate()
 
     def test_has_id_returns_true_when_id_set(self):
-        vq = VectorQuery(field_name="embedding", id="doc123")
+        vq = Query(field_name="embedding", id="doc123")
         assert vq.has_id()
 
     def test_has_id_returns_false_when_no_id(self):
-        vq = VectorQuery(field_name="embedding", vector=[0.1])
+        vq = Query(field_name="embedding", vector=[0.1])
         assert not vq.has_id()
 
     def test_has_vector_returns_true_with_non_empty_vector(self):
-        vq = VectorQuery(field_name="embedding", vector=[0.1])
+        vq = Query(field_name="embedding", vector=[0.1])
         assert vq.has_vector()
 
     def test_validate_fails_on_both_id_and_vector(self):
-        vq = VectorQuery(field_name="test", id="doc123", vector=[0.1])
+        vq = Query(field_name="test", id="doc123", vector=[0.1])
         with pytest.raises(ValueError):
             vq._validate()
 
@@ -568,3 +569,23 @@ class TestVectorSchemaWithOmega:
         assert schema.index_param.type == IndexType.OMEGA
         assert schema.index_param.metric_type == MetricType.COSINE
         assert schema.index_param.window_size == 64
+
+
+class TestVectorQueryDeprecated:
+    def test_deprecation_warning(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            vq = VectorQuery(field_name="embedding", id="doc123")
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "Query" in str(w[0].message)
+
+    def test_isinstance_compatibility(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            vq = VectorQuery(field_name="embedding", id="doc123")
+        assert isinstance(vq, Query)

@@ -8,6 +8,8 @@ add_subdirectory(yaml-cpp-0.6.3)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
+mark_target_includes_system(yaml-cpp)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(yaml-cpp PRIVATE -Wno-shadow)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

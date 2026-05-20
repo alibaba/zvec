@@ -40,7 +40,12 @@ endif()
 
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR} ${ZVEC_GENERATED_INCLUDE_DIR})
-link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
+link_directories(${ZVEC_LIB_DIR})
+
+# Support multi-config builds (MSVC puts libs in Debug/Release subdirectories)
+if(CMAKE_BUILD_TYPE)
+    link_directories(${ZVEC_LIB_DIR}/${CMAKE_BUILD_TYPE})
+endif()
 
 # Find required packages
 find_package(Threads REQUIRED)
@@ -51,132 +56,18 @@ if(OpenMP_FOUND AND NOT ANDROID)
     list(APPEND zvec_openmp_deps OpenMP::OpenMP_CXX)
 endif()
 
-# --- Determine debug/release library names ---
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(GLOG_LIB glogd)
-    set(GFLAGS_LIB gflags_nothreads_debug)
-    set(PROTOBUF_LIB protobufd)
-else()
-    set(GLOG_LIB glog)
-    set(GFLAGS_LIB gflags_nothreads)
-    set(PROTOBUF_LIB protobuf)
-endif()
-
-if(ZVEC_ENABLE_OMEGA)
-    set(_zvec_omega_search_paths
-        ${ZVEC_DEPENDENCY_LIB_DIR}
-        ${ZVEC_DEPENDENCY_LIB_DIR}/Debug
-        ${ZVEC_DEPENDENCY_LIB_DIR}/Release
-        ${ZVEC_DEPENDENCY_LIB_DIR}/RelWithDebInfo
-        ${ZVEC_DEPENDENCY_LIB_DIR}/MinSizeRel
-    )
-    find_library(ZVEC_OMEGA_LIB
-        NAMES omega
-        PATHS ${_zvec_omega_search_paths}
-        NO_DEFAULT_PATH
-    )
-    find_library(ZVEC_LIGHTGBM_LIB
-        NAMES lib_lightgbm _lightgbm
-        PATHS ${_zvec_omega_search_paths}
-        NO_DEFAULT_PATH
-    )
-    if(NOT ZVEC_OMEGA_LIB OR NOT ZVEC_LIGHTGBM_LIB)
-        message(FATAL_ERROR
-            "ZVEC_ENABLE_OMEGA=ON but failed to locate OMEGA host libraries under "
-            "${ZVEC_DEPENDENCY_LIB_DIR}"
-        )
-    endif()
-endif()
-
-# --- Dependency groups ---
-if(NOT WIN32)
-    set(zvec_c_api_deps
-        roaring
-        rocksdb
-        arrow
-        arrow_acero
-        arrow_bundled_dependencies
-        arrow_compute
-        arrow_dataset
-        parquet
-        antlr4-runtime
-        ${GLOG_LIB}
-        ${GFLAGS_LIB}
-        ${PROTOBUF_LIB}
-        lz4
-        ${zvec_openmp_deps}
-        ${CMAKE_THREAD_LIBS_INIT}
-        ${CMAKE_DL_LIBS}
-    )
-    if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_c_api_deps ${ZVEC_OMEGA_LIB} ${ZVEC_LIGHTGBM_LIB})
-    endif()
-else()
-    # Windows static libraries use different naming conventions
-    set(PROTOBUF_LIB libprotobuf)
-    set(zvec_c_api_deps
-        roaring
-        rocksdb
-        arrow_static
-        arrow_acero_static
-        arrow_bundled_dependencies
-        arrow_compute_static
-        arrow_dataset_static
-        parquet_static
-        antlr4-runtime-static
-        ${GLOG_LIB}
-        ${GFLAGS_LIB}
-        ${PROTOBUF_LIB}
-        lz4
-        ${zvec_openmp_deps}
-        ${CMAKE_THREAD_LIBS_INIT}
-        rpcrt4
-        shlwapi
-    )
-    if(ZVEC_ENABLE_OMEGA)
-        list(APPEND zvec_c_api_deps ${ZVEC_OMEGA_LIB} ${ZVEC_LIGHTGBM_LIB})
-    endif()
-endif()
-
-# Create INTERFACE target for zvec_c_api with platform-specific linking
+# Create INTERFACE target for zvec_c_api (fat shared library)
+# No whole-archive flags needed — all symbols are already resolved in the .so/.dylib
 add_library(zvec-c-api INTERFACE)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(zvec-c-api INTERFACE
-        -Wl,--whole-archive
-        -lzvec_c_api
-        -Wl,--no-whole-archive
-        -Wl,--start-group
-        ${zvec_c_api_deps}
-        -Wl,--end-group
-    )
-elseif(APPLE)
-    # On macOS, use -Wl,-force_load with full path to ensure all symbols are loaded
-    target_link_libraries(zvec-c-api INTERFACE
-        -Wl,-force_load
-        ${ZVEC_LIB_DIR}/libzvec_c_api.dylib
-        ${zvec_c_api_deps}
-    )
-    # Set rpath so the executable can find the dylib at runtime
-    target_link_options(zvec-c-api INTERFACE
-        -Wl,-rpath,${ZVEC_LIB_DIR}
-    )
-elseif(ANDROID)
-    target_link_libraries(zvec-c-api INTERFACE
-        -Wl,--whole-archive
-        -lzvec_c_api
-        -Wl,--no-whole-archive
-        -Wl,--start-group
-        ${zvec_c_api_deps}
-        -Wl,--end-group
-    )
-elseif(WIN32)
-    target_link_libraries(zvec-c-api INTERFACE
-        zvec_c_api
-        ${zvec_c_api_deps}
-    )
-    target_link_options(zvec-c-api INTERFACE "/WHOLEARCHIVE:zvec_c_api")
-else()
-    message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
+target_link_libraries(zvec-c-api INTERFACE
+    zvec_c_api
+    Threads::Threads
+)
+if(NOT WIN32)
+    target_link_libraries(zvec-c-api INTERFACE ${CMAKE_DL_LIBS})
+endif()
+if(APPLE)
+    target_link_options(zvec-c-api INTERFACE -Wl,-rpath,${ZVEC_LIB_DIR})
 endif()
 
 # Basic example

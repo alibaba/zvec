@@ -15,7 +15,7 @@
 
 # src/db, tests
 /src/db/                @zhourrr
-/tests/                 @zhourrr
+/tests/db               @zhourrr
 
 # src/core, src/turbo
 /src/core/              @richyreachy
@@ -23,6 +23,8 @@
 
 # src/ailego
 /src/ailego/            @iaojnh
+/tests/ailego           @iaojnh
+/tests/core             @iaojnh
 
 # tools
 /tools/                 @JalinWang

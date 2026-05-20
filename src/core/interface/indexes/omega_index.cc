@@ -655,7 +655,7 @@ bool TrainModel(const OmegaTrainingArtifacts &artifacts,
 }  // namespace
 
 // OmegaIndex owns the framework-facing index lifecycle and delegates OMEGA-
-// specific runtime behavior to OmegaStreamer/OmegaSearcher. It is responsible
+// specific runtime behavior to OmegaStreamer. It is responsible
 // for creating the correct streamer and injecting OMEGA query params into the
 // search context. It does not own the adaptive-search algorithm itself.
 int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
@@ -689,8 +689,7 @@ int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
     return core::IndexError_Runtime;
   }
 
-  // Persist the OMEGA-aware searcher type so reopened indices route searches
-  // through OmegaSearcher instead of the plain HNSW searcher.
+  // Persist the OMEGA-aware searcher type metadata for index identification.
   proxima_index_meta_.set_searcher("OmegaSearcher", 0, ailego::Params());
 
   return core::IndexError_Success;

@@ -11,8 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <cerrno>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_format.h>
@@ -54,8 +54,8 @@ struct FileDumper : public IndexDumper {
     }
 
     if (!file_.create(path.c_str(), sizeof(IndexFormat::MetaHeader))) {
-      LOG_ERROR("Failed to create file %s, errno %d, %s", path.c_str(), errno,
-                std::strerror(errno));
+      LOG_ERROR("Failed to create file %s, %s", path.c_str(),
+                ailego::FileHelper::GetLastErrorString().c_str());
       return IndexError_CreateFile;
     }
 
@@ -63,8 +63,8 @@ struct FileDumper : public IndexDumper {
       return this->file_.write(buf, size);
     };
     if (!packer_.setup(write_data)) {
-      LOG_ERROR("Failed to setup index package, errno %d, %s", errno,
-                std::strerror(errno));
+      LOG_ERROR("Failed to setup index package, %s",
+                ailego::FileHelper::GetLastErrorString().c_str());
       return IndexError_WriteData;
     }
     return 0;

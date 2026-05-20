@@ -200,6 +200,10 @@ class HnswIndexParam(VectorIndexParam):
         quantize_type (QuantizeType): Optional quantization type for vector
             compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
             disable quantization.
+        use_contiguous_memory (bool): If True, the HNSW streamer allocates a
+            single contiguous memory arena for all graph nodes, improving cache
+            locality and search throughput at the cost of peak memory usage.
+            Default is False.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -207,10 +211,11 @@ class HnswIndexParam(VectorIndexParam):
         ...     metric_type=MetricType.COSINE,
         ...     m=16,
         ...     ef_construction=200,
-        ...     quantize_type=QuantizeType.INT8
+        ...     quantize_type=QuantizeType.INT8,
+        ...     use_contiguous_memory=True,
         ... )
         >>> print(params)
-        {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8'}
+        {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8', 'use_contiguous_memory': True}
     """
 
     def __getstate__(self) -> tuple: ...
@@ -220,6 +225,7 @@ class HnswIndexParam(VectorIndexParam):
         m: typing.SupportsInt = 50,
         ef_construction: typing.SupportsInt = 500,
         quantize_type: _zvec.typing.QuantizeType = ...,
+        use_contiguous_memory: bool = False,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -238,6 +244,14 @@ class HnswIndexParam(VectorIndexParam):
     def m(self) -> int:
         """
         int: Maximum number of neighbors per node in upper layers.
+        """
+
+    @property
+    def use_contiguous_memory(self) -> bool:
+        """
+        bool: Whether to allocate a single contiguous memory arena for all
+        HNSW graph nodes. Improves cache locality and search throughput at
+        the cost of peak memory usage. Defaults to False.
         """
 
 class HnswQueryParam(QueryParam):

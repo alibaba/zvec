@@ -11,9 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <cerrno>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_unpacker.h>
@@ -289,7 +289,7 @@ class FileReadStorage : public IndexStorage {
   }
 
   int append(const std::string & /*id*/, size_t /*size*/) override {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   void refresh(uint64_t) override {
@@ -391,13 +391,13 @@ class FileReadStorage : public IndexStorage {
                                                        bool direct_io) {
     auto file_ptr = std::make_shared<ailego::File>();
     if (!file_ptr) {
-      LOG_ERROR("Failed to create file object, errno %d, %s", errno,
-                std::strerror(errno));
+      LOG_ERROR("Failed to create file object, %s",
+                ailego::FileHelper::GetLastErrorString().c_str());
       return nullptr;
     }
     if (!file_ptr->open(path, true, direct_io)) {
-      LOG_ERROR("Failed to open file %s, errno %d, %s", path.c_str(), errno,
-                std::strerror(errno));
+      LOG_ERROR("Failed to open file %s, %s", path.c_str(),
+                ailego::FileHelper::GetLastErrorString().c_str());
       return nullptr;
     }
     return file_ptr;

@@ -4,20 +4,21 @@ on:
   workflow_call:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # Windows build and test matrix
   build-and-test-windows:
     name: Build & Test (${{ matrix.platform }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022
-            platform: windows-2022-x64
-          - os: windows-2025
-            platform: windows-2025-x64
+          - platform: windows-2022
+          - platform: windows-2025
 
     steps:
       - name: Show env info
@@ -63,6 +64,7 @@ jobs:
             cmake==3.30.0 `
             ninja==1.11.1 `
             pytest `
+            pytest-xdist `
             scikit-build-core `
             setuptools_scm
         shell: powershell
@@ -96,6 +98,30 @@ jobs:
           cd build
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build . --config Release --parallel $env:NPROC
+
+          # Copy zvec.dll next to the example executables so Windows can find it.
+          # CMake places DLLs in bin/ (RUNTIME output) and import libs in lib/.
+          $buildDir = "$env:GITHUB_WORKSPACE\build"
+          $found = $false
+          foreach ($sub in @("$buildDir\bin", "$buildDir\bin\Release", "$buildDir\lib", "$buildDir\lib\Release")) {
+            if (Test-Path "$sub\zvec.dll") {
+              Copy-Item "$sub\zvec.dll" -Destination . -Force
+              Write-Host "Copied zvec.dll from $sub"
+              $found = $true
+              break
+            }
+          }
+          if (-not $found) {
+            Write-Host "WARNING: zvec.dll not found, searching recursively..."
+            $dll = Get-ChildItem -Path $buildDir -Filter "zvec.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($dll) {
+              Copy-Item $dll.FullName -Destination . -Force
+              Write-Host "Copied zvec.dll from $($dll.DirectoryName)"
+            } else {
+              Write-Error "zvec.dll not found anywhere under $buildDir"
+            }
+          }
+
           .\db-example.exe
           .\core-example.exe
           .\ailego-example.exe

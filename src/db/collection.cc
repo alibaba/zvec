@@ -26,7 +26,6 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/file_helper.h>
-#include <zvec/ailego/utility/string_helper.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/options.h>
@@ -46,6 +45,7 @@
 #include "db/sqlengine/sqlengine.h"
 #include "db/training/omega_model_trainer.h"
 #include "db/training/training_data_collector.h"
+#include "zvec/core/interface/index.h"
 
 namespace zvec {
 
@@ -123,6 +123,9 @@ class CollectionImpl : public Collection {
       const GroupByVectorQuery &query) const override;
 
   Result<DocPtrMap> Fetch(const std::vector<std::string> &pks) const override;
+
+  Result<std::string> DebugGetHnswStorageMode(
+      const std::string &column_name) const override;
 
  private:
   void prepare_schema();
@@ -627,9 +630,10 @@ Status CollectionImpl::execute_tasks(
 
 Status CollectionImpl::DropIndex(const std::string &column_name) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
-  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   std::lock_guard lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
   auto s = new_schema->drop_index(column_name);
@@ -1070,7 +1074,8 @@ Status CollectionImpl::validate(const std::string &column,
         return Status::InvalidArgument("Column name is empty");
       }
       if (schema_->has_field(schema->name())) {
-        return Status::InvalidArgument("column already exists");
+        return Status::InvalidArgument("column already exists: ",
+                                       schema->name());
       }
 
       auto s = schema->validate();
@@ -1081,7 +1086,8 @@ Status CollectionImpl::validate(const std::string &column,
 
       if (expression.empty() && !schema->nullable()) {
         return Status::InvalidArgument(
-            "Add column is not supported for non-nullable column");
+            "Add column is not supported for non-nullable column: ",
+            schema->name());
       }
 
       break;
@@ -1452,8 +1458,8 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
   for (auto &&doc : docs) {
-    auto validate = doc.validate(schema_, mode == WriteMode::UPDATE);
-    CHECK_RETURN_STATUS_EXPECTED(validate);
+    auto s = doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
+    CHECK_RETURN_STATUS_EXPECTED(s);
   }
 
   // TODO: The granularity of the write_lock is too coarse.
@@ -1462,10 +1468,11 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   WriteResults results;
   // validate write batch size
   if (docs.size() > kMaxWriteBatchSize) {
-    CHECK_RETURN_STATUS_EXPECTED(Status::InvalidArgument("Too many docs"));
+    CHECK_RETURN_STATUS_EXPECTED(Status::InvalidArgument(
+        "Too many docs: ", docs.size(), " exceeds max write batch size of ",
+        kMaxWriteBatchSize));
   }
 
-  // validate docs
   for (auto &&doc : docs) {
     if (need_switch_to_new_segment()) {
       auto s = switch_to_new_segment_for_writing();
@@ -1561,8 +1568,6 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
-  auto segments = get_all_segments();
-
   VectorQuery query;
   query.filter_ = filter;
   query.topk_ = INT32_MAX;
@@ -1579,7 +1584,7 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
   for (auto &doc : ret.value()) {
     Status s = writing_segment_->Delete(doc->doc_id());
     if (!s.ok()) {
-      LOG_ERROR("Delete doc_id failed");
+      LOG_ERROR("Delete doc_id: %zu failed", (size_t)doc->doc_id());
       return s;
     }
   }
@@ -1592,7 +1597,9 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
-  auto s = query.validate(schema_->get_vector_field(query.field_name_));
+  VectorQuery sanitized = query;
+  auto s = sanitized.validate_and_sanitize(
+      schema_->get_vector_field(sanitized.field_name_));
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();
@@ -1600,7 +1607,7 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
     return DocPtrList();
   }
 
-  return sql_engine_->execute(schema_, query, segments);
+  return sql_engine_->execute(schema_, sanitized, segments);
 }
 
 Result<GroupResults> CollectionImpl::GroupByQuery(
@@ -1648,6 +1655,50 @@ Result<DocPtrMap> CollectionImpl::Fetch(
   }
 
   return results;
+}
+
+Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
+    const std::string &column_name) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  // Try all segments (including the writing one). The first segment that has
+  // a fully-built HNSW index wins; if only a building segment exists we still
+  // surface its current storage mode so that tests can observe the entity
+  // type right after Open().
+  auto segments = get_all_segments();
+
+  for (const auto &segment : segments) {
+    if (!segment) {
+      continue;
+    }
+    auto indexers = segment->get_vector_indexer(column_name);
+    for (const auto &indexer : indexers) {
+      if (!indexer) {
+        continue;
+      }
+      auto index = indexer->debug_get_index();
+      if (!index) {
+        continue;
+      }
+      auto *hnsw_index = dynamic_cast<core_interface::HNSWIndex *>(index.get());
+      if (!hnsw_index) {
+        return tl::make_unexpected(Status::InvalidArgument(
+            "Column '", column_name,
+            "' does not have an HNSW index (or index is sparse)"));
+      }
+      auto mode = hnsw_index->storage_mode();
+      if (mode.empty()) {
+        // streamer not initialized yet; skip and look at other segments
+        continue;
+      }
+      return mode;
+    }
+  }
+
+  return tl::make_unexpected(
+      Status::NotFound("No HNSW index found for column '", column_name, "'"));
 }
 
 Status CollectionImpl::recovery() {
@@ -1717,7 +1768,7 @@ Status CollectionImpl::recover_idmap_and_delete_store() {
   id_map_ = IDMap::CreateAndOpen(schema_->name(), idmap_path, false,
                                  options_.read_only_);
   if (!id_map_) {
-    return Status::InternalError("recovery idmap failed");
+    return Status::InternalError("recovery idmap failed, path: ", idmap_path);
   }
 
   // delete store
@@ -1726,7 +1777,8 @@ Status CollectionImpl::recover_idmap_and_delete_store() {
   delete_store_ =
       DeleteStore::CreateAndLoad(schema_->name(), delete_store_path);
   if (!delete_store_) {
-    return Status::InternalError("recovery delete store failed");
+    return Status::InternalError("recovery delete store failed, path: ",
+                                 delete_store_path);
   }
 
   return Status::OK();
@@ -1737,9 +1789,9 @@ Status CollectionImpl::create() {
   if (path_.empty()) {
     return Status::InvalidArgument("path validate failed: path is empty");
   }
-  if (!std::regex_match(path_, COLLECTION_PATH_REGEX)) {
+  if (!FileHelper::PathSimpleValidation(path_)) {
     return Status::InvalidArgument("path validate failed: path[", path_,
-                                   "] cannot pass the regex verification");
+                                   "] is not a valid path");
   }
   if (ailego::FileHelper::IsExist(path_.c_str())) {
     return Status::InvalidArgument("path validate failed: path[", path_,
@@ -1751,8 +1803,9 @@ Status CollectionImpl::create() {
   CHECK_RETURN_STATUS(s);
 
   if (!ailego::FileHelper::MakePath(path_.c_str())) {
-    return Status::InvalidArgument("create collection path failed: ", path_,
-                                   ", error: ", strerror(errno));
+    return Status::InvalidArgument(
+        "create collection path failed: ", path_,
+        ", error: ", ailego::FileHelper::GetLastErrorString());
   }
 
   // init lock file
@@ -1796,7 +1849,7 @@ Status CollectionImpl::create_idmap_and_delete_store() {
   id_map_ = IDMap::CreateAndOpen(schema_->name(), idmap_path, true,
                                  options_.read_only_);
   if (!id_map_) {
-    return Status::InternalError("create id map failed");
+    return Status::InternalError("create id map failed, path: ", idmap_path);
   }
 
   std::string delete_store_path =
@@ -1838,25 +1891,27 @@ Status CollectionImpl::init_writing_segment() {
 }
 
 Status CollectionImpl::acquire_file_lock(bool create) {
-  std::string lock_file_path = ailego::StringHelper::Concat(path_, "/", "LOCK");
+  std::string lock_file_path = ailego::FileHelper::PathJoin(path_, "LOCK");
 
   if (create) {
     if (!lock_file_.create(lock_file_path.c_str(), 0)) {
-      return Status::InternalError("Can't create lock file");
+      return Status::InternalError("Can't create lock file: ", lock_file_path);
     }
   } else {
     if (!lock_file_.open(lock_file_path.c_str(), false)) {
-      return Status::InternalError("Can't open lock file");
+      return Status::InternalError("Can't open lock file: ", lock_file_path);
     }
   }
 
   if (options_.read_only_) {
     if (!ailego::FileLock::TryLockShared(lock_file_.native_handle())) {
-      return Status::InternalError("Can't lock read-only collection");
+      return Status::InternalError("Can't lock read-only collection: ",
+                                   lock_file_path);
     }
   } else {
     if (!ailego::FileLock::TryLock(lock_file_.native_handle())) {
-      return Status::InternalError("Can't lock read-write collection");
+      return Status::InternalError("Can't lock read-write collection: ",
+                                   lock_file_path);
     }
   }
 

@@ -12,5 +12,5 @@ endif()
 
 add_library(sparsehash INTERFACE)
 target_include_directories(
-    sparsehash INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/sparsehash-2.0.4/src/"
+    sparsehash SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/sparsehash-2.0.4/src/"
   )

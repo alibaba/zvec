@@ -30,16 +30,16 @@ from zvec import (
     HnswQueryParam,
     OmegaIndexParam,
     OmegaQueryParam,
+    IndexOption,
+    IndexType,
     InvertIndexParam,
     MetricType,
     LogLevel,
     LogType,
-    VectorSchema,
-    StatusCode,
-    IndexOption,
-    IndexType,
-    VectorQuery,
     OptimizeOption,
+    StatusCode,
+    Query,
+    VectorSchema,
 )
 
 IS_ANDROID = hasattr(sys, "getandroidapilevel") or "ANDROID_ROOT" in os.environ
@@ -627,10 +627,9 @@ class TestCollectionInsert:
             vectors={"dense": [1 + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
         )
         with pytest.raises(ValueError) as e:
-            # ValueError: doc validate failed: field[id] is configured not nullable,
-            # but doc does not contain this field
+            # ValueError: Invalid doc: field[id] is required but not provided
             test_collection.insert(doc)
-        assert "field[id] is configured not nullable" in str(e.value)
+        assert "field[id] is required but not provided" in str(e.value)
 
         # without name
         doc = Doc(
@@ -642,7 +641,7 @@ class TestCollectionInsert:
         )
         with pytest.raises(ValueError) as e:
             test_collection.insert(doc)
-        assert "field[name] is configured not nullable" in str(e.value)
+        assert "field[name] is required but not provided" in str(e.value)
 
     def test_collection_insert_with_nullable_true_field(self, test_collection):
         # id, name's nullable == False
@@ -749,8 +748,7 @@ class TestCollectionUpdate:
             fields={"id": None},
         )
         with pytest.raises(ValueError) as e:
-            # ValueError: doc validate failed: field[id] is configured not nullable,
-            # but doc does not contain this field
+            # ValueError: Invalid doc: field[id] is required but its value is null
             collection_with_single_doc.update(doc)
 
         doc = Doc(
@@ -1095,7 +1093,7 @@ class TestCollectionQuery:
     ):
         with pytest.raises(ValueError):
             collection_with_single_doc.query(
-                VectorQuery(
+                Query(
                     field_name="dense",
                     id=single_doc.id,
                     vector=single_doc.vector("dense"),
@@ -1111,19 +1109,19 @@ class TestCollectionQuery:
     def test_collection_with_error_query_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        query = VectorQuery(
+        query = Query(
             field_name="dense", vector=multiple_docs[0].vector("dense"), param=[1, 2, 3]
         )
         with pytest.raises(TypeError):
             result = collection_with_multiple_docs.query(
-                filter="id in (1)", topk=100, vectors=query
+                query, filter="id in (1)", topk=100
             )
 
     def test_collection_query_by_id(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         result = collection_with_multiple_docs.query(
-            VectorQuery(field_name="dense", id=multiple_docs[0].id)
+            Query(field_name="dense", id=multiple_docs[0].id)
         )
         assert len(result) == 10
 
@@ -1145,7 +1143,7 @@ class TestCollectionQuery:
             assert item.ok()
 
         query_result = omega_test_collection.query(
-            VectorQuery(
+            Query(
                 field_name="dense",
                 vector=omega_multiple_docs[0].vector("dense"),
                 param=OmegaQueryParam(ef=128, target_recall=0.91),
@@ -1190,7 +1188,7 @@ class TestCollectionQuery:
             }.issubset(model_files)
 
             query_result = omega_collection.query(
-                VectorQuery(
+                Query(
                     field_name="dense",
                     vector=omega_workflow_docs[31].vector("dense"),
                     param=OmegaQueryParam(ef=128, target_recall=0.91),
@@ -1241,7 +1239,7 @@ class TestCollectionQuery:
             # so fallback-to-HNSW can be checked via exact result equality.
             query_vector = [64.3] * 128
             hnsw_result = hnsw_collection.query(
-                VectorQuery(
+                Query(
                     field_name="dense",
                     vector=query_vector,
                     param=HnswQueryParam(ef=128),
@@ -1249,7 +1247,7 @@ class TestCollectionQuery:
                 topk=10,
             )
             omega_result = omega_collection.query(
-                VectorQuery(
+                Query(
                     field_name="dense",
                     vector=query_vector,
                     param=OmegaQueryParam(ef=128, target_recall=0.91),
@@ -1268,12 +1266,8 @@ class TestCollectionQuery:
         with pytest.raises(ValueError):
             collection_with_multiple_docs.query(
                 [
-                    VectorQuery(
-                        field_name="dense", vector=multiple_docs[0].vector("dense")
-                    ),
-                    VectorQuery(
-                        field_name="dense", vector=multiple_docs[0].vector("dense")
-                    ),
+                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
                 ]
             )
 

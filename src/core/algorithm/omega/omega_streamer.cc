@@ -32,7 +32,7 @@ namespace {
 
 struct OmegaHookSetup {
   OmegaHookState state;
-  HnswAlgorithm::SearchHooks hooks;
+  SearchHooks hooks;
 };
 
 OmegaHookSetup CreateOmegaHookSetup(omega::SearchContext *omega_search_ctx,
@@ -308,7 +308,7 @@ int OmegaStreamer::omega_search_impl(const void *query,
   hnsw_ctx->update_dist_caculator_distance(search_distance_,
                                            search_batch_distance_);
   hnsw_ctx->resize_results(count);
-  hnsw_ctx->check_need_adjuct_ctx(entity_.doc_cnt());
+  hnsw_ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   hnsw_ctx->reset_query(query);
   OmegaHookSetup hook_setup = CreateOmegaHookSetup(
       omega_search_ctx, enable_early_stopping, training_mode_enabled_);
@@ -347,7 +347,7 @@ IndexStreamer::Context::Pointer OmegaStreamer::create_context(void) const {
     return Context::Pointer();
   }
 
-  HnswEntity::Pointer entity = entity_.clone();
+  HnswEntity::Pointer entity = entity_->clone();
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("OmegaContext clone entity failed");
     return Context::Pointer();
@@ -390,7 +390,7 @@ int OmegaStreamer::dump(const IndexDumper::Pointer &dumper) {
   ailego::Params searcher_params;
   const auto &streamer_params = meta_.streamer_params();
 
-  // Copy the omega.* params needed by OmegaSearcher::init().
+  // Copy the omega.* params into the searcher metadata for index persistence.
   if (streamer_params.has("omega.enabled")) {
     searcher_params.insert("omega.enabled",
                            streamer_params.get_as_bool("omega.enabled"));
@@ -426,7 +426,7 @@ int OmegaStreamer::dump(const IndexDumper::Pointer &dumper) {
     return ret;
   }
 
-  return entity_.dump(dumper);
+  return entity_->dump(dumper);
 }
 
 INDEX_FACTORY_REGISTER_STREAMER(OmegaStreamer);

@@ -19,9 +19,6 @@
 	path = thirdparty/arrow/apache-arrow-21.0.0
 	url = https://github.com/apache/arrow.git
 	ignore = all
-[submodule "thirdparty/CRoaring/CRoaring-2.0.4"]
-	path = thirdparty/CRoaring/CRoaring-2.0.4
-	url = https://github.com/RoaringBitmap/CRoaring.git
 [submodule "thirdparty/glog/glog-0.5.0"]
 	path = thirdparty/glog/glog-0.5.0
 	url = https://github.com/google/glog.git

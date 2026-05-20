@@ -108,5 +108,8 @@ static const std::string PARAM_HNSW_REDUCER_INDEX_NAME(
 static const std::string PARAM_HNSW_REDUCER_EFCONSTRUCTION(
     "proxima.hnsw.reducer.efconstruction");
 
+static const std::string PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY(
+    "proxima.hnsw.streamer.use_contiguous_memory");
+
 }  // namespace core
 }  // namespace zvec

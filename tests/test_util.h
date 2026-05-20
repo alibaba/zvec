@@ -18,6 +18,13 @@
 #include <string>
 #include <zvec/ailego/utility/file_helper.h>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS || TARGET_OS_SIMULATOR
+#include <glob.h>
+#endif
+#endif
+
 #ifdef _MSC_VER
 #include <fcntl.h>
 #include <io.h>
@@ -41,6 +48,14 @@ inline void RemoveTestFiles(const std::string &pattern) {
       pattern.find('?') != std::string::npos) {
 #ifdef _WIN32
     system(("del /f /q " + pattern + " 2>NUL").c_str());
+#elif defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_SIMULATOR)
+    glob_t globbuf;
+    if (glob(pattern.c_str(), 0, nullptr, &globbuf) == 0) {
+      for (size_t i = 0; i < globbuf.gl_pathc; ++i) {
+        ailego::FileHelper::RemovePath(globbuf.gl_pathv[i]);
+      }
+      globfree(&globbuf);
+    }
 #else
     system(("rm -rf " + pattern).c_str());
 #endif

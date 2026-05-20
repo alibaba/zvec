@@ -17,6 +17,7 @@ tests/de_integration/log
 tests/de_integration/*.log
 !.git*
 !.clang-format
+!.clang-tidy
 !.circleci
 !.drone.yml
 sdk/python/dist/
@@ -49,3 +50,5 @@ yarn-error.log*
 allure-*
 
 !build_android.sh
+!build_ios.sh
+

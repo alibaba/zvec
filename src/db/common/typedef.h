@@ -40,9 +40,6 @@ using idx_t = uint64_t;
 #define CLOG_FATAL(format, ...) \
   LOG_FATAL(format COLLECTION_FORMAT, ##__VA_ARGS__, collection_name().c_str())
 
-#define ELOG_ERROR(format, ...) \
-  LOG_ERROR(format " errno[%s] ", ##__VA_ARGS__, std::strerror(errno))
-
 #define WAL_FORMAT " wal_path_[%s] "
 
 #define WLOG_DEBUG(format, ...) \

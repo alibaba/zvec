@@ -1,8 +1,6 @@
 name: Build and Test PyPi Wheels on Windows
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_call:
     inputs:
       publish_target:
@@ -67,10 +65,16 @@ jobs:
           & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -prerelease -format json
         shell: powershell
 
+      - name: Enable git long paths
+        shell: powershell
+        run: git config --global core.longpaths true
+
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
 
       - name: Cleanup left marker files
         run: |
@@ -81,26 +85,38 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install cibuildwheel
-        run: |
-          pip install --upgrade pip
-          pip install cibuildwheel==3.4.0
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Add Git bin to PATH
         run: echo "C:\Program Files\Git\usr\bin" >> $env:GITHUB_PATH
         shell: powershell
 
-      - name: Cache built wheels
-        id: cache-wheels
-        uses: actions/cache@v4
-        with:
-          path: wheelhouse
-          key: ${{ runner.os }}-wheels-${{ hashFiles('**/pyproject.toml', '**/setup.py', '**/*.py', '**/*.c', '**/*.cpp') }}
+      #      - name: Cache built wheels
+      #        id: cache-wheels
+      #        uses: actions/cache@v4
+      #        with:
+      #          path: wheelhouse
+      #          key: ${{ runner.os }}-wheels-${{ hashFiles('**/pyproject.toml', '**/setup.py', '**/*.py', '**/*.c', '**/*.cpp') }}
 
       - name: Build wheels using cibuildwheel
-        if: steps.cache-wheels.outputs.cache-hit != 'true'
+        # if: steps.cache-wheels.outputs.cache-hit != 'true'
         shell: powershell
         run: |
+          # 1. Generate and capture the version from setuptools_scm
+          pip install --upgrade pip
+          pip install cibuildwheel==3.4.0
+          pip install setuptools-scm>=8.0
+          
+          $SCM_VERSION = python -m setuptools_scm
+          echo "Detected Version: $SCM_VERSION"
+          
+          # 2. Set it as an environment variable for the current shell and subsequent steps
+          $env:SETUPTOOLS_SCM_PRETEND_VERSION = $SCM_VERSION
+          
+          # 3. Run cibuildwheel
           python -m cibuildwheel --output-dir wheelhouse
 
       - name: Install and test wheel
@@ -140,7 +156,7 @@ jobs:
           "wheels=$($wheels -join ' ')" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload built wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-wheels
           path: wheelhouse/*.whl
@@ -152,7 +168,7 @@ jobs:
 
     steps:
       - name: Download built wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: windows-wheels
           path: wheelhouse/
@@ -180,6 +196,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: Smoke test from PyPI
         shell: powershell
         env:
@@ -207,7 +228,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $found = $false
           for ($i = 1; $i -le 30; $i++) {
-            python -m pip install -f @indexArgs --dry-run "zvec==$version" 1>$null 2>$null
+            python -m pip install --force-reinstall @indexArgs --dry-run "zvec==$version"
             if ($LASTEXITCODE -eq 0) {
               Write-Host "Version $version is available."
               $found = $true
@@ -225,5 +246,5 @@ jobs:
           python -m venv test_env
           $venvPython = "test_env/Scripts/python.exe"
           & $venvPython -m pip install --upgrade pip
-          & $venvPython -m pip install @indexArgs "zvec==$version"
+          & $venvPython -m pip install --force-reinstall @indexArgs "zvec==$version"
           & $venvPython -c "import zvec; print('Import OK:', zvec.__version__)"

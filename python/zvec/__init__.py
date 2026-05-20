@@ -60,8 +60,10 @@ from .model.param import (
     OmegaIndexParam,
     OmegaQueryParam,
     OptimizeOption,
+    VamanaIndexParam,
+    VamanaQueryParam,
 )
-from .model.param.vector_query import VectorQuery
+from .model.param.query import Query, VectorQuery
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
 from .tool import require_module
 from .typing import (
@@ -89,11 +91,11 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
+    "Query",
     "VectorQuery",
     "InvertIndexParam",
     "HnswIndexParam",
     "HnswRabitqIndexParam",
-    "HnswRabitqQueryParam",
     "FlatIndexParam",
     "IVFIndexParam",
     "OmegaIndexParam",
@@ -103,8 +105,11 @@ __all__ = [
     "AddColumnOption",
     "AlterColumnOption",
     "HnswQueryParam",
+    "HnswRabitqQueryParam",
     "IVFQueryParam",
     "OmegaQueryParam",
+    "VamanaIndexParam",
+    "VamanaQueryParam",
     # Extensions
     "DenseEmbeddingFunction",
     "SparseEmbeddingFunction",

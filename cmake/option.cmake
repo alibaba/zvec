@@ -188,6 +188,11 @@ function(setup_compiler_march_for_x86 VAR_NAME_SSE VAR_NAME_AVX2 VAR_NAME_AVX512
   endforeach()
 endfunction()
 
+# iOS: Skip -march flags and OpenMP; architecture is controlled by CMAKE_OSX_ARCHITECTURES
+if(IOS OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  return()
+endif()
+
 if(NOT AUTO_DETECT_ARCH)
   if(ENABLE_NATIVE)
     if (NOT MSVC)
@@ -288,7 +293,7 @@ else()
     set(HOST_ARCH unknown)
     message(WARNING "unknown host arch: ${CMAKE_SYSTEM_PROCESSOR}")
   endif()
-  message(STATUS "host arch: ${HOST_ARCH}")
+  #  message(STATUS "host arch: ${HOST_ARCH}")
 
   if (HOST_ARCH MATCHES "^(arm|arm64)$")
     _setup_armv8_march()

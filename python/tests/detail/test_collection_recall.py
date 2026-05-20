@@ -15,7 +15,7 @@
 import pytest
 
 from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
-from zvec.model import Collection, Doc, VectorQuery
+from zvec.model import Collection, Doc, Query
 from zvec.model.param import (
     CollectionOption,
     InvertIndexParam,
@@ -158,7 +158,7 @@ def get_ground_truth_for_vector_query(
 
     else:
         full_result = collection.query(
-            VectorQuery(field_name=field_name, vector=query_vector),
+            Query(field_name=field_name, vector=query_vector),
             topk=min(len(all_docs), 1024),
             include_vector=True,
         )
@@ -214,7 +214,7 @@ def calculate_recall_at_k(
             print("Starting %dth query" % i)
 
             query_result_list = collection.query(
-                VectorQuery(field_name=field_name, vector=query_vector),
+                Query(field_name=field_name, vector=query_vector),
                 topk=1024,
                 include_vector=True,
             )

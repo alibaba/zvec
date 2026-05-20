@@ -15,6 +15,9 @@
 
 #include <filesystem>
 #include <thread>
+#ifdef __ANDROID__
+#include <unistd.h>  // _exit()
+#endif
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/db/collection.h>
 #include "zvec/ailego/logger/logger.h"
@@ -114,6 +117,9 @@ int main(int argc, char **argv) {
   // Parse arguments
   if (!ParseArgs(argc, argv, config)) {
     PrintUsage(argv[0]);
+#ifdef __ANDROID__
+    _exit(1);
+#endif
     return 1;
   }
 
@@ -136,15 +142,25 @@ int main(int argc, char **argv) {
   std::cout << "  BatchDelay: " << kBatchDelayMs << "ms" << std::endl;
   std::cout << std::endl;
 
-  auto result = zvec::Collection::Open(
-      config.path, zvec::CollectionOptions{false, true, 4 * 1024 * 1024});
-  if (!result) {
-    LOG_ERROR("Failed to open collection[%s]: %s", config.path.c_str(),
-              result.error().c_str());
-    return -1;
+  // Scope 'result' so its shared_ptr is released before we call _exit().
+  // Without scoping, result.value() returns a reference and the copy means
+  // result still owns a second shared_ptr; collection.reset() would only
+  // drop the refcount to 1, and _exit() would skip the Collection destructor,
+  // leaving the WAL dirty.
+  zvec::Collection::Ptr collection;
+  {
+    auto result = zvec::Collection::Open(
+        config.path, zvec::CollectionOptions{false, true, 4 * 1024 * 1024});
+    if (!result) {
+      LOG_ERROR("Failed to open collection[%s]: %s", config.path.c_str(),
+                result.error().c_str());
+#ifdef __ANDROID__
+      _exit(1);
+#endif
+      return -1;
+    }
+    collection = result.value();
   }
-
-  auto collection = result.value();
   LOG_INFO("Collection[%s] opened successfully", config.path.c_str());
 
   // Process documents in batches
@@ -181,12 +197,22 @@ int main(int argc, char **argv) {
     if (!results) {
       LOG_ERROR("Failed to perform operation[%s], reason: %s",
                 config.operation.c_str(), results.error().message().c_str());
+#ifdef __ANDROID__
+      collection.reset();
+      sync();
+      _exit(1);
+#endif
       return 1;
     }
     for (auto &s : results.value()) {
       if (!s.ok()) {
         LOG_ERROR("Failed to perform operation[%s], reason: %s",
                   config.operation.c_str(), s.message().c_str());
+#ifdef __ANDROID__
+        collection.reset();
+        sync();
+        _exit(1);
+#endif
         return 1;
       }
     }
@@ -213,5 +239,19 @@ int main(int argc, char **argv) {
   std::cout << "Success! Processed " << processed << " documents in "
             << batch_num << " batches." << std::endl;
 
+#ifdef __ANDROID__
+  // On Android with c++_static STL, static destructors of glog/gflags
+  // crash during process teardown.  Use _exit() to skip them.
+  // Flush + close the collection to persist all buffered data (WAL, memtable),
+  // then sync() to ensure kernel buffers are written to disk before _exit().
+  collection->Flush();
+  collection.reset();
+  sync();
+  std::cout.flush();
+  std::cerr.flush();
+  fflush(stdout);
+  fflush(stderr);
+  _exit(0);
+#endif
   return 0;
 }

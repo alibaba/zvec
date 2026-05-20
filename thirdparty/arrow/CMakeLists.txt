@@ -2,9 +2,16 @@ set(ARROW_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0)
 if(ANDROID)
         set(ARROW_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.android.patch)
         apply_patch_once("arrow_android_fix" "${ARROW_SRC_DIR}" "${ARROW_PATCH}")
+elseif(IOS)
+        set(ARROW_IOS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.ios.patch)
+        apply_patch_once("arrow_ios_fix" "${ARROW_SRC_DIR}" "${ARROW_IOS_PATCH}")
 else()
         set(ARROW_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.patch)
         apply_patch_once("arrow_fix" "${ARROW_SRC_DIR}" "${ARROW_PATCH}")
+endif()
+if(MSVC)
+        set(ARROW_WIN_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.windows.patch)
+        apply_patch_once("arrow_windows_crt_fix" "${ARROW_SRC_DIR}" "${ARROW_WIN_PATCH}")
 endif()
 
 include(ExternalProject)
@@ -57,8 +64,47 @@ if(ANDROID)
                 LOG_BUILD ON
                 LOG_INSTALL ON
         )
+elseif(IOS)
+        # Determine ARROW_CPU_FLAG based on architecture
+        if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+                set(IOS_ARROW_CPU_FLAG "aarch64")
+        elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+                set(IOS_ARROW_CPU_FLAG "x86")
+        else()
+                set(IOS_ARROW_CPU_FLAG "aarch64")
+        endif()
+        # Propagate deployment target to Arrow's bundled dependencies via env var.
+        # Without this, sub-ExternalProjects (re2, utf8proc, etc.) pick up the SDK
+        # version instead of the intended deployment target, causing linker warnings.
+        set(_arrow_ios_env ${CONFIGURE_ENV_LIST} "IPHONEOS_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        ExternalProject_Add(
+                ARROW.BUILD PREFIX arrow
+                SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0
+                DOWNLOAD_COMMAND ""
+                BUILD_IN_SOURCE false
+                CONFIGURE_COMMAND env ${_arrow_ios_env} "${CMAKE_COMMAND}" ${CMAKE_CACHE_ARGS} -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_DEBUG_POSTFIX= -DARROW_BUILD_SHARED=OFF -DARROW_ACERO=ON -DARROW_FILESYSTEM=ON -DARROW_DATASET=ON -DARROW_PARQUET=ON -DARROW_COMPUTE=ON -DARROW_WITH_ZLIB=OFF -DARROW_DEPENDENCY_SOURCE=BUNDLED -DARROW_MIMALLOC=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET} -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES} -DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT} -DARROW_CPU_FLAG=${IOS_ARROW_CPU_FLAG} "<SOURCE_DIR>/cpp"
+                BUILD_COMMAND env "IPHONEOS_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}" "${CMAKE_COMMAND}" --build . --target all -- -j ${NPROC}
+                INSTALL_COMMAND "${CMAKE_COMMAND}" --install "<BINARY_DIR>" --prefix=${EXTERNAL_BINARY_DIR}/usr/local
+                BYPRODUCTS ${LIB_PARQUET} ${LIB_ARROW} ${LIB_COMPUTE} ${LIB_ACERO} ${LIB_ARROW_DEPENDS} ${LIB_ARROW_DATASET}
+                LOG_DOWNLOAD ON
+                LOG_CONFIGURE ON
+                LOG_BUILD ON
+                LOG_INSTALL ON
+        )
 elseif (MSVC)
-    set(ARROW_EXTRA_CMAKE_ARGS -DCMAKE_C_FLAGS=/FS -DCMAKE_CXX_FLAGS=/FS)
+    if(ZVEC_USE_STATIC_CRT)
+        set(_ARROW_CRT_FLAG "/MT")
+        set(_ARROW_MSVC_RUNTIME "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+        set(_ARROW_CRT_FLAG "/MD")
+        set(_ARROW_MSVC_RUNTIME "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>")
+    endif()
+    set(ARROW_EXTRA_CMAKE_ARGS
+        "-DCMAKE_C_FLAGS=/FS ${_ARROW_CRT_FLAG}"
+        "-DCMAKE_CXX_FLAGS=/FS ${_ARROW_CRT_FLAG}"
+        -DARROW_USE_STATIC_CRT=${ZVEC_USE_STATIC_CRT}
+        "-DCMAKE_MSVC_RUNTIME_LIBRARY=${_ARROW_MSVC_RUNTIME}"
+    )
         ExternalProject_Add(
                 ARROW.BUILD PREFIX arrow
                 SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0
@@ -103,6 +149,7 @@ add_library(Arrow::arrow_depends UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_depends PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ARROW_DEPENDS}"
 )
 add_dependencies(Arrow::arrow_depends ARROW.BUILD)
@@ -112,6 +159,7 @@ add_library(Arrow::arrow_static UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_static PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ARROW}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_STATIC" #TODO(windows): see if this can be removed
@@ -122,6 +170,7 @@ add_library(Arrow::parquet_static UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::parquet_static PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_PARQUET}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static"
         INTERFACE_COMPILE_DEFINITIONS "PARQUET_STATIC"
@@ -132,6 +181,7 @@ add_library(Arrow::arrow_compute UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_compute PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_COMPUTE}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_COMPUTE_STATIC"
@@ -142,6 +192,7 @@ add_library(Arrow::arrow_acero UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_acero PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ACERO}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static;Arrow::arrow_compute"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_ACERO_STATIC"
@@ -152,6 +203,7 @@ add_library(Arrow::arrow_dataset UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_dataset PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ARROW_DATASET}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static;Arrow::arrow_compute;Arrow::arrow_acero"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_DS_STATIC"

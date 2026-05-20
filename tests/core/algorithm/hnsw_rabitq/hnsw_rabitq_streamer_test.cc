@@ -14,8 +14,10 @@
 
 #include "hnsw_rabitq_streamer.h"
 #include <memory>
+#include <string>
 #include <gtest/gtest.h>
 #include "zvec/ailego/container/params.h"
+#include "zvec/ailego/utility/file_helper.h"
 #include "zvec/core/framework/index_holder.h"
 #include "zvec/core/framework/index_streamer.h"
 #include "hnsw_rabitq_streamer.h"
@@ -49,9 +51,7 @@ void HnswRabitqStreamerTest::SetUp(void) {
 }
 
 void HnswRabitqStreamerTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  ailego::FileHelper::RemovePath(dir_.c_str());
 }
 
 TEST_F(HnswRabitqStreamerTest, TestBuildAndSearch) {

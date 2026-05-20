@@ -57,7 +57,7 @@ CpuFeatures::CpuFlags::CpuFlags(void)
     L1_ECX = ecx;
     L1_EDX = edx;
   }
-  if (__get_cpuid_max(0, NULL) >= 7) {
+  if (__get_cpuid_max(0, nullptr) >= 7) {
     __cpuid_count(7, 0, eax, ebx, ecx, edx);
     L7_EBX = ebx;
     L7_ECX = ecx;

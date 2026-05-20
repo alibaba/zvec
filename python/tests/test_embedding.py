@@ -1168,8 +1168,8 @@ class TestDefaultLocalDenseEmbedding:
             return_value="/path/to/model",
         ):
             mock_ms = Mock()
-            mock_require_module.side_effect = (
-                lambda m: mock_st if m == "sentence_transformers" else mock_ms
+            mock_require_module.side_effect = lambda m: (
+                mock_st if m == "sentence_transformers" else mock_ms
             )
             emb_func_ms = DefaultLocalDenseEmbedding(model_source="modelscope")
             assert (
@@ -1635,8 +1635,8 @@ class TestDefaultLocalSparseEmbedding:
             "modelscope.hub.snapshot_download.snapshot_download",
             return_value="/cache/splade-cocondenser",
         ):
-            mock_require_module.side_effect = (
-                lambda m: mock_st if m == "sentence_transformers" else mock_ms
+            mock_require_module.side_effect = lambda m: (
+                mock_st if m == "sentence_transformers" else mock_ms
             )
 
             sparse_emb = DefaultLocalSparseEmbedding(model_source="modelscope")

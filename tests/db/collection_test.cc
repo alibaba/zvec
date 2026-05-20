@@ -30,7 +30,6 @@
 #include "db/index/common/type_helper.h"
 #include "index/utils/utils.h"
 #include "zvec/ailego/utility/float_helper.h"
-#include "zvec/db/config.h"
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/options.h"
@@ -217,14 +216,15 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
   auto schema = TestHelper::CreateNormalSchema();
 
   {
-    std::vector<std::string> valid_paths = {"abc",
+    std::vector<std::string> valid_paths = {"你好",
                                             "data123",
                                             "my_collection",
                                             "v1.2_alpha-beta",
                                             ".hidden",
                                             "file.txt",
-                                            "/tmp/absolute/path",
-                                            "/tmp/a/b/c",
+                                            "abs_test/nested/path",
+                                            "abs test/nested/path",
+                                            "nested/a/b/c",
                                             "_",
                                             "-",
                                             "./tmp"};
@@ -234,6 +234,8 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
       auto result = Collection::CreateAndOpen(path, *schema, options);
       if (!result.has_value()) {
         std::cout << result.error().message() << std::endl;
+        std::cout << "File error:" << ailego::FileHelper::GetLastErrorString()
+                  << std::endl;
       }
       ASSERT_TRUE(result.has_value());
 
@@ -242,30 +244,15 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_PathValidate) {
   }
 
   {
-    std::vector<std::string> inalid_paths = {
-        " ",         "",
-        "file name",  // space
-        "file$name",  // $
-        "a&b",        // &
-        "a|b",        // |
-        "a<b",        // <
-        "a>b",        // >
-        "a\"b",       // "
-        "a'b",        // '
-        "a;b",        // ;
-        "a?b",        // ?
-        "a*b",        // *
-        "a[b]",       // []
-        "a{b}",       // {}
-        "a~b",        // ~
-        "a#b",        // #
-        "a\tb",       // tab
-        "a\nb",       // newline
-        "a\rb",       // carriage return
+    using std::string_literals::operator""s;
+    std::vector<std::string> invalid_paths = {
+        "",
+        "v\0v"s,  // NUL
+#if _WIN32
+        "v?v"s,
+#endif
     };
-    for (auto path : inalid_paths) {
-      ailego::FileHelper::RemoveDirectory(path.c_str());
-
+    for (auto path : invalid_paths) {
       auto result = Collection::CreateAndOpen(path, *schema, options);
       if (!result.has_value()) {
         std::cout << result.error().message() << std::endl;
@@ -2123,6 +2110,10 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
 }
 
 TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
   auto func = [&](std::string field_name, bool enable_optimize,
                   IndexParams::Ptr scalar_index_params = nullptr) {
     FileHelper::RemoveDirectory(col_path);
@@ -2397,6 +2388,10 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
 }
 
 TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
   auto func = [&](std::string field_name, bool enable_optimize) {
     FileHelper::RemoveDirectory(col_path);
 
@@ -3274,7 +3269,7 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
 
   {
     VectorQuery query;
-    query.topk_ = 1025;
+    query.topk_ = 100001;
     query.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);
@@ -4345,4 +4340,59 @@ TEST_F(CollectionTest, CornerCase_CreateIndex) {
                               std::make_shared<IVFIndexParams>(MetricType::IP));
   ASSERT_FALSE(s.ok());
   ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+}
+
+TEST_F(CollectionTest, Feature_Query_NullableFilter_WithoutIndex) {
+  auto run_test = [&](bool with_scalar_index) {
+    FileHelper::RemoveDirectory(col_path);
+    IndexParams::Ptr scalar_idx =
+        with_scalar_index ? std::make_shared<InvertIndexParams>(false) : nullptr;
+    auto schema =
+        TestHelper::CreateNormalSchema(/*nullable=*/true, "demo", scalar_idx);
+    CollectionOptions options{false, true, 100 * 1024 * 1024};
+    auto result = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(result.has_value());
+    auto collection = result.value();
+
+    int non_null_count = 50;
+    int null_count = 50;
+    int total = non_null_count + null_count;
+
+    auto s = TestHelper::CollectionInsertDoc(collection, 0, non_null_count,
+                                             /*nullable=*/false);
+    ASSERT_TRUE(s.ok());
+    s = TestHelper::CollectionInsertDoc(collection, non_null_count, total,
+                                        /*nullable=*/true);
+    ASSERT_TRUE(s.ok());
+    collection->Flush();
+
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, total);
+
+    auto query_doc = TestHelper::CreateDoc(1, *schema);
+    VectorQuery query;
+    query.topk_ = total;
+    query.field_name_ = "dense_fp32";
+    auto vec = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vec.has_value());
+    query.query_vector_.assign((char *)vec.value().data(),
+                               vec.value().size() * sizeof(float));
+    query.filter_ = "int32 > 0";
+    query.output_fields_ = std::vector<std::string>{"int32"};
+
+    auto query_result = collection->Query(query);
+    ASSERT_TRUE(query_result.has_value());
+    for (auto &doc : query_result.value()) {
+      auto int32_val = doc->get<int32_t>("int32");
+      ASSERT_TRUE(int32_val.has_value())
+          << "Null doc leaked through filter: " << doc->pk()
+          << " (with_scalar_index=" << with_scalar_index << ")";
+      ASSERT_GT(int32_val.value(), 0);
+    }
+    ASSERT_EQ(query_result.value().size(), non_null_count - 1)
+        << "with_scalar_index=" << with_scalar_index;
+  };
+
+  run_test(false);
+  run_test(true);
 }

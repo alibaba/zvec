@@ -82,10 +82,7 @@ class IndexSegmentStorage : public IndexStorage {
     }
 
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
-      const void **data_ptr = nullptr;
-      size_t ret = parent_->read(data_offset_ + offset, data_ptr, len);
-      data.reset((void *)*data_ptr);
-      return ret;
+      return parent_->read(data_offset_ + offset, data, len);
     }
 
     //! Read data from segment

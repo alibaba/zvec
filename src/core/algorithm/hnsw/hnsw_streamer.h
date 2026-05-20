@@ -31,10 +31,22 @@ class HnswStreamer : public IndexStreamer {
   HnswStreamer(const HnswStreamer &streamer) = delete;
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
 
+ public:
+  //! Retrieve the storage mode of the underlying entity. Returns
+  //! HnswStorageMode::kMmap when the entity has not been initialized yet.
+  //! Intended for introspection and debug/testing usage.
+  HnswStorageMode storage_mode() const {
+    if (!entity_) {
+      return HnswStorageMode::kMmap;
+    }
+    return entity_->storage_mode();
+  }
+
+  //! Fast search without lock (for OMEGA integration)
   int FastSearch(HnswContext *ctx) const;
 
-  int FastSearchWithHooks(HnswContext *ctx,
-                          const HnswAlgorithm::SearchHooks *hooks,
+  //! Fast search with hooks (for OMEGA integration)
+  int FastSearchWithHooks(HnswContext *ctx, const SearchHooks *hooks,
                           bool *stopped_early) const;
 
  protected:
@@ -94,22 +106,22 @@ class HnswStreamer : public IndexStreamer {
 
   //! Fetch vector by key
   virtual const void *get_vector(uint64_t key) const override {
-    return entity_.get_vector_by_key(key);
+    return entity_->get_vector_by_key(key);
   }
 
   virtual int get_vector(const uint64_t key,
                          IndexStorage::MemoryBlock &block) const override {
-    return entity_.get_vector_by_key(key, block);
+    return entity_->get_vector_by_key(key, block);
   }
 
   //! Fetch vector by id
   virtual const void *get_vector_by_id(uint32_t id) const override {
-    return entity_.get_vector(id);
+    return entity_->get_vector(id);
   }
 
   virtual int get_vector_by_id(
       const uint32_t id, IndexStorage::MemoryBlock &block) const override {
-    return entity_.get_vector(id, block);
+    return entity_->get_vector(id, block);
   }
 
   //! Open index from file path
@@ -164,10 +176,15 @@ class HnswStreamer : public IndexStreamer {
     return 0;
   }
 
+ private:
+  //! Configure and initialize the entity with saved parameters
+  int setup_entity();
+
  protected:
   //! To share ctx across streamer/searcher, we need to update the context for
   //! current streamer/searcher (moved to protected for OmegaStreamer)
   int update_context(HnswContext *ctx) const;
+
   // Changed from private to protected to allow OmegaStreamer inheritance
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {
@@ -186,8 +203,8 @@ class HnswStreamer : public IndexStreamer {
     }
   };
 
-  HnswStreamerEntity entity_;
-  HnswAlgorithm::UPointer alg_;
+  std::unique_ptr<HnswStreamerEntity> entity_;
+  HnswAlgorithmBase::UPointer alg_;
   IndexMeta meta_{};
   IndexMetric::Pointer metric_{};
 
@@ -205,6 +222,7 @@ class HnswStreamer : public IndexStreamer {
   size_t docs_hard_limit_{HnswEntity::kDefaultDocsHardLimit};
   size_t docs_soft_limit_{0UL};
   uint32_t min_neighbor_cnt_{0u};
+  uint32_t prune_cnt_{0u};
   uint32_t upper_max_neighbor_cnt_{HnswEntity::kDefaultUpperMaxNeighborCnt};
   uint32_t l0_max_neighbor_cnt_{HnswEntity::kDefaultL0MaxNeighborCnt};
   uint32_t ef_{HnswEntity::kDefaultEf};
@@ -224,6 +242,7 @@ class HnswStreamer : public IndexStreamer {
   bool get_vector_enabled_{false};
   bool force_padding_topk_enabled_{false};
   bool use_id_map_{true};
+  bool use_contiguous_memory_{false};
 
   //! avoid add vector while dumping index
   ailego::SharedMutex shared_mutex_{};

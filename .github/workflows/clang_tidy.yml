@@ -1,0 +1,162 @@
+name: Clang-Tidy
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  clang_tidy:
+    name: Clang-Tidy Checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Shallow checkout (no submodules)
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Collect changed C/C++ files
+        id: changed_files
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            **/*.c
+            **/*.cc
+            **/*.cpp
+            **/*.cxx
+          files_ignore: |
+            thirdparty/**
+            build/**
+
+      - name: No C/C++ files changed - skip
+        if: steps.changed_files.outputs.any_changed != 'true'
+        run: echo "No C/C++ files changed. Skipping clang-tidy."
+
+      - name: Checkout submodules
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: git submodule update --init --recursive
+
+      - name: Install dependencies
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy=1:18.0-59~exp2 cmake ninja-build libomp-dev
+
+      - name: Setup ccache
+        if: steps.changed_files.outputs.any_changed == 'true'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: clang-tidy
+          max-size: 100M
+
+      - name: Configure CMake and export compile commands
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DBUILD_TOOLS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Filter changed files against compile_commands.json
+        id: tidy_files
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = os.environ.get("ALL_CHANGED_FILES", "")
+          changed = [f for f in raw.split() if f]
+
+          compile_db_path = Path("build/compile_commands.json")
+          with compile_db_path.open("r", encoding="utf-8") as fh:
+              compile_db = json.load(fh)
+
+          compile_entries = set()
+          for entry in compile_db:
+              file_field = entry.get("file", "")
+              if file_field:
+                  compile_entries.add(os.path.normpath(file_field))
+
+          cwd = Path.cwd().resolve()
+          selected = []
+          skipped = []
+
+          for rel_path in changed:
+              abs_path = os.path.normpath(str((cwd / rel_path).resolve()))
+              if abs_path in compile_entries:
+                  selected.append(rel_path)
+              elif not Path(rel_path).is_file():
+                  skipped.append(f"{rel_path} (file not found)")
+              else:
+                  skipped.append(f"{rel_path} (not in compile_commands.json)")
+
+          github_output = os.environ["GITHUB_OUTPUT"]
+          with open(github_output, "a", encoding="utf-8") as out:
+              out.write(f"any_tidy_files={'true' if selected else 'false'}\n")
+              out.write("all_tidy_files<<TIDY_EOF\n")
+              out.write("\n".join(selected) + "\n")
+              out.write("TIDY_EOF\n")
+              out.write("skipped_files<<SKIP_EOF\n")
+              out.write("\n".join(skipped) + "\n")
+              out.write("SKIP_EOF\n")
+          PY
+        env:
+          ALL_CHANGED_FILES: ${{ steps.changed_files.outputs.all_changed_files }}
+
+      - name: Show skipped files
+        if: steps.changed_files.outputs.any_changed == 'true' && steps.tidy_files.outputs.skipped_files != ''
+        run: |
+          echo "=== Files skipped by clang-tidy ==="
+          printf '%s\n' "${{ steps.tidy_files.outputs.skipped_files }}"
+
+      - name: Compute submodule commits hash
+        id: submodule_hash
+        if: steps.changed_files.outputs.any_changed == 'true'
+        run: |
+          hash=$(git submodule status --recursive | awk '{print $1}' | sort | sha256sum | awk '{print $1}')
+          echo "value=${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache third-party build artifacts
+        id: cache_thirdparty
+        if: steps.changed_files.outputs.any_changed == 'true'
+        uses: actions/cache@v5
+        with:
+          path: build/external
+          key: thirdparty-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch') }}-${{ steps.submodule_hash.outputs.value }}
+
+      - name: Build
+        if: steps.tidy_files.outputs.any_tidy_files == 'true'
+        run: |
+          ninja -C build zvec_db
+
+      - name: Run clang-tidy on changed files
+        if: steps.tidy_files.outputs.any_tidy_files == 'true'
+        run: |
+          mapfile -t files_to_check <<'TIDY_EOF'
+          ${{ steps.tidy_files.outputs.all_tidy_files }}
+          TIDY_EOF
+
+          failed=0
+          for file in "${files_to_check[@]}"; do
+            [[ -z "${file// }" ]] && continue
+            if [ -f "$file" ]; then
+              echo "=== clang-tidy: $file ==="
+              clang-tidy -p build --warnings-as-errors='*' "$file" || failed=1
+            fi
+          done
+
+          exit $failed
+
+      - name: No files to analyse
+        if: steps.changed_files.outputs.any_changed == 'true' && steps.tidy_files.outputs.any_tidy_files != 'true'
+        run: echo "Changed C/C++ files not in compile_commands.json. Nothing to analyse."

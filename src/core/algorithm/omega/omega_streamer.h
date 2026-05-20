@@ -32,7 +32,7 @@ namespace core {
  * - It carries training-mode/search-mode configuration that must travel with
  *   the loaded streamer instance.
  * - It does not define the adaptive-stop policy; that lives in OMEGALib
- *   through OmegaSearcher/OmegaContext.
+ *   through OmegaContext.
  */
 class OmegaStreamer : public HnswStreamer {
  public:
@@ -89,7 +89,7 @@ class OmegaStreamer : public HnswStreamer {
   virtual Context::Pointer create_context() const override;
 
   /**
-   * @brief Override dump to set "OmegaSearcher" instead of "HnswSearcher"
+   * @brief Override dump to persist OMEGA params in index metadata
    */
   virtual int dump(const IndexDumper::Pointer &dumper) override;
 

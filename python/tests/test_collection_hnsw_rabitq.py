@@ -34,7 +34,7 @@ from zvec import (
     HnswRabitqQueryParam,
     MetricType,
     VectorSchema,
-    VectorQuery,
+    Query,
 )
 
 
@@ -285,13 +285,13 @@ class TestHnswRabitqCollectionQuery:
     ):
         """Test querying by vector with HNSW RaBitQ index."""
         query_vector = multiple_docs[0].vector("embedding")
-        query = VectorQuery(
+        query = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=300),
         )
 
-        result = collection_with_multiple_docs.query(vectors=query, topk=10)
+        result = collection_with_multiple_docs.query(queries=query, topk=10)
         assert len(result) > 0
         assert len(result) <= 10
 
@@ -304,13 +304,13 @@ class TestHnswRabitqCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs: list[Doc]
     ):
         """Test querying by document ID with HNSW RaBitQ index."""
-        query = VectorQuery(
+        query = Query(
             field_name="embedding",
             id=multiple_docs[0].id,
             param=HnswRabitqQueryParam(ef=300),
         )
 
-        result = collection_with_multiple_docs.query(vectors=query, topk=10)
+        result = collection_with_multiple_docs.query(queries=query, topk=10)
         assert len(result) > 0
         assert len(result) <= 10
 
@@ -321,21 +321,21 @@ class TestHnswRabitqCollectionQuery:
         query_vector = multiple_docs[0].vector("embedding")
 
         # Test with ef=100
-        query_100 = VectorQuery(
+        query_100 = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=100),
         )
-        result_100 = collection_with_multiple_docs.query(vectors=query_100, topk=10)
+        result_100 = collection_with_multiple_docs.query(queries=query_100, topk=10)
         assert len(result_100) > 0
 
         # Test with ef=500
-        query_500 = VectorQuery(
+        query_500 = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=500),
         )
-        result_500 = collection_with_multiple_docs.query(vectors=query_500, topk=10)
+        result_500 = collection_with_multiple_docs.query(queries=query_500, topk=10)
         assert len(result_500) > 0
 
     def test_query_with_topk(
@@ -343,18 +343,18 @@ class TestHnswRabitqCollectionQuery:
     ):
         """Test querying with different topk values."""
         query_vector = multiple_docs[0].vector("embedding")
-        query = VectorQuery(
+        query = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=300),
         )
 
         # Test topk=5
-        result_5 = collection_with_multiple_docs.query(vectors=query, topk=5)
+        result_5 = collection_with_multiple_docs.query(queries=query, topk=5)
         assert len(result_5) <= 5
 
         # Test topk=20
-        result_20 = collection_with_multiple_docs.query(vectors=query, topk=20)
+        result_20 = collection_with_multiple_docs.query(queries=query, topk=20)
         assert len(result_20) <= 20
 
     def test_query_with_filter(
@@ -362,7 +362,7 @@ class TestHnswRabitqCollectionQuery:
     ):
         """Test querying with filter conditions."""
         query_vector = multiple_docs[0].vector("embedding")
-        query = VectorQuery(
+        query = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=300),
@@ -370,7 +370,7 @@ class TestHnswRabitqCollectionQuery:
 
         # Query with id filter
         result = collection_with_multiple_docs.query(
-            vectors=query, topk=10, filter="id < 50"
+            queries=query, topk=10, filter="id < 50"
         )
         assert len(result) > 0
         for doc in result:
@@ -381,14 +381,14 @@ class TestHnswRabitqCollectionQuery:
     ):
         """Test querying with specific output fields."""
         query_vector = multiple_docs[0].vector("embedding")
-        query = VectorQuery(
+        query = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=300),
         )
 
         result = collection_with_multiple_docs.query(
-            vectors=query, topk=10, output_fields=["id", "name"]
+            queries=query, topk=10, output_fields=["id", "name"]
         )
         assert len(result) > 0
 
@@ -401,14 +401,14 @@ class TestHnswRabitqCollectionQuery:
     ):
         """Test querying with vector data included in results."""
         query_vector = multiple_docs[0].vector("embedding")
-        query = VectorQuery(
+        query = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=300),
         )
 
         result = collection_with_multiple_docs.query(
-            vectors=query, topk=10, include_vector=True
+            queries=query, topk=10, include_vector=True
         )
         assert len(result) > 0
 
@@ -536,12 +536,12 @@ class TestHnswRabitqCollectionOptimizeAndReopen:
 
         # Verify data is still accessible after optimize
         query_vector = multiple_docs[0].vector("embedding")
-        query = VectorQuery(
+        query = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=300),
         )
-        result_before_close = coll.query(vectors=query, topk=10)
+        result_before_close = coll.query(query, topk=10)
         assert len(result_before_close) > 0
 
         # Close collection (destroy will close it)
@@ -554,12 +554,12 @@ class TestHnswRabitqCollectionOptimizeAndReopen:
         assert reopened_coll.stats.doc_count == len(multiple_docs)
 
         # Execute query on reopened collection
-        query_after_reopen = VectorQuery(
+        query_after_reopen = Query(
             field_name="embedding",
             vector=query_vector,
             param=HnswRabitqQueryParam(ef=300),
         )
-        result_after_reopen = reopened_coll.query(vectors=query_after_reopen, topk=10)
+        result_after_reopen = reopened_coll.query(query_after_reopen, topk=10)
         assert len(result_after_reopen) > 0
         assert len(result_after_reopen) <= 10
 

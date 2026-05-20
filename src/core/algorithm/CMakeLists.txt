@@ -24,6 +24,7 @@ else()
       VERSION "${PROXIMA_ZVEC_VERSION}"
     )
 endif()
+cc_directory(vamana)
 if(RABITQ_SUPPORTED)
   message(STATUS "BUILD RABITQ")
   cc_directory(hnsw_rabitq)

@@ -1,6 +1,12 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
+# Crash recovery tests rely on fork()+execvp()+kill() to spawn helper processes
+# and simulate crashes. These POSIX process APIs are prohibited on iOS.
+if(IOS)
+  return()
+endif()
+
 if(APPLE)
   set(APPLE_FRAMEWORK_LIBS
     -framework CoreFoundation
@@ -44,6 +50,7 @@ cc_binary(
     INCS .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
+set_target_properties(data_generator PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 
 # Build collection_optimizer executable
@@ -54,6 +61,7 @@ cc_binary(
     INCS .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
+set_target_properties(collection_optimizer PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 
 # Build test executables
@@ -69,5 +77,8 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     )
     add_dependencies(${CC_TARGET} data_generator)
     add_dependencies(${CC_TARGET} collection_optimizer)
+    set_tests_properties(${CC_TARGET} PROPERTIES
+        ENVIRONMENT "TEST_BINARY_DIR=${PROJECT_BINARY_DIR}"
+    )
     cc_test_suite(zvec_crash_recovery ${CC_TARGET})
 endforeach()

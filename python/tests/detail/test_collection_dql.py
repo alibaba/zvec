@@ -13,28 +13,24 @@
 # limitations under the License.
 
 
-from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
-from zvec.model import Collection, Doc, VectorQuery
+from distance_helper import *
+from doc_helper import *
+from fixture_helper import *
+from params_helper import *
+from zvec import StatusCode
+from zvec.extension import QwenReRanker, RrfReRanker, WeightedReRanker
+from zvec.model import Collection, Doc
 from zvec.model.param import (
     CollectionOption,
-    InvertIndexParam,
-    HnswIndexParam,
     FlatIndexParam,
-    IVFIndexParam,
+    HnswIndexParam,
     HnswQueryParam,
+    InvertIndexParam,
+    IVFIndexParam,
     IVFQueryParam,
 )
-
-
 from zvec.model.schema import FieldSchema, VectorSchema
-from zvec.extension import RrfReRanker, WeightedReRanker, QwenReRanker
-from distance_helper import *
-
-from zvec import StatusCode
-from distance_helper import *
-from fixture_helper import *
-from doc_helper import *
-from params_helper import *
+from zvec.typing import DataType, MetricType, QuantizeType, StatusCode
 
 
 # ==================== helper ====================
@@ -85,7 +81,7 @@ def batchdoc_and_check(
     first_doc = multiple_docs[doc_num - 1]
     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
         query_result = collection.query(
-            VectorQuery(field_name=v, vector=first_doc.vectors[v]),
+            Query(field_name=v, vector=first_doc.vectors[v]),
             topk=1024,
             include_vector=True,
         )
@@ -156,7 +152,7 @@ def batchdoc_and_check_ivf(
     for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
         if v in ["vector_fp16_field", "vector_fp32_field"]:
             query_result = collection.query(
-                VectorQuery(field_name=v, vector=first_doc.vectors[v]),
+                Query(field_name=v, vector=first_doc.vectors[v]),
                 topk=1024,
                 include_vector=True,
             )
@@ -469,7 +465,7 @@ class TestCollectionQuery:
         with pytest.raises(Exception) as exc_info:
             full_collection.query(filter=filter)
         if filter in ["int32_field = 'string'", "nonexistent_field = 5"]:
-            assert "Analyze sql info failed" in str(exc_info.value)
+            assert "Analyze SQL info failed" in str(exc_info.value)
         else:
             assert "Invalid filter" in str(exc_info.value)
 
@@ -575,7 +571,7 @@ class TestCollectionQuery:
             full_collection_new, multiple_docs, doc_num, operator="insert"
         )
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
-            query_result = full_collection_new.query(VectorQuery(field_name=v, id="1"))
+            query_result = full_collection_new.query(Query(field_name=v, id="1"))
             assert len(query_result) > 0
             query_doc = full_collection_new.fetch(ids=["1"])
             query_vector = query_doc["1"].vector(v)
@@ -599,9 +595,7 @@ class TestCollectionQuery:
         )
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
             if v in ["vector_fp16_field", "vector_fp32_field"]:
-                query_result = full_collection_ivf.query(
-                    VectorQuery(field_name=v, id="1")
-                )
+                query_result = full_collection_ivf.query(Query(field_name=v, id="1"))
                 assert len(query_result) > 0
                 query_doc = full_collection_ivf.fetch(ids=["1"])
                 query_vector = query_doc["1"].vector(v)
@@ -639,22 +633,22 @@ class TestCollectionQuery:
             query_vector = doc_vectors[v]
             if topk and filter:
                 query_result = full_collection_new.query(
+                    Query(field_name=v, vector=query_vector),
                     filter=filter,
-                    vectors=VectorQuery(field_name=v, vector=query_vector),
                     topk=topk,
                 )
             elif topk and not filter:
                 query_result = full_collection_new.query(
-                    VectorQuery(field_name=v, vector=query_vector), topk=topk
+                    Query(field_name=v, vector=query_vector), topk=topk
                 )
             elif not topk and filter:
                 query_result = full_collection_new.query(
+                    Query(field_name=v, vector=query_vector),
                     filter=filter,
-                    vectors=VectorQuery(field_name=v, vector=query_vector),
                 )
             else:
                 query_result = full_collection_new.query(
-                    VectorQuery(field_name=v, vector=query_vector)
+                    Query(field_name=v, vector=query_vector)
                 )
             assert len(query_result) > 0, (
                 f"Expected at least 1 query result, but got {len(query_result)}"
@@ -684,7 +678,7 @@ class TestCollectionQuery:
                 )
                 query_vector = doc_vectors[v]
                 query_result = full_collection_ivf.query(
-                    VectorQuery(field_name=v, vector=query_vector),
+                    Query(field_name=v, vector=query_vector),
                     topk=1024,
                 )
                 assert len(query_result) > 0, (
@@ -711,16 +705,16 @@ class TestCollectionQuery:
         single_query_results = {}
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
             single_query_results[v] = full_collection.query(
-                VectorQuery(field_name=v, vector=doc_vectors[v])
+                Query(field_name=v, vector=doc_vectors[v])
             )
         expected_rrf_scores = calculate_multi_vector_rrf_scores(single_query_results)
         multi_query_vectors = []
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
-            multi_query_vectors.append(VectorQuery(field_name=v, vector=doc_vectors[v]))
+            multi_query_vectors.append(Query(field_name=v, vector=doc_vectors[v]))
 
         rrf_reranker = RrfReRanker(topn=3)
         multi_query_result = full_collection.query(
-            vectors=multi_query_vectors,
+            multi_query_vectors,
             reranker=rrf_reranker,
         )
         assert len(multi_query_result) > 0, (
@@ -777,7 +771,7 @@ class TestCollectionQuery:
         single_query_results = {}
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
             single_query_results[v] = full_collection.query(
-                VectorQuery(field_name=v, vector=doc_vectors[v])
+                Query(field_name=v, vector=doc_vectors[v])
             )
         expected_weighted_scores = calculate_multi_vector_weighted_scores(
             single_query_results, weights, MetricType.IP
@@ -785,10 +779,10 @@ class TestCollectionQuery:
 
         multi_query_vectors = []
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
-            multi_query_vectors.append(VectorQuery(field_name=v, vector=doc_vectors[v]))
+            multi_query_vectors.append(Query(field_name=v, vector=doc_vectors[v]))
 
         multi_query_result = full_collection.query(
-            vectors=multi_query_vectors,
+            multi_query_vectors,
             reranker=weighted_reranker,
         )
         assert len(multi_query_result) > 0, (
@@ -848,6 +842,9 @@ class TestCollectionQuery:
     @pytest.mark.parametrize("doc_num", [10])
     @pytest.mark.parametrize("topk", [1024])
     @pytest.mark.parametrize("filter", ["int32_field >= 3 and int32_field <= 7"])
+    @pytest.mark.parametrize(
+        "full_schema_new", [(True, True, HnswIndexParam())], indirect=True
+    )
     def test_query_vector_with_HnswQueryParam_valid(
         self,
         full_collection_new: Collection,
@@ -869,10 +866,8 @@ class TestCollectionQuery:
             )
             query_vector = doc_vectors[v]
             query_result = full_collection_new.query(
+                Query(field_name=v, vector=query_vector, param=HnswQueryParam(ef=ef)),
                 filter=filter,
-                vectors=VectorQuery(
-                    field_name=v, vector=query_vector, param=HnswQueryParam(ef=ef)
-                ),
                 topk=topk,
             )
             assert len(query_result) > 0, (
@@ -904,10 +899,10 @@ class TestCollectionQuery:
             query_vector = doc_vectors[v]
             with pytest.raises(Exception) as exc_info:
                 full_collection.query(
-                    filter=filter,
-                    vectors=VectorQuery(
+                    Query(
                         field_name=v, vector=query_vector, param=HnswQueryParam(ef=ef)
                     ),
+                    filter=filter,
                     topk=topk,
                 )
             assert INCOMPATIBLE_CONSTRUCTOR_ERROR_MSG in str(exc_info.value)
@@ -916,6 +911,9 @@ class TestCollectionQuery:
     @pytest.mark.parametrize("doc_num", [10])
     @pytest.mark.parametrize("topk", [10])
     @pytest.mark.parametrize("filter", ["int32_field >= 3 and int32_field <= 7"])
+    @pytest.mark.parametrize(
+        "full_schema_ivf", [(True, True, IVFIndexParam())], indirect=True
+    )
     def test_query_vector_with_IVFQueryParam_valid(
         self, full_collection_ivf: Collection, nprobe, doc_num, topk, filter
     ):
@@ -933,12 +931,12 @@ class TestCollectionQuery:
                 query_vector = doc_vectors[v]
 
                 query_result = full_collection_ivf.query(
-                    filter=filter,
-                    vectors=VectorQuery(
+                    Query(
                         field_name=v,
                         vector=query_vector,
                         param=IVFQueryParam(nprobe=nprobe),
                     ),
+                    filter=filter,
                     topk=topk,
                 )
                 assert len(query_result) > 0
@@ -975,12 +973,12 @@ class TestCollectionQuery:
                 query_vector = doc_vectors[v]
                 with pytest.raises(Exception) as exc_info:
                     full_collection_ivf.query(
-                        # filter=filter,
-                        vectors=VectorQuery(
+                        Query(
                             field_name=v,
                             vector=query_vector,
                             param=IVFQueryParam(nprobe=nprobe),
                         ),
+                        # filter=filter,
                         topk=topk,
                     )
                 assert INCOMPATIBLE_CONSTRUCTOR_ERROR_MSG in str(exc_info.value)
@@ -1003,10 +1001,10 @@ class TestCollectionQuery:
                 query_vector = doc_vectors[v]
                 if v in ["vector_fp16_field", "vector_fp32_field"]:
                     full_collection.query(
-                        filter=filter,
-                        vectors=VectorQuery(
+                        Query(
                             field_name=v, vector=query_vector, param=HnswIndexParam()
                         ),
+                        filter=filter,
                     )
         assert INCOMPATIBLE_FUNCTION_ERROR_MSG in str(exc_info.value)
 
@@ -1016,56 +1014,56 @@ class TestCollectionQuery:
         [
             (
                 "Non-existent vector field name",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="nonexistent_vector", vector=ref_dense_vector
                 ),
                 "Expected exception for non-existent vector field name",
             ),
             (
                 "Invalid vector data type for dense vector (string instead of list)",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="vector_fp32_field", vector="invalid_vector_data"
                 ),
                 "Expected exception for invalid dense vector data type",
             ),
             (
                 "Invalid vector data type for sparse vector (list instead of dict)",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="sparse_fp32", vector=[1.0, 2.0, 3.0]
                 ),
                 "Expected exception for invalid sparse vector data type",
             ),
             (
                 "Empty vector data for dense vector",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="vector_fp32_field", vector=[]
                 ),
                 "Expected exception for empty dense vector data",
             ),
             (
                 "Invalid dimension for dense vector",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="vector_fp32_field", vector=[1.0, 2.0]
                 ),  # Only 2 dimensions instead of 128
                 "Expected exception for invalid dense vector dimension",
             ),
             (
                 "Non-existent document ID for by_id query",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="vector_fp32_field", id="999"
                 ),  # Non-existent ID
                 "Expected exception for non-existent document ID",
             ),
             (
                 "Both vector and id specified (invalid combination)",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="vector_fp32_field", vector=ref_dense_vector, id="5"
                 ),
                 "Expected exception for specifying both vector and id",
             ),
             (
                 "Neither vector nor id specified",
-                lambda ref_dense_vector: VectorQuery(
+                lambda ref_dense_vector: Query(
                     field_name="vector_fp32_field"
                 ),  # Neither vector nor id
                 "Expected exception for specifying neither vector nor id",
@@ -1090,7 +1088,7 @@ class TestCollectionQuery:
         ref_dense_vector = ref_doc.vector("vector_fp32_field")
 
         with pytest.raises(Exception) as exc_info:
-            full_collection.query(vectors=[vector_query(ref_dense_vector)])
+            full_collection.query([vector_query(ref_dense_vector)])
         assert exc_info.value is not None, expected_error_msg
 
     @pytest.mark.parametrize("filter", ["int32_field >= 3 and int32_field <= 7"])
@@ -1110,8 +1108,8 @@ class TestCollectionQuery:
                 )
                 query_vector = doc_vectors[v]
                 full_collection.query(
+                    Query(field_name=v, vector=query_vector),
                     filter=filter,
-                    vectors=VectorQuery(field_name=v, vector=query_vector),
                     param=HnswIndexParam(),
                     topk=3,
                 )
@@ -1260,9 +1258,7 @@ class TestCollectionConcurrencyOperations:
                 else:
                     query_vector = [0.1] * 128
                     result = full_collection.query(
-                        VectorQuery(
-                            field_name="vector_fp32_field", vector=query_vector
-                        ),
+                        Query(field_name="vector_fp32_field", vector=query_vector),
                         topk=3,
                     )
 

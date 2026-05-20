@@ -123,8 +123,10 @@ PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidCollectionName, 2042,
 PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidPartitionName, 2043,
                                "Invalid partition name");
 PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidFieldName, 2044, "Invalid field name");
-PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidChannelCount, 2045, "Invalid field name");
-PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidReplicaCount, 2046, "Invalid field name");
+PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidChannelCount, 2045,
+                               "Invalid channel count");
+PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidReplicaCount, 2046,
+                               "Invalid replica count");
 PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidJson, 2047, "Invalid json");
 // used by master
 PROXIMA_ZVEC_ERROR_CODE_DEFINE(InvalidClusterConfig, 2048,

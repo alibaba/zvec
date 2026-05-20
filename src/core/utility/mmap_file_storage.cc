@@ -140,6 +140,11 @@ class MMapFileStorage : public IndexStorage {
       return shared_from_this();
     }
 
+    //! Stable base data pointer — valid for the lifetime of the mmap.
+    const uint8_t *base_data(void) const override {
+      return (const uint8_t *)segment_->data();
+    }
+
    private:
     IndexMapping::Segment *segment_{};
     MMapFileStorage *owner_{nullptr};

@@ -100,7 +100,8 @@ Examples:
       .value("IVF", IndexType::IVF)
       .value("FLAT", IndexType::FLAT)
       .value("INVERT", IndexType::INVERT)
-      .value("OMEGA", IndexType::OMEGA);
+      .value("OMEGA", IndexType::OMEGA)
+      .value("VAMANA", IndexType::VAMANA);
 }
 
 void ZVecPyTyping::bind_metric_types(pybind11::module_ &m) {

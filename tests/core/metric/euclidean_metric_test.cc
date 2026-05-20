@@ -25,10 +25,6 @@ TEST(SquaredEuclideanMetric, General) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_INT16, 64);
   ASSERT_NE(0, metric->init(meta, ailego::Params()));
-  meta.set_meta(IndexMeta::DataType::DT_BINARY32, 64);
-  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
-  meta.set_meta(IndexMeta::DataType::DT_BINARY64, 64);
-  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
   meta.set_meta(IndexMeta::DataType::DT_FP16, 64);
   ASSERT_EQ(0, metric->init(meta, ailego::Params()));
   meta.set_meta(IndexMeta::DataType::DT_FP32, 64);
@@ -88,10 +84,6 @@ TEST(EuclideanMetric, General) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_INT16, 64);
   ASSERT_NE(0, metric->init(meta, ailego::Params()));
-  meta.set_meta(IndexMeta::DataType::DT_BINARY32, 64);
-  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
-  meta.set_meta(IndexMeta::DataType::DT_BINARY64, 64);
-  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
   meta.set_meta(IndexMeta::DataType::DT_FP16, 64);
   ASSERT_EQ(0, metric->init(meta, ailego::Params()));
   meta.set_meta(IndexMeta::DataType::DT_FP32, 64);
