@@ -176,6 +176,7 @@ class HnswSparseStreamer : public IndexStreamer {
     }
   };
 
+  Stats stats_{};
   HnswSparseStreamerEntity entity_;
   HnswSparseAlgorithm::UPointer alg_;
   IndexMeta meta_{};
@@ -183,7 +184,6 @@ class HnswSparseStreamer : public IndexStreamer {
 
   IndexMetric::MatrixSparseDistance add_distance_{};
   IndexMetric::MatrixSparseDistance search_distance_{};
-  Stats stats_{};
   std::mutex mutex_{};
 
   size_t max_index_size_{0UL};

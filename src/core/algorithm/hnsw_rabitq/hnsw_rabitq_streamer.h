@@ -196,6 +196,7 @@ class HnswRabitqStreamer : public IndexStreamer {
     }
   };
 
+  Stats stats_{};
   HnswRabitqStreamerEntity entity_;
   HnswRabitqAlgorithm::UPointer alg_;
   IndexMeta meta_{};
@@ -211,8 +212,6 @@ class HnswRabitqStreamer : public IndexStreamer {
   HnswRabitqQueryAlgorithm::UPointer query_alg_;  // query algorithm
   // provider_ provides raw vector, which is used to build graph
   IndexProvider::Pointer provider_{};
-
-  Stats stats_{};
   std::mutex mutex_{};
 
   size_t max_index_size_{0UL};

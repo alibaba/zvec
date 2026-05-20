@@ -173,7 +173,6 @@ class VamanaStreamer : public IndexStreamer {
   size_t bruteforce_threshold_{VamanaEntity::kDefaultBruteForceThreshold};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};
-  float bf_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
 
   uint32_t magic_{0U};

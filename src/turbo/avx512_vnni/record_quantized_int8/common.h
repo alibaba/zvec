@@ -30,7 +30,7 @@
 #ifdef _MSC_VER
 #define TURBO_ALWAYS_INLINE __forceinline
 #else
-#define TURBO_ALWAYS_INLINE __attribute__((always_inline))
+#define TURBO_ALWAYS_INLINE inline __attribute__((always_inline))
 #endif
 
 namespace zvec::turbo::avx512_vnni::internal {

@@ -218,19 +218,20 @@ class VamanaEntity {
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const = 0;
   virtual const Neighbors get_neighbors(node_id_t id) const = 0;
 
-  virtual int add_vector(key_t key, const void *vec, node_id_t *id) {
+  virtual int add_vector(key_t /*key*/, const void * /*vec*/,
+                         node_id_t * /*id*/) {
     return IndexError_NotImplemented;
   }
-  virtual int add_vector_with_id(node_id_t id, const void *vec) {
+  virtual int add_vector_with_id(node_id_t /*id*/, const void * /*vec*/) {
     return IndexError_NotImplemented;
   }
   virtual int update_neighbors(
-      node_id_t id,
-      const std::vector<std::pair<node_id_t, dist_t>> &neighbors) {
+      node_id_t /*id*/,
+      const std::vector<std::pair<node_id_t, dist_t>> & /*neighbors*/) {
     return IndexError_NotImplemented;
   }
-  virtual void add_neighbor(node_id_t id, uint32_t size,
-                            node_id_t neighbor_id) {}
+  virtual void add_neighbor(node_id_t /*id*/, uint32_t /*size*/,
+                            node_id_t /*neighbor_id*/) {}
 
   // --- Neighbor distance storage (CSR-like, lazy-loaded) ---
   // Each node has max_degree dist_t slots, the i-th slot stores the distance
@@ -250,19 +251,20 @@ class VamanaEntity {
 
   // Get pointer to the distance array for node `id`.
   // Returns nullptr if dist storage is not loaded.
-  virtual const dist_t *get_neighbor_dists(node_id_t id) const {
+  virtual const dist_t *get_neighbor_dists(node_id_t /*id*/) const {
     return nullptr;
   }
 
   // Update all neighbor distances for node `id` from a prune result.
   virtual void update_neighbor_dists(
-      node_id_t id,
-      const std::vector<std::pair<node_id_t, dist_t>> &neighbors) {}
+      node_id_t /*id*/,
+      const std::vector<std::pair<node_id_t, dist_t>> & /*neighbors*/) {}
 
   // Set the distance for the `idx`-th neighbor of node `id`.
-  virtual void set_neighbor_dist(node_id_t id, uint32_t idx, dist_t dist) {}
+  virtual void set_neighbor_dist(node_id_t /*id*/, uint32_t /*idx*/,
+                                 dist_t /*dist*/) {}
 
-  virtual int dump(const IndexDumper::Pointer &dumper) {
+  virtual int dump(const IndexDumper::Pointer & /*dumper*/) {
     return IndexError_NotImplemented;
   }
 

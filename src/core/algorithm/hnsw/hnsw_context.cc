@@ -102,7 +102,7 @@ int HnswContext::update(const ailego::Params &params) {
     }
 
     if (params.has(p)) {
-      bool bf_enabled;
+      bool bf_enabled = false;
       params.get(p, &bf_enabled);
       if (bf_enabled ^ (filter_mode_ == VisitFilter::BloomFilter)) {
         need_update = true;

@@ -97,7 +97,7 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
   float qb = q_tail[1];
   float qs = q_tail[2];
 
-  for (int i = 0; i < n; ++i) {
+  for (size_t i = 0; i < n; ++i) {
     const float *m_tail = reinterpret_cast<const float *>(
         reinterpret_cast<const int8_t *>(vectors[i]) + original_dim);
     float ma = m_tail[0];
