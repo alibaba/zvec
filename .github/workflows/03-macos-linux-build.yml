@@ -115,6 +115,7 @@ jobs:
       - name: Run C++ Tests
         run: |
           cd "$GITHUB_WORKSPACE/build"
+          unset LD_LIBRARY_PATH
           cmake --build . --target unittest --parallel $NPROC
         shell: bash
 
