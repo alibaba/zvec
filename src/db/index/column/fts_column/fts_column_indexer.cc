@@ -343,32 +343,19 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_term_iterator(
   return create_term_iterator_from_raw(term, std::move(raw_data));
 }
 
-void FtsColumnIndexer::batch_get_postings(
-    const std::vector<std::string> &terms,
-    std::vector<std::string> *raw_postings) const {
-  raw_postings->clear();
-  raw_postings->resize(terms.size());
+std::vector<rocksdb::PinnableSlice> FtsColumnIndexer::batch_get_postings(
+    const std::vector<rocksdb::Slice> &terms) const {
+  std::vector<rocksdb::PinnableSlice> raw_postings(terms.size());
   if (terms.empty()) {
-    return;
+    return raw_postings;
   }
 
-  std::vector<rocksdb::Slice> key_slices;
-  key_slices.reserve(terms.size());
-  for (const auto &k : terms) {
-    key_slices.emplace_back(k);
-  }
   std::vector<rocksdb::ColumnFamilyHandle *> cfs(terms.size(), postings_cf_);
-  std::vector<rocksdb::PinnableSlice> pinnable_values(terms.size());
   std::vector<rocksdb::Status> statuses(terms.size());
-  ctx_->db_->MultiGet(ctx_->read_opts_, terms.size(), cfs.data(),
-                      key_slices.data(), pinnable_values.data(),
-                      statuses.data());
-  for (size_t i = 0; i < terms.size(); ++i) {
-    if (statuses[i].ok()) {
-      (*raw_postings)[i].assign(pinnable_values[i].data(),
-                                pinnable_values[i].size());
-    }
-  }
+  ctx_->db_->MultiGet(ctx_->read_opts_, terms.size(), cfs.data(), terms.data(),
+                      raw_postings.data(), statuses.data());
+  // Ignore failed lookups as callers can check via empty()
+  return raw_postings;
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
@@ -378,8 +365,12 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
   }
 
   const std::vector<std::string> &terms = phrase_node.terms;
-  std::vector<std::string> raw_postings;
-  batch_get_postings(terms, &raw_postings);
+  std::vector<rocksdb::Slice> term_slices;
+  term_slices.reserve(terms.size());
+  for (const auto &t : terms) {
+    term_slices.emplace_back(t);
+  }
+  auto raw_postings = batch_get_postings(term_slices);
 
   std::vector<DocIteratorPtr> term_iterators;
   term_iterators.reserve(terms.size());
@@ -389,7 +380,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
       return DocIteratorPtr{nullptr};
     }
     auto iter_result =
-        create_term_iterator_from_raw(terms[i], std::move(raw_postings[i]));
+        create_term_iterator_from_raw(terms[i], raw_postings[i].ToString());
     if (!iter_result.has_value()) {
       return iter_result;
     }
@@ -416,23 +407,20 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     return DocIteratorPtr{nullptr};
   }
 
-  std::vector<std::string> term_keys;
+  std::vector<rocksdb::Slice> term_key_slices;
   std::vector<size_t> term_child_indices;
-  term_keys.reserve(and_node.children.size());
+  term_key_slices.reserve(and_node.children.size());
   term_child_indices.reserve(and_node.children.size());
 
   for (size_t i = 0; i < and_node.children.size(); ++i) {
     const auto &child = and_node.children[i];
     if (child && child->type() == FtsNodeType::TERM) {
-      term_keys.push_back(static_cast<const TermNode &>(*child).term);
+      term_key_slices.emplace_back(static_cast<const TermNode &>(*child).term);
       term_child_indices.push_back(i);
     }
   }
 
-  std::vector<std::string> term_raw_postings;
-  if (!term_keys.empty()) {
-    batch_get_postings(term_keys, &term_raw_postings);
-  }
+  auto term_raw_postings = batch_get_postings(term_key_slices);
 
   std::vector<DocIteratorPtr> must_iterators;
   std::vector<DocIteratorPtr> must_not_iterators;
@@ -445,10 +433,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     DocIteratorPtr iter;
     if (batched_cursor < term_child_indices.size() &&
         term_child_indices[batched_cursor] == i) {
-      std::string &raw = term_raw_postings[batched_cursor];
+      rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
       const std::string &term = static_cast<const TermNode &>(*child).term;
       if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
+        auto iter_result = create_term_iterator_from_raw(term, raw.ToString());
         if (!iter_result.has_value()) {
           return iter_result;
         }
@@ -495,23 +483,20 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     return DocIteratorPtr{nullptr};
   }
 
-  std::vector<std::string> term_keys;
+  std::vector<rocksdb::Slice> term_key_slices;
   std::vector<size_t> term_child_indices;
-  term_keys.reserve(or_node.children.size());
+  term_key_slices.reserve(or_node.children.size());
   term_child_indices.reserve(or_node.children.size());
 
   for (size_t i = 0; i < or_node.children.size(); ++i) {
     const auto &child = or_node.children[i];
     if (child && child->type() == FtsNodeType::TERM) {
-      term_keys.push_back(static_cast<const TermNode &>(*child).term);
+      term_key_slices.emplace_back(static_cast<const TermNode &>(*child).term);
       term_child_indices.push_back(i);
     }
   }
 
-  std::vector<std::string> term_raw_postings;
-  if (!term_keys.empty()) {
-    batch_get_postings(term_keys, &term_raw_postings);
-  }
+  auto term_raw_postings = batch_get_postings(term_key_slices);
 
   std::vector<DocIteratorPtr> positive_iterators;
   std::vector<DocIteratorPtr> must_not_iterators;
@@ -524,10 +509,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     DocIteratorPtr iter;
     if (batched_cursor < term_child_indices.size() &&
         term_child_indices[batched_cursor] == i) {
-      std::string &raw = term_raw_postings[batched_cursor];
+      rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
       const std::string &term = static_cast<const TermNode &>(*child).term;
       if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
+        auto iter_result = create_term_iterator_from_raw(term, raw.ToString());
         if (!iter_result.has_value()) {
           return iter_result;
         }
