@@ -33,8 +33,14 @@ jobs:
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
             -o Dpkg::Lock::Timeout=300 \
-            python3-pybind11 pybind11-dev
+            ccache python3-pybind11 pybind11-dev
         shell: bash
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-riscv64-${{ runner.os }}-gcc
+          max-size: 150M
 
       - name: Build from source
         run: |
@@ -45,7 +51,9 @@ jobs:
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TOOLS=ON \
-            -DBUILD_PYTHON_BINDINGS=ON
+            -DBUILD_PYTHON_BINDINGS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           make -C build -j"$NPROC"
         shell: bash
 
@@ -92,8 +100,14 @@ jobs:
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
             -o Dpkg::Lock::Timeout=300 \
-            python3-pybind11 pybind11-dev libgtest-dev liburing-dev
+            ccache python3-pybind11 pybind11-dev libgtest-dev liburing-dev
         shell: bash
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-riscv64-${{ runner.os }}-gcc
+          max-size: 150M
 
       - name: Reconfigure build directory
         run: |
@@ -102,7 +116,9 @@ jobs:
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TOOLS=ON \
-            -DBUILD_PYTHON_BINDINGS=ON
+            -DBUILD_PYTHON_BINDINGS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
 
       - name: Run C++ Tests
@@ -145,6 +161,14 @@ jobs:
           echo "$($PYTHON -c 'import site; print(site.USER_BASE)')/bin" >> "$GITHUB_PATH"
         shell: bash
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: linux-riscv64-${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            linux-riscv64-${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
           sudo mkdir -p /var/lib/dpkg/updates
@@ -157,12 +181,18 @@ jobs:
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
             -o Dpkg::Lock::Timeout=300 \
-            libgtest-dev liburing-dev
+            ccache libgtest-dev liburing-dev
             
           $PYTHON -m pip install --upgrade pip
           $PYTHON -m pip install numpy==2.2.2 cmake==3.30.0 ninja==1.11.1.1 --index-url "$RISE_PYPI"
           $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm pytest-xdist
         shell: bash
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-riscv64-${{ runner.os }}-gcc
+          max-size: 150M
 
       - name: Reconfigure build directory
         run: |
@@ -172,6 +202,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TOOLS=ON \
             -DBUILD_PYTHON_BINDINGS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -Dpybind11_DIR="$($PYTHON -c 'import pybind11; print(pybind11.get_cmake_dir())')"
         shell: bash
 
@@ -184,7 +216,9 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           $PYTHON -m pip install -v . \
             --no-build-isolation \
-            --config-settings='cmake.define.BUILD_TOOLS="ON"'
+            --config-settings='cmake.define.BUILD_TOOLS="ON"' \
+            --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
+            --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
         shell: bash
 
       - name: Run Python Tests
@@ -211,12 +245,35 @@ jobs:
           tar -xf linux-riscv64-workspace.tar
         shell: bash
 
+      - name: Install ccache
+        run: |
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/
+          sudo touch /var/lib/dpkg/status
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            ccache
+        shell: bash
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-riscv64-${{ runner.os }}-gcc
+          max-size: 150M
+
       - name: Run C++ Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c++"
           NPROC=$(nproc 2>/dev/null || echo 2)
           mkdir -p build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           make -j "$NPROC"
           ./db-example
           ./core-example
@@ -241,12 +298,35 @@ jobs:
           tar -xf linux-riscv64-workspace.tar
         shell: bash
 
+      - name: Install ccache
+        run: |
+          sudo mkdir -p /var/lib/dpkg/updates
+          sudo mkdir -p /var/lib/apt/lists/
+          sudo mkdir -p /var/cache/apt/archives/
+          sudo touch /var/lib/dpkg/status
+          sudo apt-get purge -y byobu || true
+          sudo apt-get update -o Dpkg::Lock::Timeout=300
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            -o Dpkg::Lock::Timeout=300 \
+            ccache
+        shell: bash
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-riscv64-${{ runner.os }}-gcc
+          max-size: 150M
+
       - name: Run C Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c"
           NPROC=$(nproc 2>/dev/null || echo 2)
           mkdir -p build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           make -j "$NPROC"
           ./c_api_basic_example
           ./c_api_collection_schema_example
