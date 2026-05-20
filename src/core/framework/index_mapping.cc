@@ -135,7 +135,7 @@ int IndexMapping::create(const std::string &path, size_t seg_meta_capacity) {
 
 int IndexMapping::init_meta_section() {
   if (current_header_start_offset_ % ailego::MemoryHelper::PageSize() != 0) {
-    LOG_ERROR("File offset %zu is not a multiple of the page size: %zu",
+    LOG_ERROR("File offset %llu is not a multiple of the page size: %zu",
               current_header_start_offset_, ailego::MemoryHelper::PageSize());
     return IndexError_InvalidValue;
   }
@@ -461,7 +461,7 @@ int IndexMapping::flush(void) {
       auto header = item.second;
       if (file_.write(header_start_offset, header, header->content_offset) !=
           header->content_offset) {
-        LOG_ERROR("Failed to write segment, size %lu, %s",
+        LOG_ERROR("Failed to write segment, size %llu, %s",
                   header->content_offset,
                   ailego::FileHelper::GetLastErrorString().c_str());
         return IndexError_WriteData;

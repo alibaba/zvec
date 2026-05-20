@@ -149,6 +149,7 @@ add_library(Arrow::arrow_depends UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_depends PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ARROW_DEPENDS}"
 )
 add_dependencies(Arrow::arrow_depends ARROW.BUILD)
@@ -158,6 +159,7 @@ add_library(Arrow::arrow_static UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_static PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ARROW}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_STATIC" #TODO(windows): see if this can be removed
@@ -168,6 +170,7 @@ add_library(Arrow::parquet_static UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::parquet_static PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_PARQUET}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static"
         INTERFACE_COMPILE_DEFINITIONS "PARQUET_STATIC"
@@ -178,6 +181,7 @@ add_library(Arrow::arrow_compute UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_compute PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_COMPUTE}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_COMPUTE_STATIC"
@@ -188,6 +192,7 @@ add_library(Arrow::arrow_acero UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_acero PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ACERO}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static;Arrow::arrow_compute"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_ACERO_STATIC"
@@ -198,6 +203,7 @@ add_library(Arrow::arrow_dataset UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_dataset PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
         IMPORTED_LOCATION "${LIB_ARROW_DATASET}"
         INTERFACE_LINK_LIBRARIES "Arrow::arrow_depends;Arrow::arrow_static;Arrow::arrow_compute;Arrow::arrow_acero"
         INTERFACE_COMPILE_DEFINITIONS "ARROW_DS_STATIC"

@@ -108,28 +108,6 @@ class IndexMetaHelper {
         std::cerr << "Not supported type(" << type << ") for IP" << std::endl;
         return false;
       }
-    } else if (method == std::string("Cosine")) {
-      if (feature_type == IndexMeta::DataType::DT_FP32) {
-        meta.set_metric("Cosine", 0, std::move(params));
-      } else if (feature_type == IndexMeta::DataType::DT_INT8) {
-        meta.set_metric("Cosine", 0, std::move(params));
-      } else if (feature_type == IndexMeta::DataType::DT_FP16) {
-        meta.set_metric("Cosine", 0, std::move(params));
-      } else {
-        std::cerr << "Not supported type(" << type << ") for Cosine"
-                  << std::endl;
-        return false;
-      }
-    } else if (method == std::string("HAMMING")) {
-      if (feature_type == IndexMeta::DataType::DT_BINARY32) {
-        meta.set_metric("Hamming", 0, std::move(params));
-      } else if (feature_type == IndexMeta::DataType::DT_BINARY64) {
-        meta.set_metric("Hamming", 0, std::move(params));
-      } else {
-        std::cerr << "Not supported type(" << type << ") for hamming"
-                  << std::endl;
-        return false;
-      }
     } else {
       std::cerr << "Not supported method: " << method << std::endl;
       return false;
