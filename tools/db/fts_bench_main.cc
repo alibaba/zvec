@@ -192,8 +192,8 @@ static bool open_fts_store(RocksdbContext *store, const std::string &field_name,
         RocksdbContext::Args{data_dir, cf_names, nullptr, per_cf_merge_ops},
         false);
   } else {
-    status = store->create(
-        RocksdbContext::Args{data_dir, cf_names, nullptr, per_cf_merge_ops});
+    status = store->create(RocksdbContext::Args{data_dir, cf_names, nullptr,
+                                                per_cf_merge_ops, true});
   }
   if (!status.ok()) {
     fprintf(stderr, "ERROR: Failed to open RocksdbStore at [%s], status[%s]\n",

@@ -38,10 +38,12 @@ struct RocksdbContext {
     std::shared_ptr<rocksdb::MergeOperator> merge_op;
     std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
         per_cf_merge_ops;
+    bool enable_hash_skiplist = false;
   };
   std::unique_ptr<rocksdb::DB> db_{nullptr};
   std::string db_path_;
   bool read_only_;
+  bool enable_hash_skiplist_{false};
   std::vector<rocksdb::ColumnFamilyHandle *> cf_handles_;
   rocksdb::Options create_opts_;
   rocksdb::WriteOptions write_opts_;

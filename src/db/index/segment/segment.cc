@@ -4513,9 +4513,10 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   // Whether side CFs are available after open
   bool has_side_cfs = create;
 
+  bool enable_hash_skiplist = true;
   if (create) {
-    s = fts_ctx_->create(
-        RocksdbContext::Args{fts_path, cf_names, nullptr, per_cf_merge_ops});
+    s = fts_ctx_->create(RocksdbContext::Args{
+        fts_path, cf_names, nullptr, per_cf_merge_ops, enable_hash_skiplist});
   } else {
     // Try opening with side CFs first (un-dumped mutable segment).
     // If they don't exist (post-dump), retry without them.
@@ -4531,7 +4532,7 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     }
     s = fts_ctx_->open(
         RocksdbContext::Args{fts_path, cf_names_with_side, nullptr,
-                             per_cf_merge_ops_with_side},
+                             per_cf_merge_ops_with_side, enable_hash_skiplist},
         options_.read_only_);
     if (s.ok()) {
       has_side_cfs = true;

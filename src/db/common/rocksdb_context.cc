@@ -15,6 +15,8 @@
 
 #include "rocksdb_context.h"
 #include <rocksdb/filter_policy.h>
+#include <rocksdb/memtablerep.h>
+#include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/checkpoint.h>
@@ -33,6 +35,7 @@ Status RocksdbContext::create(
 
 Status RocksdbContext::create(Args args) {
   per_cf_merge_ops_ = std::move(args.per_cf_merge_ops);
+  enable_hash_skiplist_ = args.enable_hash_skiplist;
 
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -108,6 +111,7 @@ Status RocksdbContext::open(const std::string &db_path, bool read_only,
 
 Status RocksdbContext::open(Args args, bool read_only) {
   per_cf_merge_ops_ = std::move(args.per_cf_merge_ops);
+  enable_hash_skiplist_ = args.enable_hash_skiplist;
 
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -287,6 +291,18 @@ void RocksdbContext::prepare_options(
 
   // Disable direct reads (use buffered I/O instead)
   create_opts_.use_direct_reads = false;
+
+  // Hash skip list memtable for prefix-based lookups
+  if (enable_hash_skiplist_) {
+    create_opts_.prefix_extractor.reset(rocksdb::NewCappedPrefixTransform(8));
+    create_opts_.memtable_factory.reset(rocksdb::NewHashSkipListRepFactory(
+        1000000,  // bucket_count
+        4,        // skiplist_height
+        4         // skiplist_branching_factor
+        ));
+    create_opts_.allow_concurrent_memtable_write = false;
+    read_opts_.total_order_seek = true;
+  }
 }
 
 
