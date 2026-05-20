@@ -495,24 +495,61 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     return DocIteratorPtr{nullptr};
   }
 
+  std::vector<std::string> term_keys;
+  std::vector<size_t> term_child_indices;
+  term_keys.reserve(or_node.children.size());
+  term_child_indices.reserve(or_node.children.size());
+
+  for (size_t i = 0; i < or_node.children.size(); ++i) {
+    const auto &child = or_node.children[i];
+    if (child && child->type() == FtsNodeType::TERM) {
+      term_keys.push_back(static_cast<const TermNode &>(*child).term);
+      term_child_indices.push_back(i);
+    }
+  }
+
+  std::vector<std::string> term_raw_postings;
+  if (!term_keys.empty()) {
+    batch_get_postings(term_keys, &term_raw_postings);
+  }
+
   std::vector<DocIteratorPtr> positive_iterators;
   std::vector<DocIteratorPtr> must_not_iterators;
+  size_t batched_cursor = 0;
 
-  for (const auto &child : or_node.children) {
+  for (size_t i = 0; i < or_node.children.size(); ++i) {
+    const auto &child = or_node.children[i];
     const bool is_must_not = child->must_not;
 
-    auto iter_result = build_iterator(*child);
-    if (!iter_result.has_value()) {
-      return iter_result;
+    DocIteratorPtr iter;
+    if (batched_cursor < term_child_indices.size() &&
+        term_child_indices[batched_cursor] == i) {
+      std::string &raw = term_raw_postings[batched_cursor];
+      const std::string &term = static_cast<const TermNode &>(*child).term;
+      if (!raw.empty()) {
+        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
+        if (!iter_result.has_value()) {
+          return iter_result;
+        }
+        iter = std::move(iter_result.value());
+      }
+      ++batched_cursor;
+    } else {
+      auto iter_result = build_iterator(*child);
+      if (!iter_result.has_value()) {
+        return iter_result;
+      }
+      iter = std::move(iter_result.value());
     }
-    if (!iter_result.value()) {
+
+    if (!iter) {
       continue;
     }
 
     if (is_must_not) {
-      must_not_iterators.push_back(std::move(iter_result.value()));
+      must_not_iterators.push_back(std::move(iter));
     } else {
-      positive_iterators.push_back(std::move(iter_result.value()));
+      positive_iterators.push_back(std::move(iter));
     }
   }
 
