@@ -135,6 +135,7 @@ jobs:
           ./db-example
           ./core-example
           ./ailego-example
+          ./omega-example
         shell: bash
 
       - name: Run C Examples

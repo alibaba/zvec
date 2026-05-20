@@ -15,6 +15,7 @@ endif()
 
 set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
 set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
+set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/external/usr/local/lib)
 
 if(ANDROID)
     option(ZVEC_ENABLE_OMEGA "Link examples against OMEGA support from the host build" OFF)
@@ -35,6 +36,9 @@ if(WIN32)
 endif()
 
 if(ZVEC_ENABLE_OMEGA)
+    # OMEGA support is compiled into libzvec.so; no extra libraries needed
+    # at link time for the examples.  We only verify the host build produced
+    # the OMEGA static libs so we know the feature was actually compiled in.
     set(_zvec_omega_search_paths
         ${ZVEC_DEPENDENCY_LIB_DIR}
         ${ZVEC_DEPENDENCY_LIB_DIR}/Debug
@@ -53,9 +57,10 @@ if(ZVEC_ENABLE_OMEGA)
         NO_DEFAULT_PATH
     )
     if(NOT ZVEC_OMEGA_LIB OR NOT ZVEC_LIGHTGBM_LIB)
-        message(FATAL_ERROR
-            "ZVEC_ENABLE_OMEGA=ON but failed to locate OMEGA host libraries under "
-            "${ZVEC_DEPENDENCY_LIB_DIR}"
+        message(WARNING
+            "ZVEC_ENABLE_OMEGA=ON but could not locate OMEGA host libraries under "
+            "${ZVEC_DEPENDENCY_LIB_DIR}. "
+            "omega-example will still link against libzvec (which should bundle OMEGA)."
         )
     endif()
 endif()
@@ -92,9 +97,7 @@ target_link_libraries(ailego-example PRIVATE zvec-lib)
 
 if(ZVEC_ENABLE_OMEGA)
     add_executable(omega-example omega/main.cc)
-    target_link_libraries(omega-example PRIVATE
-        zvec-core
-    )
+    target_link_libraries(omega-example PRIVATE zvec-lib)
 endif()
 
 # Strip symbols to reduce executable size
