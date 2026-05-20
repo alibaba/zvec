@@ -17,7 +17,7 @@
 #include <string.h>
 #include "zvec/c_api.h"
 
-static ZVecErrorCode check(ZVecErrorCode error, const char *context) {
+static zvec_error_code_t check(zvec_error_code_t error, const char *context) {
   if (error != ZVEC_OK) {
     char *error_msg = NULL;
     zvec_get_last_error(&error_msg);
@@ -28,15 +28,15 @@ static ZVecErrorCode check(ZVecErrorCode error, const char *context) {
   return error;
 }
 
-static ZVecErrorCode create_omega_collection(ZVecCollection **collection) {
-  ZVecCollectionSchema *schema =
+static zvec_error_code_t create_omega_collection(zvec_collection_t **collection) {
+  zvec_collection_schema_t *schema =
       zvec_collection_schema_create("omega_collection");
-  ZVecCollectionOptions *options = NULL;
-  ZVecIndexParams *invert_params = NULL;
-  ZVecIndexParams *omega_params = NULL;
-  ZVecFieldSchema *id_field = NULL;
-  ZVecFieldSchema *embedding_field = NULL;
-  ZVecErrorCode error = ZVEC_OK;
+  zvec_collection_options_t *options = NULL;
+  zvec_index_params_t *invert_params = NULL;
+  zvec_index_params_t *omega_params = NULL;
+  zvec_field_schema_t *id_field = NULL;
+  zvec_field_schema_t *embedding_field = NULL;
+  zvec_error_code_t error = ZVEC_OK;
 
   if (!schema) {
     return ZVEC_ERROR_INTERNAL_ERROR;
@@ -82,11 +82,11 @@ cleanup:
 }
 
 int main(void) {
-  ZVecCollection *collection = NULL;
-  ZVecVectorQuery *query = NULL;
-  ZVecOmegaQueryParams *omega_query = NULL;
-  ZVecDoc *docs[2] = {NULL, NULL};
-  ZVecDoc **results = NULL;
+  zvec_collection_t *collection = NULL;
+  zvec_vector_query_t *query = NULL;
+  zvec_omega_query_params_t *omega_query = NULL;
+  zvec_doc_t *docs[2] = {NULL, NULL};
+  zvec_doc_t **results = NULL;
   size_t result_count = 0;
   int exit_code = 1;
   float vector1[] = {1.0f, 0.1f, 0.1f, 0.1f};
@@ -120,7 +120,7 @@ int main(void) {
   {
     size_t success_count = 0;
     size_t error_count = 0;
-    if (check(zvec_collection_insert(collection, (const ZVecDoc **)docs, 2,
+    if (check(zvec_collection_insert(collection, (const zvec_doc_t **)docs, 2,
                                      &success_count, &error_count),
               "zvec_collection_insert") != ZVEC_OK) {
       goto cleanup;
