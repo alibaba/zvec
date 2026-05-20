@@ -943,9 +943,12 @@ zvec_index_params_get_hnsw_ef_construction(const zvec_index_params_t *params);
  * @param ef_groundtruth ef value used for ground-truth generation
  * @return ZVEC_OK on success, error code on failure
  */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_omega_training_params(
-    zvec_index_params_t *params, uint32_t min_vector_threshold,
-    size_t num_training_queries, int ef_training, int ef_groundtruth);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_omega_training_params(zvec_index_params_t *params,
+                                            uint32_t min_vector_threshold,
+                                            size_t num_training_queries,
+                                            int ef_training,
+                                            int ef_groundtruth);
 
 /**
  * @brief Set IVF specific parameters
@@ -1201,16 +1204,17 @@ zvec_query_params_omega_get_ef(const zvec_omega_query_params_t *params);
  * @param target_recall Target recall
  * @return zvec_error_code_t Error code
  */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_omega_set_target_recall(
-    zvec_omega_query_params_t *params, float target_recall);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_omega_set_target_recall(zvec_omega_query_params_t *params,
+                                          float target_recall);
 
 /**
  * @brief Get target recall
  * @param params OMEGA query parameters pointer
  * @return float Target recall
  */
-ZVEC_EXPORT float ZVEC_CALL
-zvec_query_params_omega_get_target_recall(const zvec_omega_query_params_t *params);
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_omega_get_target_recall(
+    const zvec_omega_query_params_t *params);
 
 /**
  * @brief Set search radius
@@ -1218,8 +1222,8 @@ zvec_query_params_omega_get_target_recall(const zvec_omega_query_params_t *param
  * @param radius Search radius
  * @return zvec_error_code_t Error code
  */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_query_params_omega_set_radius(zvec_omega_query_params_t *params, float radius);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_omega_set_radius(
+    zvec_omega_query_params_t *params, float radius);
 
 /**
  * @brief Get search radius

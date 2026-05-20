@@ -47,8 +47,7 @@ class IndexParams {
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
            type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
-           type_ == IndexType::OMEGA ||
-           type_ == IndexType::VAMANA;
+           type_ == IndexType::OMEGA || type_ == IndexType::VAMANA;
   }
 
   IndexType type() const {

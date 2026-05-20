@@ -54,8 +54,8 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 };
 
 std::unordered_set<IndexType> support_dense_vector_index = {
-    IndexType::FLAT, IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::IVF,
-    IndexType::OMEGA, IndexType::VAMANA};
+    IndexType::FLAT, IndexType::HNSW,  IndexType::HNSW_RABITQ,
+    IndexType::IVF,  IndexType::OMEGA, IndexType::VAMANA};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};

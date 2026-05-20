@@ -223,7 +223,13 @@ class VectorSchema:
         data_type: DataType,
         dimension: Optional[int] = 0,
         index_param: Optional[
-            Union[HnswIndexParam, HnswRabitqIndexParam, FlatIndexParam, IVFIndexParam, OmegaIndexParam]
+            Union[
+                HnswIndexParam,
+                HnswRabitqIndexParam,
+                FlatIndexParam,
+                IVFIndexParam,
+                OmegaIndexParam,
+            ]
         ] = None,
     ):
         if name is None or not isinstance(name, str):
@@ -279,7 +285,13 @@ class VectorSchema:
     @property
     def index_param(
         self,
-    ) -> Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]:
+    ) -> Union[
+        HnswIndexParam,
+        HnswRabitqIndexParam,
+        IVFIndexParam,
+        FlatIndexParam,
+        OmegaIndexParam,
+    ]:
         """Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, OmegaIndexParam]: Index configuration for the vector."""
         return self._cpp_obj.index_param
 

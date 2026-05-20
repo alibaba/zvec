@@ -63,7 +63,9 @@ class Query:
     field_name: str
     id: Optional[str] = None
     vector: VectorType = None
-    param: Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, OmegaQueryParam]] = None
+    param: Optional[
+        Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, OmegaQueryParam]
+    ] = None
 
     def has_id(self) -> bool:
         """Check if the query is based on a document ID.
