@@ -46,6 +46,9 @@ class DisjunctionIterator : public DocIterator {
   void set_min_competitive_score(float min_score) override;
 
  private:
+  void resort_postings();
+
+ private:
   std::vector<DocIteratorPtr> sub_iterators_;  // Owns the sub-iterators
   std::vector<DocIterator *> postings_;  // Pointers for fast sorting (WAND)
   std::vector<DocIterator *> matching_iterators_;  // Current doc matches

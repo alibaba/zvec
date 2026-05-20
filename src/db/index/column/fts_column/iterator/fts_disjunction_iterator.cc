@@ -17,6 +17,25 @@
 
 namespace zvec::fts {
 
+namespace {
+
+// Move element at `idx` forward (toward higher indices) to restore sorted
+// order. Only the element at `idx` may be out of place; all other elements
+// must already be sorted.
+inline void sift_forward(std::vector<DocIterator *> &vec, size_t idx) {
+  DocIterator *elem = vec[idx];
+  uint32_t elem_doc = elem->doc_id();
+  size_t pos = idx;
+  size_t end = vec.size();
+  while (pos + 1 < end && vec[pos + 1]->doc_id() < elem_doc) {
+    vec[pos] = vec[pos + 1];
+    ++pos;
+  }
+  vec[pos] = elem;
+}
+
+}  // namespace
+
 DisjunctionIterator::DisjunctionIterator(
     std::vector<DocIteratorPtr> sub_iterators)
     : sub_iterators_(std::move(sub_iterators)) {
@@ -29,10 +48,21 @@ DisjunctionIterator::DisjunctionIterator(
     iter->next_doc();
     postings_.push_back(iter.get());
   }
+  // Initial sort to establish sorted order
+  resort_postings();
 }
 
 void DisjunctionIterator::set_min_competitive_score(float min_score) {
   min_competitive_score_ = min_score;
+}
+
+// Re-establish sorted order of postings_ by doc_id ascending.
+// Called when multiple iterators may have changed position.
+void DisjunctionIterator::resort_postings() {
+  std::sort(postings_.begin(), postings_.end(),
+            [](const DocIterator *a, const DocIterator *b) {
+              return a->doc_id() < b->doc_id();
+            });
 }
 
 uint32_t DisjunctionIterator::next_doc() {
@@ -42,12 +72,11 @@ uint32_t DisjunctionIterator::next_doc() {
   }
   matching_iterators_.clear();
 
+  // Restore sorted order — multiple iterators may have changed
+  resort_postings();
+
   while (true) {
-    // 1. Sort iterators by their current doc_id ascending
-    std::sort(postings_.begin(), postings_.end(),
-              [](const DocIterator *a, const DocIterator *b) {
-                return a->doc_id() < b->doc_id();
-              });
+    // 1. postings_ is maintained in sorted order
 
     if (postings_.empty() || postings_[0]->doc_id() == NO_MORE_DOCS) {
       current_doc_id_ = NO_MORE_DOCS;
@@ -59,7 +88,9 @@ uint32_t DisjunctionIterator::next_doc() {
     size_t pivot_idx = 0;
     bool found_pivot = false;
     for (; pivot_idx < postings_.size(); ++pivot_idx) {
-      if (postings_[pivot_idx]->doc_id() == NO_MORE_DOCS) break;
+      if (postings_[pivot_idx]->doc_id() == NO_MORE_DOCS) {
+        break;
+      }
       partial_max_score += postings_[pivot_idx]->max_score();
       if (partial_max_score >= min_competitive_score_) {
         found_pivot = true;
@@ -132,6 +163,8 @@ uint32_t DisjunctionIterator::next_doc() {
               postings_[i]->advance(skip_target);
             }
           }
+          // Multiple iterators changed — full resort
+          resort_postings();
           continue;
         }
       }
@@ -150,7 +183,9 @@ uint32_t DisjunctionIterator::next_doc() {
       // 4. Iterator Jumping: advance the iterator with the smallest doc_id
       // to at least the pivot's doc_id. This bypasses scoring and checking
       // for all documents smaller than pivot_doc!
+      // Only postings_[0] changed — use sift_forward instead of full sort.
       postings_[0]->advance(pivot_doc);
+      sift_forward(postings_, 0);
     }
   }
 }
