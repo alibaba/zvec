@@ -17,6 +17,7 @@
 #include "bitpacked_simd_scalar.h"
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
     defined(_M_IX86)
+#include "bitpacked_simd_avx2.h"
 #include "bitpacked_simd_sse41.h"
 #endif
 
@@ -26,6 +27,14 @@ static DispatchTable init_dispatch() {
   DispatchTable t{};
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
     defined(_M_IX86)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    t.max_128 = avx2_max_128;
+    t.pack_uint32_128 = avx2_pack_uint32_128;
+    t.unpack_uint32_128 = avx2_unpack_uint32_128;
+    t.prefix_sum_128 = avx2_prefix_sum_128;
+    t.find_first_ge = avx2_find_first_ge;
+    return t;
+  }
   if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
     t.max_128 = sse41_max_128;
     t.pack_uint32_128 = sse41_pack_uint32_128;

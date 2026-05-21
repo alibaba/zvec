@@ -9,6 +9,11 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             PROPERTIES
             COMPILE_FLAGS "${INDEX_MARCH_FLAG_SSE}"
         )
+        set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/column/fts_column/posting/bitpacked_simd_avx2.cc
+            PROPERTIES
+            COMPILE_FLAGS "${INDEX_MARCH_FLAG_AVX2}"
+        )
     endif()
 endif()
 
