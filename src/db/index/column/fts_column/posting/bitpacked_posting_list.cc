@@ -35,7 +35,7 @@ namespace zvec::fts {
 // a precomputed BM25 score upper bound to support Block-Max WAND pruning.
 //
 // File layout:
-//   [FileHeader 16B] [SkipList N*12B] [Block0] [Block1] ...
+//   [Header 16B] [SkipList N*12B] [Block0] [Block1] ...
 //
 // Block layout:
 //   [BlockHeader 12B] [packed_deltas] [packed_tfs] [packed_dlens]
@@ -83,7 +83,7 @@ void BitPackedPostingList::pack_uint32(const uint32_t *in, uint8_t bitwidth,
   if (bitwidth == 0 || count == 0) return;
 
   // Full block path: 128 values at once via dispatch (SIMD or scalar)
-  if (count == BLOCK_SIZE) {
+  if (count == DOCS_PER_BLOCK) {
     simd::get_dispatch().pack_uint32_128(in, bitwidth, out);
     return;
   }
@@ -122,7 +122,7 @@ void BitPackedPostingList::unpack_uint32(const uint8_t *in, uint8_t bitwidth,
   }
 
   // Full block path: 128 values at once via dispatch (SIMD or scalar)
-  if (count == BLOCK_SIZE) {
+  if (count == DOCS_PER_BLOCK) {
     simd::get_dispatch().unpack_uint32_128(in, bitwidth, out);
     return;
   }
@@ -159,18 +159,18 @@ std::string BitPackedPostingList::encode(const uint32_t *doc_ids,
                                          const BM25Scorer &scorer) {
   if (count == 0) {
     // Encode an empty posting list (just the header)
-    FileHeader hdr{};
+    Header hdr{};
     hdr.magic = MAGIC;
     hdr.version = VERSION;
     hdr.num_docs = 0;
     hdr.num_blocks = 0;
-    std::string result(sizeof(FileHeader), '\0');
-    std::memcpy(result.data(), &hdr, sizeof(FileHeader));
+    std::string result(HEADER_SIZE, '\0');
+    std::memcpy(result.data(), &hdr, HEADER_SIZE);
     return result;
   }
 
   const uint32_t num_blocks =
-      static_cast<uint32_t>((count + BLOCK_SIZE - 1) / BLOCK_SIZE);
+      static_cast<uint32_t>((count + DOCS_PER_BLOCK - 1) / DOCS_PER_BLOCK);
 
   // ---- Phase 1: Compute delta-encoded doc_ids ----
   // Use 16-byte-aligned allocation so SIMD pack/max paths can use aligned loads
@@ -183,7 +183,7 @@ std::string BitPackedPostingList::encode(const uint32_t *doc_ids,
   // ---- Phase 2: Compute per-block metadata and packed sizes ----
   struct BlockInfo {
     size_t start;        // index into the arrays
-    uint32_t block_n;    // number of docs in this block
+    uint32_t num_docs;   // number of docs in this block
     uint8_t bw_id;       // bitwidth for doc_id deltas
     uint8_t bw_tf;       // bitwidth for tfs
     uint8_t bw_dl;       // bitwidth for doc_lens
@@ -194,26 +194,26 @@ std::string BitPackedPostingList::encode(const uint32_t *doc_ids,
   std::vector<BlockInfo> blocks(num_blocks);
 
   for (uint32_t b = 0; b < num_blocks; ++b) {
-    const size_t start = static_cast<size_t>(b) * BLOCK_SIZE;
-    const uint32_t block_n = static_cast<uint32_t>(
-        std::min(static_cast<size_t>(BLOCK_SIZE), count - start));
+    const size_t start = static_cast<size_t>(b) * DOCS_PER_BLOCK;
+    const uint32_t num_docs = static_cast<uint32_t>(
+        std::min(static_cast<size_t>(DOCS_PER_BLOCK), count - start));
 
     // Find max values in block for bitwidth computation
     uint32_t max_delta = 0, max_tf = 0, max_dl = 0;
     float block_max = 0.0f;
 
-    if (block_n == BLOCK_SIZE) {
+    if (num_docs == DOCS_PER_BLOCK) {
       // Dispatch max for full blocks (SSE4.1 or scalar fallback)
       simd::get_dispatch().max_128(deltas.get(), tfs, doc_lens, start,
-                                   BLOCK_SIZE, max_delta, max_tf, max_dl);
+                                   DOCS_PER_BLOCK, max_delta, max_tf, max_dl);
       // block_max_score still needs scalar loop (float BM25 scoring)
-      for (uint32_t i = 0; i < BLOCK_SIZE; ++i) {
+      for (uint32_t i = 0; i < DOCS_PER_BLOCK; ++i) {
         float s = scorer.score(df, tfs[start + i], doc_lens[start + i]);
         block_max = std::max(block_max, s);
       }
     } else {
       // Scalar path for tail blocks
-      for (uint32_t i = 0; i < block_n; ++i) {
+      for (uint32_t i = 0; i < num_docs; ++i) {
         max_delta = std::max(max_delta, deltas[start + i]);
         max_tf = std::max(max_tf, tfs[start + i]);
         max_dl = std::max(max_dl, doc_lens[start + i]);
@@ -223,31 +223,30 @@ std::string BitPackedPostingList::encode(const uint32_t *doc_ids,
     }
 
     blocks[b].start = start;
-    blocks[b].block_n = block_n;
+    blocks[b].num_docs = num_docs;
     blocks[b].bw_id = bits_needed(max_delta);
     blocks[b].bw_tf = bits_needed(max_tf);
     blocks[b].bw_dl = bits_needed(max_dl);
     blocks[b].max_score = block_max;
     // Full block (128 values): use SIMD packed size; tail block: use scalar
-    if (block_n == BLOCK_SIZE) {
+    if (num_docs == DOCS_PER_BLOCK) {
       blocks[b].packed_size = simd_packed_byte_size(blocks[b].bw_id) +
                               simd_packed_byte_size(blocks[b].bw_tf) +
                               simd_packed_byte_size(blocks[b].bw_dl);
     } else {
-      blocks[b].packed_size = packed_byte_size(blocks[b].bw_id, block_n) +
-                              packed_byte_size(blocks[b].bw_tf, block_n) +
-                              packed_byte_size(blocks[b].bw_dl, block_n);
+      blocks[b].packed_size = packed_byte_size(blocks[b].bw_id, num_docs) +
+                              packed_byte_size(blocks[b].bw_tf, num_docs) +
+                              packed_byte_size(blocks[b].bw_dl, num_docs);
     }
   }
 
   // ---- Phase 3: Compute total size and block offsets ----
-  const size_t header_size = sizeof(FileHeader);
   const size_t skip_list_size = num_blocks * sizeof(BlockMeta);
   const size_t block_header_size = sizeof(BlockHeader);
 
   // Compute block offsets, aligning each block start to a 16-byte boundary
   // so that SIMD decode paths can use aligned loads on the packed data.
-  size_t current_offset = align_up(header_size + skip_list_size, 16);
+  size_t current_offset = align_up(HEADER_SIZE + skip_list_size, 16);
   std::vector<uint32_t> block_offsets(num_blocks);
   for (uint32_t b = 0; b < num_blocks; ++b) {
     block_offsets[b] = static_cast<uint32_t>(current_offset);
@@ -262,17 +261,17 @@ std::string BitPackedPostingList::encode(const uint32_t *doc_ids,
   char *buf = result.data();
 
   // File Header
-  FileHeader hdr{};
+  Header hdr{};
   hdr.magic = MAGIC;
   hdr.version = VERSION;
   hdr.num_docs = static_cast<uint32_t>(count);
   hdr.num_blocks = num_blocks;
-  std::memcpy(buf, &hdr, sizeof(FileHeader));
+  std::memcpy(buf, &hdr, HEADER_SIZE);
 
   // Skip List
-  BlockMeta *skip = reinterpret_cast<BlockMeta *>(buf + header_size);
+  BlockMeta *skip = reinterpret_cast<BlockMeta *>(buf + HEADER_SIZE);
   for (uint32_t b = 0; b < num_blocks; ++b) {
-    const size_t last_idx = blocks[b].start + blocks[b].block_n - 1;
+    const size_t last_idx = blocks[b].start + blocks[b].num_docs - 1;
     skip[b].max_doc_id = doc_ids[last_idx];
     skip[b].block_offset = block_offsets[b];
     skip[b].block_max_score = blocks[b].max_score;
@@ -288,33 +287,33 @@ std::string BitPackedPostingList::encode(const uint32_t *doc_ids,
     bhdr.bitwidth_id = blocks[b].bw_id;
     bhdr.bitwidth_tf = blocks[b].bw_tf;
     bhdr.bitwidth_dl = blocks[b].bw_dl;
-    bhdr.num_docs = static_cast<uint8_t>(blocks[b].block_n);
+    bhdr.num_docs = static_cast<uint8_t>(blocks[b].num_docs);
     bhdr.block_max_score = blocks[b].max_score;
     std::memcpy(block_ptr, &bhdr, sizeof(BlockHeader));
 
     uint8_t *packed_ptr =
         reinterpret_cast<uint8_t *>(block_ptr + sizeof(BlockHeader));
 
-    const bool is_full_block = (blocks[b].block_n == BLOCK_SIZE);
+    const bool is_full_block = (blocks[b].num_docs == DOCS_PER_BLOCK);
 
     // Pack doc_id deltas
     const size_t id_bytes =
         is_full_block ? simd_packed_byte_size(blocks[b].bw_id)
-                      : packed_byte_size(blocks[b].bw_id, blocks[b].block_n);
-    pack_uint32(&deltas[blocks[b].start], blocks[b].bw_id, blocks[b].block_n,
+                      : packed_byte_size(blocks[b].bw_id, blocks[b].num_docs);
+    pack_uint32(&deltas[blocks[b].start], blocks[b].bw_id, blocks[b].num_docs,
                 packed_ptr);
     packed_ptr += id_bytes;
 
     // Pack term frequencies
     const size_t tf_bytes =
         is_full_block ? simd_packed_byte_size(blocks[b].bw_tf)
-                      : packed_byte_size(blocks[b].bw_tf, blocks[b].block_n);
-    pack_uint32(&tfs[blocks[b].start], blocks[b].bw_tf, blocks[b].block_n,
+                      : packed_byte_size(blocks[b].bw_tf, blocks[b].num_docs);
+    pack_uint32(&tfs[blocks[b].start], blocks[b].bw_tf, blocks[b].num_docs,
                 packed_ptr);
     packed_ptr += tf_bytes;
 
     // Pack document lengths
-    pack_uint32(&doc_lens[blocks[b].start], blocks[b].bw_dl, blocks[b].block_n,
+    pack_uint32(&doc_lens[blocks[b].start], blocks[b].bw_dl, blocks[b].num_docs,
                 packed_ptr);
   }
 
@@ -326,16 +325,16 @@ std::string BitPackedPostingList::encode(const uint32_t *doc_ids,
 // ============================================================
 
 int BitPackedPostingIterator::open(const char *data, size_t size) {
-  if (!data || size < sizeof(BitPackedPostingList::FileHeader)) {
+  if (!data || size < BitPackedPostingList::HEADER_SIZE) {
     LOG_ERROR(
         "BitPackedPostingIterator open failed: truncated data, "
         "size[%zu] expected_min[%zu]",
-        size, sizeof(BitPackedPostingList::FileHeader));
+        size, BitPackedPostingList::HEADER_SIZE);
     return -1;
   }
 
   // Parse file header
-  BitPackedPostingList::FileHeader hdr{};
+  BitPackedPostingList::Header hdr{};
   std::memcpy(&hdr, data, sizeof(hdr));
 
   if (hdr.magic != BitPackedPostingList::MAGIC) {
@@ -364,7 +363,7 @@ int BitPackedPostingIterator::open(const char *data, size_t size) {
   }
 
   // Validate skip list fits
-  const size_t skip_list_offset = sizeof(BitPackedPostingList::FileHeader);
+  const size_t skip_list_offset = BitPackedPostingList::HEADER_SIZE;
   const size_t skip_list_size =
       num_blocks_ * sizeof(BitPackedPostingList::BlockMeta);
   if (skip_list_offset + skip_list_size > size) {
@@ -428,7 +427,7 @@ void BitPackedPostingIterator::decode_block(size_t block_idx) {
       reinterpret_cast<const uint8_t *>(block_ptr + sizeof(bhdr));
 
   const bool is_full_block =
-      (bhdr.num_docs == BitPackedPostingList::BLOCK_SIZE);
+      (bhdr.num_docs == BitPackedPostingList::DOCS_PER_BLOCK);
 
   // Unpack doc_id deltas
   const size_t id_bytes =
@@ -436,7 +435,7 @@ void BitPackedPostingIterator::decode_block(size_t block_idx) {
           ? BitPackedPostingList::simd_packed_byte_size(bhdr.bitwidth_id)
           : BitPackedPostingList::packed_byte_size(bhdr.bitwidth_id,
                                                    bhdr.num_docs);
-  alignas(16) uint32_t deltas[BitPackedPostingList::BLOCK_SIZE];
+  alignas(16) uint32_t deltas[BitPackedPostingList::DOCS_PER_BLOCK];
   if (is_full_block) {
     // Fast path: use cached function pointer directly for full blocks
     unpack_fn_(packed_ptr, bhdr.bitwidth_id, deltas);
@@ -448,8 +447,8 @@ void BitPackedPostingIterator::decode_block(size_t block_idx) {
 
   // Reconstruct absolute doc_ids from deltas using prefix-sum
   if (is_full_block) {
-    prefix_sum_fn_(deltas, bhdr.min_doc_id, BitPackedPostingList::BLOCK_SIZE,
-                   block_doc_ids_);
+    prefix_sum_fn_(deltas, bhdr.min_doc_id,
+                   BitPackedPostingList::DOCS_PER_BLOCK, block_doc_ids_);
   } else {
     // Scalar prefix-sum for tail block
     block_doc_ids_[0] = bhdr.min_doc_id;

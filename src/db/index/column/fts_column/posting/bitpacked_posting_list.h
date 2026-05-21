@@ -28,7 +28,7 @@ namespace zvec::fts {
 
 class BitPackedPostingList {
  public:
-  static constexpr uint32_t BLOCK_SIZE = 128;
+  static constexpr uint32_t DOCS_PER_BLOCK = 128;
   static constexpr uint32_t MAGIC = 0x42504B44;  // "BPKD"
   static constexpr uint32_t VERSION = 1;
 
@@ -40,12 +40,13 @@ class BitPackedPostingList {
   };
 
   /// File header (16 bytes).
-  struct FileHeader {
+  struct Header {
     uint32_t magic;
     uint32_t version;
     uint32_t num_docs;
     uint32_t num_blocks;
   };
+  static constexpr size_t HEADER_SIZE = sizeof(Header);
 
   /// Block header (16 bytes, padded for SIMD alignment).
   struct BlockHeader {
@@ -83,7 +84,7 @@ class BitPackedPostingList {
 
   /// Pack \p count uint32 values (each using \p bitwidth bits) into \p out.
   /// \p out must have at least ceil(bitwidth * count / 8) bytes.
-  /// \p count must be <= BLOCK_SIZE (128).
+  /// \p count must be <= DOCS_PER_BLOCK (128).
   static void pack_uint32(const uint32_t *in, uint8_t bitwidth, uint32_t count,
                           uint8_t *out);
 
@@ -97,7 +98,7 @@ class BitPackedPostingList {
   static uint8_t bits_needed(uint32_t max_value);
 
   /// Compute packed byte size for \p count values at \p bitwidth bits each
-  /// (scalar format, used for tail blocks with count < BLOCK_SIZE).
+  /// (scalar format, used for tail blocks with count < DOCS_PER_BLOCK).
   static size_t packed_byte_size(uint8_t bitwidth, uint32_t count) {
     return (static_cast<size_t>(bitwidth) * count + 7) / 8;
   }
@@ -211,9 +212,9 @@ class BitPackedPostingIterator {
   size_t data_size_{0};
 
   // Current block state (decoded into stack arrays)
-  alignas(16) uint32_t block_doc_ids_[BitPackedPostingList::BLOCK_SIZE];
-  alignas(16) uint32_t block_tfs_[BitPackedPostingList::BLOCK_SIZE];
-  alignas(16) uint32_t block_doc_lens_[BitPackedPostingList::BLOCK_SIZE];
+  alignas(16) uint32_t block_doc_ids_[BitPackedPostingList::DOCS_PER_BLOCK];
+  alignas(16) uint32_t block_tfs_[BitPackedPostingList::DOCS_PER_BLOCK];
+  alignas(16) uint32_t block_doc_lens_[BitPackedPostingList::DOCS_PER_BLOCK];
   size_t current_block_idx_{0};
   uint32_t current_block_size_{0};
   size_t in_block_pos_{0};  ///< Position within current decoded block
