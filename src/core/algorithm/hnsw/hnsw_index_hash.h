@@ -141,7 +141,6 @@ class HnswIndexHashMap {
     auto idx = key >> mask_bits_;
     if (idx >= slots_.size()) {
       if (ailego_unlikely(idx >= slots_.capacity())) {
-        LOG_ERROR("no space to insert");
         return false;
       }
       for (auto i = slots_.size(); i <= idx; ++i) {
@@ -152,7 +151,6 @@ class HnswIndexHashMap {
     }
     auto it = slots_[idx].find(key, slot_items_, slot_loc_mask_);
     if (ailego_unlikely(it == nullptr)) {
-      LOG_ERROR("no space to insert");
       return false;
     }
 

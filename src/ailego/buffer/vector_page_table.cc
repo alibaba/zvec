@@ -134,16 +134,22 @@ void VectorPageTable::release_block(block_id_t block_id) {
 void VectorPageTable::evict_block(block_id_t block_id) {
   assert(block_id < entry_num_);
   Entry &e = entry_at(block_id);
-  char *buffer = e.buffer;
   int expected = 0;
   if (e.ref_count.compare_exchange_strong(
           expected, std::numeric_limits<int>::min())) {
+    // Read e.buffer ONLY after we won the CAS, so we are guaranteed to be the
+    // sole owner of the slot.  Reading it before the CAS races with another
+    // thread that may have already evicted (and freed) e.buffer and then had
+    // a fresh acquire_buffer / set_block_acquired sequence overwrite e.buffer
+    // with a new pointer.
+    char *buffer = e.buffer;
     if (buffer && e.is_dirty.load(std::memory_order_relaxed) &&
         flush_callback_) {
       flush_callback_(block_id, buffer, kVectorPageSize, e.file_offset);
       e.is_dirty.store(false, std::memory_order_relaxed);
     }
     if (buffer) {
+      e.buffer = nullptr;
       MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
   }

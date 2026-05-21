@@ -46,8 +46,11 @@ struct CrossPageScratch {
   char *ensure(size_t len) {
     if (cap < len) {
       if (buf) ailego_free(buf);
-      buf = static_cast<char *>(ailego_aligned_malloc(len, 4096));
-      cap = buf ? len : 0;
+      // C11 aligned_alloc requires size to be a multiple of alignment.
+      const size_t kAlign = 4096UL;
+      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
+      buf = static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
+      cap = buf ? alloc_size : 0;
     }
     return buf;
   }
@@ -220,7 +223,13 @@ class BufferStorage : public IndexStorage {
         data.reset(owner_->buffer_pool_handle_.get(), page_id, raw);
         return len;
       }
-      char *tmp = static_cast<char *>(ailego_aligned_malloc(len, 4096));
+      // C11 aligned_alloc requires the requested size to be a multiple of
+      // the alignment; round len up to the next 4K boundary.  Without this
+      // glibc treats the call as undefined behaviour and silently corrupts
+      // heap metadata (manifesting later as `corrupted size vs. prev_size`).
+      const size_t kAlign = 4096UL;
+      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
+      char *tmp = static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
       if (!tmp) {
         LOG_ERROR("read error (alloc cross-page temp buffer failed).");
         return 0;
