@@ -29,7 +29,7 @@ struct MemoryDumper : public IndexDumper {
   MemoryDumper(void) {}
 
   //! Destructor
-  virtual ~MemoryDumper(void) {}
+  ~MemoryDumper(void) override {}
 
   //! Initialize dumper
   int init(const ailego::Params &) override {

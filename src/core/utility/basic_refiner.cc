@@ -29,7 +29,7 @@ class BasicRefiner : public IndexRefiner {
    public:
     //! Construct
     BasicRefinerContext() = default;
-    ~BasicRefinerContext() = default;
+    ~BasicRefinerContext() override = default;
 
     int set_contexts(IndexRunner::Context::Pointer base_ctx,
                      IndexRunner::Context::Pointer refine_ctx) override {
@@ -115,11 +115,10 @@ class BasicRefiner : public IndexRefiner {
   }
 
   //! Add a vector into index
-  virtual int add_impl(uint64_t key, const void *base_query,
-                       const IndexQueryMeta &base_qmeta,
-                       const void *refine_query,
-                       const IndexQueryMeta &refine_qmeta,
-                       Context::Pointer &context) override {
+  int add_impl(uint64_t key, const void *base_query,
+               const IndexQueryMeta &base_qmeta, const void *refine_query,
+               const IndexQueryMeta &refine_qmeta,
+               Context::Pointer &context) override {
     BasicRefinerContext *ctx =
         dynamic_cast<BasicRefinerContext *>(context.get());
 
@@ -143,11 +142,9 @@ class BasicRefiner : public IndexRefiner {
   }
 
   //! Similarity search
-  virtual int search_impl(const void *base_query,
-                          const IndexQueryMeta &base_qmeta,
-                          const void *refine_query,
-                          const IndexQueryMeta &refine_qmeta, uint32_t count,
-                          Context::Pointer &context) const override {
+  int search_impl(const void *base_query, const IndexQueryMeta &base_qmeta,
+                  const void *refine_query, const IndexQueryMeta &refine_qmeta,
+                  uint32_t count, Context::Pointer &context) const override {
     BasicRefinerContext *ctx =
         dynamic_cast<BasicRefinerContext *>(context.get());
 
@@ -200,21 +197,18 @@ class BasicRefiner : public IndexRefiner {
   }
 
   //! Similarity search
-  virtual int search_impl(const void *base_query,
-                          const IndexQueryMeta &base_qmeta,
-                          const void *refine_query,
-                          const IndexQueryMeta &refine_qmeta,
-                          Context::Pointer &context) const override {
+  int search_impl(const void *base_query, const IndexQueryMeta &base_qmeta,
+                  const void *refine_query, const IndexQueryMeta &refine_qmeta,
+                  Context::Pointer &context) const override {
     return search_impl(base_query, base_qmeta, refine_query, refine_qmeta, 1,
                        context);
   }
 
   //! Similarity brute force search
-  virtual int search_bf_impl(const void *base_query,
-                             const IndexQueryMeta &base_qmeta,
-                             const void *refine_query,
-                             const IndexQueryMeta &refine_qmeta, uint32_t count,
-                             Context::Pointer &context) const override {
+  int search_bf_impl(const void *base_query, const IndexQueryMeta &base_qmeta,
+                     const void *refine_query,
+                     const IndexQueryMeta &refine_qmeta, uint32_t count,
+                     Context::Pointer &context) const override {
     BasicRefinerContext *ctx =
         dynamic_cast<BasicRefinerContext *>(context.get());
 
@@ -254,11 +248,10 @@ class BasicRefiner : public IndexRefiner {
   }
 
   //! Similarity brute force search
-  virtual int search_bf_impl(const void *base_query,
-                             const IndexQueryMeta &base_qmeta,
-                             const void *refine_query,
-                             const IndexQueryMeta &refine_qmeta,
-                             Context::Pointer &context) const override {
+  int search_bf_impl(const void *base_query, const IndexQueryMeta &base_qmeta,
+                     const void *refine_query,
+                     const IndexQueryMeta &refine_qmeta,
+                     Context::Pointer &context) const override {
     return search_bf_impl(base_query, base_qmeta, refine_query, refine_qmeta, 1,
                           context);
   }

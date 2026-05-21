@@ -282,8 +282,7 @@ class QuantizedIntegerMetric : public IndexMetric {
     return nullptr;
   }
 
-  virtual DistanceBatchQueryPreprocessFunc get_query_preprocess_func()
-      const override {
+  DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     if (origin_metric_type_ == MetricType::kCosine &&
         meta_.data_type() == IndexMeta::DataType::DT_INT8) {
       auto turbo_ret = turbo::get_query_preprocess_func(

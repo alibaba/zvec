@@ -24,8 +24,8 @@ using namespace std;
 
 class IVFBuilderTest : public testing::Test {
  protected:
-  void SetUp();
-  void TearDown();
+  void SetUp() override;
+  void TearDown() override;
 
   void prepare_index_holder(uint32_t base_key, uint32_t num);
 

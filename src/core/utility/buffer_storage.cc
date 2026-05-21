@@ -49,7 +49,7 @@ class BufferStorage : public IndexStorage {
           segment_header_start_offset_(segment_header_start_offset),
           segment_header_(segment_header) {}
     //! Destructor
-    virtual ~WrappedSegment(void) {}
+    ~WrappedSegment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -169,7 +169,7 @@ class BufferStorage : public IndexStorage {
   };
 
   //! Destructor
-  virtual ~BufferStorage(void) {
+  ~BufferStorage(void) override {
     this->cleanup();
   }
 

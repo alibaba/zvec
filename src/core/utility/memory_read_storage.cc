@@ -46,7 +46,7 @@ class MemoryReadStorage : public IndexStorage {
           rope_(rope) {}
 
     //! Destructor
-    virtual ~Segment(void) {}
+    ~Segment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -139,7 +139,7 @@ class MemoryReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  virtual ~MemoryReadStorage(void) {}
+  ~MemoryReadStorage(void) override {}
 
   //! Initialize container
   int init(const ailego::Params &params) override {
