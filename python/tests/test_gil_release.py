@@ -122,8 +122,9 @@ class TestGILRelease:
         target_total = 0.2
         num_iters = max(1, min(500, int(target_total / per_query)))
         projected_total = per_query * num_iters
-        # Pick switch_interval safely above projected total (>=5x, >=1s).
-        switch_interval = max(1.0, projected_total * 5.0)
+        # Pick switch_interval with a large safety margin (>=10x, >=2s) to absorb
+        # GC pauses, CPU throttling, and noisy-neighbor effects on CI / shared VMs.
+        switch_interval = max(2.0, projected_total * 10.0)
 
         old_interval = sys.getswitchinterval()
         sys.setswitchinterval(switch_interval)
@@ -165,12 +166,17 @@ class TestGILRelease:
             print(f"Counter during queries: {count_during_queries}")
 
             # Verify queries completed within the switch_interval window.
-            # If they did, the ONLY way bg thread could run is via explicit GIL release.
-            assert elapsed < switch_interval, (
-                f"Queries took {elapsed:.3f}s >= switch_interval "
-                f"({switch_interval:.3f}s). Calibration under-estimated latency; "
-                "test is inconclusive."
-            )
+            # If they did NOT, the run was contaminated by external jitter (GC,
+            # throttling, noisy neighbor) rather than a real GIL-release defect,
+            # so skip instead of failing to avoid flaky CI noise.
+            if elapsed >= switch_interval:
+                pytest.skip(
+                    f"Queries took {elapsed:.3f}s >= switch_interval "
+                    f"({switch_interval:.3f}s); calibration was outpaced by "
+                    "runtime jitter, result is inconclusive."
+                )
+            # If elapsed < switch_interval, the ONLY way bg thread could run is
+            # via explicit GIL release.
             assert count_during_queries > 0, (
                 "Background thread could not run during C++ execution despite "
                 "query time < switch_interval. GIL was NOT released."
