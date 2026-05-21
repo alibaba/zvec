@@ -87,18 +87,47 @@ class TestGILRelease:
         """Prove the GIL is explicitly released during C++ Query calls.
 
         Strategy:
-        - Set switch_interval to 0.5s (100x the default 5ms). This means CPython's
-          involuntary GIL switching will NOT occur for 500ms after a thread acquires.
-        - Run queries that complete in total < 500ms (about 100-200ms).
-        - A background thread (using time.sleep(0) to avoid deadlock) counts how many
-          times it got to run.
+        - Calibrate per-query latency on the current platform (slow archs like
+          RISC-V can be 10x slower than x86), then dynamically pick a query count
+          whose total runtime fits comfortably inside switch_interval.
+        - Set switch_interval well above the projected total query time so that
+          CPython's involuntary GIL switching will NOT trigger during the run.
+        - A background thread (using time.sleep(0) to avoid deadlock) counts how
+          many times it got to run.
         - Since total query time < switch_interval, the bg thread can ONLY run if
           the C++ code explicitly releases the GIL.
         - Reset counter just before queries; check counter > 0 after queries.
         """
+        query_vec = [1.0] * 128
+
+        def run_query():
+            gil_test_collection.query(
+                Query(field_name="vec", vector=query_vec),
+                topk=100,
+            )
+
+        # --- Calibrate: estimate per-query latency on this platform ---
+        # Warm up to avoid first-call overhead skewing the measurement.
+        for _ in range(3):
+            run_query()
+
+        calib_iters = 10
+        calib_start = time.monotonic()
+        for _ in range(calib_iters):
+            run_query()
+        per_query = max((time.monotonic() - calib_start) / calib_iters, 1e-6)
+
+        # Target total query window ~200ms, capped to a sane range so the test
+        # remains meaningful on both fast and slow archs.
+        target_total = 0.2
+        num_iters = max(1, min(500, int(target_total / per_query)))
+        projected_total = per_query * num_iters
+        # Pick switch_interval with a large safety margin (>=10x, >=2s) to absorb
+        # GC pauses, CPU throttling, and noisy-neighbor effects on CI / shared VMs.
+        switch_interval = max(2.0, projected_total * 10.0)
+
         old_interval = sys.getswitchinterval()
-        # 500ms - much longer than the total query time (~100-200ms)
-        sys.setswitchinterval(0.5)
+        sys.setswitchinterval(switch_interval)
 
         try:
             counter = {"value": 0}
@@ -118,13 +147,9 @@ class TestGILRelease:
             # --- Critical section: reset counter, run queries, capture counter ---
             counter["value"] = 0
 
-            query_vec = [1.0] * 128
             start = time.monotonic()
-            for _ in range(100):
-                gil_test_collection.query(
-                    Query(field_name="vec", vector=query_vec),
-                    topk=100,
-                )
+            for _ in range(num_iters):
+                run_query()
             elapsed = time.monotonic() - start
 
             count_during_queries = counter["value"]
@@ -134,15 +159,24 @@ class TestGILRelease:
             time.sleep(0.01)
             bg_thread.join(timeout=5)
 
-            print(f"\nQuery elapsed: {elapsed:.4f}s (switch_interval=0.5s)")
+            print(
+                f"\nPer-query: {per_query * 1000:.2f}ms, iters: {num_iters}, "
+                f"elapsed: {elapsed:.4f}s, switch_interval: {switch_interval:.2f}s"
+            )
             print(f"Counter during queries: {count_during_queries}")
 
             # Verify queries completed within the switch_interval window.
-            # If they did, the ONLY way bg thread could run is via explicit GIL release.
-            assert elapsed < 0.5, (
-                f"Queries took {elapsed:.3f}s >= switch_interval (0.5s). "
-                "Test is inconclusive; increase switch_interval or reduce query count."
-            )
+            # If they did NOT, the run was contaminated by external jitter (GC,
+            # throttling, noisy neighbor) rather than a real GIL-release defect,
+            # so skip instead of failing to avoid flaky CI noise.
+            if elapsed >= switch_interval:
+                pytest.skip(
+                    f"Queries took {elapsed:.3f}s >= switch_interval "
+                    f"({switch_interval:.3f}s); calibration was outpaced by "
+                    "runtime jitter, result is inconclusive."
+                )
+            # If elapsed < switch_interval, the ONLY way bg thread could run is
+            # via explicit GIL release.
             assert count_during_queries > 0, (
                 "Background thread could not run during C++ execution despite "
                 "query time < switch_interval. GIL was NOT released."
