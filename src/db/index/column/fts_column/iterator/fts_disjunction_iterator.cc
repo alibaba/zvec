@@ -24,10 +24,10 @@ namespace {
 // must already be sorted.
 inline void sift_forward(std::vector<DocIterator *> &vec, size_t idx) {
   DocIterator *elem = vec[idx];
-  uint32_t elem_doc = elem->doc_id();
+  uint32_t elem_doc = elem->cached_doc_id_;
   size_t pos = idx;
   size_t end = vec.size();
-  while (pos + 1 < end && vec[pos + 1]->doc_id() < elem_doc) {
+  while (pos + 1 < end && vec[pos + 1]->cached_doc_id_ < elem_doc) {
     vec[pos] = vec[pos + 1];
     ++pos;
   }
@@ -44,24 +44,25 @@ DisjunctionIterator::DisjunctionIterator(
   total_max_score_ = 0.0f;
   for (auto &iter : sub_iterators_) {
     total_cost_ += iter->cost();
-    total_max_score_ += iter->max_score();
+    total_max_score_ += iter->cached_max_score_;
     iter->next_doc();
     postings_.push_back(iter.get());
   }
   // Initial sort to establish sorted order
   resort_postings();
+  cached_max_score_ = total_max_score_;
 }
 
 void DisjunctionIterator::set_min_competitive_score(float min_score) {
   min_competitive_score_ = min_score;
 }
 
-// Re-establish sorted order of postings_ by doc_id ascending.
+// Re-establish sorted order of postings_ by cached_doc_id_ ascending.
 // Called when multiple iterators may have changed position.
 void DisjunctionIterator::resort_postings() {
   std::sort(postings_.begin(), postings_.end(),
             [](const DocIterator *a, const DocIterator *b) {
-              return a->doc_id() < b->doc_id();
+              return a->cached_doc_id_ < b->cached_doc_id_;
             });
 }
 
@@ -78,8 +79,8 @@ uint32_t DisjunctionIterator::next_doc() {
   while (true) {
     // 1. postings_ is maintained in sorted order
 
-    if (postings_.empty() || postings_[0]->doc_id() == NO_MORE_DOCS) {
-      current_doc_id_ = NO_MORE_DOCS;
+    if (postings_.empty() || postings_[0]->cached_doc_id_ == NO_MORE_DOCS) {
+      cached_doc_id_ = NO_MORE_DOCS;
       return NO_MORE_DOCS;
     }
 
@@ -88,10 +89,10 @@ uint32_t DisjunctionIterator::next_doc() {
     size_t pivot_idx = 0;
     bool found_pivot = false;
     for (; pivot_idx < postings_.size(); ++pivot_idx) {
-      if (postings_[pivot_idx]->doc_id() == NO_MORE_DOCS) {
+      if (postings_[pivot_idx]->cached_doc_id_ == NO_MORE_DOCS) {
         break;
       }
-      partial_max_score += postings_[pivot_idx]->max_score();
+      partial_max_score += postings_[pivot_idx]->cached_max_score_;
       if (partial_max_score >= min_competitive_score_) {
         found_pivot = true;
         break;
@@ -101,14 +102,14 @@ uint32_t DisjunctionIterator::next_doc() {
     if (!found_pivot) {
       // If all remaining iterators' max_score sum is less than threshold,
       // no more competitive documents can be produced.
-      current_doc_id_ = NO_MORE_DOCS;
+      cached_doc_id_ = NO_MORE_DOCS;
       return NO_MORE_DOCS;
     }
 
-    uint32_t pivot_doc = postings_[pivot_idx]->doc_id();
+    uint32_t pivot_doc = postings_[pivot_idx]->cached_doc_id_;
 
     // 3. Check alignment
-    if (postings_[0]->doc_id() == pivot_doc) {
+    if (postings_[0]->cached_doc_id_ == pivot_doc) {
       // 3.5 Block-Max WAND pruning (Ding & Suel 2011).
       //     First accumulate block_max_scores from [0..pivot_idx].
       //     If already >= threshold, skip the pruning check (fast path).
@@ -137,7 +138,7 @@ uint32_t DisjunctionIterator::next_doc() {
           // Lazily accumulate remaining iterators beyond pivot_idx.
           // They may also contribute scores for pivot_doc.
           for (size_t i = pivot_idx + 1; i < postings_.size(); ++i) {
-            if (postings_[i]->doc_id() == NO_MORE_DOCS) {
+            if (postings_[i]->cached_doc_id_ == NO_MORE_DOCS) {
               break;
             }
             auto info = postings_[i]->block_max_info_for(pivot_doc);
@@ -159,7 +160,7 @@ uint32_t DisjunctionIterator::next_doc() {
           // the smallest block boundary to maximize the jump distance.
           uint32_t skip_target = min_block_end + 1;
           for (size_t i = 0; i <= pivot_idx; ++i) {
-            if (postings_[i]->doc_id() < skip_target) {
+            if (postings_[i]->cached_doc_id_ < skip_target) {
               postings_[i]->advance(skip_target);
             }
           }
@@ -171,13 +172,14 @@ uint32_t DisjunctionIterator::next_doc() {
 
       // Candidate doc passed block-level check. Collect all matching iterators.
       for (size_t i = 0; i < postings_.size(); ++i) {
-        if (postings_[i]->doc_id() == pivot_doc) {
+        if (postings_[i]->cached_doc_id_ == pivot_doc) {
           matching_iterators_.push_back(postings_[i]);
         } else {
-          break;  // because postings_ is sorted by doc_id
+          break;  // because postings_ is sorted by cached_doc_id_
         }
       }
-      current_doc_id_ = pivot_doc;
+      cached_doc_id_ = pivot_doc;
+      cached_doc_id_ = pivot_doc;
       return pivot_doc;
     } else {
       // 4. Iterator Jumping: advance the iterator with the smallest doc_id
@@ -195,7 +197,7 @@ uint32_t DisjunctionIterator::advance(uint32_t target) {
   matching_iterators_.clear();
 
   for (auto *iter : postings_) {
-    if (iter->doc_id() < target) {
+    if (iter->cached_doc_id_ < target) {
       iter->advance(target);
     }
   }

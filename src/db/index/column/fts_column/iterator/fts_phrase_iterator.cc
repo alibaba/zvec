@@ -26,24 +26,26 @@ PhraseDocIterator::PhraseDocIterator(DocIteratorPtr conjunction,
     : conjunction_(std::move(conjunction)),
       terms_(std::move(terms)),
       ctx_(ctx),
-      positions_cf_(positions_cf) {}
+      positions_cf_(positions_cf) {
+  cached_max_score_ = conjunction_->cached_max_score_;
+}
 
 uint32_t PhraseDocIterator::next_doc() {
-  current_doc_id_ = conjunction_->next_doc();
-  return current_doc_id_;
+  cached_doc_id_ = conjunction_->next_doc();
+  return cached_doc_id_;
 }
 
 uint32_t PhraseDocIterator::advance(uint32_t target) {
-  current_doc_id_ = conjunction_->advance(target);
-  return current_doc_id_;
+  cached_doc_id_ = conjunction_->advance(target);
+  return cached_doc_id_;
 }
 
 bool PhraseDocIterator::matches() {
-  if (current_doc_id_ == NO_MORE_DOCS) {
+  if (cached_doc_id_ == NO_MORE_DOCS) {
     return false;
   }
   // Phase 2: verify position adjacency (deferred IO)
-  return verify_phrase_positions(current_doc_id_);
+  return verify_phrase_positions(cached_doc_id_);
 }
 
 float PhraseDocIterator::score() {

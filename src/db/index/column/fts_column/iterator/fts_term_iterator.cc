@@ -42,6 +42,7 @@ TermDocIterator::TermDocIterator(std::string term, roaring_bitmap_t *bitmap,
       doc_len_cf_(doc_len_cf),
       cf_counter_(cf_counter) {
   roaring_init_iterator(bitmap_, &roaring_iter_);
+  cached_max_score_ = max_score_val_;
 }
 
 TermDocIterator::~TermDocIterator() {
@@ -73,6 +74,7 @@ TermDocIterator::TermDocIterator(std::string term, std::string packed_data,
         "iterator will yield no documents",
         term_.c_str());
   }
+  cached_max_score_ = max_score_val_;
 }
 
 // ============================================================
@@ -81,8 +83,8 @@ TermDocIterator::TermDocIterator(std::string term, std::string packed_data,
 
 uint32_t TermDocIterator::next_doc() {
   if (mode_ == Mode::BITPACKED) {
-    current_doc_id_ = bp_iter_.next_doc();
-    return current_doc_id_;
+    cached_doc_id_ = bp_iter_.next_doc();
+    return cached_doc_id_;
   }
 
   // Roaring mode: stream via roaring_uint32_iterator_t
@@ -94,31 +96,31 @@ uint32_t TermDocIterator::next_doc() {
     roaring_advance_uint32_iterator(&roaring_iter_);
   }
   if (!roaring_iter_.has_value) {
-    current_doc_id_ = NO_MORE_DOCS;
+    cached_doc_id_ = NO_MORE_DOCS;
     return NO_MORE_DOCS;
   }
-  current_doc_id_ = roaring_iter_.current_value;
-  return current_doc_id_;
+  cached_doc_id_ = roaring_iter_.current_value;
+  return cached_doc_id_;
 }
 
 uint32_t TermDocIterator::advance(uint32_t target) {
   if (mode_ == Mode::BITPACKED) {
-    current_doc_id_ = bp_iter_.advance(target);
-    return current_doc_id_;
+    cached_doc_id_ = bp_iter_.advance(target);
+    return cached_doc_id_;
   }
 
   // Roaring mode: skip to the first doc_id >= target
   roaring_iter_started_ = true;
   if (!roaring_move_uint32_iterator_equalorlarger(&roaring_iter_, target)) {
-    current_doc_id_ = NO_MORE_DOCS;
+    cached_doc_id_ = NO_MORE_DOCS;
     return NO_MORE_DOCS;
   }
-  current_doc_id_ = roaring_iter_.current_value;
-  return current_doc_id_;
+  cached_doc_id_ = roaring_iter_.current_value;
+  return cached_doc_id_;
 }
 
 float TermDocIterator::score() {
-  if (current_doc_id_ == NO_MORE_DOCS) {
+  if (cached_doc_id_ == NO_MORE_DOCS) {
     return 0.0f;
   }
 
@@ -130,8 +132,8 @@ float TermDocIterator::score() {
   }
 
   // Roaring mode: read from RocksDB
-  const uint32_t tf = read_term_freq(current_doc_id_);
-  const uint32_t doc_len = read_doc_len(current_doc_id_);
+  const uint32_t tf = read_term_freq(cached_doc_id_);
+  const uint32_t doc_len = read_doc_len(cached_doc_id_);
   return scorer_->score(df_, tf, doc_len);
 }
 
@@ -156,8 +158,8 @@ float TermDocIterator::current_block_max_score() const {
 
 uint32_t TermDocIterator::skip_to_next_block() {
   if (mode_ == Mode::BITPACKED) {
-    current_doc_id_ = bp_iter_.skip_to_next_block();
-    return current_doc_id_;
+    cached_doc_id_ = bp_iter_.skip_to_next_block();
+    return cached_doc_id_;
   }
   // Roaring mode: no block structure, just advance to next doc
   return next_doc();

@@ -84,9 +84,6 @@ class TermDocIterator : public DocIterator {
 
   uint32_t next_doc() override;
   uint32_t advance(uint32_t target) override;
-  uint32_t doc_id() const override {
-    return current_doc_id_;
-  }
   float score() override;
   uint64_t cost() const override;
   float max_score() const override {
@@ -115,7 +112,6 @@ class TermDocIterator : public DocIterator {
   uint64_t df_;
   BM25ScorerPtr scorer_;
   float max_score_val_;
-  uint32_t current_doc_id_{NO_MORE_DOCS};
 
   // Roaring mode state (owns the bitmap; iterator is stack-allocated)
   roaring_bitmap_t *bitmap_{nullptr};

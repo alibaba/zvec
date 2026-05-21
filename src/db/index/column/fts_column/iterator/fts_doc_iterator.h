@@ -39,6 +39,15 @@ class DocIterator {
   //! Sentinel value indicating no more matching documents
   static constexpr uint32_t NO_MORE_DOCS = UINT32_MAX;
 
+  //! Cached doc_id for hot-path access without virtual dispatch.
+  //! Sub-classes MUST update this in next_doc() / advance() before returning.
+  uint32_t cached_doc_id_{NO_MORE_DOCS};
+
+  //! Cached max_score for hot-path access without virtual dispatch.
+  //! Sub-classes MUST set this in constructors (and update if max_score
+  //! changes, which is rare for most iterators).
+  float cached_max_score_{0.0f};
+
   //! Advance to the next matching document.
   //! \return doc_id of the next match, or NO_MORE_DOCS if exhausted.
   virtual uint32_t next_doc() = 0;
@@ -50,7 +59,9 @@ class DocIterator {
 
   //! Return the current document ID.
   //! Undefined before the first call to next_doc() or advance().
-  virtual uint32_t doc_id() const = 0;
+  uint32_t doc_id() const {
+    return cached_doc_id_;
+  }
 
   //! Phase-2 exact verification for the current document.
   //! For most iterators this is a no-op (returns true).

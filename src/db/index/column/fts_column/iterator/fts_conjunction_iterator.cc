@@ -27,42 +27,48 @@ ConjunctionIterator::ConjunctionIterator(
             [](const DocIteratorPtr &a, const DocIteratorPtr &b) {
               return a->cost() < b->cost();
             });
+  // Compute and cache max_score in base class field
+  float total = 0.0f;
+  for (auto &iter : must_iterators_) {
+    total += iter->cached_max_score_;
+  }
+  cached_max_score_ = total;
 }
 
 uint32_t ConjunctionIterator::next_doc() {
   if (must_iterators_.empty()) {
-    current_doc_id_ = NO_MORE_DOCS;
+    cached_doc_id_ = NO_MORE_DOCS;
     return NO_MORE_DOCS;
   }
 
   // MaxScore pruning: If the maximum possible score of this AND node
   // cannot beat the threshold, terminate iteration early.
   if (min_competitive_score_ > 0.0f && max_score() < min_competitive_score_) {
-    current_doc_id_ = NO_MORE_DOCS;
+    cached_doc_id_ = NO_MORE_DOCS;
     return NO_MORE_DOCS;
   }
 
   // Advance the lead iterator and try to find agreement
   uint32_t candidate = must_iterators_[0]->next_doc();
-  current_doc_id_ = do_next(candidate);
-  return current_doc_id_;
+  cached_doc_id_ = do_next(candidate);
+  return cached_doc_id_;
 }
 
 uint32_t ConjunctionIterator::advance(uint32_t target) {
   if (must_iterators_.empty()) {
-    current_doc_id_ = NO_MORE_DOCS;
+    cached_doc_id_ = NO_MORE_DOCS;
     return NO_MORE_DOCS;
   }
 
   // MaxScore pruning
   if (min_competitive_score_ > 0.0f && max_score() < min_competitive_score_) {
-    current_doc_id_ = NO_MORE_DOCS;
+    cached_doc_id_ = NO_MORE_DOCS;
     return NO_MORE_DOCS;
   }
 
   uint32_t candidate = must_iterators_[0]->advance(target);
-  current_doc_id_ = do_next(candidate);
-  return current_doc_id_;
+  cached_doc_id_ = do_next(candidate);
+  return cached_doc_id_;
 }
 
 uint32_t ConjunctionIterator::do_next(uint32_t candidate) {

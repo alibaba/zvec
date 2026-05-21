@@ -32,9 +32,6 @@ class DisjunctionIterator : public DocIterator {
 
   uint32_t next_doc() override;
   uint32_t advance(uint32_t target) override;
-  uint32_t doc_id() const override {
-    return current_doc_id_;
-  }
   bool matches() override;
   float score() override;
   uint64_t cost() const override;
@@ -52,7 +49,6 @@ class DisjunctionIterator : public DocIterator {
   std::vector<DocIteratorPtr> sub_iterators_;  // Owns the sub-iterators
   std::vector<DocIterator *> postings_;  // Pointers for fast sorting (WAND)
   std::vector<DocIterator *> matching_iterators_;  // Current doc matches
-  uint32_t current_doc_id_{NO_MORE_DOCS};
   float min_competitive_score_{0.0f};
   uint64_t total_cost_{0};
   float total_max_score_{0.0f};

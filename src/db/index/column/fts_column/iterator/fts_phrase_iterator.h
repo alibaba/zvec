@@ -43,9 +43,6 @@ class PhraseDocIterator : public DocIterator {
 
   uint32_t next_doc() override;
   uint32_t advance(uint32_t target) override;
-  uint32_t doc_id() const override {
-    return current_doc_id_;
-  }
 
   //! Phase-2: verify position adjacency for the current document.
   //! Reads position lists from $POS CF (deferred IO).
@@ -71,7 +68,6 @@ class PhraseDocIterator : public DocIterator {
   std::vector<std::string> terms_;
   RocksdbContext *ctx_;
   rocksdb::ColumnFamilyHandle *positions_cf_;
-  uint32_t current_doc_id_{NO_MORE_DOCS};
 };
 
 }  // namespace zvec::fts

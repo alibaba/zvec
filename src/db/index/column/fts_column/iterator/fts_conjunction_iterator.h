@@ -38,9 +38,6 @@ class ConjunctionIterator : public DocIterator {
 
   uint32_t next_doc() override;
   uint32_t advance(uint32_t target) override;
-  uint32_t doc_id() const override {
-    return current_doc_id_;
-  }
   bool matches() override;
   float score() override;
   uint64_t cost() const override;
@@ -63,7 +60,6 @@ class ConjunctionIterator : public DocIterator {
   // must_iterators_[0] is the lead (lowest cost)
   std::vector<DocIteratorPtr> must_iterators_;
   std::vector<DocIteratorPtr> must_not_iterators_;
-  uint32_t current_doc_id_{NO_MORE_DOCS};
   float min_competitive_score_{0.0f};
 };
 
