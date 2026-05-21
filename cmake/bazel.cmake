@@ -625,11 +625,16 @@ function(_targets_link_dependencies _NAME)
           APPEND LIBS_INCS
           "$<TARGET_PROPERTY:${LIB},INTERFACE_INCLUDE_DIRECTORIES>"
         )
+      list(
+          APPEND LIBS_SYSTEM_INCS
+          "$<TARGET_PROPERTY:${LIB},INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>"
+        )
     endif()
   endforeach()
 
   if(LIBS_DEPS)
     add_dependencies(${_NAME} ${LIBS_DEPS})
+    target_include_directories(${_NAME} SYSTEM PRIVATE "${LIBS_SYSTEM_INCS}")
     target_include_directories(${_NAME} PRIVATE "${LIBS_INCS}")
   endif()
 endfunction()

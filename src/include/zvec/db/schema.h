@@ -77,7 +77,6 @@ class FieldSchema {
   }
   FieldSchema(FieldSchema &&) = default;
   FieldSchema &operator=(FieldSchema &&) = default;
-  ;
   ~FieldSchema() = default;
 
  public:
@@ -302,6 +301,18 @@ class CollectionSchema {
     name_ = other.name_;
     copy_fields(other.fields_);
     max_doc_count_per_segment_ = other.max_doc_count_per_segment_;
+  }
+
+  CollectionSchema &operator=(const CollectionSchema &other) {
+    if (this == &other) {
+      return *this;
+    }
+    name_ = other.name_;
+    fields_.clear();
+    fields_map_.clear();
+    copy_fields(other.fields_);
+    max_doc_count_per_segment_ = other.max_doc_count_per_segment_;
+    return *this;
   }
 
  public:
