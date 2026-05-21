@@ -38,6 +38,7 @@ def init(
     optimize_threads: Optional[int] = None,
     invert_to_forward_scan_ratio: Optional[float] = None,
     brute_force_by_keys_ratio: Optional[float] = None,
+    fts_brute_force_by_keys_ratio: Optional[float] = None,
     memory_limit_mb: Optional[int] = None,
 ) -> None:
     """Initialize Zvec with configuration options.
@@ -88,6 +89,12 @@ def init(
             Threshold to use brute-force key lookup over index.
             Lower → prefer index; higher → prefer brute-force.
             Range: [0.0, 1.0]. Default: ``0.1``.
+        fts_brute_force_by_keys_ratio (Optional[float], optional):
+            Threshold to switch FTS scan from posting-driven to
+            candidate-driven (brute-force) when the invert filter is
+            highly selective. Independent from ``brute_force_by_keys_ratio``
+            because per-candidate FTS cost is higher.
+            Range: [0.0, 1.0]. Default: ``0.05``.
         memory_limit_mb (Optional[int], optional):
             Soft memory cap in MB. Zvec may throttle or fail operations
             approaching this limit.
@@ -157,6 +164,8 @@ def init(
         config_dict["invert_to_forward_scan_ratio"] = invert_to_forward_scan_ratio
     if brute_force_by_keys_ratio is not None:
         config_dict["brute_force_by_keys_ratio"] = brute_force_by_keys_ratio
+    if fts_brute_force_by_keys_ratio is not None:
+        config_dict["fts_brute_force_by_keys_ratio"] = fts_brute_force_by_keys_ratio
     if memory_limit_mb is not None:
         config_dict["memory_limit_mb"] = memory_limit_mb
 

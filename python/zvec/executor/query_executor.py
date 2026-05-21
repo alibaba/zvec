@@ -20,7 +20,7 @@ from typing import Optional, Union, final
 
 import numpy as np
 from _zvec import _Collection
-from _zvec.param import _VectorQuery
+from _zvec.param import _FtsQuery, _VectorQuery
 
 from ..extension import ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
@@ -141,6 +141,14 @@ class QueryExecutor(ABC):
             core_vector.output_fields = ctx.output_fields
         return core_vector
 
+    def _do_build_fts_query(self, query: Query, core_vector: _VectorQuery) -> None:
+        """Set FTS query on core_vector if the query has FTS parameters."""
+        if query.has_fts():
+            fts = _FtsQuery()
+            fts.query_string = query.fts.query_string or ""
+            fts.match_string = query.fts.match_string or ""
+            core_vector.fts_query = fts
+
     def _do_build_query_with_vector(
         self, ctx: QueryContext, query: Query, collection: _Collection
     ) -> _VectorQuery:
@@ -149,6 +157,16 @@ class QueryExecutor(ABC):
         if query.param:
             core_vector.query_params = query.param
 
+        # set FTS query if provided
+        self._do_build_fts_query(query, core_vector)
+
+        # set output_fields
+        core_vector.output_fields = ctx.output_fields
+
+        # FTS-only query (no vector, no id) — skip vector resolution
+        if query.has_fts() and not query.has_vector() and not query.has_id():
+            return core_vector
+
         vector_schema = (
             self._schema.vector(query.field_name) if query else self._schema.vectors[0]
         )
@@ -156,18 +174,17 @@ class QueryExecutor(ABC):
         if vector_schema is None:
             raise ValueError("No vector field found")
 
-        # set output_fields
-        core_vector.output_fields = ctx.output_fields
-
         # set vector
         if query.has_vector():
             vec_data = query.vector
-        else:
+        elif query.has_id():
             fetched = collection.Fetch([query.id])
             doc = next(iter(fetched.values()))
             if not doc:
                 return core_vector
             vec_data = doc.get_any(vector_schema.name, vector_schema.data_type)
+        else:
+            return core_vector
 
         target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
         core_vector.set_vector(

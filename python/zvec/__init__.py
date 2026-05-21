@@ -56,11 +56,14 @@ from .model.collection import Collection
 from .model.doc import Doc
 
 # —— Query & index parameters ——
+# —— FTS params (C++ binding) ——
 from .model.param import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
     FlatIndexParam,
+    FtsIndexParam,
+    FtsQueryParam,
     HnswIndexParam,
     HnswQueryParam,
     HnswRabitqIndexParam,
@@ -73,7 +76,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Query, VectorQuery
+from .model.param.query import Fts, Query, VectorQuery
 
 # —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
