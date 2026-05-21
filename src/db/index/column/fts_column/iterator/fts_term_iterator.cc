@@ -56,7 +56,8 @@ TermDocIterator::~TermDocIterator() {
 }
 
 // BitPacked mode
-TermDocIterator::TermDocIterator(std::string term, std::string packed_data,
+TermDocIterator::TermDocIterator(std::string term,
+                                 rocksdb::PinnableSlice packed_data,
                                  uint64_t df, BM25ScorerPtr scorer,
                                  float max_score_val)
     : mode_(Mode::BITPACKED),

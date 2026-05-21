@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <string>
 #include <roaring/roaring.h>
+#include <rocksdb/slice.h>
 #include "db/common/rocksdb_context.h"
 #include "fts_doc_iterator.h"
 #include "../bm25_scorer.h"
@@ -72,8 +73,8 @@ class TermDocIterator : public DocIterator {
    *  \param scorer         BM25 scorer (with segment stats loaded)
    *  \param max_score_val  Precomputed WAND upper bound score for this term
    */
-  TermDocIterator(std::string term, std::string packed_data, uint64_t df,
-                  BM25ScorerPtr scorer, float max_score_val);
+  TermDocIterator(std::string term, rocksdb::PinnableSlice packed_data,
+                  uint64_t df, BM25ScorerPtr scorer, float max_score_val);
 
   // Prevent move/copy: bp_iter_ holds a raw pointer into packed_data_'s
   // buffer, so moving would create a dangling pointer.
@@ -123,8 +124,8 @@ class TermDocIterator : public DocIterator {
   std::atomic<int> *cf_counter_{nullptr};
 
   // BitPacked mode state
-  std::string packed_data_;           // owns the serialized data
-  BitPackedPostingIterator bp_iter_;  // zero-copy iterator over packed_data_
+  rocksdb::PinnableSlice packed_data_;  // owns the serialized data (zero-copy)
+  BitPackedPostingIterator bp_iter_;    // zero-copy iterator over packed_data_
 };
 
 }  // namespace zvec::fts

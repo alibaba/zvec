@@ -267,7 +267,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_iterator(
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
-    const std::string &term, std::string raw_data) const {
+    const std::string &term, rocksdb::PinnableSlice raw_data) const {
   if (BitPackedPostingList::is_bitpacked_format(raw_data.data(),
                                                 raw_data.size())) {
     BitPackedPostingIterator probe;
@@ -334,7 +334,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_term_iterator(
     const TermNode &term_node) const {
   const std::string &term = term_node.term;
 
-  std::string raw_data;
+  rocksdb::PinnableSlice raw_data;
   auto s = ctx_->db_->Get(ctx_->read_opts_, postings_cf_, term, &raw_data);
   if (!s.ok() || raw_data.empty()) {
     return DocIteratorPtr{nullptr};
@@ -380,7 +380,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
       return DocIteratorPtr{nullptr};
     }
     auto iter_result =
-        create_term_iterator_from_raw(terms[i], raw_postings[i].ToString());
+        create_term_iterator_from_raw(terms[i], std::move(raw_postings[i]));
     if (!iter_result.has_value()) {
       return iter_result;
     }
@@ -436,7 +436,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
       rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
       const std::string &term = static_cast<const TermNode &>(*child).term;
       if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(term, raw.ToString());
+        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
         if (!iter_result.has_value()) {
           return iter_result;
         }
@@ -512,7 +512,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
       rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
       const std::string &term = static_cast<const TermNode &>(*child).term;
       if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(term, raw.ToString());
+        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
         if (!iter_result.has_value()) {
           return iter_result;
         }

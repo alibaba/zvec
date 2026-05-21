@@ -181,7 +181,7 @@ class FtsColumnIndexer {
   Result<DocIteratorPtr> build_and_iterator(const AndNode &and_node) const;
   Result<DocIteratorPtr> build_or_iterator(const OrNode &or_node) const;
   Result<DocIteratorPtr> create_term_iterator_from_raw(
-      const std::string &term, std::string raw_data) const;
+      const std::string &term, rocksdb::PinnableSlice raw_data) const;
   std::vector<rocksdb::PinnableSlice> batch_get_postings(
       const std::vector<rocksdb::Slice> &terms) const;
 
