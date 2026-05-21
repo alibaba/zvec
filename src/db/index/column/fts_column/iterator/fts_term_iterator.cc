@@ -43,6 +43,7 @@ TermDocIterator::TermDocIterator(std::string term, roaring_bitmap_t *bitmap,
       cf_counter_(cf_counter) {
   roaring_init_iterator(bitmap_, &roaring_iter_);
   cached_max_score_ = max_score_val_;
+  idf_weight_ = scorer_->idf(df_);
 }
 
 TermDocIterator::~TermDocIterator() {
@@ -76,6 +77,7 @@ TermDocIterator::TermDocIterator(std::string term,
         term_.c_str());
   }
   cached_max_score_ = max_score_val_;
+  idf_weight_ = scorer_->idf(df_);
 }
 
 // ============================================================
@@ -129,13 +131,13 @@ float TermDocIterator::score() {
     // Fast path: read tf/doc_len from inline payload (zero I/O)
     const uint32_t tf = bp_iter_.term_freq();
     const uint32_t dl = bp_iter_.doc_len();
-    return scorer_->score(df_, tf, dl);
+    return scorer_->score_with_idf(idf_weight_, tf, dl);
   }
 
   // Roaring mode: read from RocksDB
   const uint32_t tf = read_term_freq(cached_doc_id_);
   const uint32_t doc_len = read_doc_len(cached_doc_id_);
-  return scorer_->score(df_, tf, doc_len);
+  return scorer_->score_with_idf(idf_weight_, tf, doc_len);
 }
 
 uint64_t TermDocIterator::cost() const {

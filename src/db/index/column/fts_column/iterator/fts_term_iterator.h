@@ -113,6 +113,7 @@ class TermDocIterator : public DocIterator {
   uint64_t df_;
   BM25ScorerPtr scorer_;
   float max_score_val_;
+  float idf_weight_{0.0f};  // Pre-computed IDF to avoid log() per score()
 
   // Roaring mode state (owns the bitmap; iterator is stack-allocated)
   roaring_bitmap_t *bitmap_{nullptr};

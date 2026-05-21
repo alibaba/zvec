@@ -123,6 +123,27 @@ float BM25Scorer::score(uint64_t term_doc_freq, uint32_t term_freq,
   return idf_value * tf_norm;
 }
 
+float BM25Scorer::score_with_idf(float idf_value, uint32_t term_freq,
+                                 uint32_t doc_len) const {
+  if (idf_value <= 0.0f) {
+    return 0.0f;
+  }
+  const auto snap = stats_.snapshot();
+  if (snap.total_docs == 0) {
+    return 0.0f;
+  }
+
+  const float tf = static_cast<float>(term_freq);
+  const float doc_length = static_cast<float>(doc_len);
+  const float avg_dl = snap.avg_doc_len();
+
+  const float tf_norm =
+      tf * (params_.k1 + 1.0f) /
+      (tf + params_.k1 * (1.0f - params_.b + params_.b * doc_length / avg_dl));
+
+  return idf_value * tf_norm;
+}
+
 // ============================================================
 // WandOptimizer implementation
 // ============================================================

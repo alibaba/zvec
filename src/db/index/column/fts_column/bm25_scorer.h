@@ -127,6 +127,16 @@ class BM25Scorer {
    */
   float idf(uint64_t term_doc_freq) const;
 
+  /*! Calculate BM25 score using a pre-computed IDF value.
+   *  Avoids recomputing log() on every call — IDF is constant per term.
+   *  \param idf_value      Pre-computed IDF value (from idf())
+   *  \param term_freq      Term frequency in current document
+   *  \param doc_len        Document length (number of tokens)
+   *  \return BM25 score contribution
+   */
+  float score_with_idf(float idf_value, uint32_t term_freq,
+                       uint32_t doc_len) const;
+
   /*! Update in-memory segment statistics (called by FtsColumnIndexer after
    *  each insert so that search() uses up-to-date stats for BM25 scoring)
    *  \param total_docs    Current total number of documents
