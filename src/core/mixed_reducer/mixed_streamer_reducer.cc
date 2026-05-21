@@ -349,9 +349,6 @@ void MixedStreamerReducer::add_vec(int *result) {
 
 void MixedStreamerReducer::add_vec_with_builder(int *result) {
   ailego::ElapsedTime timer;
-  auto target_streamer_query_meta = IndexQueryMeta{
-      IndexMeta::MetaType::MT_DENSE, target_streamer_->meta().data_type(),
-      target_streamer_->meta().dimension()};
 
   AILEGO_DEFER([&]() {
     // make producer quit
