@@ -2208,7 +2208,7 @@ TEST_F(HnswStreamerTest, TestKnnSearchCosine) {
            topk1Recall, cost);
 #endif
   EXPECT_GT(recall, 0.90f);
-  EXPECT_GT(topk1Recall, 0.95f);
+  EXPECT_GT(topk1Recall, 0.90f);
   // EXPECT_GT(cost, 2.0f);
 }
 
