@@ -175,8 +175,8 @@ class VamanaStreamerEntity : public VamanaEntity {
         use_key_info_map_(use_key_info_map),
         keys_map_lock_(keys_map_lock),
         keys_map_(keys_map),
-        node_chunks_(std::move(node_chunks)),
-        broker_(broker) {
+        broker_(broker),
+        node_chunks_(std::move(node_chunks)) {
     *mutable_header() = hd;
     neighbor_size_ = neighbors_size();
   }

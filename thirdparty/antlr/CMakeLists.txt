@@ -7,9 +7,10 @@ if(MSVC)
 endif()
 add_subdirectory(antlr4/runtime/Cpp/)
 
-target_include_directories(antlr4_static INTERFACE
+target_include_directories(antlr4_static SYSTEM INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/antlr4/runtime/Cpp/runtime/src/"
 )
+mark_target_includes_system(antlr4_static)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(antlr4_static PRIVATE -Wno-unknown-pragmas -Wno-unqualified-std-cast-call)

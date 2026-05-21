@@ -166,6 +166,11 @@ int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
   hnsw_rabitq_streamer->set_provider(provider);
   return 0;
 #else
+  (void)streamer;
+  (void)meta;
+  (void)config_root;
+  (void)converter_name;
+  (void)build_holder;
   cerr << "HNSW RaBitQ is not supported on this platform" << endl;
   return -1;
 #endif
@@ -311,20 +316,20 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
       add_to_streamer_sparse = [&](uint64_t pkey, const uint32_t sparse_count,
                                    const uint32_t *sparse_indices,
                                    const void *sparse_query,
-                                   const IndexQueryMeta &qmeta,
+                                   const IndexQueryMeta &query_meta,
                                    IndexContext::Pointer &context) -> int {
     return streamer->add_impl(pkey, sparse_count, sparse_indices, sparse_query,
-                              qmeta, context);
+                              query_meta, context);
   };
   if (g_disable_id_map) {
     add_to_streamer_sparse = [&](uint64_t pkey, const uint32_t sparse_count,
                                  const uint32_t *sparse_indices,
                                  const void *sparse_query,
-                                 const IndexQueryMeta &qmeta,
+                                 const IndexQueryMeta &query_meta,
                                  IndexContext::Pointer &context) -> int {
       return streamer->add_with_id_impl(static_cast<uint32_t>(pkey),
                                         sparse_count, sparse_indices,
-                                        sparse_query, qmeta, context);
+                                        sparse_query, query_meta, context);
     };
   }
 
@@ -490,16 +495,16 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
   std::function<int(uint64_t, const void *, const IndexQueryMeta &,
                     IndexContext::Pointer &)>
       add_to_streamer = [&](uint64_t pkey, const void *query,
-                            const IndexQueryMeta &qmeta,
+                            const IndexQueryMeta &query_meta,
                             IndexContext::Pointer &context) -> int {
-    return streamer->add_impl(pkey, query, qmeta, context);
+    return streamer->add_impl(pkey, query, query_meta, context);
   };
   if (g_disable_id_map) {
     add_to_streamer = [&](uint64_t pkey, const void *query,
-                          const IndexQueryMeta &qmeta,
+                          const IndexQueryMeta &query_meta,
                           IndexStreamer::Context::Pointer &context) -> int {
       return streamer->add_with_id_impl(static_cast<uint32_t>(pkey), query,
-                                        qmeta, context);
+                                        query_meta, context);
     };
   }
 

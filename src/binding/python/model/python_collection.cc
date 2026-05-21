@@ -75,13 +75,20 @@ void ZVecPyCollection::bind_db_methods(
   col.def_static("CreateAndOpen",
                  [](const std::string &path, const CollectionSchema &schema,
                     const CollectionOptions &options) {
-                   auto result =
-                       Collection::CreateAndOpen(path, schema, options);
+                   Result<Collection::Ptr> result;
+                   {
+                     py::gil_scoped_release release;
+                     result = Collection::CreateAndOpen(path, schema, options);
+                   }
                    return unwrap_expected(result);
                  })
       .def_static("Open", [](const std::string &path,
                              const CollectionOptions &options) {
-        auto result = Collection::Open(path, options);
+        Result<Collection::Ptr> result;
+        {
+          py::gil_scoped_release release;
+          result = Collection::Open(path, options);
+        }
         return unwrap_expected(result);
       });
 }
@@ -113,11 +120,19 @@ void ZVecPyCollection::bind_ddl_methods(
   // bind collection ddl methods
   col.def("Destroy",
           [](Collection &self) {
-            const auto status = self.Destroy();
+            Status status;
+            {
+              py::gil_scoped_release release;
+              status = self.Destroy();
+            }
             throw_if_error(status);
           })
       .def("Flush", [](Collection &self) {
-        auto status = self.Flush();
+        Status status;
+        {
+          py::gil_scoped_release release;
+          status = self.Flush();
+        }
         throw_if_error(status);
       });
 
@@ -126,17 +141,28 @@ void ZVecPyCollection::bind_ddl_methods(
           [](Collection &self, const std::string &column_name,
              const IndexParams::Ptr &index_options,
              const CreateIndexOptions &options) {
-            const auto status =
-                self.CreateIndex(column_name, index_options, options);
+            Status status;
+            {
+              py::gil_scoped_release release;
+              status = self.CreateIndex(column_name, index_options, options);
+            }
             throw_if_error(status);
           })
       .def("DropIndex",
            [](Collection &self, const std::string &column_name) {
-             const auto status = self.DropIndex(column_name);
+             Status status;
+             {
+               py::gil_scoped_release release;
+               status = self.DropIndex(column_name);
+             }
              throw_if_error(status);
            })
       .def("Optimize", [](Collection &self, const OptimizeOptions &options) {
-        const auto status = self.Optimize(options);
+        Status status;
+        {
+          py::gil_scoped_release release;
+          status = self.Optimize(options);
+        }
         throw_if_error(status);
       });
 
@@ -144,21 +170,32 @@ void ZVecPyCollection::bind_ddl_methods(
   col.def("AddColumn",
           [](Collection &self, const FieldSchema::Ptr &column_schema,
              const std::string &expression, const AddColumnOptions &options) {
-            const auto status =
-                self.AddColumn(column_schema, expression, options);
+            Status status;
+            {
+              py::gil_scoped_release release;
+              status = self.AddColumn(column_schema, expression, options);
+            }
             throw_if_error(status);
           })
       .def("DropColumn",
            [](Collection &self, std::string &column_name) {
-             auto status = self.DropColumn(column_name);
+             Status status;
+             {
+               py::gil_scoped_release release;
+               status = self.DropColumn(column_name);
+             }
              throw_if_error(status);
            })
       .def("AlterColumn", [](Collection &self, std::string &column_name,
                              const std::string &rename,
                              const FieldSchema::Ptr &new_column_schema,
                              const AlterColumnOptions &options) {
-        const auto status =
-            self.AlterColumn(column_name, rename, new_column_schema, options);
+        Status status;
+        {
+          py::gil_scoped_release release;
+          status =
+              self.AlterColumn(column_name, rename, new_column_schema, options);
+        }
         throw_if_error(status);
       });
 }
@@ -168,26 +205,46 @@ void ZVecPyCollection::bind_dml_methods(
   // bind collection upsert/insert/update/delete methods
   col.def("Insert",
           [](Collection &self, std::vector<Doc> &docs) {
-            const auto result = self.Insert(docs);
+            Result<WriteResults> result;
+            {
+              py::gil_scoped_release release;
+              result = self.Insert(docs);
+            }
             return unwrap_expected(result);
           })
       .def("Update",
            [](Collection &self, std::vector<Doc> &docs) {
-             const auto result = self.Update(docs);
+             Result<WriteResults> result;
+             {
+               py::gil_scoped_release release;
+               result = self.Update(docs);
+             }
              return unwrap_expected(result);
            })
       .def("Upsert",
            [](Collection &self, std::vector<Doc> &docs) {
-             const auto result = self.Upsert(docs);
+             Result<WriteResults> result;
+             {
+               py::gil_scoped_release release;
+               result = self.Upsert(docs);
+             }
              return unwrap_expected(result);
            })
       .def("Delete",
            [](Collection &self, const std::vector<std::string> &pks) {
-             const auto result = self.Delete(pks);
+             Result<WriteResults> result;
+             {
+               py::gil_scoped_release release;
+               result = self.Delete(pks);
+             }
              return unwrap_expected(result);
            })
       .def("DeleteByFilter", [](Collection &self, const std::string &filter) {
-        const auto status = self.DeleteByFilter(filter);
+        Status status;
+        {
+          py::gil_scoped_release release;
+          status = self.DeleteByFilter(filter);
+        }
         throw_if_error(status);
       });
 }
@@ -196,19 +253,31 @@ void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
   col.def("Query",
           [](const Collection &self, const VectorQuery &query) {
-            const auto result = self.Query(query);
+            Result<DocPtrList> result;
+            {
+              py::gil_scoped_release release;
+              result = self.Query(query);
+            }
             // return DocPtrList
             return unwrap_expected(result);
           })
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {
-             const auto result = self.GroupByQuery(query);
+             Result<GroupResults> result;
+             {
+               py::gil_scoped_release release;
+               result = self.GroupByQuery(query);
+             }
              // return GroupResults
              return unwrap_expected(result);
            })
       .def("Fetch",
            [](const Collection &self, const std::vector<std::string> &pks) {
-             const auto result = self.Fetch(pks);
+             Result<DocPtrMap> result;
+             {
+               py::gil_scoped_release release;
+               result = self.Fetch(pks);
+             }
              // return DocPtrMap
              return unwrap_expected(result);
            })

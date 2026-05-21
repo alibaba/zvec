@@ -98,7 +98,7 @@ std::optional<bool> DocFilter::get_forward_bit(uint64_t id) const {
     const auto &arr = forward_bitmap_->chunk(c);
     if (id < rows_seen + arr->length()) {
       auto *bool_array = static_cast<arrow::BooleanArray *>(arr.get());
-      return (*bool_array)[id - rows_seen];
+      return (*bool_array)[id - rows_seen].value_or(false);
     }
     rows_seen += arr->length();
   }
@@ -155,7 +155,8 @@ std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
   }
   arrow::Datum datum = maybe_result.MoveValueUnsafe();
   if (datum.is_scalar()) {
-    return datum.scalar_as<arrow::BooleanScalar>().value;
+    const auto &scalar = datum.scalar_as<arrow::BooleanScalar>();
+    return scalar.is_valid && scalar.value;
   }
   LOG_ERROR("Datum is not scalar, id[%zu] type[%s]", (size_t)id,
             datum.type()->ToString().c_str());

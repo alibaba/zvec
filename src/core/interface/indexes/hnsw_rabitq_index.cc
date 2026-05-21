@@ -27,6 +27,7 @@ namespace zvec::core_interface {
 
 int HNSWRabitqIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
 #if !RABITQ_SUPPORTED
+  (void)param;
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return core::IndexError_Unsupported;
 #else
@@ -87,6 +88,8 @@ int HNSWRabitqIndex::_prepare_for_search(
     const BaseIndexQueryParam::Pointer &search_param,
     core::IndexContext::Pointer &context) {
 #if !RABITQ_SUPPORTED
+  (void)search_param;
+  (void)context;
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return core::IndexError_Unsupported;
 #else
@@ -125,6 +128,7 @@ int HNSWRabitqIndex::_prepare_for_search(
 int HNSWRabitqIndex::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
 #if !RABITQ_SUPPORTED
+  (void)search_param;
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return -1;
 #else

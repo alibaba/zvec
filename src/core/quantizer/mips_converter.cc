@@ -532,7 +532,7 @@ class MipsConverter : public IndexConverter {
     switch (holder->data_type()) {
       case IndexMeta::DataType::DT_FP16:
         for (; iter->is_valid(); iter->next()) {
-          float score;
+          float score = 0.0f;
           ailego::Norm2Matrix<ailego::Float16, 1>::Compute(
               reinterpret_cast<const ailego::Float16 *>(iter->data()), dim,
               &score);
@@ -549,7 +549,7 @@ class MipsConverter : public IndexConverter {
 
       case IndexMeta::DataType::DT_FP32:
         for (; iter->is_valid(); iter->next()) {
-          float score;
+          float score = 0.0f;
           ailego::Norm2Matrix<float, 1>::Compute(
               reinterpret_cast<const float *>(iter->data()), dim, &score);
 

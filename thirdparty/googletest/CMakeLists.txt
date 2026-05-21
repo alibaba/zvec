@@ -20,6 +20,8 @@ add_subdirectory(googletest-1.10.0)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
+mark_target_includes_system(gtest gtest_main gmock gmock_main)
+
 get_target_property(GTEST_INCLUDE_DIRS gtest INTERFACE_INCLUDE_DIRECTORIES)
 
 set(GTEST_FOUND TRUE PARENT_SCOPE)

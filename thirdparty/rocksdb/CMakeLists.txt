@@ -57,6 +57,7 @@ if(NOT TARGET lz4::lz4)
         IMPORTED_LOCATION_MINSIZEREL "${lz4_LIBRARY}"
         IMPORTED_LOCATION_RELWITHDEBINFO "${lz4_LIBRARY}"
         INTERFACE_INCLUDE_DIRECTORIES "${lz4_INCLUDE_DIR}"
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${lz4_INCLUDE_DIR}"
     )
     add_dependencies(lz4::lz4 Lz4.BUILD)
 endif()
@@ -71,6 +72,7 @@ unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 get_target_property(rocksdb_SOURCE_DIR rocksdb SOURCE_DIR)
 set(ROCKSDB_INCLUDE_DIR ${rocksdb_SOURCE_DIR}/include)
 
-target_include_directories(rocksdb PUBLIC $<BUILD_INTERFACE:${ROCKSDB_INCLUDE_DIR}>)
-target_include_directories(rocksdb PRIVATE ${lz4_INCLUDE_DIR})
+target_include_directories(rocksdb SYSTEM PUBLIC $<BUILD_INTERFACE:${ROCKSDB_INCLUDE_DIR}>)
+target_include_directories(rocksdb SYSTEM PRIVATE ${lz4_INCLUDE_DIR})
+mark_target_includes_system(rocksdb)
 add_dependencies(rocksdb Lz4.BUILD)
