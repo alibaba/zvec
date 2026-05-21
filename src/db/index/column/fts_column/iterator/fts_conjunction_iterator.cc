@@ -54,6 +54,34 @@ uint32_t ConjunctionIterator::next_doc() {
   return cached_doc_id_;
 }
 
+uint32_t ConjunctionIterator::next_doc(const zvec::IndexFilter *filter) {
+  if (must_iterators_.empty()) {
+    cached_doc_id_ = NO_MORE_DOCS;
+    return NO_MORE_DOCS;
+  }
+
+  // MaxScore pruning
+  if (min_competitive_score_ > 0.0f && max_score() < min_competitive_score_) {
+    cached_doc_id_ = NO_MORE_DOCS;
+    return NO_MORE_DOCS;
+  }
+
+  // Lead iterator advances with filter-awareness so filtered docs never
+  // reach do_next() alignment.
+  uint32_t candidate = must_iterators_[0]->next_doc(filter);
+  while (candidate != NO_MORE_DOCS) {
+    candidate = do_next(candidate);
+    if (candidate == NO_MORE_DOCS || !filter->is_filtered(candidate)) {
+      break;
+    }
+    // do_next may have re-anchored the lead onto a filtered doc; advance
+    // the lead past it (still filter-aware) and try again.
+    candidate = must_iterators_[0]->next_doc(filter);
+  }
+  cached_doc_id_ = candidate;
+  return candidate;
+}
+
 uint32_t ConjunctionIterator::advance(uint32_t target) {
   if (must_iterators_.empty()) {
     cached_doc_id_ = NO_MORE_DOCS;

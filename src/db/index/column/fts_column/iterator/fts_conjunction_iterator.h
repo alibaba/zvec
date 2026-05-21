@@ -37,6 +37,9 @@ class ConjunctionIterator : public DocIterator {
                       std::vector<DocIteratorPtr> must_not_iterators);
 
   uint32_t next_doc() override;
+  //! Internal-driven filter skip: pushes filter into the lead iterator so
+  //! filtered candidates never trigger the do_next alignment cascade.
+  uint32_t next_doc(const zvec::IndexFilter *filter) override;
   uint32_t advance(uint32_t target) override;
   bool matches() override;
   float score() override;

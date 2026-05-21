@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include "db/index/common/index_filter.h"
 
 namespace zvec::fts {
 
@@ -51,6 +52,21 @@ class DocIterator {
   //! Advance to the next matching document.
   //! \return doc_id of the next match, or NO_MORE_DOCS if exhausted.
   virtual uint32_t next_doc() = 0;
+
+  //! Filter-aware next_doc. Composite iterators (Disjunction/Conjunction/
+  //! Phrase) override to check the filter at the optimal point inside their
+  //! loops — before block-max binary search, do_next alignment, or phase-2
+  //! position verification — so filtered docs do not pay that cost.
+  //! Default implementation just loops over next_doc() and skips filtered
+  //! docs (functionally equivalent to a caller-side post-filter check).
+  //! \param filter Must be non-null; true means SKIP the doc.
+  virtual uint32_t next_doc(const zvec::IndexFilter *filter) {
+    uint32_t doc = next_doc();
+    while (doc != NO_MORE_DOCS && filter->is_filtered(doc)) {
+      doc = next_doc();
+    }
+    return doc;
+  }
 
   //! Advance to the first matching document with doc_id >= target.
   //! \param target  Minimum doc_id to seek to.

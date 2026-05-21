@@ -189,20 +189,20 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
   }
 
   const uint32_t topk = query_params.topk;
-  const auto &filter = query_params.filter;
+  const zvec::IndexFilter *filter_ptr = query_params.filter.get();
 
   using MinHeap = std::priority_queue<FtsResult, std::vector<FtsResult>,
                                       std::greater<FtsResult>>;
   MinHeap min_heap;
 
-  uint32_t doc_id = root_iter->next_doc();
+  // Filter pushdown: when a filter is present, use the filter-aware next_doc
+  // overload so composite iterators skip filtered docs before paying for
+  // block-max binary search, do_next alignment, or phase-2 position checks.
+  uint32_t doc_id =
+      filter_ptr ? root_iter->next_doc(filter_ptr) : root_iter->next_doc();
   while (doc_id != DocIterator::NO_MORE_DOCS) {
     const uint64_t global_doc_id = static_cast<uint64_t>(doc_id);
 
-    if (filter && filter->is_filtered(global_doc_id)) {
-      doc_id = root_iter->next_doc();
-      continue;
-    }
     if (root_iter->matches()) {
       float s = root_iter->score();
       if (s > 0.0f) {
@@ -218,7 +218,8 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
         }
       }
     }
-    doc_id = root_iter->next_doc();
+    doc_id =
+        filter_ptr ? root_iter->next_doc(filter_ptr) : root_iter->next_doc();
   }
 
   std::vector<FtsResult> results(min_heap.size());

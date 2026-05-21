@@ -35,6 +35,11 @@ uint32_t PhraseDocIterator::next_doc() {
   return cached_doc_id_;
 }
 
+uint32_t PhraseDocIterator::next_doc(const zvec::IndexFilter *filter) {
+  cached_doc_id_ = conjunction_->next_doc(filter);
+  return cached_doc_id_;
+}
+
 uint32_t PhraseDocIterator::advance(uint32_t target) {
   cached_doc_id_ = conjunction_->advance(target);
   return cached_doc_id_;

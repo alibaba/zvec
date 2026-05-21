@@ -42,6 +42,10 @@ class PhraseDocIterator : public DocIterator {
                     rocksdb::ColumnFamilyHandle *positions_cf);
 
   uint32_t next_doc() override;
+  //! Internal-driven filter skip: delegates to the inner conjunction so the
+  //! expensive phase-2 verify_phrase_positions() ($POS CF reads) is never
+  //! run on filtered docs.
+  uint32_t next_doc(const zvec::IndexFilter *filter) override;
   uint32_t advance(uint32_t target) override;
 
   //! Phase-2: verify position adjacency for the current document.

@@ -67,6 +67,14 @@ void DisjunctionIterator::resort_postings() {
 }
 
 uint32_t DisjunctionIterator::next_doc() {
+  return next_doc_impl(nullptr);
+}
+
+uint32_t DisjunctionIterator::next_doc(const zvec::IndexFilter *filter) {
+  return next_doc_impl(filter);
+}
+
+uint32_t DisjunctionIterator::next_doc_impl(const zvec::IndexFilter *filter) {
   // Advance matched from the previous document
   for (auto *iter : matching_iterators_) {
     iter->next_doc();
@@ -110,6 +118,21 @@ uint32_t DisjunctionIterator::next_doc() {
 
     // 3. Check alignment
     if (postings_[0]->cached_doc_id_ == pivot_doc) {
+      // 3.1 Filter pushdown: if pivot_doc is filtered, skip it before paying
+      //     for block-max accumulation, matches(), or score(). Advance every
+      //     posting currently sitting at pivot_doc past it, then resort.
+      if (filter && filter->is_filtered(pivot_doc)) {
+        for (size_t i = 0; i < postings_.size(); ++i) {
+          if (postings_[i]->cached_doc_id_ == pivot_doc) {
+            postings_[i]->next_doc();
+          } else {
+            break;  // postings_ is sorted; rest are > pivot_doc
+          }
+        }
+        resort_postings();
+        continue;
+      }
+
       // 3.5 Block-Max WAND pruning (Ding & Suel 2011).
       //     First accumulate block_max_scores from [0..pivot_idx].
       //     If already >= threshold, skip the pruning check (fast path).

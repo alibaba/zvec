@@ -17,10 +17,12 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/db/index_params.h>
 #include "db/common/file_helper.h"
+#include "db/index/common/index_filter.h"
 // FtsQueryParams defined below
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
@@ -63,6 +65,29 @@ static bool search_ok(Reader &reader, const std::string &query_str,
   }
   zvec::fts::FtsQueryParams qp;
   qp.topk = topk;
+  auto ret = reader.search(*ast, qp);
+  if (!ret.has_value()) {
+    return false;
+  }
+  *results = std::move(ret.value());
+  return true;
+}
+
+// Helper: parse a query string with a filter and call search().
+template <typename Reader>
+static bool search_ok_with_filter(Reader &reader, const std::string &query_str,
+                                  uint32_t topk, zvec::IndexFilter::Ptr filter,
+                                  std::vector<FtsResult> *results) {
+  FtsQueryParser parser;
+  auto ast = parser.parse(query_str);
+  if (!ast) {
+    ADD_FAILURE() << "FtsQueryParser failed to parse: " << query_str
+                  << " err: " << parser.err_msg();
+    return false;
+  }
+  zvec::fts::FtsQueryParams qp;
+  qp.topk = topk;
+  qp.filter = std::move(filter);
   auto ret = reader.search(*ast, qp);
   if (!ret.has_value()) {
     return false;
@@ -1082,4 +1107,135 @@ TEST_F(FtsMultiColumnSharedDbTest, MultiColumnStatsIndependent) {
   // Inserting into body must not affect title's counters.
   EXPECT_EQ(title_indexer->total_docs(), 2u);
   EXPECT_EQ(title_indexer->total_tokens(), 4u);
+}
+
+// ============================================================
+// Filter pushdown into FTS iterators (single-term / OR / Phrase)
+// ============================================================
+
+namespace {
+
+// Build an IndexFilter that excludes any doc_id present in `blocked`.
+zvec::IndexFilter::Ptr make_blocked_filter(
+    std::initializer_list<uint64_t> blocked) {
+  std::unordered_set<uint64_t> set(blocked);
+  return zvec::EasyIndexFilter::Create(
+      [set = std::move(set)](uint64_t id) { return set.count(id) > 0; });
+}
+
+}  // namespace
+
+// Single-term query path: TermDocIterator inherits the base-class default
+// next_doc(filter), which loops over next_doc() and skips filtered docs.
+TEST_F(FtsColumnIndexerTest, FilterPushdownExcludesFilteredDocs) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "hello foo").has_value());
+  EXPECT_TRUE(indexer->insert(2, "hello world bar").has_value());
+  EXPECT_TRUE(indexer->insert(3, "hello baz").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  // Baseline: no filter — all 4 docs match "hello".
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "hello", 10, &baseline));
+  EXPECT_EQ(baseline.size(), 4u);
+
+  // Block docs 1 and 3.
+  std::vector<FtsResult> filtered;
+  EXPECT_TRUE(search_ok_with_filter(*indexer, "hello", 10,
+                                    make_blocked_filter({1, 3}), &filtered));
+  ASSERT_EQ(filtered.size(), 2u);
+
+  std::vector<uint64_t> ids;
+  for (const auto &r : filtered) {
+    ids.push_back(r.doc_id);
+    EXPECT_GT(r.score, 0.0f);
+  }
+  std::sort(ids.begin(), ids.end());
+  EXPECT_EQ(ids[0], 0ull);
+  EXPECT_EQ(ids[1], 2ull);
+}
+
+// OR query exercises DisjunctionIterator::next_doc(filter) override —
+// pivot_doc is filter-checked before block-max accumulation and resort.
+TEST_F(FtsColumnIndexerTest, FilterPushdownWithDisjunction) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "alpha beta").has_value());
+  EXPECT_TRUE(indexer->insert(1, "alpha gamma").has_value());
+  EXPECT_TRUE(indexer->insert(2, "beta gamma").has_value());
+  EXPECT_TRUE(indexer->insert(3, "alpha beta gamma").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  // Baseline: "alpha OR beta" matches all 4 docs.
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "alpha beta", 10, &baseline));
+  EXPECT_EQ(baseline.size(), 4u);
+
+  std::vector<FtsResult> filtered;
+  EXPECT_TRUE(search_ok_with_filter(*indexer, "alpha beta", 10,
+                                    make_blocked_filter({0, 2}), &filtered));
+  ASSERT_EQ(filtered.size(), 2u);
+
+  std::vector<uint64_t> ids;
+  for (const auto &r : filtered) {
+    ids.push_back(r.doc_id);
+    EXPECT_GT(r.score, 0.0f);
+  }
+  std::sort(ids.begin(), ids.end());
+  EXPECT_EQ(ids[0], 1ull);
+  EXPECT_EQ(ids[1], 3ull);
+}
+
+// Phrase query exercises PhraseDocIterator::next_doc(filter) -> inner
+// ConjunctionIterator::next_doc(filter), ensuring verify_phrase_positions()
+// is never executed for filtered docs.
+TEST_F(FtsColumnIndexerTest, FilterPushdownWithPhrase) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "machine learning model").has_value());
+  EXPECT_TRUE(indexer->insert(1, "machine learning notes").has_value());
+  EXPECT_TRUE(indexer->insert(2, "learning machine translation").has_value());
+  EXPECT_TRUE(indexer->insert(3, "machine learning systems").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  // Baseline: phrase "machine learning" matches docs 0, 1, 3 (not 2, where
+  // the order is reversed).
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "\"machine learning\"", 10, &baseline));
+  EXPECT_EQ(baseline.size(), 3u);
+
+  // Block docs 1 and 3 — only doc 0 should remain.
+  std::vector<FtsResult> filtered;
+  EXPECT_TRUE(search_ok_with_filter(*indexer, "\"machine learning\"", 10,
+                                    make_blocked_filter({1, 3}), &filtered));
+  ASSERT_EQ(filtered.size(), 1u);
+  EXPECT_EQ(filtered[0].doc_id, 0ull);
+  EXPECT_GT(filtered[0].score, 0.0f);
+}
+
+// Regression guard: a null filter yields the same doc_ids and scores as the
+// baseline path (which still uses the no-filter next_doc() overload).
+TEST_F(FtsColumnIndexerTest, FilterPushdownNullFilterUnchanged) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "quick brown fox").has_value());
+  EXPECT_TRUE(indexer->insert(1, "lazy brown dog").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "brown", 10, &baseline));
+  ASSERT_EQ(baseline.size(), 2u);
+
+  std::vector<FtsResult> with_null;
+  EXPECT_TRUE(search_ok_with_filter(*indexer, "brown", 10, /*filter=*/nullptr,
+                                    &with_null));
+  ASSERT_EQ(with_null.size(), 2u);
+
+  auto by_id = [](const FtsResult &a, const FtsResult &b) {
+    return a.doc_id < b.doc_id;
+  };
+  std::sort(baseline.begin(), baseline.end(), by_id);
+  std::sort(with_null.begin(), with_null.end(), by_id);
+  for (size_t i = 0; i < baseline.size(); ++i) {
+    EXPECT_EQ(baseline[i].doc_id, with_null[i].doc_id);
+    EXPECT_FLOAT_EQ(baseline[i].score, with_null[i].score);
+  }
 }

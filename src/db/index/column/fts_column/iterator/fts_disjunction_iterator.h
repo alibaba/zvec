@@ -31,6 +31,9 @@ class DisjunctionIterator : public DocIterator {
   explicit DisjunctionIterator(std::vector<DocIteratorPtr> sub_iterators);
 
   uint32_t next_doc() override;
+  //! Internal-driven filter skip: checks filter inside the WAND loop after
+  //! pivot alignment, before block-max accumulation and resort overhead.
+  uint32_t next_doc(const zvec::IndexFilter *filter) override;
   uint32_t advance(uint32_t target) override;
   bool matches() override;
   float score() override;
@@ -44,6 +47,9 @@ class DisjunctionIterator : public DocIterator {
 
  private:
   void resort_postings();
+
+  //! Unified WAND loop body. \p filter may be null (no-filter fast path).
+  uint32_t next_doc_impl(const zvec::IndexFilter *filter);
 
  private:
   std::vector<DocIteratorPtr> sub_iterators_;  // Owns the sub-iterators
