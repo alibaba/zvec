@@ -4667,12 +4667,6 @@ Status SegmentImpl::dump_fts_indexers() {
     fts_ctx_->drop_cf(name + kFtsDocLenSuffix);
   }
 
-  // create checkpoint for persistence
-  auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_);
-  auto checkpoint_path = fts_path + ".checkpoint";
-  auto s = fts_ctx_->create_checkpoint(checkpoint_path);
-  CHECK_RETURN_STATUS(s);
-
   return Status::OK();
 }
 

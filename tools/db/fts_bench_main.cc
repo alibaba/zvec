@@ -672,17 +672,6 @@ static int do_build() {
   std::cout << "Running compaction..." << std::endl;
   store.compact();
 
-  const std::string checkpoint_dir = FLAGS_index + ".checkpoint";
-  Status ckpt_status = store.create_checkpoint(checkpoint_dir);
-  if (ckpt_status.ok()) {
-    std::cout << "  Checkpoint  : " << checkpoint_dir << std::endl;
-    std::cout << "  SST size    : " << store.sst_file_size() / 1024 / 1024
-              << " MB" << std::endl;
-  } else {
-    fprintf(stderr, "WARN: Checkpoint failed: %s\n",
-            ckpt_status.message().c_str());
-  }
-
   uint64_t dump_ms = dump_timer.milli_seconds();
   uint64_t elapsed_ms = timer.milli_seconds();
   std::cout << "=== BUILD COMPLETE ===" << std::endl;

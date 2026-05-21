@@ -156,8 +156,8 @@ Status RocksdbContext::open(Args args, bool read_only) {
     for (const auto &column_name : args.column_names) {
       if (std::find(existing_cf_names.begin(), existing_cf_names.end(),
                     column_name) == existing_cf_names.end()) {
-        LOG_ERROR("Column family[%s] does not exist in RocksDB[%s]",
-                  column_name.c_str(), args.db_path.c_str());
+        LOG_WARN("Column family[%s] does not exist in RocksDB[%s]",
+                 column_name.c_str(), args.db_path.c_str());
         return Status::InvalidArgument();
       }
       if (column_name == rocksdb::kDefaultColumnFamilyName) {
