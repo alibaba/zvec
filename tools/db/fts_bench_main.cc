@@ -96,6 +96,9 @@ DEFINE_string(extra_params, R"({"tokenizer":"standard"})",
               "Extra params JSON for tokenizer pipeline");
 DEFINE_string(field, "text", "FTS field name");
 DEFINE_int32(threads, 16, "Number of threads for multi-threaded search");
+DEFINE_int32(max_queries, 0,
+             "Maximum number of queries to run in search mode. "
+             "0 means all queries (default).");
 DEFINE_bool(reduce, false,
             "After build, run FtsRocksdbReducer to convert postings to "
             "BitPacked format. Reduced index is written to <index>-reduce.");
@@ -1028,6 +1031,23 @@ static int do_search() {
   }
   std::cout << "Loaded " << queries.size() << " queries." << std::endl;
 
+  // Limit the number of queries if configured: first keep only queries that
+  // have qrels entries (relevant results), then truncate to max_queries.
+  if (FLAGS_max_queries > 0) {
+    std::vector<QueryEntry> filtered;
+    for (auto &q : queries) {
+      if (qrels.count(q.query_id) > 0) {
+        filtered.push_back(std::move(q));
+      }
+    }
+    queries = std::move(filtered);
+    if (static_cast<size_t>(FLAGS_max_queries) < queries.size()) {
+      queries.resize(FLAGS_max_queries);
+    }
+    std::cout << "Limited to " << queries.size()
+              << " queries with qrels (--max_queries)." << std::endl;
+  }
+
   // Shared atomic index for work-stealing across threads
   std::atomic<size_t> next_query_index{0};
 
@@ -1297,6 +1317,23 @@ static int do_search_db() {
     }
   }
   std::cout << "Loaded " << queries.size() << " queries." << std::endl;
+
+  // Limit the number of queries if configured: first keep only queries that
+  // have qrels entries (relevant results), then truncate to max_queries.
+  if (FLAGS_max_queries > 0) {
+    std::vector<QueryEntry> filtered;
+    for (auto &q : queries) {
+      if (qrels.count(q.query_id) > 0) {
+        filtered.push_back(std::move(q));
+      }
+    }
+    queries = std::move(filtered);
+    if (static_cast<size_t>(FLAGS_max_queries) < queries.size()) {
+      queries.resize(FLAGS_max_queries);
+    }
+    std::cout << "Limited to " << queries.size()
+              << " queries with qrels (--max_queries)." << std::endl;
+  }
 
   // Per-thread result accumulators
   std::atomic<size_t> next_query_index{0};
