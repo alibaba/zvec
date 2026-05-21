@@ -718,6 +718,17 @@ BitPackedPostingIterator::block_max_info_for(uint32_t target) const {
   if (num_blocks_ == 0 || skip_list_ == nullptr) {
     return {0.0f, NO_MORE_DOCS};
   }
+
+  // Fast path: check if target falls within the previously cached block
+  if (cached_bmi_valid_ && target <= cached_bmi_last_doc_) {
+    // target is in the same or earlier block as last query.
+    // Check if it's still in the same block (block_idx is correct).
+    if (cached_bmi_block_idx_ == 0 ||
+        target > skip_list_[cached_bmi_block_idx_ - 1].max_doc_id) {
+      return {cached_bmi_score_, cached_bmi_last_doc_};
+    }
+  }
+
   size_t lo = 0, hi = num_blocks_;
   while (lo < hi) {
     size_t mid = lo + (hi - lo) / 2;
@@ -730,7 +741,14 @@ BitPackedPostingIterator::block_max_info_for(uint32_t target) const {
   if (lo >= num_blocks_) {
     return {0.0f, NO_MORE_DOCS};
   }
-  return {skip_list_[lo].block_max_score, skip_list_[lo].max_doc_id};
+
+  // Update cache
+  cached_bmi_block_idx_ = lo;
+  cached_bmi_last_doc_ = skip_list_[lo].max_doc_id;
+  cached_bmi_score_ = skip_list_[lo].block_max_score;
+  cached_bmi_valid_ = true;
+
+  return {cached_bmi_score_, cached_bmi_last_doc_};
 }
 
 }  // namespace zvec::fts

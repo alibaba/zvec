@@ -233,6 +233,14 @@ class BitPackedPostingIterator {
 
   uint32_t current_doc_id_{NO_MORE_DOCS};
   float global_max_score_{0.0f};
+
+  // Cache for block_max_info_for to avoid repeated binary searches.
+  // If target falls within [cached_bmi_block_min_doc_+1, cached_bmi_last_doc_],
+  // we can return the cached result directly.
+  mutable uint32_t cached_bmi_last_doc_{0};
+  mutable float cached_bmi_score_{0.0f};
+  mutable size_t cached_bmi_block_idx_{0};
+  mutable bool cached_bmi_valid_{false};
 };
 
 }  // namespace zvec::fts
