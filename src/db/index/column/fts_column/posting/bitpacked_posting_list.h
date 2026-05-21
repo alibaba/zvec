@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include "bitpacked_simd_dispatch.h"
 #include "../bm25_scorer.h"
 
 namespace zvec::fts {
@@ -233,6 +234,13 @@ class BitPackedPostingIterator {
 
   uint32_t current_doc_id_{NO_MORE_DOCS};
   float global_max_score_{0.0f};
+
+  // Cached SIMD dispatch function pointers (initialized in open()).
+  // Avoids repeated PLT/indirect calls through get_dispatch() on every
+  // decode_block / simd_find_first_ge invocation.
+  simd::PrefixSumFunc prefix_sum_fn_{nullptr};
+  simd::FindFirstGeFunc find_first_ge_fn_{nullptr};
+  simd::UnpackFunc unpack_fn_{nullptr};
 
   // Cache for block_max_info_for to avoid repeated binary searches.
   // If target falls within [cached_bmi_block_min_doc_+1, cached_bmi_last_doc_],

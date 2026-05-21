@@ -392,6 +392,12 @@ int BitPackedPostingIterator::open(const char *data, size_t size) {
   block_decoded_ = false;
   current_doc_id_ = NO_MORE_DOCS;
 
+  // Cache SIMD dispatch function pointers to avoid PLT overhead on hot path
+  const auto &dispatch = simd::get_dispatch();
+  prefix_sum_fn_ = dispatch.prefix_sum_128;
+  find_first_ge_fn_ = dispatch.find_first_ge;
+  unpack_fn_ = dispatch.unpack_uint32_128;
+
   return 0;
 }
 
@@ -431,15 +437,19 @@ void BitPackedPostingIterator::decode_block(size_t block_idx) {
           : BitPackedPostingList::packed_byte_size(bhdr.bitwidth_id,
                                                    bhdr.num_docs);
   alignas(16) uint32_t deltas[BitPackedPostingList::BLOCK_SIZE];
-  BitPackedPostingList::unpack_uint32(packed_ptr, bhdr.bitwidth_id,
-                                      bhdr.num_docs, deltas);
+  if (is_full_block) {
+    // Fast path: use cached function pointer directly for full blocks
+    unpack_fn_(packed_ptr, bhdr.bitwidth_id, deltas);
+  } else {
+    BitPackedPostingList::unpack_uint32(packed_ptr, bhdr.bitwidth_id,
+                                        bhdr.num_docs, deltas);
+  }
   packed_ptr += id_bytes;
 
-  // Reconstruct absolute doc_ids from deltas using prefix-sum via dispatch
+  // Reconstruct absolute doc_ids from deltas using prefix-sum
   if (is_full_block) {
-    simd::get_dispatch().prefix_sum_128(deltas, bhdr.min_doc_id,
-                                        BitPackedPostingList::BLOCK_SIZE,
-                                        block_doc_ids_);
+    prefix_sum_fn_(deltas, bhdr.min_doc_id, BitPackedPostingList::BLOCK_SIZE,
+                   block_doc_ids_);
   } else {
     // Scalar prefix-sum for tail block
     block_doc_ids_[0] = bhdr.min_doc_id;
@@ -516,8 +526,7 @@ uint32_t BitPackedPostingIterator::next_doc() {
 
 size_t BitPackedPostingIterator::simd_find_first_ge(uint32_t target,
                                                     size_t start) const {
-  return simd::get_dispatch().find_first_ge(block_doc_ids_, current_block_size_,
-                                            target, start);
+  return find_first_ge_fn_(block_doc_ids_, current_block_size_, target, start);
 }
 
 uint32_t BitPackedPostingIterator::advance(uint32_t target) {
@@ -636,16 +645,29 @@ uint32_t BitPackedPostingIterator::skip_to_next_block() {
 }
 
 void BitPackedPostingIterator::ensure_tf_decoded() {
-  if (tf_decoded_) return;
-  BitPackedPostingList::unpack_uint32(packed_tf_ptr_, current_bitwidth_tf_,
-                                      current_block_num_docs_, block_tfs_);
+  if (tf_decoded_) {
+    return;
+  }
+  if (current_block_is_full_) {
+    unpack_fn_(packed_tf_ptr_, current_bitwidth_tf_, block_tfs_);
+  } else {
+    BitPackedPostingList::unpack_uint32(packed_tf_ptr_, current_bitwidth_tf_,
+                                        current_block_num_docs_, block_tfs_);
+  }
   tf_decoded_ = true;
 }
 
 void BitPackedPostingIterator::ensure_dl_decoded() {
-  if (dl_decoded_) return;
-  BitPackedPostingList::unpack_uint32(packed_dl_ptr_, current_bitwidth_dl_,
-                                      current_block_num_docs_, block_doc_lens_);
+  if (dl_decoded_) {
+    return;
+  }
+  if (current_block_is_full_) {
+    unpack_fn_(packed_dl_ptr_, current_bitwidth_dl_, block_doc_lens_);
+  } else {
+    BitPackedPostingList::unpack_uint32(packed_dl_ptr_, current_bitwidth_dl_,
+                                        current_block_num_docs_,
+                                        block_doc_lens_);
+  }
   dl_decoded_ = true;
 }
 
