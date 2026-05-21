@@ -38,8 +38,8 @@ namespace core {
 
 class FlatSparseStreamerTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
   void generate_sparse_data(
       size_t cnt, uint32_t sparse_dim_count,
       std::vector<NumericalVector<uint32_t>> &sparse_indices_list,

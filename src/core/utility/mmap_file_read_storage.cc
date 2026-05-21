@@ -45,7 +45,7 @@ class MMapFileReadStorage : public IndexStorage {
           file_ptr_(file_ptr) {}
 
     //! Destructor
-    virtual ~Segment(void) {}
+    ~Segment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -142,7 +142,7 @@ class MMapFileReadStorage : public IndexStorage {
   };
 
   //! Destructor
-  virtual ~MMapFileReadStorage(void) {}
+  ~MMapFileReadStorage(void) override {}
 
   //! Initialize container
   int init(const ailego::Params &params) override {

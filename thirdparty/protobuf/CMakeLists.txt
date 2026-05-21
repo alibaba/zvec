@@ -27,13 +27,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         -Wno-unused-function
     )
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(libprotobuf PRIVATE 
-        -Wno-deprecated-declarations 
+    target_compile_options(libprotobuf PRIVATE
+        -Wno-deprecated-declarations
         -Wno-unused-function
         -Wno-maybe-uninitialized
         -Wno-sign-compare
         -Wno-return-type
         -Wno-stringop-overflow
+        -Wno-stringop-overread
+        -Wno-array-bounds
     )
     target_compile_options(libprotoc PRIVATE 
         -Wno-unused-private-field 

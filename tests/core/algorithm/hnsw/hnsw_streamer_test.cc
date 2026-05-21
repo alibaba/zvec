@@ -42,8 +42,8 @@ constexpr size_t static dim = 16;
 
 class HnswStreamerTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
 
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;
@@ -1595,27 +1595,27 @@ TEST_F(HnswStreamerTest, TestCheckDuplicateAndGetVector) {
 }
 
 class TestDumper : public IndexDumper {
-  virtual int init(const ailego::Params &) {
+  int init(const ailego::Params &) override {
     return 0;
   }
-  virtual int cleanup(void) {
+  int cleanup(void) override {
     return 0;
   }
-  virtual int create(const std::string &path) {
+  int create(const std::string &path) override {
     return 0;
   }
-  virtual uint32_t magic(void) const {
+  uint32_t magic(void) const override {
     return 0;
   }
-  virtual int close(void) {
+  int close(void) override {
     return 0;
   }
-  virtual int append(const std::string &id, size_t data_size,
-                     size_t padding_size, uint32_t crc) {
+  int append(const std::string &id, size_t data_size, size_t padding_size,
+             uint32_t crc) override {
     usleep(100000);
     return 0;
   }
-  virtual size_t write(const void *data, size_t len) {
+  size_t write(const void *data, size_t len) override {
     return len;
   }
 };

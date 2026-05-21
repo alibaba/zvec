@@ -31,8 +31,8 @@ using namespace std;
 class IVFSearcherTest : public testing::Test {
  public:
  protected:
-  void SetUp();
-  void TearDown();
+  void SetUp() override;
+  void TearDown() override;
   void prepare_index_holder(uint32_t base_key, uint32_t num);
 
   void prepare_rand_index_holder(uint32_t base_key, uint32_t num);

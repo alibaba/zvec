@@ -49,7 +49,7 @@ class BufferStorage : public IndexStorage {
           segment_header_start_offset_(segment_header_start_offset),
           segment_header_(segment_header) {}
     //! Destructor
-    virtual ~WrappedSegment(void) {}
+    ~WrappedSegment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -169,7 +169,7 @@ class BufferStorage : public IndexStorage {
   };
 
   //! Destructor
-  virtual ~BufferStorage(void) {
+  ~BufferStorage(void) override {
     this->cleanup();
   }
 
@@ -179,7 +179,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Initialize storage
-  int init(const ailego::Params &params) override {
+  int init(const ailego::Params & /*params*/) override {
     return 0;
   }
 
@@ -204,9 +204,9 @@ class BufferStorage : public IndexStorage {
       return ret;
     }
     LOG_INFO(
-        "BufferStorage opened: file=%s, max_segment_size=%lu, "
+        "BufferStorage opened: file=%s, max_segment_size=%zu, "
         "segment_count=%zu",
-        file_name_.c_str(), max_segment_size_, segments_.size());
+        file_name_.c_str(), (size_t)max_segment_size_, segments_.size());
     return 0;
   }
 
@@ -524,7 +524,6 @@ class BufferStorage : public IndexStorage {
   ailego::VecBufferPool::Pointer buffer_pool_{nullptr};
   ailego::VecBufferPoolHandle::Pointer buffer_pool_handle_{nullptr};
   uint64_t current_header_start_offset_{0u};
-  uint64_t buffer_size_{2lu * 1024 * 1024 * 1024};  // 2G
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(BufferStorage);

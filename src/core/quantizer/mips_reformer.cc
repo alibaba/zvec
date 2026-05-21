@@ -111,7 +111,7 @@ class MipsReformer : public IndexReformer {
         out->resize((qmeta.dimension() + m_value_) * sizeof(ailego::Float16));
 
         if (normalize_) {
-          float norm;
+          float norm = 0.0f;
           ailego::Norm2Matrix<float, 1>::Compute(
               reinterpret_cast<const float *>(query), qmeta.dimension(), &norm);
 
@@ -137,7 +137,7 @@ class MipsReformer : public IndexReformer {
         out->resize((qmeta.dimension() + m_value_) * sizeof(float));
 
         if (normalize_) {
-          float norm;
+          float norm = 0.0f;
           ailego::Normalizer<float>::L2(reinterpret_cast<float *>(&(*out)[0]),
                                         qmeta.dimension(), &norm);
         }
@@ -155,7 +155,7 @@ class MipsReformer : public IndexReformer {
       out->resize((qmeta.dimension() + m_value_) * sizeof(ailego::Float16));
 
       if (normalize_) {
-        float norm;
+        float norm = 0.0f;
         ailego::Normalizer<ailego::Float16>::L2(
             reinterpret_cast<ailego::Float16 *>(&(*out)[0]), qmeta.dimension(),
             &norm);
@@ -193,7 +193,7 @@ class MipsReformer : public IndexReformer {
               reinterpret_cast<const float *>(query) + i * qmeta.dimension();
 
           if (normalize_) {
-            float norm;
+            float norm = 0.0f;
             ailego::Norm2Matrix<float, 1>::Compute(sub_query, qmeta.dimension(),
                                                    &norm);
             ailego::FloatHelper::ToFP16(
@@ -222,7 +222,7 @@ class MipsReformer : public IndexReformer {
           out->resize(offset + (qmeta.dimension() + m_value_) * sizeof(float));
 
           if (normalize_) {
-            float norm;
+            float norm = 0.0f;
             ailego::Normalizer<float>::L2(
                 reinterpret_cast<float *>(&(*out)[offset]), qmeta.dimension(),
                 &norm);
@@ -250,7 +250,7 @@ class MipsReformer : public IndexReformer {
                     (qmeta.dimension() + m_value_) * sizeof(ailego::Float16));
 
         if (normalize_) {
-          float norm;
+          float norm = 0.0f;
           ailego::Normalizer<ailego::Float16>::L2(
               reinterpret_cast<ailego::Float16 *>(&(*out)[offset]),
               qmeta.dimension(), &norm);

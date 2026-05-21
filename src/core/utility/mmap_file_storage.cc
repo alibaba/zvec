@@ -41,7 +41,7 @@ class MMapFileStorage : public IndexStorage {
                                         segment->meta()->padding_size)) {}
 
     //! Destructor
-    virtual ~Segment(void) {}
+    ~Segment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -152,7 +152,7 @@ class MMapFileStorage : public IndexStorage {
   };
 
   //! Destructor
-  virtual ~MMapFileStorage(void) {
+  ~MMapFileStorage(void) override {
     this->cleanup();
   }
 

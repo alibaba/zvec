@@ -28,40 +28,40 @@ class StratifiedCluster : public IndexCluster {
   StratifiedCluster(void) {}
 
   //! Destructor
-  virtual ~StratifiedCluster(void) {}
+  ~StratifiedCluster(void) override {}
 
   //! Initialize Cluster
-  virtual int init(const IndexMeta &meta, const ailego::Params &params) {
+  int init(const IndexMeta &meta, const ailego::Params &params) override {
     meta_ = meta;
     this->update_params(params);
     return 0;
   }
 
   //! Cleanup Cluster
-  virtual int cleanup(void) {
+  int cleanup(void) override {
     features_.reset();
     return 0;
   }
 
   //! Reset Cluster
-  virtual int reset(void) {
+  int reset(void) override {
     features_.reset();
     return 0;
   }
 
   //! Update Cluster
-  virtual int update(const ailego::Params &params) {
+  int update(const ailego::Params &params) override {
     this->update_params(params);
     return 0;
   }
 
   //! Suggest dividing to K clusters
-  virtual void suggest(uint32_t k) {
+  void suggest(uint32_t k) override {
     cluster_count_ = k;
   }
 
   //! Mount features
-  virtual int mount(IndexFeatures::Pointer feats) {
+  int mount(IndexFeatures::Pointer feats) override {
     if (!feats) {
       return IndexError_InvalidArgument;
     }
@@ -73,17 +73,17 @@ class StratifiedCluster : public IndexCluster {
   }
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
   //! Classify
-  virtual int classify(IndexThreads::Pointer threads,
-                       IndexCluster::CentroidList &cents);
+  int classify(IndexThreads::Pointer threads,
+               IndexCluster::CentroidList &cents) override;
 
   //! Label
-  virtual int label(IndexThreads::Pointer threads,
-                    const IndexCluster::CentroidList &cents,
-                    std::vector<uint32_t> *out);
+  int label(IndexThreads::Pointer threads,
+            const IndexCluster::CentroidList &cents,
+            std::vector<uint32_t> *out) override;
 
  protected:
   //! Test if it is valid

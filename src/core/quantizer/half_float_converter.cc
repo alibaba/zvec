@@ -36,7 +36,7 @@ class HalfFloatHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -122,7 +122,7 @@ class HalfFloatHolder : public IndexHolder {
 class HalfFloatConverter : public IndexConverter {
  public:
   //! Destructor
-  virtual ~HalfFloatConverter(void) {}
+  ~HalfFloatConverter(void) override {}
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &) override {
@@ -206,7 +206,7 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
@@ -299,7 +299,7 @@ class HalfFloatSparseHolder : public IndexSparseHolder {
 class HalfFloatSparseConverter : public IndexConverter {
  public:
   //! Destructor
-  virtual ~HalfFloatSparseConverter(void) {}
+  ~HalfFloatSparseConverter(void) override {}
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &) override {

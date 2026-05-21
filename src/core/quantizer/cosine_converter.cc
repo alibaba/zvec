@@ -60,7 +60,7 @@ class CosineConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -313,7 +313,7 @@ class CosineConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  virtual int cleanup(void) override {
+  int cleanup(void) override {
     *stats_.mutable_transformed_count() = 0;
     return 0;
   }

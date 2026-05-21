@@ -1,7 +1,8 @@
 Checks: >
   -*,
   modernize-use-nullptr,
+  modernize-use-override,
 WarningsAsErrors: "*"
-HeaderFilterRegex: "^(src|tests|tools)/"
+HeaderFilterRegex: "^(src|tests|tools)/(?!db/sqlengine/antlr/gen/).*"
 FormatStyle: none
 SystemHeaders: false
