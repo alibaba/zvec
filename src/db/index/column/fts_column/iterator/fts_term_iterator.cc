@@ -151,39 +151,6 @@ uint64_t TermDocIterator::cost() const {
 // Block-Max WAND support
 // ============================================================
 
-float TermDocIterator::current_block_max_score() const {
-  if (mode_ == Mode::BITPACKED) {
-    return bp_iter_.current_block_max_score();
-  }
-  // Roaring mode: fall back to global max_score (no block-level info)
-  return max_score_val_;
-}
-
-uint32_t TermDocIterator::skip_to_next_block() {
-  if (mode_ == Mode::BITPACKED) {
-    cached_doc_id_ = bp_iter_.skip_to_next_block();
-    return cached_doc_id_;
-  }
-  // Roaring mode: no block structure, just advance to next doc
-  return next_doc();
-}
-
-float TermDocIterator::block_max_score_for(uint32_t target) const {
-  if (mode_ == Mode::BITPACKED) {
-    return bp_iter_.block_max_score_for(target);
-  }
-  // Roaring mode: fall back to global max_score (no block-level info)
-  return max_score_val_;
-}
-
-uint32_t TermDocIterator::block_max_last_doc_for(uint32_t target) const {
-  if (mode_ == Mode::BITPACKED) {
-    return bp_iter_.block_max_last_doc_for(target);
-  }
-  // Roaring mode: no block structure
-  return NO_MORE_DOCS;
-}
-
 DocIterator::BlockMaxInfo TermDocIterator::block_max_info_for(
     uint32_t target) const {
   if (mode_ == Mode::BITPACKED) {

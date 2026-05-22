@@ -419,7 +419,6 @@ void BitPackedPostingIterator::decode_block(size_t block_idx) {
   std::memcpy(&bhdr, block_ptr, sizeof(bhdr));
 
   current_block_size_ = bhdr.num_docs;
-  current_block_max_score_ = bhdr.block_max_score;
   current_block_idx_ = block_idx;
   in_block_pos_ = 0;
 
@@ -621,28 +620,6 @@ uint32_t BitPackedPostingIterator::advance(uint32_t target) {
   return NO_MORE_DOCS;
 }
 
-uint32_t BitPackedPostingIterator::skip_to_next_block() {
-  if (!block_decoded_ || num_docs_ == 0) {
-    current_doc_id_ = NO_MORE_DOCS;
-    return NO_MORE_DOCS;
-  }
-
-  size_t next_block = current_block_idx_ + 1;
-  if (next_block >= num_blocks_) {
-    current_doc_id_ = NO_MORE_DOCS;
-    return NO_MORE_DOCS;
-  }
-
-  decode_block(next_block);
-  if (current_block_size_ == 0) {
-    current_doc_id_ = NO_MORE_DOCS;
-    return NO_MORE_DOCS;
-  }
-  in_block_pos_ = 0;
-  current_doc_id_ = block_doc_ids_[0];
-  return current_doc_id_;
-}
-
 void BitPackedPostingIterator::ensure_tf_decoded() {
   if (tf_decoded_) {
     return;
@@ -684,54 +661,6 @@ uint32_t BitPackedPostingIterator::doc_len() {
   }
   ensure_dl_decoded();
   return block_doc_lens_[in_block_pos_];
-}
-
-float BitPackedPostingIterator::current_block_max_score() const {
-  if (!block_decoded_) {
-    return 0.0f;
-  }
-  return current_block_max_score_;
-}
-
-float BitPackedPostingIterator::block_max_score_for(uint32_t target) const {
-  if (num_blocks_ == 0 || skip_list_ == nullptr) {
-    return 0.0f;
-  }
-  // Binary search for the first block whose max_doc_id >= target
-  size_t lo = 0, hi = num_blocks_;
-  while (lo < hi) {
-    size_t mid = lo + (hi - lo) / 2;
-    if (skip_list_[mid].max_doc_id >= target) {
-      hi = mid;
-    } else {
-      lo = mid + 1;
-    }
-  }
-  if (lo >= num_blocks_) {
-    return 0.0f;  // target beyond all blocks
-  }
-  return skip_list_[lo].block_max_score;
-}
-
-uint32_t BitPackedPostingIterator::block_max_last_doc_for(
-    uint32_t target) const {
-  if (num_blocks_ == 0 || skip_list_ == nullptr) {
-    return NO_MORE_DOCS;
-  }
-  // Binary search for the first block whose max_doc_id >= target
-  size_t lo = 0, hi = num_blocks_;
-  while (lo < hi) {
-    size_t mid = lo + (hi - lo) / 2;
-    if (skip_list_[mid].max_doc_id >= target) {
-      hi = mid;
-    } else {
-      lo = mid + 1;
-    }
-  }
-  if (lo >= num_blocks_) {
-    return NO_MORE_DOCS;  // target beyond all blocks
-  }
-  return skip_list_[lo].max_doc_id;
 }
 
 BitPackedPostingIterator::BlockMaxInfo

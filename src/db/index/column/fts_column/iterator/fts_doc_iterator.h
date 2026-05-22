@@ -107,40 +107,8 @@ class DocIterator {
   //! \param min_score  Current minimum score needed to enter the TopK heap.
   virtual void set_min_competitive_score(float /*min_score*/) {}
 
-  //! Block-Max WAND support: return the BM25 score upper bound for the
-  //! current block. Default implementation falls back to the global
-  //! max_score(), which disables block-level pruning.
-  virtual float current_block_max_score() const {
-    return max_score();
-  }
-
-  //! Block-Max WAND support: skip remaining documents in the current block
-  //! and move to the first document of the next block.
-  //! Default implementation falls back to next_doc() (no block skipping).
-  virtual uint32_t skip_to_next_block() {
-    return next_doc();
-  }
-
-  //! Block-Max WAND support: return the BM25 score upper bound for the block
-  //! that contains \p target (i.e. the first block whose max_doc_id >= target).
-  //! This does NOT move the iterator position — it only queries the skip list.
-  //! Used by DisjunctionIterator to compute aligned block-level score bounds.
-  //! Default implementation falls back to the global max_score().
-  virtual float block_max_score_for(uint32_t /*target*/) const {
-    return max_score();
-  }
-
-  //! Block-Max WAND support: return the last doc_id (max_doc_id) of the block
-  //! that contains \p target. Used to determine the safe skip-to point when
-  //! block-level pruning fires.
-  //! Default implementation returns NO_MORE_DOCS (no block structure).
-  virtual uint32_t block_max_last_doc_for(uint32_t /*target*/) const {
-    return NO_MORE_DOCS;
-  }
-
-  //! Combined block-max lookup: return both block_max_score and max_doc_id
+  //! Block-Max WAND support: return both block_max_score and max_doc_id
   //! for the block containing \p target in a single skip list binary search.
-  //! More efficient than calling block_max_score_for + block_max_last_doc_for.
   struct BlockMaxInfo {
     float block_max_score{0.0f};
     uint32_t block_last_doc{NO_MORE_DOCS};

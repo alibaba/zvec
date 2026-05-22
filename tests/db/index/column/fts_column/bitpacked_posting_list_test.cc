@@ -504,9 +504,8 @@ TEST(BitPackedPostingListTest, BlockMaxScoreCorrectness) {
   BitPackedPostingIterator iter;
   EXPECT_EQ(iter.open(encoded.data(), encoded.size()), 0);
 
-  // Verify block_max_score for block 0
-  iter.next_doc();
-  float block0_max = iter.current_block_max_score();
+  // Verify block_max_score for block 0 via block_max_info_for()
+  auto info0 = iter.block_max_info_for(0);
 
   // Manually compute max score for block 0
   float expected_max = 0.0f;
@@ -514,57 +513,19 @@ TEST(BitPackedPostingListTest, BlockMaxScoreCorrectness) {
     float s = scorer.score(count, tfs[i], doc_lens[i]);
     expected_max = std::max(expected_max, s);
   }
-  EXPECT_FLOAT_EQ(block0_max, expected_max);
+  EXPECT_FLOAT_EQ(info0.block_max_score, expected_max);
+  EXPECT_EQ(info0.block_last_doc, 127u);
 
-  // Advance to block 1
-  iter.advance(128);
-  float block1_max = iter.current_block_max_score();
+  // Verify block_max_score for block 1 via block_max_info_for()
+  auto info1 = iter.block_max_info_for(128);
 
   expected_max = 0.0f;
   for (size_t i = 128; i < 256; ++i) {
     float s = scorer.score(count, tfs[i], doc_lens[i]);
     expected_max = std::max(expected_max, s);
   }
-  EXPECT_FLOAT_EQ(block1_max, expected_max);
-}
-
-// ============================================================
-// skip_to_next_block()
-// ============================================================
-
-TEST(BitPackedPostingListTest, SkipToNextBlock) {
-  BM25Scorer scorer = make_scorer();
-  const size_t count = 300;
-  std::vector<uint32_t> doc_ids(count);
-  std::vector<uint32_t> tfs(count, 1);
-  std::vector<uint32_t> doc_lens(count, 100);
-
-  for (size_t i = 0; i < count; ++i) {
-    doc_ids[i] = static_cast<uint32_t>(i * 2);
-  }
-
-  std::string encoded = BitPackedPostingList::encode(
-      doc_ids.data(), tfs.data(), doc_lens.data(), count, count, scorer);
-
-  BitPackedPostingIterator iter;
-  EXPECT_EQ(iter.open(encoded.data(), encoded.size()), 0);
-
-  // Read first doc
-  EXPECT_EQ(iter.next_doc(), 0u);
-
-  // Skip to next block (block 1 starts at doc_id 128*2=256)
-  uint32_t next_block_doc = iter.skip_to_next_block();
-  EXPECT_EQ(next_block_doc, 256u);
-  EXPECT_EQ(iter.doc_id(), 256u);
-
-  // Skip to next block (block 2 starts at doc_id 256*2=512)
-  next_block_doc = iter.skip_to_next_block();
-  EXPECT_EQ(next_block_doc, 512u);
-  EXPECT_EQ(iter.doc_id(), 512u);
-
-  // Skip past last block
-  next_block_doc = iter.skip_to_next_block();
-  EXPECT_EQ(next_block_doc, BitPackedPostingIterator::NO_MORE_DOCS);
+  EXPECT_FLOAT_EQ(info1.block_max_score, expected_max);
+  EXPECT_EQ(info1.block_last_doc, 255u);
 }
 
 // ============================================================

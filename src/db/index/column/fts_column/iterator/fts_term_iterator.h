@@ -59,8 +59,7 @@ class TermDocIterator : public DocIterator {
    *  embedded inline in packed_data, so this iterator is completely
    *  self-contained on the read path:
    *    - score() reads tf/doc_len from bp_iter_ — zero RocksDB I/O.
-   *    - current_block_max_score() / block_max_score_for() /
-   *      block_max_info_for() / max_score() all read from the BitPacked
+   *    - block_max_info_for() / max_score() all read from the BitPacked
    *      skip-list / block headers — no $MAX_TF lookup needed.
    *  Construction takes neither $TF, $DOC_LEN, nor $MAX_TF column families:
    *  the immutable segment SST may have these CFs entirely empty (cleared
@@ -92,10 +91,6 @@ class TermDocIterator : public DocIterator {
   }
 
   // Block-Max WAND support (only effective in BitPacked mode)
-  float current_block_max_score() const override;
-  uint32_t skip_to_next_block() override;
-  float block_max_score_for(uint32_t target) const override;
-  uint32_t block_max_last_doc_for(uint32_t target) const override;
   BlockMaxInfo block_max_info_for(uint32_t target) const override;
 
  private:

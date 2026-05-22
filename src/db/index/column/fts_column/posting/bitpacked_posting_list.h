@@ -150,26 +150,9 @@ class BitPackedPostingIterator {
   /// NOTE: non-const because lazy decode may be triggered on first access.
   uint32_t doc_len();
 
-  /// BM25 score upper bound for the current block (Block-Max WAND support).
-  float current_block_max_score() const;
-
-  /// Skip remaining docs in the current block, move to the start of the
-  /// next block. Returns the first doc_id of the next block, or NO_MORE_DOCS.
-  uint32_t skip_to_next_block();
-
-  /// Return the block_max_score for the block containing \p target
-  /// (the first block whose max_doc_id >= target).
-  /// Does NOT move the iterator position — only queries the skip list.
-  float block_max_score_for(uint32_t target) const;
-
-  /// Return the max_doc_id of the block containing \p target
-  /// (the first block whose max_doc_id >= target).
-  /// Does NOT move the iterator position — only queries the skip list.
-  uint32_t block_max_last_doc_for(uint32_t target) const;
-
-  /// Combined lookup: return both block_max_score and max_doc_id for the block
-  /// containing \p target in a single binary search. More efficient than
-  /// calling block_max_score_for + block_max_last_doc_for separately.
+  /// Return both block_max_score and max_doc_id for the block containing
+  /// \p target in a single binary search on the skip list.
+  /// Does NOT move the iterator position.
   struct BlockMaxInfo {
     float block_max_score{0.0f};
     uint32_t block_last_doc{NO_MORE_DOCS};
@@ -217,8 +200,7 @@ class BitPackedPostingIterator {
   alignas(16) uint32_t block_doc_lens_[BitPackedPostingList::DOCS_PER_BLOCK];
   size_t current_block_idx_{0};
   uint32_t current_block_size_{0};
-  size_t in_block_pos_{0};  ///< Position within current decoded block
-  float current_block_max_score_{0.0f};
+  size_t in_block_pos_{0};     ///< Position within current decoded block
   bool block_decoded_{false};  ///< Whether current block is decoded
 
   // Lazy decode state: tf and doc_len are decoded on first access
