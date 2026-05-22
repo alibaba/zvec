@@ -177,6 +177,17 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       data.brute_force_by_keys_ratio = static_cast<float>(v);
     }
 
+    // set fts_brute_force_by_keys_ratio
+    if (has_key(config_dict, "fts_brute_force_by_keys_ratio")) {
+      auto v =
+          get_if<double>(config_dict, "fts_brute_force_by_keys_ratio").value();
+      if (v < 0.0 || v > 1.0) {
+        throw py::value_error(
+            "fts_brute_force_by_keys_ratio must be in [0.0, 1.0]");
+      }
+      data.fts_brute_force_by_keys_ratio = static_cast<float>(v);
+    }
+
     // initialize (contains validate)
     Status status = GlobalConfig::Instance().Initialize(data);
     if (!status.ok()) {

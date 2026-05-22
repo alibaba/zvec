@@ -680,6 +680,24 @@ ZVEC_EXPORT float ZVEC_CALL zvec_config_data_get_brute_force_by_keys_ratio(
     const zvec_config_data_t *config);
 
 /**
+ * @brief Set FTS brute force by keys ratio in configuration data
+ * @param config Configuration data pointer
+ * @param ratio FTS brute force by keys ratio
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_config_data_set_fts_brute_force_by_keys_ratio(zvec_config_data_t *config,
+                                                   float ratio);
+
+/**
+ * @brief Get FTS brute force by keys ratio from configuration data
+ * @param config Configuration data pointer
+ * @return float FTS brute force by keys ratio
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_config_data_get_fts_brute_force_by_keys_ratio(
+    const zvec_config_data_t *config);
+
+/**
  * @brief Set optimize thread count in configuration data
  * @param config Configuration data pointer
  * @param thread_count Optimize thread count

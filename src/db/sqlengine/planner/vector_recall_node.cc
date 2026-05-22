@@ -21,6 +21,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/framework/index_meta.h>
+#include <zvec/db/config.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/type.h>
@@ -159,7 +160,8 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   query_params.data_type = vector_cond_->vector_schema()->data_type();
   query_params.dimension = vector_cond_->dimension();
   query_params.query_params = vector_cond_->query_params();
-  auto brute_force_keys = doc_filter_->get_bf_by_keys_and_update();
+  auto brute_force_keys = doc_filter_->get_bf_by_keys_and_update(
+      GlobalConfig::Instance().brute_force_by_keys_ratio());
   if (brute_force_keys) {
     query_params.bf_pks.emplace_back(std::move(brute_force_keys.value()));
   }

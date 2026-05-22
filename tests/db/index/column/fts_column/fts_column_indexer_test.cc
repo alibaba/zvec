@@ -1212,6 +1212,230 @@ TEST_F(FtsColumnIndexerTest, FilterPushdownWithPhrase) {
   EXPECT_GT(filtered[0].score, 0.0f);
 }
 
+// ============================================================
+// Brute-force (candidate-driven) mode via FtsQueryParams.candidate_ids
+// ============================================================
+
+namespace {
+
+// Helper: run a query with an explicit candidate id list.
+template <typename Reader>
+static bool search_ok_with_candidates(Reader &reader,
+                                      const std::string &query_str,
+                                      uint32_t topk,
+                                      std::vector<uint64_t> candidates,
+                                      std::vector<FtsResult> *results) {
+  FtsQueryParser parser;
+  auto ast = parser.parse(query_str);
+  if (!ast) {
+    ADD_FAILURE() << "FtsQueryParser failed to parse: " << query_str
+                  << " err: " << parser.err_msg();
+    return false;
+  }
+  zvec::fts::FtsQueryParams qp;
+  qp.topk = topk;
+  qp.candidate_ids = std::move(candidates);
+  auto ret = reader.search(*ast, qp);
+  if (!ret.has_value()) {
+    return false;
+  }
+  *results = std::move(ret.value());
+  return true;
+}
+
+// Compare two result vectors as (doc_id, score) sets — order independent on
+// doc_id, scores compared with FLOAT_EQ. Brute-force and posting-driven
+// paths reuse the same TermDocIterator / BM25Scorer so scores must agree.
+static void ExpectSameResults(std::vector<FtsResult> a,
+                              std::vector<FtsResult> b) {
+  ASSERT_EQ(a.size(), b.size());
+  auto by_id = [](const FtsResult &x, const FtsResult &y) {
+    return x.doc_id < y.doc_id;
+  };
+  std::sort(a.begin(), a.end(), by_id);
+  std::sort(b.begin(), b.end(), by_id);
+  for (size_t i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(a[i].doc_id, b[i].doc_id) << "i=" << i;
+    EXPECT_FLOAT_EQ(a[i].score, b[i].score) << "i=" << i;
+  }
+}
+
+}  // namespace
+
+// Single-term query: candidate-driven path returns the intersection of the
+// term posting and the candidate set, with the same BM25 scores as the
+// posting-driven baseline.
+TEST_F(FtsColumnIndexerTest, BruteForceTermMatchesPostingDriven) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "hello foo").has_value());
+  EXPECT_TRUE(indexer->insert(2, "hello world bar").has_value());
+  EXPECT_TRUE(indexer->insert(3, "hello baz").has_value());
+  EXPECT_TRUE(indexer->insert(4, "world only").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  // Baseline: "hello" matches docs 0,1,2,3.
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "hello", 10, &baseline));
+  ASSERT_EQ(baseline.size(), 4u);
+
+  // Candidate-driven with {1, 2, 4} -> expect {1, 2} (4 is not in posting).
+  std::vector<FtsResult> bf;
+  EXPECT_TRUE(search_ok_with_candidates(*indexer, "hello", 10,
+                                        /*candidates=*/{1, 2, 4}, &bf));
+
+  std::vector<FtsResult> expected;
+  for (const auto &r : baseline) {
+    if (r.doc_id == 1 || r.doc_id == 2) expected.push_back(r);
+  }
+  ExpectSameResults(std::move(expected), std::move(bf));
+}
+
+// Disjunction (OR) — same BM25 score, only intersected docs returned.
+TEST_F(FtsColumnIndexerTest, BruteForceDisjunctionMatchesPostingDriven) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "alpha beta").has_value());
+  EXPECT_TRUE(indexer->insert(1, "alpha gamma").has_value());
+  EXPECT_TRUE(indexer->insert(2, "beta gamma").has_value());
+  EXPECT_TRUE(indexer->insert(3, "alpha beta gamma").has_value());
+  EXPECT_TRUE(indexer->insert(4, "delta").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "alpha beta", 10, &baseline));
+  ASSERT_EQ(baseline.size(), 4u);  // 0,1,2,3 all match OR
+
+  std::vector<FtsResult> bf;
+  EXPECT_TRUE(search_ok_with_candidates(*indexer, "alpha beta", 10,
+                                        /*candidates=*/{0, 3, 4}, &bf));
+
+  std::vector<FtsResult> expected;
+  for (const auto &r : baseline) {
+    if (r.doc_id == 0 || r.doc_id == 3) expected.push_back(r);
+  }
+  ExpectSameResults(std::move(expected), std::move(bf));
+}
+
+// Conjunction (AND) — wrapped AND-of-AND is semantically transparent.
+TEST_F(FtsColumnIndexerTest, BruteForceConjunctionMatchesPostingDriven) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "alpha beta gamma").has_value());
+  EXPECT_TRUE(indexer->insert(1, "alpha gamma").has_value());  // missing beta
+  EXPECT_TRUE(indexer->insert(2, "alpha beta").has_value());   // missing gamma
+  EXPECT_TRUE(indexer->insert(3, "alpha beta gamma").has_value());
+  EXPECT_TRUE(indexer->insert(4, "alpha beta gamma").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "alpha AND beta AND gamma", 10, &baseline));
+  ASSERT_EQ(baseline.size(), 3u);  // 0,3,4
+
+  std::vector<FtsResult> bf;
+  EXPECT_TRUE(search_ok_with_candidates(*indexer, "alpha AND beta AND gamma",
+                                        10, /*candidates=*/{0, 1, 4}, &bf));
+
+  std::vector<FtsResult> expected;
+  for (const auto &r : baseline) {
+    if (r.doc_id == 0 || r.doc_id == 4) expected.push_back(r);
+  }
+  ExpectSameResults(std::move(expected), std::move(bf));
+}
+
+// Phrase query — phase-2 position check is preserved in candidate-driven mode.
+TEST_F(FtsColumnIndexerTest, BruteForcePhraseMatchesPostingDriven) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "machine learning model").has_value());
+  EXPECT_TRUE(indexer->insert(1, "machine notes learning").has_value());
+  EXPECT_TRUE(indexer->insert(2, "the machine learning jumps").has_value());
+  EXPECT_TRUE(indexer->insert(3, "learning machine").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "\"machine learning\"", 10, &baseline));
+  ASSERT_EQ(baseline.size(), 2u);  // 0,2
+
+  // Candidate set = {1, 2, 3}: only 2 is a real phrase match.
+  std::vector<FtsResult> bf;
+  EXPECT_TRUE(search_ok_with_candidates(*indexer, "\"machine learning\"", 10,
+                                        /*candidates=*/{1, 2, 3}, &bf));
+
+  std::vector<FtsResult> expected;
+  for (const auto &r : baseline) {
+    if (r.doc_id == 2) expected.push_back(r);
+  }
+  ExpectSameResults(std::move(expected), std::move(bf));
+}
+
+// Nested (AND of OR) — root iterator type does not matter; wrap is
+// transparent.
+TEST_F(FtsColumnIndexerTest, BruteForceNestedMatchesPostingDriven) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "alpha").has_value());
+  EXPECT_TRUE(indexer->insert(1, "beta").has_value());
+  EXPECT_TRUE(indexer->insert(2, "alpha gamma").has_value());  // matches
+  EXPECT_TRUE(indexer->insert(3, "beta gamma").has_value());   // matches
+  EXPECT_TRUE(indexer->insert(4, "gamma only").has_value());   // no alpha/beta
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  // (alpha OR beta) AND gamma -> docs 2, 3
+  std::vector<FtsResult> baseline;
+  EXPECT_TRUE(search_ok(*indexer, "(alpha OR beta) AND gamma", 10, &baseline));
+  ASSERT_EQ(baseline.size(), 2u);
+
+  std::vector<FtsResult> bf;
+  EXPECT_TRUE(search_ok_with_candidates(*indexer, "(alpha OR beta) AND gamma",
+                                        10, /*candidates=*/{2, 4}, &bf));
+
+  std::vector<FtsResult> expected;
+  for (const auto &r : baseline) {
+    if (r.doc_id == 2) expected.push_back(r);
+  }
+  ExpectSameResults(std::move(expected), std::move(bf));
+}
+
+// Candidate-driven coexists with the existing filter pushdown:
+// candidate_ids narrows the doc set; filter further drops some.
+TEST_F(FtsColumnIndexerTest, BruteForceCoexistsWithFilterPushdown) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "alpha").has_value());
+  EXPECT_TRUE(indexer->insert(1, "alpha").has_value());
+  EXPECT_TRUE(indexer->insert(2, "alpha").has_value());
+  EXPECT_TRUE(indexer->insert(3, "alpha").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  FtsQueryParser parser;
+  auto ast = parser.parse("alpha");
+  ASSERT_NE(ast, nullptr);
+
+  zvec::fts::FtsQueryParams qp;
+  qp.topk = 10;
+  qp.candidate_ids = {0, 1, 2};          // candidates restrict to {0,1,2}
+  qp.filter = make_blocked_filter({1});  // further drop doc 1
+  auto ret = indexer->search(*ast, qp);
+  ASSERT_TRUE(ret.has_value());
+  auto results = std::move(ret.value());
+  ASSERT_EQ(results.size(), 2u);
+
+  std::vector<uint64_t> ids;
+  for (const auto &r : results) ids.push_back(r.doc_id);
+  std::sort(ids.begin(), ids.end());
+  EXPECT_EQ(ids[0], 0ull);
+  EXPECT_EQ(ids[1], 2ull);
+}
+
+// Empty candidate_ids takes the regular posting-driven path (the wrap guard
+// requires non-empty), so search still finds all matching docs.
+TEST_F(FtsColumnIndexerTest, BruteForceEmptyCandidatesFallsBack) {
+  auto indexer = make_indexer("content");
+  EXPECT_TRUE(indexer->insert(0, "alpha beta").has_value());
+  EXPECT_TRUE(indexer->insert(1, "alpha gamma").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> r;
+  EXPECT_TRUE(search_ok_with_candidates(*indexer, "alpha", 10, {}, &r));
+  EXPECT_EQ(r.size(), 2u);
+}
+
 // Regression guard: a null filter yields the same doc_ids and scores as the
 // baseline path (which still uses the no-filter next_doc() overload).
 TEST_F(FtsColumnIndexerTest, FilterPushdownNullFilterUnchanged) {

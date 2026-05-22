@@ -92,6 +92,9 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     uint32_t query_thread_count;
     float invert_to_forward_scan_ratio;
     float brute_force_by_keys_ratio;
+    // Independent from brute_force_by_keys_ratio: per-candidate FTS cost
+    // (phrase phase-2 IO, BM25) is higher, so a tighter default fits.
+    float fts_brute_force_by_keys_ratio;
 
     // optimize
     uint32_t optimize_thread_count;
@@ -159,6 +162,12 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
   //! Brute force by keys ratio
   float brute_force_by_keys_ratio() const noexcept {
     return config_.brute_force_by_keys_ratio;
+  }
+
+  //! FTS brute force by keys ratio (independent from brute_force_by_keys_ratio
+  //! because FTS per-candidate cost is higher).
+  float fts_brute_force_by_keys_ratio() const noexcept {
+    return config_.fts_brute_force_by_keys_ratio;
   }
 
   //! Optimize thread count

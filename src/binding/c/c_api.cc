@@ -627,6 +627,27 @@ float zvec_config_data_get_brute_force_by_keys_ratio(
   return cpp_config->brute_force_by_keys_ratio;
 }
 
+zvec_error_code_t zvec_config_data_set_fts_brute_force_by_keys_ratio(
+    zvec_config_data_t *config, float ratio) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::ConfigData *>(config);
+  cpp_config->fts_brute_force_by_keys_ratio = ratio;
+  return ZVEC_OK;
+}
+
+float zvec_config_data_get_fts_brute_force_by_keys_ratio(
+    const zvec_config_data_t *config) {
+  if (!config) {
+    return 0.0f;
+  }
+  auto *cpp_config =
+      reinterpret_cast<const zvec::GlobalConfig::ConfigData *>(config);
+  return cpp_config->fts_brute_force_by_keys_ratio;
+}
+
 zvec_error_code_t zvec_config_data_set_optimize_thread_count(
     zvec_config_data_t *config, uint32_t thread_count) {
   if (!config) {

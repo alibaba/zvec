@@ -37,6 +37,7 @@ GlobalConfig::ConfigData::ConfigData()
       query_thread_count(CgroupUtil::getCpuLimit()),
       invert_to_forward_scan_ratio(0.9),
       brute_force_by_keys_ratio(0.1),
+      fts_brute_force_by_keys_ratio(0.05),
       optimize_thread_count(CgroupUtil::getCpuLimit()) {}
 
 Status GlobalConfig::Validate(const ConfigData &config) const {
@@ -67,6 +68,13 @@ Status GlobalConfig::Validate(const ConfigData &config) const {
       config.brute_force_by_keys_ratio > 1.0f) {
     return Status::InvalidArgument(
         "brute_force_by_keys_ratio must be between 0 and 1");
+  }
+
+  // Validate fts_brute_force_by_keys_ratio (should be between 0 and 1)
+  if (config.fts_brute_force_by_keys_ratio < 0.0f ||
+      config.fts_brute_force_by_keys_ratio > 1.0f) {
+    return Status::InvalidArgument(
+        "fts_brute_force_by_keys_ratio must be between 0 and 1");
   }
 
   // Validate optimize thread count

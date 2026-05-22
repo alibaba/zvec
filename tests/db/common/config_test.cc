@@ -43,6 +43,7 @@ TEST_F(ConfigTest, InitializeWithDefaultConfig) {
   ASSERT_GT(GlobalConfig::Instance().query_thread_count(), 0);
   ASSERT_EQ(GlobalConfig::Instance().invert_to_forward_scan_ratio(), 0.9f);
   ASSERT_EQ(GlobalConfig::Instance().brute_force_by_keys_ratio(), 0.1f);
+  ASSERT_EQ(GlobalConfig::Instance().fts_brute_force_by_keys_ratio(), 0.05f);
   ASSERT_GT(GlobalConfig::Instance().optimize_thread_count(), 0);
 }
 
@@ -149,6 +150,16 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidRatios) {
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
   ASSERT_NE(status.message().find(
                 "brute_force_by_keys_ratio must be between 0 and 1"),
+            std::string::npos);
+
+  // Test invalid fts_brute_force_by_keys_ratio
+  config.brute_force_by_keys_ratio = 0.1f;       // Reset to valid value
+  config.fts_brute_force_by_keys_ratio = -0.5f;  // Invalid value
+  status = config_instance.Validate(config);
+  ASSERT_FALSE(status.ok());
+  ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+  ASSERT_NE(status.message().find(
+                "fts_brute_force_by_keys_ratio must be between 0 and 1"),
             std::string::npos);
 }
 

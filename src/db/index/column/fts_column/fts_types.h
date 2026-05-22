@@ -27,6 +27,12 @@ struct FtsQueryParams {
   // Optional filter: returns true if a doc should be EXCLUDED.
   // Wraps zvec::IndexFilter for push-down filtering inside the search loop.
   IndexFilter::Ptr filter{nullptr};
+  // Candidate-driven (brute-force) mode: ascending segment-local doc_ids;
+  // when non-empty, FtsColumnIndexer restricts evaluation to this set by
+  // AND-ing it with the root iterator. Filled by the planner via
+  // DocFilter::get_bf_by_keys_and_update when an invert result is highly
+  // selective.
+  std::vector<uint64_t> candidate_ids;
 };
 
 /*! Per-segment statistics needed by the FTS reducer for doc_id remapping. */

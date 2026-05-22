@@ -15,6 +15,7 @@
 #include "db/sqlengine/planner/fts_recall_node.h"
 #include <arrow/api.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/db/config.h>
 
 namespace cp = arrow::compute;
 
@@ -84,8 +85,14 @@ Result<FtsIndexResults::Ptr> FtsRecallNode::prepare() {
 
   fts::FtsQueryParams params;
   params.topk = query_info_->query_topn();
-  // Push down filter into FTS search so that filtered docs are skipped
-  // during scoring, ensuring we always return up to topk results.
+  // Brute-force path: get_bf_by_keys_and_update also clears invert_filter_
+  // when it returns ids, so the filter set below won't double-check them.
+  if (auto bf_keys = doc_filter_->get_bf_by_keys_and_update(
+          GlobalConfig::Instance().fts_brute_force_by_keys_ratio())) {
+    params.candidate_ids = std::move(bf_keys.value());
+  }
+  // Push down remaining filters (delete / forward) so filtered docs are
+  // skipped during scoring and we still return up to topk results.
   params.filter = doc_filter_->empty() ? nullptr : doc_filter_;
 
   auto results =
