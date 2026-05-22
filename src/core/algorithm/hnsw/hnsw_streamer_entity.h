@@ -370,6 +370,11 @@ class HnswStreamerEntity : public HnswEntity {
     if (level == 0) {
       return 0;
     }
+    // Serialize concurrent add_upper_neighbor calls: multiple build threads
+    // share the same entity via shared_mutex (shared-lock), so both
+    // upper_neighbor_chunks_ (vector mutation) and upper_neighbor_index_->insert
+    // (hashmap slot assignment) must be protected from concurrent writes.
+    std::lock_guard<std::mutex> lk(upper_neighbor_mutex_);
     Chunk::Pointer chunk;
     uint64_t chunk_offset = UINT64_MAX;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
@@ -529,6 +534,9 @@ class HnswStreamerEntity : public HnswEntity {
  protected:
   IndexStreamer::Stats &stats_;
   std::mutex mutex_{};
+  //! Guards add_upper_neighbor (upper_neighbor_chunks_ + upper_neighbor_index_
+  //! insert) against concurrent build threads holding the shared lock.
+  mutable std::mutex upper_neighbor_mutex_{};
   size_t max_index_size_{0UL};
   uint32_t chunk_size_{kDefaultChunkSize};
   uint32_t upper_neighbor_chunk_size_{kDefaultChunkSize};
