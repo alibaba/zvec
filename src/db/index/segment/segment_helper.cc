@@ -655,7 +655,7 @@ Status SegmentHelper::ReduceVectorIndex(
 
       output_block_metas->push_back(new_block_meta);
     } else {
-      auto vector_index_path = FileHelper::MakeQuantizeVectorIndexPath(
+      auto vector_index_path = FileHelper::MakeVectorIndexPath(
           output_segment_path, field->name(), vector_block_id);
 
       auto field_without_quantize = std::make_shared<FieldSchema>(*field);
@@ -697,6 +697,9 @@ Status SegmentHelper::ReduceVectorIndex(
       new_block_meta.set_id(vector_block_id);
       new_block_meta.set_type(BlockType::VECTOR_INDEX);
       new_block_meta.set_columns({field->name()});
+      new_block_meta.set_min_doc_id(min_doc_id);
+      new_block_meta.set_max_doc_id(max_doc_id);
+      new_block_meta.set_doc_count(doc_count);
       output_block_metas->push_back(new_block_meta);
 
       // create quantize index
@@ -731,6 +734,9 @@ Status SegmentHelper::ReduceVectorIndex(
       new_block_meta.set_id(vector_quan_block_id);
       new_block_meta.set_type(BlockType::VECTOR_INDEX_QUANTIZE);
       new_block_meta.set_columns({field->name()});
+      new_block_meta.set_min_doc_id(min_doc_id);
+      new_block_meta.set_max_doc_id(max_doc_id);
+      new_block_meta.set_doc_count(doc_count);
       output_block_metas->push_back(new_block_meta);
     }
   }
