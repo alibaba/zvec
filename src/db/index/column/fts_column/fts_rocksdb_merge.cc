@@ -118,7 +118,6 @@ bool FtsPostingsMerge::PartialMerge(const rocksdb::Slice & /*key*/,
   roaring_bitmap_or_inplace(left_bitmap, right_bitmap);
   roaring_bitmap_free(right_bitmap);
 
-  roaring_bitmap_run_optimize(left_bitmap);
   size_t serialized_size = roaring_bitmap_portable_size_in_bytes(left_bitmap);
   new_value->resize(serialized_size);
   roaring_bitmap_portable_serialize(left_bitmap, new_value->data());
