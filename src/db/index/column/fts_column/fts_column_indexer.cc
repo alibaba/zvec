@@ -285,19 +285,12 @@ Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
     const std::string &term, rocksdb::PinnableSlice raw_data) const {
   if (BitPackedPostingList::is_bitpacked_format(raw_data.data(),
                                                 raw_data.size())) {
-    BitPackedPostingIterator probe;
-    if (probe.open(raw_data.data(), raw_data.size()) != 0) {
-      return tl::make_unexpected(Status::InternalError(
-          "FtsColumnIndexer: failed to open BitPacked postings. field=",
-          field_name_, " term=", term));
-    }
-    const uint64_t df = probe.cost();
-    if (df == 0) {
+    auto iter =
+        std::make_unique<TermDocIterator>(term, std::move(raw_data), scorer_);
+    if (iter->cost() == 0) {
       return DocIteratorPtr{nullptr};
     }
-    const float max_score_val = probe.max_score();
-    return std::make_unique<TermDocIterator>(term, std::move(raw_data), df,
-                                             scorer_, max_score_val);
+    return iter;
   }
 
   roaring_bitmap_t *bitmap = roaring_bitmap_portable_deserialize_safe(

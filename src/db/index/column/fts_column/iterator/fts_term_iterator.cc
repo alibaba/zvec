@@ -59,13 +59,10 @@ TermDocIterator::~TermDocIterator() {
 // BitPacked mode
 TermDocIterator::TermDocIterator(std::string term,
                                  rocksdb::PinnableSlice packed_data,
-                                 uint64_t df, BM25ScorerPtr scorer,
-                                 float max_score_val)
+                                 BM25ScorerPtr scorer)
     : mode_(Mode::BITPACKED),
       term_(std::move(term)),
-      df_(df),
       scorer_(std::move(scorer)),
-      max_score_val_(max_score_val),
       packed_data_(std::move(packed_data)) {
   // Failure here means the term will produce no docs (next_doc returns
   // NO_MORE_DOCS). bp_iter_.open() already logs the underlying parse error;
@@ -76,6 +73,8 @@ TermDocIterator::TermDocIterator(std::string term,
         "iterator will yield no documents",
         term_.c_str());
   }
+  df_ = bp_iter_.cost();
+  max_score_val_ = bp_iter_.max_score();
   cached_max_score_ = max_score_val_;
   idf_weight_ = scorer_->idf(df_);
 }

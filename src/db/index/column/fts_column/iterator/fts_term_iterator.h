@@ -66,14 +66,15 @@ class TermDocIterator : public DocIterator {
    *  by FtsColumnIndexer::convert_postings_to_bitpacked at dump time) and
    *  this iterator still works correctly.
    *
+   *  df and max_score are read from bp_iter_ after open(); on open failure
+   *  cost() returns 0 and callers should treat the iterator as empty.
+   *
    *  \param term           Processed (tokenized) term string
    *  \param packed_data    Serialized BitPacked posting list (ownership taken)
-   *  \param df             Document frequency of this term in the segment
    *  \param scorer         BM25 scorer (with segment stats loaded)
-   *  \param max_score_val  Precomputed WAND upper bound score for this term
    */
   TermDocIterator(std::string term, rocksdb::PinnableSlice packed_data,
-                  uint64_t df, BM25ScorerPtr scorer, float max_score_val);
+                  BM25ScorerPtr scorer);
 
   // Prevent move/copy: bp_iter_ holds a raw pointer into packed_data_'s
   // buffer, so moving would create a dangling pointer.
