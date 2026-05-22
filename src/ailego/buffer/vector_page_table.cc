@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <thread>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_logger.h>
@@ -135,13 +136,13 @@ void VectorPageTable::evict_block(block_id_t block_id) {
   assert(block_id < entry_num_);
   Entry &e = entry_at(block_id);
   int expected = 0;
-  if (e.ref_count.compare_exchange_strong(
-          expected, std::numeric_limits<int>::min())) {
-    // Read e.buffer ONLY after we won the CAS, so we are guaranteed to be the
-    // sole owner of the slot.  Reading it before the CAS races with another
-    // thread that may have already evicted (and freed) e.buffer and then had
-    // a fresh acquire_buffer / set_block_acquired sequence overwrite e.buffer
-    // with a new pointer.
+  // Two-phase eviction to prevent data race on e.buffer with
+  // set_block_acquired.  We first CAS to kEvicting (-1), which causes
+  // set_block_acquired to spin-wait; then do the actual work (flush, free,
+  // null buffer); finally store INT_MIN ("evicted") which unblocks
+  // set_block_acquired.
+  static constexpr int kEvicting = -1;
+  if (e.ref_count.compare_exchange_strong(expected, kEvicting)) {
     char *buffer = e.buffer;
     if (buffer && e.is_dirty.load(std::memory_order_relaxed) &&
         flush_callback_) {
@@ -152,6 +153,10 @@ void VectorPageTable::evict_block(block_id_t block_id) {
       e.buffer = nullptr;
       MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
+    // Transition to fully-evicted state.  Use release so that the
+    // set_block_acquired acquire-load sees e.buffer == nullptr.
+    e.ref_count.store(std::numeric_limits<int>::min(),
+                      std::memory_order_release);
   }
   e.in_evict_queue.store(false, std::memory_order_relaxed);
 }
@@ -161,7 +166,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
   assert(block_id < entry_num_);
   Entry &e = entry_at(block_id);
   while (true) {
-    int current_count = e.ref_count.load(std::memory_order_relaxed);
+    int current_count = e.ref_count.load(std::memory_order_acquire);
     if (current_count >= 0) {
       if (e.ref_count.compare_exchange_weak(
               current_count, current_count + 1, std::memory_order_acq_rel,
@@ -169,13 +174,19 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
         MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
         return e.buffer;
       }
-    } else {
+    } else if (current_count == std::numeric_limits<int>::min()) {
+      // Fully evicted — safe to claim this entry for our new buffer.
       e.buffer = buffer;
       e.file_offset = file_offset;
       e.in_evict_queue.store(false, std::memory_order_relaxed);
       e.is_dirty.store(false, std::memory_order_relaxed);
       e.ref_count.store(1, std::memory_order_release);
       return e.buffer;
+    } else {
+      // kEvicting (-1): eviction is in progress on this entry.  Spin briefly
+      // until evict_block finishes (transitions to INT_MIN).
+      // This is a very short critical section (flush + free, ~μs).
+      std::this_thread::yield();
     }
   }
 }
