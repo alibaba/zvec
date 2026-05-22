@@ -16,10 +16,24 @@
 #include <arrow/api.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/config.h>
+#include "db/sqlengine/common/util.h"
 
 namespace cp = arrow::compute;
 
 namespace zvec::sqlengine {
+
+FtsRecallNode::FtsRecallNode(Segment::Ptr segment, QueryInfo::Ptr query_info,
+                             DocFilter::Ptr doc_filter, int batch_size)
+    : segment_(std::move(segment)),
+      query_info_(std::move(query_info)),
+      doc_filter_(std::move(doc_filter)),
+      fetched_columns_(query_info_->get_all_fetched_scalar_field_names()),
+      batch_size_(batch_size) {
+  auto table = segment_->fetch(fetched_columns_, std::vector<int>{});
+  // Append BM25 score column so downstream fill_doc_score() surfaces it to
+  // the Python Doc.score, matching the vector-recall path.
+  schema_ = Util::append_field(*table->schema(), kFieldScore, arrow::float32());
+}
 
 arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
   auto state_ptr = std::make_shared<State>();
@@ -45,9 +59,16 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
 
     std::vector<int> indices;
     indices.reserve(self->batch_size_);
+    arrow::FloatBuilder score_builder;
     for (int i = 0; state.iter_->valid() && i < self->batch_size_;
          i++, state.iter_->next()) {
       indices.push_back(state.iter_->doc_id());
+      auto s = score_builder.Append(state.iter_->score());
+      if (!s.ok()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::ExecutionError("score builder append failed:",
+                                          s.ToString()));
+      }
     }
     if (indices.empty()) {
       return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
@@ -65,7 +86,22 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
           arrow::Status::ExecutionError("combine chunks to batch failed:",
                                         batch.status().ToString()));
     }
-    cp::ExecBatch exec_batch(*batch.ValueUnsafe());
+    auto score_array = score_builder.Finish();
+    if (!score_array.ok()) {
+      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+          arrow::Status::ExecutionError("finish score builder failed:",
+                                        score_array.status().ToString()));
+    }
+    auto record_batch = std::move(batch.ValueUnsafe());
+    auto with_score =
+        record_batch->AddColumn(record_batch->num_columns(), kFieldScore,
+                                score_array.MoveValueUnsafe());
+    if (!with_score.ok()) {
+      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+          arrow::Status::ExecutionError("add score column failed:",
+                                        with_score.status().ToString()));
+    }
+    cp::ExecBatch exec_batch(*with_score.ValueUnsafe());
     return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
         std::move(exec_batch));
   };
