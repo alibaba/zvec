@@ -29,38 +29,38 @@ class OptKmeansAlgorithm : public IndexCluster {
   OptKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~OptKmeansAlgorithm(void) {}
+  ~OptKmeansAlgorithm(void) override {}
 
   //! Initialize Cluster
-  int init(const IndexMeta &meta, const ailego::Params &params);
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Mount features
-  virtual int mount(IndexFeatures::Pointer feats);
+  int mount(IndexFeatures::Pointer feats) override;
 
   //! Suggest dividing to K clusters
-  virtual void suggest(uint32_t k);
+  void suggest(uint32_t k) override;
 
   //! Classify
-  virtual int classify(IndexThreads::Pointer threads,
-                       IndexCluster::CentroidList &cents);
+  int classify(IndexThreads::Pointer threads,
+               IndexCluster::CentroidList &cents) override;
 
   //! Label
-  virtual int label(IndexThreads::Pointer threads,
-                    const IndexCluster::CentroidList &cents,
-                    std::vector<uint32_t> *out);
+  int label(IndexThreads::Pointer threads,
+            const IndexCluster::CentroidList &cents,
+            std::vector<uint32_t> *out) override;
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents) = 0;
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override = 0;
 
   //! Cleanup Cluster
-  virtual int cleanup(void);
+  int cleanup(void) override;
 
   //! Reset Cluster
-  virtual int reset(void);
+  int reset(void) override;
 
   //! Update Cluster
-  virtual int update(const ailego::Params &params);
+  int update(const ailego::Params &params) override;
 
  protected:
   //! Update parameters
@@ -498,11 +498,11 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
   NumericalKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NumericalKmeansAlgorithm(void) {}
+  ~NumericalKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   void update_centroids(
@@ -631,11 +631,11 @@ class NibbleKmeansAlgorithm : public OptKmeansAlgorithm {
   NibbleKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NibbleKmeansAlgorithm(void) {}
+  ~NibbleKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   //! update centroids
@@ -765,11 +765,11 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
   NumericalInnerProductKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NumericalInnerProductKmeansAlgorithm(void) {}
+  ~NumericalInnerProductKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   void update_centroids(
@@ -899,11 +899,11 @@ class NibbleInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
   NibbleInnerProductKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NibbleInnerProductKmeansAlgorithm(void) {}
+  ~NibbleInnerProductKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   //! update centroids
@@ -1026,38 +1026,38 @@ class OptKmeansCluster : public IndexCluster {
   OptKmeansCluster(void) {}
 
   //! Destructor
-  virtual ~OptKmeansCluster(void) {}
+  ~OptKmeansCluster(void) override {}
 
   //! Initialize Cluster
-  virtual int init(const IndexMeta &meta, const ailego::Params &params);
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Cluster
-  virtual int cleanup(void);
+  int cleanup(void) override;
 
   //! Reset Cluster
-  virtual int reset(void);
+  int reset(void) override;
 
   //! Update Cluster
-  virtual int update(const ailego::Params &params);
+  int update(const ailego::Params &params) override;
 
   //! Suggest dividing to K clusters
-  virtual void suggest(uint32_t k);
+  void suggest(uint32_t k) override;
 
   //! Mount features
-  virtual int mount(IndexFeatures::Pointer feats);
+  int mount(IndexFeatures::Pointer feats) override;
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
   //! Classify
-  virtual int classify(IndexThreads::Pointer threads,
-                       IndexCluster::CentroidList &cents);
+  int classify(IndexThreads::Pointer threads,
+               IndexCluster::CentroidList &cents) override;
 
   //! Label
-  virtual int label(IndexThreads::Pointer threads,
-                    const IndexCluster::CentroidList &cents,
-                    std::vector<uint32_t> *out);
+  int label(IndexThreads::Pointer threads,
+            const IndexCluster::CentroidList &cents,
+            std::vector<uint32_t> *out) override;
 
  protected:
   //! Members

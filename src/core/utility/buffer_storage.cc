@@ -85,7 +85,7 @@ class BufferStorage : public IndexStorage {
           capacity_(static_cast<size_t>(info->segment.meta()->data_size +
                                         info->segment.meta()->padding_size)) {}
     //! Destructor
-    virtual ~WrappedSegment(void) {}
+    ~WrappedSegment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -353,7 +353,7 @@ class BufferStorage : public IndexStorage {
   };
 
   //! Destructor
-  virtual ~BufferStorage(void) {
+  ~BufferStorage(void) override {
     this->cleanup();
   }
 

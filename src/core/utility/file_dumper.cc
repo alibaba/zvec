@@ -29,7 +29,7 @@ struct FileDumper : public IndexDumper {
   FileDumper(void) {}
 
   //! Destructor
-  virtual ~FileDumper(void) {
+  ~FileDumper(void) override {
     this->cleanup();
   }
 

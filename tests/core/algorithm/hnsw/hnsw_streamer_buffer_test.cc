@@ -23,8 +23,8 @@ constexpr size_t static dim = 16;
 
 class HnswStreamerTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
   void hybrid_scale(std::vector<float> &dense_value,
                     std::vector<float> &sparse_value, float alpha_scale);
 

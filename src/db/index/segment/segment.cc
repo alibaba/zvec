@@ -150,7 +150,7 @@ class SegmentImpl : public Segment,
   std::vector<VectorColumnIndexer::Ptr> get_vector_indexer(
       const std::string &field_name) const override;
 
-  virtual std::vector<VectorColumnIndexer::Ptr> get_quant_vector_indexer(
+  std::vector<VectorColumnIndexer::Ptr> get_quant_vector_indexer(
       const std::string &field_name) const override;
 
   InvertedColumnIndexer::Ptr get_scalar_indexer(
@@ -393,7 +393,7 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
       std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers,
       const std::vector<std::string> &columns);
 
-  ~CombinedRecordBatchReader();
+  ~CombinedRecordBatchReader() override;
 
   std::shared_ptr<arrow::Schema> schema() const override;
 

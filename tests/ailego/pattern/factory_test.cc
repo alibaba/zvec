@@ -26,7 +26,7 @@ struct Base {
 struct AAA : public Base {
   AAA(void) {}
 
-  virtual void do_something() {
+  void do_something() override {
     printf("do something\n");
   }
 };

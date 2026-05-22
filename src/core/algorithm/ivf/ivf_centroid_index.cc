@@ -28,51 +28,51 @@ class FakeClusterTrainer : public IndexTrainer {
       : meta_(imeta), bundle_(bundle) {}
 
   //! Destructor
-  ~FakeClusterTrainer(void) {}
+  ~FakeClusterTrainer(void) override {}
 
  protected:
   //! Initialize Trainer
-  virtual int init(const IndexMeta &, const ailego::Params &) override {
+  int init(const IndexMeta &, const ailego::Params &) override {
     return 0;
   }
 
   //! Cleanup Trainer
-  virtual int cleanup(void) override {
+  int cleanup(void) override {
     return 0;
   }
 
   //! Train the data
-  virtual int train(IndexHolder::Pointer) override {
+  int train(IndexHolder::Pointer) override {
     return 0;
   }
 
   //! Train the data
-  virtual int train(IndexThreads::Pointer, IndexHolder::Pointer) override {
+  int train(IndexThreads::Pointer, IndexHolder::Pointer) override {
     return 0;
   }
 
   //! Load index from file path or dir
-  virtual int load(IndexStorage::Pointer) override {
+  int load(IndexStorage::Pointer) override {
     return 0;
   }
 
   //! Dump index into file path or dir
-  virtual int dump(const IndexDumper::Pointer &) override {
+  int dump(const IndexDumper::Pointer &) override {
     return 0;
   }
 
   //! Retrieve Index Meta
-  virtual const IndexMeta &meta(void) const override {
+  const IndexMeta &meta(void) const override {
     return meta_;
   }
 
   //! Retrieve statistics
-  virtual const IndexTrainer::Stats &stats(void) const override {
+  const IndexTrainer::Stats &stats(void) const override {
     return stats_;
   }
 
   //! Retrieve the output indexes
-  virtual IndexBundle::Pointer indexes(void) const override {
+  IndexBundle::Pointer indexes(void) const override {
     return bundle_;
   }
 
@@ -88,29 +88,29 @@ class FakeClusterTrainer : public IndexTrainer {
 class Int8QuantizerReformer4IP : public IndexReformer {
  public:
   //! Initialize Reformer
-  virtual int init(const ailego::Params &) override {
+  int init(const ailego::Params &) override {
     return 0;
   }
 
   //! Cleanup Reformer
-  virtual int cleanup(void) override {
+  int cleanup(void) override {
     return 0;
   }
 
   //! Load index from container
-  virtual int load(IndexStorage::Pointer) override {
+  int load(IndexStorage::Pointer) override {
     return 0;
   }
 
   //! Unload index
-  virtual int unload(void) override {
+  int unload(void) override {
     return 0;
   }
 
   //! Transform query
-  virtual int transform(const void * /*query*/,
-                        const IndexQueryMeta & /*qmeta*/, std::string * /*out*/,
-                        IndexQueryMeta * /*ometa*/) const override {
+  int transform(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
+                std::string * /*out*/,
+                IndexQueryMeta * /*ometa*/) const override {
 #if 0
         size_t dim = qmeta.dimension();
         out->resize(IndexMeta::ElementSizeof(
@@ -140,9 +140,8 @@ class Int8QuantizerReformer4IP : public IndexReformer {
   }
 
   //! Transform queries
-  virtual int transform(const void *query, const IndexQueryMeta &qmeta,
-                        uint32_t count, std::string *oquery,
-                        IndexQueryMeta *ometa) const override {
+  int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+                std::string *oquery, IndexQueryMeta *ometa) const override {
     size_t dim = qmeta.dimension();
     oquery->resize(count *
                    IndexMeta::ElementSizeof(IndexMeta::DataType::DT_INT8, dim));
@@ -172,9 +171,8 @@ class Int8QuantizerReformer4IP : public IndexReformer {
   }
 
   //! Normalize results
-  virtual int normalize(const void * /*query*/,
-                        const IndexQueryMeta & /*qmeta*/,
-                        IndexDocumentList & /*result*/) const override {
+  int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
+                IndexDocumentList & /*result*/) const override {
     return 0;
   }
 };
@@ -184,36 +182,35 @@ class Int8QuantizerReformer4IP : public IndexReformer {
 class Int4QuantizerReformer4IP : public IndexReformer {
  public:
   //! Initialize Reformer
-  virtual int init(const ailego::Params &) override {
+  int init(const ailego::Params &) override {
     return 0;
   }
 
   //! Cleanup Reformer
-  virtual int cleanup(void) override {
+  int cleanup(void) override {
     return 0;
   }
 
   //! Load index from container
-  virtual int load(IndexStorage::Pointer) override {
+  int load(IndexStorage::Pointer) override {
     return 0;
   }
 
   //! Unload index
-  virtual int unload(void) override {
+  int unload(void) override {
     return 0;
   }
 
   //! Transform query
-  virtual int transform(const void * /*query*/,
-                        const IndexQueryMeta & /*qmeta*/, std::string * /*out*/,
-                        IndexQueryMeta * /*ometa*/) const override {
+  int transform(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
+                std::string * /*out*/,
+                IndexQueryMeta * /*ometa*/) const override {
     return IndexError_NotImplemented;
   }
 
   //! Transform queries
-  virtual int transform(const void *query, const IndexQueryMeta &qmeta,
-                        uint32_t count, std::string *oquery,
-                        IndexQueryMeta *ometa) const override {
+  int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+                std::string *oquery, IndexQueryMeta *ometa) const override {
     if (qmeta.dimension() & 0x1) {
       LOG_ERROR("Unsuuport dim=%u for transform", qmeta.dimension());
       return IndexError_Unsupported;
@@ -251,9 +248,8 @@ class Int4QuantizerReformer4IP : public IndexReformer {
   }
 
   //! Normalize results
-  virtual int normalize(const void * /*query*/,
-                        const IndexQueryMeta & /*qmeta*/,
-                        IndexDocumentList & /*result*/) const override {
+  int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
+                IndexDocumentList & /*result*/) const override {
     return 0;
   }
 };
