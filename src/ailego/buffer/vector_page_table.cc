@@ -120,9 +120,9 @@ void VectorPageTable::release_block(block_id_t block_id) {
   if (e.ref_count.fetch_sub(1, std::memory_order_release) == 1) {
     std::atomic_thread_fence(std::memory_order_acquire);
     bool expected = false;
-    if (e.in_evict_queue.compare_exchange_strong(
-            expected, true, std::memory_order_acq_rel,
-            std::memory_order_relaxed)) {
+    if (e.in_evict_queue.compare_exchange_strong(expected, true,
+                                                 std::memory_order_acq_rel,
+                                                 std::memory_order_relaxed)) {
       BlockEvictionQueue::BlockType block;
       block.page_table = this;
       block.vector_block.first = block_id;
@@ -168,9 +168,9 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
   while (true) {
     int current_count = e.ref_count.load(std::memory_order_acquire);
     if (current_count >= 0) {
-      if (e.ref_count.compare_exchange_weak(
-              current_count, current_count + 1, std::memory_order_acq_rel,
-              std::memory_order_acquire)) {
+      if (e.ref_count.compare_exchange_weak(current_count, current_count + 1,
+                                            std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {
         MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
         return e.buffer;
       }
@@ -196,16 +196,13 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
   file_name_ = filename;
   writable_ = writable || create;
 #if defined(_MSC_VER)
-  int flags =
-      writable_
-          ? (create ? (O_RDWR | O_CREAT | O_TRUNC | _O_BINARY)
-                    : (O_RDWR | _O_BINARY))
-          : (O_RDONLY | _O_BINARY);
+  int flags = writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC | _O_BINARY)
+                                  : (O_RDWR | _O_BINARY))
+                        : (O_RDONLY | _O_BINARY);
   fd_ = _open(filename.c_str(), flags, 0644);
 #else
-  int flags = writable_
-                  ? (create ? (O_RDWR | O_CREAT | O_TRUNC) : O_RDWR)
-                  : O_RDONLY;
+  int flags =
+      writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC) : O_RDWR) : O_RDONLY;
   fd_ = ::open(filename.c_str(), flags, 0644);
 #endif
   if (fd_ < 0) {
@@ -239,23 +236,23 @@ int VecBufferPool::init() {
   if (writable_) {
     int fd = fd_;
     const std::string &name = file_name_;
-    page_table_.set_flush_callback(
-        [fd, &name](block_id_t /*block_id*/, char *buf, size_t sz,
-                    size_t off) -> int {
+    page_table_.set_flush_callback([fd, &name](block_id_t /*block_id*/,
+                                               char *buf, size_t sz,
+                                               size_t off) -> int {
 #if defined(_MSC_VER)
-          ssize_t w = zvec_pwrite(fd, buf, sz, off);
+      ssize_t w = zvec_pwrite(fd, buf, sz, off);
 #else
-          ssize_t w = ::pwrite(fd, buf, sz, off);
+      ssize_t w = ::pwrite(fd, buf, sz, off);
 #endif
-          if (w != static_cast<ssize_t>(sz)) {
-            LOG_ERROR(
-                "Buffer pool flush failed: file[%s], offset[%zu], "
-                "expected[%zu], got[%zd]",
-                name.c_str(), off, sz, w);
-            return -1;
-          }
-          return 0;
-        });
+      if (w != static_cast<ssize_t>(sz)) {
+        LOG_ERROR(
+            "Buffer pool flush failed: file[%s], offset[%zu], "
+            "expected[%zu], got[%zd]",
+            name.c_str(), off, sz, w);
+        return -1;
+      }
+      return 0;
+    });
   }
   return 0;
 }
@@ -358,8 +355,7 @@ int VecBufferPool::write_range(size_t file_offset, size_t length,
       return -1;
     }
     size_t page_start = pg * kVectorPageSize;
-    size_t intra_offset =
-        (pg == first_page) ? (file_offset - page_start) : 0;
+    size_t intra_offset = (pg == first_page) ? (file_offset - page_start) : 0;
     size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
     std::memcpy(page + intra_offset, src + src_cursor, chunk);
     page_table_.mark_dirty(pg);

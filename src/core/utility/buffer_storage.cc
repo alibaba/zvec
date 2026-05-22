@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <sys/stat.h>
 #include <algorithm>
 #include <atomic>
 #include <functional>
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
-#include <sys/stat.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -229,7 +229,8 @@ class BufferStorage : public IndexStorage {
       // heap metadata (manifesting later as `corrupted size vs. prev_size`).
       const size_t kAlign = 4096UL;
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      char *tmp = static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
+      char *tmp =
+          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
       if (!tmp) {
         LOG_ERROR("read error (alloc cross-page temp buffer failed).");
         return 0;
@@ -268,8 +269,9 @@ class BufferStorage : public IndexStorage {
         return len;
       }
       if (ailego_unlikely(offset > capacity_ || len > capacity_ - offset)) {
-        LOG_ERROR("write() exceeds segment capacity: offset=%zu len=%zu cap=%zu",
-                  offset, len, capacity_);
+        LOG_ERROR(
+            "write() exceeds segment capacity: offset=%zu len=%zu cap=%zu",
+            offset, len, capacity_);
         return 0;
       }
       auto meta = segment_info_->segment.meta();
@@ -521,9 +523,9 @@ class BufferStorage : public IndexStorage {
       // are multiple meta-header chains in the file, the next ParseHeader()
       // would overwrite that single instance and break content_offset for
       // all earlier-chain segments.
-      segments_[seg_name] = IndexMapping::SegmentInfo{
-          IndexMapping::Segment{iter}, current_header_start_offset_,
-          chain_header};
+      segments_[seg_name] =
+          IndexMapping::SegmentInfo{IndexMapping::Segment{iter},
+                                    current_header_start_offset_, chain_header};
       max_segment_size_ =
           std::max(max_segment_size_, iter->data_size + iter->padding_size);
       if (sizeof(IndexFormat::SegmentMeta) * footer_.segment_count >
@@ -545,8 +547,7 @@ class BufferStorage : public IndexStorage {
       // never overwrite earlier-chain headers (prior implementation used a
       // single header_ member, which corrupted content_offset for chain-0
       // segments once chain-1 was parsed).
-      chain_headers_.emplace_back(
-          std::make_unique<IndexFormat::MetaHeader>());
+      chain_headers_.emplace_back(std::make_unique<IndexFormat::MetaHeader>());
       IndexFormat::MetaHeader *chain_header = chain_headers_.back().get();
       ret = ParseHeader(current_header_start_offset_, chain_header);
       if (ret != 0) {
@@ -587,8 +588,8 @@ class BufferStorage : public IndexStorage {
       const uint64_t segment_start_offset =
           footer_offset - footer_.segments_meta_size;
       uint32_t segment_ids_offset = footer_.segments_meta_size;
-      ret = ParseSegment(segment_start_offset, chain_header,
-                         &segment_ids_offset);
+      ret =
+          ParseSegment(segment_start_offset, chain_header, &segment_ids_offset);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -598,8 +599,7 @@ class BufferStorage : public IndexStorage {
       // Record per-chain metadata offsets so flush_index() can write
       // updated segment metas and footers back to the backing file.
       meta_chains_.push_back({current_header_start_offset_, footer_offset,
-                              segment_start_offset,
-                              footer_.segments_meta_size,
+                              segment_start_offset, footer_.segments_meta_size,
                               segment_ids_offset, footer_});
 
       if (footer_.next_meta_header_offset == 0) {
@@ -927,8 +927,7 @@ class BufferStorage : public IndexStorage {
     AllShardsExclusiveLatch latch(mapping_shards_);
 
     if (!buffer_pool_ || !buffer_pool_handle_) {
-      LOG_ERROR("append_segment: pool not ready, file[%s]",
-                file_name_.c_str());
+      LOG_ERROR("append_segment: pool not ready, file[%s]", file_name_.c_str());
       return IndexError_Runtime;
     }
     if (!buffer_pool_->writable()) {
@@ -944,8 +943,7 @@ class BufferStorage : public IndexStorage {
     }
     if (meta_chains_.empty() || chain_headers_.empty() ||
         buffer_pool_buffers_.empty()) {
-      LOG_ERROR("append_segment: invalid state, file[%s]",
-                file_name_.c_str());
+      LOG_ERROR("append_segment: invalid state, file[%s]", file_name_.c_str());
       return IndexError_Runtime;
     }
 
@@ -1034,8 +1032,8 @@ class BufferStorage : public IndexStorage {
       IndexFormat::SetupMetaFooter(&new_footer);
       new_footer.segments_meta_size = new_segments_meta_size;
       new_footer.total_size = new_meta_total;
-      new_footer.segments_meta_crc = ailego::Crc32c::Hash(
-          new_meta_buf.get(), new_segments_meta_size, 0u);
+      new_footer.segments_meta_crc =
+          ailego::Crc32c::Hash(new_meta_buf.get(), new_segments_meta_size, 0u);
       IndexFormat::UpdateMetaFooter(&new_footer, 0);
 
       if (buffer_pool_handle_->write_meta(
@@ -1067,10 +1065,9 @@ class BufferStorage : public IndexStorage {
       chain->footer = linked_footer;  // old chain keeps linked footer
       chain_headers_.push_back(std::move(new_header));
       buffer_pool_buffers_.push_back(std::move(new_meta_buf));
-      meta_chains_.push_back(MetaChain{new_chain_start, new_footer_file_offset,
-                                       new_segment_meta_file_offset,
-                                       new_segments_meta_size,
-                                       new_segments_meta_size, new_footer});
+      meta_chains_.push_back(MetaChain{
+          new_chain_start, new_footer_file_offset, new_segment_meta_file_offset,
+          new_segments_meta_size, new_segments_meta_size, new_footer});
       footer_ = new_footer;
       current_header_start_offset_ = new_chain_start;
 
@@ -1083,8 +1080,8 @@ class BufferStorage : public IndexStorage {
       // value (except `this`-via-member-access) so a subsequent reassignment
       // of local pointers (chain/header/meta_buf) does not corrupt the
       // closure.
-      rollback_step1 = [this, saved_footer_before_split,
-                        saved_old_chain_footer, saved_old_footer_file_offset,
+      rollback_step1 = [this, saved_footer_before_split, saved_old_chain_footer,
+                        saved_old_footer_file_offset,
                         saved_current_header_start]() {
         // 1. Restore old chain's footer on disk (drop forward link).
         buffer_pool_handle_->write_meta(
@@ -1250,7 +1247,8 @@ class BufferStorage : public IndexStorage {
       for (size_t i = 0; i < kMappingMutexShards; ++i) shards_[i].mtx.unlock();
     }
     AllShardsExclusiveLatch(const AllShardsExclusiveLatch &) = delete;
-    AllShardsExclusiveLatch &operator=(const AllShardsExclusiveLatch &) = delete;
+    AllShardsExclusiveLatch &operator=(const AllShardsExclusiveLatch &) =
+        delete;
   };
 
   // buffer manager

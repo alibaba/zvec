@@ -57,8 +57,7 @@ class VectorPageTable {
  public:
   // Callback invoked by evict_block() to persist a dirty block before its
   // memory is released. Signature: (block_id, buffer, size, file_offset).
-  using FlushCallback =
-      std::function<int(block_id_t, char *, size_t, size_t)>;
+  using FlushCallback = std::function<int(block_id_t, char *, size_t, size_t)>;
 
   VectorPageTable() {
     BlockEvictionQueue::get_instance().set_valid(this);
@@ -118,8 +117,7 @@ class VectorPageTable {
     if (!e.is_dirty.load(std::memory_order_relaxed)) {
       return 0;
     }
-    int rc = flush_callback_(block_id, buffer, kVectorPageSize,
-                             e.file_offset);
+    int rc = flush_callback_(block_id, buffer, kVectorPageSize, e.file_offset);
     if (rc == 0) {
       e.is_dirty.store(false, std::memory_order_relaxed);
     }
@@ -146,7 +144,8 @@ class VectorPageTable {
   static constexpr size_t kSegmentShift = 16;  // 65536 entries per segment
   static constexpr size_t kSegmentSize = size_t{1} << kSegmentShift;
   static constexpr size_t kSegmentMask = kSegmentSize - 1;
-  static constexpr size_t kMaxSegments = 2048;  // up to 128M entries (512GB @ 4K)
+  static constexpr size_t kMaxSegments =
+      2048;  // up to 128M entries (512GB @ 4K)
 
   size_t entry_num_{0};
   size_t segment_count_{0};
