@@ -163,16 +163,16 @@ class QueryExecutor(ABC):
         # set output_fields
         core_vector.output_fields = ctx.output_fields
 
-        # FTS-only query (no vector, no id) — skip vector resolution
-        if query.has_fts() and not query.has_vector() and not query.has_id():
-            return core_vector
+        vector_schema = None
+        if query.has_vector() or query.has_id():
+            vector_schema = (
+                self._schema.vector(query.field_name)
+                if query
+                else self._schema.vectors[0]
+            )
 
-        vector_schema = (
-            self._schema.vector(query.field_name) if query else self._schema.vectors[0]
-        )
-
-        if vector_schema is None:
-            raise ValueError("No vector field found")
+            if vector_schema is None:
+                raise ValueError("No vector field found")
 
         # set vector
         if query.has_vector():
@@ -260,13 +260,21 @@ class NoVectorQueryExecutor(QueryExecutor):
         super().__init__(schema)
 
     def _do_validate(self, ctx: QueryContext) -> None:
-        if len(ctx.queries) > 0:
-            raise ValueError("Collection does not support query with vector or id")
+        for query in ctx.queries:
+            if query.has_vector() or query.has_id():
+                raise ValueError("Collection does not support query with vector or id")
+            query._validate()
 
     def _do_build(
-        self, ctx: QueryContext, _collection: _Collection
+        self, ctx: QueryContext, collection: _Collection
     ) -> list[_VectorQuery]:
-        return [self._do_build_query_wo_vector(ctx)]
+        if len(ctx.queries) == 0:
+            return [self._do_build_query_wo_vector(ctx)]
+        # FTS-only branch in _do_build_query_with_vector skips vector resolution.
+        return [
+            self._do_build_query_with_vector(ctx, query, collection)
+            for query in ctx.queries
+        ]
 
 
 class SingleVectorQueryExecutor(NoVectorQueryExecutor):

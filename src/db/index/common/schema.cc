@@ -301,11 +301,11 @@ Status CollectionSchema::validate() const {
         "schema validate failed: max_doc_count_per_segment must >= ",
         MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD);
   }
-  auto v_fields = vector_fields();
-  if (v_fields.empty()) {
-    return Status::InvalidArgument(
-        "schema validate failed: vector fields is empty");
+  if (fields_.empty()) {
+    return Status::InvalidArgument("schema validate failed: collection[", name_,
+                                   "] has no fields");
   }
+  auto v_fields = vector_fields();
   if (v_fields.size() > kMaxVectorFieldSize) {
     return Status::InvalidArgument(
         "schema validate failed: collection[", name_,

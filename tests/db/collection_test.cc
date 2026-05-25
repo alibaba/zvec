@@ -4841,18 +4841,6 @@ TEST_F(CollectionTest, CornerCase_CreateAndOpen) {
       ASSERT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
       std::cout << result.error().message() << std::endl;
     }
-
-    {
-      std::cout << "Collection::CreateAndOpen case 5" << std::endl;
-      FileHelper::RemoveDirectory(col_path);
-      // abnormal schema
-      auto schema = TestHelper::CreateScalarSchema();
-      auto result = Collection::CreateAndOpen(col_path, *schema,
-                                              CollectionOptions{false, true});
-      ASSERT_FALSE(result.has_value());
-      ASSERT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
-      std::cout << result.error().message() << std::endl;
-    }
   }
 
   {
@@ -5114,4 +5102,78 @@ TEST_F(CollectionTest, Feature_Fetch_OutputFields) {
   }
 
   ASSERT_TRUE(collection->Destroy().ok());
+}
+
+// FTS-only collection (no vector field).  Covers Create / Insert / FTS Query
+// / Delete / Optimize-with-rebuild round trip — the rebuild path exercises
+// SegmentHelper::ReduceFts, which is the most invasive consumer of the
+// "schema may have zero vector fields" relaxation.
+TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = std::make_shared<CollectionSchema>("fts_only");
+  schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+  schema->add_field(std::make_shared<FieldSchema>(
+      "content", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+
+  auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                              CollectionOptions{false, true});
+  ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+  auto col = create_res.value();
+
+  // Insert a corpus where 4 of 5 docs contain "hello".  Doc 4 is the only
+  // doc without "hello"; we'll delete it later to verify Optimize correctly
+  // rewrites postings + stats.
+  auto make_doc = [](uint64_t id, const std::string &title,
+                     const std::string &content) {
+    Doc d;
+    d.set_pk("pk_" + std::to_string(id));
+    d.set<std::string>("title", title);
+    d.set<std::string>("content", content);
+    return d;
+  };
+  std::vector<Doc> docs;
+  docs.push_back(make_doc(0, "intro", "hello world"));
+  docs.push_back(make_doc(1, "guide", "hello foo bar"));
+  docs.push_back(make_doc(2, "tips", "hello baz"));
+  docs.push_back(make_doc(3, "more", "hello hello"));
+  docs.push_back(make_doc(4, "other", "nothing relevant"));
+  ASSERT_TRUE(col->Insert(docs).has_value());
+  ASSERT_EQ(col->Stats().value().doc_count, 5u);
+
+  auto fts_search = [&](const std::string &term) {
+    VectorQuery vq;
+    vq.field_name_ = "content";
+    vq.topk_ = 10;
+    FtsQuery fts_q;
+    fts_q.query_string_ = term;
+    vq.fts_query_ = fts_q;
+    auto r = col->Query(vq);
+    EXPECT_TRUE(r.has_value()) << r.error().message();
+    return r.has_value() ? r.value() : DocPtrList{};
+  };
+
+  // Baseline: 4 docs hit "hello".
+  ASSERT_EQ(fts_search("hello").size(), 4u);
+
+  // Delete enough to push delete ratio above COMPACT_DELETE_RATIO_THRESHOLD
+  // (0.3) so the next Optimize sets rebuild=true and exercises ReduceFts.
+  // Drop pk_0 and pk_4: 2/5 = 40% deletes, and pk_0 carries one "hello".
+  ASSERT_TRUE(col->Delete({"pk_0", "pk_4"}).has_value());
+  ASSERT_EQ(col->Stats().value().doc_count, 3u);
+
+  // Tombstone filter applied at query time — "hello" now returns 3 docs.
+  ASSERT_EQ(fts_search("hello").size(), 3u);
+  // Doc 4 (only "nothing") is deleted ⇒ no hit for its unique term.
+  ASSERT_EQ(fts_search("nothing").size(), 0u);
+
+  // Optimize physically removes tombstones and rebuilds FTS postings via
+  // FtsRocksdbReducer.  Same recall expected after rebuild.
+  ASSERT_TRUE(col->Optimize().ok());
+  ASSERT_EQ(col->Stats().value().doc_count, 3u);
+  ASSERT_EQ(fts_search("hello").size(), 3u);
+  ASSERT_EQ(fts_search("nothing").size(), 0u);
+
+  col.reset();
+  FileHelper::RemoveDirectory(col_path);
 }
