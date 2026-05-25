@@ -79,10 +79,9 @@ class IVFIndexProvider : public IndexProvider {
         // Fallback: compute sorting if mapping segment is unavailable
         fallback_.resize(count_);
         std::iota(fallback_.begin(), fallback_.end(), size_t(0));
-        std::sort(fallback_.begin(), fallback_.end(),
-                  [&](size_t a, size_t b) {
-                    return entity_->get_key(a) < entity_->get_key(b);
-                  });
+        std::sort(fallback_.begin(), fallback_.end(), [&](size_t a, size_t b) {
+          return entity_->get_key(a) < entity_->get_key(b);
+        });
       }
     }
 
