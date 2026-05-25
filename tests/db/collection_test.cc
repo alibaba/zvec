@@ -2683,7 +2683,7 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   // unquantized
   func(QuantizeType::UNDEFINED, "IVF");
   // quantized
-  func_ivf(QuantizeType::FP16, "IVF");
+  func(QuantizeType::FP16, "IVF");
 
   // unquantized
   func();
