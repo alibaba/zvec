@@ -2588,82 +2588,99 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
-  int doc_count = 1000;
+  auto func = [&](QuantizeType quantize_type = QuantizeType::UNDEFINED) {
+    FileHelper::RemoveDirectory(col_path);
 
-  // create empty collection
-  auto schema = TestHelper::CreateSchemaWithVectorIndex();
-  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
-  auto collection = TestHelper::CreateCollectionWithDoc(
-      col_path, *schema, options, 0, doc_count, false);
+    int doc_count = 1000;
 
-  auto check_doc = [&]() {
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, *schema);
-      auto result = collection->Fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      if (doc == nullptr) {
-        std::cout << "doc is null, pk: " << expect_doc.pk() << std::endl;
-      }
-      ASSERT_NE(doc, nullptr);
-      if (*doc != expect_doc) {
-        std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-        std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                  << std::endl;
-      }
-      ASSERT_EQ(*doc, expect_doc);
+    // create empty collection
+    CollectionSchema::Ptr schema;
+    if (quantize_type == QuantizeType::UNDEFINED) {
+      schema = TestHelper::CreateSchemaWithVectorIndex();
+    } else {
+      schema = TestHelper::CreateSchemaWithVectorIndex(
+          false, "demo",
+          std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200,
+                                            quantize_type));
     }
-  };
+    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(
+        col_path, *schema, options, 0, doc_count, false);
 
-  check_doc();
-  std::cout << "check success 1" << std::endl;
+    auto check_doc = [&]() {
+      for (int i = 0; i < doc_count; i++) {
+        auto expect_doc = TestHelper::CreateDoc(i, *schema);
+        auto result = collection->Fetch({expect_doc.pk()});
+        ASSERT_TRUE(result.has_value());
+        ASSERT_EQ(result.value().size(), 1);
+        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+        auto doc = result.value()[expect_doc.pk()];
+        if (doc == nullptr) {
+          std::cout << "doc is null, pk: " << expect_doc.pk() << std::endl;
+        }
+        ASSERT_NE(doc, nullptr);
+        if (*doc != expect_doc) {
+          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
+          std::cout << "expect_doc:" << expect_doc.to_detail_string()
+                    << std::endl;
+        }
+        ASSERT_EQ(*doc, expect_doc);
+      }
+    };
 
-  ASSERT_TRUE(collection->Flush().ok());
-  auto stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, doc_count);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
+    check_doc();
+    std::cout << "check success 1" << std::endl;
 
-  auto s = collection->Optimize();
-  ASSERT_TRUE(s.ok());
-  stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, doc_count);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
 
-  int loop_count = 10;
-  uint64_t start_doc_id = doc_count;
-  for (int i = 0; i < loop_count; i++) {
-    std::cout << "loop: " << i << " begin" << std::endl;
-
-    s = TestHelper::CollectionInsertDoc(collection, start_doc_id,
-                                        start_doc_id + 1);
+    auto s = collection->Optimize();
     ASSERT_TRUE(s.ok());
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+    int loop_count = 10;
+    uint64_t start_doc_id = doc_count;
+    for (int i = 0; i < loop_count; i++) {
+      std::cout << "loop: " << i << " begin" << std::endl;
+
+      s = TestHelper::CollectionInsertDoc(collection, start_doc_id,
+                                          start_doc_id + 1);
+      ASSERT_TRUE(s.ok());
+
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, doc_count + i + 1);
+      ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"],
+                      1.0 * (doc_count + i) / (doc_count + i + 1));
+
+
+      s = collection->Optimize();
+      if (!s.ok()) {
+        std::cout << "optimize failed: " << s.message() << std::endl;
+      }
+      ASSERT_TRUE(s.ok());
+
+      start_doc_id += 1;
+
+      std::cout << "loop: " << i << " end" << std::endl;
+    }
 
     stats = collection->Stats().value();
-    ASSERT_EQ(stats.doc_count, doc_count + i + 1);
-    ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"],
-                    1.0 * (doc_count + i) / (doc_count + i + 1));
+    ASSERT_EQ(stats.doc_count, doc_count + loop_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
+    doc_count += loop_count;
+    check_doc();
+    std::cout << "check success 2" << std::endl;
+  };
 
-    s = collection->Optimize();
-    if (!s.ok()) {
-      std::cout << "optimize failed: " << s.message() << std::endl;
-    }
-    ASSERT_TRUE(s.ok());
-
-    start_doc_id += 1;
-
-    std::cout << "loop: " << i << " end" << std::endl;
-  }
-
-  stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, doc_count + loop_count);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
-
-  doc_count += loop_count;
-  check_doc();
-  std::cout << "check success 2" << std::endl;
+  // unquantized
+  func();
+  // quantized
+  func(QuantizeType::FP16);
 }
 
 TEST_F(CollectionTest, Feature_Optimize_MetricType) {
@@ -3935,6 +3952,517 @@ TEST_F(CollectionTest, Feature_AlterColumn_CornerCase) {
   }
 }
 
+TEST_F(CollectionTest, Feature_AddNullableColumn_MultiSegment) {
+  int docs_per_segment = 1000;
+  int num_segments = 3;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      docs_per_segment);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, docs_per_segment, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  for (int seg = 1; seg < num_segments; seg++) {
+    auto s = TestHelper::CollectionInsertDoc(collection, seg * docs_per_segment,
+                                             (seg + 1) * docs_per_segment);
+    ASSERT_TRUE(s.ok());
+    ASSERT_TRUE(collection->Flush().ok());
+  }
+
+  int total_docs = docs_per_segment * num_segments;
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Reopen to ensure segments are persisted
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = result.value();
+
+  // Add nullable columns without expression — this used to crash on
+  // multi-segment collections
+  std::vector<std::pair<std::string, DataType>> nullable_types = {
+      {"add_int32_null", DataType::INT32},
+      {"add_int64_null", DataType::INT64},
+      {"add_float_null", DataType::FLOAT},
+      {"add_double_null", DataType::DOUBLE},
+  };
+  for (auto &[col_name, data_type] : nullable_types) {
+    auto field_schema =
+        std::make_shared<FieldSchema>(col_name, data_type, true);
+    auto s = collection->AddColumn(field_schema, "", AddColumnOptions());
+    ASSERT_TRUE(s.ok()) << "Failed to add nullable column " << col_name << ": "
+                        << s.message();
+  }
+
+  auto new_schema = collection->Schema().value();
+  for (auto &[col_name, _] : nullable_types) {
+    ASSERT_TRUE(new_schema.has_field(col_name));
+  }
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Verify all docs are fetchable and new columns have null values
+  for (int i = 0; i < total_docs; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, new_schema);
+    auto fetch_result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetch_result.has_value());
+    ASSERT_EQ(fetch_result.value().size(), 1);
+    ASSERT_EQ(fetch_result.value().count(expect_doc.pk()), 1);
+    auto doc = fetch_result.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+  }
+
+  // Insert more docs after adding columns and verify
+  auto s = TestHelper::CollectionInsertDoc(collection, total_docs,
+                                           total_docs + docs_per_segment);
+  ASSERT_TRUE(s.ok());
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs + docs_per_segment);
+}
+
+TEST_F(CollectionTest, Feature_AddColumn_MultiSegment_MixedOps) {
+  int docs_per_segment = 1000;
+  int num_segments = 3;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      docs_per_segment);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, docs_per_segment, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  for (int seg = 1; seg < num_segments; seg++) {
+    auto s = TestHelper::CollectionInsertDoc(collection, seg * docs_per_segment,
+                                             (seg + 1) * docs_per_segment);
+    ASSERT_TRUE(s.ok());
+    ASSERT_TRUE(collection->Flush().ok());
+  }
+
+  int total_docs = docs_per_segment * num_segments;
+
+  // Reopen
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = result.value();
+
+  // 1) Add column with expression on multi-segment collection
+  auto expr_field =
+      std::make_shared<FieldSchema>("expr_col", DataType::INT32, false);
+  auto s = collection->AddColumn(expr_field, "int32 + 1", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "AddColumn with expression failed: " << s.message();
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // 2) Add nullable column without expression after expression-based column
+  auto null_field =
+      std::make_shared<FieldSchema>("null_col", DataType::INT64, true);
+  s = collection->AddColumn(null_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "AddColumn nullable failed: " << s.message();
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // 3) Drop the expression-based column, then add another nullable column
+  s = collection->DropColumn("expr_col");
+  ASSERT_TRUE(s.ok()) << "DropColumn failed: " << s.message();
+
+  auto null_field2 =
+      std::make_shared<FieldSchema>("null_col2", DataType::FLOAT, true);
+  s = collection->AddColumn(null_field2, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "AddColumn nullable after drop failed: "
+                      << s.message();
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // 4) Verify schema correctness
+  auto new_schema = collection->Schema().value();
+  ASSERT_FALSE(new_schema.has_field("expr_col"));
+  ASSERT_TRUE(new_schema.has_field("null_col"));
+  ASSERT_TRUE(new_schema.has_field("null_col2"));
+
+  // 5) Verify all docs are still fetchable
+  for (int i = 0; i < total_docs; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, new_schema);
+    auto fetch_result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetch_result.has_value());
+    ASSERT_EQ(fetch_result.value().size(), 1);
+  }
+}
+
+TEST_F(CollectionTest, Feature_AlterColumn_MultiSegment) {
+  int docs_per_segment = 1000;
+  int num_segments = 3;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      docs_per_segment);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, docs_per_segment, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  for (int seg = 1; seg < num_segments; seg++) {
+    auto s = TestHelper::CollectionInsertDoc(collection, seg * docs_per_segment,
+                                             (seg + 1) * docs_per_segment);
+    ASSERT_TRUE(s.ok());
+    ASSERT_TRUE(collection->Flush().ok());
+  }
+
+  int total_docs = docs_per_segment * num_segments;
+
+  // Reopen
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = result.value();
+
+  // Alter type: int32 -> int64
+  auto altered_field =
+      std::make_shared<FieldSchema>("int32", DataType::INT64, false);
+  auto s =
+      collection->AlterColumn("int32", "", altered_field, AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "alter column type failed: " << s.message();
+
+  auto new_schema = collection->Schema().value();
+  ASSERT_TRUE(new_schema.get_field("int32")->data_type() == DataType::INT64);
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Rename column
+  s = collection->AlterColumn("uint32", "renamed_uint32", nullptr,
+                              AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "alter column rename failed: " << s.message();
+
+  new_schema = collection->Schema().value();
+  ASSERT_FALSE(new_schema.has_field("uint32"));
+  ASSERT_TRUE(new_schema.has_field("renamed_uint32"));
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Verify all docs are fetchable
+  for (int i = 0; i < total_docs; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, new_schema);
+    auto fetch_result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetch_result.has_value());
+    ASSERT_EQ(fetch_result.value().size(), 1);
+  }
+}
+
+TEST_F(CollectionTest, Feature_DropColumn_MultiSegment) {
+  int docs_per_segment = 1000;
+  int num_segments = 3;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      docs_per_segment);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, docs_per_segment, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  for (int seg = 1; seg < num_segments; seg++) {
+    auto s = TestHelper::CollectionInsertDoc(collection, seg * docs_per_segment,
+                                             (seg + 1) * docs_per_segment);
+    ASSERT_TRUE(s.ok());
+    ASSERT_TRUE(collection->Flush().ok());
+  }
+
+  int total_docs = docs_per_segment * num_segments;
+
+  // Reopen
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = result.value();
+
+  // Drop multiple columns
+  std::vector<std::string> to_drop = {"int32", "uint32", "float"};
+  for (auto &col_name : to_drop) {
+    auto s = collection->DropColumn(col_name);
+    ASSERT_TRUE(s.ok()) << "drop column " << col_name
+                        << " failed: " << s.message();
+  }
+
+  auto new_schema = collection->Schema().value();
+  for (auto &col_name : to_drop) {
+    ASSERT_FALSE(new_schema.has_field(col_name));
+  }
+  ASSERT_TRUE(new_schema.has_field("int64"));
+  ASSERT_TRUE(new_schema.has_field("double"));
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Insert more docs after dropping columns
+  auto s = TestHelper::CollectionInsertDoc(collection, total_docs,
+                                           total_docs + docs_per_segment);
+  ASSERT_TRUE(s.ok());
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs + docs_per_segment);
+}
+
+TEST_F(CollectionTest, Feature_AddNullableColumn_ReopenVerifyNull) {
+  int docs_per_segment = 1000;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      docs_per_segment);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, docs_per_segment, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  // Add another segment
+  auto s = TestHelper::CollectionInsertDoc(collection, docs_per_segment,
+                                           docs_per_segment * 2);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(collection->Flush().ok());
+
+  int total_docs = docs_per_segment * 2;
+
+  // Add nullable column
+  auto nullable_field =
+      std::make_shared<FieldSchema>("null_col", DataType::INT64, true);
+  s = collection->AddColumn(nullable_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "add nullable column failed: " << s.message();
+
+  // Close and reopen
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = result.value();
+
+  auto new_schema = collection->Schema().value();
+  ASSERT_TRUE(new_schema.has_field("null_col"));
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Verify docs are fetchable after reopen
+  for (int i = 0; i < total_docs; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, new_schema);
+    auto fetch_result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetch_result.has_value());
+    ASSERT_EQ(fetch_result.value().size(), 1);
+  }
+
+  // Insert new docs with value for the added column and verify
+  s = TestHelper::CollectionInsertDoc(collection, total_docs,
+                                      total_docs + docs_per_segment);
+  ASSERT_TRUE(s.ok());
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs + docs_per_segment);
+}
+
+TEST_F(CollectionTest, Feature_AddColumn_WithUnflushedData) {
+  int doc_count = 1000;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      doc_count);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  // Create collection with flushed data (segment 1)
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  // Insert more unflushed data (in writing segment)
+  auto s =
+      TestHelper::CollectionInsertDoc(collection, doc_count, doc_count + 500);
+  ASSERT_TRUE(s.ok());
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, doc_count + 500);
+
+  // AddColumn while writing segment has unflushed data
+  auto field_schema =
+      std::make_shared<FieldSchema>("new_col", DataType::INT32, false);
+  s = collection->AddColumn(field_schema, "int32 + 1", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "AddColumn with unflushed data failed: "
+                      << s.message();
+
+  auto new_schema = collection->Schema().value();
+  ASSERT_TRUE(new_schema.has_field("new_col"));
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, doc_count + 500);
+
+  // Add nullable column while writing segment has unflushed data
+  auto nullable_field =
+      std::make_shared<FieldSchema>("null_unflushed", DataType::INT64, true);
+  s = collection->AddColumn(nullable_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "AddColumn nullable with unflushed data failed: "
+                      << s.message();
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, doc_count + 500);
+
+  // Insert after add column and flush
+  s = TestHelper::CollectionInsertDoc(collection, doc_count + 500,
+                                      doc_count + 1000);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(collection->Flush().ok());
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, doc_count + 1000);
+}
+
+TEST_F(CollectionTest, Feature_ColumnDDL_ChainedOps_MultiSegment) {
+  int docs_per_segment = 1000;
+  int num_segments = 3;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      docs_per_segment);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, docs_per_segment, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  for (int seg = 1; seg < num_segments; seg++) {
+    auto s = TestHelper::CollectionInsertDoc(collection, seg * docs_per_segment,
+                                             (seg + 1) * docs_per_segment);
+    ASSERT_TRUE(s.ok());
+    ASSERT_TRUE(collection->Flush().ok());
+  }
+
+  int total_docs = docs_per_segment * num_segments;
+
+  // Reopen
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = result.value();
+
+  // Chain 1: add nullable -> alter type -> drop -> add again
+  auto field_v1 =
+      std::make_shared<FieldSchema>("chain_col", DataType::INT32, true);
+  auto s = collection->AddColumn(field_v1, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "chain add v1 failed: " << s.message();
+
+  auto field_v2 =
+      std::make_shared<FieldSchema>("chain_col", DataType::INT64, true);
+  s = collection->AlterColumn("chain_col", "", field_v2, AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "chain alter failed: " << s.message();
+
+  auto new_schema = collection->Schema().value();
+  ASSERT_TRUE(new_schema.get_field("chain_col")->data_type() ==
+              DataType::INT64);
+
+  s = collection->DropColumn("chain_col");
+  ASSERT_TRUE(s.ok()) << "chain drop failed: " << s.message();
+
+  new_schema = collection->Schema().value();
+  ASSERT_FALSE(new_schema.has_field("chain_col"));
+
+  auto field_v3 =
+      std::make_shared<FieldSchema>("chain_col", DataType::FLOAT, false);
+  s = collection->AddColumn(field_v3, "float + 1.0", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "chain re-add failed: " << s.message();
+
+  new_schema = collection->Schema().value();
+  ASSERT_TRUE(new_schema.has_field("chain_col"));
+  ASSERT_TRUE(new_schema.get_field("chain_col")->data_type() ==
+              DataType::FLOAT);
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Chain 2: add with expr -> rename -> drop
+  auto expr_field =
+      std::make_shared<FieldSchema>("chain2_col", DataType::DOUBLE, false);
+  s = collection->AddColumn(expr_field, "double", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "chain2 add failed: " << s.message();
+
+  s = collection->AlterColumn("chain2_col", "chain2_renamed", nullptr,
+                              AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "chain2 rename failed: " << s.message();
+
+  new_schema = collection->Schema().value();
+  ASSERT_FALSE(new_schema.has_field("chain2_col"));
+  ASSERT_TRUE(new_schema.has_field("chain2_renamed"));
+
+  s = collection->DropColumn("chain2_renamed");
+  ASSERT_TRUE(s.ok()) << "chain2 drop failed: " << s.message();
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs);
+
+  // Verify all docs still fetchable after all chained operations
+  for (int i = 0; i < total_docs; i++) {
+    new_schema = collection->Schema().value();
+    auto expect_doc = TestHelper::CreateDoc(i, new_schema);
+    auto fetch_result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetch_result.has_value());
+    ASSERT_EQ(fetch_result.value().size(), 1);
+  }
+
+  // Insert more docs after all operations
+  s = TestHelper::CollectionInsertDoc(collection, total_docs,
+                                      total_docs + docs_per_segment);
+  ASSERT_TRUE(s.ok());
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, total_docs + docs_per_segment);
+}
+
+TEST_F(CollectionTest, Feature_AlterColumn_NullableValidation) {
+  int doc_count = 1000;
+  auto schema = TestHelper::CreateNormalSchema(
+      false, "demo", nullptr, std::make_shared<HnswIndexParams>(MetricType::IP),
+      doc_count);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  // Add a nullable column
+  auto nullable_field =
+      std::make_shared<FieldSchema>("nullable_col", DataType::INT32, true);
+  auto s = collection->AddColumn(nullable_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok());
+
+  // Attempt to alter nullable column to non-nullable — should fail
+  auto non_nullable_field =
+      std::make_shared<FieldSchema>("nullable_col", DataType::INT32, false);
+  s = collection->AlterColumn("nullable_col", "", non_nullable_field,
+                              AlterColumnOptions());
+  ASSERT_FALSE(s.ok()) << "should reject nullable->non-nullable alter";
+
+  // Alter non-nullable to nullable — should succeed
+  auto to_nullable =
+      std::make_shared<FieldSchema>("int32", DataType::INT32, true);
+  s = collection->AlterColumn("int32", "", to_nullable, AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "non-nullable->nullable alter failed: " << s.message();
+
+  auto new_schema = collection->Schema().value();
+  ASSERT_TRUE(new_schema.get_field("int32")->nullable());
+
+  // Alter type and nullable at the same time
+  auto type_and_nullable =
+      std::make_shared<FieldSchema>("uint32", DataType::INT64, true);
+  s = collection->AlterColumn("uint32", "", type_and_nullable,
+                              AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "alter type+nullable failed: " << s.message();
+
+  new_schema = collection->Schema().value();
+  ASSERT_TRUE(new_schema.get_field("uint32")->data_type() == DataType::INT64);
+  ASSERT_TRUE(new_schema.get_field("uint32")->nullable());
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, doc_count);
+}
+
 TEST_F(CollectionTest, Feature_Column_MixOperation) {
   int max_doc_per_count = 1000;
   // create empty collection
@@ -4346,7 +4874,8 @@ TEST_F(CollectionTest, Feature_Query_NullableFilter_WithoutIndex) {
   auto run_test = [&](bool with_scalar_index) {
     FileHelper::RemoveDirectory(col_path);
     IndexParams::Ptr scalar_idx =
-        with_scalar_index ? std::make_shared<InvertIndexParams>(false) : nullptr;
+        with_scalar_index ? std::make_shared<InvertIndexParams>(false)
+                          : nullptr;
     auto schema =
         TestHelper::CreateNormalSchema(/*nullable=*/true, "demo", scalar_idx);
     CollectionOptions options{false, true, 100 * 1024 * 1024};

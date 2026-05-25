@@ -39,38 +39,38 @@ class KmeansCluster : public IndexCluster {
   KmeansCluster(bool batch) : batch_(batch) {}
 
   //! Destructor
-  virtual ~KmeansCluster(void) {}
+  ~KmeansCluster(void) override {}
 
   //! Initialize Cluster
-  virtual int init(const IndexMeta &meta, const ailego::Params &params);
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Cluster
-  virtual int cleanup(void);
+  int cleanup(void) override;
 
   //! Reset Cluster
-  virtual int reset(void);
+  int reset(void) override;
 
   //! Update Cluster
-  virtual int update(const ailego::Params &params);
+  int update(const ailego::Params &params) override;
 
   //! Suggest dividing to K clusters
-  virtual void suggest(uint32_t k);
+  void suggest(uint32_t k) override;
 
   //! Mount features
-  virtual int mount(IndexFeatures::Pointer feats);
+  int mount(IndexFeatures::Pointer feats) override;
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
   //! Classify
-  virtual int classify(IndexThreads::Pointer threads,
-                       IndexCluster::CentroidList &cents);
+  int classify(IndexThreads::Pointer threads,
+               IndexCluster::CentroidList &cents) override;
 
   //! Label
-  virtual int label(IndexThreads::Pointer threads,
-                    const IndexCluster::CentroidList &cents,
-                    std::vector<uint32_t> *out);
+  int label(IndexThreads::Pointer threads,
+            const IndexCluster::CentroidList &cents,
+            std::vector<uint32_t> *out) override;
 
  protected:
   //! Test if it is valid
@@ -169,23 +169,23 @@ class KmeansCentroidFeatures : public IndexFeatures {
         feature_dimension_(meta.dimension()),
         data_type_(meta.data_type()) {}
 
-  virtual size_t count(void) const {
+  size_t count(void) const override {
     return centroids_.size();
   }
 
-  virtual size_t dimension(void) const {
+  size_t dimension(void) const override {
     return feature_dimension_;
   }
 
-  virtual const void *element(size_t i) const {
+  const void *element(size_t i) const override {
     return centroids_[i].feature();
   }
 
-  virtual IndexMeta::DataType data_type(void) const {
+  IndexMeta::DataType data_type(void) const override {
     return data_type_;
   }
 
-  virtual size_t element_size(void) const {
+  size_t element_size(void) const override {
     return feature_size_;
   }
 

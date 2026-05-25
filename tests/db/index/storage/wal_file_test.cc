@@ -42,11 +42,11 @@ using SegmentID = uint32_t;
 
 class WalFileTest : public testing::Test {
  protected:
-  void SetUp() {
+  void SetUp() override {
     zvec::test_util::RemoveTestFiles("./data.wal.*");
   }
 
-  void TearDown() {}
+  void TearDown() override {}
 };
 
 TEST_F(WalFileTest, TestGeneral) {

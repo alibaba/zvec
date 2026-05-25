@@ -36,8 +36,8 @@ static inline size_t RandomDimension(void) {
 static size_t DIMENSION = RandomDimension();
 class FlatBuilderTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
 
  public:
   static std::string dir_;

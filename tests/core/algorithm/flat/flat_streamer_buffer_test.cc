@@ -22,8 +22,8 @@ constexpr size_t static dim = 16;
 
 class FlatStreamerTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
   void hybrid_scale(std::vector<float> &dense_value,
                     std::vector<float> &sparse_value, float alpha_scale);
 
@@ -171,7 +171,8 @@ TEST_F(FlatStreamerTest, TestLinearSearch) {
 TEST_F(FlatStreamerTest, TestLinearSearchWithLRU) {
   MemoryLimitPool::get_instance().init(100 * 1024UL * 1024UL);
 #ifdef __ANDROID__
-  GTEST_SKIP() << "Skipped on Android: requires ~6GB memory/disk (emulator limit)";
+  GTEST_SKIP()
+      << "Skipped on Android: requires ~6GB memory/disk (emulator limit)";
 #endif
   constexpr size_t static dim = 1600;
   IndexStreamer::Pointer write_streamer =

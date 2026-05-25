@@ -34,8 +34,8 @@ constexpr size_t static dim = 128;
 
 class HnswRabitqStreamerTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
 
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;

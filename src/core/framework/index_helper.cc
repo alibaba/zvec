@@ -110,7 +110,7 @@ class TwoPassIndexHolder : public IndexHolder {
         : holder_(owner), front_iter_(std::move(iter)) {}
 
     //! Destructor
-    virtual ~FirstPassIterator(void) {}
+    ~FirstPassIterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -151,7 +151,7 @@ class TwoPassIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~SecondPassIterator(void) {}
+    ~SecondPassIterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {

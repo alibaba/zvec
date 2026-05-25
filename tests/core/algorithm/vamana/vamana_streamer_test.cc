@@ -41,8 +41,8 @@ constexpr size_t kDim = 16;
 
 class VamanaStreamerTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
 
   IndexStreamer::Pointer CreateVamanaStreamer(
       const ailego::Params &extra_params = ailego::Params());

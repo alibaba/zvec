@@ -86,7 +86,7 @@ class MipsConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -214,7 +214,7 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -343,7 +343,7 @@ class MipsConverterHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -453,7 +453,7 @@ class MipsConverterHalfHolder : public IndexHolder {
 class MipsConverter : public IndexConverter {
  public:
   //! Destructor
-  virtual ~MipsConverter(void) {}
+  ~MipsConverter(void) override {}
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &params) override {
