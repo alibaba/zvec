@@ -75,33 +75,33 @@ class TestFtsQueryValidation:
 
 
 class TestFtsQueryBinding:
-    """Test FTS binding layer (_FtsQuery)."""
+    """Test FTS binding layer (_Fts)."""
 
     def test_import_fts_query(self):
-        """_FtsQuery should be importable from _zvec.param."""
-        from _zvec.param import _FtsQuery
+        """_Fts should be importable from _zvec.param."""
+        from _zvec.param import _Fts
 
-        fts = _FtsQuery()
+        fts = _Fts()
         assert fts.query_string == ""
         assert fts.match_string == ""
 
     def test_fts_query_set_fields(self):
-        """Setting fields on _FtsQuery should work."""
-        from _zvec.param import _FtsQuery
+        """Setting fields on _Fts should work."""
+        from _zvec.param import _Fts
 
-        fts = _FtsQuery()
+        fts = _Fts()
         fts.query_string = "+hello -world"
         assert fts.query_string == "+hello -world"
 
-        fts2 = _FtsQuery()
+        fts2 = _Fts()
         fts2.match_string = "machine learning"
         assert fts2.match_string == "machine learning"
 
     def test_fts_query_pickle(self):
-        """_FtsQuery should support pickling."""
-        from _zvec.param import _FtsQuery
+        """_Fts should support pickling."""
+        from _zvec.param import _Fts
 
-        fts = _FtsQuery()
+        fts = _Fts()
         fts.query_string = "+vector search"
         fts.match_string = ""
 
@@ -111,40 +111,40 @@ class TestFtsQueryBinding:
         assert restored.match_string == ""
 
     def test_vector_query_fts_field(self):
-        """_VectorQuery should have fts_query field."""
-        from _zvec.param import _FtsQuery, _VectorQuery
+        """_VectorQuery should have fts field."""
+        from _zvec.param import _Fts, _VectorQuery
 
         vq = _VectorQuery()
-        # fts_query should be None by default (optional)
-        assert vq.fts_query is None
+        # fts should be None by default (optional)
+        assert vq.fts is None
 
-        # set fts_query
-        fts = _FtsQuery()
+        # set fts
+        fts = _Fts()
         fts.query_string = "hello"
-        vq.fts_query = fts
-        assert vq.fts_query is not None
-        assert vq.fts_query.query_string == "hello"
+        vq.fts = fts
+        assert vq.fts is not None
+        assert vq.fts.query_string == "hello"
 
     def test_vector_query_pickle_with_fts(self):
-        """_VectorQuery with fts_query should survive pickling."""
-        from _zvec.param import _FtsQuery, _VectorQuery
+        """_VectorQuery with fts should survive pickling."""
+        from _zvec.param import _Fts, _VectorQuery
 
         vq = _VectorQuery()
         vq.topk = 10
         vq.field_name = "embedding"
-        fts = _FtsQuery()
+        fts = _Fts()
         fts.match_string = "test query"
-        vq.fts_query = fts
+        vq.fts = fts
 
         data = pickle.dumps(vq)
         restored = pickle.loads(data)
         assert restored.topk == 10
         assert restored.field_name == "embedding"
-        assert restored.fts_query is not None
-        assert restored.fts_query.match_string == "test query"
+        assert restored.fts is not None
+        assert restored.fts.match_string == "test query"
 
     def test_vector_query_pickle_without_fts(self):
-        """_VectorQuery without fts_query should survive pickling."""
+        """_VectorQuery without fts should survive pickling."""
         from _zvec.param import _VectorQuery
 
         vq = _VectorQuery()
@@ -155,4 +155,4 @@ class TestFtsQueryBinding:
         restored = pickle.loads(data)
         assert restored.topk == 5
         assert restored.field_name == "vec"
-        assert restored.fts_query is None
+        assert restored.fts is None

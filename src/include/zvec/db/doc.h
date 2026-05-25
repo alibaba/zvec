@@ -364,7 +364,7 @@ using DocPtrMap = std::unordered_map<std::string, Doc::Ptr>;
 
 using WriteResults = std::vector<Status>;
 
-struct FtsQuery {
+struct Fts {
   std::string query_string_;  // FTS query expression (e.g. "+vector -slow
                               // \"exact phrase\"")
   std::string match_string_;  // Natural language match string, tokenized and
@@ -386,7 +386,7 @@ struct VectorQuery {
   std::optional<std::vector<std::string>> output_fields_;
   QueryParams::Ptr query_params_;
 
-  std::optional<FtsQuery> fts_query_;
+  std::optional<Fts> fts_;
 
   Status validate_and_sanitize(const FieldSchema *schema);
 };

@@ -1514,19 +1514,19 @@ Args:
 }
 
 void ZVecPyParams::bind_vector_query(py::module_ &m) {
-  // bind FtsQuery
-  py::class_<FtsQuery>(m, "_FtsQuery")
+  // bind Fts
+  py::class_<Fts>(m, "_Fts")
       .def(py::init<>())
-      .def_readwrite("query_string", &FtsQuery::query_string_)
-      .def_readwrite("match_string", &FtsQuery::match_string_)
+      .def_readwrite("query_string", &Fts::query_string_)
+      .def_readwrite("match_string", &Fts::match_string_)
       .def(py::pickle(
-          [](const FtsQuery &self) {
+          [](const Fts &self) {
             return py::make_tuple(self.query_string_, self.match_string_);
           },
           [](py::tuple t) {
             if (t.size() != 2)
-              throw std::runtime_error("Invalid pickle data for FtsQuery");
-            FtsQuery obj{};
+              throw std::runtime_error("Invalid pickle data for Fts");
+            Fts obj{};
             obj.query_string_ = t[0].cast<std::string>();
             obj.match_string_ = t[1].cast<std::string>();
             return obj;
@@ -1542,18 +1542,18 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
       .def_readwrite("query_params", &VectorQuery::query_params_)
       .def_readwrite("output_fields", &VectorQuery::output_fields_)
       .def_property(
-          "fts_query",
+          "fts",
           [](const VectorQuery &self) -> py::object {
-            if (self.fts_query_.has_value()) {
-              return py::cast(self.fts_query_.value());
+            if (self.fts_.has_value()) {
+              return py::cast(self.fts_.value());
             }
             return py::none();
           },
           [](VectorQuery &self, const py::object &obj) {
             if (obj.is_none()) {
-              self.fts_query_ = std::nullopt;
+              self.fts_ = std::nullopt;
             } else {
-              self.fts_query_ = obj.cast<FtsQuery>();
+              self.fts_ = obj.cast<Fts>();
             }
           })
       // vector
@@ -1768,8 +1768,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                     ? py::cast(self.output_fields_.value())
                     : py::none(),
                 self.query_params_ ? py::cast(self.query_params_) : py::none(),
-                self.fts_query_.has_value() ? py::cast(self.fts_query_.value())
-                                            : py::none());
+                self.fts_.has_value() ? py::cast(self.fts_.value())
+                                      : py::none());
           },
           [](py::tuple t) {
             if (t.size() != 10)
@@ -1791,7 +1791,7 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
               obj.query_params_ = t[8].cast<QueryParams::Ptr>();
             }
             if (!t[9].is_none()) {
-              obj.fts_query_ = t[9].cast<FtsQuery>();
+              obj.fts_ = t[9].cast<Fts>();
             }
             return obj;
           }));

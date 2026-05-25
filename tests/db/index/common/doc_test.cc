@@ -1410,7 +1410,7 @@ TEST(VectorQuery, ValidateAndSanitize) {
     EXPECT_TRUE(s.ok());
   }
 
-  // fts_query_ and vector fields are mutually exclusive
+  // fts_ and vector fields are mutually exclusive
   {
     auto fts_params = std::make_shared<FtsIndexParams>();
     FieldSchema fts_schema("content", DataType::STRING, false, fts_params);
@@ -1422,11 +1422,11 @@ TEST(VectorQuery, ValidateAndSanitize) {
     query.query_vector_ =
         std::string(reinterpret_cast<char *>(query_vector.data()),
                     query_vector.size() * sizeof(float));
-    FtsQuery fts_query_hello;
-    fts_query_hello.query_string_ = "hello";
-    query.fts_query_ = fts_query_hello;
+    Fts fts_hello;
+    fts_hello.query_string_ = "hello";
+    query.fts_ = fts_hello;
 
-    // Should fail: both vector and fts_query_ set
+    // Should fail: both vector and fts_ set
     auto s = query.validate_and_sanitize(&fts_schema);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
@@ -1440,9 +1440,9 @@ TEST(VectorQuery, ValidateAndSanitize) {
     VectorQuery fts_only;
     fts_only.field_name_ = "content";
     fts_only.topk_ = 10;
-    FtsQuery fts_query_test;
-    fts_query_test.query_string_ = "test";
-    fts_only.fts_query_ = fts_query_test;
+    Fts fts_test;
+    fts_test.query_string_ = "test";
+    fts_only.fts_ = fts_test;
     s = fts_only.validate_and_sanitize(&fts_schema);
     EXPECT_TRUE(s.ok());
 

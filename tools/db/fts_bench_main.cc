@@ -45,7 +45,6 @@
 #include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/fts_column/fts_utils.h"
 #include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
-#include "db/index/common/index_filter.h"
 
 namespace {
 
@@ -385,13 +384,10 @@ static int do_reduce(const std::string &src_index_path, uint32_t total_docs) {
     return -1;
   }
 
-  // Run reduce with no-delete filter
-  auto no_delete_filter_ptr =
-      EasyIndexFilter::Create([](uint64_t /*doc_id*/) { return false; });
-  const IndexFilter &no_delete_filter = *no_delete_filter_ptr;
-
+  // Run reduce with no-delete filter (empty bitmap = nothing deleted).
   std::cout << "  Running reduce..." << std::endl;
-  auto reduce_result = reducer.reduce(no_delete_filter);
+  roaring::Roaring no_delete_bitmap;
+  auto reduce_result = reducer.reduce(no_delete_bitmap);
   if (!reduce_result.has_value()) {
     fprintf(stderr, "ERROR: FtsRocksdbReducer reduce failed, status[%s]\n",
             reduce_result.error().message().c_str());
@@ -1257,7 +1253,7 @@ static int do_search() {
 }
 
 // ---------------------------------------------------------------------------
-// SEARCH MODE (db): use zvec Collection::Query(FtsQuery)
+// SEARCH MODE (db): use zvec Collection::Query(Fts)
 // ---------------------------------------------------------------------------
 static int do_search_db() {
   const int num_threads = std::max(1, FLAGS_threads);
@@ -1356,9 +1352,9 @@ static int do_search_db() {
       VectorQuery vq;
       vq.field_name_ = FLAGS_field;
       vq.topk_ = FLAGS_topk;
-      FtsQuery fts_query;
-      fts_query.match_string_ = entry.match_text;
-      vq.fts_query_ = fts_query;
+      Fts fts;
+      fts.match_string_ = entry.match_text;
+      vq.fts_ = fts;
 
       uint64_t elapsed_us = 0;
       std::vector<std::string> retrieved_corpus_ids;
@@ -1374,8 +1370,7 @@ static int do_search_db() {
             retrieved_corpus_ids.push_back(doc_ptr->pk());
           }
         } else {
-          fprintf(stderr,
-                  "ERROR: Thread[%d] FtsQuery failed for query_id[%s]: %s\n",
+          fprintf(stderr, "ERROR: Thread[%d] Fts failed for query_id[%s]: %s\n",
                   thread_id, entry.query_id.c_str(),
                   query_result.error().message().c_str());
           fatal_error.store(true, std::memory_order_relaxed);
@@ -1426,7 +1421,7 @@ static int do_search_db() {
   }
 
   if (fatal_error.load()) {
-    fprintf(stderr, "ERROR: Aborting: FtsQuery failed during search\n");
+    fprintf(stderr, "ERROR: Aborting: Fts failed during search\n");
     return -1;
   }
 

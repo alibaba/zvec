@@ -72,7 +72,7 @@ class SQLEngineImpl : public SQLEngine {
   //! Parse FTS query into a FtsCondInfo (AST + field name).
   Result<FtsCondInfo::Ptr> parse_fts_query(
       CollectionSchema::Ptr collection, const std::string &field_name,
-      const FtsQuery &fts_query, const QueryParams::Ptr &query_params);
+      const Fts &fts, const QueryParams::Ptr &query_params);
 
  private:
   zvec::Profiler::Ptr profiler_;

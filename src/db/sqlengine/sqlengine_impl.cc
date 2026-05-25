@@ -125,10 +125,10 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
 
 Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     CollectionSchema::Ptr collection, const std::string &field_name,
-    const FtsQuery &fts_query, const QueryParams::Ptr &query_params) {
+    const Fts &fts, const QueryParams::Ptr &query_params) {
   // Exactly one of query_string_ or match_string_ must be provided.
-  bool has_query = !fts_query.query_string_.empty();
-  bool has_match_string = !fts_query.match_string_.empty();
+  bool has_query = !fts.query_string_.empty();
+  bool has_match_string = !fts.match_string_.empty();
   if (has_query == has_match_string) {
     return tl::make_unexpected(Status::InvalidArgument(
         "Exactly one of query_string or match_string must be provided"));
@@ -150,7 +150,7 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
   if (has_query) {
     // Structured query expression: parse via ANTLR grammar.
     fts::FtsQueryParser fts_parser;
-    ast = fts_parser.parse(fts_query.query_string_, default_op);
+    ast = fts_parser.parse(fts.query_string_, default_op);
     if (!ast) {
       LOG_ERROR("FTS query parse failed: %s", fts_parser.err_msg().c_str());
       return tl::make_unexpected(Status::InvalidArgument(
@@ -177,7 +177,7 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
           pipeline_result.error().message()));
     }
     auto &pipeline = pipeline_result.value();
-    auto tokens = pipeline->process(fts_query.match_string_);
+    auto tokens = pipeline->process(fts.match_string_);
     if (tokens.empty()) {
       return tl::make_unexpected(
           Status::InvalidArgument("match_string produced no tokens"));
@@ -261,10 +261,10 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
 
   // If the request carries an FTS query, parse it and attach to SelectInfo
   // so that query_analyzer can propagate it to QueryInfo.
-  if (request.fts_query_.has_value()) {
+  if (request.fts_.has_value()) {
     auto fts_result =
-        parse_fts_query(collection, request.field_name_,
-                        request.fts_query_.value(), request.query_params_);
+        parse_fts_query(collection, request.field_name_, request.fts_.value(),
+                        request.query_params_);
     if (!fts_result) {
       return tl::make_unexpected(fts_result.error());
     }

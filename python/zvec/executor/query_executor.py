@@ -20,7 +20,7 @@ from typing import Optional, Union, final
 
 import numpy as np
 from _zvec import _Collection
-from _zvec.param import _FtsQuery, _VectorQuery
+from _zvec.param import _Fts, _VectorQuery
 
 from ..extension import ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
@@ -144,10 +144,10 @@ class QueryExecutor(ABC):
     def _do_build_fts_query(self, query: Query, core_vector: _VectorQuery) -> None:
         """Set FTS query on core_vector if the query has FTS parameters."""
         if query.has_fts():
-            fts = _FtsQuery()
+            fts = _Fts()
             fts.query_string = query.fts.query_string or ""
             fts.match_string = query.fts.match_string or ""
-            core_vector.fts_query = fts
+            core_vector.fts = fts
 
     def _do_build_query_with_vector(
         self, ctx: QueryContext, query: Query, collection: _Collection

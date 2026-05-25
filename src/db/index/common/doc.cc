@@ -1281,20 +1281,20 @@ Status VectorQuery::validate_and_sanitize(const FieldSchema *schema) {
         kMaxOutputFieldSize);
   }
 
-  // Mutual exclusion: fts_query_ and vector fields cannot be set together.
-  if (fts_query_.has_value()) {
+  // Mutual exclusion: fts_ and vector fields cannot be set together.
+  if (fts_.has_value()) {
     if (!query_vector_.empty() || !query_sparse_indices_.empty()) {
       return Status::InvalidArgument(
-          "Invalid query: fts_query and vector query fields "
+          "Invalid query: fts and vector query fields "
           "(query_vector/query_sparse_indices) are mutually exclusive");
     }
   }
 
   if (schema == nullptr) {
-    if (fts_query_.has_value()) {
+    if (fts_.has_value()) {
       // FTS query requires a valid field_name_ that resolves to an FTS field.
       return Status::InvalidArgument(
-          "Invalid query: fts_query requires a valid FTS field, but field[",
+          "Invalid query: fts requires a valid FTS field, but field[",
           field_name_, "] does not exist in the collection");
     }
     if (query_vector_.empty() && query_sparse_indices_.empty()) {
@@ -1309,10 +1309,10 @@ Status VectorQuery::validate_and_sanitize(const FieldSchema *schema) {
   }
 
   // FTS query: field must be an FTS-indexed field.
-  if (fts_query_.has_value()) {
+  if (fts_.has_value()) {
     if (schema->index_type() != IndexType::FTS) {
       return Status::InvalidArgument(
-          "Invalid query: fts_query requires an FTS-indexed field, but field[",
+          "Invalid query: fts requires an FTS-indexed field, but field[",
           field_name_, "] has index type ",
           IndexTypeCodeBook::AsString(schema->index_type()));
     }

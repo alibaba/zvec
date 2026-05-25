@@ -5145,9 +5145,9 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
     VectorQuery vq;
     vq.field_name_ = "content";
     vq.topk_ = 10;
-    FtsQuery fts_q;
+    Fts fts_q;
     fts_q.query_string_ = term;
-    vq.fts_query_ = fts_q;
+    vq.fts_ = fts_q;
     auto r = col->Query(vq);
     EXPECT_TRUE(r.has_value()) << r.error().message();
     return r.has_value() ? r.value() : DocPtrList{};
