@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/mman.h>
 #endif
@@ -323,6 +324,10 @@ class HnswStreamerEntity : public HnswEntity {
 
   inline std::pair<uint32_t, uint32_t> get_upper_neighbor_chunk_loc(
       level_t level, node_id_t id) const {
+    // Shared lock: concurrent readers are fine, but must synchronize with
+    // add_upper_neighbor's exclusive lock to avoid data-race on
+    // slots_.size() inside HnswIndexHashMap.
+    std::shared_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");
@@ -370,12 +375,10 @@ class HnswStreamerEntity : public HnswEntity {
     if (level == 0) {
       return 0;
     }
-    // Serialize concurrent add_upper_neighbor calls: multiple build threads
-    // share the same entity via shared_mutex (shared-lock), so both
-    // upper_neighbor_chunks_ (vector mutation) and
-    // upper_neighbor_index_->insert (hashmap slot assignment) must be protected
-    // from concurrent writes.
-    std::lock_guard<std::mutex> lk(upper_neighbor_mutex_);
+    // Exclusive lock: protects upper_neighbor_chunks_.emplace_back() and
+    // upper_neighbor_index_->insert() from racing with concurrent find()
+    // calls in get_upper_neighbor_chunk_loc().
+    std::unique_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
     Chunk::Pointer chunk;
     uint64_t chunk_offset = UINT64_MAX;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
@@ -558,9 +561,9 @@ class HnswStreamerEntity : public HnswEntity {
  protected:
   IndexStreamer::Stats &stats_;
   std::mutex mutex_{};
-  //! Guards add_upper_neighbor (upper_neighbor_chunks_ + upper_neighbor_index_
-  //! insert) against concurrent build threads holding the shared lock.
-  mutable std::mutex upper_neighbor_mutex_{};
+  //! Guards upper_neighbor_index_ and upper_neighbor_chunks_ against
+  //! concurrent reads (find) and writes (insert/emplace_back).
+  mutable std::shared_mutex upper_neighbor_rw_mutex_{};
   size_t max_index_size_{0UL};
   uint32_t chunk_size_{kDefaultChunkSize};
   uint32_t upper_neighbor_chunk_size_{kDefaultChunkSize};

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <iostream>
+#include <shared_mutex>
 #include <ailego/parallel/lock.h>
 #include <sparsehash/dense_hash_map>
 #include <sparsehash/dense_hash_set>
@@ -286,6 +287,11 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
 
   inline std::pair<uint32_t, uint32_t> get_upper_neighbor_chunk_loc(
       level_t level, node_id_t id) const {
+    // Shared lock: concurrent readers are fine, but must synchronize with
+    // add_upper_neighbor's exclusive lock to avoid data-race on
+    // slots_.size() inside HnswIndexHashMap (the emplace_back in alloc_slot
+    // is not atomic and concurrent find() may see a stale size value).
+    std::shared_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");
@@ -334,6 +340,10 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     if (level == 0) {
       return 0;
     }
+    // Exclusive lock: protects upper_neighbor_chunks_.emplace_back() and
+    // upper_neighbor_index_->insert() from racing with concurrent find()
+    // calls in get_upper_neighbor_chunk_loc().
+    std::unique_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
     Chunk::Pointer chunk;
     uint64_t chunk_offset = -1UL;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
@@ -526,6 +536,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   bool get_vector_enabled_{false};
   bool use_key_info_map_{true};
 
+  mutable std::shared_mutex upper_neighbor_rw_mutex_{};
   NIHashMapPointer upper_neighbor_index_{};
 
   mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_{};
