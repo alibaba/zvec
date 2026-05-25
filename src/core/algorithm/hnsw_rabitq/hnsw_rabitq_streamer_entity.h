@@ -375,25 +375,35 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
                  (chunk_offset / upper_neighbor_size_);
     size_t zero_start = chunk_offset;
     chunk_offset += upper_neighbor_size_ * level;
-    if (ailego_unlikely(!upper_neighbor_index_->insert(id, meta.data))) {
-      LOG_ERROR("HashMap insert value failed");
-      return IndexError_Runtime;
-    }
 
+    // IMPORTANT: order matters here.
+    // 1) resize so the chunk's data_size covers the new region.
+    // 2) zero-fill the new region: storage backends like BufferStorage do
+    //    NOT zero on resize -- only metadata is updated, and the underlying
+    //    page may contain stale content from a previously-evicted page.
+    //    Without this step, NeighborsHeader::neighbor_cnt is garbage and
+    //    select_entry_point()/search_neighbors() iterate over garbage
+    //    node_ids, eventually triggering find()'s assertion in
+    //    get_upper_neighbor_chunk_loc() at line 291.
+    // 3) ONLY THEN publish the entry to upper_neighbor_index_, so that any
+    //    concurrent reader that finds this id already sees a properly
+    //    zeroed upper-neighbor slot.
     if (ailego_unlikely(chunk->resize(chunk_offset) != chunk_offset)) {
       LOG_ERROR("Chunk resize to %zu failed", (size_t)chunk_offset);
       return IndexError_Runtime;
     }
 
-    // Zero-initialize the new upper neighbor region to ensure
-    // NeighborsHeader::neighbor_cnt is 0 before update_neighbors() writes it.
-    // Without this, the entry point node (whose add_node returns early) would
-    // have uninitialized neighbor data, causing garbage reads during traversal.
-    char zeros[neighbors_size];
-    memset(zeros, 0, neighbors_size);
-    if (ailego_unlikely(chunk->write(zero_start, zeros, neighbors_size) !=
-                        neighbors_size)) {
+    // Use std::vector instead of a VLA: VLAs are a GNU extension and may
+    // produce different codegen / be rejected under clang/MSVC.
+    std::vector<char> zeros(neighbors_size, 0);
+    if (ailego_unlikely(chunk->write(zero_start, zeros.data(),
+                                     neighbors_size) != neighbors_size)) {
       LOG_ERROR("Chunk write zeros failed");
+      return IndexError_Runtime;
+    }
+
+    if (ailego_unlikely(!upper_neighbor_index_->insert(id, meta.data))) {
+      LOG_ERROR("HashMap insert value failed");
       return IndexError_Runtime;
     }
 
