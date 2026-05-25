@@ -2677,6 +2677,95 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     std::cout << "check success 2" << std::endl;
   };
 
+  auto func_ivf = [&](QuantizeType quantize_type = QuantizeType::UNDEFINED) {
+    FileHelper::RemoveDirectory(col_path);
+
+    int doc_count = 1000;
+
+    // create empty collection
+    CollectionSchema::Ptr schema;
+    schema = TestHelper::CreateSchemaWithVectorIndex(
+        false, "demo",
+        std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false, quantize_type));
+    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(
+        col_path, *schema, options, 0, doc_count, false);
+
+    auto check_doc = [&]() {
+      for (int i = 0; i < doc_count; i++) {
+        auto expect_doc = TestHelper::CreateDoc(i, *schema);
+        auto result = collection->Fetch({expect_doc.pk()});
+        ASSERT_TRUE(result.has_value());
+        ASSERT_EQ(result.value().size(), 1);
+        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+        auto doc = result.value()[expect_doc.pk()];
+        if (doc == nullptr) {
+          std::cout << "doc is null, pk: " << expect_doc.pk() << std::endl;
+        }
+        ASSERT_NE(doc, nullptr);
+        if (*doc != expect_doc) {
+          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
+          std::cout << "expect_doc:" << expect_doc.to_detail_string()
+                    << std::endl;
+        }
+        ASSERT_EQ(*doc, expect_doc);
+      }
+    };
+
+    check_doc();
+    std::cout << "check success 1" << std::endl;
+
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
+
+    auto s = collection->Optimize();
+    ASSERT_TRUE(s.ok());
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+    int loop_count = 10;
+    uint64_t start_doc_id = doc_count;
+    for (int i = 0; i < loop_count; i++) {
+      std::cout << "loop: " << i << " begin" << std::endl;
+
+      s = TestHelper::CollectionInsertDoc(collection, start_doc_id,
+                                          start_doc_id + 1);
+      ASSERT_TRUE(s.ok());
+
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, doc_count + i + 1);
+      ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"],
+                      1.0 * (doc_count + i) / (doc_count + i + 1));
+
+
+      s = collection->Optimize();
+      if (!s.ok()) {
+        std::cout << "optimize failed: " << s.message() << std::endl;
+      }
+      ASSERT_TRUE(s.ok());
+
+      start_doc_id += 1;
+
+      std::cout << "loop: " << i << " end" << std::endl;
+    }
+
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count + loop_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+    doc_count += loop_count;
+    check_doc();
+    std::cout << "check success 2" << std::endl;
+  };
+
+  // unquantized
+  func_ivf();
+  // quantized
+  func_ivf(QuantizeType::FP16);
+
   // unquantized
   func();
   // quantized
