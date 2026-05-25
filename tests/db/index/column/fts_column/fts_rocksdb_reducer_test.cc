@@ -142,6 +142,9 @@ static FtsSegmentStats MakeSegmentStats(uint64_t min_doc_id,
   FtsSegmentStats stats;
   stats.min_doc_id = min_doc_id;
   stats.max_doc_id = max_doc_id;
+  // Tests build fresh source segments where local doc_id space is dense over
+  // [min_doc_id, max_doc_id], so doc_count is the range size.
+  stats.doc_count = max_doc_id - min_doc_id + 1;
   return stats;
 }
 
@@ -165,26 +168,23 @@ static void InsertDocs(
 }
 
 // ============================================================
-// Helper: build a no-op filter (no documents deleted)
+// Helper: build a roaring bitmap of deleted positions in input scan order.
+// In these tests segments are contiguous starting at min_doc_id=0 with
+// doc_count == range, so "scan position" of a global doc_id equals the
+// global value itself.  Kept under the original name for callsite stability.
 // ============================================================
 
-static zvec::IndexFilter::Ptr NoDeleteFilter() {
-  return zvec::EasyIndexFilter::Create(
-      [](uint64_t /*doc_id*/) { return false; });
+static roaring::Roaring NoDeleteFilter() {
+  return roaring::Roaring{};
 }
 
-// ============================================================
-// Helper: build a filter that deletes specific global doc_ids
-// ============================================================
-
-static zvec::IndexFilter::Ptr DeleteFilter(
-    const std::vector<uint64_t> &deleted_doc_ids) {
-  return zvec::EasyIndexFilter::Create([deleted_doc_ids](uint64_t doc_id) {
-    for (uint64_t deleted : deleted_doc_ids) {
-      if (doc_id == deleted) return true;
-    }
-    return false;
-  });
+static roaring::Roaring DeleteFilter(
+    std::initializer_list<uint32_t> deleted_scan_positions) {
+  roaring::Roaring r;
+  for (uint32_t p : deleted_scan_positions) {
+    r.add(p);
+  }
+  return r;
 }
 
 // ============================================================
@@ -336,6 +336,50 @@ TEST_F(FtsRocksdbReducerTest, FeedFailsWithNonConsecutiveDocIds) {
                    .has_value());
 }
 
+TEST_F(FtsRocksdbReducerTest, FeedAcceptsEmptySegmentAsNoop) {
+  // Empty segments (doc_count == 0) silently contribute nothing — the
+  // surrounding non-empty segments still get their contiguity validated
+  // against each other, as if the empty one wasn't there.
+  auto indexer0 = MakeSrc0Indexer();
+  InsertDocs(indexer0.get(), {{0, "hello world"}, {1, "foo"}, {2, "bar"}});
+  auto indexer1 = MakeSrc1Indexer();
+  InsertDocs(indexer1.get(), {{0, "baz"}});
+
+  FtsRocksdbReducer reducer = MakeReducer();
+
+  FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
+  ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
+                  .has_value());
+
+  // Empty middle segment — accepted, doesn't break contiguity.
+  FtsSegmentStats empty_stats;
+  empty_stats.min_doc_id = 0;
+  empty_stats.max_doc_id = 0;
+  empty_stats.doc_count = 0;
+  EXPECT_TRUE(
+      reducer.feed(empty_stats, &src1_db_, src1_postings_, src1_positions_)
+          .has_value());
+
+  // src1 must still start at stats0.max_doc_id + 1 = 3, not be shifted by
+  // the (skipped) empty segment.
+  FtsSegmentStats stats1 = MakeSegmentStats(3, 3);
+  ASSERT_TRUE(reducer.feed(stats1, &src1_db_, src1_postings_, src1_positions_)
+                  .has_value());
+
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
+
+  auto reader = MakeDstReader();
+  std::vector<FtsResult> results;
+  ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
+  EXPECT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
+
+  results.clear();
+  ASSERT_TRUE(search_str_ok(*reader, "baz", 10, &results));
+  EXPECT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 3ull);
+}
+
 // ============================================================
 // Single segment: basic merge without deletes
 // ============================================================
@@ -350,7 +394,7 @@ TEST_F(FtsRocksdbReducerTest, SingleSegmentMergeNoDeletes) {
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // Verify: search "hello" should return doc_ids 0 and 1
   auto reader = MakeDstReader();
@@ -389,16 +433,17 @@ TEST_F(FtsRocksdbReducerTest, SingleSegmentMergeWithDeletes) {
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
 
-  // Delete doc_id 0 (global)
-  ASSERT_TRUE(reducer.reduce(*DeleteFilter({0})).has_value());
+  // Delete doc_id 0 (global).  After reduce, the dst segment has dense local
+  // doc_ids; surviving global {1,2} get dense ranks {0,1}.
+  ASSERT_TRUE(reducer.reduce(DeleteFilter({0})).has_value());
 
   auto reader = MakeDstReader();
   std::vector<FtsResult> results;
 
-  // "hello" should only return doc_id 1 (doc_id 0 was deleted)
+  // "hello" survived in global doc 1 → dense doc_id 0.
   ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
   EXPECT_EQ(results.size(), 1u);
-  EXPECT_EQ(results[0].doc_id, 1ull);
+  EXPECT_EQ(results[0].doc_id, 0ull);
 
   // "world" should return nothing (its only document was deleted)
   results.clear();
@@ -430,7 +475,7 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDocIdRemapping) {
   ASSERT_TRUE(reducer.feed(stats1, &src1_db_, src1_postings_, src1_positions_)
                   .has_value());
 
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // Dst segment starts at GLOBAL doc_id 0 (covers 0..3); reader returns
   // GLOBAL doc_ids by adding start_doc_id back to local doc_ids stored in
@@ -489,22 +534,23 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentsMergeDeleteFromSecondSegment) {
   ASSERT_TRUE(reducer.feed(stats1, &src1_db_, src1_postings_, src1_positions_)
                   .has_value());
 
-  // Delete global doc_id 2 (first doc of segment 1, local 0)
-  ASSERT_TRUE(reducer.reduce(*DeleteFilter({2})).has_value());
+  // Delete global doc_id 2 (first doc of segment 1, local 0).  Survivors in
+  // input scan order are global {0, 1, 3}, getting dense ranks {0, 1, 2}.
+  ASSERT_TRUE(reducer.reduce(DeleteFilter({2})).has_value());
 
   auto reader = MakeDstReader();
   std::vector<FtsResult> results;
 
-  // "hello" should only return global doc_id 0 (doc_id 2 was deleted)
+  // "hello" survived in global doc 0 → dense rank 0.
   ASSERT_TRUE(search_str_ok(*reader, "hello", 10, &results));
   EXPECT_EQ(results.size(), 1u);
   EXPECT_EQ(results[0].doc_id, 0ull);
 
-  // "qux" (global doc_id 3) should still be present
+  // "qux" was global doc 3 → dense rank 2.
   results.clear();
   ASSERT_TRUE(search_str_ok(*reader, "qux", 10, &results));
   EXPECT_EQ(results.size(), 1u);
-  EXPECT_EQ(results[0].doc_id, 3ull);
+  EXPECT_EQ(results[0].doc_id, 2ull);
 }
 
 // ============================================================
@@ -520,7 +566,7 @@ TEST_F(FtsRocksdbReducerTest, MergedResultsHavePositiveScores) {
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   auto reader = MakeDstReader();
   std::vector<FtsResult> results;
@@ -539,7 +585,7 @@ TEST_F(FtsRocksdbReducerTest, MergedResultsHavePositiveScores) {
 
 TEST_F(FtsRocksdbReducerTest, ReduceFailsBeforeFeed) {
   FtsRocksdbReducer reducer = MakeReducer();
-  EXPECT_FALSE(reducer.reduce(*NoDeleteFilter()).has_value());
+  EXPECT_FALSE(reducer.reduce(NoDeleteFilter()).has_value());
 }
 
 // ============================================================
@@ -555,11 +601,11 @@ TEST_F(FtsRocksdbReducerTest, CleanupResetsState) {
   FtsSegmentStats stats0 = MakeSegmentStats(0, 1);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
   ASSERT_TRUE(reducer.cleanup().has_value());
 
   // After cleanup, reduce() should fail (no segments fed)
-  EXPECT_FALSE(reducer.reduce(*NoDeleteFilter()).has_value());
+  EXPECT_FALSE(reducer.reduce(NoDeleteFilter()).has_value());
 }
 
 // ============================================================
@@ -575,7 +621,7 @@ TEST_F(FtsRocksdbReducerTest, ReduceProducesBitPackedFormat) {
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // Verify that postings in destination CF are in BitPacked format
   std::string raw_data;
@@ -627,7 +673,7 @@ TEST_F(FtsRocksdbReducerTest, TwoSegmentMergeBitPackedCorrectness) {
   ASSERT_TRUE(reducer.feed(stats1, &src1_db_, src1_postings_, src1_positions_)
                   .has_value());
 
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // Verify "hello" postings are BitPacked and contain both doc_ids
   std::string raw_data;
@@ -688,7 +734,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
                     .feed(MakeSegmentStats(0, 2), &src0_db_, src0_postings_,
                           src0_positions_)
                     .has_value());
-    ASSERT_TRUE(reducer0.reduce(*NoDeleteFilter()).has_value());
+    ASSERT_TRUE(reducer0.reduce(NoDeleteFilter()).has_value());
 
     // Verify mid0 postings are in BitPacked format
     std::string raw;
@@ -721,7 +767,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
                     .feed(MakeSegmentStats(0, 1), &src1_db_, src1_postings_,
                           src1_positions_)
                     .has_value());
-    ASSERT_TRUE(reducer1.reduce(*NoDeleteFilter()).has_value());
+    ASSERT_TRUE(reducer1.reduce(NoDeleteFilter()).has_value());
 
     // Verify mid1 postings are in BitPacked format
     std::string raw;
@@ -755,7 +801,7 @@ TEST_F(FtsRocksdbReducerTest, MergeTwoBitPackedSegments) {
       final_reducer
           .feed(MakeSegmentStats(3, 4), &mid1_db, mid1_postings, mid1_positions)
           .has_value());
-  ASSERT_TRUE(final_reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(final_reducer.reduce(NoDeleteFilter()).has_value());
 
   mid0_db.close();
   mid1_db.close();
@@ -881,7 +927,7 @@ TEST_F(FtsRocksdbReducerTest, ReducerHandlesBitpackedConvertedSrcSegments) {
                   .feed(MakeSegmentStats(3, 4), &src1_db_, src1_postings_,
                         src1_positions_)
                   .has_value());
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // ----- Verify dst can be queried -----
   // After reduce, dst postings get re-written to BitPacked again by the
@@ -949,7 +995,7 @@ TEST_F(FtsRocksdbReducerTest, ReduceWithEmptySideCFsProducesBitPacked) {
                   .feed(MakeSegmentStats(0, 2), &src0_db_, src0_postings_,
                         src0_positions_)
                   .has_value());
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // Destination postings_cf must be BitPacked and carry inline tf/doc_len
   // recovered solely from the source BitPacked payloads.
@@ -1020,7 +1066,7 @@ TEST_F(FtsRocksdbReducerTest, MultiSegmentBM25StatsAreAccumulatedCorrectly) {
                   .feed(MakeSegmentStats(2, 3), &src1_db_, src1_postings_,
                         src1_positions_)
                   .has_value());
-  ASSERT_TRUE(reducer.reduce(*NoDeleteFilter()).has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
 
   // 4 surviving docs across both segments; 5 + 5 = 10 tokens total.
   std::string total_docs_raw, total_tokens_raw;

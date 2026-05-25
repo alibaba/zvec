@@ -35,10 +35,18 @@ struct FtsQueryParams {
   std::vector<uint64_t> candidate_ids;
 };
 
-/*! Per-segment statistics needed by the FTS reducer for doc_id remapping. */
+/*! Per-segment statistics needed by the FTS reducer for doc_id remapping.
+ *  - min_doc_id / max_doc_id: GLOBAL doc_id range used by the delete filter
+ *    (filter.is_filtered() takes a global doc_id).
+ *  - doc_count: number of FTS LOCAL doc_ids in the source segment; the posting
+ *    list domain is [0, doc_count).  For fresh (non-merged) segments this
+ *    equals max_doc_id - min_doc_id + 1, and the local-to-global mapping is
+ *    `global = min_doc_id + local`.
+ */
 struct FtsSegmentStats {
   uint64_t min_doc_id{0};
   uint64_t max_doc_id{0};
+  uint64_t doc_count{0};
 };
 
 struct FtsIndexParams {

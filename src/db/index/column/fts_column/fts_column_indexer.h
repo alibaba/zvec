@@ -172,6 +172,18 @@ class FtsColumnIndexer {
     return total_tokens_.load(std::memory_order_relaxed);
   }
 
+  // Accessors used by the compaction-time FTS reducer to feed source segments
+  // (postings + positions) without going through the higher-level search path.
+  RocksdbContext *ctx() const {
+    return ctx_;
+  }
+  rocksdb::ColumnFamilyHandle *postings_cf() const {
+    return postings_cf_;
+  }
+  rocksdb::ColumnFamilyHandle *positions_cf() const {
+    return positions_cf_;
+  }
+
  private:
   // --- Iterator tree construction (search internals) ---
   Result<DocIteratorPtr> build_iterator(const FtsAstNode &node) const;

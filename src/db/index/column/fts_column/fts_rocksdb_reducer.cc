@@ -22,59 +22,58 @@
 
 namespace zvec::fts {
 
+namespace {
+
+// Dense survivor index in [0, effective_total_docs), or kFilteredRank if
+// scan_pos is in the delete bitmap.  Roaring rank(x) counts elements ≤ x;
+// for an alive scan_pos that's exactly the number of deletes strictly
+// before it, so `scan_pos - rank(scan_pos)` is its survivor rank.
+constexpr uint32_t kFilteredRank = std::numeric_limits<uint32_t>::max();
+
+inline uint32_t dense_rank(uint64_t scan_pos, const roaring::Roaring &bitmap) {
+  const uint32_t pos32 = static_cast<uint32_t>(scan_pos);
+  if (bitmap.contains(pos32)) {
+    return kFilteredRank;
+  }
+  return static_cast<uint32_t>(scan_pos - bitmap.rank(pos32));
+}
+
+}  // namespace
+
 // ============================================================
 // Design notes
 // ============================================================
 //
-// Every immutable FTS segment stores its data in three CFs:
-//   - postings_cf   : term -> BitPacked posting list (inline
-//                     tf / doc_len / per-block max_score)
-//   - positions_cf  : term\0doc_id -> varint delta-encoded positions
-//                     (needed for phrase queries)
-//   - stat_cf       : field_name_total_docs / field_name_total_tokens
+// Immutable FTS segment CFs:
+//   - postings_cf   : term -> BitPacked posting (inline tf/doc_len/max_score)
+//   - positions_cf  : term\0doc_id -> varint delta positions (phrase queries)
+//   - stat_cf       : field_total_docs / field_total_tokens
 //
-// The reducer performs a multi-way merge of N source segments into one
-// destination segment.  It iterates each source segment's BitPacked
-// postings_cf, decodes (doc_id, tf, doc_len) triples directly from the
-// inline payloads, applies the delete filter, remaps doc_ids to the new
-// segment's local range, and emits a single merged BitPacked posting list
-// per term into dst_postings_cf.  positions_cf is merged key-by-key for
-// phrase support.  stat_cf is recomputed from the surviving docs.
+// Multi-way merge N source segments into one destination, in two passes.
+// All input postings must be BitPacked; output is BitPacked too — no
+// Roaring intermediate, no side CFs ($TF/$MAX_TF/$DOC_LEN) read or written.
 //
-// All input postings_cf values must be in BitPacked format.
+// Doc id spaces:
+//   SRC LOCAL   ∈ [0, stats.doc_count): value stored in src postings.
+//   SCAN POS    ∈ [0, Σ stats.doc_count): feed-order concatenated position;
+//               same id space as SegmentHelper::delete_row_id_bitmap.
+//               scan_pos = scan_offset_per_seg_[seg] + local
+//   DST LOCAL   ∈ [0, effective_total_docs_): dense survivor rank.
+//               Equals the row index ReduceScalar writes into the new
+//               segment's densified forward storage, so post-merge fetch()
+//               needs no translation.
+//               dst_local = scan_pos - bitmap.rank(scan_pos)
 //
-// doc_id encoding contract (aligned with InvertRocksdbStreamer2):
-// every src segment's RocksDB stores LOCAL doc_ids, i.e.
-//   local_doc_id = global_doc_id - segment_stats[i].min_doc_id
-// so that values fit into uint32_t and reduce_* logic can safely
-// reconstruct global_doc_id via
-//   global_doc_id = stats.min_doc_id + local_doc_id
-// and remap into the dst segment local space via
-//   new_local_doc_id = global_doc_id - dst_min_doc_id_.
-// FtsColumnIndexer::insert() is responsible for storing local doc_id
-// (see start_doc_id_ in FtsColumnIndexer).
+// Pass 1 (collect_effective_stats): no per-doc materialization.
+//   - effective_total_docs_   = Σ stats.doc_count - bitmap.cardinality()
+//   - effective_total_tokens_ = sum of survivors' inline doc_len
+//     (per-segment dedup uses vector<bool>, ~125 KB / 1M docs)
 //
-// Two-pass streaming design:
-//
-// Pass 1 (collect_effective_stats): iterates all source posting lists to
-// compute effective_total_docs_ and effective_total_tokens_ WITHOUT
-// storing any PostingEntry.
-// - effective_total_docs_ is derived from each segment's
-//   [min_doc_id, max_doc_id] range minus filtered docs.
-// - effective_total_tokens_ is accumulated from inline doc_len payloads
-//   of surviving docs (empty docs contribute 0).
-// - Per-segment seen-doc dedup uses vector<bool> instead of
-//   unordered_set<uint32_t> (~125KB vs ~40MB per million docs).
-//
-// Pass 2 (merge_and_flush_postings): opens N RocksDB iterators (one per
-// source segment) and performs a multi-way merge by term in lexicographic
-// order.  For each term, entries from all segments are aggregated into a
-// temporary vector, immediately encoded as BitPacked and put to
-// dst_postings_cf, then the vector is cleared.  Peak memory is bounded
-// by the single largest term's entries rather than all terms combined.
-//
-// No Roaring intermediate format is involved, and no $TF/$MAX_TF/$DOC_LEN
-// side CF is read or written.
+// Pass 2 (merge_and_flush_postings): N RocksDB iterators, term-by-term
+// multi-way merge in lex order; per-term entries are encoded + put
+// immediately so peak memory is one term's entries.  dst_local resolved
+// on the fly via dense_rank(scan_pos), sharing the bitmap with the
+// vector reducer.
 
 // ============================================================
 // Public interface
@@ -105,6 +104,7 @@ Result<void> FtsRocksdbReducer::cleanup() {
   src_ctxs_.clear();
   src_postings_cfs_.clear();
   src_positions_cfs_.clear();
+  scan_offset_per_seg_.clear();
   num_segments_ = 0;
   state_ = STATE_UNINITED;
   return {};
@@ -124,16 +124,21 @@ Result<void> FtsRocksdbReducer::feed(
         "FtsRocksdbReducer: null source CF. field=", field_name_));
   }
 
-  // Track global min_doc_id from the first segment; require consecutive
-  // doc_id ranges across segments so that downstream remap is safe.
-  if (segment_stats_.empty()) {
-    min_doc_id_ = segment_stats.min_doc_id;
-  } else {
-    if (segment_stats.min_doc_id != segment_stats_.back().max_doc_id + 1) {
-      return tl::make_unexpected(Status::InternalError(
-          "FtsRocksdbReducer: segments not in consecutive doc_id order. field=",
-          field_name_));
-    }
+  // doc_count == 0 segments contribute nothing; mark state and skip so the
+  // contiguity check and scan_offset cumsum only see non-empty inputs (the
+  // matching FilterRecordBatch / RowIdFilter id space behaves the same way).
+  if (segment_stats.doc_count == 0) {
+    state_ = STATE_FEED;
+    return {};
+  }
+
+  // Require consecutive global doc_id ranges between non-empty segments so
+  // the shared delete_row_id_bitmap stays aligned with input scan order.
+  if (!segment_stats_.empty() &&
+      segment_stats.min_doc_id != segment_stats_.back().max_doc_id + 1) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsRocksdbReducer: segments not in consecutive doc_id order. field=",
+        field_name_));
   }
 
   segment_stats_.emplace_back(std::move(segment_stats));
@@ -146,7 +151,8 @@ Result<void> FtsRocksdbReducer::feed(
   return {};
 }
 
-Result<void> FtsRocksdbReducer::reduce(const IndexFilter &filter) {
+Result<void> FtsRocksdbReducer::reduce(
+    const roaring::Roaring &delete_row_id_bitmap) {
   if (state_ != STATE_FEED || num_segments_ == 0) {
     return tl::make_unexpected(Status::InternalError(
         "FtsRocksdbReducer: call feed() before reduce(). field=", field_name_));
@@ -155,23 +161,29 @@ Result<void> FtsRocksdbReducer::reduce(const IndexFilter &filter) {
   effective_total_docs_ = 0;
   effective_total_tokens_ = 0;
 
-  // Phase 1: Streaming per-term merge across all source segments.  Decodes
-  // BitPacked postings inline, applies the filter, remaps doc_ids, and
-  // emits one merged BitPacked posting list per term to dst_postings_cf.
-  // Also accumulates effective_total_docs_ / effective_total_tokens_ from
-  // inline doc_len payloads (each surviving doc counted once across all
-  // its terms within a segment).
-  auto ret = reduce_postings(filter);
+  // Precompute scan_offset = cumulative doc_count.  Combined with the
+  // bitmap this lets dense_rank() resolve any (seg, local) in
+  // O(roaring::rank) without a per-doc table.
+  scan_offset_per_seg_.assign(num_segments_, 0);
+  uint64_t cumulative = 0;
+  for (uint32_t seg = 0; seg < num_segments_; ++seg) {
+    scan_offset_per_seg_[seg] = cumulative;
+    cumulative += segment_stats_[seg].doc_count;
+  }
+
+  // Phase 1: streaming per-term BitPacked merge into dst_postings_cf;
+  // accumulates effective_total_docs_ / effective_total_tokens_.
+  auto ret = reduce_postings(delete_row_id_bitmap);
   if (!ret) {
     LOG_ERROR("FtsRocksdbReducer: reduce_postings failed. field[%s]",
               field_name_.c_str());
     return ret;
   }
 
-  // Phase 2: Merge positions CF per segment for phrase query support.
+  // Phase 2: per-segment positions CF remap (phrase queries).
   for (uint32_t segment_index = 0; segment_index < num_segments_;
        ++segment_index) {
-    ret = reduce_positions(segment_index, filter);
+    ret = reduce_positions(segment_index, delete_row_id_bitmap);
     if (!ret) {
       LOG_ERROR(
           "FtsRocksdbReducer: reduce_positions failed. segment[%u] field[%s]",
@@ -180,9 +192,8 @@ Result<void> FtsRocksdbReducer::reduce(const IndexFilter &filter) {
     }
   }
 
-  // Phase 3: Persist effective stats so search-time IDF / avgdl matches the
-  // encode-time block_max_score (single source of truth, derived from the
-  // documents that actually survived the filter).
+  // Phase 3: persist effective stats — same source of truth used by Phase 1
+  // when encoding block_max_score, so search-time IDF/avgdl stays consistent.
   ret = flush_stat(effective_total_docs_, effective_total_tokens_);
   if (!ret) {
     LOG_ERROR("FtsRocksdbReducer: flush_stat failed. field[%s]",
@@ -200,55 +211,51 @@ Result<void> FtsRocksdbReducer::reduce(const IndexFilter &filter) {
 }
 
 // ============================================================
-// Private: streaming postings merge (single stage, BitPacked in/out)
+// Private
 // ============================================================
 
-Result<void> FtsRocksdbReducer::reduce_postings(const IndexFilter &filter) {
-  // Pass 1: collect effective stats (no PostingEntry storage).
-  auto ret = collect_effective_stats(filter);
+Result<void> FtsRocksdbReducer::reduce_postings(
+    const roaring::Roaring &delete_row_id_bitmap) {
+  auto ret = collect_effective_stats(delete_row_id_bitmap);
   if (!ret) {
     return ret;
   }
-
-  // Initialize BM25 scorer with final effective stats.
+  // Scorer seeded with final effective stats; used by Pass 2 to compute
+  // block_max_score consistent with the values flushed to stat_cf.
   scorer_ = std::make_shared<BM25Scorer>();
   scorer_->update_stats(effective_total_docs_, effective_total_tokens_);
-
-  // Pass 2: multi-way merge + streaming encode/flush.
-  return merge_and_flush_postings(filter);
+  return merge_and_flush_postings(delete_row_id_bitmap);
 }
 
-// ============================================================
-// Private: Pass 1 — collect effective stats without storing entries
-// ============================================================
-
 Result<void> FtsRocksdbReducer::collect_effective_stats(
-    const IndexFilter &filter) {
+    const roaring::Roaring &delete_row_id_bitmap) {
   effective_total_docs_ = 0;
   effective_total_tokens_ = 0;
 
+  // effective_total_docs = Σ doc_count - |deletes|.  Bitmap covers scan
+  // positions [0, Σ doc_count), so cardinality() is the exact filtered
+  // count.  Includes empty docs, matching mutable indexer semantics.
+  uint64_t total_input_docs = 0;
+  for (const auto &s : segment_stats_) {
+    total_input_docs += s.doc_count;
+  }
+  const uint64_t total_deletes = delete_row_id_bitmap.cardinality();
+  if (total_deletes > total_input_docs) {
+    return tl::make_unexpected(
+        Status::InternalError("FtsRocksdbReducer: delete bitmap cardinality[",
+                              total_deletes, "] exceeds total input docs[",
+                              total_input_docs, "]. field=", field_name_));
+  }
+  effective_total_docs_ = total_input_docs - total_deletes;
+
+  // effective_total_tokens_: walk every posting, sum doc_len once per
+  // surviving local_doc_id.  Per-segment vector<bool> dedup (~125 KB / 1M
+  // docs) is required because immutable segments have no per-doc doc_len
+  // column to read from directly.
   for (uint32_t seg = 0; seg < num_segments_; ++seg) {
-    const auto &stats = segment_stats_[seg];
-    const uint64_t seg_doc_count = stats.max_doc_id - stats.min_doc_id + 1;
-
-    // ---------- effective_total_docs_: from doc_id range - filtered ----------
-    // Count how many docs in [min_doc_id, max_doc_id] survive the filter.
-    // This includes empty docs (no tokens), matching mutable indexer semantics
-    // where total_docs_++ on every insert regardless of doc_len.
-    uint64_t seg_filtered = 0;
-    for (uint64_t gid = stats.min_doc_id; gid <= stats.max_doc_id; ++gid) {
-      if (filter.is_filtered(gid)) {
-        ++seg_filtered;
-      }
-    }
-    effective_total_docs_ += (seg_doc_count - seg_filtered);
-
-    // ---------- effective_total_tokens_: from posting inline doc_len
-    // ---------- Use vector<bool> for per-segment seen-doc dedup (local_doc_id
-    // is a contiguous small integer).  Memory: ~125KB per million docs vs ~40MB
-    // for unordered_set<uint32_t>.
-    const uint64_t local_range = seg_doc_count;
-    std::vector<bool> seen_docs(local_range, false);
+    const uint64_t seg_doc_count = segment_stats_[seg].doc_count;
+    const uint64_t scan_offset = scan_offset_per_seg_[seg];
+    std::vector<bool> seen_docs(seg_doc_count, false);
 
     auto *src_cf = src_postings_cfs_[seg];
     auto iter = std::unique_ptr<rocksdb::Iterator>(
@@ -274,10 +281,9 @@ Result<void> FtsRocksdbReducer::collect_effective_stats(
 
       uint32_t local_doc_id = bp_iter.next_doc();
       while (local_doc_id != BitPackedPostingIterator::NO_MORE_DOCS) {
-        const uint64_t global_doc_id =
-            stats.min_doc_id + static_cast<uint64_t>(local_doc_id);
-        if (!filter.is_filtered(global_doc_id)) {
-          if (local_doc_id < local_range && !seen_docs[local_doc_id]) {
+        if (local_doc_id < seg_doc_count && !seen_docs[local_doc_id]) {
+          const uint64_t scan_pos = scan_offset + local_doc_id;
+          if (!delete_row_id_bitmap.contains(static_cast<uint32_t>(scan_pos))) {
             seen_docs[local_doc_id] = true;
             effective_total_tokens_ += bp_iter.doc_len();
           }
@@ -296,12 +302,8 @@ Result<void> FtsRocksdbReducer::collect_effective_stats(
   return {};
 }
 
-// ============================================================
-// Private: Pass 2 — multi-way merge + streaming encode/flush
-// ============================================================
-
 Result<void> FtsRocksdbReducer::merge_and_flush_postings(
-    const IndexFilter &filter) {
+    const roaring::Roaring &delete_row_id_bitmap) {
   struct PostingEntry {
     uint32_t doc_id;
     uint32_t tf;
@@ -328,7 +330,7 @@ Result<void> FtsRocksdbReducer::merge_and_flush_postings(
   std::vector<uint32_t> doc_ids_buf, tfs_buf, doc_lens_buf;
 
   while (true) {
-    // Find the lexicographically smallest current term across all cursors.
+    // Pick the lex-smallest current term across cursors.
     std::string min_term;
     bool found = false;
     for (auto &c : cursors) {
@@ -342,11 +344,10 @@ Result<void> FtsRocksdbReducer::merge_and_flush_postings(
       }
     }
     if (!found) {
-      break;  // All iterators exhausted.
+      break;
     }
 
-    // Collect entries for min_term from every cursor that has it.
-    // Process cursors in segment order to maintain doc_id ascending order.
+    // Cursors visited in segment order ⇒ dense ranks emerge ascending.
     term_entries.clear();
     for (auto &c : cursors) {
       if (!c.iter->Valid()) {
@@ -372,26 +373,28 @@ Result<void> FtsRocksdbReducer::merge_and_flush_postings(
       }
 
       term_entries.reserve(term_entries.size() + bp_iter.cost());
+      const uint64_t scan_offset = scan_offset_per_seg_[c.segment_index];
+      const uint64_t seg_doc_count = c.stats->doc_count;
       uint32_t local_doc_id = bp_iter.next_doc();
       while (local_doc_id != BitPackedPostingIterator::NO_MORE_DOCS) {
-        const uint64_t global_doc_id =
-            c.stats->min_doc_id + static_cast<uint64_t>(local_doc_id);
-        if (!filter.is_filtered(global_doc_id)) {
+        if (local_doc_id < seg_doc_count) {
           const uint32_t new_doc_id =
-              static_cast<uint32_t>(global_doc_id - min_doc_id_);
-          term_entries.push_back(
-              {new_doc_id, bp_iter.term_freq(), bp_iter.doc_len()});
+              dense_rank(scan_offset + local_doc_id, delete_row_id_bitmap);
+          if (new_doc_id != kFilteredRank) {
+            term_entries.push_back(
+                {new_doc_id, bp_iter.term_freq(), bp_iter.doc_len()});
+          }
         }
         local_doc_id = bp_iter.next_doc();
       }
-      c.iter->Next();  // Advance past this term in this cursor.
+      c.iter->Next();
     }
 
     if (term_entries.empty()) {
       continue;
     }
 
-    // Encode and put immediately — peak memory is one term's entries.
+    // Encode + put per term ⇒ peak memory is one term's entries.
     doc_ids_buf.clear();
     tfs_buf.clear();
     doc_lens_buf.clear();
@@ -419,10 +422,11 @@ Result<void> FtsRocksdbReducer::merge_and_flush_postings(
   return {};
 }
 
-Result<void> FtsRocksdbReducer::reduce_positions(uint32_t segment_index,
-                                                 const IndexFilter &filter) {
-  const FtsSegmentStats &stats = segment_stats_[segment_index];
+Result<void> FtsRocksdbReducer::reduce_positions(
+    uint32_t segment_index, const roaring::Roaring &delete_row_id_bitmap) {
   auto *src_positions_cf = src_positions_cfs_[segment_index];
+  const uint64_t scan_offset = scan_offset_per_seg_[segment_index];
+  const uint64_t seg_doc_count = segment_stats_[segment_index].doc_count;
 
   auto iter = std::unique_ptr<rocksdb::Iterator>(
       src_ctxs_[segment_index]->db_->NewIterator(
@@ -439,14 +443,14 @@ Result<void> FtsRocksdbReducer::reduce_positions(uint32_t segment_index,
           "FtsRocksdbReducer: malformed positions key. field=", field_name_));
     }
 
-    const uint64_t global_doc_id =
-        stats.min_doc_id + static_cast<uint64_t>(local_doc_id);
-    if (filter.is_filtered(global_doc_id)) {
+    if (local_doc_id >= seg_doc_count) {
       continue;
     }
-
     const uint32_t new_doc_id =
-        static_cast<uint32_t>(global_doc_id - min_doc_id_);
+        dense_rank(scan_offset + local_doc_id, delete_row_id_bitmap);
+    if (new_doc_id == kFilteredRank) {
+      continue;
+    }
     const std::string new_key = make_doc_term_key(term, new_doc_id);
 
     if (!ctx_->db_

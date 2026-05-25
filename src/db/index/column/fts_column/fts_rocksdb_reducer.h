@@ -21,6 +21,7 @@
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/fts_column/bm25_scorer.h"
 #include "db/index/column/fts_column/fts_types.h"
+#include <roaring.hh>
 
 namespace zvec::fts {
 
@@ -62,18 +63,18 @@ class FtsRocksdbReducer {
                     rocksdb::ColumnFamilyHandle *src_postings_cf,
                     rocksdb::ColumnFamilyHandle *src_positions_cf);
 
-  /*! Merge all fed segments into the destination store.
-   *  Reads BitPacked posting lists from each source postings_cf, applies
-   *  the delete filter, remaps doc_ids, and emits one merged BitPacked
-   *  posting list per term to dst_postings_cf.  Also accumulates effective
-   *  total_docs / total_tokens from inline doc_len payloads and writes them
-   *  to dst_stat_cf for BM25 IDF / avgdl.
+  /*! Merge fed segments into the destination: per-term BitPacked postings
+   *  to dst_postings_cf, doc_ids remapped to the new segment's dense space,
+   *  effective total_docs / total_tokens to dst_stat_cf for BM25.
    *
-   *  \param filter   Returns true for doc_ids that should be filtered out
-   *                  (i.e., deleted documents).
-   *  \return Result<void> on success, or Status on failure
+   *  \param delete_row_id_bitmap  Deleted positions in input scan order,
+   *      id space [0, Σ stats.doc_count).  For segment i with
+   *      scan_offset = Σ_{j<i} stats_j.doc_count, source (i, local) is
+   *      filtered iff the bitmap contains (scan_offset + local).
+   *      Same bitmap built by SegmentHelper::FilterRecordBatch — sharing
+   *      it avoids materializing a per-doc dense rank table.
    */
-  Result<void> reduce(const IndexFilter &filter);
+  Result<void> reduce(const roaring::Roaring &delete_row_id_bitmap);
 
   /*! No-op: FTS data is written directly during reduce(). */
   Result<void> dump() {
@@ -81,32 +82,27 @@ class FtsRocksdbReducer {
   }
 
  private:
-  // Two-pass streaming merge of postings.  Pass 1 collects effective stats
-  // without storing any PostingEntry; Pass 2 does multi-way merge across all
-  // source segment iterators by term (lexicographic order), encodes + puts
-  // each term's merged BitPacked posting list immediately, keeping peak
-  // memory at one term's worth of entries.
-  Result<void> reduce_postings(const IndexFilter &filter);
+  // Two-pass streaming merge.  Pass 1: collect effective stats.  Pass 2:
+  // multi-way merge by term, encode + put one BitPacked posting per term
+  // (peak memory bounded by one term's entries).  Both passes take the
+  // shared delete bitmap by reference rather than storing it on the
+  // reducer so its lifetime stays scoped to reduce().
+  Result<void> reduce_postings(const roaring::Roaring &delete_row_id_bitmap);
 
-  // Pass 1: collect effective_total_docs_ / effective_total_tokens_ without
-  // storing any PostingEntry.
-  // - effective_total_docs_ is computed from segment doc_id ranges minus
-  //   filtered docs (includes empty docs, matching mutable indexer semantics).
-  // - effective_total_tokens_ is accumulated from inline doc_len payloads
-  //   of surviving docs seen in postings (empty docs contribute 0).
-  Result<void> collect_effective_stats(const IndexFilter &filter);
+  // Pass 1: effective_total_docs_ = Σ stats.doc_count - bitmap.cardinality
+  // (counts empty docs too, like the mutable indexer); effective_total_tokens_
+  // is summed from inline doc_len payloads of surviving docs.
+  Result<void> collect_effective_stats(
+      const roaring::Roaring &delete_row_id_bitmap);
 
-  // Pass 2: multi-way merge across all source segment iterators by term
-  // (lexicographic order), accumulate per-term entries, encode + put as
-  // BitPacked into dst_postings_cf_ immediately after each term boundary,
-  // keeping peak memory at one term's worth of entries.
-  Result<void> merge_and_flush_postings(const IndexFilter &filter);
+  // Pass 2: see reduce_postings.  Dense rank looked up on the fly via
+  // the file-local dense_rank helper in the .cc.
+  Result<void> merge_and_flush_postings(
+      const roaring::Roaring &delete_row_id_bitmap);
 
-  // Merge positions CF for one source segment: iterate src positions_cf,
-  // drop entries whose doc_id is filtered, remap to the new doc_id space,
-  // and put into dst_positions_cf.  Required for phrase query support.
+  // Per-segment positions CF remap (phrase query support).
   Result<void> reduce_positions(uint32_t segment_index,
-                                const IndexFilter &filter);
+                                const roaring::Roaring &delete_row_id_bitmap);
 
   // Write accumulated stats to destination stat CF.
   Result<void> flush_stat(uint64_t total_docs, uint64_t total_tokens);
@@ -140,14 +136,14 @@ class FtsRocksdbReducer {
   std::vector<rocksdb::ColumnFamilyHandle *> src_positions_cfs_{};
 
   uint32_t num_segments_{0};
-  uint64_t min_doc_id_{0};
 
-  // Effective per-segment statistics accumulated during reduce_postings()
-  // from BitPacked inline doc_len payloads.  Reflect only documents that
-  // survive the filter, and are used both as the truth fed into scorer_ for
-  // block_max_score computation and as the values written into dst stat_cf.
+  // Survivor-only stats; fed into scorer_ for block_max_score and written
+  // to dst stat_cf.
   uint64_t effective_total_docs_{0};
   uint64_t effective_total_tokens_{0};
+
+  // Precomputed cumsum: scan_offset_per_seg_[i] = Σ_{j<i} stats_j.doc_count.
+  std::vector<uint64_t> scan_offset_per_seg_{};
 
   // BM25 scorer for computing block_max_score during BitPacked encoding.
   // Initialized inside reduce() once effective stats are known.
