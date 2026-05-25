@@ -40,7 +40,7 @@ HnswRabitqStreamer::HnswRabitqStreamer(IndexProvider::Pointer provider,
       provider_(std::move(provider)) {}
 
 HnswRabitqStreamer::~HnswRabitqStreamer() {
-  if (state_ == STATE_INITED) {
+  if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
 }

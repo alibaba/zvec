@@ -28,7 +28,7 @@ namespace core {
 HnswStreamer::HnswStreamer() = default;
 
 HnswStreamer::~HnswStreamer() {
-  if (state_ == STATE_INITED) {
+  if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
 }
