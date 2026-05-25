@@ -793,6 +793,7 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_IVF 2
 #define ZVEC_INDEX_TYPE_FLAT 3
 #define ZVEC_INDEX_TYPE_INVERT 10
+#define ZVEC_INDEX_TYPE_FTS 11
 
 /**
  * @brief Distance metric type codes (must match zvec::MetricType in
@@ -995,6 +996,34 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_invert_params(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
     zvec_index_params_t *params, bool enable_range_opt, bool enable_wildcard);
 
+/**
+ * @brief Set FTS index specific parameters
+ * @param params Index parameters (must be FTS type)
+ * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value)
+ * @param filters Token filter names (NULL keeps current value)
+ * @param extra_params Additional tokenizer parameters (NULL keeps current
+ * value)
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_fts_params(
+    zvec_index_params_t *params, const char *tokenizer_name,
+    const zvec_string_array_t *filters, const char *extra_params);
+
+/**
+ * @brief Get FTS index parameters (all at once)
+ * @param params Index parameters (must be FTS type)
+ * @param out_tokenizer_name Output parameter for tokenizer name (can be NULL,
+ *                           owned by params, do not free)
+ * @param out_filters Output parameter for filter list (can be NULL); caller
+ *                    must call zvec_string_array_destroy() to free
+ * @param out_extra_params Output parameter for extra params (can be NULL,
+ *                         owned by params, do not free)
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_fts_params(
+    const zvec_index_params_t *params, const char **out_tokenizer_name,
+    zvec_string_array_t **out_filters, const char **out_extra_params);
+
 // =============================================================================
 // Query Parameters Structures (Opaque Pointer Pattern)
 // =============================================================================
@@ -1029,6 +1058,16 @@ typedef struct zvec_ivf_query_params_t zvec_ivf_query_params_t;
  */
 typedef struct zvec_flat_query_params_t zvec_flat_query_params_t;
 
+/**
+ * @brief FTS query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::FtsQueryParams* (raw pointer).
+ * Created by zvec_query_params_fts_create() and destroyed by
+ * zvec_query_params_fts_destroy(). Caller owns the pointer and must explicitly
+ * destroy it.
+ */
+typedef struct zvec_fts_query_params_t zvec_fts_query_params_t;
+
 
 // =============================================================================
 // Query Structures (Opaque Pointer Pattern)
@@ -1049,6 +1088,13 @@ typedef struct zvec_vector_query_t zvec_vector_query_t;
  * zvec_group_by_vector_query_destroy() to destroy
  */
 typedef struct zvec_group_by_vector_query_t zvec_group_by_vector_query_t;
+
+/**
+ * @brief FTS query payload structure (opaque pointer)
+ * Aligned with zvec::Fts
+ * Use zvec_fts_create() to create and zvec_fts_destroy() to destroy
+ */
+typedef struct zvec_fts_t zvec_fts_t;
 
 
 // =============================================================================
@@ -1346,6 +1392,46 @@ ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_flat_get_is_using_refiner(
     const zvec_flat_query_params_t *params);
 
 // -----------------------------------------------------------------------------
+// zvec_fts_query_params_t (FTS Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create FTS query parameters
+ * @param default_operator Default boolean operator for adjacent bare terms:
+ *                         "OR" / "AND" (case-insensitive); NULL or "" keeps
+ *                         the built-in default
+ * @return zvec_fts_query_params_t* Pointer to the newly created FTS query
+ * parameters
+ */
+ZVEC_EXPORT zvec_fts_query_params_t *ZVEC_CALL
+zvec_query_params_fts_create(const char *default_operator);
+
+/**
+ * @brief Destroy FTS query parameters
+ * @param params FTS query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_fts_destroy(zvec_fts_query_params_t *params);
+
+/**
+ * @brief Set default boolean operator
+ * @param params FTS query parameters pointer
+ * @param default_operator Default boolean operator
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_fts_set_default_operator(zvec_fts_query_params_t *params,
+                                           const char *default_operator);
+
+/**
+ * @brief Get default boolean operator
+ * @param params FTS query parameters pointer
+ * @return const char* Default boolean operator (owned by params, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL zvec_query_params_fts_get_default_operator(
+    const zvec_fts_query_params_t *params);
+
+// -----------------------------------------------------------------------------
 // zvec_vector_query_t (Vector Query)
 // -----------------------------------------------------------------------------
 
@@ -1517,6 +1603,83 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_ivf_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_flat_params(
     zvec_vector_query_t *query, zvec_flat_query_params_t *flat_params);
+
+/**
+ * @brief Set FTS query parameters (takes ownership)
+ * @param query Vector query pointer
+ * @param fts_params FTS query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_fts_params(
+    zvec_vector_query_t *query, zvec_fts_query_params_t *fts_params);
+
+// -----------------------------------------------------------------------------
+// zvec_fts_t (FTS query payload)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create FTS query payload
+ * @return zvec_fts_t* Pointer to the newly created FTS query payload
+ */
+ZVEC_EXPORT zvec_fts_t *ZVEC_CALL zvec_fts_create(void);
+
+/**
+ * @brief Destroy FTS query payload
+ * @param fts FTS query payload pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_fts_destroy(zvec_fts_t *fts);
+
+/**
+ * @brief Set FTS boolean / advanced query expression
+ * @param fts FTS query payload pointer
+ * @param query_string Query expression (NULL is treated as empty string)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_fts_set_query_string(zvec_fts_t *fts, const char *query_string);
+
+/**
+ * @brief Set FTS natural-language match string
+ * @param fts FTS query payload pointer
+ * @param match_string Match string (NULL is treated as empty string)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_fts_set_match_string(zvec_fts_t *fts, const char *match_string);
+
+/**
+ * @brief Get FTS query expression
+ * @param fts FTS query payload pointer
+ * @return const char* Query expression (owned by fts, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_fts_get_query_string(const zvec_fts_t *fts);
+
+/**
+ * @brief Get FTS match string
+ * @param fts FTS query payload pointer
+ * @return const char* Match string (owned by fts, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_fts_get_match_string(const zvec_fts_t *fts);
+
+/**
+ * @brief Set FTS payload on a vector query (payload is copied)
+ * @param query Vector query pointer
+ * @param fts FTS query payload pointer (NULL clears the payload)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_vector_query_set_fts(zvec_vector_query_t *query, const zvec_fts_t *fts);
+
+/**
+ * @brief Get FTS payload attached to a vector query
+ * @param query Vector query pointer
+ * @return const zvec_fts_t* FTS payload (owned by query, do not free), or
+ *         NULL if no payload is attached
+ */
+ZVEC_EXPORT const zvec_fts_t *ZVEC_CALL
+zvec_vector_query_get_fts(const zvec_vector_query_t *query);
 
 // -----------------------------------------------------------------------------
 // zvec_group_by_vector_query_t (Group By Vector Query)
