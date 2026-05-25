@@ -414,6 +414,7 @@ class HnswStreamerEntity : public HnswEntity {
     meta.level = level;
     meta.index = (chunk_index << upper_neighbor_mask_bits_) |
                  (chunk_offset / upper_neighbor_size_);
+    size_t zero_start = chunk_offset;
     chunk_offset += upper_neighbor_size_ * level;
     if (ailego_unlikely(!upper_neighbor_index_->insert(id, meta.data))) {
       LOG_ERROR("HashMap insert value failed");
@@ -422,6 +423,18 @@ class HnswStreamerEntity : public HnswEntity {
 
     if (ailego_unlikely(chunk->resize(chunk_offset) != chunk_offset)) {
       LOG_ERROR("Chunk resize to %zu failed", (size_t)chunk_offset);
+      return IndexError_Runtime;
+    }
+
+    // Zero-initialize the new upper neighbor region to ensure
+    // NeighborsHeader::neighbor_cnt is 0 before update_neighbors() writes it.
+    // Without this, the entry point node (whose add_node returns early) would
+    // have uninitialized neighbor data, causing garbage reads during traversal.
+    char zeros[neighbors_size];
+    memset(zeros, 0, neighbors_size);
+    if (ailego_unlikely(chunk->write(zero_start, zeros, neighbors_size) !=
+                        neighbors_size)) {
+      LOG_ERROR("Chunk write zeros failed");
       return IndexError_Runtime;
     }
 
