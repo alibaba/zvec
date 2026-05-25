@@ -252,6 +252,7 @@ class HnswStreamerEntity : public HnswEntity {
                      uint32_t upper_neighbor_mask_bits, bool filter_same_key,
                      bool get_vector_enabled,
                      const NIHashMapPointer &upper_neighbor_index,
+                     const std::shared_ptr<std::shared_mutex> &upper_neighbor_rw_mutex,
                      std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
                      const HashMapPointer<key_t, node_id_t> &keys_map,
                      bool use_key_info_map,
@@ -270,6 +271,7 @@ class HnswStreamerEntity : public HnswEntity {
         filter_same_key_(filter_same_key),
         get_vector_enabled_(get_vector_enabled),
         use_key_info_map_(use_key_info_map),
+        upper_neighbor_rw_mutex_(upper_neighbor_rw_mutex),
         upper_neighbor_index_(upper_neighbor_index),
         keys_map_lock_(keys_map_lock),
         keys_map_(keys_map),
@@ -327,7 +329,7 @@ class HnswStreamerEntity : public HnswEntity {
     // Shared lock: concurrent readers are fine, but must synchronize with
     // add_upper_neighbor's exclusive lock to avoid data-race on
     // slots_.size() inside HnswIndexHashMap.
-    std::shared_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
+    std::shared_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");
@@ -378,7 +380,7 @@ class HnswStreamerEntity : public HnswEntity {
     // Exclusive lock: protects upper_neighbor_chunks_.emplace_back() and
     // upper_neighbor_index_->insert() from racing with concurrent find()
     // calls in get_upper_neighbor_chunk_loc().
-    std::unique_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
+    std::unique_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     Chunk::Pointer chunk;
     uint64_t chunk_offset = UINT64_MAX;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
@@ -563,7 +565,8 @@ class HnswStreamerEntity : public HnswEntity {
   std::mutex mutex_{};
   //! Guards upper_neighbor_index_ and upper_neighbor_chunks_ against
   //! concurrent reads (find) and writes (insert/emplace_back).
-  mutable std::shared_mutex upper_neighbor_rw_mutex_{};
+  //! Shared via shared_ptr so all clones synchronize on the SAME mutex.
+  mutable std::shared_ptr<std::shared_mutex> upper_neighbor_rw_mutex_{};
   size_t max_index_size_{0UL};
   uint32_t chunk_size_{kDefaultChunkSize};
   uint32_t upper_neighbor_chunk_size_{kDefaultChunkSize};

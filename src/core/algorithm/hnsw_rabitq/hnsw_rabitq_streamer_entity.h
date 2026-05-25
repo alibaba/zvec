@@ -217,17 +217,17 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   using NIHashMapPointer = std::shared_ptr<NIHashMap>;
 
   //! Private construct, only be called by clone method
-  HnswRabitqStreamerEntity(IndexStreamer::Stats &stats, const HNSWHeader &hd,
-                           size_t chunk_size, uint32_t node_index_mask_bits,
-                           uint32_t upper_neighbor_mask_bits,
-                           bool filter_same_key, bool get_vector_enabled,
-                           const NIHashMapPointer &upper_neighbor_index,
-                           std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
-                           const HashMapPointer<key_t, node_id_t> &keys_map,
-                           bool use_key_info_map,
-                           std::vector<Chunk::Pointer> &&node_chunks,
-                           std::vector<Chunk::Pointer> &&upper_neighbor_chunks,
-                           const HnswRabitqChunkBroker::Pointer &broker)
+  HnswRabitqStreamerEntity(
+      IndexStreamer::Stats &stats, const HNSWHeader &hd, size_t chunk_size,
+      uint32_t node_index_mask_bits, uint32_t upper_neighbor_mask_bits,
+      bool filter_same_key, bool get_vector_enabled,
+      const NIHashMapPointer &upper_neighbor_index,
+      const std::shared_ptr<std::shared_mutex> &upper_neighbor_rw_mutex,
+      std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
+      const HashMapPointer<key_t, node_id_t> &keys_map, bool use_key_info_map,
+      std::vector<Chunk::Pointer> &&node_chunks,
+      std::vector<Chunk::Pointer> &&upper_neighbor_chunks,
+      const HnswRabitqChunkBroker::Pointer &broker)
       : stats_(stats),
         chunk_size_(chunk_size),
         node_index_mask_bits_(node_index_mask_bits),
@@ -238,6 +238,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
         filter_same_key_(filter_same_key),
         get_vector_enabled_(get_vector_enabled),
         use_key_info_map_(use_key_info_map),
+        upper_neighbor_rw_mutex_(upper_neighbor_rw_mutex),
         upper_neighbor_index_(upper_neighbor_index),
         keys_map_lock_(keys_map_lock),
         keys_map_(keys_map),
@@ -291,7 +292,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     // add_upper_neighbor's exclusive lock to avoid data-race on
     // slots_.size() inside HnswIndexHashMap (the emplace_back in alloc_slot
     // is not atomic and concurrent find() may see a stale size value).
-    std::shared_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
+    std::shared_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");
@@ -343,7 +344,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     // Exclusive lock: protects upper_neighbor_chunks_.emplace_back() and
     // upper_neighbor_index_->insert() from racing with concurrent find()
     // calls in get_upper_neighbor_chunk_loc().
-    std::unique_lock<std::shared_mutex> lk(upper_neighbor_rw_mutex_);
+    std::unique_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     Chunk::Pointer chunk;
     uint64_t chunk_offset = -1UL;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
@@ -536,7 +537,11 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   bool get_vector_enabled_{false};
   bool use_key_info_map_{true};
 
-  mutable std::shared_mutex upper_neighbor_rw_mutex_{};
+  // Shared via shared_ptr so that all cloned entities synchronize against
+  // the SAME mutex instance. A plain std::shared_mutex member would be
+  // independent per clone and provide no real protection for the shared
+  // upper_neighbor_index_ hashmap.
+  mutable std::shared_ptr<std::shared_mutex> upper_neighbor_rw_mutex_{};
   NIHashMapPointer upper_neighbor_index_{};
 
   mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_{};
