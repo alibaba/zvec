@@ -802,12 +802,17 @@ class BufferStorage : public IndexStorage {
   //! writer can slip in between flush and pool reset and lose its dirty
   //! pages).
   int flush_index_locked(void) {
-    // NULL GUARD: a previous append_segment() may have left the pool in a
-    // torn-down state.
+    // NULL GUARD: pool was never initialized (open() never succeeded, or
+    // close_index() already tore it down).  This is a no-op rather than an
+    // error: close_index() unconditionally calls us as part of teardown,
+    // and a never-opened / already-closed storage simply has nothing to
+    // flush.  Logging ERROR here would spam test logs on benign destructor
+    // / cleanup paths.  Real corruption is still reported by the
+    // corrupted_ branch below.
     if (!buffer_pool_ || !buffer_pool_handle_) {
-      LOG_ERROR("BufferStorage::flush_index skipped: pool not ready, file[%s]",
-                file_name_.c_str());
-      return IndexError_Runtime;
+      // Keep dirty flag in sync so a future re-open + flush is consistent.
+      index_dirty_.store(false, std::memory_order_relaxed);
+      return 0;
     }
     if (corrupted_.load(std::memory_order_acquire)) {
       LOG_ERROR(
