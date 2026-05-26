@@ -42,16 +42,13 @@
 namespace zvec {
 namespace ailego {
 
+extern const size_t kVectorPageSize;
+
 class VectorPageTable {
-  struct alignas(64) Entry {
+  struct Entry {
     std::atomic<int> ref_count;
-    // True when this block has been enqueued in BlockEvictionQueue and has not
-    // yet been evicted. Used in release_block() to suppress duplicate
-    // insertions: once a block is in the eviction queue we never push it again
-    // until it is evicted (which resets the flag).
     std::atomic<bool> in_evict_queue;
     char *buffer;
-    size_t size;
   };
 
  public:
@@ -76,22 +73,17 @@ class VectorPageTable {
 
   void evict_block(block_id_t block_id);
 
-  char *set_block_acquired(block_id_t block_id, char *buffer, size_t size);
+  char *set_block_acquired(block_id_t block_id, char *buffer);
 
   size_t entry_num() const {
     return entry_num_;
   }
 
-  // Returns true if the block has no active references (ref_count <= 0).
-  // Used by VecBufferPool destructor to assert all handles are released.
   bool is_released(block_id_t block_id) const {
     assert(block_id < entry_num_);
     return entries_[block_id].ref_count.load(std::memory_order_relaxed) <= 0;
   }
 
-  // Returns true if the block is no longer registered in the eviction queue
-  // (either it was never added, or it has already been evicted).
-  // Used by BlockEvictionQueue to detect stale queue entries.
   inline bool is_dead_block(BlockEvictionQueue::BlockType block) const {
     Entry &entry = entries_[block.vector_block.first];
     return !entry.in_evict_queue.load(std::memory_order_relaxed);
@@ -108,12 +100,11 @@ class VecBufferPool {
  public:
   typedef std::shared_ptr<VecBufferPool> Pointer;
 
+  static constexpr size_t kMutexBucketCount = 64UL * 1024UL;
+
   VecBufferPool(const std::string &filename);
   ~VecBufferPool() {
     for (size_t i = 0; i < page_table_.entry_num(); ++i) {
-      // A positive ref_count means a VecBufferPoolHandle is still alive,
-      // which is a contract violation: all handles must be destroyed before
-      // the pool itself is destroyed.
       assert(page_table_.is_released(i));
       page_table_.evict_block(i);
     }
@@ -124,12 +115,11 @@ class VecBufferPool {
 #endif
   }
 
-  int init(size_t segment_count);
+  int init();
 
   VecBufferPoolHandle get_handle();
 
-  char *acquire_buffer(block_id_t block_id, size_t offset, size_t size,
-                       int retry = 0);
+  char *acquire_buffer(block_id_t page_id, int retry = 0);
 
   int get_meta(size_t offset, size_t length, char *buffer);
 
@@ -146,11 +136,7 @@ class VecBufferPool {
   VectorPageTable page_table_;
 
  private:
-  // Contiguous array of per-block mutexes (one allocation, cache-friendly for
-  // the cold-path load in acquire_buffer). block_mutexes_count_ mirrors the
-  // array length because unique_ptr<T[]> has no built-in size accessor.
   std::unique_ptr<std::mutex[]> block_mutexes_{};
-  size_t block_mutexes_count_{0};
 };
 
 class VecBufferPoolHandle {
@@ -162,7 +148,9 @@ class VecBufferPoolHandle {
 
   typedef std::shared_ptr<VecBufferPoolHandle> Pointer;
 
-  char *get_block(size_t offset, size_t size, size_t block_id);
+  char *get_single_page(size_t file_offset, size_t len, size_t &out_page_id);
+
+  bool read_range(size_t file_offset, size_t len, char *out);
 
   int get_meta(size_t offset, size_t length, char *buffer);
 

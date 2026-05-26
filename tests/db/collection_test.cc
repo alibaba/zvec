@@ -2588,19 +2588,23 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
-  auto func = [&](QuantizeType quantize_type = QuantizeType::UNDEFINED) {
+  auto func = [&](QuantizeType quantize_type = QuantizeType::UNDEFINED,
+                  std::string index_type = "HNSW") {
     FileHelper::RemoveDirectory(col_path);
 
     int doc_count = 1000;
 
     // create empty collection
     CollectionSchema::Ptr schema;
-    if (quantize_type == QuantizeType::UNDEFINED) {
-      schema = TestHelper::CreateSchemaWithVectorIndex();
-    } else {
+    if (index_type == "HNSW") {
       schema = TestHelper::CreateSchemaWithVectorIndex(
           false, "demo",
           std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200,
+                                            quantize_type));
+    } else if (index_type == "IVF") {
+      schema = TestHelper::CreateSchemaWithVectorIndex(
+          false, "demo",
+          std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
                                             quantize_type));
     }
     auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
@@ -2676,6 +2680,10 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     check_doc();
     std::cout << "check success 2" << std::endl;
   };
+  // unquantized
+  func(QuantizeType::UNDEFINED, "IVF");
+  // quantized
+  func(QuantizeType::FP16, "IVF");
 
   // unquantized
   func();
