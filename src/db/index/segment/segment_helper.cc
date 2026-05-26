@@ -18,29 +18,18 @@
 #include <memory>
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
-#include <zvec/ailego/container/params.h>
 #include <zvec/ailego/logger/logger.h>
-#include <zvec/core/interface/index.h>
-#include <zvec/db/index_params.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#if RABITQ_SUPPORTED
-#include "core/algorithm/hnsw_rabitq/rabitq_params.h"
-#endif
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
 #include "db/common/typedef.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
-#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/meta.h"
 #include "db/index/storage/forward_writer.h"
-#include "zvec/core/framework/index_factory.h"
-#include "zvec/core/framework/index_meta.h"
-#include "zvec/core/framework/index_provider.h"
-#include "zvec/core/framework/index_reformer.h"
 #include "roaring.hh"
 
 namespace zvec {
@@ -701,63 +690,8 @@ Status SegmentHelper::ReduceVectorIndex(
       s = vector_indexer->Flush();
       CHECK_RETURN_STATUS(s);
 
-      // For RABITQ, train a fresh converter on the just-merged flat data
-      // so the produced quantize index file carries its own
-      // `rabitq.converter` segment. Defer Close() of the flat indexer until
-      // after the quantize index is built so the raw_vector_provider it
-      // backs remains valid throughout converter training and quantize
-      // index construction.
-      auto field_for_quantize = std::make_shared<FieldSchema>(*field);
-#if RABITQ_SUPPORTED
-      if (vector_index_params->quantize_type() == QuantizeType::RABITQ) {
-        auto rabitq_params = std::dynamic_pointer_cast<HnswRabitqIndexParams>(
-            vector_index_params->clone());
-        if (!rabitq_params) {
-          return Status::InternalError("Expect HnswRabitqIndexParams");
-        }
-        auto raw_vector_provider = vector_indexer->create_index_provider();
-
-        auto converter = core::IndexFactory::CreateConverter("RabitqConverter");
-        if (!converter) {
-          return Status::NotSupported("RabitqConverter not found");
-        }
-        core::IndexMeta index_meta;
-        index_meta.set_meta(
-            ProximaEngineHelper::convert_to_engine_data_type(field->data_type())
-                .value(),
-            field->dimension());
-        index_meta.set_metric(
-            core_interface::Index::get_metric_name(
-                ProximaEngineHelper::convert_to_engine_metric_type(
-                    vector_index_params->metric_type())
-                    .value(),
-                false),
-            0, ailego::Params{});
-        ailego::Params converter_params;
-        converter_params.set(core::PARAM_RABITQ_TOTAL_BITS,
-                             rabitq_params->total_bits());
-        converter_params.set(core::PARAM_RABITQ_NUM_CLUSTERS,
-                             rabitq_params->num_clusters());
-        converter_params.set(core::PARAM_RABITQ_SAMPLE_COUNT,
-                             rabitq_params->sample_count());
-        if (int ret = converter->init(index_meta, converter_params);
-            ret != 0) {
-          return Status::InternalError("Failed to init rabitq converter:", ret);
-        }
-        if (int ret = converter->train(raw_vector_provider); ret != 0) {
-          return Status::InternalError("Failed to train rabitq converter:",
-                                       ret);
-        }
-        core::IndexReformer::Pointer reformer;
-        if (int ret = converter->to_reformer(&reformer); ret != 0) {
-          return Status::InternalError("Failed to to get rabitq reformer:",
-                                       ret);
-        }
-        rabitq_params->set_rabitq_reformer(reformer);
-        rabitq_params->set_raw_vector_provider(raw_vector_provider);
-        field_for_quantize->set_index_params(rabitq_params);
-      }
-#endif
+      s = vector_indexer->Close();
+      CHECK_RETURN_STATUS(s);
 
       BlockMeta new_block_meta;
       new_block_meta.set_id(vector_block_id);
@@ -774,8 +708,8 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      auto vector_indexer_quantize = std::make_shared<VectorColumnIndexer>(
-          vector_quan_index_path, *field_for_quantize);
+      auto vector_indexer_quantize =
+          std::make_shared<VectorColumnIndexer>(vector_quan_index_path, *field);
       s = vector_indexer_quantize->Open({true, true});
       CHECK_RETURN_STATUS(s);
 
@@ -795,12 +729,6 @@ Status SegmentHelper::ReduceVectorIndex(
       CHECK_RETURN_STATUS(s);
 
       s = vector_indexer_quantize->Close();
-      CHECK_RETURN_STATUS(s);
-
-      // Close the flat indexer after the quantize index is fully built so
-      // the underlying raw_vector_provider stays valid for the duration of
-      // the quantize index construction.
-      s = vector_indexer->Close();
       CHECK_RETURN_STATUS(s);
 
       new_block_meta.set_id(vector_quan_block_id);
