@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
+#include <magic_enum/magic_enum.hpp>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
@@ -2588,28 +2589,20 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
-  auto func = [&](QuantizeType quantize_type = QuantizeType::UNDEFINED,
-                  std::string index_type = "HNSW") {
+  auto run_repeated_optimize_test = [&](IndexParams::Ptr index_params) {
+    ASSERT_NE(index_params, nullptr);
+    SCOPED_TRACE(testing::Message()
+                 << "index_params=" << index_params->to_string());
+
     FileHelper::RemoveDirectory(col_path);
-
     int doc_count = 1000;
-
-    // create empty collection
-    CollectionSchema::Ptr schema;
-    if (index_type == "HNSW") {
-      schema = TestHelper::CreateSchemaWithVectorIndex(
-          false, "demo",
-          std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200,
-                                            quantize_type));
-    } else if (index_type == "IVF") {
-      schema = TestHelper::CreateSchemaWithVectorIndex(
-          false, "demo",
-          std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
-                                            quantize_type));
-    }
+    auto schema =
+        TestHelper::CreateSchemaWithVectorIndex(false, "demo", index_params);
     auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
+
+    const bool tracks_completeness = (index_params->type() != IndexType::FLAT);
 
     auto check_doc = [&]() {
       for (int i = 0; i < doc_count; i++) {
@@ -2632,34 +2625,51 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
       }
     };
 
+    // Phase 1: docs are inserted but no index is built yet.
     check_doc();
-    std::cout << "check success 1" << std::endl;
 
     ASSERT_TRUE(collection->Flush().ok());
     auto stats = collection->Stats().value();
     ASSERT_EQ(stats.doc_count, doc_count);
-    ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
+    if (tracks_completeness) {
+      ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
+    }
 
+    // Phase 2: first full optimize builds the index from scratch.
     auto s = collection->Optimize();
     ASSERT_TRUE(s.ok());
     stats = collection->Stats().value();
     ASSERT_EQ(stats.doc_count, doc_count);
-    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    if (tracks_completeness) {
+      ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    }
 
-    int loop_count = 10;
-    uint64_t start_doc_id = doc_count;
-    for (int i = 0; i < loop_count; i++) {
-      std::cout << "loop: " << i << " begin" << std::endl;
+    // Phase 3: optimize again with no new data; must be a no-op and remain
+    // fully built.
+    s = collection->Optimize();
+    ASSERT_TRUE(s.ok());
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    if (tracks_completeness) {
+      ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    }
 
-      s = TestHelper::CollectionInsertDoc(collection, start_doc_id,
-                                          start_doc_id + 1);
+    // Phase 4: repeated single-doc incremental optimize. Each iteration
+    // appends one doc and re-optimizes; completeness must shrink to a
+    // predictable ratio after insert and return to 1 after optimize.
+    int single_loop_count = 10;
+    uint64_t next_doc_id = doc_count;
+    for (int i = 0; i < single_loop_count; i++) {
+      s = TestHelper::CollectionInsertDoc(collection, next_doc_id,
+                                          next_doc_id + 1);
       ASSERT_TRUE(s.ok());
 
       stats = collection->Stats().value();
       ASSERT_EQ(stats.doc_count, doc_count + i + 1);
-      ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"],
-                      1.0 * (doc_count + i) / (doc_count + i + 1));
-
+      if (tracks_completeness) {
+        ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"],
+                        1.0 * (doc_count + i) / (doc_count + i + 1));
+      }
 
       s = collection->Optimize();
       if (!s.ok()) {
@@ -2667,28 +2677,86 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
       }
       ASSERT_TRUE(s.ok());
 
-      start_doc_id += 1;
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, doc_count + i + 1);
+      if (tracks_completeness) {
+        ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+      }
 
-      std::cout << "loop: " << i << " end" << std::endl;
+      next_doc_id += 1;
+    }
+    doc_count += single_loop_count;
+
+    // Phase 5: repeated batch incremental optimize. Each iteration appends
+    // a batch of docs and re-optimizes.
+    int batch_loop_count = 3;
+    int batch_size = 100;
+    for (int i = 0; i < batch_loop_count; i++) {
+      s = TestHelper::CollectionInsertDoc(collection, next_doc_id,
+                                          next_doc_id + batch_size);
+      ASSERT_TRUE(s.ok());
+
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, doc_count + batch_size);
+      if (tracks_completeness) {
+        ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"],
+                        1.0 * doc_count / (doc_count + batch_size));
+      }
+
+      s = collection->Optimize();
+      if (!s.ok()) {
+        std::cout << "optimize failed: " << s.message() << std::endl;
+      }
+      ASSERT_TRUE(s.ok());
+
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, doc_count + batch_size);
+      if (tracks_completeness) {
+        ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+      }
+
+      next_doc_id += batch_size;
+      doc_count += batch_size;
     }
 
-    stats = collection->Stats().value();
-    ASSERT_EQ(stats.doc_count, doc_count + loop_count);
-    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
-
-    doc_count += loop_count;
+    // Phase 6: verify all documents survived the repeated optimizes.
     check_doc();
-    std::cout << "check success 2" << std::endl;
-  };
-  // unquantized
-  func(QuantizeType::UNDEFINED, "IVF");
-  // quantized
-  func(QuantizeType::FP16, "IVF");
 
-  // unquantized
-  func();
-  // quantized
-  func(QuantizeType::FP16);
+    // Phase 7: reopen the collection and verify the persisted state is
+    // still fully built and fetchable.
+    collection.reset();
+    auto reopen_result = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_result.has_value());
+    collection = std::move(reopen_result.value());
+
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    if (tracks_completeness) {
+      ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    }
+
+    check_doc();
+  };
+
+
+  run_repeated_optimize_test(std::make_shared<FlatIndexParams>(
+      MetricType::IP, QuantizeType::UNDEFINED));
+  run_repeated_optimize_test(
+      std::make_shared<FlatIndexParams>(MetricType::IP, QuantizeType::FP16));
+  run_repeated_optimize_test(std::make_shared<HnswIndexParams>(
+      MetricType::IP, 16, 200, QuantizeType::UNDEFINED));
+  run_repeated_optimize_test(std::make_shared<HnswIndexParams>(
+      MetricType::IP, 16, 200, QuantizeType::FP16));
+  run_repeated_optimize_test(std::make_shared<IVFIndexParams>(
+      MetricType::IP, 10, 4, false, QuantizeType::UNDEFINED));
+  run_repeated_optimize_test(std::make_shared<IVFIndexParams>(
+      MetricType::IP, 10, 4, false, QuantizeType::FP16));
+#if RABITQ_SUPPORTED
+  // TODO: re-enable once HNSW_RABITQ compact-path RaBitQ training is fixed.
+  // run_repeated_optimize_test(
+  //     std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7, 256, 16,
+  //                                             200, 0));
+#endif
 }
 
 TEST_F(CollectionTest, Feature_Optimize_MetricType) {
