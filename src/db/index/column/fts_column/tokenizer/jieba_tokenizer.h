@@ -18,20 +18,28 @@
 #include <string>
 #include "tokenizer.h"
 
+// Use the low-level segmenters directly: cppjieba::Jieba would also pull in
+// KeywordExtractor and force-load idf.utf8 / stop_words.utf8, which the
+// tokenizer never uses.
 namespace cppjieba {
-class Jieba;
+class DictTrie;
+class HMMModel;
+class QuerySegment;
+class MixSegment;
+class FullSegment;
+class HMMSegment;
 }  // namespace cppjieba
 
 namespace zvec::fts {
 
 /*! Jieba tokenizer
  *
- *  Wraps cppjieba to provide Chinese (and mixed Chinese/English) word
- *  segmentation.  Uses CutForSearch mode by default which produces finer
- *  granularity suitable for search/indexing scenarios.
+ *  Wraps cppjieba's low-level segmenters to provide Chinese (and mixed
+ *  Chinese/English) word segmentation. Uses CutForSearch (QuerySegment) by
+ *  default, which produces the finer granularity used for indexing/search.
  *
- *  The cppjieba::Jieba instance is thread-safe for concurrent Cut* calls
- *  after construction, so tokenize() can be called from multiple threads.
+ *  After init(), the active segmenter is thread-safe for concurrent Cut
+ *  calls, so tokenize() can be invoked from multiple threads.
  */
 class JiebaTokenizer : public Tokenizer {
  public:
@@ -42,15 +50,12 @@ class JiebaTokenizer : public Tokenizer {
   JiebaTokenizer(const JiebaTokenizer &) = delete;
   JiebaTokenizer &operator=(const JiebaTokenizer &) = delete;
 
-  /*! Initialise from JSON config.
-   *  Supported keys:
-   *    "dict_path"      – path to jieba.dict.utf8 (required)
-   *    "model_path"     – path to hmm_model.utf8 (required)
-   *    "user_dict_path" – path to user.dict.utf8 (optional)
-   *    "idf_path"       – path to idf.utf8 (optional)
-   *    "stop_word_path" – path to stop_words.utf8 (optional)
-   *    "cut_mode"       – "search" (default) | "mix" | "full" | "hmm"
-   */
+  // JSON config keys:
+  //   "dict_path"      - jieba.dict.utf8 (required unless cut_mode=hmm)
+  //   "model_path"     - hmm_model.utf8  (required unless cut_mode=full)
+  //   "user_dict_path" - user.dict.utf8  (optional)
+  //   "cut_mode"       - "search" (default) | "mix" | "full" | "hmm"
+  // Stop-word filtering is done by a TokenFilter, not by this tokenizer.
   bool init(const ailego::JsonObject &config) override;
 
   std::vector<Token> tokenize(const std::string &text) const override;
@@ -60,18 +65,31 @@ class JiebaTokenizer : public Tokenizer {
   }
 
   bool is_valid() const {
-    return jieba_ != nullptr;
+    return initialized_;
   }
 
-  // Move-only (unique_ptr member)
+  // Move-only (unique_ptr members)
   JiebaTokenizer(JiebaTokenizer &&) = default;
   JiebaTokenizer &operator=(JiebaTokenizer &&) = default;
 
  private:
   enum class CutMode { kSearch, kMix, kFull, kHmm };
 
-  std::unique_ptr<cppjieba::Jieba> jieba_;
+  // Release segmenters first (they hold raw pointers into dict_trie_ /
+  // hmm_model_), then release the underlying dict/model.
+  void reset();
+
+  // Declared before segmenters: reverse-order destruction keeps the raw
+  // pointers held by segmenters valid until the segmenters die.
+  std::unique_ptr<cppjieba::DictTrie> dict_trie_;
+  std::unique_ptr<cppjieba::HMMModel> hmm_model_;
+  std::unique_ptr<cppjieba::QuerySegment> query_seg_;
+  std::unique_ptr<cppjieba::MixSegment> mix_seg_;
+  std::unique_ptr<cppjieba::FullSegment> full_seg_;
+  std::unique_ptr<cppjieba::HMMSegment> hmm_seg_;
+
   CutMode cut_mode_{CutMode::kSearch};
+  bool initialized_{false};
 };
 
 }  // namespace zvec::fts

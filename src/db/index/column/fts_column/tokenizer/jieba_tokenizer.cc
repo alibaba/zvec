@@ -14,7 +14,12 @@
 
 #include "jieba_tokenizer.h"
 #include <zvec/ailego/logger/logger.h>
-#include "cppjieba/Jieba.hpp"
+#include "cppjieba/DictTrie.hpp"
+#include "cppjieba/FullSegment.hpp"
+#include "cppjieba/HMMModel.hpp"
+#include "cppjieba/HMMSegment.hpp"
+#include "cppjieba/MixSegment.hpp"
+#include "cppjieba/QuerySegment.hpp"
 
 namespace zvec::fts {
 
@@ -33,22 +38,10 @@ static std::string get_string_or_default(const ailego::JsonObject &config,
 
 bool JiebaTokenizer::init(const ailego::JsonObject &config) {
   std::string dict_path = get_string_or_default(config, "dict_path", "");
-  if (dict_path.empty()) {
-    LOG_ERROR("JiebaTokenizer: 'dict_path' is required but not provided");
-    return false;
-  }
   std::string model_path = get_string_or_default(config, "model_path", "");
-  if (model_path.empty()) {
-    LOG_ERROR("JiebaTokenizer: 'model_path' is required but not provided");
-    return false;
-  }
   std::string user_dict_path =
       get_string_or_default(config, "user_dict_path", "");
-  std::string idf_path = get_string_or_default(config, "idf_path", "");
-  std::string stop_word_path =
-      get_string_or_default(config, "stop_word_path", "");
 
-  // Parse cut mode
   std::string mode_str = get_string_or_default(config, "cut_mode", "search");
   if (mode_str == "search") {
     cut_mode_ = CutMode::kSearch;
@@ -63,18 +56,53 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
     return false;
   }
 
-  // Release any previously initialised handle
-  jieba_.reset();
+  bool needs_dict = cut_mode_ != CutMode::kHmm;
+  bool needs_model = cut_mode_ != CutMode::kFull;
 
-  try {
-    jieba_ = std::make_unique<cppjieba::Jieba>(
-        dict_path, model_path, user_dict_path, idf_path, stop_word_path);
-  } catch (const std::exception &e) {
-    LOG_ERROR("JiebaTokenizer init failed: %s", e.what());
-    jieba_.reset();
+  if (needs_dict && dict_path.empty()) {
+    LOG_ERROR("JiebaTokenizer: 'dict_path' is required for cut_mode '%s'",
+              mode_str.c_str());
+    return false;
+  }
+  if (needs_model && model_path.empty()) {
+    LOG_ERROR("JiebaTokenizer: 'model_path' is required for cut_mode '%s'",
+              mode_str.c_str());
     return false;
   }
 
+  reset();
+
+  try {
+    if (needs_dict) {
+      dict_trie_ =
+          std::make_unique<cppjieba::DictTrie>(dict_path, user_dict_path);
+    }
+    if (needs_model) {
+      hmm_model_ = std::make_unique<cppjieba::HMMModel>(model_path);
+    }
+    switch (cut_mode_) {
+      case CutMode::kSearch:
+        query_seg_ = std::make_unique<cppjieba::QuerySegment>(dict_trie_.get(),
+                                                              hmm_model_.get());
+        break;
+      case CutMode::kMix:
+        mix_seg_ = std::make_unique<cppjieba::MixSegment>(dict_trie_.get(),
+                                                          hmm_model_.get());
+        break;
+      case CutMode::kFull:
+        full_seg_ = std::make_unique<cppjieba::FullSegment>(dict_trie_.get());
+        break;
+      case CutMode::kHmm:
+        hmm_seg_ = std::make_unique<cppjieba::HMMSegment>(hmm_model_.get());
+        break;
+    }
+  } catch (const std::exception &e) {
+    LOG_ERROR("JiebaTokenizer init failed: %s", e.what());
+    reset();
+    return false;
+  }
+
+  initialized_ = true;
   LOG_INFO(
       "JiebaTokenizer init success. dict_path[%s] model_path[%s] "
       "cut_mode[%s]",
@@ -84,40 +112,42 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
 
 JiebaTokenizer::~JiebaTokenizer() = default;
 
+void JiebaTokenizer::reset() {
+  query_seg_.reset();
+  mix_seg_.reset();
+  full_seg_.reset();
+  hmm_seg_.reset();
+  dict_trie_.reset();
+  hmm_model_.reset();
+  initialized_ = false;
+}
+
 std::vector<Token> JiebaTokenizer::tokenize(const std::string &text) const {
   std::vector<Token> tokens;
-  if (!jieba_ || text.empty()) {
+  if (!initialized_ || text.empty()) {
     return tokens;
   }
 
   std::vector<cppjieba::Word> words;
   switch (cut_mode_) {
     case CutMode::kSearch:
-      jieba_->CutForSearch(text, words, true);
+      query_seg_->Cut(text, words, true);
       break;
     case CutMode::kMix:
-      jieba_->Cut(text, words, true);
+      mix_seg_->Cut(text, words, true);
       break;
     case CutMode::kFull:
-      jieba_->CutAll(text, words);
+      full_seg_->Cut(text, words);
       break;
     case CutMode::kHmm:
-      jieba_->CutHMM(text, words);
+      hmm_seg_->Cut(text, words);
       break;
-    default:
-      LOG_ERROR("JiebaTokenizer: unexpected cut_mode %d",
-                static_cast<int>(cut_mode_));
-      return tokens;
   }
 
   tokens.reserve(words.size());
-  // CutForSearch (and other cut modes) emit overlapping sub-words right after
-  // their long parent word. Using the cppjieba unicode_offset as position
-  // breaks PhraseDocIterator's strict anchor+1 adjacency check because
-  // overlapping tokens share a unicode_offset and gaps appear between long
-  // words. Use the output sequence index instead so doc and query tokenized
-  // with the same cut_mode produce contiguous, monotonically increasing
-  // positions, which makes phrase matching land on the same subsequence.
+  // Position = output sequence index, not cppjieba's unicode_offset:
+  // overlapping sub-words emitted after long parents share unicode_offset,
+  // which breaks PhraseDocIterator's strict anchor+1 adjacency check.
   uint32_t seq = 0;
   for (const auto &word : words) {
     if (word.word.empty()) {
