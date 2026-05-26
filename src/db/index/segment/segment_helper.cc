@@ -21,15 +21,23 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#if RABITQ_SUPPORTED
+#include "core/algorithm/hnsw_rabitq/rabitq_params.h"
+#endif
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
 #include "db/common/typedef.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
+#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/meta.h"
 #include "db/index/storage/forward_writer.h"
+#include "zvec/ailego/container/params.h"
+#include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_meta.h"
+#include "zvec/core/framework/index_reformer.h"
 #include "roaring.hh"
 
 namespace zvec {
@@ -690,7 +698,17 @@ Status SegmentHelper::ReduceVectorIndex(
       s = vector_indexer->Flush();
       CHECK_RETURN_STATUS(s);
 
-      s = vector_indexer->Close();
+      // The training step (for RABITQ) and the subsequent quantize merge both
+      // rely on the raw provider held by the flat indexer, so its Close() is
+      // deferred until after the quantize indexer is written.
+      core::IndexProvider::Pointer raw_vector_provider;
+      if (vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+        raw_vector_provider = vector_indexer->create_index_provider();
+      }
+
+      std::shared_ptr<FieldSchema> field_for_quantize;
+      s = PrepareQuantizeField(*field, raw_vector_provider,
+                               &field_for_quantize);
       CHECK_RETURN_STATUS(s);
 
       BlockMeta new_block_meta;
@@ -708,8 +726,8 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      auto vector_indexer_quantize =
-          std::make_shared<VectorColumnIndexer>(vector_quan_index_path, *field);
+      auto vector_indexer_quantize = std::make_shared<VectorColumnIndexer>(
+          vector_quan_index_path, *field_for_quantize);
       s = vector_indexer_quantize->Open({true, true});
       CHECK_RETURN_STATUS(s);
 
@@ -731,6 +749,9 @@ Status SegmentHelper::ReduceVectorIndex(
       s = vector_indexer_quantize->Close();
       CHECK_RETURN_STATUS(s);
 
+      s = vector_indexer->Close();
+      CHECK_RETURN_STATUS(s);
+
       new_block_meta.set_id(vector_quan_block_id);
       new_block_meta.set_type(BlockType::VECTOR_INDEX_QUANTIZE);
       new_block_meta.set_columns({field->name()});
@@ -742,6 +763,79 @@ Status SegmentHelper::ReduceVectorIndex(
   }
 
   return Status::OK();
+}
+
+Status SegmentHelper::PrepareQuantizeField(
+    const FieldSchema &field,
+    const core::IndexProvider::Pointer &raw_vector_provider,
+    std::shared_ptr<FieldSchema> *out_field) {
+  auto vector_index_params =
+      std::dynamic_pointer_cast<VectorIndexParams>(field.index_params());
+  if (!vector_index_params) {
+    return Status::InvalidArgument("field is not a vector field");
+  }
+
+  auto field_clone = std::make_shared<FieldSchema>(field);
+
+  if (vector_index_params->quantize_type() != QuantizeType::RABITQ) {
+    *out_field = field_clone;
+    return Status::OK();
+  }
+
+#if !RABITQ_SUPPORTED
+  return Status::NotSupported(
+      "RabitQ is not supported on this platform (Linux x86_64 only)");
+#else
+  if (raw_vector_provider == nullptr) {
+    return Status::InvalidArgument(
+        "raw_vector_provider is required for RABITQ training");
+  }
+
+  auto rabitq_params = std::dynamic_pointer_cast<HnswRabitqIndexParams>(
+      vector_index_params->clone());
+  if (!rabitq_params) {
+    return Status::InternalError("Expect HnswRabitqIndexParams");
+  }
+
+  auto converter = core::IndexFactory::CreateConverter("RabitqConverter");
+  if (!converter) {
+    return Status::NotSupported("RabitqConverter not found");
+  }
+  core::IndexMeta index_meta;
+  index_meta.set_meta(
+      ProximaEngineHelper::convert_to_engine_data_type(field.data_type())
+          .value(),
+      field.dimension());
+  index_meta.set_metric(core_interface::Index::get_metric_name(
+                            ProximaEngineHelper::convert_to_engine_metric_type(
+                                vector_index_params->metric_type())
+                                .value(),
+                            false),
+                        0, ailego::Params{});
+  ailego::Params converter_params;
+  converter_params.set(core::PARAM_RABITQ_TOTAL_BITS,
+                       rabitq_params->total_bits());
+  converter_params.set(core::PARAM_RABITQ_NUM_CLUSTERS,
+                       rabitq_params->num_clusters());
+  converter_params.set(core::PARAM_RABITQ_SAMPLE_COUNT,
+                       rabitq_params->sample_count());
+  if (int ret = converter->init(index_meta, converter_params); ret != 0) {
+    return Status::InternalError("Failed to init rabitq converter:", ret);
+  }
+  if (int ret = converter->train(raw_vector_provider); ret != 0) {
+    return Status::InternalError("Failed to train rabitq converter:", ret);
+  }
+  core::IndexReformer::Pointer reformer;
+  if (int ret = converter->to_reformer(&reformer); ret != 0) {
+    return Status::InternalError("Failed to to get rabitq reformer:", ret);
+  }
+  rabitq_params->set_rabitq_reformer(reformer);
+  rabitq_params->set_raw_vector_provider(raw_vector_provider);
+
+  field_clone->set_index_params(rabitq_params);
+  *out_field = field_clone;
+  return Status::OK();
+#endif
 }
 
 arrow::Status SegmentHelper::FilterRecordBatch(

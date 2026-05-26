@@ -24,6 +24,7 @@
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/meta.h"
+#include "zvec/core/framework/index_provider.h"
 #include "segment.h"
 
 namespace zvec {
@@ -214,6 +215,20 @@ class SegmentHelper {
       std::function<BlockID()> &block_id_generator, uint64_t min_doc_id,
       uint64_t max_doc_id, uint32_t doc_count, int concurrency,
       std::vector<BlockMeta> *output_block_metas);
+
+  // Returns a FieldSchema clone whose index_params is ready for building the
+  // quantize indexer.
+  //   - RABITQ: clones HnswRabitqIndexParams, trains a RabitqConverter against
+  //     `raw_vector_provider`, and attaches the resulting reformer and raw
+  //     provider to the cloned params.
+  //   - Other quantize types: clones the field with its current index_params
+  //     unchanged.
+  // `raw_vector_provider` must remain alive until the quantize indexer has
+  // been flushed; it may be null for non-RABITQ cases.
+  static Status PrepareQuantizeField(
+      const FieldSchema &field,
+      const core::IndexProvider::Pointer &raw_vector_provider,
+      std::shared_ptr<FieldSchema> *out_field);
 
   static arrow::Status FilterRecordBatch(
       const std::shared_ptr<arrow::RecordBatch> &batch,
