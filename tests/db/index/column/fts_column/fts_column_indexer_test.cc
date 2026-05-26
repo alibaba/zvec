@@ -51,13 +51,25 @@ FieldSchema::Ptr make_test_field_meta(
 
 }  // namespace
 
+// Build a tokenizer pipeline matching the indexer config used by the tests.
+// A standalone helper so tests can pass it to parser.parse() without
+// reaching into FtsColumnIndexer internals.
+static zvec::fts::TokenizerPipelinePtr make_whitespace_pipeline() {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "whitespace";
+  params.filters = {"lowercase"};
+  return zvec::fts::TokenizerFactory::create(params);
+}
+
 // Helper: parse a query string and call search() on a reader/indexer.
 // Terminates the test with ASSERT if parsing fails.
 template <typename Reader>
 static bool search_ok(Reader &reader, const std::string &query_str,
-                      uint32_t topk, std::vector<FtsResult> *results) {
+                      uint32_t topk, std::vector<FtsResult> *results,
+                      const zvec::fts::TokenizerPipelinePtr &pipeline =
+                          make_whitespace_pipeline()) {
   FtsQueryParser parser;
-  auto ast = parser.parse(query_str);
+  auto ast = parser.parse(query_str, pipeline);
   if (!ast) {
     ADD_FAILURE() << "FtsQueryParser failed to parse: " << query_str
                   << " err: " << parser.err_msg();
@@ -77,9 +89,11 @@ static bool search_ok(Reader &reader, const std::string &query_str,
 template <typename Reader>
 static bool search_ok_with_filter(Reader &reader, const std::string &query_str,
                                   uint32_t topk, zvec::IndexFilter::Ptr filter,
-                                  std::vector<FtsResult> *results) {
+                                  std::vector<FtsResult> *results,
+                                  const zvec::fts::TokenizerPipelinePtr
+                                      &pipeline = make_whitespace_pipeline()) {
   FtsQueryParser parser;
-  auto ast = parser.parse(query_str);
+  auto ast = parser.parse(query_str, pipeline);
   if (!ast) {
     ADD_FAILURE() << "FtsQueryParser failed to parse: " << query_str
                   << " err: " << parser.err_msg();
@@ -432,7 +446,7 @@ TEST_F(FtsColumnIndexerTest, SearchTopLevelMustNotIsRejected) {
 
   // -(hello AND world) => AndNode with must_not=true at the root
   FtsQueryParser parser;
-  auto ast = parser.parse("-(hello AND world)");
+  auto ast = parser.parse("-(hello AND world)", make_whitespace_pipeline());
   ASSERT_NE(ast, nullptr);
   EXPECT_TRUE(ast->must_not);
 
@@ -683,6 +697,73 @@ TEST_F(FtsColumnIndexerJiebaTest, FlushAndReloadWithJiebaTokenizer) {
   auto search_ret = reader.search(term_node, query_params);
   EXPECT_TRUE(search_ret.has_value());
   EXPECT_GE(search_ret.value().size(), 1u);
+}
+
+// Construct a jieba pipeline matching the indexer config so phrase queries
+// tokenize the same way the index did.
+static zvec::fts::TokenizerPipelinePtr make_jieba_pipeline_for_test() {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "jieba";
+  params.filters = {"lowercase"};
+  params.extra_params = std::string(R"({"dict_path":")") + kJiebaDictDir +
+                        R"(/jieba.dict.utf8","model_path":")" + kJiebaDictDir +
+                        R"(/hmm_model.utf8"})";
+  return zvec::fts::TokenizerFactory::create(params);
+}
+
+// Phrase queries on a jieba-indexed doc must hit when the query goes through
+// the same pipeline as the document. Before the parser was pipeline-aware
+// the query path split the phrase on ASCII whitespace, so a CJK phrase
+// became a single opaque token and failed to match the per-segment tokens
+// the index actually stored.
+TEST_F(FtsColumnIndexerJiebaTest, PhraseSearchHitsAfterJiebaTokenization) {
+  auto indexer = make_jieba_indexer();
+  EXPECT_TRUE(indexer->insert(0, "中华人民共和国成立").has_value());
+  EXPECT_TRUE(indexer->insert(1, "无关文档").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  auto pipeline = make_jieba_pipeline_for_test();
+  ASSERT_NE(pipeline, nullptr);
+
+  // Phrase covering the full doc text — query and doc tokenize identically
+  // so the strict anchor+i adjacency check in PhraseDocIterator succeeds.
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(
+      search_ok(*indexer, "\"中华人民共和国成立\"", 10, &results, pipeline));
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
+
+  // A single-token phrase still works after the position-as-sequence fix:
+  // jieba emits "成立" once with a deterministic sequence position, the
+  // single-term phrase trivially matches.
+  results.clear();
+  EXPECT_TRUE(search_ok(*indexer, "\"成立\"", 10, &results, pipeline));
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
+}
+
+// JiebaTokenizer.position must be a strictly increasing per-output-token
+// sequence number. CutForSearch emits overlapping sub-words for a long
+// parent word; using cppjieba's unicode_offset would assign duplicate or
+// non-monotonic positions and break PhraseDocIterator's strict adjacency
+// check. Sequence numbers are guaranteed contiguous across all emitted
+// tokens.
+TEST(JiebaTokenizerTest, PositionIsContiguousSequence) {
+  if (!jieba_dict_available()) {
+    GTEST_SKIP() << "Jieba dict not available at: " << kJiebaDictDir;
+  }
+  auto pipeline = make_jieba_pipeline_for_test();
+  ASSERT_NE(pipeline, nullptr);
+
+  // CutForSearch on this string emits the long parent word followed by its
+  // shorter sub-words; the sub-words share a unicode_offset with the parent
+  // but get distinct sequence numbers under the new scheme.
+  auto tokens = pipeline->process("中华人民共和国");
+  ASSERT_FALSE(tokens.empty());
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    EXPECT_EQ(tokens[i].position, static_cast<uint32_t>(i))
+        << "tokens[" << i << "].text=" << tokens[i].text;
+  }
 }
 
 // ============================================================
@@ -1226,7 +1307,7 @@ static bool search_ok_with_candidates(Reader &reader,
                                       std::vector<uint64_t> candidates,
                                       std::vector<FtsResult> *results) {
   FtsQueryParser parser;
-  auto ast = parser.parse(query_str);
+  auto ast = parser.parse(query_str, make_whitespace_pipeline());
   if (!ast) {
     ADD_FAILURE() << "FtsQueryParser failed to parse: " << query_str
                   << " err: " << parser.err_msg();
@@ -1404,7 +1485,7 @@ TEST_F(FtsColumnIndexerTest, BruteForceCoexistsWithFilterPushdown) {
   EXPECT_TRUE(indexer->flush().has_value());
 
   FtsQueryParser parser;
-  auto ast = parser.parse("alpha");
+  auto ast = parser.parse("alpha", make_whitespace_pipeline());
   ASSERT_NE(ast, nullptr);
 
   zvec::fts::FtsQueryParams qp;

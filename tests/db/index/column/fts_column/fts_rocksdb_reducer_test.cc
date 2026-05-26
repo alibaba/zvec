@@ -27,6 +27,7 @@
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
 #include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 // meta.h not needed in zvec
 #include "db/common/constants.h"
 #include "db/common/rocksdb_context.h"
@@ -36,13 +37,22 @@ using namespace zvec::fts;
 using namespace zvec;
 using namespace zvec::fts;
 
+// Build the same whitespace pipeline used by the reducer's source indexers
+// so the query path tokenizes identically to what the index stored.
+static zvec::fts::TokenizerPipelinePtr make_reducer_test_pipeline() {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "whitespace";
+  params.filters = {"lowercase"};
+  return zvec::fts::TokenizerFactory::create(params);
+}
+
 // Helper: parse a query string and call search() on a reader.
 // Returns true on success, false on failure.
 template <typename Reader>
 static bool search_str_ok(Reader &reader, const std::string &query_str,
                           uint32_t topk, std::vector<FtsResult> *results) {
   FtsQueryParser parser;
-  auto ast = parser.parse(query_str);
+  auto ast = parser.parse(query_str, make_reducer_test_pipeline());
   if (!ast) {
     ADD_FAILURE() << "FtsQueryParser failed to parse: " << query_str
                   << " err: " << parser.err_msg();

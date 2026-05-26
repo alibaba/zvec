@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "fts_query_parser.h"
-#include <cctype>
 #include <zvec/ailego/utility/string_helper.h>
 #include "db/index/column/fts_column/gen/FtsLexer.h"
 #include "db/index/column/fts_column/gen/FtsParser.h"
@@ -29,9 +28,9 @@ namespace zvec::fts {
 
 class FtsErrorListener : public BaseErrorListener {
  public:
-  void syntaxError(Recognizer * /*recognizer*/, Token * /*offending_symbol*/,
-                   size_t line, size_t char_position_in_line,
-                   const std::string &msg,
+  void syntaxError(Recognizer * /*recognizer*/,
+                   antlr4::Token * /*offending_symbol*/, size_t line,
+                   size_t char_position_in_line, const std::string &msg,
                    std::exception_ptr /*exception*/) override {
     if (err_msg_.empty()) {
       err_msg_ = ailego::StringHelper::Concat(
@@ -55,6 +54,7 @@ namespace {
 
 // Forward declaration
 FtsAstNodePtr build_fts_or_expr(FtsParser::Fts_or_exprContext *or_ctx,
+                                const TokenizerPipeline &pipeline,
                                 FtsDefaultOperator default_op,
                                 std::string *err_msg);
 
@@ -66,29 +66,6 @@ std::string strip_quotes(const std::string &quoted) {
     return quoted.substr(1, quoted.size() - 2);
   }
   return quoted;
-}
-
-// Split a phrase string (already stripped of quotes) into individual words.
-// Words are separated by ASCII whitespace.
-std::vector<std::string> split_phrase_words(const std::string &phrase) {
-  std::vector<std::string> words;
-  size_t start = 0;
-  while (start < phrase.size()) {
-    while (start < phrase.size() &&
-           std::isspace(static_cast<unsigned char>(phrase[start]))) {
-      ++start;
-    }
-    size_t end = start;
-    while (end < phrase.size() &&
-           !std::isspace(static_cast<unsigned char>(phrase[end]))) {
-      ++end;
-    }
-    if (end > start) {
-      words.push_back(phrase.substr(start, end - start));
-    }
-    start = end;
-  }
-  return words;
 }
 
 // Propagate must/must_not modifier to the root of an already-built AST node.
@@ -109,7 +86,9 @@ void apply_modifier(FtsAstNode *node, bool is_must, bool is_must_not) {
 //
 // fts_primary: fts_term | fts_phrase | LP fts_or_expr RP
 FtsAstNodePtr build_fts_atom(FtsParser::Fts_atomContext *atom_ctx, bool is_must,
-                             bool is_must_not, FtsDefaultOperator default_op,
+                             bool is_must_not,
+                             const TokenizerPipeline &pipeline,
+                             FtsDefaultOperator default_op,
                              std::string *err_msg) {
   // Reject field-prefixed queries (e.g. "title:cancer")
   if (atom_ctx->fts_field_prefix() != nullptr) {
@@ -134,25 +113,59 @@ FtsAstNodePtr build_fts_atom(FtsParser::Fts_atomContext *atom_ctx, bool is_must,
 
   if (primary_ctx->fts_term() != nullptr) {
     std::string term_text = primary_ctx->fts_term()->getText();
-    return std::make_unique<TermNode>(std::move(term_text), is_must,
-                                      is_must_not);
+    auto tokens = pipeline.process(term_text);
+    if (tokens.empty()) {
+      // Term filtered out (e.g. stop-word, pure punctuation). Returning
+      // nullptr here lets the seq/and/or builders skip this child.
+      return nullptr;
+    }
+    if (tokens.size() == 1) {
+      return std::make_unique<TermNode>(std::move(tokens[0].text), is_must,
+                                        is_must_not);
+    }
+    // Multi-token bare term: combine via the configured default operator and
+    // attach must/must_not on the composite root.
+    FtsAstNodePtr composite;
+    if (default_op == FtsDefaultOperator::AND) {
+      auto and_node = std::make_unique<AndNode>();
+      and_node->children.reserve(tokens.size());
+      for (auto &t : tokens) {
+        and_node->children.push_back(
+            std::make_unique<TermNode>(std::move(t.text)));
+      }
+      composite = std::move(and_node);
+    } else {
+      auto or_node = std::make_unique<OrNode>();
+      or_node->children.reserve(tokens.size());
+      for (auto &t : tokens) {
+        or_node->children.push_back(
+            std::make_unique<TermNode>(std::move(t.text)));
+      }
+      composite = std::move(or_node);
+    }
+    apply_modifier(composite.get(), is_must, is_must_not);
+    return composite;
   }
 
   if (primary_ctx->fts_phrase() != nullptr) {
     std::string raw = primary_ctx->fts_phrase()->getText();
     std::string phrase_text = strip_quotes(raw);
+    auto tokens = pipeline.process(phrase_text);
     auto phrase_node = std::make_unique<PhraseNode>();
     phrase_node->must = is_must;
     phrase_node->must_not = is_must_not;
-    phrase_node->terms = split_phrase_words(phrase_text);
+    phrase_node->terms.reserve(tokens.size());
+    for (auto &t : tokens) {
+      phrase_node->terms.push_back(std::move(t.text));
+    }
     return phrase_node;
   }
 
   if (primary_ctx->fts_or_expr() != nullptr) {
     // Parenthesised sub-expression — propagate default_op so that adjacent
     // bare terms inside the parentheses share the same implicit semantics.
-    auto inner =
-        build_fts_or_expr(primary_ctx->fts_or_expr(), default_op, err_msg);
+    auto inner = build_fts_or_expr(primary_ctx->fts_or_expr(), pipeline,
+                                   default_op, err_msg);
     apply_modifier(inner.get(), is_must, is_must_not);
     return inner;
   }
@@ -165,22 +178,23 @@ FtsAstNodePtr build_fts_atom(FtsParser::Fts_atomContext *atom_ctx, bool is_must,
 // build_fts_and_expr. antlr4 generates separate subclasses for each labeled
 // alternative.
 FtsAstNodePtr build_fts_unary(FtsParser::Fts_unaryContext *unary_ctx,
+                              const TokenizerPipeline &pipeline,
                               FtsDefaultOperator default_op,
                               std::string *err_msg) {
   if (auto *must_ctx = dynamic_cast<FtsParser::Must_atomContext *>(unary_ctx)) {
     return build_fts_atom(must_ctx->fts_atom(), /*is_must=*/true,
-                          /*is_must_not=*/false, default_op, err_msg);
+                          /*is_must_not=*/false, pipeline, default_op, err_msg);
   }
   if (auto *must_not_ctx =
           dynamic_cast<FtsParser::Must_not_atomContext *>(unary_ctx)) {
     return build_fts_atom(must_not_ctx->fts_atom(), /*is_must=*/false,
-                          /*is_must_not=*/true, default_op, err_msg);
+                          /*is_must_not=*/true, pipeline, default_op, err_msg);
   }
   // Plain_atomContext (no modifier)
   if (auto *plain_ctx =
           dynamic_cast<FtsParser::Plain_atomContext *>(unary_ctx)) {
     return build_fts_atom(plain_ctx->fts_atom(), /*is_must=*/false,
-                          /*is_must_not=*/false, default_op, err_msg);
+                          /*is_must_not=*/false, pipeline, default_op, err_msg);
   }
   return nullptr;
 }
@@ -190,17 +204,18 @@ FtsAstNodePtr build_fts_unary(FtsParser::Fts_unaryContext *unary_ctx,
 // This is the only place where FtsDefaultOperator actually changes the AST
 // structure; all other build_* helpers simply propagate the value.
 FtsAstNodePtr build_fts_seq_expr(FtsParser::Fts_seq_exprContext *seq_ctx,
+                                 const TokenizerPipeline &pipeline,
                                  FtsDefaultOperator default_op,
                                  std::string *err_msg) {
   auto unary_list = seq_ctx->fts_unary();
   if (unary_list.size() == 1) {
-    return build_fts_unary(unary_list[0], default_op, err_msg);
+    return build_fts_unary(unary_list[0], pipeline, default_op, err_msg);
   }
 
   // Parse all children first
   std::vector<FtsAstNodePtr> children;
   for (auto *unary_ctx : unary_list) {
-    auto child = build_fts_unary(unary_ctx, default_op, err_msg);
+    auto child = build_fts_unary(unary_ctx, pipeline, default_op, err_msg);
     if (!child) {
       if (err_msg && !err_msg->empty()) {
         return nullptr;
@@ -232,6 +247,7 @@ FtsAstNodePtr build_fts_seq_expr(FtsParser::Fts_seq_exprContext *seq_ctx,
 //   `a NOT b`        => And[a, b{must_not}]
 //   `a AND b NOT c`  => And[a, b, c{must_not}]
 FtsAstNodePtr build_fts_and_expr(FtsParser::Fts_and_exprContext *and_ctx,
+                                 const TokenizerPipeline &pipeline,
                                  FtsDefaultOperator default_op,
                                  std::string *err_msg) {
   auto and_node = std::make_unique<AndNode>();
@@ -250,7 +266,7 @@ FtsAstNodePtr build_fts_and_expr(FtsParser::Fts_and_exprContext *and_ctx,
     if (seq_ctx == nullptr) {
       continue;
     }
-    auto child = build_fts_seq_expr(seq_ctx, default_op, err_msg);
+    auto child = build_fts_seq_expr(seq_ctx, pipeline, default_op, err_msg);
     bool is_not_for_this_child = next_is_not;
     next_is_not = false;
     if (!child) {
@@ -275,15 +291,16 @@ FtsAstNodePtr build_fts_and_expr(FtsParser::Fts_and_exprContext *and_ctx,
 
 // orExpr: andExpr (OR andExpr)*
 FtsAstNodePtr build_fts_or_expr(FtsParser::Fts_or_exprContext *or_ctx,
+                                const TokenizerPipeline &pipeline,
                                 FtsDefaultOperator default_op,
                                 std::string *err_msg) {
   auto and_list = or_ctx->fts_and_expr();
   if (and_list.size() == 1) {
-    return build_fts_and_expr(and_list[0], default_op, err_msg);
+    return build_fts_and_expr(and_list[0], pipeline, default_op, err_msg);
   }
   auto or_node = std::make_unique<OrNode>();
   for (auto *and_ctx : and_list) {
-    auto child = build_fts_and_expr(and_ctx, default_op, err_msg);
+    auto child = build_fts_and_expr(and_ctx, pipeline, default_op, err_msg);
     if (!child) {
       if (err_msg && !err_msg->empty()) {
         return nullptr;
@@ -305,8 +322,13 @@ FtsAstNodePtr build_fts_or_expr(FtsParser::Fts_or_exprContext *or_ctx,
 // ============================================================
 
 FtsAstNodePtr FtsQueryParser::parse(const std::string &query,
+                                    const TokenizerPipelinePtr &pipeline,
                                     FtsDefaultOperator default_op) {
   err_msg_.clear();
+  if (!pipeline) {
+    err_msg_ = "fts parser: pipeline is required";
+    return nullptr;
+  }
 
   try {
     ANTLRInputStream input(query);
@@ -353,7 +375,8 @@ FtsAstNodePtr FtsQueryParser::parse(const std::string &query,
       return nullptr;
     }
 
-    auto result = build_fts_or_expr(tree->fts_or_expr(), default_op, &err_msg_);
+    auto result = build_fts_or_expr(tree->fts_or_expr(), *pipeline, default_op,
+                                    &err_msg_);
     if (!result && !err_msg_.empty()) {
       return nullptr;
     }

@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include "db/index/column/fts_column/fts_query_ast.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 
 namespace zvec::fts {
 
@@ -40,6 +41,9 @@ class FtsQueryParser {
   /*! Parse an FTS query expression string into an AST.
    *  \param query        Query string, e.g. '+vector -slow "exact phrase" 中文
    *                      AND 分词'
+   *  \param pipeline     Tokenizer pipeline used to tokenize phrase contents
+   *                      and bare terms so that query-side segmentation
+   *                      matches the doc-side index. Must be non-null.
    *  \param default_op   Default operator for adjacent bare terms with no
    *                      explicit operator. Defaults to OR for backward
    *                      compatibility. Does not change the semantics of
@@ -48,6 +52,7 @@ class FtsQueryParser {
    *          retrieve the error description.
    */
   FtsAstNodePtr parse(const std::string &query,
+                      const TokenizerPipelinePtr &pipeline,
                       FtsDefaultOperator default_op = FtsDefaultOperator::OR);
 
   /*! Return the error message from the most recent failed parse() call. */

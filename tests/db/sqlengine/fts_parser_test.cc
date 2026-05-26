@@ -14,7 +14,9 @@
 
 #include <gtest/gtest.h>
 #include "db/index/column/fts_column/fts_query_ast.h"
+#include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 
 namespace zvec::fts {
 
@@ -24,13 +26,25 @@ namespace zvec::fts {
 
 class FtsParserTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    // Standard tokenizer + lowercase filter: ASCII tests behave the same as
+    // the previous whitespace split (alnum runs become tokens, delimiters
+    // get dropped) while CJK tests can exercise the per-character tokens
+    // standard produces from non-alnum bytes.
+    FtsIndexParams params;
+    params.tokenizer_name = "standard";
+    params.filters = {"lowercase"};
+    pipeline_ = TokenizerFactory::create(params);
+    ASSERT_NE(pipeline_, nullptr);
+  }
+
   FtsAstNodePtr parse(const std::string &query) {
-    return parser_.parse(query);
+    return parser_.parse(query, pipeline_);
   }
 
   // Overload for tests that need to specify the default operator explicitly.
   FtsAstNodePtr parse(const std::string &query, FtsDefaultOperator default_op) {
-    return parser_.parse(query, default_op);
+    return parser_.parse(query, pipeline_, default_op);
   }
 
   const std::string &err_msg() {
@@ -60,6 +74,7 @@ class FtsParserTest : public ::testing::Test {
 
  private:
   FtsQueryParser parser_;
+  TokenizerPipelinePtr pipeline_;
 };
 
 // ============================================================
@@ -84,11 +99,17 @@ TEST_F(FtsParserTest, SingleTermNumeric) {
 }
 
 TEST_F(FtsParserTest, SingleTermWithHyphen) {
-  // REGULAR_ID allows hyphens
+  // The lexer's REGULAR_ID rule keeps hyphenated text as one token, but the
+  // standard tokenizer on the parser side splits non-alphanumerics. With the
+  // default OR operator the term decomposes into Or[full, text] so query
+  // segmentation matches the index segmentation.
   auto ast = parse("full-text");
   ASSERT_NE(ast, nullptr);
-  ASSERT_EQ(ast->type(), FtsNodeType::TERM);
-  EXPECT_EQ(as_term(*ast).term, "full-text");
+  ASSERT_EQ(ast->type(), FtsNodeType::OR);
+  const auto &or_node = as_or(*ast);
+  ASSERT_EQ(or_node.children.size(), 2u);
+  EXPECT_EQ(as_term(*or_node.children[0]).term, "full");
+  EXPECT_EQ(as_term(*or_node.children[1]).term, "text");
 }
 
 // ============================================================
@@ -681,6 +702,71 @@ TEST_F(FtsParserTest, DefaultOperatorAnd_PreservesPlusMinusModifiers) {
   EXPECT_EQ(t2.term, "c");
   EXPECT_FALSE(t2.must);
   EXPECT_TRUE(t2.must_not);
+}
+
+// ============================================================
+// Pipeline-aware tokenization (phrase / bare term split through pipeline)
+// ============================================================
+
+TEST_F(FtsParserTest, MultiTokenBareTermAndDefaultGroupsAsAnd) {
+  // `full-text` lexes as one REGULAR_ID, but standard splits it into
+  // ["full", "text"]. With AND default operator the two tokens combine into
+  // an AndNode rather than the OR returned by the OR-default test above.
+  auto ast = parse("full-text", FtsDefaultOperator::AND);
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+  const auto &and_node = as_and(*ast);
+  ASSERT_EQ(and_node.children.size(), 2u);
+  EXPECT_EQ(as_term(*and_node.children[0]).term, "full");
+  EXPECT_EQ(as_term(*and_node.children[1]).term, "text");
+}
+
+TEST_F(FtsParserTest, MultiTokenBareTermPreservesMustModifier) {
+  // `+full-text` -> Or[full, text] with must=true on the composite root.
+  auto ast = parse("+full-text");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::OR);
+  EXPECT_TRUE(ast->must);
+  EXPECT_FALSE(ast->must_not);
+  const auto &or_node = as_or(*ast);
+  ASSERT_EQ(or_node.children.size(), 2u);
+  EXPECT_EQ(as_term(*or_node.children[0]).term, "full");
+  EXPECT_EQ(as_term(*or_node.children[1]).term, "text");
+}
+
+TEST_F(FtsParserTest, PhraseTokensRunThroughPipeline) {
+  // The phrase body is tokenized exactly like document text. With the
+  // standard tokenizer, mixed delimiters between alnum runs collapse so
+  // "machine, learning!" becomes ["machine", "learning"].
+  auto ast = parse("\"machine, learning!\"");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::PHRASE);
+  const auto &phrase = as_phrase(*ast);
+  ASSERT_EQ(phrase.terms.size(), 2u);
+  EXPECT_EQ(phrase.terms[0], "machine");
+  EXPECT_EQ(phrase.terms[1], "learning");
+}
+
+TEST_F(FtsParserTest, PhraseLowercaseFilterApplies) {
+  // The lowercase filter is part of the pipeline so phrase tokens come back
+  // lowercased even when the input mixed case.
+  auto ast = parse("\"Machine LEARNING\"");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::PHRASE);
+  const auto &phrase = as_phrase(*ast);
+  ASSERT_EQ(phrase.terms.size(), 2u);
+  EXPECT_EQ(phrase.terms[0], "machine");
+  EXPECT_EQ(phrase.terms[1], "learning");
+}
+
+TEST_F(FtsParserTest, AllPunctuationPhraseYieldsEmptyTerms) {
+  // Pure non-alnum content is filtered out entirely. The phrase node still
+  // exists but carries zero terms; the search engine treats this as
+  // "match nothing" without crashing.
+  auto ast = parse("\"!!! ???\"");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::PHRASE);
+  EXPECT_TRUE(as_phrase(*ast).terms.empty());
 }
 
 }  // namespace zvec::fts

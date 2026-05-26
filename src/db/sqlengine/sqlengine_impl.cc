@@ -146,37 +146,41 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     }
   }
 
+  // Tokenizer pipeline is required by both branches: query_string needs it to
+  // tokenize phrase contents and bare terms, match_string needs it to split
+  // the natural-language input. Resolve once and share.
+  auto *field_schema = collection->get_field(field_name);
+  if (!field_schema) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("FTS field not found: ", field_name));
+  }
+  auto fts_idx_param =
+      std::dynamic_pointer_cast<FtsIndexParams>(field_schema->index_params());
+  if (!fts_idx_param) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "FTS field has no FtsIndexParams: ", field_name));
+  }
+  auto pipeline_result = fts_idx_param->create_pipeline();
+  if (!pipeline_result.has_value()) {
+    return tl::make_unexpected(Status::InternalError(
+        "Failed to create tokenizer pipeline for field: ", field_name, " ",
+        pipeline_result.error().message()));
+  }
+  auto &pipeline = pipeline_result.value();
+
   fts::FtsAstNodePtr ast;
   if (has_query) {
-    // Structured query expression: parse via ANTLR grammar.
+    // Structured query expression: parse via ANTLR grammar; phrase/term
+    // bodies are tokenized through the same pipeline used at index time.
     fts::FtsQueryParser fts_parser;
-    ast = fts_parser.parse(fts.query_string_, default_op);
+    ast = fts_parser.parse(fts.query_string_, pipeline, default_op);
     if (!ast) {
       LOG_ERROR("FTS query parse failed: %s", fts_parser.err_msg().c_str());
       return tl::make_unexpected(Status::InvalidArgument(
           "FTS query parse failed: ", fts_parser.err_msg()));
     }
   } else {
-    // Natural language match_string: tokenize using the field's configured
-    // tokenizer pipeline, then combine tokens with default_operator.
-    auto *field_schema = collection->get_field(field_name);
-    if (!field_schema) {
-      return tl::make_unexpected(
-          Status::InvalidArgument("FTS field not found: ", field_name));
-    }
-    auto fts_idx_param =
-        std::dynamic_pointer_cast<FtsIndexParams>(field_schema->index_params());
-    if (!fts_idx_param) {
-      return tl::make_unexpected(Status::InvalidArgument(
-          "FTS field has no FtsIndexParams: ", field_name));
-    }
-    auto pipeline_result = fts_idx_param->create_pipeline();
-    if (!pipeline_result.has_value()) {
-      return tl::make_unexpected(Status::InternalError(
-          "Failed to create tokenizer pipeline for field: ", field_name, " ",
-          pipeline_result.error().message()));
-    }
-    auto &pipeline = pipeline_result.value();
+    // Natural language match_string: tokenize and combine with default_op.
     auto tokens = pipeline->process(fts.match_string_);
     if (tokens.empty()) {
       return tl::make_unexpected(

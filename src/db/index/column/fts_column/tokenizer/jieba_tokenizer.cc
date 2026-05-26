@@ -111,6 +111,14 @@ std::vector<Token> JiebaTokenizer::tokenize(const std::string &text) const {
   }
 
   tokens.reserve(words.size());
+  // CutForSearch (and other cut modes) emit overlapping sub-words right after
+  // their long parent word. Using the cppjieba unicode_offset as position
+  // breaks PhraseDocIterator's strict anchor+1 adjacency check because
+  // overlapping tokens share a unicode_offset and gaps appear between long
+  // words. Use the output sequence index instead so doc and query tokenized
+  // with the same cut_mode produce contiguous, monotonically increasing
+  // positions, which makes phrase matching land on the same subsequence.
+  uint32_t seq = 0;
   for (const auto &word : words) {
     if (word.word.empty()) {
       continue;
@@ -118,7 +126,7 @@ std::vector<Token> JiebaTokenizer::tokenize(const std::string &text) const {
     Token token;
     token.text = word.word;
     token.offset = word.offset;
-    token.position = word.unicode_offset;
+    token.position = seq++;
     tokens.push_back(std::move(token));
   }
 
