@@ -13,6 +13,9 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
+#include <numeric>
+#include <vector>
 #include <zvec/core/framework/index_searcher.h>
 #include "ivf_entity.h"
 
@@ -33,7 +36,7 @@ class IVFIndexProvider : public IndexProvider {
  public:
   //! Create a new iterator
   virtual Iterator::Pointer create_iterator(void) override {
-    return Iterator::Pointer(new (std::nothrow) Iterator(entity_));
+    return Iterator::Pointer(new (std::nothrow) SortedIterator(entity_));
   }
 
   //! Retrieve count of vectors
@@ -67,13 +70,62 @@ class IVFIndexProvider : public IndexProvider {
   }
 
  private:
+  class SortedIterator : public IndexProvider::Iterator {
+   public:
+    SortedIterator(const IVFEntity::Pointer &entity) : entity_(entity) {
+      count_ = entity_->vector_count();
+      mapping_ = entity_->get_key_order_mapping();
+      if (!mapping_) {
+        // Fallback: compute sorting if mapping segment is unavailable
+        fallback_.resize(count_);
+        std::iota(fallback_.begin(), fallback_.end(), size_t(0));
+        std::sort(fallback_.begin(), fallback_.end(), [&](size_t a, size_t b) {
+          return entity_->get_key(a) < entity_->get_key(b);
+        });
+      }
+    }
+
+    //! Retrieve pointer of data
+    //! NOTICE: the vec feature will be changed after iterating to next, so
+    //! the caller need to keep a copy of it before iterator to next vector
+    virtual const void *data(void) const override {
+      return entity_->get_vector(current_local_id());
+    }
+
+    //! Test if the iterator is valid
+    virtual bool is_valid(void) const override {
+      return pos_ < count_;
+    }
+
+    //! Retrieve primary key
+    virtual uint64_t key(void) const override {
+      return entity_->get_key(current_local_id());
+    }
+
+    //! Next iterator
+    virtual void next(void) override {
+      ++pos_;
+    }
+
+   private:
+    size_t current_local_id() const {
+      return mapping_ ? static_cast<size_t>(mapping_[pos_]) : fallback_[pos_];
+    }
+
+    //! Members
+    IVFEntity::Pointer entity_;
+    const uint32_t *mapping_{nullptr};  // points into mapping_ segment data
+    std::vector<size_t> fallback_;      // used only if mapping_ unavailable
+    size_t count_{0};
+    size_t pos_{0};
+  };
+
+  //! Original sequential iterator (kept for potential internal use)
   class Iterator : public IndexProvider::Iterator {
    public:
     Iterator(const IVFEntity::Pointer &entity) : entity_(entity) {}
 
     //! Retrieve pointer of data
-    //! NOTICE: the vec feature will be changed after iterating to next, so
-    //! the caller need to keep a copy of it before iterator to next vector
     virtual const void *data(void) const override {
       return entity_->get_vector(index_);
     }

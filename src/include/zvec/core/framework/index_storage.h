@@ -65,6 +65,7 @@ class IndexStorage : public IndexModule {
     MemoryBlock(const MemoryBlock &rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
           this->reset(rhs.data_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:

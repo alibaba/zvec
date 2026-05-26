@@ -3099,6 +3099,15 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
                                    status.message());
   }
 
+  // write new column
+  const std::string &filter_column = scalar_blocks[0].columns()[0];
+  std::vector<BlockMeta> filter_column_blocks;
+  std::copy_if(scalar_blocks.begin(), scalar_blocks.end(),
+               std::back_inserter(filter_column_blocks),
+               [&filter_column](const BlockMeta &block) {
+                 return block.contain_column(filter_column);
+               });
+
   std::shared_ptr<arrow::ChunkedArray> new_column;
   auto expected_type = arrow_field->type();
   if (expression.empty()) {
@@ -3106,8 +3115,12 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
       return Status::InvalidArgument(
           "Add column is not supported for non-nullable column");
     }
+    int64_t total_doc_count = 0;
+    for (const auto &block : filter_column_blocks) {
+      total_doc_count += block.doc_count_;
+    }
     arrow::Result<std::shared_ptr<arrow::Array>> result =
-        arrow::MakeArrayOfNull(expected_type, scalar_blocks[0].doc_count_);
+        arrow::MakeArrayOfNull(expected_type, total_doc_count);
     if (!result.ok()) {
       return Status::InternalError("MakeArrayOfNull failed");
     }
@@ -3143,15 +3156,6 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
     }
     new_column = result_table->column(0);
   }
-
-  // write new column
-  const std::string &filter_column = scalar_blocks[0].columns()[0];
-  std::vector<BlockMeta> filter_column_blocks;
-  std::copy_if(scalar_blocks.begin(), scalar_blocks.end(),
-               std::back_inserter(filter_column_blocks),
-               [&filter_column](const BlockMeta &block) {
-                 return block.contain_column(filter_column);
-               });
 
   std::vector<BlockMeta> new_blocks;
   status = WriteColumnInBlocks(

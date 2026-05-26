@@ -905,6 +905,15 @@ class BufferStorage : public IndexStorage {
     segments_.clear();
     chain_headers_.clear();
     memset(&footer_, 0, sizeof(footer_));
+    {
+      std::lock_guard<std::mutex> tmp_latch(tmp_buffers_mutex_);
+      for (char *p : tmp_buffers_) {
+        if (p) {
+          ailego_free(p);
+        }
+      }
+      tmp_buffers_.clear();
+    }
     buffer_pool_handle_.reset();
     buffer_pool_.reset();
     max_segment_size_ = 0;
@@ -1250,6 +1259,9 @@ class BufferStorage : public IndexStorage {
     AllShardsExclusiveLatch &operator=(const AllShardsExclusiveLatch &) =
         delete;
   };
+
+  std::vector<char *> tmp_buffers_{};
+  mutable std::mutex tmp_buffers_mutex_{};
 
   // buffer manager
   std::string file_name_;
