@@ -263,7 +263,8 @@ int VecBufferPool::init() {
   if (!page_table_.init(block_num)) {
     LOG_ERROR(
         "VecBufferPool::init: page_table_ init failed for file[%s], "
-        "file_size=%zu, block_num=%zu (exceeds VectorPageTable::kMaxEntries=%zu)",
+        "file_size=%zu, block_num=%zu (exceeds "
+        "VectorPageTable::kMaxEntries=%zu)",
         file_name_.c_str(), file_size_, block_num,
         VectorPageTable::kMaxEntries);
     return -1;

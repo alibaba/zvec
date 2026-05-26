@@ -262,8 +262,7 @@ class BufferStorage : public IndexStorage {
                   owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      if (ailego_unlikely(
-              owner_->corrupted_.load(std::memory_order_acquire))) {
+      if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
         LOG_ERROR(
             "WrappedSegment::write: storage is marked corrupted, refusing "
             "write, file[%s], id[%zu]",
@@ -1153,8 +1152,7 @@ class BufferStorage : public IndexStorage {
         //    would follow to garbage on the next open.  Mark the storage
         //    corrupted so subsequent writes refuse to proceed.
         if (buffer_pool_handle_->write_meta(
-                saved_old_footer_file_offset,
-                sizeof(saved_footer_before_split),
+                saved_old_footer_file_offset, sizeof(saved_footer_before_split),
                 reinterpret_cast<const char *>(&saved_footer_before_split)) !=
             0) {
           LOG_ERROR(
