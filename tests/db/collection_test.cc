@@ -2589,50 +2589,20 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
-  auto run_repeated_optimize_test = [&](IndexType index_type,
-                                        QuantizeType quantize_type) {
+  auto run_repeated_optimize_test = [&](IndexParams::Ptr index_params) {
+    ASSERT_NE(index_params, nullptr);
     SCOPED_TRACE(testing::Message()
-                 << "index_type=" << magic_enum::enum_name(index_type)
-                 << " quantize_type=" << magic_enum::enum_name(quantize_type));
+                 << "index_params=" << index_params->to_string());
 
     FileHelper::RemoveDirectory(col_path);
     int doc_count = 1000;
-    CollectionSchema::Ptr schema;
-    switch (index_type) {
-      case IndexType::FLAT:
-        schema = TestHelper::CreateSchemaWithVectorIndex(
-            false, "demo",
-            std::make_shared<FlatIndexParams>(MetricType::IP, quantize_type));
-        break;
-      case IndexType::HNSW:
-        schema = TestHelper::CreateSchemaWithVectorIndex(
-            false, "demo",
-            std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200,
-                                              quantize_type));
-        break;
-      case IndexType::IVF:
-        schema = TestHelper::CreateSchemaWithVectorIndex(
-            false, "demo",
-            std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
-                                             quantize_type));
-        break;
-#if RABITQ_SUPPORTED
-      case IndexType::HNSW_RABITQ:
-        schema = TestHelper::CreateSchemaWithVectorIndex(
-            false, "demo",
-            std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7, 256, 16,
-                                                    200, 0));
-        break;
-#endif
-      default:
-        FAIL() << "unsupported index_type: "
-               << magic_enum::enum_name(index_type);
-    }
+    auto schema =
+        TestHelper::CreateSchemaWithVectorIndex(false, "demo", index_params);
     auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
 
-    const bool tracks_completeness = (index_type != IndexType::FLAT);
+    const bool tracks_completeness = (index_params->type() != IndexType::FLAT);
 
     auto check_doc = [&]() {
       for (int i = 0; i < doc_count; i++) {
@@ -2769,15 +2739,23 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   };
 
 
-  run_repeated_optimize_test(IndexType::FLAT, QuantizeType::UNDEFINED);
-  run_repeated_optimize_test(IndexType::FLAT, QuantizeType::FP16);
-  run_repeated_optimize_test(IndexType::HNSW, QuantizeType::UNDEFINED);
-  run_repeated_optimize_test(IndexType::HNSW, QuantizeType::FP16);
-  run_repeated_optimize_test(IndexType::IVF, QuantizeType::UNDEFINED);
-  run_repeated_optimize_test(IndexType::IVF, QuantizeType::FP16);
+  run_repeated_optimize_test(std::make_shared<FlatIndexParams>(
+      MetricType::IP, QuantizeType::UNDEFINED));
+  run_repeated_optimize_test(
+      std::make_shared<FlatIndexParams>(MetricType::IP, QuantizeType::FP16));
+  run_repeated_optimize_test(std::make_shared<HnswIndexParams>(
+      MetricType::IP, 16, 200, QuantizeType::UNDEFINED));
+  run_repeated_optimize_test(std::make_shared<HnswIndexParams>(
+      MetricType::IP, 16, 200, QuantizeType::FP16));
+  run_repeated_optimize_test(std::make_shared<IVFIndexParams>(
+      MetricType::IP, 10, 4, false, QuantizeType::UNDEFINED));
+  run_repeated_optimize_test(std::make_shared<IVFIndexParams>(
+      MetricType::IP, 10, 4, false, QuantizeType::FP16));
 #if RABITQ_SUPPORTED
   // TODO: re-enable once HNSW_RABITQ compact-path RaBitQ training is fixed.
-  // run_repeated_optimize_test(IndexType::HNSW_RABITQ, QuantizeType::RABITQ);
+  // run_repeated_optimize_test(
+  //     std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7, 256, 16,
+  //                                             200, 0));
 #endif
 }
 
