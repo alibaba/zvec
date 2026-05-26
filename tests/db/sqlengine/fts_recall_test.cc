@@ -393,6 +393,13 @@ TEST_F(FtsRecallTest, MatchStringMultipleTokens) {
   EXPECT_EQ(result->size(), 5u);
 }
 
+// match_string analysing to zero tokens → empty result, not an error.
+TEST_F(FtsRecallTest, MatchStringEmptyTokensReturnsNoResults) {
+  auto result = fts_match("   \t  ");
+  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  EXPECT_TRUE(result->empty());
+}
+
 // ============================================================
 // default_operator tests
 // ============================================================

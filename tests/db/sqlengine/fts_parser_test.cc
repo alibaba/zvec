@@ -421,6 +421,24 @@ TEST_F(FtsParserTest, UnclosedParenReturnsNull) {
 }
 
 // ============================================================
+// Empty-AST cases: grammar valid, analyzer drops every term → EmptyNode.
+// ============================================================
+
+TEST_F(FtsParserTest, PunctuationOnlyReturnsEmpty) {
+  auto ast = parse("!!!");
+  ASSERT_NE(ast, nullptr);
+  EXPECT_EQ(ast->type(), FtsNodeType::EMPTY);
+  EXPECT_TRUE(err_msg().empty());
+}
+
+TEST_F(FtsParserTest, MultiplePunctuationTermsReturnsEmpty) {
+  auto ast = parse("!!! ??? ...");
+  ASSERT_NE(ast, nullptr);
+  EXPECT_EQ(ast->type(), FtsNodeType::EMPTY);
+  EXPECT_TRUE(err_msg().empty());
+}
+
+// ============================================================
 // NOT as a binary AND-NOT operator
 // ============================================================
 

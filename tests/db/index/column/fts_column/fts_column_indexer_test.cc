@@ -395,6 +395,58 @@ TEST_F(FtsColumnIndexerTest, SearchImplicitAdjacency) {
 }
 
 // ============================================================
+// search() - EmptyNode (matches zero docs)
+// ============================================================
+
+TEST_F(FtsColumnIndexerTest, SearchEmptyNodeReturnsNoResults) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "foo bar").has_value());
+
+  EmptyNode empty;
+  zvec::fts::FtsQueryParams qp;
+  qp.topk = 10;
+  auto ret = indexer->search(empty, qp);
+  ASSERT_TRUE(ret.has_value());
+  EXPECT_TRUE(ret.value().empty());
+}
+
+TEST_F(FtsColumnIndexerTest, SearchAndWithEmptyChildReturnsNoResults) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "hello foo").has_value());
+
+  // AND with EmptyNode child → whole conjunction matches nothing.
+  AndNode and_node;
+  and_node.children.push_back(std::make_unique<EmptyNode>());
+  and_node.children.push_back(std::make_unique<TermNode>("hello"));
+
+  zvec::fts::FtsQueryParams qp;
+  qp.topk = 10;
+  auto ret = indexer->search(and_node, qp);
+  ASSERT_TRUE(ret.has_value());
+  EXPECT_TRUE(ret.value().empty());
+}
+
+TEST_F(FtsColumnIndexerTest, SearchOrWithEmptyChildIgnoresIt) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "foo bar").has_value());
+
+  // OR with EmptyNode child → empty is skipped, equivalent to OR(hello).
+  OrNode or_node;
+  or_node.children.push_back(std::make_unique<EmptyNode>());
+  or_node.children.push_back(std::make_unique<TermNode>("hello"));
+
+  zvec::fts::FtsQueryParams qp;
+  qp.topk = 10;
+  auto ret = indexer->search(or_node, qp);
+  ASSERT_TRUE(ret.has_value());
+  ASSERT_EQ(ret.value().size(), 1u);
+  EXPECT_EQ(ret.value()[0].doc_id, 0ull);
+}
+
+// ============================================================
 // search() - must_not modifier
 // ============================================================
 

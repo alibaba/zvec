@@ -183,8 +183,9 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     // Natural language match_string: tokenize and combine with default_op.
     auto tokens = pipeline->process(fts.match_string_);
     if (tokens.empty()) {
-      return tl::make_unexpected(
-          Status::InvalidArgument("match_string produced no tokens"));
+      // Analyzer dropped everything → zero-doc query, not an error.
+      return std::make_shared<FtsCondInfo>(field_name,
+                                           std::make_unique<fts::EmptyNode>());
     }
     if (tokens.size() == 1) {
       ast = std::make_unique<fts::TermNode>(std::move(tokens[0].text));

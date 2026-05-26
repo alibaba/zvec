@@ -27,6 +27,7 @@ enum class FtsNodeType {
   PHRASE,  // Phrase node, e.g., "\"exact phrase\""
   AND,     // AND combination node (intersection)
   OR,      // OR combination node (union)
+  EMPTY,   // Matches zero documents (analogous to Lucene MatchNoDocsQuery).
 };
 
 /*! AST node base class
@@ -103,6 +104,20 @@ struct PhraseNode : public FtsAstNode {
     }
     result += "\"";
     return result;
+  }
+};
+
+/*! Match-nothing node — used when the analyzer drops every term (e.g.
+ *  pure punctuation or all stop-words). Composes naturally with AND/OR so
+ *  callers don't have to special-case nullptr.
+ */
+struct EmptyNode : public FtsAstNode {
+  FtsNodeType type() const override {
+    return FtsNodeType::EMPTY;
+  }
+
+  std::string text() const override {
+    return modifier_prefix() + "<empty>";
   }
 };
 

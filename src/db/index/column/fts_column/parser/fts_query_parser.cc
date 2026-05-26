@@ -380,6 +380,11 @@ FtsAstNodePtr FtsQueryParser::parse(const std::string &query,
     if (!result && !err_msg_.empty()) {
       return nullptr;
     }
+    if (!result) {
+      // Grammar valid but analyzer dropped every term: return EmptyNode so
+      // callers don't have to treat zero-doc queries as parse errors.
+      return std::make_unique<EmptyNode>();
+    }
     return result;
 
   } catch (const std::exception &exception) {

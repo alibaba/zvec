@@ -274,6 +274,9 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_iterator(
       return build_and_iterator(static_cast<const AndNode &>(node));
     case FtsNodeType::OR:
       return build_or_iterator(static_cast<const OrNode &>(node));
+    case FtsNodeType::EMPTY:
+      // Null iterator reuses the existing AND/OR/search() null-handling path.
+      return DocIteratorPtr{nullptr};
     default:
       return tl::make_unexpected(Status::InternalError(
           "FtsColumnIndexer::build_iterator: unknown node type. field=",
