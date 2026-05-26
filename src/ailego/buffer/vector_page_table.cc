@@ -60,15 +60,25 @@ namespace ailego {
 
 const size_t kVectorPageSize = MemoryHelper::PageSize();
 
-void VectorPageTable::init(size_t entry_num) {
-  // Free old segments if any.
-  for (size_t i = 0; i < segment_count_; ++i) {
+bool VectorPageTable::init(size_t entry_num) {
+  size_t need_segments = (entry_num + kSegmentSize - 1) / kSegmentSize;
+  if (need_segments > kMaxSegments) {
+    LOG_ERROR(
+        "VectorPageTable::init: entry_num=%zu exceeds capacity "
+        "(kMaxEntries=%zu, need_segments=%zu, kMaxSegments=%zu); "
+        "refusing to init.",
+        entry_num, kMaxEntries, need_segments, kMaxSegments);
+    return false;
+  }
+  // Free old segments if any.  init() is only called from VecBufferPool::init
+  // which is single-threaded with respect to other accesses, so a relaxed
+  // load of segment_count_ is sufficient here.
+  size_t old_count = segment_count_.load(std::memory_order_relaxed);
+  for (size_t i = 0; i < old_count; ++i) {
     delete[] segments_[i];
     segments_[i] = nullptr;
   }
-  entry_num_ = entry_num;
-  segment_count_ = (entry_num + kSegmentSize - 1) / kSegmentSize;
-  for (size_t s = 0; s < segment_count_; ++s) {
+  for (size_t s = 0; s < need_segments; ++s) {
     segments_[s] = new Entry[kSegmentSize];
     for (size_t i = 0; i < kSegmentSize; ++i) {
       segments_[s][i].ref_count.store(std::numeric_limits<int>::min());
@@ -78,12 +88,33 @@ void VectorPageTable::init(size_t entry_num) {
       segments_[s][i].file_offset = 0;
     }
   }
+  // Publish new segments to readers.  segment_count_ is published first
+  // (release) so that a reader that acquire-loads segment_count_ before
+  // entry_num_ also sees a consistent segment table; entry_num_ is the
+  // primary synchronization point used by callers via entry_num().
+  segment_count_.store(need_segments, std::memory_order_release);
+  entry_num_.store(entry_num, std::memory_order_release);
+  return true;
 }
 
-void VectorPageTable::extend(size_t new_entry_num) {
-  if (new_entry_num <= entry_num_) return;
+bool VectorPageTable::extend(size_t new_entry_num) {
+  // Relaxed read is fine: extend() is serialized by the caller (extend_file
+  // is invoked under the BufferStorage write latch).  No other writer races
+  // with us on entry_num_ / segment_count_.
+  if (new_entry_num <= entry_num_.load(std::memory_order_relaxed)) {
+    return true;
+  }
   size_t new_segment_count = (new_entry_num + kSegmentSize - 1) / kSegmentSize;
-  for (size_t s = segment_count_; s < new_segment_count; ++s) {
+  if (new_segment_count > kMaxSegments) {
+    LOG_ERROR(
+        "VectorPageTable::extend: new_entry_num=%zu exceeds capacity "
+        "(kMaxEntries=%zu, new_segment_count=%zu, kMaxSegments=%zu); "
+        "refusing to extend.",
+        new_entry_num, kMaxEntries, new_segment_count, kMaxSegments);
+    return false;
+  }
+  size_t old_count = segment_count_.load(std::memory_order_relaxed);
+  for (size_t s = old_count; s < new_segment_count; ++s) {
     segments_[s] = new Entry[kSegmentSize];
     for (size_t i = 0; i < kSegmentSize; ++i) {
       segments_[s][i].ref_count.store(std::numeric_limits<int>::min());
@@ -93,12 +124,17 @@ void VectorPageTable::extend(size_t new_entry_num) {
       segments_[s][i].file_offset = 0;
     }
   }
-  segment_count_ = new_segment_count;
-  entry_num_ = new_entry_num;
+  // Publish in the same order as init(): segment_count_ first, entry_num_
+  // last.  Both are release-stores so that the prior segment allocation /
+  // Entry initialization is visible to any reader that acquire-loads either
+  // counter (typically via entry_num()).
+  segment_count_.store(new_segment_count, std::memory_order_release);
+  entry_num_.store(new_entry_num, std::memory_order_release);
+  return true;
 }
 
 char *VectorPageTable::acquire_block(block_id_t block_id) {
-  assert(block_id < entry_num_);
+  assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
   while (true) {
     int current_count = e.ref_count.load(std::memory_order_acquire);
@@ -114,7 +150,7 @@ char *VectorPageTable::acquire_block(block_id_t block_id) {
 }
 
 void VectorPageTable::release_block(block_id_t block_id) {
-  assert(block_id < entry_num_);
+  assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
 
   if (e.ref_count.fetch_sub(1, std::memory_order_release) == 1) {
@@ -133,7 +169,7 @@ void VectorPageTable::release_block(block_id_t block_id) {
 }
 
 void VectorPageTable::evict_block(block_id_t block_id) {
-  assert(block_id < entry_num_);
+  assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
   int expected = 0;
   // Two-phase eviction to prevent data race on e.buffer with
@@ -163,7 +199,7 @@ void VectorPageTable::evict_block(block_id_t block_id) {
 
 char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
                                           size_t file_offset) {
-  assert(block_id < entry_num_);
+  assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
   while (true) {
     int current_count = e.ref_count.load(std::memory_order_acquire);
@@ -224,7 +260,14 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
 
 int VecBufferPool::init() {
   size_t block_num = (file_size_ + kVectorPageSize - 1) / kVectorPageSize;
-  page_table_.init(block_num);
+  if (!page_table_.init(block_num)) {
+    LOG_ERROR(
+        "VecBufferPool::init: page_table_ init failed for file[%s], "
+        "file_size=%zu, block_num=%zu (exceeds VectorPageTable::kMaxEntries=%zu)",
+        file_name_.c_str(), file_size_, block_num,
+        VectorPageTable::kMaxEntries);
+    return -1;
+  }
   block_mutexes_ =
       std::make_unique<std::mutex[]>(VecBufferPool::kMutexBucketCount);
   LOG_DEBUG("entry num: %zu, file_size: %zu", page_table_.entry_num(),
@@ -393,13 +436,26 @@ int VecBufferPool::flush_all() {
     return 0;
   }
   int rc = 0;
+  size_t total_dirty = 0;
+  size_t fail_count = 0;
   for (size_t i = 0; i < page_table_.entry_num(); ++i) {
     if (page_table_.is_block_dirty(i)) {
+      ++total_dirty;
       int r = page_table_.flush_block(i);
       if (r != 0) {
         rc = r;
+        ++fail_count;
       }
     }
+  }
+  if (fail_count != 0) {
+    // Aggregated diagnostic so that callers (notably ~VecBufferPool, which
+    // discards the return value) cannot silently lose dirty pages: any
+    // unflushed page at this point means the on-disk image is now stale.
+    LOG_ERROR(
+        "VecBufferPool::flush_all: %zu/%zu dirty page(s) failed to flush, "
+        "file[%s] last_rc=%d -- on-disk data may be stale.",
+        fail_count, total_dirty, file_name_.c_str(), rc);
   }
   return rc;
 }
@@ -412,6 +468,19 @@ bool VecBufferPool::extend_file(size_t new_size) {
   }
   if (new_size <= file_size_) {
     return true;
+  }
+  // Pre-validate against the page table's static capacity BEFORE mutating
+  // any on-disk state.  Otherwise a successful ftruncate followed by a
+  // failed page_table_.extend() would leave the file size and the page
+  // table out of sync (file grew, but no Entry slots cover the new range).
+  size_t new_entry_num = (new_size + kVectorPageSize - 1) / kVectorPageSize;
+  if (new_entry_num > VectorPageTable::kMaxEntries) {
+    LOG_ERROR(
+        "extend_file: requested new_size=%zu would require %zu page entries, "
+        "exceeding VectorPageTable::kMaxEntries=%zu (file=%s).",
+        new_size, new_entry_num, VectorPageTable::kMaxEntries,
+        file_name_.c_str());
+    return false;
   }
 #if defined(_MSC_VER)
   if (_chsize_s(fd_, static_cast<int64_t>(new_size)) != 0) {
@@ -429,9 +498,16 @@ bool VecBufferPool::extend_file(size_t new_size) {
   file_size_ = new_size;
   // Extend the page table to cover the new file range.  Existing entries
   // stay at their original addresses so concurrent readers are unaffected.
-  size_t new_entry_num = (file_size_ + kVectorPageSize - 1) / kVectorPageSize;
+  // Capacity has already been validated above, so this should never fail;
+  // a failure here would indicate a programming error and is logged.
   if (new_entry_num > page_table_.entry_num()) {
-    page_table_.extend(new_entry_num);
+    if (!page_table_.extend(new_entry_num)) {
+      LOG_ERROR(
+          "extend_file: page_table_.extend(%zu) failed unexpectedly after "
+          "capacity pre-check (file=%s, new_size=%zu).",
+          new_entry_num, file_name_.c_str(), new_size);
+      return false;
+    }
   }
   return true;
 }

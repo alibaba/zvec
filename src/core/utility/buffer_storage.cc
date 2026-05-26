@@ -31,30 +31,16 @@
 namespace zvec {
 namespace core {
 
-// Thread-local reusable scratch buffer for cross-page reads in the
-// read(const void**) overload.  Avoids allocating a new buffer on
-// every cross-page read by reusing the same allocation on each thread.  The
-// returned pointer is valid only until the next cross-page read() on
-// the same thread -- matching the single-page path's transient
-// lifetime (ref released immediately, page may be evicted any time).
-struct CrossPageScratch {
-  char *buf = nullptr;
-  size_t cap = 0;
-  ~CrossPageScratch() {
-    if (buf) ailego_free(buf);
-  }
-  char *ensure(size_t len) {
-    if (cap < len) {
-      if (buf) ailego_free(buf);
-      // C11 aligned_alloc requires size to be a multiple of alignment.
-      const size_t kAlign = 4096UL;
-      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      buf = static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
-      cap = buf ? alloc_size : 0;
-    }
-    return buf;
-  }
-};
+// Cross-page reads through the legacy read(const void**) overload need a
+// buffer whose lifetime is at least as long as the BufferStorage itself,
+// because callers store the returned pointer indefinitely (the historical
+// contract is "pointer is valid until the storage is closed").  Earlier
+// revisions used a thread_local scratch buffer here, which subtly broke
+// that contract: the next cross-page read(const void**) on the SAME thread
+// silently overwrote the buffer, dangling every previously-handed-out
+// pointer.  We now allocate per call and hand ownership to the storage's
+// tmp_buffers_ list (freed in close_index()).  Callers that want bounded
+// memory should migrate to the read(MemoryBlock&) overload.
 
 /*! Buffer Storage
  */
@@ -166,24 +152,37 @@ class BufferStorage : public IndexStorage {
           return 0;
         }
         *data = raw;
-        // Release the buffer-pool ref count acquired by get_single_page().
-        // The pointer remains valid as long as the page is not evicted; callers
-        // needing a stable pin should use the read(MemoryBlock&) overload.
-        owner_->buffer_pool_handle_->release_one(page_id);
+        // NOTE: get_single_page() acquires a pin on the page; we intentionally
+        // do NOT release it here.  The legacy contract of read(const void**)
+        // is that the returned pointer remains valid until the storage is
+        // closed (an implicit, never-released pin).  Many call sites rely on
+        // this lifetime guarantee.  Callers that want explicit pin/release
+        // semantics should migrate to the read(MemoryBlock&) overload, which
+        // hands the ref-count to a RAII MemoryBlock.
+        (void)page_id;
         return len;
       }
-      // Reuse a thread-local scratch buffer to avoid allocating on
-      // every cross-page read.  The pointer is valid until the next
-      // cross-page read(const void**) on the same thread.
-      thread_local CrossPageScratch scratch;
-      char *tmp = scratch.ensure(len);
+      // Cross-page path: allocate a buffer whose ownership is handed to
+      // owner_->tmp_buffers_ so that the returned pointer remains valid
+      // for the entire lifetime of the BufferStorage (matching the
+      // single-page "pinned forever" semantics established above).
+      // C11 aligned_alloc requires size to be a multiple of alignment.
+      const size_t kAlign = 4096UL;
+      size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
+      char *tmp =
+          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
       if (!tmp) {
         *data = nullptr;
         return 0;
       }
       if (!owner_->buffer_pool_handle_->read_range(abs_offset, len, tmp)) {
+        ailego_free(tmp);
         *data = nullptr;
         return 0;
+      }
+      {
+        std::lock_guard<std::mutex> tmp_latch(owner_->tmp_buffers_mutex_);
+        owner_->tmp_buffers_.push_back(tmp);
       }
       *data = tmp;
       return len;
@@ -261,6 +260,14 @@ class BufferStorage : public IndexStorage {
                           !owner_->buffer_pool_)) {
         LOG_ERROR("WrappedSegment::write: pool is null, file[%s], id[%zu]",
                   owner_->file_name_.c_str(), segment_id_);
+        return 0;
+      }
+      if (ailego_unlikely(
+              owner_->corrupted_.load(std::memory_order_acquire))) {
+        LOG_ERROR(
+            "WrappedSegment::write: storage is marked corrupted, refusing "
+            "write, file[%s], id[%zu]",
+            owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
       // In read-only mode the write is a silent no-op so that callers that
@@ -803,6 +810,13 @@ class BufferStorage : public IndexStorage {
                 file_name_.c_str());
       return IndexError_Runtime;
     }
+    if (corrupted_.load(std::memory_order_acquire)) {
+      LOG_ERROR(
+          "BufferStorage::flush_index skipped: storage is marked corrupted, "
+          "file[%s]",
+          file_name_.c_str());
+      return IndexError_Runtime;
+    }
     if (!buffer_pool_->writable()) {
       // Read-only pool: nothing to flush.
       index_dirty_.store(false, std::memory_order_relaxed);
@@ -831,10 +845,29 @@ class BufferStorage : public IndexStorage {
     // stored by a concurrent refresh_index() during this flush.
     const uint64_t consumed_chkp =
         pending_check_point_.load(std::memory_order_relaxed);
+    // Restore consumed_chkp into pending_check_point_ on any failure path
+    // below so that the in-flight value is not lost.  Although the current
+    // implementation only LOADs consumed_chkp (so pending already holds it),
+    // this explicit monotonic CAS-back makes the invariant
+    // (pending_check_point_ >= consumed_chkp) self-evident and resilient to
+    // future refactors that might exchange/zero pending eagerly.  Uses the
+    // same CAS-loop max as refresh_index() so a concurrent larger chkp
+    // wins.
+    auto restore_chkp_on_failure = [this, consumed_chkp]() {
+      if (consumed_chkp == 0) return;
+      uint64_t cur = pending_check_point_.load(std::memory_order_relaxed);
+      while (consumed_chkp > cur) {
+        if (pending_check_point_.compare_exchange_weak(
+                cur, consumed_chkp, std::memory_order_relaxed)) {
+          break;
+        }
+      }
+    };
     // Flush all dirty data blocks to the backing file first.
     if (buffer_pool_handle_->flush_all() != 0) {
       // Restore dirty so the next flush_index() retries.
       index_dirty_.store(true, std::memory_order_relaxed);
+      restore_chkp_on_failure();
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
       return IndexError_WriteData;
     }
@@ -857,6 +890,7 @@ class BufferStorage : public IndexStorage {
         LOG_ERROR("Failed to write segment meta: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
         index_dirty_.store(true, std::memory_order_relaxed);
+        restore_chkp_on_failure();
         return IndexError_WriteData;
       }
       // Write the updated footer back to disk.
@@ -866,6 +900,7 @@ class BufferStorage : public IndexStorage {
         LOG_ERROR("Failed to write footer: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
         index_dirty_.store(true, std::memory_order_relaxed);
+        restore_chkp_on_failure();
         return IndexError_WriteData;
       }
     }
@@ -922,6 +957,7 @@ class BufferStorage : public IndexStorage {
     current_header_start_offset_ = 0;
     pending_check_point_.store(0, std::memory_order_relaxed);
     index_dirty_.store(false, std::memory_order_relaxed);
+    corrupted_.store(false, std::memory_order_relaxed);
   }
 
   //! Append a segment into storage.
@@ -937,6 +973,13 @@ class BufferStorage : public IndexStorage {
 
     if (!buffer_pool_ || !buffer_pool_handle_) {
       LOG_ERROR("append_segment: pool not ready, file[%s]", file_name_.c_str());
+      return IndexError_Runtime;
+    }
+    if (corrupted_.load(std::memory_order_acquire)) {
+      LOG_ERROR(
+          "append_segment: storage is marked corrupted, refusing to append, "
+          "file[%s], id[%s]",
+          file_name_.c_str(), id.c_str());
       return IndexError_Runtime;
     }
     if (!buffer_pool_->writable()) {
@@ -1012,11 +1055,23 @@ class BufferStorage : public IndexStorage {
       }
 
       // Best-effort rollback: restore original old footer on disk if a
-      // subsequent disk write in this split block fails.
-      auto undo_old_footer = [&]() {
-        buffer_pool_handle_->write_meta(
-            chain->footer_file_offset, sizeof(saved_footer_before_split),
-            reinterpret_cast<const char *>(&saved_footer_before_split));
+      // subsequent disk write in this split block fails.  If THIS rollback
+      // also fails to land on disk, the file is now in an inconsistent
+      // state (old footer points forward to a partially-written new chain
+      // region) -- raise the corrupted_ flag so subsequent writes refuse
+      // to compound the damage.
+      auto undo_old_footer = [this, chain, &saved_footer_before_split]() {
+        if (buffer_pool_handle_->write_meta(
+                chain->footer_file_offset, sizeof(saved_footer_before_split),
+                reinterpret_cast<const char *>(&saved_footer_before_split)) !=
+            0) {
+          LOG_ERROR(
+              "append_segment: rollback write of old footer FAILED, file[%s] "
+              "is now in an inconsistent state -- marking storage as "
+              "corrupted; further writes will be rejected.",
+              file_name_.c_str());
+          corrupted_.store(true, std::memory_order_release);
+        }
       };
 
       // Extend the file and write the new chain's header + (zero) footer.
@@ -1093,9 +1148,22 @@ class BufferStorage : public IndexStorage {
                         saved_old_footer_file_offset,
                         saved_current_header_start]() {
         // 1. Restore old chain's footer on disk (drop forward link).
-        buffer_pool_handle_->write_meta(
-            saved_old_footer_file_offset, sizeof(saved_footer_before_split),
-            reinterpret_cast<const char *>(&saved_footer_before_split));
+        //    A failure here leaves the on-disk old footer still pointing
+        //    at the now-popped new chain region, which ParseToMapping()
+        //    would follow to garbage on the next open.  Mark the storage
+        //    corrupted so subsequent writes refuse to proceed.
+        if (buffer_pool_handle_->write_meta(
+                saved_old_footer_file_offset,
+                sizeof(saved_footer_before_split),
+                reinterpret_cast<const char *>(&saved_footer_before_split)) !=
+            0) {
+          LOG_ERROR(
+              "append_segment: rollback_step1 write of old footer FAILED, "
+              "file[%s] is now in an inconsistent state -- marking storage "
+              "as corrupted; further writes will be rejected.",
+              file_name_.c_str());
+          corrupted_.store(true, std::memory_order_release);
+        }
         // 2. Pop the freshly-pushed new chain from in-memory containers.
         //    The associated unique_ptr<MetaHeader> / unique_ptr<char[]>
         //    are released here.
@@ -1227,6 +1295,14 @@ class BufferStorage : public IndexStorage {
  private:
   std::atomic<bool> index_dirty_{false};
   std::atomic<uint64_t> pending_check_point_{0};
+  // Set to true when a rollback path inside append_segment() fails to
+  // restore the on-disk metadata to its pre-call state.  Once set, the
+  // storage is considered corrupted and all subsequent writes
+  // (write/append_segment/flush_index_locked) refuse to proceed so that
+  // we do not compound the damage on top of inconsistent on-disk state.
+  // The flag is only ever raised, never cleared, for the lifetime of the
+  // BufferStorage instance; close_index() resets the whole object.
+  std::atomic<bool> corrupted_{false};
 
   // Sharded reader-writer lock to eliminate cache-line ping-pong on the
   // reader counter.  Each concurrent reader hashes to its own shard,

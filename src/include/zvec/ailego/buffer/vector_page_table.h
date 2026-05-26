@@ -64,7 +64,11 @@ class VectorPageTable {
   }
   ~VectorPageTable() {
     BlockEvictionQueue::get_instance().set_invalid(this);
-    for (size_t i = 0; i < segment_count_; ++i) {
+    // Destructor runs without concurrent readers/writers (callers guarantee
+    // no live handles by the time the page table is destroyed), so a relaxed
+    // load is sufficient here.
+    size_t cnt = segment_count_.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < cnt; ++i) {
       delete[] segments_[i];
     }
   }
@@ -74,12 +78,17 @@ class VectorPageTable {
   VectorPageTable(VectorPageTable &&) = delete;
   VectorPageTable &operator=(VectorPageTable &&) = delete;
 
-  void init(size_t entry_num);
+  //! Initialize the page table to cover `entry_num` entries.
+  //! Returns false (without modifying state) if `entry_num` exceeds the
+  //! statically allocated segment table capacity (kMaxEntries).
+  bool init(size_t entry_num);
 
   //! Extend the page table to cover at least `new_entry_num` entries.
   //! Existing entries stay at their original addresses (no invalidation).
   //! Safe to call while readers operate on existing pages.
-  void extend(size_t new_entry_num);
+  //! Returns false (without modifying state) if `new_entry_num` exceeds
+  //! the statically allocated segment table capacity (kMaxEntries).
+  bool extend(size_t new_entry_num);
 
   char *acquire_block(block_id_t block_id);
 
@@ -96,19 +105,19 @@ class VectorPageTable {
 
   //! Mark a loaded block as dirty so that it is persisted on eviction.
   void mark_dirty(block_id_t block_id) {
-    assert(block_id < entry_num_);
+    assert(block_id < entry_num_.load(std::memory_order_relaxed));
     entry_at(block_id).is_dirty.store(true, std::memory_order_relaxed);
   }
 
   bool is_block_dirty(block_id_t block_id) const {
-    assert(block_id < entry_num_);
+    assert(block_id < entry_num_.load(std::memory_order_relaxed));
     return entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
   }
 
   //! Flush a single dirty block without evicting it. Caller guarantees the
   //! block is currently loaded (buffer != nullptr).
   int flush_block(block_id_t block_id) {
-    assert(block_id < entry_num_);
+    assert(block_id < entry_num_.load(std::memory_order_relaxed));
     Entry &e = entry_at(block_id);
     char *buffer = e.buffer;
     if (!buffer || !flush_callback_) {
@@ -124,12 +133,15 @@ class VectorPageTable {
     return rc;
   }
 
+  //! Returns the current number of entries.  Uses acquire ordering so that
+  //! callers iterating over [0, entry_num()) are guaranteed to see all
+  //! segments_[s] writes performed by a concurrent extend()/init().
   size_t entry_num() const {
-    return entry_num_;
+    return entry_num_.load(std::memory_order_acquire);
   }
 
   bool is_released(block_id_t block_id) const {
-    assert(block_id < entry_num_);
+    assert(block_id < entry_num_.load(std::memory_order_relaxed));
     return entry_at(block_id).ref_count.load(std::memory_order_relaxed) <= 0;
   }
 
@@ -144,11 +156,24 @@ class VectorPageTable {
   static constexpr size_t kSegmentShift = 16;  // 65536 entries per segment
   static constexpr size_t kSegmentSize = size_t{1} << kSegmentShift;
   static constexpr size_t kSegmentMask = kSegmentSize - 1;
+
+ public:
   static constexpr size_t kMaxSegments =
       2048;  // up to 128M entries (512GB @ 4K)
+  // Maximum number of entries the segment table can ever hold.  Callers
+  // (e.g. VecBufferPool::extend_file) can use this to pre-validate a target
+  // file size before mutating any on-disk state.
+  static constexpr size_t kMaxEntries = kMaxSegments * kSegmentSize;
 
-  size_t entry_num_{0};
-  size_t segment_count_{0};
+ private:
+  // entry_num_ and segment_count_ are mutated by writers in init()/extend()
+  // and observed by readers in entry_num() and the hot-path methods.  They
+  // are atomic to establish a release/acquire synchronization edge with the
+  // (non-atomic) writes to segments_[s] performed prior to the store: any
+  // reader that observes the new entry_num_ is guaranteed to see the
+  // fully-initialized Entry slots in the corresponding segment.
+  std::atomic<size_t> entry_num_{0};
+  std::atomic<size_t> segment_count_{0};
   Entry *segments_[kMaxSegments]{};
 
   Entry &entry_at(size_t idx) {
