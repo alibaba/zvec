@@ -30,12 +30,13 @@ TermDocIterator::TermDocIterator(std::string term, roaring_bitmap_t *bitmap,
                                  float max_score_val, RocksdbContext *ctx,
                                  rocksdb::ColumnFamilyHandle *term_freq_cf,
                                  rocksdb::ColumnFamilyHandle *doc_len_cf,
-                                 std::atomic<int> *cf_counter)
+                                 std::atomic<int> *cf_counter, float boost)
     : mode_(Mode::ROARING),
       term_(std::move(term)),
       df_(df),
       scorer_(std::move(scorer)),
-      max_score_val_(max_score_val),
+      max_score_val_(max_score_val * boost),
+      boost_(boost),
       bitmap_(bitmap),
       ctx_(ctx),
       term_freq_cf_(term_freq_cf),
@@ -59,10 +60,11 @@ TermDocIterator::~TermDocIterator() {
 // BitPacked mode
 TermDocIterator::TermDocIterator(std::string term,
                                  rocksdb::PinnableSlice packed_data,
-                                 BM25ScorerPtr scorer)
+                                 BM25ScorerPtr scorer, float boost)
     : mode_(Mode::BITPACKED),
       term_(std::move(term)),
       scorer_(std::move(scorer)),
+      boost_(boost),
       packed_data_(std::move(packed_data)) {
   // Failure here means the term will produce no docs (next_doc returns
   // NO_MORE_DOCS). bp_iter_.open() already logs the underlying parse error;
@@ -74,7 +76,9 @@ TermDocIterator::TermDocIterator(std::string term,
         term_.c_str());
   }
   df_ = bp_iter_.cost();
-  max_score_val_ = bp_iter_.max_score();
+  // Apply boost to max_score_val_ so that DisjunctionIterator's WAND pivot
+  // computation matches the actual scores returned by score() below.
+  max_score_val_ = bp_iter_.max_score() * boost_;
   cached_max_score_ = max_score_val_;
   idf_weight_ = scorer_->idf(df_);
 }
@@ -130,13 +134,13 @@ float TermDocIterator::score() {
     // Fast path: read tf/doc_len from inline payload (zero I/O)
     const uint32_t tf = bp_iter_.term_freq();
     const uint32_t dl = bp_iter_.doc_len();
-    return scorer_->score_with_idf(idf_weight_, tf, dl);
+    return scorer_->score_with_idf(idf_weight_, tf, dl, boost_);
   }
 
   // Roaring mode: read from RocksDB
   const uint32_t tf = read_term_freq(cached_doc_id_);
   const uint32_t doc_len = read_doc_len(cached_doc_id_);
-  return scorer_->score_with_idf(idf_weight_, tf, doc_len);
+  return scorer_->score_with_idf(idf_weight_, tf, doc_len, boost_);
 }
 
 uint64_t TermDocIterator::cost() const {

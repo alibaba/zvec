@@ -19,6 +19,7 @@
 #include <zvec/db/index_params.h>
 #include <zvec/db/type.h>
 #include "db/common/constants.h"
+#include "db/index/column/fts_column/fts_ast_rewriter.h"
 #include "db/index/column/fts_column/fts_query_ast.h"
 #include "db/sqlengine/analyzer/query_analyzer.h"
 #include "db/sqlengine/parser/select_info.h"
@@ -207,6 +208,16 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
       }
     }
   }
+
+  // Structural rewrite: dedup repeated terms (collapsed into a single node
+  // with summed boost), flatten same-type composites for better WAND pruning,
+  // propagate EmptyNode, and detect must/must_not contradictions. The pre-
+  // rewrite AST is logged at DEBUG so the transform is auditable. LOG_DEBUG
+  // is gated by the configured log level, so ast->text() is only built when
+  // debug logging is enabled.
+  LOG_DEBUG("FTS AST before rewrite: %s", ast ? ast->text().c_str() : "<null>");
+  fts::simplify(ast);
+  LOG_DEBUG("FTS AST after rewrite : %s", ast ? ast->text().c_str() : "<null>");
 
   return std::make_shared<FtsCondInfo>(field_name, std::move(ast));
 }

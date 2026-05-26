@@ -137,6 +137,20 @@ class BM25Scorer {
   float score_with_idf(float idf_value, uint32_t term_freq,
                        uint32_t doc_len) const;
 
+  /*! Calculate BM25 score with a per-term boost multiplier.
+   *  Boost > 1 represents a term that appears multiple times in the original
+   *  query (collapsed by the AST rewriter) or carries an explicit user weight.
+   *  The multiplier is linear so that the post-rewrite score exactly matches
+   *  the pre-rewrite "sum of N independent scorers" value.
+   *  \param idf_value      Pre-computed IDF value (from idf())
+   *  \param term_freq      Term frequency in current document
+   *  \param doc_len        Document length (number of tokens)
+   *  \param boost          Per-term boost (1.0 = no boost)
+   *  \return BM25 score contribution scaled by boost
+   */
+  float score_with_idf(float idf_value, uint32_t term_freq, uint32_t doc_len,
+                       float boost) const;
+
   /*! Update in-memory segment statistics (called by FtsColumnIndexer after
    *  each insert so that search() uses up-to-date stats for BM25 scoring)
    *  \param total_docs    Current total number of documents

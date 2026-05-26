@@ -285,11 +285,12 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_iterator(
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
-    const std::string &term, rocksdb::PinnableSlice raw_data) const {
+    const std::string &term, rocksdb::PinnableSlice raw_data,
+    float boost) const {
   if (BitPackedPostingList::is_bitpacked_format(raw_data.data(),
                                                 raw_data.size())) {
-    auto iter =
-        std::make_unique<TermDocIterator>(term, std::move(raw_data), scorer_);
+    auto iter = std::make_unique<TermDocIterator>(term, std::move(raw_data),
+                                                  scorer_, boost);
     if (iter->cost() == 0) {
       return DocIteratorPtr{nullptr};
     }
@@ -338,7 +339,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
 
   return std::make_unique<TermDocIterator>(term, bitmap, df, scorer_,
                                            max_score_val, ctx_, term_freq_cf,
-                                           doc_len_cf, cf_counter);
+                                           doc_len_cf, cf_counter, boost);
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::build_term_iterator(
@@ -351,7 +352,8 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_term_iterator(
     return DocIteratorPtr{nullptr};
   }
 
-  return create_term_iterator_from_raw(term, std::move(raw_data));
+  return create_term_iterator_from_raw(term, std::move(raw_data),
+                                       term_node.boost);
 }
 
 std::vector<rocksdb::PinnableSlice> FtsColumnIndexer::batch_get_postings(
@@ -386,12 +388,16 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
   std::vector<DocIteratorPtr> term_iterators;
   term_iterators.reserve(terms.size());
 
+  // Phrase-level boost is distributed across the internal term iterators.
+  // PhraseDocIterator.score() delegates to conjunction.score() which sums the
+  // internal contributions, so multiplying each contribution by boost yields
+  // boost * (sum) = boost-applied-once at the phrase level.
   for (size_t i = 0; i < terms.size(); ++i) {
     if (raw_postings[i].empty()) {
       return DocIteratorPtr{nullptr};
     }
-    auto iter_result =
-        create_term_iterator_from_raw(terms[i], std::move(raw_postings[i]));
+    auto iter_result = create_term_iterator_from_raw(
+        terms[i], std::move(raw_postings[i]), phrase_node.boost);
     if (!iter_result.has_value()) {
       return iter_result;
     }
@@ -445,9 +451,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     if (batched_cursor < term_child_indices.size() &&
         term_child_indices[batched_cursor] == i) {
       rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
-      const std::string &term = static_cast<const TermNode &>(*child).term;
+      const auto &term_node = static_cast<const TermNode &>(*child);
       if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
+        auto iter_result = create_term_iterator_from_raw(
+            term_node.term, std::move(raw), term_node.boost);
         if (!iter_result.has_value()) {
           return iter_result;
         }
@@ -521,9 +528,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     if (batched_cursor < term_child_indices.size() &&
         term_child_indices[batched_cursor] == i) {
       rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
-      const std::string &term = static_cast<const TermNode &>(*child).term;
+      const auto &term_node = static_cast<const TermNode &>(*child);
       if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(term, std::move(raw));
+        auto iter_result = create_term_iterator_from_raw(
+            term_node.term, std::move(raw), term_node.boost);
         if (!iter_result.has_value()) {
           return iter_result;
         }

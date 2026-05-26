@@ -125,6 +125,11 @@ float BM25Scorer::score(uint64_t term_doc_freq, uint32_t term_freq,
 
 float BM25Scorer::score_with_idf(float idf_value, uint32_t term_freq,
                                  uint32_t doc_len) const {
+  return score_with_idf(idf_value, term_freq, doc_len, 1.0f);
+}
+
+float BM25Scorer::score_with_idf(float idf_value, uint32_t term_freq,
+                                 uint32_t doc_len, float boost) const {
   if (idf_value <= 0.0f) {
     return 0.0f;
   }
@@ -141,7 +146,7 @@ float BM25Scorer::score_with_idf(float idf_value, uint32_t term_freq,
       tf * (params_.k1 + 1.0f) /
       (tf + params_.k1 * (1.0f - params_.b + params_.b * doc_length / avg_dl));
 
-  return idf_value * tf_norm;
+  return boost * idf_value * tf_norm;
 }
 
 // ============================================================

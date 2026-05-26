@@ -41,16 +41,20 @@ class TermDocIterator : public DocIterator {
    *  \param df             Document frequency of this term in the segment
    *  \param scorer         BM25 scorer (with segment stats loaded)
    *  \param max_score_val  Precomputed WAND upper bound score for this term
+   *                        (caller must NOT pre-multiply by boost — the
+   *                        constructor applies boost to both score() output
+   *                        and max_score_val_ to keep WAND pivot correct)
    *  \param term_freq_cf   $TF column family for reading per-doc term freq
    *  \param doc_len_cf     $DOC_LEN column family for reading doc length
    *  \param cf_counter     CF reference counter for term_freq_cf and doc_len_cf
+   *  \param boost          Per-term boost (1.0 = no boost)
    */
   TermDocIterator(std::string term, roaring_bitmap_t *bitmap, uint64_t df,
                   BM25ScorerPtr scorer, float max_score_val,
                   RocksdbContext *ctx,
                   rocksdb::ColumnFamilyHandle *term_freq_cf,
                   rocksdb::ColumnFamilyHandle *doc_len_cf,
-                  std::atomic<int> *cf_counter);
+                  std::atomic<int> *cf_counter, float boost = 1.0f);
 
   ~TermDocIterator() override;
 
@@ -72,9 +76,10 @@ class TermDocIterator : public DocIterator {
    *  \param term           Processed (tokenized) term string
    *  \param packed_data    Serialized BitPacked posting list (ownership taken)
    *  \param scorer         BM25 scorer (with segment stats loaded)
+   *  \param boost          Per-term boost (1.0 = no boost)
    */
   TermDocIterator(std::string term, rocksdb::PinnableSlice packed_data,
-                  BM25ScorerPtr scorer);
+                  BM25ScorerPtr scorer, float boost = 1.0f);
 
   // Prevent move/copy: bp_iter_ holds a raw pointer into packed_data_'s
   // buffer, so moving would create a dangling pointer.
@@ -110,6 +115,7 @@ class TermDocIterator : public DocIterator {
   BM25ScorerPtr scorer_;
   float max_score_val_;
   float idf_weight_{0.0f};  // Pre-computed IDF to avoid log() per score()
+  float boost_{1.0f};       // Per-term boost (collapsed from repeated terms)
 
   // Roaring mode state (owns the bitmap; iterator is stack-allocated)
   roaring_bitmap_t *bitmap_{nullptr};

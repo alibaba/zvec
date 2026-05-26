@@ -531,4 +531,47 @@ TEST_F(FtsRecallTest, FtsSearchWithFilter_TopkRespected) {
   EXPECT_LE(result->size(), 1u);
 }
 
+// ============================================================
+// Repeated-term linearity: the AST rewriter collapses a repeated term into a
+// single TermNode whose boost equals the occurrence count. With linear boost
+// the per-document score must be exactly N× the single-term score, matching
+// the pre-rewrite "N independent scorers summed" semantics.
+// ============================================================
+
+TEST_F(FtsRecallTest, MatchStringRepeatedTermLinearBoost) {
+  auto baseline = fts_match("apple");
+  auto repeated = fts_match("apple apple");
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().c_str();
+  ASSERT_TRUE(repeated.has_value()) << repeated.error().c_str();
+  ASSERT_EQ(baseline->size(), repeated->size());
+
+  // Same doc set, same ordering — only the absolute scores differ.
+  for (size_t i = 0; i < baseline->size(); ++i) {
+    EXPECT_EQ((*baseline)[i]->pk(), (*repeated)[i]->pk()) << "rank " << i;
+    EXPECT_FLOAT_EQ((*baseline)[i]->score() * 2.0f, (*repeated)[i]->score())
+        << "rank " << i << " pk=" << (*repeated)[i]->pk();
+  }
+}
+
+TEST_F(FtsRecallTest, MatchStringRepeatedTermPreservesUnion) {
+  // "apple apple banana" — apple repeated, banana once. Doc set must equal
+  // "apple banana" (union), and apple-only docs should score 2× their
+  // single-term score plus zero for banana.
+  auto plain_union = fts_match("apple banana");
+  auto repeated_union = fts_match("apple apple banana");
+  ASSERT_TRUE(plain_union.has_value()) << plain_union.error().c_str();
+  ASSERT_TRUE(repeated_union.has_value()) << repeated_union.error().c_str();
+  EXPECT_EQ(plain_union->size(), repeated_union->size());
+
+  std::set<std::string> plain_pks;
+  std::set<std::string> repeated_pks;
+  for (const auto &d : *plain_union) {
+    plain_pks.insert(d->pk());
+  }
+  for (const auto &d : *repeated_union) {
+    repeated_pks.insert(d->pk());
+  }
+  EXPECT_EQ(plain_pks, repeated_pks);
+}
+
 }  // namespace zvec::sqlengine

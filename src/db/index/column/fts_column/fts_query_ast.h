@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,12 @@ enum class FtsNodeType {
 struct FtsAstNode {
   bool must{false};      // Prefix + means must
   bool must_not{false};  // Prefix - / right-hand side of AND NOT means must_not
+  // Per-node scoring weight. Currently meaningful only on TermNode / PhraseNode
+  // (composite nodes inherit boost from their scored leaves). Repeated terms in
+  // a sibling list are collapsed by the AST rewriter into a single node whose
+  // boost is the linear sum of duplicates, so that the post-rewrite score
+  // matches the pre-rewrite "sum of independent scorers" semantics exactly.
+  float boost{1.0f};
 
   virtual ~FtsAstNode() = default;
   virtual FtsNodeType type() const = 0;
@@ -55,6 +62,14 @@ struct FtsAstNode {
       return "-";
     }
     return "";
+  }
+
+  // Helper: append ^X boost suffix when boost differs from default 1.0
+  std::string boost_suffix() const {
+    if (std::fabs(boost - 1.0f) < 1e-6f) {
+      return "";
+    }
+    return "^" + std::to_string(boost);
   }
 };
 
@@ -79,7 +94,7 @@ struct TermNode : public FtsAstNode {
   }
 
   std::string text() const override {
-    return modifier_prefix() + term;
+    return modifier_prefix() + term + boost_suffix();
   }
 };
 
@@ -103,6 +118,7 @@ struct PhraseNode : public FtsAstNode {
       result += terms[i];
     }
     result += "\"";
+    result += boost_suffix();
     return result;
   }
 };
