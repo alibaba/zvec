@@ -553,6 +553,30 @@ TEST_F(FtsRecallTest, MatchStringRepeatedTermLinearBoost) {
   }
 }
 
+// Unary `-` prefix inside an OR was previously executed via build_or_iterator
+// wrapping the disjunction in a must_not Conjunction. After the rewriter
+// canonicalizes OR-with-must_not into AND(positive..., -negative...), the
+// must_not iterator path lives only in build_and_iterator. End-to-end the
+// match set must be unchanged: apple{0,3,5} − banana{0,1,7} = {3, 5}.
+TEST_F(FtsRecallTest, QueryStringUnaryMinusExcludesMatchingDocs) {
+  auto result = fts_search("apple -banana");
+  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  std::set<std::string> pks;
+  for (const auto &d : *result) {
+    pks.insert(d->pk());
+  }
+  EXPECT_EQ(pks, std::set<std::string>({"pk_3", "pk_5"}));
+}
+
+// `apple -apple` is a self-contradiction; the rewriter detects the must vs
+// must_not conflict after canonicalization and rewrites the whole subtree
+// to EmptyNode, so the query short-circuits to zero docs.
+TEST_F(FtsRecallTest, QueryStringSelfContradictionReturnsNoResults) {
+  auto result = fts_search("apple -apple");
+  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  EXPECT_TRUE(result->empty());
+}
+
 TEST_F(FtsRecallTest, MatchStringRepeatedTermPreservesUnion) {
   // "apple apple banana" — apple repeated, banana once. Doc set must equal
   // "apple banana" (union), and apple-only docs should score 2× their

@@ -24,6 +24,7 @@
 #include "db/common/file_helper.h"
 #include "db/index/common/index_filter.h"
 // FtsQueryParams defined below
+#include "db/index/column/fts_column/fts_ast_rewriter.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
@@ -75,6 +76,10 @@ static bool search_ok(Reader &reader, const std::string &query_str,
                   << " err: " << parser.err_msg();
     return false;
   }
+  // Apply the same AST rewrite the production sqlengine path runs so that
+  // FtsColumnIndexer::search() sees a canonical AST (no must_not children
+  // inside an OrNode, dedup-collapsed siblings, etc.).
+  zvec::fts::simplify(ast);
   zvec::fts::FtsQueryParams qp;
   qp.topk = topk;
   auto ret = reader.search(*ast, qp);
@@ -99,6 +104,7 @@ static bool search_ok_with_filter(Reader &reader, const std::string &query_str,
                   << " err: " << parser.err_msg();
     return false;
   }
+  zvec::fts::simplify(ast);
   zvec::fts::FtsQueryParams qp;
   qp.topk = topk;
   qp.filter = std::move(filter);

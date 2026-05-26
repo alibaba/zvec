@@ -120,17 +120,17 @@ TEST(FtsAstRewriterTest, AndDedupsRepeatedTerms) {
 }
 
 TEST(FtsAstRewriterTest, DifferentOccurDoesNotMerge) {
-  // OR(apple, +apple, -apple) — three different Occur buckets, no merge.
+  // OR(apple, +apple) — same term, different modifiers must NOT collapse;
+  // dedup keys include the must/must_not bits so the two stay distinct.
   std::vector<FtsAstNodePtr> children;
   children.push_back(term("apple"));
   children.push_back(term("apple", /*must=*/true));
-  children.push_back(term("apple", /*must=*/false, /*must_not=*/true));
   auto ast = or_node(std::move(children));
 
   simplify(ast);
 
   ASSERT_EQ(ast->type(), FtsNodeType::OR);
-  EXPECT_EQ(as_or(*ast).children.size(), 3u);
+  EXPECT_EQ(as_or(*ast).children.size(), 2u);
 }
 
 // --- Conflict ---
@@ -174,22 +174,6 @@ TEST(FtsAstRewriterTest, OrFlattensNestedOr) {
 
   ASSERT_EQ(ast->type(), FtsNodeType::OR);
   ASSERT_EQ(as_or(*ast).children.size(), 3u);
-}
-
-TEST(FtsAstRewriterTest, OrDoesNotFlattenOrWithMustNotChild) {
-  // OR(a, OR(b, -c)) — inner has must_not, semantics differ if inlined.
-  std::vector<FtsAstNodePtr> inner;
-  inner.push_back(term("b"));
-  inner.push_back(term("c", false, true));
-  std::vector<FtsAstNodePtr> outer;
-  outer.push_back(term("a"));
-  outer.push_back(or_node(std::move(inner)));
-  auto ast = or_node(std::move(outer));
-
-  simplify(ast);
-
-  ASSERT_EQ(ast->type(), FtsNodeType::OR);
-  EXPECT_EQ(as_or(*ast).children.size(), 2u);
 }
 
 TEST(FtsAstRewriterTest, AndFlattensNestedAndWithoutMustNot) {
@@ -369,6 +353,104 @@ TEST(FtsAstRewriterTest, SimplifyIsIdempotent) {
   const std::string after_second = ast->text();
 
   EXPECT_EQ(after_first, after_second);
+}
+
+// --- OR must_not canonicalization ---
+
+TEST(FtsAstRewriterTest, OrWithSinglePositiveAndMustNotBecomesAnd) {
+  // OR(a, -b) → AND(a, -b)
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("a"));
+  children.push_back(term("b", false, true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+  const auto &n = as_and(*ast);
+  ASSERT_EQ(n.children.size(), 2u);
+  EXPECT_EQ(as_term(*n.children[0]).term, "a");
+  EXPECT_FALSE(n.children[0]->must_not);
+  EXPECT_EQ(as_term(*n.children[1]).term, "b");
+  EXPECT_TRUE(n.children[1]->must_not);
+}
+
+TEST(FtsAstRewriterTest, OrWithMultiplePositivesAndMustNotWrapsInAnd) {
+  // OR(a, b, -c) → AND(OR(a, b), -c)
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("a"));
+  children.push_back(term("b"));
+  children.push_back(term("c", false, true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+  const auto &n = as_and(*ast);
+  ASSERT_EQ(n.children.size(), 2u);
+  ASSERT_EQ(n.children[0]->type(), FtsNodeType::OR);
+  EXPECT_EQ(as_or(*n.children[0]).children.size(), 2u);
+  EXPECT_EQ(as_term(*n.children[1]).term, "c");
+  EXPECT_TRUE(n.children[1]->must_not);
+}
+
+TEST(FtsAstRewriterTest, OrCanonicalizationCatchesSameTermConflict) {
+  // OR(a, -a) — canonicalization moves -a into AND with a, then
+  // and_has_mustnot_conflict fires → EmptyNode.
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("a"));
+  children.push_back(term("a", false, true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  EXPECT_EQ(ast->type(), FtsNodeType::EMPTY);
+}
+
+TEST(FtsAstRewriterTest, OrCanonicalizationLiftsParentModifier) {
+  // +OR(a, -b) → +AND(a, -b)
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("a"));
+  children.push_back(term("b", false, true));
+  auto ast = or_node(std::move(children), /*must=*/true);
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+  EXPECT_TRUE(ast->must);
+  EXPECT_FALSE(ast->must_not);
+}
+
+TEST(FtsAstRewriterTest, NestedOrWithMustNotCanonicalizedAtBothLevels) {
+  // OR(x, OR(b, -c)) — inner canonicalizes to AND(b, -c); outer keeps OR
+  // since it has no must_not after recursion.
+  std::vector<FtsAstNodePtr> inner;
+  inner.push_back(term("b"));
+  inner.push_back(term("c", false, true));
+  std::vector<FtsAstNodePtr> outer;
+  outer.push_back(term("x"));
+  outer.push_back(or_node(std::move(inner)));
+  auto ast = or_node(std::move(outer));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::OR);
+  const auto &n = as_or(*ast);
+  ASSERT_EQ(n.children.size(), 2u);
+  EXPECT_EQ(as_term(*n.children[0]).term, "x");
+  EXPECT_EQ(n.children[1]->type(), FtsNodeType::AND);
+}
+
+TEST(FtsAstRewriterTest, OrWithoutMustNotIsLeftAlone) {
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("a"));
+  children.push_back(term("b"));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::OR);
+  EXPECT_EQ(as_or(*ast).children.size(), 2u);
 }
 
 // --- Leaf untouched ---

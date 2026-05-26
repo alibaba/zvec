@@ -516,13 +516,22 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
 
   auto term_raw_postings = batch_get_postings(term_key_slices);
 
+  // Invariant: the AST rewriter (fts::simplify) lifts any must_not children
+  // out of OrNode into a wrapping AndNode before we get here, so the loop
+  // below only ever sees SHOULD-style positives. A must_not child reaching
+  // this point indicates a caller that bypassed simplify — bail out loudly
+  // rather than silently produce wrong scores.
   std::vector<DocIteratorPtr> positive_iterators;
-  std::vector<DocIteratorPtr> must_not_iterators;
   size_t batched_cursor = 0;
 
   for (size_t i = 0; i < or_node.children.size(); ++i) {
     const auto &child = or_node.children[i];
-    const bool is_must_not = child->must_not;
+    if (child->must_not) {
+      LOG_ERROR(
+          "build_or_iterator: must_not child reached OR (rewriter bypassed)");
+      return tl::make_unexpected(Status::InternalError(
+          "FtsColumnIndexer::build_or_iterator: OR contains must_not child"));
+    }
 
     DocIteratorPtr iter;
     if (batched_cursor < term_child_indices.size() &&
@@ -546,13 +555,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
       iter = std::move(iter_result.value());
     }
 
-    if (!iter) {
-      continue;
-    }
-
-    if (is_must_not) {
-      must_not_iterators.push_back(std::move(iter));
-    } else {
+    if (iter) {
       positive_iterators.push_back(std::move(iter));
     }
   }
@@ -560,23 +563,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
   if (positive_iterators.empty()) {
     return DocIteratorPtr{nullptr};
   }
-
-  DocIteratorPtr or_iter;
   if (positive_iterators.size() == 1) {
-    or_iter = std::move(positive_iterators[0]);
-  } else {
-    or_iter =
-        std::make_unique<DisjunctionIterator>(std::move(positive_iterators));
+    return std::move(positive_iterators[0]);
   }
-
-  if (!must_not_iterators.empty()) {
-    std::vector<DocIteratorPtr> must_vec;
-    must_vec.push_back(std::move(or_iter));
-    return std::make_unique<ConjunctionIterator>(std::move(must_vec),
-                                                 std::move(must_not_iterators));
-  }
-
-  return or_iter;
+  return std::make_unique<DisjunctionIterator>(std::move(positive_iterators));
 }
 
 // ============================================================

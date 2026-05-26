@@ -304,14 +304,59 @@ void simplify_or(FtsAstNodePtr &node) {
   // inside an OR mean "exclude from the disjunction"; with no positive base
   // the result is empty.)
   bool any_positive = false;
+  size_t mustnot_count = 0;
   for (const auto &c : n.children) {
-    if (!c->must_not) {
+    if (c->must_not) {
+      ++mustnot_count;
+    } else {
       any_positive = true;
-      break;
     }
   }
   if (!any_positive) {
     node = make_empty_like(n);
+    return;
+  }
+
+  // Canonicalize OR-with-must_not into AND(OR(positives), must_nots...). After
+  // this, an OrNode never carries must_not children, so the iterator builder
+  // can drop its special-case wrapping. Conflict cases like `apple -apple` end
+  // up inside the new AND where and_has_mustnot_conflict catches them and
+  // collapses the whole subtree to EmptyNode for free.
+  if (mustnot_count > 0) {
+    std::vector<FtsAstNodePtr> positives;
+    std::vector<FtsAstNodePtr> negatives;
+    positives.reserve(n.children.size() - mustnot_count);
+    negatives.reserve(mustnot_count);
+    for (auto &c : n.children) {
+      if (c->must_not) {
+        negatives.push_back(std::move(c));
+      } else {
+        positives.push_back(std::move(c));
+      }
+    }
+
+    FtsAstNodePtr positive_part;
+    if (positives.size() == 1) {
+      positive_part = std::move(positives[0]);
+    } else {
+      auto inner_or = std::make_unique<OrNode>();
+      inner_or->children = std::move(positives);
+      positive_part = std::move(inner_or);
+    }
+
+    auto wrap = std::make_unique<AndNode>();
+    wrap->children.reserve(1 + negatives.size());
+    wrap->children.push_back(std::move(positive_part));
+    for (auto &mn : negatives) {
+      wrap->children.push_back(std::move(mn));
+    }
+    wrap->must = n.must;
+    wrap->must_not = n.must_not;
+    wrap->boost = n.boost;
+
+    FtsAstNodePtr replacement = std::move(wrap);
+    simplify_and(replacement);
+    node = std::move(replacement);
     return;
   }
 
