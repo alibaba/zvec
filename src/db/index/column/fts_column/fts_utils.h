@@ -46,6 +46,19 @@ inline std::string make_doc_term_key(const std::string &term, uint32_t doc_id) {
   return key;
 }
 
+// In-place variant of make_doc_term_key: appends the key to an existing buffer.
+// Callers that build many keys in a row can reserve once and reuse the buffer,
+// avoiding per-key allocation. Returns the number of bytes appended so the
+// caller can build Slices into the buffer.
+inline size_t append_doc_term_key(const std::string &term, uint32_t doc_id,
+                                  std::string *buf) {
+  const size_t bytes = term.size() + 1 + sizeof(uint32_t);
+  buf->append(term);
+  buf->push_back('\0');
+  encode_uint32_big_endian(doc_id, buf);
+  return bytes;
+}
+
 bool parse_doc_term_key(const std::string &key, std::string *term_out,
                         uint32_t *doc_id_out);
 

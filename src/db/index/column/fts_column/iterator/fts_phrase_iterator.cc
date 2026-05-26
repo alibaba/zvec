@@ -15,6 +15,7 @@
 #include "fts_phrase_iterator.h"
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
 #include "../fts_utils.h"
 
 namespace zvec::fts {
@@ -66,31 +67,102 @@ float PhraseDocIterator::max_score() const {
 }
 
 bool PhraseDocIterator::verify_phrase_positions(uint32_t doc_id) const {
-  if (terms_.empty()) {
+  const size_t n = terms_.size();
+  if (n == 0) {
     return false;
   }
 
-  // Read position list of first term as anchor.
-  // Empty anchor means the term has no position record for this doc — this is
-  // normal for non-matching docs filtered through the conjunction without a
-  // position-CF entry, so do NOT log here.
-  std::vector<uint32_t> anchor_positions = read_positions(terms_[0], doc_id);
-  if (anchor_positions.empty()) {
-    return false;
+  // Deduplicate terms within the phrase. Repeated terms (e.g., "to be or not
+  // to be") collapse into one $POS lookup; term_to_unique_idx maps each phrase
+  // position back to its slot in the unique list.
+  std::vector<size_t> term_to_unique_idx(n);
+  std::vector<size_t> unique_to_first_term_idx;
+  unique_to_first_term_idx.reserve(n);
+  std::unordered_map<std::string, size_t> seen;
+  seen.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    const size_t next_idx = unique_to_first_term_idx.size();
+    auto [it, inserted] = seen.try_emplace(terms_[i], next_idx);
+    if (inserted) {
+      unique_to_first_term_idx.push_back(i);
+    }
+    term_to_unique_idx[i] = it->second;
+  }
+  const size_t unique_size = unique_to_first_term_idx.size();
+
+  // Build unique (term, doc_id) keys into a single reusable buffer; reserve
+  // up-front so the buffer never reallocates and the Slice pointers below stay
+  // valid until the MultiGet returns.
+  size_t total_key_bytes = 0;
+  for (size_t u = 0; u < unique_size; ++u) {
+    total_key_bytes +=
+        terms_[unique_to_first_term_idx[u]].size() + 1 + sizeof(uint32_t);
+  }
+  std::string key_buffer;
+  key_buffer.reserve(total_key_bytes);
+
+  std::vector<rocksdb::Slice> key_slices;
+  key_slices.reserve(unique_size);
+  for (size_t u = 0; u < unique_size; ++u) {
+    const std::string &term = terms_[unique_to_first_term_idx[u]];
+    const size_t offset = key_buffer.size();
+    const size_t bytes = fts::append_doc_term_key(term, doc_id, &key_buffer);
+    key_slices.emplace_back(key_buffer.data() + offset, bytes);
   }
 
-  // For each anchor position, verify if subsequent terms appear at consecutive
-  // positions
+  // Batched read across unique (term, doc_id) keys — single MultiGet instead
+  // of per-anchor-position Gets.
+  std::vector<rocksdb::ColumnFamilyHandle *> cfs(unique_size, positions_cf_);
+  std::vector<rocksdb::PinnableSlice> values(unique_size);
+  std::vector<rocksdb::Status> statuses(unique_size);
+  ctx_->db_->MultiGet(ctx_->read_opts_, unique_size, cfs.data(),
+                      key_slices.data(), values.data(), statuses.data());
+
+  // Decode every position list once. A missing entry means this doc cannot
+  // be a phrase match — this happens for docs filtered through the conjunction
+  // without a position-CF entry, so we do NOT log here.
+  std::vector<std::vector<uint32_t>> positions_cache(unique_size);
+  for (size_t u = 0; u < unique_size; ++u) {
+    if (!statuses[u].ok() || values[u].size() == 0) {
+      return false;
+    }
+    positions_cache[u] = decode_positions(values[u]);
+    if (positions_cache[u].empty()) {
+      return false;
+    }
+  }
+
+  // Pick the term with the shortest position list as anchor so the outer
+  // loop iterates as few candidates as possible. anchor_term_idx stays in
+  // original phrase order — the phrase start equals anchor_pos -
+  // anchor_term_idx.
+  size_t anchor_term_idx = 0;
+  size_t min_size = positions_cache[term_to_unique_idx[0]].size();
+  for (size_t i = 1; i < n; ++i) {
+    const size_t sz = positions_cache[term_to_unique_idx[i]].size();
+    if (sz < min_size) {
+      min_size = sz;
+      anchor_term_idx = i;
+    }
+  }
+
+  const auto &anchor_positions =
+      positions_cache[term_to_unique_idx[anchor_term_idx]];
+  const uint32_t anchor_offset = static_cast<uint32_t>(anchor_term_idx);
   for (uint32_t anchor_pos : anchor_positions) {
+    if (anchor_pos < anchor_offset) {
+      // phrase start would be negative — impossible
+      continue;
+    }
+    const uint32_t start = anchor_pos - anchor_offset;
     bool phrase_matched = true;
-    for (size_t term_index = 1; term_index < terms_.size(); ++term_index) {
-      const uint32_t expected_pos =
-          anchor_pos + static_cast<uint32_t>(term_index);
-      std::vector<uint32_t> positions =
-          read_positions(terms_[term_index], doc_id);
-      bool found =
-          std::binary_search(positions.begin(), positions.end(), expected_pos);
-      if (!found) {
+    for (size_t i = 0; i < n; ++i) {
+      if (i == anchor_term_idx) {
+        continue;
+      }
+      const uint32_t expected = start + static_cast<uint32_t>(i);
+      const auto &positions = positions_cache[term_to_unique_idx[i]];
+      if (!std::binary_search(positions.begin(), positions.end(), expected)) {
         phrase_matched = false;
         break;
       }
@@ -103,29 +175,20 @@ bool PhraseDocIterator::verify_phrase_positions(uint32_t doc_id) const {
   return false;
 }
 
-std::vector<uint32_t> PhraseDocIterator::read_positions(const std::string &term,
-                                                        uint32_t doc_id) const {
-  const std::string key = fts::make_doc_term_key(term, doc_id);
-  std::string value;
-  if (!ctx_->db_->Get(ctx_->read_opts_, positions_cf_, key, &value).ok() ||
-      value.empty()) {
-    return {};
-  }
-  return decode_positions(value);
-}
-
 std::vector<uint32_t> PhraseDocIterator::decode_positions(
-    const std::string &data) {
+    const rocksdb::Slice &data) {
   std::vector<uint32_t> positions;
   size_t index = 0;
   uint32_t current_position = 0;
+  const char *bytes = data.data();
+  const size_t size = data.size();
 
-  while (index < data.size()) {
+  while (index < size) {
     // Decode varint
     uint32_t delta = 0;
     uint32_t shift = 0;
-    while (index < data.size()) {
-      const uint8_t byte = static_cast<uint8_t>(data[index++]);
+    while (index < size) {
+      const uint8_t byte = static_cast<uint8_t>(bytes[index++]);
       delta |= static_cast<uint32_t>(byte & 0x7F) << shift;
       shift += 7;
       if ((byte & 0x80) == 0) {

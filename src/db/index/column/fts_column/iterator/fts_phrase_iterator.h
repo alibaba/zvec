@@ -57,15 +57,13 @@ class PhraseDocIterator : public DocIterator {
   float max_score() const override;
 
  private:
-  // Read position list for a term in a specific document
-  std::vector<uint32_t> read_positions(const std::string &term,
-                                       uint32_t doc_id) const;
-
-  // Verify that terms appear at consecutive positions in the document
+  // Verify that terms appear at consecutive positions in the document.
+  // Issues a single MultiGet across the unique terms in the phrase, decodes
+  // every position list once, then validates adjacency entirely in memory.
   bool verify_phrase_positions(uint32_t doc_id) const;
 
-  // Decode varint delta-encoded position list
-  static std::vector<uint32_t> decode_positions(const std::string &data);
+  // Decode varint delta-encoded position list out of a RocksDB value slice.
+  static std::vector<uint32_t> decode_positions(const rocksdb::Slice &data);
 
  private:
   DocIteratorPtr conjunction_;

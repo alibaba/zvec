@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "db/index/column/fts_column/fts_column_indexer.h"
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -360,6 +361,43 @@ TEST_F(FtsColumnIndexerTest, SearchPhraseNotFound) {
   std::vector<FtsResult> results;
   EXPECT_TRUE(search_ok(*indexer, "\"hello foo\"", 10, &results));
   EXPECT_TRUE(results.empty());
+}
+
+// Phrase with a repeated term ("a b a") exercises the dedup path in
+// PhraseDocIterator::verify_phrase_positions: the two "a" entries must share
+// a single MultiGet slot while still validating positions 0 and 2.
+TEST_F(FtsColumnIndexerTest, SearchPhraseWithRepeatedTermFound) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "a b a").has_value());  // match
+  EXPECT_TRUE(indexer->insert(1, "a b c").has_value());  // a b ✓, trailing a ✗
+  EXPECT_TRUE(indexer->insert(2, "b a c").has_value());  // wrong order
+  EXPECT_TRUE(indexer->insert(3, "a a b").has_value());  // wrong adjacency
+
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "\"a b a\"", 10, &results));
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
+}
+
+// When the first phrase term is high-frequency in the doc (e.g., "the the the
+// the model"), the anchor must be chosen from the rarest position list rather
+// than terms_[0]; otherwise the anchor loop iterates many useless candidates.
+// This test only asserts correctness — the anchor heuristic is internal — but
+// guards against regressions in the shortest-list selection.
+TEST_F(FtsColumnIndexerTest, SearchPhraseHighFrequencyLeadingTerm) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "the the the the model").has_value());
+  EXPECT_TRUE(indexer->insert(1, "the model the the the").has_value());
+  EXPECT_TRUE(
+      indexer->insert(2, "the the the the the").has_value());  // no model
+
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "\"the model\"", 10, &results));
+  ASSERT_EQ(results.size(), 2u);
+  std::vector<uint64_t> ids{results[0].doc_id, results[1].doc_id};
+  std::sort(ids.begin(), ids.end());
+  EXPECT_EQ(ids[0], 0ull);
+  EXPECT_EQ(ids[1], 1ull);
 }
 
 // ============================================================
