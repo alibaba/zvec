@@ -2752,10 +2752,8 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   run_repeated_optimize_test(std::make_shared<IVFIndexParams>(
       MetricType::IP, 10, 4, false, QuantizeType::FP16));
 #if RABITQ_SUPPORTED
-  // TODO: re-enable once HNSW_RABITQ compact-path RaBitQ training is fixed.
-  // run_repeated_optimize_test(
-  //     std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7, 256, 16,
-  //                                             200, 0));
+  run_repeated_optimize_test(std::make_shared<HnswRabitqIndexParams>(
+      MetricType::IP, 7, 256, 16, 200, 0));
 #endif
 }
 
