@@ -221,7 +221,9 @@ class FtsColumnIndexer {
   std::atomic<bool> cf_dropped_{false};
   rocksdb::ColumnFamilyHandle *stat_cf_{nullptr};
 
-  std::atomic<uint32_t> min_doc_count_{std::numeric_limits<uint32_t>::max()};
+  // Minimum doc length observed so far. Used as a (loose) lower bound on
+  // doc_len when computing the WAND max_score for Roaring-format postings.
+  std::atomic<uint32_t> min_doc_len_{std::numeric_limits<uint32_t>::max()};
 
   mutable std::atomic<int> counter_{0};
   std::atomic<bool> opened_{false};

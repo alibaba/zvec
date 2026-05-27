@@ -15,7 +15,6 @@
 #include "tokenizer_factory.h"
 #include <zvec/ailego/encoding/json/mod_json_plus.h>
 #include <zvec/ailego/logger/logger.h>
-#include "cppjieba/Jieba.hpp"
 #include "jieba_tokenizer.h"
 #include "standard_tokenizer.h"
 #include "whitespace_tokenizer.h"

@@ -14,12 +14,6 @@
 
 #include "jieba_tokenizer.h"
 #include <zvec/ailego/logger/logger.h>
-#include "cppjieba/DictTrie.hpp"
-#include "cppjieba/FullSegment.hpp"
-#include "cppjieba/HMMModel.hpp"
-#include "cppjieba/HMMSegment.hpp"
-#include "cppjieba/MixSegment.hpp"
-#include "cppjieba/QuerySegment.hpp"
 
 namespace zvec::fts {
 

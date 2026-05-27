@@ -24,6 +24,7 @@
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
 #endif
+#include <roaring.hh>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
@@ -43,7 +44,6 @@
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_meta.h"
 #include "zvec/core/framework/index_reformer.h"
-#include <roaring.hh>
 
 namespace zvec {
 

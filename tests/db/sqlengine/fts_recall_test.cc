@@ -451,30 +451,27 @@ TEST_F(FtsRecallTest, DefaultOperatorAndLowercase_Accepted) {
   EXPECT_EQ(result->size(), 1u);
 }
 
-// Mixed-case "And" / "oR": current implementation only recognises exact
-// "AND"/"and" and "OR"/"or".  Unknown values fall through to the default (OR).
+// Mixed-case "And" / "oR" are accepted via case-insensitive normalisation.
 TEST_F(FtsRecallTest, DefaultOperatorMixedCase_Accepted) {
   {
-    // "And" is not recognised as AND -> falls back to OR
+    // "And" -> AND semantics: intersection of apple{0,3,5} and banana{0,1,7}
     auto result = fts_match("apple banana", "And");
     ASSERT_TRUE(result.has_value()) << result.error().c_str();
-    EXPECT_EQ(result->size(), 5u);
+    EXPECT_EQ(result->size(), 1u);
   }
   {
-    // "oR" is not recognised as OR explicitly -> also falls back to OR
+    // "oR" -> OR semantics: union = 5 docs
     auto result = fts_match("apple banana", "oR");
     ASSERT_TRUE(result.has_value()) << result.error().c_str();
     EXPECT_EQ(result->size(), 5u);
   }
 }
 
-// Invalid default_operator value should be rejected
+// Invalid default_operator value should be rejected (was previously silently
+// downgraded to OR).
 TEST_F(FtsRecallTest, DefaultOperatorInvalid_Rejected) {
   auto result = fts_match("apple banana", "xor");
-  // Current implementation treats unknown values as OR (no rejection),
-  // so this test documents the actual behaviour.
-  // If the implementation is changed to reject, flip to EXPECT_FALSE.
-  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  EXPECT_FALSE(result.has_value());
 }
 
 // ============================================================

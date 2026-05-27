@@ -168,6 +168,10 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
         "FtsColumnIndexer::search: not opened. field=", field_name_));
   }
 
+  if (query_params.topk == 0) {
+    return std::vector<FtsResult>{};
+  }
+
   if (ast.must_not) {
     LOG_WARN(
         "FtsColumnIndexer::search: must_not on root is not allowed. field[%s]",
@@ -329,7 +333,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
     WandOptimizer wand;
     if (wand.open(scorer_, ctx_, max_tf_cf, 0) == 0) {
       uint32_t max_tf = wand.read_max_tf(term);
-      uint32_t min_dl = min_doc_count_.load(std::memory_order_relaxed);
+      uint32_t min_dl = min_doc_len_.load(std::memory_order_relaxed);
       if (min_dl == std::numeric_limits<uint32_t>::max()) {
         min_dl = 1;
       }
@@ -634,9 +638,10 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
   std::memcpy(doc_len_value.data(), &doc_len, sizeof(uint32_t));
   batch.Put(doc_len_cf_.load(), doc_id_key, doc_len_value);
 
-  if (!ctx_->db_->Write(ctx_->write_opts_, &batch).ok()) {
+  if (auto s = ctx_->db_->Write(ctx_->write_opts_, &batch); !s.ok()) {
     return tl::make_unexpected(Status::InternalError(
-        "FtsColumnIndexer::insert: write batch failed. field=", field_name_));
+        "FtsColumnIndexer::insert: write batch failed. field=", field_name_,
+        " status=", s.ToString()));
   }
 
   // 6. Update in-memory statistics atomically so concurrent search() calls
@@ -651,10 +656,10 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
     scorer_->update_stats(new_total_docs, new_total_tokens);
   }
 
-  // CAS-update min_doc_count_ only when this document has tokens (doc_len > 0).
+  // CAS-update min_doc_len_ only when this document has tokens (doc_len > 0).
   if (doc_len > 0) {
-    uint32_t cur = min_doc_count_.load(std::memory_order_relaxed);
-    while (doc_len < cur && !min_doc_count_.compare_exchange_weak(
+    uint32_t cur = min_doc_len_.load(std::memory_order_relaxed);
+    while (doc_len < cur && !min_doc_len_.compare_exchange_weak(
                                 cur, doc_len, std::memory_order_relaxed)) {
     }
   }

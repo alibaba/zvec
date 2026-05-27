@@ -202,7 +202,6 @@ uint32_t DisjunctionIterator::next_doc_impl(const zvec::IndexFilter *filter) {
         }
       }
       cached_doc_id_ = pivot_doc;
-      cached_doc_id_ = pivot_doc;
       return pivot_doc;
     } else {
       // 4. Iterator Jumping: advance the iterator with the smallest doc_id

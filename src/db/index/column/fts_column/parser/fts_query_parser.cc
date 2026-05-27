@@ -71,12 +71,14 @@ std::string strip_quotes(const std::string &quoted) {
 // Propagate must/must_not modifier to the root of an already-built AST node.
 // Now that must/must_not live on the FtsAstNode base class, this works
 // uniformly for terms, phrases and composite (AND/OR) sub-expressions.
+// OR-merge with any existing flags so a second application on the same
+// node never silently clears modifiers set by a prior pass.
 void apply_modifier(FtsAstNode *node, bool is_must, bool is_must_not) {
   if (!node || (!is_must && !is_must_not)) {
     return;
   }
-  node->must = is_must;
-  node->must_not = is_must_not;
+  node->must = node->must || is_must;
+  node->must_not = node->must_not || is_must_not;
 }
 
 // atom: fts_field_prefix? fts_primary fts_boost?

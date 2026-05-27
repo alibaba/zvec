@@ -17,11 +17,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <roaring.hh>
 #include <zvec/db/status.h>
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/fts_column/bm25_scorer.h"
 #include "db/index/column/fts_column/fts_types.h"
-#include <roaring.hh>
 
 namespace zvec::fts {
 

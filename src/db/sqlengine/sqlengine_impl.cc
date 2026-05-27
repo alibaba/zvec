@@ -14,6 +14,7 @@
 
 #include "db/sqlengine/sqlengine_impl.h"
 #include <unordered_map>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/index_params.h>
@@ -138,12 +139,21 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
   auto *fts_query_param = dynamic_cast<FtsQueryParams *>(query_params.get());
 
   // Determine default operator once, shared by both query_string and
-  // match_string paths.
+  // match_string paths. Accept "and"/"or" case-insensitively, empty means OR;
+  // any other value is a user error and must be reported, not silently
+  // downgraded to OR. strcasecmp is mapped to _stricmp on MSVC by platform.h.
   fts::FtsDefaultOperator default_op = fts::FtsDefaultOperator::OR;
   if (fts_query_param) {
-    auto &op_str = fts_query_param->default_operator();
-    if (op_str == "AND" || op_str == "and") {
+    const auto &op_str = fts_query_param->default_operator();
+    if (op_str.empty() || strcasecmp(op_str.c_str(), "or") == 0) {
+      default_op = fts::FtsDefaultOperator::OR;
+    } else if (strcasecmp(op_str.c_str(), "and") == 0) {
       default_op = fts::FtsDefaultOperator::AND;
+    } else {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "FTS default_operator must be empty, 'and' or 'or' (case-insensitive)"
+          ", got: ",
+          op_str));
     }
   }
 

@@ -16,19 +16,8 @@
 
 #include <memory>
 #include <string>
+#include <cppjieba/QuerySegment.hpp>
 #include "tokenizer.h"
-
-// Use the low-level segmenters directly: cppjieba::Jieba would also pull in
-// KeywordExtractor and force-load idf.utf8 / stop_words.utf8, which the
-// tokenizer never uses.
-namespace cppjieba {
-class DictTrie;
-class HMMModel;
-class QuerySegment;
-class MixSegment;
-class FullSegment;
-class HMMSegment;
-}  // namespace cppjieba
 
 namespace zvec::fts {
 
