@@ -245,8 +245,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
       // Tiered diagnostics: warn once after 100ms, error every 1s after 1s.
       const auto now = clock::now();
       const auto elapsed = now - wait_start;
-      if (!warned &&
-          elapsed >= std::chrono::milliseconds(100)) {
+      if (!warned && elapsed >= std::chrono::milliseconds(100)) {
         LOG_WARN(
             "set_block_acquired: long kEvicting wait on block_id=%zu "
             "(>=100ms); evict_block may be slow",
