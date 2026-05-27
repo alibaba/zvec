@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <thread>
 #include <ailego/utility/memory_helper.h>
@@ -199,8 +200,18 @@ void VectorPageTable::evict_block(block_id_t block_id) {
 
 char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
                                           size_t file_offset) {
-  assert(block_id < entry_num_.load(std::memory_order_relaxed));
+  assert(block_id < entry_num_.load(std::memory_order_acquire));
   Entry &e = entry_at(block_id);
+  // Diagnostics for the kEvicting wait. The wait itself never gives up:
+  // the only thread that can transition kEvicting -> INT_MIN is the
+  // evict_block() owner, so abandoning the spin here would orphan the
+  // entry in kEvicting forever. Instead, we use bounded backoff and emit
+  // tiered logs so a stuck eviction is observable.
+  using clock = std::chrono::steady_clock;
+  const auto wait_start = clock::now();
+  auto last_log = wait_start;
+  unsigned spin_count = 0;
+  bool warned = false;
   while (true) {
     int current_count = e.ref_count.load(std::memory_order_acquire);
     if (current_count >= 0) {
@@ -219,10 +230,39 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
       e.ref_count.store(1, std::memory_order_release);
       return e.buffer;
     } else {
-      // kEvicting (-1): eviction is in progress on this entry.  Spin briefly
-      // until evict_block finishes (transitions to INT_MIN).
-      // This is a very short critical section (flush + free, ~μs).
-      std::this_thread::yield();
+      // kEvicting (-1): eviction is in progress on this entry.
+      // Tiered backoff: hot spin first, then short sleep, then longer sleep.
+      ++spin_count;
+      if (spin_count < 64) {
+        // Pure busy wait for the common ~μs case.
+      } else if (spin_count < 1024) {
+        std::this_thread::yield();
+      } else if (spin_count < 8192) {
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+      } else {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      // Tiered diagnostics: warn once after 100ms, error every 1s after 1s.
+      const auto now = clock::now();
+      const auto elapsed = now - wait_start;
+      if (!warned &&
+          elapsed >= std::chrono::milliseconds(100)) {
+        LOG_WARN(
+            "set_block_acquired: long kEvicting wait on block_id=%zu "
+            "(>=100ms); evict_block may be slow",
+            static_cast<size_t>(block_id));
+        warned = true;
+      }
+      if (elapsed >= std::chrono::seconds(1) &&
+          (now - last_log) >= std::chrono::seconds(1)) {
+        const auto secs =
+            std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        LOG_ERROR(
+            "set_block_acquired: stuck in kEvicting on block_id=%zu for "
+            "%lld s; evict_block owner may be hung or starved",
+            static_cast<size_t>(block_id), static_cast<long long>(secs));
+        last_log = now;
+      }
     }
   }
 }

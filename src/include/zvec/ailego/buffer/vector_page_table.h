@@ -105,19 +105,19 @@ class VectorPageTable {
 
   //! Mark a loaded block as dirty so that it is persisted on eviction.
   void mark_dirty(block_id_t block_id) {
-    assert(block_id < entry_num_.load(std::memory_order_relaxed));
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
     entry_at(block_id).is_dirty.store(true, std::memory_order_relaxed);
   }
 
   bool is_block_dirty(block_id_t block_id) const {
-    assert(block_id < entry_num_.load(std::memory_order_relaxed));
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
     return entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
   }
 
   //! Flush a single dirty block without evicting it. Caller guarantees the
   //! block is currently loaded (buffer != nullptr).
   int flush_block(block_id_t block_id) {
-    assert(block_id < entry_num_.load(std::memory_order_relaxed));
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
     Entry &e = entry_at(block_id);
     char *buffer = e.buffer;
     if (!buffer || !flush_callback_) {
@@ -141,7 +141,7 @@ class VectorPageTable {
   }
 
   bool is_released(block_id_t block_id) const {
-    assert(block_id < entry_num_.load(std::memory_order_relaxed));
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
     return entry_at(block_id).ref_count.load(std::memory_order_relaxed) <= 0;
   }
 
@@ -176,10 +176,17 @@ class VectorPageTable {
   std::atomic<size_t> segment_count_{0};
   Entry *segments_[kMaxSegments]{};
 
+  // Pair with the release-store on segment_count_ in init()/extend() so
+  // that any reader observing the published segment table also sees the
+  // fully-initialized segments_[s] pointer and Entry slots. Without this
+  // acquire load, segments_[s] can be re-read as nullptr or a torn
+  // pointer on weak memory models (and even reordered on x86 under -O2).
   Entry &entry_at(size_t idx) {
+    (void)segment_count_.load(std::memory_order_acquire);
     return segments_[idx >> kSegmentShift][idx & kSegmentMask];
   }
   const Entry &entry_at(size_t idx) const {
+    (void)segment_count_.load(std::memory_order_acquire);
     return segments_[idx >> kSegmentShift][idx & kSegmentMask];
   }
 

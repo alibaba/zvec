@@ -253,6 +253,12 @@ class BufferStorage : public IndexStorage {
     //! (data_size / padding_size).  Without this latch the lock-free hot
     //! path raced with the CRC compute, producing footer.segments_meta_crc
     //! that did not match the bytes pwrite()'d to disk.
+    //!
+    //! Takes a per-segment meta_mtx_ around the meta read-modify-write so
+    //! that two concurrent writers on the SAME segment cannot interleave
+    //! their (data_size, padding_size) updates and observe a state where
+    //! data_size + padding_size != capacity_.  Different segments still
+    //! mutate in parallel because the mutex is per-WrappedSegment.
     size_t write(size_t offset, const void *data, size_t len) override {
       std::shared_lock<std::shared_mutex> latch(
           owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
@@ -281,9 +287,15 @@ class BufferStorage : public IndexStorage {
         return 0;
       }
       auto meta = segment_info_->segment.meta();
-      if (offset + len > meta->data_size) {
-        meta->data_size = offset + len;
-        meta->padding_size = capacity_ - meta->data_size;
+      {
+        // Per-segment mutex: serialise concurrent writers that mutate
+        // (data_size, padding_size) on the SAME segment so the pair
+        // remains consistent (sum stays == capacity_).
+        std::lock_guard<std::mutex> meta_latch(meta_mtx_);
+        if (offset + len > meta->data_size) {
+          meta->data_size = offset + len;
+          meta->padding_size = capacity_ - meta->data_size;
+        }
       }
       size_t abs_offset = segment_info_->segment_header_start_offset +
                           segment_info_->segment_header->content_offset +
@@ -312,17 +324,38 @@ class BufferStorage : public IndexStorage {
     //!
     //! Takes a SHARED latch for the same reason as write(): mutating
     //! meta->data_size / padding_size must be excluded from the CRC
-    //! compute in flush_index() / append_segment().
+    //! compute in flush_index() / append_segment().  The per-segment
+    //! meta_mtx_ additionally serialises concurrent writers on the SAME
+    //! segment.
     size_t resize(size_t size) override {
       std::shared_lock<std::shared_mutex> latch(
           owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
+      // Reject resize once the storage is marked corrupted.  Without this
+      // guard, a resize() that lands AFTER append_segment()'s rollback
+      // failure would mutate meta_buf + flip index_dirty_, but the next
+      // flush_index_locked() would short-circuit on the same corrupted_
+      // flag and never persist the change -- silent partial-update.
+      if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
+        LOG_ERROR(
+            "WrappedSegment::resize: storage is marked corrupted, refusing "
+            "resize, file[%s], id[%zu]",
+            owner_->file_name_.c_str(), segment_id_);
+        return 0;
+      }
       auto meta = segment_info_->segment.meta();
-      if (meta->data_size != size) {
-        if (size > capacity_) {
-          size = capacity_;
+      bool changed = false;
+      {
+        std::lock_guard<std::mutex> meta_latch(meta_mtx_);
+        if (meta->data_size != size) {
+          if (size > capacity_) {
+            size = capacity_;
+          }
+          meta->data_size = size;
+          meta->padding_size = capacity_ - size;
+          changed = true;
         }
-        meta->data_size = size;
-        meta->padding_size = capacity_ - size;
+      }
+      if (changed) {
         owner_->set_as_dirty();
       }
       return size;
@@ -332,11 +365,28 @@ class BufferStorage : public IndexStorage {
     //!
     //! Takes a SHARED latch for the same reason as write(): mutating
     //! meta->data_crc must be excluded from the CRC compute in
-    //! flush_index() / append_segment().
+    //! flush_index() / append_segment().  The per-segment meta_mtx_
+    //! ensures the data_crc store does not interleave with a concurrent
+    //! write()/resize() update of (data_size, padding_size).
     void update_data_crc(uint32_t crc) override {
       std::shared_lock<std::shared_mutex> latch(
           owner_->mapping_shards_[owner_->mapping_shard_id()].mtx);
-      segment_info_->segment.meta()->data_crc = crc;
+      // Same rationale as resize(): refuse the meta mutation once the
+      // storage is corrupted, otherwise the CRC update would be lost on
+      // the next flush_index_locked() (which itself short-circuits on
+      // corrupted_), leaving on-disk and in-memory CRCs permanently
+      // diverged.
+      if (ailego_unlikely(owner_->corrupted_.load(std::memory_order_acquire))) {
+        LOG_ERROR(
+            "WrappedSegment::update_data_crc: storage is marked corrupted, "
+            "refusing CRC update, file[%s], id[%zu]",
+            owner_->file_name_.c_str(), segment_id_);
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> meta_latch(meta_mtx_);
+        segment_info_->segment.meta()->data_crc = crc;
+      }
       owner_->set_as_dirty();
     }
 
@@ -353,6 +403,12 @@ class BufferStorage : public IndexStorage {
     // so that re-parses after append_segment() are observed without
     // needing to recreate WrappedSegment instances held by callers.
     IndexMapping::SegmentInfo *segment_info_{nullptr};
+    // Per-segment mutex protecting concurrent writer access to the
+    // (data_size, padding_size, data_crc) fields of segment_info_->segment.
+    // The owner's shard shared_mutex still excludes these writers vs
+    // flush_index()'s AllShardsExclusiveLatch; this mutex additionally
+    // serialises hot-path writers on the SAME WrappedSegment.
+    mutable std::mutex meta_mtx_{};
 
    private:
     BufferStorage *owner_{nullptr};
@@ -1130,6 +1186,31 @@ class BufferStorage : public IndexStorage {
       const uint64_t saved_current_header_start = current_header_start_offset_;
 
       // All split disk writes succeeded -- commit in-memory state.
+      //
+      // STRONG EXCEPTION GUARANTEE: reserve() growth FIRST so the three
+      // push_back's below cannot throw (capacity is sufficient and the
+      // moved-in elements -- unique_ptr<MetaHeader>, unique_ptr<char[]>,
+      // and the POD MetaChain aggregate -- have noexcept move ctors).
+      // Without this, a bad_alloc in the middle of the three push_back's
+      // leaves chain_headers_/buffer_pool_buffers_/meta_chains_ at
+      // mismatched sizes (one or two extended, the rest not), with
+      // footer_/current_header_start_offset_ either still or already
+      // pointing at the new chain.  flush_index_locked() then iterates
+      // `min(meta_chains_.size(), buffer_pool_buffers_.size())` and
+      // silently skips the orphan chain, while ParseToMapping() on next
+      // open follows the on-disk forward link and DOES see it -- a
+      // classic split-brain.
+      try {
+        chain_headers_.reserve(chain_headers_.size() + 1);
+        buffer_pool_buffers_.reserve(buffer_pool_buffers_.size() + 1);
+        meta_chains_.reserve(meta_chains_.size() + 1);
+      } catch (const std::bad_alloc &) {
+        LOG_ERROR(
+            "append_segment: reserve for chain-split commit failed, file[%s]",
+            file_name_.c_str());
+        undo_old_footer();
+        return IndexError_Runtime;
+      }
       chain->footer = linked_footer;  // old chain keeps linked footer
       chain_headers_.push_back(std::move(new_header));
       buffer_pool_buffers_.push_back(std::move(new_meta_buf));
@@ -1272,13 +1353,54 @@ class BufferStorage : public IndexStorage {
     }
 
     // All disk writes succeeded -- commit remaining in-memory state.
+    //
+    // STRONG EXCEPTION GUARANTEE: emplace into segments_ and id_hash_ as
+    // a single transactional unit.  unordered_map::emplace() can throw
+    // bad_alloc (node allocation), so if id_hash_ throws after segments_
+    // succeeded, undo the segments_ insertion before propagating the
+    // failure.  Otherwise segments_ would carry an entry with no
+    // matching id_hash_ slot -- get(id) would return the segment via
+    // segments_, but any IVF/HNSW path that joins through id_hash_
+    // would silently miss it, producing the lopsided mapping the prior
+    // bug history attributes to id_hash_ races.
+    //
     // WrappedSegment instances already held by callers reference
     // &segments_[name], whose address is stable across unordered_map
     // insertions, so existing references stay valid.
-    segments_[id] = IndexMapping::SegmentInfo{
-        IndexMapping::Segment{new_seg}, chain->header_start_offset, header};
-    const size_t new_id = id_hash_.size();
-    id_hash_[id] = new_id;
+    auto seg_ins = segments_.end();
+    bool seg_inserted = false;
+    try {
+      auto ins = segments_.emplace(
+          id, IndexMapping::SegmentInfo{IndexMapping::Segment{new_seg},
+                                        chain->header_start_offset, header});
+      if (!ins.second) {
+        // Re-insertion under exclusive latch should be impossible (we
+        // checked find() earlier in the same critical section), but be
+        // defensive: fail loudly and roll the whole append back.
+        LOG_ERROR(
+            "append_segment: duplicate id appeared after commit, file[%s], "
+            "id[%s]",
+            file_name_.c_str(), id.c_str());
+        rollback_step2();
+        rollback_step1();
+        return IndexError_Duplicate;
+      }
+      seg_ins = ins.first;
+      seg_inserted = true;
+      const size_t new_id = id_hash_.size();
+      id_hash_.emplace(id, new_id);
+    } catch (const std::bad_alloc &) {
+      LOG_ERROR(
+          "append_segment: in-memory commit OOM, rolling back, file[%s], "
+          "id[%s]",
+          file_name_.c_str(), id.c_str());
+      if (seg_inserted) {
+        segments_.erase(seg_ins);
+      }
+      rollback_step2();
+      rollback_step1();
+      return IndexError_Runtime;
+    }
     max_segment_size_ = std::max<uint64_t>(max_segment_size_, padded_size);
 
     // ---- Step 3: With the segmented page table (C1), extend_file()
@@ -1317,12 +1439,24 @@ class BufferStorage : public IndexStorage {
   };
   mutable MutexShard mapping_shards_[kMappingMutexShards]{};
 
-  // Per-thread shard selection (stable hash, no syscall).
+  // Per-(thread, instance) shard selection.  We combine std::thread::id
+  // with `this` so that:
+  //   1) Two BufferStorage instances accessed from the SAME thread map
+  //      to (typically) DIFFERENT shards.  The previous thread_local-only
+  //      implementation cached a single id per thread regardless of
+  //      instance, which collapsed all instances onto one shard for that
+  //      thread and effectively defeated sharding.
+  //   2) Skewed thread::id distributions (on glibc, thread::id is the
+  //      aligned pthread_t pointer; `% 32` clusters) are dispersed by the
+  //      boost-style hash_combine mix.
+  // Cost: ~3 ALU ops + one mod; cheaper than the cache-line ping-pong
+  // that the bug caused.
   size_t mapping_shard_id() const {
-    thread_local const size_t id =
-        std::hash<std::thread::id>()(std::this_thread::get_id()) %
-        kMappingMutexShards;
-    return id;
+    size_t seed = std::hash<std::thread::id>()(std::this_thread::get_id());
+    size_t inst = std::hash<const void *>()(static_cast<const void *>(this));
+    // boost::hash_combine(seed, inst)
+    seed ^= inst + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    return seed % kMappingMutexShards;
   }
 
   // RAII guard that locks ALL shards exclusively (for writers).
