@@ -29,7 +29,7 @@
 #include "iterator/fts_phrase_iterator.h"
 #include "iterator/fts_term_iterator.h"
 #include "posting/bitpacked_posting_list.h"
-#include "tokenizer/tokenizer_pipeline_manager.h"
+#include "fts_pipeline.h"
 #include "fts_utils.h"
 
 namespace zvec::fts {
@@ -114,7 +114,7 @@ Result<void> FtsColumnIndexer::open(FieldSchema::Ptr field_meta,
         field_meta->name()));
   }
 
-  auto pipeline_result = fts_param->create_pipeline();
+  auto pipeline_result = zvec::detail::AcquireFtsPipeline(*fts_param);
   if (!pipeline_result.has_value()) {
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer: failed to create tokenizer pipeline. field=",

@@ -14,7 +14,6 @@
 #pragma once
 
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -26,9 +25,10 @@
 
 namespace zvec {
 
-namespace fts {
-class TokenizerPipeline;
-}  // namespace fts
+namespace detail {
+struct FtsState;
+struct FtsPipelineHelper;
+}  // namespace detail
 
 /*
  * Column index params
@@ -569,33 +569,24 @@ class VamanaIndexParams : public VectorIndexParams {
  * FTS (Full-Text Search) index params
  *
  * Not copyable.  Use shared_ptr<FtsIndexParams> for shared ownership.
- * Provides a thread-safe create_pipeline() that lazily creates and caches
- * a TokenizerPipeline; the pipeline is automatically released on destruction.
  */
 class FtsIndexParams : public IndexParams {
  public:
-  using PipelinePtr = std::shared_ptr<fts::TokenizerPipeline>;
-
   FtsIndexParams(std::string tokenizer_name = "standard",
                  std::vector<std::string> filters = {"lowercase"},
-                 std::string extra_params = "")
-      : IndexParams(IndexType::FTS),
-        tokenizer_name_(std::move(tokenizer_name)),
-        filters_(std::move(filters)),
-        extra_params_(std::move(extra_params)) {}
+                 std::string extra_params = "");
 
   // Not copyable.
   FtsIndexParams(const FtsIndexParams &) = delete;
   FtsIndexParams &operator=(const FtsIndexParams &) = delete;
 
-  // Movable (transfers pipeline ownership).
+  // Movable.
   FtsIndexParams(FtsIndexParams &&other) noexcept;
   FtsIndexParams &operator=(FtsIndexParams &&) = delete;
 
   ~FtsIndexParams() override;
 
   Ptr clone() const override {
-    // Clone produces an independent copy without pipeline cache.
     return std::make_shared<FtsIndexParams>(tokenizer_name_, filters_,
                                             extra_params_);
   }
@@ -623,10 +614,6 @@ class FtsIndexParams : public IndexParams {
            extra_params_ == other_fts.extra_params_;
   }
 
-  //! Thread-safe lazy creation of TokenizerPipeline.
-  //! Returns the cached pipeline on subsequent calls.
-  Result<PipelinePtr> create_pipeline();
-
   const std::string &tokenizer_name() const {
     return tokenizer_name_;
   }
@@ -653,10 +640,9 @@ class FtsIndexParams : public IndexParams {
   std::vector<std::string> filters_;
   std::string extra_params_;
 
-  // Pipeline cache (thread-safe via std::call_once).
-  mutable std::once_flag pipeline_once_;
-  PipelinePtr pipeline_;
-  bool pipeline_created_{false};
+  std::unique_ptr<detail::FtsState> state_;
+
+  friend struct detail::FtsPipelineHelper;
 };
 
 }  // namespace zvec

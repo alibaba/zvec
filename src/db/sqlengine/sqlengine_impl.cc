@@ -21,6 +21,7 @@
 #include <zvec/db/type.h>
 #include "db/common/constants.h"
 #include "db/index/column/fts_column/fts_ast_rewriter.h"
+#include "db/index/column/fts_column/fts_pipeline.h"
 #include "db/index/column/fts_column/fts_query_ast.h"
 #include "db/sqlengine/analyzer/query_analyzer.h"
 #include "db/sqlengine/parser/select_info.h"
@@ -171,7 +172,7 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     return tl::make_unexpected(Status::InvalidArgument(
         "FTS field has no FtsIndexParams: ", field_name));
   }
-  auto pipeline_result = fts_idx_param->create_pipeline();
+  auto pipeline_result = detail::AcquireFtsPipeline(*fts_idx_param);
   if (!pipeline_result.has_value()) {
     return tl::make_unexpected(Status::InternalError(
         "Failed to create tokenizer pipeline for field: ", field_name, " ",

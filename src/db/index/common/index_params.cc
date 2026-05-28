@@ -17,6 +17,7 @@
 #include <sstream>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/index_params.h>
+#include "db/index/column/fts_column/fts_pipeline.h"
 #include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_pipeline_manager.h"
 #include "type_helper.h"
@@ -56,57 +57,80 @@ static fts::FtsIndexParams to_internal(const FtsIndexParams &params) {
 }
 
 // ============================================================
-// FtsIndexParams — destructor
+// FtsIndexParams — opaque pipeline state (Pimpl)
 // ============================================================
 
-FtsIndexParams::~FtsIndexParams() {
-  if (pipeline_created_) {
-    auto internal = to_internal(*this);
-    fts::TokenizerPipelineManager::Instance().release(internal);
+namespace detail {
+struct FtsState {
+  std::once_flag once;
+  std::shared_ptr<fts::TokenizerPipeline> pipeline;
+  bool created{false};
+};
+
+struct FtsPipelineHelper {
+  static std::unique_ptr<FtsState> &state(FtsIndexParams &p) {
+    return p.state_;
   }
-}
+};
+}  // namespace detail
 
 // ============================================================
-// FtsIndexParams — move semantics
+// FtsIndexParams — ctor / dtor / move
 // ============================================================
+
+FtsIndexParams::FtsIndexParams(std::string tokenizer_name,
+                               std::vector<std::string> filters,
+                               std::string extra_params)
+    : IndexParams(IndexType::FTS),
+      tokenizer_name_(std::move(tokenizer_name)),
+      filters_(std::move(filters)),
+      extra_params_(std::move(extra_params)),
+      state_(std::make_unique<detail::FtsState>()) {}
 
 FtsIndexParams::FtsIndexParams(FtsIndexParams &&other) noexcept
     : IndexParams(IndexType::FTS),
       tokenizer_name_(std::move(other.tokenizer_name_)),
       filters_(std::move(other.filters_)),
       extra_params_(std::move(other.extra_params_)),
-      pipeline_(std::move(other.pipeline_)),
-      pipeline_created_(other.pipeline_created_) {
-  other.pipeline_created_ = false;
-  other.pipeline_.reset();
-  // std::once_flag is not movable; default-initialise ours (already done by
-  // the member initialiser) and leave other's in a valid but used state.
-  // If the source had already called create_pipeline(), we inherit the
-  // cached result.  If not, our fresh once_flag will allow a future call.
-  if (pipeline_created_) {
-    // Mark our once_flag as "already called" by running a no-op through it.
-    std::call_once(pipeline_once_, [] {});
+      state_(std::move(other.state_)) {}
+
+FtsIndexParams::~FtsIndexParams() {
+  if (state_ && state_->created) {
+    auto internal = to_internal(*this);
+    fts::TokenizerPipelineManager::Instance().release(internal);
   }
 }
 
-
 // ============================================================
-// FtsIndexParams — create_pipeline
+// FtsIndexParams — pipeline acquisition (internal)
 // ============================================================
 
-Result<FtsIndexParams::PipelinePtr> FtsIndexParams::create_pipeline() {
-  std::call_once(pipeline_once_, [this]() {
-    auto internal = to_internal(*this);
-    pipeline_ = fts::TokenizerPipelineManager::Instance().acquire(internal);
-    if (pipeline_) {
-      pipeline_created_ = true;
+namespace detail {
+
+Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
+    FtsIndexParams &params) {
+  auto &state_uptr = FtsPipelineHelper::state(params);
+  if (!state_uptr) {
+    // Lazily reconstruct after a move-from; not thread-safe vs. a concurrent
+    // move on the same instance, but moves on a live instance already need
+    // external synchronisation.
+    state_uptr = std::make_unique<FtsState>();
+  }
+  auto &st = *state_uptr;
+  std::call_once(st.once, [&]() {
+    auto internal = to_internal(params);
+    st.pipeline = fts::TokenizerPipelineManager::Instance().acquire(internal);
+    if (st.pipeline) {
+      st.created = true;
     }
   });
-  if (!pipeline_) {
+  if (!st.pipeline) {
     return tl::make_unexpected(
         Status::InternalError("Failed to create tokenizer pipeline"));
   }
-  return pipeline_;
+  return st.pipeline;
 }
+
+}  // namespace detail
 
 }  // namespace zvec

@@ -39,6 +39,7 @@
 #include "db/common/file_helper.h"
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/fts_column/fts_column_indexer.h"
+#include "db/index/column/fts_column/fts_pipeline.h"
 #include "db/index/column/fts_column/fts_query_ast.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/fts_rocksdb_reducer.h"
@@ -1049,7 +1050,7 @@ static int do_search() {
   std::vector<ThreadResult> thread_results(num_threads);
 
   auto query_fts_params = build_fts_index_params(FLAGS_extra_params);
-  auto pipeline_result = query_fts_params->create_pipeline();
+  auto pipeline_result = zvec::detail::AcquireFtsPipeline(*query_fts_params);
   if (!pipeline_result.has_value()) {
     fprintf(stderr,
             "ERROR: Failed to create tokenizer pipeline for "
