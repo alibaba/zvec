@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <ailego/parallel/multi_thread_list.h>
 #include <ailego/pattern/defer.h>
 #include <arrow/dataset/dataset.h>
@@ -133,7 +134,10 @@ class SegmentImpl : public Segment,
 
   Status Delete(uint64_t g_doc_id) override;
 
-  Doc::Ptr Fetch(uint64_t g_doc_id) override;
+  Doc::Ptr Fetch(uint64_t g_doc_id,
+                 const std::optional<std::vector<std::string>> &output_fields =
+                     std::nullopt,
+                 bool include_vector = true) override;
 
   CombinedVectorColumnIndexer::Ptr get_combined_vector_indexer(
       const std::string &field_name) const override;
@@ -1052,7 +1056,10 @@ Status SegmentImpl::ConvertVectorDataBufferToDocField(
 }
 
 
-Doc::Ptr SegmentImpl::Fetch(uint64_t g_doc_id) {
+Doc::Ptr SegmentImpl::Fetch(
+    uint64_t g_doc_id,
+    const std::optional<std::vector<std::string>> &output_fields,
+    bool include_vector) {
   std::lock_guard lock(seg_mtx_);
 
   if (g_doc_id > segment_meta_->max_doc_id()) {
@@ -1077,8 +1084,21 @@ Doc::Ptr SegmentImpl::Fetch(uint64_t g_doc_id) {
   std::vector<std::string> forward_columns;
   forward_columns.push_back(GLOBAL_DOC_ID);
   forward_columns.push_back(USER_ID);
-  for (const auto &field : collection_schema_->forward_fields()) {
-    forward_columns.push_back(field->name());
+  if (!output_fields.has_value()) {
+    // No output_fields specified: return all forward fields
+    for (const auto &field : collection_schema_->forward_fields()) {
+      forward_columns.push_back(field->name());
+    }
+  } else {
+    // output_fields specified: only return requested fields that exist
+    const auto &requested = *output_fields;
+    std::unordered_set<std::string> requested_set(requested.begin(),
+                                                  requested.end());
+    for (const auto &field : collection_schema_->forward_fields()) {
+      if (requested_set.count(field->name())) {
+        forward_columns.push_back(field->name());
+      }
+    }
   }
 
   // Build result schema
@@ -1369,6 +1389,9 @@ Doc::Ptr SegmentImpl::Fetch(uint64_t g_doc_id) {
   }
 
   // fetch vector
+  if (!include_vector) {
+    return doc;
+  }
   for (const auto &field : collection_schema_->vector_fields()) {
     int block_idx = find_persist_block_id(BlockType::VECTOR_INDEX,
                                           segment_doc_id, field->name());

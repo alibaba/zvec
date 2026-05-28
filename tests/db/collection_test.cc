@@ -4999,3 +4999,119 @@ TEST_F(CollectionTest, Feature_Query_NullableFilter_WithoutIndex) {
   run_test(false);
   run_test(true);
 }
+
+TEST_F(CollectionTest, Feature_Fetch_OutputFields) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = TestHelper::CreateNormalSchema(false);
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  int doc_count = 10;
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+  ASSERT_NE(collection, nullptr);
+
+  auto expect_doc = TestHelper::CreateDoc(0, *schema);
+  const std::string pk = expect_doc.pk();
+
+  // Case 1: output_fields = nullopt -> all fields returned
+  {
+    auto result = collection->Fetch({pk}, std::nullopt);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[pk];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_TRUE(doc->has("int32"));
+    ASSERT_TRUE(doc->has("string"));
+    ASSERT_TRUE(doc->has("float"));
+  }
+
+  // Case 2: output_fields = {"int32", "string"} -> only those fields returned
+  {
+    auto result =
+        collection->Fetch({pk}, std::vector<std::string>{"int32", "string"});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[pk];
+    ASSERT_NE(doc, nullptr);
+    // requested fields should be present
+    ASSERT_TRUE(doc->has("int32"));
+    ASSERT_TRUE(doc->has("string"));
+    // unrequested scalar fields should be absent
+    ASSERT_FALSE(doc->has("float"));
+    ASSERT_FALSE(doc->has("double"));
+    ASSERT_FALSE(doc->has("uint32"));
+  }
+
+  // Case 3: output_fields = {} (empty vector) -> no scalar fields returned
+  {
+    auto result = collection->Fetch({pk}, std::vector<std::string>{});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[pk];
+    ASSERT_NE(doc, nullptr);
+    // pk should still be set
+    ASSERT_EQ(doc->pk(), pk);
+    // no scalar fields should be present
+    ASSERT_FALSE(doc->has("int32"));
+    ASSERT_FALSE(doc->has("string"));
+    ASSERT_FALSE(doc->has("float"));
+  }
+
+  // Case 4: non-existent pk -> nullptr in map
+  {
+    auto result = collection->Fetch({"nonexistent_pk"},
+                                    std::vector<std::string>{"int32"});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    ASSERT_EQ(result.value()["nonexistent_pk"], nullptr);
+  }
+
+  // Case 5: output_fields with non-existent field name -> ignored gracefully
+  {
+    auto result = collection->Fetch(
+        {pk}, std::vector<std::string>{"int32", "nonexistent_field"});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[pk];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_TRUE(doc->has("int32"));
+    ASSERT_FALSE(doc->has("nonexistent_field"));
+  }
+
+  // Case 6: include_vector = false (default) -> no vector fields returned
+  {
+    auto result = collection->Fetch({pk}, std::nullopt, false);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[pk];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_TRUE(doc->has("int32"));
+    ASSERT_FALSE(doc->has("dense_fp32"));
+  }
+
+  // Case 7: include_vector = true -> vector fields returned
+  {
+    auto result = collection->Fetch({pk}, std::nullopt, true);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[pk];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_TRUE(doc->has("int32"));
+    ASSERT_TRUE(doc->has("dense_fp32"));
+  }
+
+  // Case 8: include_vector = true with output_fields
+  {
+    auto result =
+        collection->Fetch({pk}, std::vector<std::string>{"int32"}, true);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[pk];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_TRUE(doc->has("int32"));
+    ASSERT_FALSE(doc->has("string"));
+    ASSERT_TRUE(doc->has("dense_fp32"));
+  }
+
+  ASSERT_TRUE(collection->Destroy().ok());
+}

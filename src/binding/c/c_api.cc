@@ -6000,6 +6000,9 @@ zvec_error_code_t zvec_collection_query(const zvec_collection_t *collection,
 
 zvec_error_code_t zvec_collection_fetch(zvec_collection_t *collection,
                                     const char *const *pks, size_t pk_count,
+                                    const char *const *output_fields,
+                                    size_t output_field_count,
+                                    bool include_vector,
                                     zvec_doc_t ***results, size_t *doc_count) {
   if (!collection || !pks || !results || !doc_count) {
     set_last_error(
@@ -6032,8 +6035,24 @@ zvec_error_code_t zvec_collection_fetch(zvec_collection_t *collection,
         }
       }
 
+      // Build optional output_fields
+      std::optional<std::vector<std::string>> cpp_output_fields;
+      if (output_fields != nullptr && output_field_count > 0) {
+        std::vector<std::string> fields;
+        fields.reserve(output_field_count);
+        for (size_t i = 0; i < output_field_count; ++i) {
+          if (output_fields[i]) {
+            fields.emplace_back(output_fields[i]);
+          } else {
+            set_last_error("Null output_field at index " + std::to_string(i));
+            return ZVEC_ERROR_INVALID_ARGUMENT;
+          }
+        }
+        cpp_output_fields = std::move(fields);
+      }
+
       // Call C++ fetch method
-      auto result = (*coll_ptr)->Fetch(pk_vector);
+      auto result = (*coll_ptr)->Fetch(pk_vector, cpp_output_fields, include_vector);
       if (!result.has_value()) {
         set_last_error("Failed to fetch documents: " +
                         result.error().message());
