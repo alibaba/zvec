@@ -506,9 +506,8 @@ class BufferStorage : public IndexStorage {
           footer_.segments_meta_size - iter->segment_id_offset;
       const size_t seg_name_len = ::strnlen(seg_name_start, seg_name_max);
       if (seg_name_len == seg_name_max) {
-        LOG_ERROR(
-            "ParseSegment: segment_id missing NUL terminator, file[%s]",
-            file_name_.c_str());
+        LOG_ERROR("ParseSegment: segment_id missing NUL terminator, file[%s]",
+                  file_name_.c_str());
         return IndexError_InvalidValue;
       }
       const std::string seg_name(seg_name_start, seg_name_len);
@@ -618,8 +617,8 @@ class BufferStorage : public IndexStorage {
         LOG_ERROR(
             "ParseToMapping: invalid next_meta_header_offset=%lu "
             "(current=%lu, file_size=%lu), file[%s]",
-            next_off, current_header_start_offset_,
-            buffer_pool_->file_size(), file_name_.c_str());
+            next_off, current_header_start_offset_, buffer_pool_->file_size(),
+            file_name_.c_str());
         return IndexError_InvalidValue;
       }
       // Bound chain count: 1024 chains @ default 1MB segment_meta_capacity
