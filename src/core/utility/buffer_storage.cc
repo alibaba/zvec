@@ -1078,6 +1078,7 @@ class BufferStorage : public IndexStorage {
         undo_old_footer();
         return IndexError_Runtime;
       }
+      chain = &meta_chains_.back();
       chain->footer = linked_footer;  // old chain keeps linked footer
       chain_headers_.push_back(std::move(new_header));
       buffer_pool_buffers_.push_back(std::move(new_meta_buf));
