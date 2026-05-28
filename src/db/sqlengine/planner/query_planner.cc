@@ -357,6 +357,7 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
             query_info->to_string().c_str());
   int topn = query_info->query_topn();
   auto vector_cond = query_info->vector_cond_info();
+  auto fts_cond = query_info->fts_cond_info();
   bool has_group_by = query_info->group_by() != nullptr;
 
   // optimize plan by instrument query info condition, eg adjust invert cond
@@ -443,6 +444,14 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
                                kFieldScore, vector_cond->is_reverse_sort()
                                                 ? cp::SortOrder::Descending
                                                 : cp::SortOrder::Ascending}}}}};
+  } else if (fts_cond) {
+    // FTS uses BM25 where higher score = more relevant. Per-segment results
+    // are already in descending score order; merging multiple segments
+    // requires a global re-sort to keep the contract.
+    node = ac::Declaration{"order_by",
+                           {std::move(node)},
+                           ac::OrderByNodeOptions{cp::Ordering{{cp::SortKey{
+                               kFieldScore, cp::SortOrder::Descending}}}}};
   }
 
   // group by need to collect all docs
