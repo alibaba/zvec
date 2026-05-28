@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "jieba_tokenizer.h"
+#include <cstdlib>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/db/config.h>
 
 namespace zvec::fts {
 
@@ -30,9 +32,19 @@ static std::string get_string_or_default(const ailego::JsonObject &config,
   return default_value;
 }
 
+// Priority: per-field config > ZVEC_JIEBA_DICT_DIR > GlobalConfig.
+static std::string resolve_jieba_dict_dir(const ailego::JsonObject &config) {
+  std::string dir = get_string_or_default(config, "jieba_dict_dir", "");
+  if (!dir.empty()) {
+    return dir;
+  }
+  if (const char *env = std::getenv("ZVEC_JIEBA_DICT_DIR"); env && *env) {
+    return env;
+  }
+  return GlobalConfig::Instance().jieba_dict_dir();
+}
+
 bool JiebaTokenizer::init(const ailego::JsonObject &config) {
-  std::string dict_path = get_string_or_default(config, "dict_path", "");
-  std::string model_path = get_string_or_default(config, "model_path", "");
   std::string user_dict_path =
       get_string_or_default(config, "user_dict_path", "");
 
@@ -53,16 +65,18 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
   bool needs_dict = cut_mode_ != CutMode::kHmm;
   bool needs_model = cut_mode_ != CutMode::kFull;
 
-  if (needs_dict && dict_path.empty()) {
-    LOG_ERROR("JiebaTokenizer: 'dict_path' is required for cut_mode '%s'",
-              mode_str.c_str());
+  std::string dict_dir = resolve_jieba_dict_dir(config);
+  if ((needs_dict || needs_model) && dict_dir.empty()) {
+    LOG_ERROR(
+        "JiebaTokenizer: jieba_dict_dir not configured. Set via "
+        "extra_params.jieba_dict_dir, ZVEC_JIEBA_DICT_DIR env var, "
+        "or zvec.set_default_jieba_dict_dir() / "
+        "zvec.init(jieba_dict_dir=...).");
     return false;
   }
-  if (needs_model && model_path.empty()) {
-    LOG_ERROR("JiebaTokenizer: 'model_path' is required for cut_mode '%s'",
-              mode_str.c_str());
-    return false;
-  }
+
+  std::string dict_path = needs_dict ? dict_dir + "/jieba.dict.utf8" : "";
+  std::string model_path = needs_model ? dict_dir + "/hmm_model.utf8" : "";
 
   reset();
 
@@ -97,10 +111,8 @@ bool JiebaTokenizer::init(const ailego::JsonObject &config) {
   }
 
   initialized_ = true;
-  LOG_INFO(
-      "JiebaTokenizer init success. dict_path[%s] model_path[%s] "
-      "cut_mode[%s]",
-      dict_path.c_str(), model_path.c_str(), mode_str.c_str());
+  LOG_INFO("JiebaTokenizer init success. dict_dir[%s] cut_mode[%s]",
+           dict_dir.c_str(), mode_str.c_str());
   return true;
 }
 

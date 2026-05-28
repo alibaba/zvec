@@ -221,3 +221,25 @@ TEST_F(ConfigTest, LogConfigPolymorphism) {
   ASSERT_EQ(console_config->GetLoggerType(), CONSOLE_LOG_TYPE_NAME);
   ASSERT_EQ(file_config->GetLoggerType(), FILE_LOG_TYPE_NAME);
 }
+
+// jieba_dict_dir is the only ConfigData field that can be written outside
+// of Initialize() — language SDKs call set_default_jieba_dict_dir() at
+// module-load to register the dict path they bundled. The setter is
+// independent of the Initialize() one-shot lifecycle.
+TEST_F(ConfigTest, JiebaDictDirSetterIsIndependentOfInitialize) {
+  auto saved = GlobalConfig::Instance().jieba_dict_dir();
+
+  // Setter works regardless of whether Initialize was called.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-A");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-A");
+
+  // Last writer wins.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-B");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-B");
+
+  // Empty clears.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "");
+
+  GlobalConfig::Instance().set_default_jieba_dict_dir(saved);
+}

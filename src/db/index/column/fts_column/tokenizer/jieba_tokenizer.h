@@ -40,11 +40,13 @@ class JiebaTokenizer : public Tokenizer {
   JiebaTokenizer &operator=(const JiebaTokenizer &) = delete;
 
   // JSON config keys:
-  //   "dict_path"      - jieba.dict.utf8 (required unless cut_mode=hmm)
-  //   "model_path"     - hmm_model.utf8  (required unless cut_mode=full)
-  //   "user_dict_path" - user.dict.utf8  (optional)
+  //   "jieba_dict_dir" - directory containing jieba.dict.utf8 + hmm_model.utf8
+  //   "user_dict_path" - optional user.dict.utf8
   //   "cut_mode"       - "search" (default) | "mix" | "full" | "hmm"
-  // Stop-word filtering is done by a TokenFilter, not by this tokenizer.
+  //
+  // jieba_dict_dir resolution: per-field > ZVEC_JIEBA_DICT_DIR >
+  // zvec::GlobalConfig::jieba_dict_dir() (set by SDK on import or via init).
+  // Stop-word filtering belongs to a TokenFilter, not here.
   bool init(const ailego::JsonObject &config) override;
 
   std::vector<Token> tokenize(const std::string &text) const override;

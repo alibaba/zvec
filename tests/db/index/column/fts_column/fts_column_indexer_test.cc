@@ -21,6 +21,7 @@
 #include <unordered_set>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/db/config.h>
 #include <zvec/db/index_params.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/index_filter.h"
@@ -635,9 +636,7 @@ static bool jieba_dict_available() {
 }
 
 static std::string make_jieba_extra_params() {
-  return std::string(R"({"dict_path":")") + kJiebaDictDir +
-         R"(/jieba.dict.utf8","model_path":")" + kJiebaDictDir +
-         R"(/hmm_model.utf8"})";
+  return std::string(R"({"jieba_dict_dir":")") + kJiebaDictDir + R"("})";
 }
 
 class FtsColumnIndexerJiebaTest : public FtsColumnIndexerTest {
@@ -675,15 +674,18 @@ TEST_F(FtsColumnIndexerJiebaTest, OpenWithJiebaTokenizerSucceeds) {
   EXPECT_TRUE(ret.has_value());
 }
 
-// Verify that jieba tokenizer fails to open when required model_path is
-// missing.  (Note: cppjieba FATAL-aborts on non-existent dict files, so we
-// test the init-time validation in JiebaTokenizer instead.)
-TEST_F(FtsColumnIndexerJiebaTest, OpenWithJiebaTokenizerFailsWithoutModelPath) {
+// Verify that jieba tokenizer fails when no jieba_dict_dir source resolves.
+// (cppjieba FATAL-aborts on non-existent dict files, so we test the init-time
+// validation in JiebaTokenizer instead.)
+TEST_F(FtsColumnIndexerJiebaTest, OpenWithJiebaTokenizerFailsWithoutDictDir) {
+  // Make sure neither env-var nor GlobalConfig has a value; ensure
+  // extra_params is also empty.
+  ::unsetenv("ZVEC_JIEBA_DICT_DIR");
+  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir("");
+
   fts::FtsIndexParams bad_params;
   bad_params.tokenizer_name = "jieba";
-  // Provide dict_path but omit model_path — JiebaTokenizer::init should fail.
-  bad_params.extra_params = std::string(R"({"dict_path":")") + kJiebaDictDir +
-                            R"(/jieba.dict.utf8"})";
+  bad_params.extra_params = "";
   auto pipeline = TokenizerFactory::create(bad_params);
   EXPECT_EQ(pipeline, nullptr);
 }
@@ -801,9 +803,8 @@ static zvec::fts::TokenizerPipelinePtr make_jieba_pipeline_for_test() {
   zvec::fts::FtsIndexParams params;
   params.tokenizer_name = "jieba";
   params.filters = {"lowercase"};
-  params.extra_params = std::string(R"({"dict_path":")") + kJiebaDictDir +
-                        R"(/jieba.dict.utf8","model_path":")" + kJiebaDictDir +
-                        R"(/hmm_model.utf8"})";
+  params.extra_params =
+      std::string(R"({"jieba_dict_dir":")") + kJiebaDictDir + R"("})";
   return zvec::fts::TokenizerFactory::create(params);
 }
 
@@ -860,6 +861,120 @@ TEST(JiebaTokenizerTest, PositionIsContiguousSequence) {
     EXPECT_EQ(tokens[i].position, static_cast<uint32_t>(i))
         << "tokens[" << i << "].text=" << tokens[i].text;
   }
+}
+
+// ============================================================
+// jieba_dict_dir resolution priority chain
+// ============================================================
+//
+// JiebaTokenizer::init resolves jieba_dict_dir in this order:
+//   1. extra_params.jieba_dict_dir (per-field)
+//   2. ZVEC_JIEBA_DICT_DIR env var
+//   3. zvec::GlobalConfig::jieba_dict_dir() (set by SDK or zvec.init)
+//
+// The fixture below exercises each tier independently.
+
+class JiebaDictDirPriorityTest : public FtsColumnIndexerJiebaTest {
+ protected:
+  void SetUp() override {
+    FtsColumnIndexerJiebaTest::SetUp();
+    if (IsSkipped()) {
+      return;
+    }
+    saved_env_set_ = false;
+    if (const char *prev = std::getenv("ZVEC_JIEBA_DICT_DIR");
+        prev != nullptr) {
+      saved_env_set_ = true;
+      saved_env_ = prev;
+    }
+    saved_global_ = zvec::GlobalConfig::Instance().jieba_dict_dir();
+    ::unsetenv("ZVEC_JIEBA_DICT_DIR");
+    zvec::GlobalConfig::Instance().set_default_jieba_dict_dir("");
+  }
+
+  void TearDown() override {
+    if (saved_env_set_) {
+      ::setenv("ZVEC_JIEBA_DICT_DIR", saved_env_.c_str(), /*overwrite=*/1);
+    } else {
+      ::unsetenv("ZVEC_JIEBA_DICT_DIR");
+    }
+    zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(saved_global_);
+    FtsColumnIndexerJiebaTest::TearDown();
+  }
+
+  // Build an indexer with arbitrary extra_params (so individual cases can
+  // toggle whether jieba_dict_dir is in the per-field config).
+  std::unique_ptr<FtsColumnIndexer> make_indexer_with_extra_params(
+      const std::string &extra_params,
+      const std::string &field_name = "content") {
+    auto fts_params = std::make_shared<zvec::FtsIndexParams>(
+        "jieba", std::vector<std::string>{"lowercase"}, extra_params);
+    auto field_meta = make_test_field_meta(field_name, fts_params);
+    auto indexer = std::make_unique<FtsColumnIndexer>();
+    auto ret = indexer->open(field_meta, &db_, postings_cf_, positions_cf_,
+                             term_freq_cf_, max_tf_cf_, doc_len_cf_, stat_cf_);
+    EXPECT_TRUE(ret.has_value());
+    return indexer;
+  }
+
+ private:
+  bool saved_env_set_{false};
+  std::string saved_env_;
+  std::string saved_global_;
+};
+
+// Core scenario: SDK in module-load called set_default_jieba_dict_dir; user
+// never called zvec_initialize; per-field extra_params is empty. Jieba must
+// still work end-to-end. Validates that SDK auto-registration is decoupled
+// from the GlobalConfig::Initialize one-shot lifecycle.
+TEST_F(JiebaDictDirPriorityTest, GlobalConfigDefaultUsedWithoutInitialize) {
+  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(kJiebaDictDir);
+
+  auto indexer = make_indexer_with_extra_params("");
+  EXPECT_TRUE(indexer->insert(0, "中华人民共和国").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> results;
+  auto pipeline = make_jieba_pipeline_for_test();
+  EXPECT_TRUE(search_ok(*indexer, "中华", 10, &results, pipeline));
+  EXPECT_GE(results.size(), 1u);
+}
+
+// env-var must override GlobalConfig even when zvec_initialize was never
+// called. Set GlobalConfig to a bogus path; with env-var pointing at the
+// real dict, jieba should resolve via env-var and succeed.
+TEST_F(JiebaDictDirPriorityTest, EnvVarBeatsGlobalConfig) {
+  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(
+      "/zvec/intentionally/missing/global");
+  ::setenv("ZVEC_JIEBA_DICT_DIR", kJiebaDictDir.c_str(), /*overwrite=*/1);
+
+  auto indexer = make_indexer_with_extra_params("");
+  EXPECT_TRUE(indexer->insert(0, "搜索引擎").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> results;
+  auto pipeline = make_jieba_pipeline_for_test();
+  EXPECT_TRUE(search_ok(*indexer, "搜索", 10, &results, pipeline));
+  EXPECT_GE(results.size(), 1u);
+}
+
+// per-field extra_params.jieba_dict_dir must beat env-var and GlobalConfig
+// even when both of them are bogus.
+TEST_F(JiebaDictDirPriorityTest, PerFieldBeatsEnvAndGlobalConfig) {
+  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(
+      "/zvec/intentionally/missing/global");
+  ::setenv("ZVEC_JIEBA_DICT_DIR", "/zvec/intentionally/missing/env",
+           /*overwrite=*/1);
+
+  auto extra = std::string(R"({"jieba_dict_dir":")") + kJiebaDictDir + R"("})";
+  auto indexer = make_indexer_with_extra_params(extra);
+  EXPECT_TRUE(indexer->insert(0, "自然语言处理").has_value());
+  EXPECT_TRUE(indexer->flush().has_value());
+
+  std::vector<FtsResult> results;
+  auto pipeline = make_jieba_pipeline_for_test();
+  EXPECT_TRUE(search_ok(*indexer, "自然", 10, &results, pipeline));
+  EXPECT_GE(results.size(), 1u);
 }
 
 // ============================================================

@@ -669,6 +669,27 @@ uint32_t zvec_config_data_get_optimize_thread_count(
   return cpp_config->optimize_thread_count;
 }
 
+zvec_error_code_t zvec_config_data_set_jieba_dict_dir(
+    zvec_config_data_t *config, const char *dir) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::ConfigData *>(config);
+  cpp_config->jieba_dict_dir = (dir != nullptr) ? std::string(dir) : "";
+  return ZVEC_OK;
+}
+
+const char *zvec_config_data_get_jieba_dict_dir(
+    const zvec_config_data_t *config) {
+  if (!config) {
+    return "";
+  }
+  auto *cpp_config =
+      reinterpret_cast<const zvec::GlobalConfig::ConfigData *>(config);
+  return cpp_config->jieba_dict_dir.c_str();
+}
+
 
 // =============================================================================
 // Initialization and cleanup interface implementation
@@ -722,6 +743,18 @@ zvec_error_code_t zvec_shutdown(void) {
 
 bool zvec_is_initialized(void) {
   return g_initialized.load();
+}
+
+void zvec_set_default_jieba_dict_dir(const char *dir) {
+  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(
+      (dir != nullptr) ? std::string(dir) : std::string());
+}
+
+const char *zvec_get_default_jieba_dict_dir(void) {
+  // Thread-local buffer keeps c_str() valid until the next call on this thread.
+  thread_local std::string cached;
+  cached = zvec::GlobalConfig::Instance().jieba_dict_dir();
+  return cached.c_str();
 }
 
 // =============================================================================
