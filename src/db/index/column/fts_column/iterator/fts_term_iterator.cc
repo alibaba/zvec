@@ -158,9 +158,12 @@ DocIterator::BlockMaxInfo TermDocIterator::block_max_info_for(
     uint32_t target) const {
   if (mode_ == Mode::BITPACKED) {
     auto info = bp_iter_.block_max_info_for(target);
-    return {info.block_max_score, info.block_last_doc};
+    // Apply boost so the upper bound matches score() (which multiplies by
+    // boost_) and stays consistent with max_score_val_ for WAND pivoting.
+    return {info.block_max_score * boost_, info.block_last_doc};
   }
-  // Roaring mode: fall back to global max_score, no block structure
+  // Roaring mode: fall back to global max_score (already boosted in ctor),
+  // no block structure available.
   return {max_score_val_, NO_MORE_DOCS};
 }
 
