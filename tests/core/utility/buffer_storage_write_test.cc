@@ -992,10 +992,18 @@ TEST_F(BufferStorageWriteTest, CR_CrossPageWriteAndRead) {
   EXPECT_EQ(kWriteLen, seg->fetch(kWriteOffset, fetch_buf.data(), kWriteLen));
   EXPECT_EQ(write_data, fetch_buf);
 
-  // Read back via read(MemoryBlock&) - exercises the cross-page alloc path
-  IndexStorage::MemoryBlock mb;
-  EXPECT_EQ(kWriteLen, seg->read(kWriteOffset, mb, kWriteLen));
-  EXPECT_EQ(0, std::memcmp(write_data.data(), mb.data(), kWriteLen));
+  // Read back via read(MemoryBlock&) - exercises the cross-page alloc path.
+  // Scope the MemoryBlock so it is destroyed BEFORE storage->close():
+  // when the read happens to land on a single page (e.g. macOS arm64 with
+  // 16KB pages, where [2000, 7000) fits in one page) the returned block
+  // is MBT_BUFFERPOOL holding a raw pointer to buffer_pool_handle_.  Once
+  // close_index() resets buffer_pool_handle_/buffer_pool_, that raw
+  // pointer dangles and ~MemoryBlock()'s release_one() segfaults.
+  {
+    IndexStorage::MemoryBlock mb;
+    EXPECT_EQ(kWriteLen, seg->read(kWriteOffset, mb, kWriteLen));
+    EXPECT_EQ(0, std::memcmp(write_data.data(), mb.data(), kWriteLen));
+  }
 
   EXPECT_EQ(0, storage->close());
 }
