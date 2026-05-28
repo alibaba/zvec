@@ -1379,31 +1379,39 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
       .def_readwrite("num_candidates", &SubQuery::num_candidates_)
       .def_static(
           "from_vector_query",
-          [](const VectorQuery &vq) {
+          [](const SearchQuery &sq) {
             SubQuery sub;
-            sub.num_candidates_ = vq.topk_;
-            sub.target_.field_name_ = vq.field_name_;
-            auto &clause = std::get<VectorClause>(sub.target_.clause_);
-            clause.query_vector_ = vq.query_vector_;
-            clause.sparse_indices_ = vq.query_sparse_indices_;
-            clause.sparse_values_ = vq.query_sparse_values_;
-            sub.target_.query_params_ = vq.query_params_;
+            sub.num_candidates_ = sq.topk_;
+            sub.target_ = sq.target_;
             return sub;
           },
-          py::arg("vector_query"), "Create a SubQuery from a VectorQuery");
+          py::arg("vector_query"),
+          "Create a SubQuery from a single-target search query.");
 
-  py::class_<VectorQuery>(m, "_VectorQuery")
+  // _VectorQuery is the historical Python class name; it now wraps the
+  // single-target SearchQuery so external Python code keeps working unchanged.
+  py::class_<SearchQuery>(m, "_VectorQuery")
       .def(py::init<>())
       // properties
-      .def_readwrite("topk", &VectorQuery::topk_)
-      .def_readwrite("field_name", &VectorQuery::field_name_)
-      .def_readwrite("filter", &VectorQuery::filter_)
-      .def_readwrite("include_vector", &VectorQuery::include_vector_)
-      .def_readwrite("query_params", &VectorQuery::query_params_)
-      .def_readwrite("output_fields", &VectorQuery::output_fields_)
+      .def_readwrite("topk", &SearchQuery::topk_)
+      .def_property(
+          "field_name",
+          [](const SearchQuery &s) { return s.target_.field_name_; },
+          [](SearchQuery &s, std::string v) {
+            s.target_.field_name_ = std::move(v);
+          })
+      .def_readwrite("filter", &SearchQuery::filter_)
+      .def_readwrite("include_vector", &SearchQuery::include_vector_)
+      .def_property(
+          "query_params",
+          [](const SearchQuery &s) { return s.target_.query_params_; },
+          [](SearchQuery &s, QueryParams::Ptr p) {
+            s.target_.query_params_ = std::move(p);
+          })
+      .def_readwrite("output_fields", &SearchQuery::output_fields_)
       // vector
       .def("set_vector",
-           [](VectorQuery &self, const FieldSchema &field_schema,
+           [](SearchQuery &self, const FieldSchema &field_schema,
               const py::object &obj) {
              const DataType data_type = field_schema.data_type();
 
@@ -1422,23 +1430,23 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                const auto buf = arr.request();
                switch (data_type) {
                  case DataType::VECTOR_FP32: {
-                   self.query_vector_ = serialize_vector<float>(
-                       static_cast<const float *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<float>(
+                       static_cast<const float *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_FP64: {
-                   self.query_vector_ = serialize_vector<double>(
-                       static_cast<const double *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<double>(
+                       static_cast<const double *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_INT8: {
-                   self.query_vector_ = serialize_vector<int8_t>(
-                       static_cast<const int8_t *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<int8_t>(
+                       static_cast<const int8_t *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_FP16: {
-                   self.query_vector_ = serialize_vector<uint16_t>(
-                       static_cast<const uint16_t *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<uint16_t>(
+                       static_cast<const uint16_t *>(buf.ptr), buf.size));
                    return;
                  }
                  default:
@@ -1466,8 +1474,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                                  "FLOAT");
                              return ailego::Float16(f);
                            });
-                   self.query_sparse_indices_ = std::move(indices);
-                   self.query_sparse_values_ = std::move(values);
+                   self.target_.set_sparse_vector(std::move(indices),
+                                                  std::move(values));
                    break;
                  }
                  case DataType::SPARSE_VECTOR_FP32: {
@@ -1477,8 +1485,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                              h, "Sparse value[" + std::to_string(idx) + "]",
                              "FLOAT");
                        });
-                   self.query_sparse_indices_ = std::move(indices);
-                   self.query_sparse_values_ = std::move(values);
+                   self.target_.set_sparse_vector(std::move(indices),
+                                                  std::move(values));
                    break;
                  }
                  default:
@@ -1494,16 +1502,17 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
            })
       .def(
           "get_vector",
-          [](const VectorQuery &self,
+          [](const SearchQuery &self,
              const FieldSchema &field_schema) -> py::object {
             DataType data_type = field_schema.data_type();
+            const VectorClause *vc = self.target_.get_vector_clause();
             if (FieldSchema::is_dense_vector_field(data_type)) {
-              if (self.query_vector_.empty()) {
+              if (vc == nullptr || vc->query_vector_.empty()) {
                 throw std::runtime_error("No dense vector has been set");
               }
 
-              size_t byte_size = self.query_vector_.size();
-              const void *data = self.query_vector_.data();
+              size_t byte_size = vc->query_vector_.size();
+              const void *data = vc->query_vector_.data();
 
               switch (data_type) {
                 case DataType::VECTOR_FP32: {
@@ -1549,29 +1558,29 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
               }
             }
             if (FieldSchema::is_sparse_vector_field(data_type)) {
-              if (self.query_sparse_indices_.empty()) {
+              if (vc == nullptr || vc->sparse_indices_.empty()) {
                 return py::dict();
               }
 
               // Deserialize indices: stored as uint32_t[]
-              size_t indices_byte_size = self.query_sparse_indices_.size();
+              size_t indices_byte_size = vc->sparse_indices_.size();
               if (indices_byte_size % sizeof(uint32_t) != 0) {
                 throw std::runtime_error(
                     "Sparse indices buffer size not aligned to uint32_t");
               }
               size_t n = indices_byte_size / sizeof(uint32_t);
               const uint32_t *indices = reinterpret_cast<const uint32_t *>(
-                  self.query_sparse_indices_.data());
+                  vc->sparse_indices_.data());
 
               // Deserialize values
               switch (data_type) {
                 case DataType::SPARSE_VECTOR_FP32: {
-                  if (self.query_sparse_values_.size() != n * sizeof(float)) {
+                  if (vc->sparse_values_.size() != n * sizeof(float)) {
                     throw std::runtime_error(
                         "Sparse FP32 values buffer size mismatch");
                   }
                   const float *values = reinterpret_cast<const float *>(
-                      self.query_sparse_values_.data());
+                      vc->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     result[py::int_(indices[i])] = py::float_(values[i]);
@@ -1579,13 +1588,12 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                   return result;
                 }
                 case DataType::SPARSE_VECTOR_FP16: {
-                  if (self.query_sparse_values_.size() !=
-                      n * sizeof(uint16_t)) {
+                  if (vc->sparse_values_.size() != n * sizeof(uint16_t)) {
                     throw std::runtime_error(
                         "Sparse FP16 values buffer size mismatch");
                   }
                   const uint16_t *raw_bits = reinterpret_cast<const uint16_t *>(
-                      self.query_sparse_values_.data());
+                      vc->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     float f = ailego::FloatHelper::ToFP32(raw_bits[i]);
@@ -1604,29 +1612,34 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
           },
           py::arg("field_schema"))
       .def(py::pickle(
-          [](const VectorQuery &self) {
-            return py::make_tuple(
-                self.topk_, self.field_name_, self.query_vector_,
-                self.query_sparse_indices_, self.query_sparse_values_,
-                self.filter_, self.include_vector_, self.output_fields_,
-                self.query_params_ ? py::cast(self.query_params_) : py::none());
+          [](const SearchQuery &self) {
+            const VectorClause *vc = self.target_.get_vector_clause();
+            return py::make_tuple(self.topk_, self.target_.field_name_,
+                                  vc ? vc->query_vector_ : std::string(),
+                                  vc ? vc->sparse_indices_ : std::string(),
+                                  vc ? vc->sparse_values_ : std::string(),
+                                  self.filter_, self.include_vector_,
+                                  self.output_fields_,
+                                  self.target_.query_params_
+                                      ? py::cast(self.target_.query_params_)
+                                      : py::none());
           },
           [](py::tuple t) {
             if (t.size() != 9)
-              throw std::runtime_error("Invalid pickle data for VectorQuery");
+              throw std::runtime_error("Invalid pickle data for _VectorQuery");
 
-            VectorQuery obj{};
+            SearchQuery obj{};
             obj.topk_ = t[0].cast<int>();
-            obj.field_name_ = t[1].cast<std::string>();
-            obj.query_vector_ = t[2].cast<std::string>();
-            obj.query_sparse_indices_ = t[3].cast<std::string>();
-            obj.query_sparse_values_ = t[4].cast<std::string>();
+            obj.target_.field_name_ = t[1].cast<std::string>();
+            obj.target_.clause_ =
+                VectorClause{t[2].cast<std::string>(), t[3].cast<std::string>(),
+                             t[4].cast<std::string>()};
             obj.filter_ = t[5].cast<std::string>();
             obj.include_vector_ = t[6].cast<bool>();
             obj.output_fields_ = t[7].cast<std::vector<std::string>>();
 
             if (!t[8].is_none()) {
-              obj.query_params_ = t[8].cast<QueryParams::Ptr>();
+              obj.target_.query_params_ = t[8].cast<QueryParams::Ptr>();
             }
             return obj;
           }));

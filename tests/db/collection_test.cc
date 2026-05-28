@@ -94,7 +94,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
   ASSERT_FALSE(col->Delete({}).has_value());
   ASSERT_FALSE(col->DeleteByFilter("").ok());
   ASSERT_FALSE(col->Fetch({}).has_value());
-  ASSERT_FALSE(col->Query(VectorQuery{}).has_value());
+  ASSERT_FALSE(col->Query(SearchQuery{}).has_value());
   ASSERT_FALSE(col->Query(MultiQuery{}).has_value());
   ASSERT_FALSE(col->GroupByQuery({}).has_value());
   ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
@@ -1905,9 +1905,9 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
               << ", code: " << GetDefaultMessage(s.code()) << std::endl;
     ASSERT_TRUE(s.ok());
 
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = doc_count;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
     query.include_vector_ = true;
     auto field_scheama = schema->get_vector_field(field_name);
     ASSERT_NE(field_scheama, nullptr);
@@ -1927,37 +1927,36 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
         vector_fp16 = std::vector<ailego::Float16>(field_scheama->dimension(),
                                                    ailego::Float16(1.0f));
         vector_fp16[0] = 0;
-        query.query_vector_.assign(
-            (char *)vector_fp16.data(),
-            vector_fp16.size() * sizeof(ailego::Float16));
+        query.target_.set_vector(
+            std::string((char *)vector_fp16.data(),
+                        vector_fp16.size() * sizeof(ailego::Float16)));
       } else if (field_scheama->data_type() == DataType::VECTOR_FP32) {
         vector = std::vector<float>(field_scheama->dimension(), 1);
         vector[0] = 0;
-        query.query_vector_.assign((char *)vector.data(),
-                                   vector.size() * sizeof(float));
+        query.target_.set_vector(
+            std::string((char *)vector.data(), vector.size() * sizeof(float)));
       } else {
         vector_int8 = std::vector<int8_t>(field_scheama->dimension(), 1);
         vector_int8[0] = 0;
-        query.query_vector_.assign((char *)vector_int8.data(),
-                                   vector_int8.size() * sizeof(int8_t));
+        query.target_.set_vector(std::string(
+            (char *)vector_int8.data(), vector_int8.size() * sizeof(int8_t)));
       }
     } else {
       if (field_scheama->data_type() == DataType::SPARSE_VECTOR_FP32) {
         sparse_vector = {{1}, {1}};
-        query.query_sparse_indices_.assign(
-            (char *)sparse_vector.first.data(),
-            sparse_vector.first.size() * sizeof(uint32_t));
-        query.query_sparse_values_.assign(
-            (char *)sparse_vector.second.data(),
-            sparse_vector.second.size() * sizeof(float));
+        query.target_.set_sparse_vector(
+            std::string((char *)sparse_vector.first.data(),
+                        sparse_vector.first.size() * sizeof(uint32_t)),
+            std::string((char *)sparse_vector.second.data(),
+                        sparse_vector.second.size() * sizeof(float)));
       } else {
         sparse_vector_fp16 = {{1}, {ailego::Float16(1.0f)}};
-        query.query_sparse_indices_.assign(
-            (char *)sparse_vector_fp16.first.data(),
-            sparse_vector_fp16.first.size() * sizeof(uint32_t));
-        query.query_sparse_values_.assign(
-            (char *)sparse_vector_fp16.second.data(),
-            sparse_vector_fp16.second.size() * sizeof(ailego::Float16));
+        query.target_.set_sparse_vector(
+            std::string((char *)sparse_vector_fp16.first.data(),
+                        sparse_vector_fp16.first.size() * sizeof(uint32_t)),
+            std::string(
+                (char *)sparse_vector_fp16.second.data(),
+                sparse_vector_fp16.second.size() * sizeof(ailego::Float16)));
       }
     }
     auto query_result = collection->Query(query);
@@ -2816,15 +2815,16 @@ TEST_F(CollectionTest, Feature_Optimize_MetricType) {
       auto query_doc = TestHelper::CreateDoc(i, *schema);
       // std::cout << query_doc.to_detail_string() << std::endl;
 
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = 10;
       query.include_vector_ = true;
-      query.field_name_ = "dense_fp32";
+      query.target_.field_name_ = "dense_fp32";
 
       auto vector = query_doc.get<std::vector<float>>("dense_fp32");
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
 
 
       auto result = collection->Query(query);
@@ -3329,9 +3329,9 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
   auto query_doc = TestHelper::CreateDoc(1, *schema);
 
   {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 1024;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);
     ASSERT_NE(field_scheama, nullptr);
@@ -3340,18 +3340,18 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
     if (field_scheama->is_dense_vector()) {
       auto vector = query_doc.get<std::vector<float>>(field_name);
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
     } else {
       auto sparse_vector =
           query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
               field_name);
-      query.query_sparse_indices_.assign(
-          (char *)sparse_vector.value().first.data(),
-          sparse_vector.value().first.size() * sizeof(uint32_t));
-      query.query_sparse_values_.assign(
-          (char *)sparse_vector.value().second.data(),
-          sparse_vector.value().second.size() * sizeof(float));
+      query.target_.set_sparse_vector(
+          std::string((char *)sparse_vector.value().first.data(),
+                      sparse_vector.value().first.size() * sizeof(uint32_t)),
+          std::string((char *)sparse_vector.value().second.data(),
+                      sparse_vector.value().second.size() * sizeof(float)));
     }
     query.include_vector_ = true;
 
@@ -3361,9 +3361,9 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
   }
 
   {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 100001;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);
     ASSERT_NE(field_scheama, nullptr);
@@ -3372,18 +3372,18 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
     if (field_scheama->is_dense_vector()) {
       auto vector = query_doc.get<std::vector<float>>(field_name);
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
     } else {
       auto sparse_vector =
           query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
               field_name);
-      query.query_sparse_indices_.assign(
-          (char *)sparse_vector.value().first.data(),
-          sparse_vector.value().first.size() * sizeof(uint32_t));
-      query.query_sparse_values_.assign(
-          (char *)sparse_vector.value().second.data(),
-          sparse_vector.value().second.size() * sizeof(float));
+      query.target_.set_sparse_vector(
+          std::string((char *)sparse_vector.value().first.data(),
+                      sparse_vector.value().first.size() * sizeof(uint32_t)),
+          std::string((char *)sparse_vector.value().second.data(),
+                      sparse_vector.value().second.size() * sizeof(float)));
     }
     query.include_vector_ = true;
 
@@ -3393,9 +3393,9 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
   }
 
   {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 1024;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
     query.output_fields_ = std::make_optional<std::vector<std::string>>(
         std::vector<std::string>(1025));
 
@@ -3406,18 +3406,18 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
     if (field_scheama->is_dense_vector()) {
       auto vector = query_doc.get<std::vector<float>>(field_name);
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
     } else {
       auto sparse_vector =
           query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
               field_name);
-      query.query_sparse_indices_.assign(
-          (char *)sparse_vector.value().first.data(),
-          sparse_vector.value().first.size() * sizeof(uint32_t));
-      query.query_sparse_values_.assign(
-          (char *)sparse_vector.value().second.data(),
-          sparse_vector.value().second.size() * sizeof(float));
+      query.target_.set_sparse_vector(
+          std::string((char *)sparse_vector.value().first.data(),
+                      sparse_vector.value().first.size() * sizeof(uint32_t)),
+          std::string((char *)sparse_vector.value().second.data(),
+                      sparse_vector.value().second.size() * sizeof(float)));
     }
     query.include_vector_ = true;
 
@@ -3448,9 +3448,9 @@ TEST_F(CollectionTest, Feature_Query_General) {
       auto query_doc = TestHelper::CreateDoc(i, *schema);
       // std::cout << query_doc.to_detail_string() << std::endl;
 
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = 10;
-      query.field_name_ = field_name;
+      query.target_.field_name_ = field_name;
 
       auto field_scheama = schema->get_vector_field(field_name);
       ASSERT_NE(field_scheama, nullptr);
@@ -3459,18 +3459,18 @@ TEST_F(CollectionTest, Feature_Query_General) {
       if (field_scheama->is_dense_vector()) {
         auto vector = query_doc.get<std::vector<float>>(field_name);
         ASSERT_TRUE(vector.has_value());
-        query.query_vector_.assign((char *)vector.value().data(),
-                                   vector.value().size() * sizeof(float));
+        query.target_.set_vector(
+            std::string((char *)vector.value().data(),
+                        vector.value().size() * sizeof(float)));
       } else {
         auto sparse_vector =
             query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
                 field_name);
-        query.query_sparse_indices_.assign(
-            (char *)sparse_vector.value().first.data(),
-            sparse_vector.value().first.size() * sizeof(uint32_t));
-        query.query_sparse_values_.assign(
-            (char *)sparse_vector.value().second.data(),
-            sparse_vector.value().second.size() * sizeof(float));
+        query.target_.set_sparse_vector(
+            std::string((char *)sparse_vector.value().first.data(),
+                        sparse_vector.value().first.size() * sizeof(uint32_t)),
+            std::string((char *)sparse_vector.value().second.data(),
+                        sparse_vector.value().second.size() * sizeof(float)));
       }
       query.include_vector_ = true;
 
@@ -3519,7 +3519,7 @@ TEST_F(CollectionTest, Feature_Query_Empty) {
       auto query_doc = TestHelper::CreateDoc(i, *schema);
       // std::cout << query_doc.to_detail_string() << std::endl;
 
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = topk;
       query.include_vector_ = true;
 
@@ -3562,7 +3562,7 @@ TEST_F(CollectionTest, Feature_Query_WithoutVector_CreateScalarIndex) {
     std::cout << stats.to_string_formatted() << std::endl;
 
     // validate query result
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = topk;
     query.include_vector_ = true;
     query.filter_ = filter;
@@ -3648,7 +3648,7 @@ TEST_F(CollectionTest, Feature_Query_WithoutVector_WithScalarIndex) {
     std::cout << stats.to_string_formatted() << std::endl;
 
     // validate query result
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = topk;
     query.include_vector_ = true;
     query.filter_ = filter;
@@ -4159,7 +4159,7 @@ TEST_F(CollectionTest, Feature_AddColumn_General) {
 
   // validate query result
   for (int i = 1; i < 2; i++) {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 10;
     query.include_vector_ = true;
 
@@ -4345,7 +4345,7 @@ TEST_F(CollectionTest, Feature_AlterColumn_General) {
 
   // validate query result
   for (int i = 1; i < 2; i++) {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 10;
     query.include_vector_ = true;
 
@@ -4439,7 +4439,7 @@ TEST_F(CollectionTest, Feature_AlterColumn_CornerCase) {
 
     // validate query result
     for (int i = 1; i < 2; i++) {
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = 10;
       query.include_vector_ = true;
 
@@ -5407,13 +5407,13 @@ TEST_F(CollectionTest, Feature_Query_NullableFilter_WithoutIndex) {
     ASSERT_EQ(stats.doc_count, total);
 
     auto query_doc = TestHelper::CreateDoc(1, *schema);
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = total;
-    query.field_name_ = "dense_fp32";
+    query.target_.field_name_ = "dense_fp32";
     auto vec = query_doc.get<std::vector<float>>("dense_fp32");
     ASSERT_TRUE(vec.has_value());
-    query.query_vector_.assign((char *)vec.value().data(),
-                               vec.value().size() * sizeof(float));
+    query.target_.set_vector(std::string((char *)vec.value().data(),
+                                         vec.value().size() * sizeof(float)));
     query.filter_ = "int32 > 0";
     query.output_fields_ = std::vector<std::string>{"int32"};
 

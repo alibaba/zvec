@@ -1018,9 +1018,10 @@ typedef struct zvec_flat_query_params_t zvec_flat_query_params_t;
 
 /**
  * @brief Vector query structure (opaque pointer)
- * Aligned with zvec::VectorQuery
+ * Backed by zvec::SearchQuery internally; the C symbol name is kept for
+ * backward compatibility.
  * Use zvec_vector_query_create() to create and zvec_vector_query_destroy() to
- * destroy
+ * destroy.
  */
 typedef struct zvec_vector_query_t zvec_vector_query_t;
 

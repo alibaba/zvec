@@ -1269,7 +1269,7 @@ bool Doc::operator==(const Doc &other) const {
   return true;
 }
 
-Status VectorQuery::validate_and_sanitize(const FieldSchema *schema) {
+Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
   if ((uint32_t)topk_ > kMaxQueryTopk) {
     return Status::InvalidArgument("Invalid query: topk[", topk_,
                                    "] exceeds the maximum allowed value of ",
@@ -1282,8 +1282,15 @@ Status VectorQuery::validate_and_sanitize(const FieldSchema *schema) {
         kMaxOutputFieldSize);
   }
 
+  auto *vc = target_.get_vector_clause();
+  auto &field_name_ = target_.field_name_;
+  // A "scalar-only filter" query has no vector payload — either the clause
+  // is not a VectorClause (e.g., FtsClause) or its fields are all empty.
+  bool no_vector_payload = (vc == nullptr) || (vc->query_vector_.empty() &&
+                                               vc->sparse_indices_.empty());
+
   if (schema == nullptr) {
-    if (query_vector_.empty() && query_sparse_indices_.empty()) {
+    if (no_vector_payload) {
       // Scalar-only filter query
       return Status::OK();
     } else {
@@ -1295,6 +1302,17 @@ Status VectorQuery::validate_and_sanitize(const FieldSchema *schema) {
           "] does not exist or is not a vector field in the collection");
     }
   }
+
+  // Schema is non-null from here on: a vector payload is required.
+  if (no_vector_payload) {
+    return Status::InvalidArgument("Invalid query: missing query clause for [",
+                                   field_name_, "]");
+  }
+
+  auto &query_vector_ = vc->query_vector_;
+  auto &query_sparse_indices_ = vc->sparse_indices_;
+  auto &query_sparse_values_ = vc->sparse_values_;
+  auto &query_params_ = target_.query_params_;
 
   // Vector query
   if (schema->is_dense_vector()) {

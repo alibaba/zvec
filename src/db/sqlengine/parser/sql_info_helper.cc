@@ -26,16 +26,20 @@ namespace zvec::sqlengine {
 
 using namespace zvec;
 
-Node::Ptr handle_vector(const VectorQuery &request, std::string * /*err_msg*/) {
+Node::Ptr handle_vector(const SearchQuery &request, std::string * /*err_msg*/) {
+  const auto *vc = request.target_.get_vector_clause();
+  if (vc == nullptr) {
+    return nullptr;
+  }
   Node::Ptr rel_exp = std::make_shared<Node>(NodeOp::T_EQ);
-  rel_exp->set_left(std::make_shared<IDNode>(request.field_name_));
+  rel_exp->set_left(std::make_shared<IDNode>(request.target_.field_name_));
   rel_exp->set_right(std::make_shared<VectorMatrixNode>(
-      request.query_vector_, request.query_sparse_indices_,
-      request.query_sparse_values_, request.query_params_));
+      vc->query_vector_, vc->sparse_indices_, vc->sparse_values_,
+      request.target_.query_params_));
   return rel_exp;
 }
 
-void handle_query_field(const VectorQuery *query, SelectInfo *selected_info) {
+void handle_query_field(const SearchQuery *query, SelectInfo *selected_info) {
   if (!query->output_fields_.has_value()) {
     SelectedElemInfo::Ptr selected_elem_info =
         std::make_shared<SelectedElemInfo>();
@@ -61,13 +65,15 @@ void handle_query_field(const VectorQuery *query, SelectInfo *selected_info) {
   }
 }
 
-bool SQLInfoHelper::MessageToSQLInfo(const VectorQuery *query,
+bool SQLInfoHelper::MessageToSQLInfo(const SearchQuery *query,
                                      Node::Ptr filter_node,
                                      std::shared_ptr<GroupBy> group_by,
                                      sqlengine::SQLInfo::Ptr *sql_info,
                                      std::string *err_msg) {
   Node::Ptr index_params_node_ptr = nullptr;
-  if (!query->query_vector_.empty() || !query->query_sparse_indices_.empty()) {
+  if (const auto *vc = query->target_.get_vector_clause();
+      vc != nullptr &&
+      (!vc->query_vector_.empty() || !vc->sparse_indices_.empty())) {
     index_params_node_ptr = handle_vector(*query, err_msg);
     if (index_params_node_ptr == nullptr) {
       return false;

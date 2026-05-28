@@ -24,7 +24,7 @@ namespace zvec::sqlengine {
 class SQLInfoHelper {
  public:
   //! Perform QueryRequest to sql info conversion:
-  static bool MessageToSQLInfo(const VectorQuery *query, Node::Ptr filter_node,
+  static bool MessageToSQLInfo(const SearchQuery *query, Node::Ptr filter_node,
                                std::shared_ptr<GroupBy> group_by,
                                sqlengine::SQLInfo::Ptr *sql_info,
                                std::string *err_msg);
