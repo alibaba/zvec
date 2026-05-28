@@ -25,6 +25,9 @@ step). In that case CI will rely on the C++ unit tests instead.
 
 from __future__ import annotations
 
+import os
+import sys
+
 import pytest
 import zvec
 from zvec import (
@@ -73,6 +76,9 @@ def _require_bundled_dict():
 @pytest.fixture(scope="function")
 def jieba_collection(tmp_path_factory) -> Collection:
     """FTS-only collection using jieba tokenizer and no explicit dict path."""
+    # env-var shadows GlobalConfig in the priority chain.
+    if os.environ.get("ZVEC_JIEBA_DICT_DIR"):
+        pytest.skip("ZVEC_JIEBA_DICT_DIR shadows the bundled default")
     temp_dir = tmp_path_factory.mktemp("zvec_jieba_default")
     collection_path = temp_dir / "fts_jieba"
 
@@ -141,3 +147,55 @@ def test_user_can_override_default_at_runtime():
         assert zvec.get_default_jieba_dict_dir() == "/tmp/zvec/jieba-override"
     finally:
         zvec.set_default_jieba_dict_dir(saved)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.environ writes may not propagate across CRT to zvec.pyd",
+)
+def test_env_var_overrides_global_config(monkeypatch, tmp_path_factory):
+    """ZVEC_JIEBA_DICT_DIR beats GlobalConfig in jieba's resolution chain."""
+    bundled = _bundled_dict_dir()
+    monkeypatch.setenv("ZVEC_JIEBA_DICT_DIR", bundled)
+    saved_global = zvec.get_default_jieba_dict_dir()
+    try:
+        zvec.set_default_jieba_dict_dir("/zvec/intentionally/missing/global")
+
+        temp_dir = tmp_path_factory.mktemp("zvec_jieba_env")
+        schema = zvec.CollectionSchema(
+            name="fts_jieba_env",
+            fields=[
+                FieldSchema("title", DataType.STRING, nullable=False),
+                FieldSchema(
+                    "content",
+                    DataType.STRING,
+                    nullable=False,
+                    index_param=FtsIndexParam(
+                        tokenizer_name="jieba",
+                        filters=["lowercase"],
+                    ),
+                ),
+            ],
+        )
+        coll = zvec.create_and_open(
+            path=str(temp_dir / "fts_jieba_env"),
+            schema=schema,
+            option=CollectionOption(read_only=False, enable_mmap=True),
+        )
+        assert coll is not None
+        try:
+            results = coll.insert(
+                [
+                    Doc(id="pk_1", fields={"title": "t", "content": "搜索引擎技术"}),
+                ]
+            )
+            assert all(r.ok() for r in results)
+            hits = coll.query(
+                queries=Query(field_name="content", fts=Fts(match_string="搜索")),
+                topk=10,
+            )
+            assert {d.id for d in hits} == {"pk_1"}
+        finally:
+            coll.destroy()
+    finally:
+        zvec.set_default_jieba_dict_dir(saved_global)
