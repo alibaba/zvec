@@ -29,6 +29,7 @@
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/buffer/buffer_manager.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/delete_store.h"
@@ -49,7 +50,7 @@ class SegmentTest : public testing::TestWithParam<bool> {
     FileHelper::RemoveDirectory(col_path);
     FileHelper::CreateDirectory(col_path);
 
-    ailego::BufferManager::Instance().init(MIN_MEMORY_LIMIT_BYTES, 1);
+    zvec::ailego::MemoryLimitPool::get_instance().init(MIN_MEMORY_LIMIT_BYTES);
 
     std::string idmap_path =
         FileHelper::MakeFilePath(col_path, FileID::ID_FILE, 0);
@@ -1078,12 +1079,12 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexer) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = new_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
   auto results = combined_indexer->Search(query, query_params);
   ASSERT_TRUE(results.has_value());
 
@@ -1144,13 +1145,14 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerWithQuantVectorIndex) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = new_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false,
-      .query_params = std::make_shared<zvec::QueryParams>(IndexType::HNSW)};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
+  query_params.query_params =
+      std::make_shared<zvec::QueryParams>(IndexType::HNSW);
   query_params.query_params->set_is_using_refiner(true);
 
   auto results = combined_indexer->Search(query, query_params);
@@ -1195,18 +1197,16 @@ TEST_P(SegmentTest, CombinedVectorColumnIndexerQueryWithPks) {
   auto dense_fp32_field = schema->get_field("dense_fp32");
   auto query_vector = verify_doc.get<std::vector<float>>("dense_fp32").value();
   auto query = vector_column_params::VectorData{
-      vector_column_params::DenseVector{.data = query_vector.data()}};
-  auto query_params = vector_column_params::QueryParams{
-      .data_type = dense_fp32_field->data_type(),
-      .dimension = dense_fp32_field->dimension(),
-      .topk = 10,
-      .filter = nullptr,
-      .fetch_vector = false,
-      .query_params = std::make_shared<zvec::QueryParams>(IndexType::HNSW),
-      .group_by = nullptr,
-      .bf_pks = bf_pks,
-      .refiner_param = nullptr,
-      .extra_params = {}};
+      vector_column_params::DenseVector{query_vector.data()}};
+  vector_column_params::QueryParams query_params;
+  query_params.data_type = dense_fp32_field->data_type();
+  query_params.dimension = dense_fp32_field->dimension();
+  query_params.topk = 10;
+  query_params.filter = nullptr;
+  query_params.fetch_vector = false;
+  query_params.query_params =
+      std::make_shared<zvec::QueryParams>(IndexType::HNSW);
+  query_params.bf_pks = bf_pks;
 
   auto results = combined_indexer->Search(query, query_params);
   ASSERT_TRUE(results.has_value());
@@ -1878,6 +1878,492 @@ TEST_P(SegmentTest, AddColumn) {
       func(new_field_schema, expression);
     }
   }
+}
+
+TEST_P(SegmentTest, AddNullableColumnWithoutExpressionMultiBlock) {
+  // Use small buffer to force multiple scalar blocks within a single segment
+  options.max_buffer_size_ = 1 * 1024;
+  int doc_count = 100;
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
+      0, doc_count);
+  ASSERT_TRUE(segment != nullptr);
+
+  segment->dump();
+  auto writing_segment_meta = segment->meta();
+
+  Version version = version_manager->get_current_version();
+  writing_segment_meta->remove_writing_forward_block();
+  auto s = version.add_persisted_segment_meta(writing_segment_meta);
+  ASSERT_TRUE(s.ok());
+
+  s = version_manager->apply(version);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->flush();
+  ASSERT_TRUE(s.ok());
+
+  segment.reset();
+  version_manager.reset();
+  id_map->flush();
+  id_map.reset();
+
+  std::string delete_store_path =
+      FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE, 0);
+  delete_store->flush(delete_store_path);
+  delete_store.reset();
+
+  auto recover_version_manager = VersionManager::Recovery(col_path);
+  auto recover_version_mgr = recover_version_manager.value();
+  ASSERT_TRUE(recover_version_mgr != nullptr);
+
+  Version v = recover_version_mgr->get_current_version();
+  const auto &persist_metas = v.persisted_segment_metas();
+
+  std::string idmap_path = FileHelper::MakeFilePath(col_path, FileID::ID_FILE,
+                                                    v.id_map_path_suffix());
+  IDMap::Ptr recover_id_map = std::make_shared<IDMap>(col_name);
+  auto status = recover_id_map->open(idmap_path, false, false);
+  ASSERT_TRUE(status.ok());
+
+  delete_store_path = FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE,
+                                               v.delete_snapshot_path_suffix());
+  auto recover_delete_store =
+      DeleteStore::CreateAndLoad(col_name, delete_store_path);
+  ASSERT_TRUE(recover_delete_store != nullptr);
+
+  // Verify we have multiple scalar blocks
+  int scalar_block_count = 0;
+  for (auto &block : persist_metas[0]->persisted_blocks()) {
+    if (block.type() == BlockType::SCALAR) {
+      scalar_block_count++;
+    }
+  }
+  ASSERT_GT(scalar_block_count, 1);
+
+  options.read_only_ = true;
+  auto result =
+      Segment::Open(col_path, *schema, *persist_metas[0], recover_id_map,
+                    recover_delete_store, recover_version_mgr, options);
+  ASSERT_TRUE(result.has_value());
+  segment = std::move(result).value();
+  ASSERT_TRUE(segment != nullptr);
+
+  // Add nullable columns without expression — this used to crash on
+  // multi-block segments
+  std::vector<std::pair<std::string, DataType>> nullable_types = {
+      {"add_int32_null", DataType::INT32},
+      {"add_uint32_null", DataType::UINT32},
+      {"add_int64_null", DataType::INT64},
+  };
+  for (auto &[col_name, data_type] : nullable_types) {
+    auto field_schema =
+        std::make_shared<FieldSchema>(col_name, data_type, true);
+    s = segment->add_column(field_schema, "", AddColumnOptions());
+    ASSERT_TRUE(s.ok()) << "Failed to add nullable column " << col_name << ": "
+                        << s.message();
+
+    auto combined_reader = segment->scan({"id", "name", "age", col_name});
+    ASSERT_TRUE(combined_reader != nullptr);
+    std::shared_ptr<arrow::RecordBatch> batch;
+    uint32_t total_doc = 0;
+    while (true) {
+      auto st = combined_reader->ReadNext(&batch);
+      if (!st.ok()) break;
+      if (batch == nullptr) break;
+      EXPECT_EQ(batch->num_columns(), 4);
+      total_doc += batch->num_rows();
+    }
+    EXPECT_EQ(total_doc, doc_count);
+  }
+}
+
+TEST_P(SegmentTest, AddColumnWithExpressionMultiBlock) {
+  // Use small buffer to force multiple scalar blocks within a single segment
+  options.max_buffer_size_ = 1 * 1024;
+  int doc_count = 100;
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
+      0, doc_count);
+  ASSERT_TRUE(segment != nullptr);
+
+  segment->dump();
+  auto writing_segment_meta = segment->meta();
+
+  Version version = version_manager->get_current_version();
+  writing_segment_meta->remove_writing_forward_block();
+  auto s = version.add_persisted_segment_meta(writing_segment_meta);
+  ASSERT_TRUE(s.ok());
+
+  s = version_manager->apply(version);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->flush();
+  ASSERT_TRUE(s.ok());
+
+  segment.reset();
+  version_manager.reset();
+  id_map->flush();
+  id_map.reset();
+
+  std::string delete_store_path =
+      FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE, 0);
+  delete_store->flush(delete_store_path);
+  delete_store.reset();
+
+  auto recover_version_manager = VersionManager::Recovery(col_path);
+  auto recover_version_mgr = recover_version_manager.value();
+  ASSERT_TRUE(recover_version_mgr != nullptr);
+
+  Version v = recover_version_mgr->get_current_version();
+  const auto &persist_metas = v.persisted_segment_metas();
+
+  std::string idmap_path = FileHelper::MakeFilePath(col_path, FileID::ID_FILE,
+                                                    v.id_map_path_suffix());
+  IDMap::Ptr recover_id_map = std::make_shared<IDMap>(col_name);
+  auto status = recover_id_map->open(idmap_path, false, false);
+  ASSERT_TRUE(status.ok());
+
+  delete_store_path = FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE,
+                                               v.delete_snapshot_path_suffix());
+  auto recover_delete_store =
+      DeleteStore::CreateAndLoad(col_name, delete_store_path);
+  ASSERT_TRUE(recover_delete_store != nullptr);
+
+  // Verify we have multiple scalar blocks
+  int scalar_block_count = 0;
+  for (auto &block : persist_metas[0]->persisted_blocks()) {
+    if (block.type() == BlockType::SCALAR) {
+      scalar_block_count++;
+    }
+  }
+  ASSERT_GT(scalar_block_count, 1);
+
+  options.read_only_ = true;
+  auto result =
+      Segment::Open(col_path, *schema, *persist_metas[0], recover_id_map,
+                    recover_delete_store, recover_version_mgr, options);
+  ASSERT_TRUE(result.has_value());
+  segment = std::move(result).value();
+  ASSERT_TRUE(segment != nullptr);
+
+  // Add column with expression on multi-block segment
+  auto field_schema =
+      std::make_shared<FieldSchema>("add_expr_col", DataType::INT32, false);
+  s = segment->add_column(field_schema, "id + 1", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "Failed to add column with expression: "
+                      << s.message();
+
+  auto combined_reader = segment->scan({"id", "name", "age", "add_expr_col"});
+  ASSERT_TRUE(combined_reader != nullptr);
+  std::shared_ptr<arrow::RecordBatch> batch;
+  uint32_t total_doc = 0;
+  while (true) {
+    auto st = combined_reader->ReadNext(&batch);
+    if (!st.ok()) break;
+    if (batch == nullptr) break;
+    EXPECT_EQ(batch->num_columns(), 4);
+    total_doc += batch->num_rows();
+  }
+  EXPECT_EQ(total_doc, doc_count);
+
+  // Add nullable column without expression on the same multi-block segment
+  auto nullable_field =
+      std::make_shared<FieldSchema>("add_null_col", DataType::INT64, true);
+  s = segment->add_column(nullable_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok())
+      << "Failed to add nullable column after expression column: "
+      << s.message();
+
+  combined_reader = segment->scan({"id", "add_expr_col", "add_null_col"});
+  ASSERT_TRUE(combined_reader != nullptr);
+  total_doc = 0;
+  while (true) {
+    auto st = combined_reader->ReadNext(&batch);
+    if (!st.ok()) break;
+    if (batch == nullptr) break;
+    EXPECT_EQ(batch->num_columns(), 3);
+    total_doc += batch->num_rows();
+  }
+  EXPECT_EQ(total_doc, doc_count);
+}
+
+TEST_P(SegmentTest, AlterColumnMultiBlock) {
+  options.max_buffer_size_ = 1 * 1024;
+  int doc_count = 100;
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
+      0, doc_count);
+  ASSERT_TRUE(segment != nullptr);
+
+  segment->dump();
+  auto writing_segment_meta = segment->meta();
+
+  Version version = version_manager->get_current_version();
+  writing_segment_meta->remove_writing_forward_block();
+  auto s = version.add_persisted_segment_meta(writing_segment_meta);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->apply(version);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->flush();
+  ASSERT_TRUE(s.ok());
+
+  segment.reset();
+  version_manager.reset();
+  id_map->flush();
+  id_map.reset();
+
+  std::string delete_store_path =
+      FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE, 0);
+  delete_store->flush(delete_store_path);
+  delete_store.reset();
+
+  auto recover_version_manager = VersionManager::Recovery(col_path);
+  auto recover_version_mgr = recover_version_manager.value();
+  ASSERT_TRUE(recover_version_mgr != nullptr);
+
+  Version v = recover_version_mgr->get_current_version();
+  const auto &persist_metas = v.persisted_segment_metas();
+
+  std::string idmap_path = FileHelper::MakeFilePath(col_path, FileID::ID_FILE,
+                                                    v.id_map_path_suffix());
+  IDMap::Ptr recover_id_map = std::make_shared<IDMap>(col_name);
+  auto status = recover_id_map->open(idmap_path, false, false);
+  ASSERT_TRUE(status.ok());
+
+  delete_store_path = FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE,
+                                               v.delete_snapshot_path_suffix());
+  auto recover_delete_store =
+      DeleteStore::CreateAndLoad(col_name, delete_store_path);
+  ASSERT_TRUE(recover_delete_store != nullptr);
+
+  int scalar_block_count = 0;
+  for (auto &block : persist_metas[0]->persisted_blocks()) {
+    if (block.type() == BlockType::SCALAR) {
+      scalar_block_count++;
+    }
+  }
+  ASSERT_GT(scalar_block_count, 1);
+
+  options.read_only_ = true;
+  auto result =
+      Segment::Open(col_path, *schema, *persist_metas[0], recover_id_map,
+                    recover_delete_store, recover_version_mgr, options);
+  ASSERT_TRUE(result.has_value());
+  segment = std::move(result).value();
+  ASSERT_TRUE(segment != nullptr);
+
+  // Alter column type: int32 -> int64 on multi-block segment
+  auto new_field = std::make_shared<FieldSchema>("id", DataType::INT64, false);
+  s = segment->alter_column("id", new_field, AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "alter_column failed: " << s.message();
+
+  auto combined_reader = segment->scan({"id", "name", "age"});
+  ASSERT_TRUE(combined_reader != nullptr);
+  std::shared_ptr<arrow::RecordBatch> batch;
+  uint32_t total_doc = 0;
+  while (true) {
+    auto st = combined_reader->ReadNext(&batch);
+    if (!st.ok()) break;
+    if (batch == nullptr) break;
+    EXPECT_EQ(batch->num_columns(), 3);
+    total_doc += batch->num_rows();
+  }
+  EXPECT_EQ(total_doc, doc_count);
+}
+
+TEST_P(SegmentTest, DropColumnMultiBlock) {
+  options.max_buffer_size_ = 1 * 1024;
+  int doc_count = 100;
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
+      0, doc_count);
+  ASSERT_TRUE(segment != nullptr);
+
+  segment->dump();
+  auto writing_segment_meta = segment->meta();
+
+  Version version = version_manager->get_current_version();
+  writing_segment_meta->remove_writing_forward_block();
+  auto s = version.add_persisted_segment_meta(writing_segment_meta);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->apply(version);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->flush();
+  ASSERT_TRUE(s.ok());
+
+  segment.reset();
+  version_manager.reset();
+  id_map->flush();
+  id_map.reset();
+
+  std::string delete_store_path =
+      FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE, 0);
+  delete_store->flush(delete_store_path);
+  delete_store.reset();
+
+  auto recover_version_manager = VersionManager::Recovery(col_path);
+  auto recover_version_mgr = recover_version_manager.value();
+  ASSERT_TRUE(recover_version_mgr != nullptr);
+
+  Version v = recover_version_mgr->get_current_version();
+  const auto &persist_metas = v.persisted_segment_metas();
+
+  std::string idmap_path = FileHelper::MakeFilePath(col_path, FileID::ID_FILE,
+                                                    v.id_map_path_suffix());
+  IDMap::Ptr recover_id_map = std::make_shared<IDMap>(col_name);
+  auto status = recover_id_map->open(idmap_path, false, false);
+  ASSERT_TRUE(status.ok());
+
+  delete_store_path = FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE,
+                                               v.delete_snapshot_path_suffix());
+  auto recover_delete_store =
+      DeleteStore::CreateAndLoad(col_name, delete_store_path);
+  ASSERT_TRUE(recover_delete_store != nullptr);
+
+  int scalar_block_count = 0;
+  for (auto &block : persist_metas[0]->persisted_blocks()) {
+    if (block.type() == BlockType::SCALAR) {
+      scalar_block_count++;
+    }
+  }
+  ASSERT_GT(scalar_block_count, 1);
+
+  options.read_only_ = true;
+  auto result =
+      Segment::Open(col_path, *schema, *persist_metas[0], recover_id_map,
+                    recover_delete_store, recover_version_mgr, options);
+  ASSERT_TRUE(result.has_value());
+  segment = std::move(result).value();
+  ASSERT_TRUE(segment != nullptr);
+
+  // Drop column on multi-block segment
+  s = segment->drop_column("id");
+  ASSERT_TRUE(s.ok()) << "drop_column failed: " << s.message();
+
+  auto combined_reader = segment->scan({"id"});
+  ASSERT_TRUE(combined_reader == nullptr);
+
+  // Remaining columns should still be scannable
+  combined_reader = segment->scan({"name", "age"});
+  ASSERT_TRUE(combined_reader != nullptr);
+  std::shared_ptr<arrow::RecordBatch> batch;
+  uint32_t total_doc = 0;
+  while (true) {
+    auto st = combined_reader->ReadNext(&batch);
+    if (!st.ok()) break;
+    if (batch == nullptr) break;
+    EXPECT_EQ(batch->num_columns(), 2);
+    total_doc += batch->num_rows();
+  }
+  EXPECT_EQ(total_doc, doc_count);
+}
+
+TEST_P(SegmentTest, AddNullableThenAlterDropMultiBlock) {
+  options.max_buffer_size_ = 1 * 1024;
+  int doc_count = 100;
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager, options,
+      0, doc_count);
+  ASSERT_TRUE(segment != nullptr);
+
+  segment->dump();
+  auto writing_segment_meta = segment->meta();
+
+  Version version = version_manager->get_current_version();
+  writing_segment_meta->remove_writing_forward_block();
+  auto s = version.add_persisted_segment_meta(writing_segment_meta);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->apply(version);
+  ASSERT_TRUE(s.ok());
+  s = version_manager->flush();
+  ASSERT_TRUE(s.ok());
+
+  segment.reset();
+  version_manager.reset();
+  id_map->flush();
+  id_map.reset();
+
+  std::string delete_store_path =
+      FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE, 0);
+  delete_store->flush(delete_store_path);
+  delete_store.reset();
+
+  auto recover_version_manager = VersionManager::Recovery(col_path);
+  auto recover_version_mgr = recover_version_manager.value();
+  ASSERT_TRUE(recover_version_mgr != nullptr);
+
+  Version v = recover_version_mgr->get_current_version();
+  const auto &persist_metas = v.persisted_segment_metas();
+
+  std::string idmap_path = FileHelper::MakeFilePath(col_path, FileID::ID_FILE,
+                                                    v.id_map_path_suffix());
+  IDMap::Ptr recover_id_map = std::make_shared<IDMap>(col_name);
+  auto status = recover_id_map->open(idmap_path, false, false);
+  ASSERT_TRUE(status.ok());
+
+  delete_store_path = FileHelper::MakeFilePath(col_path, FileID::DELETE_FILE,
+                                               v.delete_snapshot_path_suffix());
+  auto recover_delete_store =
+      DeleteStore::CreateAndLoad(col_name, delete_store_path);
+  ASSERT_TRUE(recover_delete_store != nullptr);
+
+  options.read_only_ = true;
+  auto result =
+      Segment::Open(col_path, *schema, *persist_metas[0], recover_id_map,
+                    recover_delete_store, recover_version_mgr, options);
+  ASSERT_TRUE(result.has_value());
+  segment = std::move(result).value();
+  ASSERT_TRUE(segment != nullptr);
+
+  // 1) Add nullable column without expression
+  auto nullable_field =
+      std::make_shared<FieldSchema>("nullable_col", DataType::INT32, true);
+  s = segment->add_column(nullable_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "add nullable column failed: " << s.message();
+
+  // 2) Alter the nullable column type: INT32 -> INT64
+  auto altered_field =
+      std::make_shared<FieldSchema>("nullable_col", DataType::INT64, true);
+  s = segment->alter_column("nullable_col", altered_field,
+                            AlterColumnOptions());
+  ASSERT_TRUE(s.ok()) << "alter nullable column failed: " << s.message();
+
+  auto combined_reader = segment->scan({"id", "nullable_col"});
+  ASSERT_TRUE(combined_reader != nullptr);
+  std::shared_ptr<arrow::RecordBatch> batch;
+  uint32_t total_doc = 0;
+  while (true) {
+    auto st = combined_reader->ReadNext(&batch);
+    if (!st.ok()) break;
+    if (batch == nullptr) break;
+    EXPECT_EQ(batch->num_columns(), 2);
+    total_doc += batch->num_rows();
+  }
+  EXPECT_EQ(total_doc, doc_count);
+
+  // 3) Drop the altered nullable column
+  s = segment->drop_column("nullable_col");
+  ASSERT_TRUE(s.ok()) << "drop nullable column failed: " << s.message();
+
+  combined_reader = segment->scan({"nullable_col"});
+  ASSERT_TRUE(combined_reader == nullptr);
+
+  // 4) Add it back again to verify structure is still consistent
+  auto re_add_field =
+      std::make_shared<FieldSchema>("nullable_col_v2", DataType::FLOAT, true);
+  s = segment->add_column(re_add_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << "re-add nullable column failed: " << s.message();
+
+  combined_reader = segment->scan({"id", "name", "nullable_col_v2"});
+  ASSERT_TRUE(combined_reader != nullptr);
+  total_doc = 0;
+  while (true) {
+    auto st = combined_reader->ReadNext(&batch);
+    if (!st.ok()) break;
+    if (batch == nullptr) break;
+    EXPECT_EQ(batch->num_columns(), 3);
+    total_doc += batch->num_rows();
+  }
+  EXPECT_EQ(total_doc, doc_count);
 }
 
 TEST_P(SegmentTest, AlterColumn) {

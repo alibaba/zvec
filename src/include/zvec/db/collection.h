@@ -14,10 +14,11 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
-#include <zvec/db/doc.h>
 #include <zvec/db/options.h>
+#include <zvec/db/query.h>
 #include <zvec/db/stats.h>
 #include <zvec/db/status.h>
 
@@ -98,11 +99,24 @@ class Collection {
 
   virtual Result<DocPtrList> Query(const VectorQuery &query) const = 0;
 
+  virtual Result<DocPtrList> Query(const MultiQuery &query) const = 0;
+
   virtual Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const = 0;
 
-  virtual Result<DocPtrMap> Fetch(
-      const std::vector<std::string> &pks) const = 0;
+  virtual Result<DocPtrMap> Fetch(const std::vector<std::string> &pks,
+                                  const std::optional<std::vector<std::string>>
+                                      &output_fields = std::nullopt,
+                                  bool include_vector = true) const = 0;
+
+ public:
+  //! Debug-only: retrieve the storage mode string of an HNSW index on the
+  //! given vector column. Returns one of {"mmap", "buffer_pool",
+  //! "contiguous"}. Returns an error Status when the column does not exist,
+  //! has no index, or the index is not an HNSW index. Intended for
+  //! introspection and testing; not part of the stable public API.
+  virtual Result<std::string> DebugGetHnswStorageMode(
+      const std::string &column_name) const = 0;
 };
 
 }  // namespace zvec

@@ -33,10 +33,10 @@ class JsonString {
   typedef mod_json_integer_t integer_type;
 
   //! Constructor
-  JsonString(void) : str_(0) {}
+  JsonString(void) : str_(nullptr) {}
 
   //! Constructor
-  JsonString(const JsonString &rhs) : str_(0) {
+  JsonString(const JsonString &rhs) : str_(nullptr) {
     if (rhs.str_) {
       str_ = mod_json_string_grab(rhs.str_);
     }
@@ -45,14 +45,14 @@ class JsonString {
 #if __cplusplus >= 201103L
   //! Constructor
   JsonString(JsonString &&rhs) : str_(rhs.str_) {
-    rhs.str_ = 0;
+    rhs.str_ = nullptr;
   }
 #endif
 
   //! Constructor
   JsonString(const char *cstr) {
     str_ = cstr ? mod_json_string_set(cstr, (mod_json_size_t)std::strlen(cstr))
-                : 0;
+                : nullptr;
   }
 
   //! Constructor
@@ -139,7 +139,7 @@ class JsonString {
 
   //! Retrieve non-zero if the string is valid
   bool is_valid(void) const {
-    return (str_ != (mod_json_string_t *)0);
+    return (str_ != (mod_json_string_t *)nullptr);
   }
 
   //! Retrieve non-zero if the string is empty
@@ -150,7 +150,7 @@ class JsonString {
   //! Assign a JSON string
   void assign(const JsonString &rhs) {
     mod_json_string_unset(str_);
-    str_ = rhs.str_ ? mod_json_string_grab(rhs.str_) : 0;
+    str_ = rhs.str_ ? mod_json_string_grab(rhs.str_) : nullptr;
   }
 
 #if __cplusplus >= 201103L
@@ -158,7 +158,7 @@ class JsonString {
   void assign(JsonString &&rhs) {
     mod_json_string_unset(str_);
     str_ = rhs.str_;
-    rhs.str_ = 0;
+    rhs.str_ = nullptr;
   }
 #endif
 
@@ -261,7 +261,7 @@ class JsonString {
   //! Clear the JSON string
   void clear(void) {
     mod_json_string_unset(str_);
-    str_ = 0;
+    str_ = nullptr;
   }
 
   //! Exchange the content with another JSON string
@@ -375,7 +375,7 @@ class JsonString {
     } else {
       str_ = mod_json_string_set("", 0);
     }
-    return (str_ != 0);
+    return (str_ != nullptr);
   }
 
   //! Clone the value and leak it
@@ -404,7 +404,7 @@ class JsonValue {
   typedef mod_json_integer_t integer_type;
 
   //! Constructor
-  JsonValue(void) : val_(0) {}
+  JsonValue(void) : val_(nullptr) {}
 
   //! Constructor
   explicit JsonValue(const bool &val) {
@@ -513,7 +513,7 @@ class JsonValue {
   }
 
   //! Constructor
-  JsonValue(const JsonValue &rhs) : val_(0) {
+  JsonValue(const JsonValue &rhs) : val_(nullptr) {
     if (rhs.val_) {
       val_ = mod_json_value_grab(rhs.val_);
     }
@@ -522,7 +522,7 @@ class JsonValue {
 #if __cplusplus >= 201103L
   //! Constructor
   JsonValue(JsonValue &&rhs) : val_(rhs.val_) {
-    rhs.val_ = 0;
+    rhs.val_ = nullptr;
   }
 #endif
 
@@ -717,7 +717,7 @@ class JsonValue {
 
   //! Retrieve non-zero if the value is valid
   bool is_valid(void) const {
-    return (val_ != (mod_json_value_t *)0);
+    return (val_ != (mod_json_value_t *)nullptr);
   }
 
   //! Retrieve non-zero if the value is a object
@@ -758,7 +758,7 @@ class JsonValue {
   //! Assign new contents to the value, replacing its current content
   void assign(const JsonValue &rhs) {
     mod_json_value_unset(val_);
-    val_ = rhs.val_ ? mod_json_value_grab(rhs.val_) : 0;
+    val_ = rhs.val_ ? mod_json_value_grab(rhs.val_) : nullptr;
   }
 
 #if __cplusplus >= 201103L
@@ -766,7 +766,7 @@ class JsonValue {
   void assign(JsonValue &&rhs) {
     mod_json_value_unset(val_);
     val_ = rhs.val_;
-    rhs.val_ = 0;
+    rhs.val_ = nullptr;
   }
 #endif
 
@@ -1048,7 +1048,7 @@ class JsonValue {
 
   //! Parse a sting as a JSON value
   bool parse(const char *str) {
-    mod_json_token_t *tok = mod_json_token_create(NULL);
+    mod_json_token_t *tok = mod_json_token_create(nullptr);
 
     if (tok) {
       mod_json_value_t *jval = mod_json_parse(tok, str);
@@ -1084,7 +1084,7 @@ class JsonValue {
     } else {
       val_ = mod_json_value_set_null();
     }
-    return (val_ != 0);
+    return (val_ != nullptr);
   }
 
   //! Clone the value and leak it
@@ -1153,7 +1153,7 @@ class JsonArray {
   class const_iterator {
    public:
     //! Constructor
-    const_iterator(void) : iter_(0) {}
+    const_iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_iterator &rhs) const {
@@ -1224,7 +1224,7 @@ class JsonArray {
   class iterator {
    public:
     //! Constructor
-    iterator(void) : iter_(0) {}
+    iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const iterator &rhs) const {
@@ -1303,7 +1303,7 @@ class JsonArray {
   class const_reverse_iterator {
    public:
     //! Constructor
-    const_reverse_iterator(void) : iter_(0) {}
+    const_reverse_iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_reverse_iterator &rhs) const {
@@ -1374,7 +1374,7 @@ class JsonArray {
   class reverse_iterator {
    public:
     //! Constructor
-    reverse_iterator(void) : iter_(0) {}
+    reverse_iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const reverse_iterator &rhs) const {
@@ -1449,10 +1449,10 @@ class JsonArray {
   };
 
   //! Constructor
-  JsonArray(void) : arr_(0) {}
+  JsonArray(void) : arr_(nullptr) {}
 
   //! Constructor
-  JsonArray(const JsonArray &rhs) : arr_(0) {
+  JsonArray(const JsonArray &rhs) : arr_(nullptr) {
     if (rhs.arr_) {
       arr_ = mod_json_array_grab(rhs.arr_);
     }
@@ -1461,7 +1461,7 @@ class JsonArray {
 #if __cplusplus >= 201103L
   //! Constructor
   JsonArray(JsonArray &&rhs) : arr_(rhs.arr_) {
-    rhs.arr_ = 0;
+    rhs.arr_ = nullptr;
   }
 #endif
 
@@ -1506,7 +1506,7 @@ class JsonArray {
 
   //! Retrieve non-zero if the array is valid
   bool is_valid(void) const {
-    return (arr_ != (mod_json_array_t *)0);
+    return (arr_ != (mod_json_array_t *)nullptr);
   }
 
   //! Retrieve non-zero if the array is empty
@@ -1532,7 +1532,7 @@ class JsonArray {
   //! Assign new contents to the array, replacing its current content
   void assign(const JsonArray &rhs) {
     mod_json_array_unset(arr_);
-    arr_ = rhs.arr_ ? mod_json_array_grab(rhs.arr_) : 0;
+    arr_ = rhs.arr_ ? mod_json_array_grab(rhs.arr_) : nullptr;
   }
 
 #if __cplusplus >= 201103L
@@ -1540,7 +1540,7 @@ class JsonArray {
   void assign(JsonArray &&rhs) {
     mod_json_array_unset(arr_);
     arr_ = rhs.arr_;
-    rhs.arr_ = 0;
+    rhs.arr_ = nullptr;
   }
 #endif
 
@@ -1648,7 +1648,7 @@ class JsonArray {
   //! Clear the JSON array
   void clear(void) {
     mod_json_array_unset(arr_);
-    arr_ = 0;
+    arr_ = nullptr;
   }
 
   //! Exchange the content with another JSON array
@@ -1781,7 +1781,7 @@ class JsonArray {
     } else {
       arr_ = mod_json_array_set_default();
     }
-    return (arr_ != 0);
+    return (arr_ != nullptr);
   }
 
   //! Clone the array and leak it
@@ -1812,11 +1812,11 @@ class JsonArray {
 class JsonPair {
  public:
   //! Constructor
-  JsonPair(void) : pair_(0) {}
+  JsonPair(void) : pair_(nullptr) {}
 
   //! Retrieve non-zero if the pair is valid
   bool is_valid(void) const {
-    return (pair_ != (mod_json_pair_t *)0);
+    return (pair_ != (mod_json_pair_t *)nullptr);
   }
 
   //! Retrieve the key of pair
@@ -1864,7 +1864,7 @@ class JsonObject {
   class const_iterator {
    public:
     //! Constructor
-    const_iterator(void) : iter_(0) {}
+    const_iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_iterator &rhs) const {
@@ -1935,7 +1935,7 @@ class JsonObject {
   class iterator {
    public:
     //! Constructor
-    iterator(void) : iter_(0) {}
+    iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const iterator &rhs) const {
@@ -2014,7 +2014,7 @@ class JsonObject {
   class const_reverse_iterator {
    public:
     //! Constructor
-    const_reverse_iterator(void) : iter_(0) {}
+    const_reverse_iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const const_reverse_iterator &rhs) const {
@@ -2085,7 +2085,7 @@ class JsonObject {
   class reverse_iterator {
    public:
     //! Constructor
-    reverse_iterator(void) : iter_(0) {}
+    reverse_iterator(void) : iter_(nullptr) {}
 
     //! Equality
     bool operator==(const reverse_iterator &rhs) const {
@@ -2160,10 +2160,10 @@ class JsonObject {
   };
 
   //! Constructor
-  JsonObject(void) : obj_(0) {}
+  JsonObject(void) : obj_(nullptr) {}
 
   //! Constructor
-  JsonObject(const JsonObject &rhs) : obj_(0) {
+  JsonObject(const JsonObject &rhs) : obj_(nullptr) {
     if (rhs.obj_) {
       obj_ = mod_json_object_grab(rhs.obj_);
     }
@@ -2172,7 +2172,7 @@ class JsonObject {
 #if __cplusplus >= 201103L
   //! Constructor
   JsonObject(JsonObject &&rhs) : obj_(rhs.obj_) {
-    rhs.obj_ = 0;
+    rhs.obj_ = nullptr;
   }
 #endif
 
@@ -2244,7 +2244,7 @@ class JsonObject {
 
   //! Retrieve non-zero if the object is valid
   bool is_valid(void) const {
-    return (obj_ != (mod_json_object_t *)0);
+    return (obj_ != (mod_json_object_t *)nullptr);
   }
 
   //! Retrieve non-zero if the object is empty
@@ -2265,7 +2265,7 @@ class JsonObject {
   //! Assign new contents to the object, replacing its current content
   void assign(const JsonObject &rhs) {
     mod_json_object_unset(obj_);
-    obj_ = rhs.obj_ ? mod_json_object_grab(rhs.obj_) : 0;
+    obj_ = rhs.obj_ ? mod_json_object_grab(rhs.obj_) : nullptr;
   }
 
 #if __cplusplus >= 201103L
@@ -2273,14 +2273,14 @@ class JsonObject {
   void assign(JsonObject &&rhs) {
     mod_json_object_unset(obj_);
     obj_ = rhs.obj_;
-    rhs.obj_ = 0;
+    rhs.obj_ = nullptr;
   }
 #endif
 
   //! Clear the JSON object
   void clear(void) {
     mod_json_object_unset(obj_);
-    obj_ = 0;
+    obj_ = nullptr;
   }
 
   //! Set the value of a key
@@ -2291,7 +2291,7 @@ class JsonObject {
     }
     return (mod_json_object_insert(obj_, *(mod_json_string_t **)&key,
                                    *(mod_json_value_t **)&tmp) !=
-            (mod_json_pair_t *)0);
+            (mod_json_pair_t *)nullptr);
   }
 
   //! Retrieve the value of a key
@@ -2518,7 +2518,7 @@ class JsonObject {
 
   //! Retrieve non-zero if the key exists in JSON object
   bool has(const char *key) const {
-    return (mod_json_object_find(obj_, key) != (mod_json_pair_t *)0);
+    return (mod_json_object_find(obj_, key) != (mod_json_pair_t *)nullptr);
   }
 
   //! Exchange the content with another JSON object
@@ -2643,7 +2643,7 @@ class JsonObject {
     } else {
       obj_ = mod_json_object_set_default();
     }
-    return (obj_ != 0);
+    return (obj_ != nullptr);
   }
 
   //! Clone the object and leak it
@@ -2755,7 +2755,9 @@ class JsonParser {
 
   //! Constructor
   JsonParser(void)
-      : state_(mod_json_state_null), error_(mod_json_error_null), context_(0) {
+      : state_(mod_json_state_null),
+        error_(mod_json_error_null),
+        context_(nullptr) {
     option_.options = 0;
     option_.object_depth = 0;
     option_.array_depth = 0;

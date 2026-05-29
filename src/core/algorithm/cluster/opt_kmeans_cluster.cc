@@ -29,38 +29,38 @@ class OptKmeansAlgorithm : public IndexCluster {
   OptKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~OptKmeansAlgorithm(void) {}
+  ~OptKmeansAlgorithm(void) override {}
 
   //! Initialize Cluster
-  int init(const IndexMeta &meta, const ailego::Params &params);
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Mount features
-  virtual int mount(IndexFeatures::Pointer feats);
+  int mount(IndexFeatures::Pointer feats) override;
 
   //! Suggest dividing to K clusters
-  virtual void suggest(uint32_t k);
+  void suggest(uint32_t k) override;
 
   //! Classify
-  virtual int classify(IndexThreads::Pointer threads,
-                       IndexCluster::CentroidList &cents);
+  int classify(IndexThreads::Pointer threads,
+               IndexCluster::CentroidList &cents) override;
 
   //! Label
-  virtual int label(IndexThreads::Pointer threads,
-                    const IndexCluster::CentroidList &cents,
-                    std::vector<uint32_t> *out);
+  int label(IndexThreads::Pointer threads,
+            const IndexCluster::CentroidList &cents,
+            std::vector<uint32_t> *out) override;
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents) = 0;
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override = 0;
 
   //! Cleanup Cluster
-  virtual int cleanup(void);
+  int cleanup(void) override;
 
   //! Reset Cluster
-  virtual int reset(void);
+  int reset(void) override;
 
   //! Update Cluster
-  virtual int update(const ailego::Params &params);
+  int update(const ailego::Params &params) override;
 
  protected:
   //! Update parameters
@@ -327,8 +327,10 @@ void OptKmeansAlgorithm::update_features_thread(
   for (size_t i = column, j = 0; i < shard_cluster_features_.size();
        i += cluster_count) {
     const std::vector<const void *> &it = shard_cluster_features_[i];
-    std::memcpy(&cluster_features[j], it.data(), it.size() * sizeof(void *));
-    j += it.size();
+    if (!it.empty()) {
+      std::memcpy(&cluster_features[j], it.data(), it.size() * sizeof(void *));
+      j += it.size();
+    }
   }
 }
 
@@ -387,16 +389,6 @@ int OptKmeansAlgorithm::mount(IndexFeatures::Pointer feats) {
         LOG_ERROR(
             "Unsupported feature dimension %zu (dimension of int8 "
             "must be an integer multiple of 4).",
-            feats->dimension());
-        return IndexError_Mismatch;
-      }
-      break;
-    case IndexMeta::DataType::DT_BINARY32:
-    case IndexMeta::DataType::DT_BINARY64:
-      if (feats->dimension() % 32 != 0) {
-        LOG_ERROR(
-            "Unsupported feature dimension %zu (dimension of binary "
-            "must be an integer multiple of 32).",
             feats->dimension());
         return IndexError_Mismatch;
       }
@@ -506,11 +498,11 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
   NumericalKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NumericalKmeansAlgorithm(void) {}
+  ~NumericalKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   void update_centroids(
@@ -639,11 +631,11 @@ class NibbleKmeansAlgorithm : public OptKmeansAlgorithm {
   NibbleKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NibbleKmeansAlgorithm(void) {}
+  ~NibbleKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   //! update centroids
@@ -757,137 +749,6 @@ int NibbleKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
   return 0;
 }
 
-/*! Binary K-Means cluster algorithm
- */
-template <typename T>
-class BinaryKmeansAlgorithm : public OptKmeansAlgorithm {
- public:
-  //! Type of value
-  using ValueType = typename std::remove_cv<T>::type;
-
-  // Check supporting type
-  static_assert(ailego::IsArithmetic<ValueType>::value,
-                "ValueType must be arithmetic");
-
-  //! Constructor
-  BinaryKmeansAlgorithm(void) {}
-
-  //! Destructor
-  virtual ~BinaryKmeansAlgorithm(void) {}
-
-  //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
-
- protected:
-  //! update centroids
-  void update_centroids(IndexCluster::CentroidList &cents,
-                        const ailego::BinaryKmeans<T, IndexThreads> &algorithm);
-};
-
-template <typename T>
-void BinaryKmeansAlgorithm<T>::update_centroids(
-    IndexCluster::CentroidList &cents,
-    const ailego::BinaryKmeans<T, IndexThreads> &algorithm) {
-  this->init_centroids(algorithm.centroids().count(), &cents);
-  for (size_t i = 0; i < cents.size(); ++i) {
-    IndexCluster::Centroid *centroid = &(cents.at(i));
-    centroid->set_score(algorithm.context().clusters()[i].cost());
-    centroid->set_follows(algorithm.context().clusters()[i].count());
-    centroid->set_feature(algorithm.centroids()[i], (meta_.dimension() >> 3));
-  }
-}
-
-template <typename T>
-int BinaryKmeansAlgorithm<T>::cluster(IndexThreads::Pointer threads,
-                                      IndexCluster::CentroidList &cents) {
-  ailego::ElapsedTime stamp;
-
-  if (!threads) {
-    threads = std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
-    if (!threads) {
-      return IndexError_NoMemory;
-    }
-  }
-  if (!this->check_centroids(cents)) {
-    LOG_ERROR("The input centroid's list includes some invalid centroids.");
-    return IndexError_InvalidArgument;
-  }
-
-  if (!this->is_valid()) {
-    LOG_ERROR("The cluster is not ready.");
-    return IndexError_NoReady;
-  }
-
-  // get cluster algorithm
-  size_t centroid_count =
-      cents.empty()
-          ? std::min(cluster_count_, static_cast<uint32_t>(features_->count()))
-          : cents.size();
-  if (centroid_count == 0) {
-    LOG_ERROR("The count of cluster is unknown.");
-    return IndexError_NoReady;
-  }
-  ailego::BinaryKmeans<T, IndexThreads> algorithm(centroid_count,
-                                                  meta_.dimension());
-
-  // mount features into algorithm
-  auto features_count = features_->count();
-  auto dim = meta_.dimension();
-  for (size_t i = 0; i < features_count; ++i) {
-    auto vec = reinterpret_cast<const T *>(features_->element(i));
-    algorithm.append(vec, dim);
-  }
-
-  if (!cents.empty()) {
-    auto centroids = algorithm.mutable_centroids();
-    centroids->reserve(cents.size());
-    for (const auto &it : cents) {
-      centroids->append(reinterpret_cast<const T *>(it.feature()),
-                        meta_.dimension());
-    }
-  } else {
-    ailego::Kmc2CentroidsGenerator<
-        ailego::BinaryKmeans<ValueType, IndexThreads>, IndexThreads>
-        g;
-    g.set_chain_length(markov_chain_length_);
-    g.set_assumption_free(assumption_free_);
-    algorithm.init_centroids(*threads, g);
-  }
-
-  double cost = 0.0;
-
-  for (uint32_t i = 0; i < max_iterations_; ++i) {
-    double old_cost, new_epsilon;
-    old_cost = cost;
-
-    bool result = algorithm.cluster_once(*threads, &cost);
-    if (result != true) {
-      LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
-    }
-
-    new_epsilon = std::abs(cost - old_cost);
-    LOG_DEBUG(
-        "(%u) Updated %zu Clusters, %zu Features: %zu ms, %f -> "
-        "%f = %f",
-        i, algorithm.centroids().count(), features_->count(),
-        (size_t)stamp.milli_seconds(), old_cost, cost, new_epsilon);
-    stamp.reset();
-
-    if (new_epsilon < epsilon_) {
-      break;
-    }
-  }
-
-  // update centroids
-  update_centroids(cents, algorithm);
-
-  // Purge the empty centroids
-  PurgeCentroids(cents, purge_empty_);
-  return 0;
-}
-
 /*! Numerical K-Means cluster algorithm
  */
 template <typename T>
@@ -904,11 +765,11 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
   NumericalInnerProductKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NumericalInnerProductKmeansAlgorithm(void) {}
+  ~NumericalInnerProductKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   void update_centroids(
@@ -1038,11 +899,11 @@ class NibbleInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
   NibbleInnerProductKmeansAlgorithm(void) {}
 
   //! Destructor
-  virtual ~NibbleInnerProductKmeansAlgorithm(void) {}
+  ~NibbleInnerProductKmeansAlgorithm(void) override {}
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
  protected:
   //! update centroids
@@ -1165,38 +1026,38 @@ class OptKmeansCluster : public IndexCluster {
   OptKmeansCluster(void) {}
 
   //! Destructor
-  virtual ~OptKmeansCluster(void) {}
+  ~OptKmeansCluster(void) override {}
 
   //! Initialize Cluster
-  virtual int init(const IndexMeta &meta, const ailego::Params &params);
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup Cluster
-  virtual int cleanup(void);
+  int cleanup(void) override;
 
   //! Reset Cluster
-  virtual int reset(void);
+  int reset(void) override;
 
   //! Update Cluster
-  virtual int update(const ailego::Params &params);
+  int update(const ailego::Params &params) override;
 
   //! Suggest dividing to K clusters
-  virtual void suggest(uint32_t k);
+  void suggest(uint32_t k) override;
 
   //! Mount features
-  virtual int mount(IndexFeatures::Pointer feats);
+  int mount(IndexFeatures::Pointer feats) override;
 
   //! Cluster
-  virtual int cluster(IndexThreads::Pointer threads,
-                      IndexCluster::CentroidList &cents);
+  int cluster(IndexThreads::Pointer threads,
+              IndexCluster::CentroidList &cents) override;
 
   //! Classify
-  virtual int classify(IndexThreads::Pointer threads,
-                       IndexCluster::CentroidList &cents);
+  int classify(IndexThreads::Pointer threads,
+               IndexCluster::CentroidList &cents) override;
 
   //! Label
-  virtual int label(IndexThreads::Pointer threads,
-                    const IndexCluster::CentroidList &cents,
-                    std::vector<uint32_t> *out);
+  int label(IndexThreads::Pointer threads,
+            const IndexCluster::CentroidList &cents,
+            std::vector<uint32_t> *out) override;
 
  protected:
   //! Members
@@ -1315,19 +1176,6 @@ int OptKmeansCluster::init(const IndexMeta &meta,
         algorithm_.reset(new (std::nothrow) NibbleKmeansAlgorithm<int32_t>);
         break;
       }
-      // TODO
-      case IndexMeta::DataType::DT_BINARY32: {
-        algorithm_.reset(new (std::nothrow) BinaryKmeansAlgorithm<uint32_t>);
-        break;
-      }
-
-#if defined(AILEGO_M64)
-      case IndexMeta::DataType::DT_BINARY64: {
-        algorithm_.reset(new (std::nothrow) BinaryKmeansAlgorithm<uint64_t>);
-        break;
-      }
-#endif  // AILEGO_M64
-
       default: {
         LOG_ERROR("Unsupported feature types %d.", type_);
         return IndexError_Mismatch;

@@ -171,6 +171,19 @@ class IVFEntity {
     return *static_cast<const uint64_t *>(data);
   }
 
+  //! Retrieve the key-order mapping (sorted rank -> local_id).
+  //! mapping[rank] is the local_id of the vector with the rank-th smallest
+  //! key. Returns nullptr if mapping segment is unavailable.
+  const uint32_t *get_key_order_mapping() const {
+    if (!mapping_) return nullptr;
+    const void *data = nullptr;
+    const size_t size = vector_count() * sizeof(uint32_t);
+    if (mapping_->read(0, &data, size) != size) {
+      return nullptr;
+    }
+    return static_cast<const uint32_t *>(data);
+  }
+
   //! Retrieve vector by local id
   const void *get_vector(size_t id) const;
 
@@ -333,7 +346,6 @@ class IVFEntity {
   IndexMeta meta_{};
   mutable IVFReformerWrapper reformer_{};
   IVFDistanceCalculator::Pointer calculator_{};
-  InvertedIndexHeader header_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};
@@ -345,6 +357,7 @@ class IVFEntity {
   mutable std::string vector_{};  // temporary buffer for colomn major order
   float norm_value_{0.0f};  // normalize the inverted vector to orignal score
   bool norm_value_sqrt_{false};  // does the norm value need to sqrt
+  InvertedIndexHeader header_;
 };
 
 }  // namespace core

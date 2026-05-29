@@ -22,32 +22,6 @@ namespace ailego {
 /*! Distance module
  */
 struct Distance {
-  //! Compute the hamming distance between two vectors (BINARY)
-  static float Hamming(const uint32_t *lhs, const uint32_t *rhs, size_t dim) {
-    float result;
-    HammingDistanceMatrix<uint32_t, 1, 1>::Compute(lhs, rhs, dim, &result);
-    return result;
-  }
-
-#if defined(AILEGO_M64)
-  //! Compute the hamming distance between two vectors (BINARY)
-  static float Hamming(const uint64_t *lhs, const uint64_t *rhs, size_t dim) {
-    float result;
-    HammingDistanceMatrix<uint64_t, 1, 1>::Compute(lhs, rhs, dim, &result);
-    return result;
-  }
-
-#else
-  //! Compute the hamming distance between two vectors (BINARY)
-  static float Hamming(const uint64_t *lhs, const uint64_t *rhs, size_t dim) {
-    float result;
-    HammingDistanceMatrix<uint32_t, 1, 1>::Compute(
-        reinterpret_cast<const uint32_t *>(lhs),
-        reinterpret_cast<const uint32_t *>(rhs), dim, &result);
-    return result;
-  }
-#endif
-
   //! Compute the squared euclidean distance between two vectors (FP32)
   static float SquaredEuclidean(const float *lhs, const float *rhs,
                                 size_t dim) {

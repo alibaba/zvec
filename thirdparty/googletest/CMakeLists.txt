@@ -1,13 +1,26 @@
+if(NOT MSVC)
 add_compile_options(-Wno-deprecated-copy)
+endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-Wno-maybe-uninitialized)
 endif()
+
+if (MSVC)
+    if(NOT ZVEC_USE_STATIC_CRT)
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    else()
+        set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+    endif()
+endif ()
+
 
 set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})
 add_subdirectory(googletest-1.10.0)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
+
+mark_target_includes_system(gtest gtest_main gmock gmock_main)
 
 get_target_property(GTEST_INCLUDE_DIRS gtest INTERFACE_INCLUDE_DIRECTORIES)
 

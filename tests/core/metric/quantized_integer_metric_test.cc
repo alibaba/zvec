@@ -261,7 +261,7 @@ void TestDistanceMatrixInt8(const std::string &metric_name) {
   ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
   auto holder2 = converter->result();
   auto &meta2 = converter->meta();
-  ASSERT_EQ(dimension + 16, holder2->dimension());
+  ASSERT_EQ(dimension + 20, holder2->dimension());
   size_t matrix_size = batch_size * holder2->dimension();
   std::vector<int8_t> matrix1(matrix_size);
   std::vector<int8_t> matrix2(matrix_size);
@@ -277,7 +277,7 @@ void TestDistanceMatrixInt8(const std::string &metric_name) {
   auto query_holder = GetHolder(dimension, query_size, dist);
   ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, query_holder));
   auto query_holder2 = converter->result();
-  ASSERT_EQ(dimension + 16, query_holder2->dimension());
+  ASSERT_EQ(dimension + 20, query_holder2->dimension());
   size_t query_matrix_size = query_size * query_holder2->dimension();
   std::vector<int8_t> query1(query_matrix_size);
   std::vector<int8_t> query2(query_matrix_size);

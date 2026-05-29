@@ -67,9 +67,9 @@
     }                                                                        \
     case 4: {                                                                \
       __m256 ymm_lhs = _mm256_cvtph_ps(                                      \
-          _mm_set_epi64((__m64)(_MASK), *((const __m64 *)(lhs))));           \
+          _mm_set_epi64x((long long)(_MASK), *(const long long *)(lhs)));    \
       __m256 ymm_rhs = _mm256_cvtph_ps(                                      \
-          _mm_set_epi64((__m64)(_MASK), *((const __m64 *)(rhs))));           \
+          _mm_set_epi64x((long long)(_MASK), *(const long long *)(rhs)));    \
       _PROC(ymm_lhs, ymm_rhs, _RES##_0_0)                                    \
       break;                                                                 \
     }                                                                        \
@@ -125,7 +125,7 @@
   {                                                              \
     __m256 ymm_m = _mm256_cvtph_ps(_LOAD((const __m128i *)(m))); \
     __m256 ymm_q = _mm256_cvtph_ps(_mm_shufflehi_epi16(          \
-        _mm_shufflelo_epi16(_mm_set1_epi64(*(const __m64 *)(q)), \
+        _mm_shufflelo_epi16(_mm_set1_epi64x(*(const long long *)(q)), \
                             _MM_SHUFFLE(1, 1, 0, 0)),            \
         _MM_SHUFFLE(3, 3, 2, 2)));                               \
     _PROC(ymm_m, ymm_q, _RES##_0_0)                              \
@@ -155,7 +155,7 @@
 //! Iterative process of computing distance (FP16, M=4, N=2)
 #define MATRIX_FP16_ITER_4X2_AVX(m, q, _RES, _LOAD, _PROC)       \
   {                                                              \
-    __m128i xmm_qi = _mm_set1_epi64(*(const __m64 *)(q));        \
+    __m128i xmm_qi = _mm_set1_epi64x(*(const long long *)(q));    \
     __m256 ymm_m = _mm256_cvtph_ps(_LOAD((const __m128i *)(m))); \
     __m256 ymm_q_0 = _mm256_cvtph_ps(_mm_shufflehi_epi16(        \
         _mm_shufflelo_epi16(xmm_qi, _MM_SHUFFLE(0, 0, 0, 0)),    \

@@ -20,7 +20,6 @@
 #include <unordered_map>
 #include <variant>
 #include <zvec/ailego/utility/float_helper.h>
-#include <zvec/db/query_params.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
@@ -68,6 +67,10 @@ class Doc {
     return pk_;
   }
 
+  const std::string &pk_ref() const {
+    return pk_;
+  }
+
   void set_score(float score) {
     score_ = score;
   }
@@ -99,7 +102,7 @@ class Doc {
     op_ = op;
   }
 
-  Operator get_operator() {
+  Operator get_operator() const {
     return op_;
   }
 
@@ -232,12 +235,32 @@ class Doc {
     return std::nullopt;
   }
 
+  // Get field value as const reference, throws exception if field doesn't exist
+  // or type mismatches
+  template <typename T>
+  const T &get_ref(const std::string &field_name) const {
+    auto it = fields_.find(field_name);
+    if (it == fields_.end()) {
+      throw std::runtime_error("Field '" + field_name + "' not found");
+    }
+
+    if (std::holds_alternative<std::monostate>(it->second)) {
+      throw std::runtime_error("Field '" + field_name + "' is null");
+    }
+
+    try {
+      return std::get<T>(it->second);
+    } catch (const std::bad_variant_access &) {
+      throw std::runtime_error("Field '" + field_name + "' type mismatch");
+    }
+  }
+
   void remove(const std::string &field_name) {
     fields_.erase(field_name);
   }
 
-  Status validate(const CollectionSchema::Ptr &schema,
-                  bool is_update = false) const;
+  Status validate_and_sanitize(const CollectionSchema::Ptr &schema,
+                               bool is_update = false);
 
   size_t memory_usage() const;
 
@@ -294,11 +317,13 @@ class Doc {
 
   static void read_from_buffer(const uint8_t *&data, void *dest, size_t size);
 
+  struct ValueEqual;
+
  private:
   std::string pk_;
   float score_{0.0f};
-  uint64_t doc_id_;
-  Operator op_;
+  uint64_t doc_id_{0};
+  Operator op_{Operator::INSERT};
 
   template <typename T>
   static constexpr bool is_valid_type_v =
@@ -315,17 +340,17 @@ class Doc {
       std::is_same_v<T, std::vector<int8_t>> ||       // 10
       std::is_same_v<T, std::vector<int16_t>> ||      // 11
       std::is_same_v<T, std::vector<int32_t>> ||      // 12
-      std::is_same_v<T, std::vector<uint32_t>> ||     // 13
-      std::is_same_v<T, std::vector<int64_t>> ||      // 14
+      std::is_same_v<T, std::vector<int64_t>> ||      // 13
+      std::is_same_v<T, std::vector<uint32_t>> ||     // 14
       std::is_same_v<T, std::vector<uint64_t>> ||     // 15
       std::is_same_v<T, std::vector<float16_t>> ||    // 16
       std::is_same_v<T, std::vector<float>> ||        // 17
       std::is_same_v<T, std::vector<double>> ||       // 18
       std::is_same_v<T, std::vector<std::string>> ||  // 19
       std::is_same_v<
-          T, std::pair<std::vector<uint32_t>, std::vector<float16_t>>> ||  // 20
+          T, std::pair<std::vector<uint32_t>, std::vector<float>>> ||  // 20
       std::is_same_v<
-          T, std::pair<std::vector<uint32_t>, std::vector<float>>>;  // 21
+          T, std::pair<std::vector<uint32_t>, std::vector<float16_t>>>;  // 21
 
   std::unordered_map<std::string, Value> fields_;
 };
@@ -337,45 +362,5 @@ using DocPtrList = std::vector<Doc::Ptr>;
 using DocPtrMap = std::unordered_map<std::string, Doc::Ptr>;
 
 using WriteResults = std::vector<Status>;
-
-struct VectorQuery {
-  int topk_;
-  std::string field_name_;
-  std::string query_vector_;  // fp16, void *
-  std::string query_sparse_indices_;
-  std::string query_sparse_values_;
-  std::string filter_;
-  bool include_vector_{false};
-  bool include_doc_id_{false};
-  // select * by default, select no field if output_fields_ is empty, select
-  // specific fields if output_fields_ is not empty
-  std::optional<std::vector<std::string>> output_fields_;
-  QueryParams::Ptr query_params_;
-
-  Status validate(const FieldSchema *schema) const;
-};
-
-struct GroupByVectorQuery {
-  std::string field_name_;
-  std::string query_vector_;
-  std::string query_sparse_indices_;
-  std::string query_sparse_values_;
-  std::string filter_;
-  bool include_vector_;
-  // select * by default, select no field if output_fields_ is empty, select
-  // specific fields if output_fields_ is not empty
-  std::optional<std::vector<std::string>> output_fields_;
-  std::string group_by_field_name_;
-  uint32_t group_count_ = 2;
-  uint32_t group_topk_ = 3;
-  QueryParams::Ptr query_params_;
-};
-
-struct GroupResult {
-  std::string group_by_value_;
-  std::vector<Doc> docs_;
-};
-
-using GroupResults = std::vector<GroupResult>;
 
 }  // namespace zvec

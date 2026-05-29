@@ -367,7 +367,7 @@ TEST(Json, JsonParser) {
 
     parser.set_simple(true);
     EXPECT_TRUE(parser.parse(str.c_str(), &val));
-    EXPECT_TRUE(val["abcd"].as_c_string() == NULL);
+    EXPECT_TRUE(val["abcd"].as_c_string() == nullptr);
     EXPECT_TRUE(val["abcd/*//*/"].as_c_string() == std::string("1234"));
 
     parser.set_comment(true);
@@ -401,7 +401,7 @@ TEST(Json, JsonParser) {
 
     parser.set_comment(true);
     EXPECT_TRUE(parser.parse(str.c_str(), &val));
-    EXPECT_TRUE(val["abcd"].as_c_string() == NULL);
+    EXPECT_TRUE(val["abcd"].as_c_string() == nullptr);
     EXPECT_TRUE(val["abcd\""].as_c_string() == std::string("1234"));
   }
 
@@ -424,7 +424,7 @@ TEST(Json, JsonParser) {
 
     std::string str = "{ ,  \n: \t  \"1234\" }";
     EXPECT_FALSE(parser.parse(str.c_str(), &val));
-    EXPECT_TRUE(val[""].as_c_string() == NULL);
+    EXPECT_TRUE(val[""].as_c_string() == nullptr);
 
     parser.set_simple(true);
     EXPECT_FALSE(parser.parse(str.c_str(), &val));
@@ -1102,7 +1102,7 @@ TEST(Json, JsonArray) {
     EXPECT_TRUE(arr.capacity() == 0);
     arr.resize(0);
     EXPECT_TRUE(arr.capacity() == 32);
-    arr.push(0);
+    arr.push(nullptr);
     EXPECT_TRUE(arr.capacity() == 32);
     EXPECT_TRUE(arr.size() == 1);
     arr.resize(0);
@@ -1396,7 +1396,7 @@ TEST(Json, JsonString) {
   {
     JsonString a;
     JsonString b("\0");
-    JsonString c(NULL);
+    JsonString c(nullptr);
     EXPECT_TRUE(a == c);
     EXPECT_TRUE(b == c);
     EXPECT_TRUE(b == a);
@@ -1405,7 +1405,7 @@ TEST(Json, JsonString) {
   {
     JsonString a;
     JsonString b("\0", 1);
-    JsonString c(NULL);
+    JsonString c(nullptr);
     EXPECT_TRUE(a == c);
     EXPECT_TRUE(b != c);
     EXPECT_TRUE(b != a);

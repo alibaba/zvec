@@ -20,11 +20,15 @@ from _zvec.param import (
     FlatIndexParam,
     HnswIndexParam,
     HnswQueryParam,
+    HnswRabitqIndexParam,
+    HnswRabitqQueryParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    VamanaIndexParam,
+    VamanaQueryParam,
 )
 
 __all__ = [
@@ -34,9 +38,13 @@ __all__ = [
     "FlatIndexParam",
     "HnswIndexParam",
     "HnswQueryParam",
+    "HnswRabitqIndexParam",
+    "HnswRabitqQueryParam",
     "IVFIndexParam",
     "IVFQueryParam",
     "IndexOption",
     "InvertIndexParam",
     "OptimizeOption",
+    "VamanaIndexParam",
+    "VamanaQueryParam",
 ]

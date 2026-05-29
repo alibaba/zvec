@@ -180,10 +180,10 @@ class FlatStreamer : public IndexStreamer {
   State state_{STATE_INIT};
   mutable std::mutex mapping_mutex_{};
   ailego::SharedMutex dump_mutex_{};
-  FlatStreamerEntity entity_;
   bool column_major_order_{false};
   bool use_key_info_map_{true};
   uint32_t read_block_size_{0};
+  FlatStreamerEntity entity_;
 };
 
 }  // namespace core

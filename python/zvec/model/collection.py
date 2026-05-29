@@ -13,7 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Optional, Union
+import warnings
+from typing import Optional, Union, overload
 
 from _zvec import _Collection
 
@@ -28,17 +29,16 @@ from .param import (
     CollectionOption,
     FlatIndexParam,
     HnswIndexParam,
+    HnswRabitqIndexParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
     OptimizeOption,
 )
-from .param.vector_query import VectorQuery
+from .param.query import Query
 from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
-
-_VECTOR_INDEX_TYPES = (HnswIndexParam, IVFIndexParam, FlatIndexParam)
 
 
 class Collection:
@@ -107,7 +107,11 @@ class Collection:
         self,
         field_name: str,
         index_param: Union[
-            HnswIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam
+            HnswIndexParam,
+            HnswRabitqIndexParam,
+            IVFIndexParam,
+            FlatIndexParam,
+            InvertIndexParam,
         ],
         option: IndexOption = IndexOption(),
     ) -> None:
@@ -118,20 +122,12 @@ class Collection:
 
         Args:
             field_name (str): Name of the field to index.
-            index_param (Union[HnswIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam]):
+            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam]):
                 Index configuration.
             option (Optional[IndexOption], optional): Index creation options.
                 Defaults to ``IndexOption()``.
 
-        Raises:
-            ValueError: If a vector index is applied to a non-vector field.
         """
-        if index_param in _VECTOR_INDEX_TYPES and not self.schema.vector(field_name):
-            supported_types = ", ".join(cls.__name__ for cls in _VECTOR_INDEX_TYPES)
-            raise ValueError(
-                f"Cannot apply vector index to non-vector field '{field_name}'. "
-                f"The field must be of vector type to use index types like {supported_types}."
-            )
         self._obj.CreateIndex(field_name, index_param, option)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 
@@ -230,6 +226,14 @@ class Collection:
         self._schema = CollectionSchema._from_core(self._obj.Schema())
 
     # ========== Collection DDL Methods ==========
+    @overload
+    def insert(self, docs: Doc) -> Status:
+        pass
+
+    @overload
+    def insert(self, docs: list[Doc]) -> list[Status]:
+        pass
+
     def insert(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Insert new documents into the collection.
 
@@ -249,6 +253,14 @@ class Collection:
         )
         return results[0] if is_single else results
 
+    @overload
+    def upsert(self, docs: Doc) -> Status:
+        pass
+
+    @overload
+    def upsert(self, docs: list[Doc]) -> list[Status]:
+        pass
+
     def upsert(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Insert new documents or update existing ones by ID.
 
@@ -265,6 +277,14 @@ class Collection:
             [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
         )
         return results[0] if is_single else results
+
+    @overload
+    def update(self, docs: Doc) -> Status:
+        pass
+
+    @overload
+    def update(self, docs: list[Doc]) -> list[Status]:
+        pass
 
     def update(self, docs: Union[Doc, list[Doc]]) -> Union[Status, list[Status]]:
         """Update existing documents by ID.
@@ -284,6 +304,14 @@ class Collection:
             [convert_to_cpp_doc(doc, self.schema) for doc in doc_list]
         )
         return results[0] if is_single else results
+
+    @overload
+    def delete(self, ids: str) -> Status:
+        pass
+
+    @overload
+    def delete(self, ids: list[str]) -> list[Status]:
+        pass
 
     def delete(self, ids: Union[str, list[str]]) -> Union[Status, list[Status]]:
         """Delete documents by ID.
@@ -309,17 +337,27 @@ class Collection:
         self._obj.DeleteByFilter(filter)
 
     # ========== Collection DQL-fetch Methods ==========
-    def fetch(self, ids: Union[str, list[str]]) -> dict[str, Doc]:
+    def fetch(
+        self,
+        ids: Union[str, list[str]],
+        *,
+        output_fields: Optional[list[str]] = None,
+        include_vector: bool = True,
+    ) -> dict[str, Doc]:
         """Retrieve documents by ID.
 
         Args:
             ids (Union[str, list[str]]): Document IDs to fetch.
+            output_fields (Optional[list[str]], optional): Scalar fields to
+                include. If None, all fields are returned. Defaults to None.
+            include_vector (bool, optional): Whether to include vector data in
+                results. Defaults to True.
 
         Returns:
             dict[str, Doc]: Mapping from ID to document. Missing IDs are omitted.
         """
         ids = [ids] if isinstance(ids, str) else ids
-        docs = self._obj.Fetch(ids)
+        docs = self._obj.Fetch(ids, output_fields, include_vector)
         return {
             doc_id: py_doc
             for doc_id, core_doc in docs.items()
@@ -330,8 +368,9 @@ class Collection:
 
     def query(
         self,
-        vectors: Optional[Union[VectorQuery, list[VectorQuery]]] = None,
+        queries: Optional[Union[Query, list[Query]]] = None,
         *,
+        vectors: Optional[Union[Query, list[Query]]] = None,
         topk: int = 10,
         filter: Optional[str] = None,
         include_vector: bool = False,
@@ -340,11 +379,13 @@ class Collection:
     ) -> list[Doc]:
         """Perform vector similarity search with optional filtering and re-ranking.
 
-        At least one `VectorQuery` must be provided.
+        At least one `Query` must be provided via `queries`.
 
         Args:
-            vectors (Optional[Union[VectorQuery, list[VectorQuery]]], optional):
+            queries (Optional[Union[Query, list[Query]]], optional):
                 One or more vector queries. Defaults to None.
+            vectors (Optional[Union[Query, list[Query]]], optional):
+                Deprecated. Use `queries` instead.
             topk (int, optional): Number of nearest neighbors to return.
                 Defaults to 10.
             filter (Optional[str], optional): Boolean expression to pre-filter candidates.
@@ -360,18 +401,29 @@ class Collection:
             list[Doc]: Top-k matching documents, sorted by relevance score.
 
         Examples:
-            >>> from zvec import VectorQuery
+            >>> from zvec import Query
             >>> results = collection.query(
-            ...     vectors=VectorQuery("embedding", vector=[0.1, 0.2]),
+            ...     queries=Query(field_name="embedding", vector=[0.1, 0.2]),
             ...     topk=5,
             ...     filter="category == 'tech'",
             ...     output_fields=["title", "url"]
             ... )
         """
+        if vectors is not None:
+            warnings.warn(
+                "The 'vectors' parameter is deprecated and will be removed in a future version. "
+                "Use 'queries' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if queries is not None:
+                raise ValueError("Cannot specify both 'queries' and 'vectors'.")
+            queries = vectors
+
         ctx = QueryContext(
             topk=topk,
             filter=filter,
-            queries=[vectors] if isinstance(vectors, VectorQuery) else vectors,
+            queries=[queries] if isinstance(queries, Query) else queries,
             include_vector=include_vector,
             output_fields=output_fields,
             reranker=reranker,

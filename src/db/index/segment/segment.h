@@ -77,7 +77,7 @@ class Segment {
   virtual Status drop_column(const std::string &column_name) = 0;
 
   virtual Status create_all_vector_index(
-      int concurrency, SegmentMeta::Ptr *new_segmnet_meta,
+      int concurrency, SegmentMeta::Ptr *new_segment_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
@@ -86,14 +86,14 @@ class Segment {
   // defined in segment.h cause it needs to access block_id generator
   virtual Status create_vector_index(
       const std::string &column, const IndexParams::Ptr &index_params,
-      int concurrency, SegmentMeta::Ptr *new_segmnet_meta,
+      int concurrency, SegmentMeta::Ptr *new_segment_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *quant_vector_indexers) = 0;
 
   virtual Status drop_vector_index(
-      const std::string &column, SegmentMeta::Ptr *new_segmnet_meta,
+      const std::string &column, SegmentMeta::Ptr *new_segment_meta,
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *vector_indexers) = 0;
 
@@ -136,7 +136,10 @@ class Segment {
 
   virtual Status Delete(uint64_t g_doc_id) = 0;
 
-  virtual Doc::Ptr Fetch(uint64_t g_doc_id) = 0;
+  virtual Doc::Ptr Fetch(uint64_t g_doc_id,
+                         const std::optional<std::vector<std::string>>
+                             &output_fields = std::nullopt,
+                         bool include_vector = true) = 0;
 
   // for sqlengine
   virtual TablePtr fetch(const std::vector<std::string> &columns,

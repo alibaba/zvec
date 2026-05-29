@@ -41,7 +41,7 @@ class BinaryConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -132,7 +132,7 @@ class BinaryConverterHolder : public IndexHolder {
 class BinaryConverter : public IndexConverter {
  public:
   //! Destructor
-  virtual ~BinaryConverter(void) {}
+  ~BinaryConverter(void) override {}
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &params) override {
@@ -159,7 +159,7 @@ class BinaryConverter : public IndexConverter {
     size_t dim =
         ailego::BinaryQuantizer::EncodedSizeInBinary32(dimension_) * 32u;
 
-    meta_.set_metric("Hamming", 0, ailego::Params());
+    meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
     meta_.set_converter("BinaryConverter", 0, params);
     meta_.set_meta(IndexMeta::DataType::DT_BINARY32, dim);
 

@@ -63,13 +63,17 @@ from .model.param import (
     FlatIndexParam,
     HnswIndexParam,
     HnswQueryParam,
+    HnswRabitqIndexParam,
+    HnswRabitqQueryParam,
     IndexOption,
     InvertIndexParam,
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    VamanaIndexParam,
+    VamanaQueryParam,
 )
-from .model.param.vector_query import VectorQuery
+from .model.param.query import Query, VectorQuery
 
 # —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
@@ -106,9 +110,11 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
+    "Query",
     "VectorQuery",
     "InvertIndexParam",
     "HnswIndexParam",
+    "HnswRabitqIndexParam",
     "FlatIndexParam",
     "IVFIndexParam",
     "CollectionOption",
@@ -117,7 +123,10 @@ __all__ = [
     "AddColumnOption",
     "AlterColumnOption",
     "HnswQueryParam",
+    "HnswRabitqQueryParam",
     "IVFQueryParam",
+    "VamanaIndexParam",
+    "VamanaQueryParam",
     # Extensions
     "DenseEmbeddingFunction",
     "SparseEmbeddingFunction",

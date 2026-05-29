@@ -41,7 +41,7 @@ class MMapFileStorage : public IndexStorage {
                                         segment->meta()->padding_size)) {}
 
     //! Destructor
-    virtual ~Segment(void) {}
+    ~Segment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -140,6 +140,11 @@ class MMapFileStorage : public IndexStorage {
       return shared_from_this();
     }
 
+    //! Stable base data pointer — valid for the lifetime of the mmap.
+    const uint8_t *base_data(void) const override {
+      return (const uint8_t *)segment_->data();
+    }
+
    private:
     IndexMapping::Segment *segment_{};
     MMapFileStorage *owner_{nullptr};
@@ -147,7 +152,7 @@ class MMapFileStorage : public IndexStorage {
   };
 
   //! Destructor
-  virtual ~MMapFileStorage(void) {
+  ~MMapFileStorage(void) override {
     this->cleanup();
   }
 
@@ -171,8 +176,8 @@ class MMapFileStorage : public IndexStorage {
   }
 
   //! Open storage
-  int open(const std::string &path, bool create) override {
-    if (!ailego::File::IsExist(path) && create) {
+  int open(const std::string &path, bool create_if_missing) override {
+    if (!ailego::File::IsExist(path) && create_if_missing) {
       size_t last_slash = path.rfind('/');
       if (last_slash != std::string::npos) {
         ailego::File::MakePath(path.substr(0, last_slash));

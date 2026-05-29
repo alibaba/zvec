@@ -1,3 +1,16 @@
+diff --git a/cpp/cmake_modules/BuildUtils.cmake b/cpp/cmake_modules/BuildUtils.cmake
+index 1234567..abcdefg 100644
+--- a/cpp/cmake_modules/BuildUtils.cmake
++++ b/cpp/cmake_modules/BuildUtils.cmake
+@@ -110,7 +110,7 @@
+     execute_process(COMMAND ${LIBTOOL_MACOS} -V
+                     OUTPUT_VARIABLE LIBTOOL_V_OUTPUT
+                     OUTPUT_STRIP_TRAILING_WHITESPACE)
+-    if(NOT "${LIBTOOL_V_OUTPUT}" MATCHES ".*cctools-([0-9.]+).*")
++    if(NOT "${LIBTOOL_V_OUTPUT}" MATCHES ".*cctools[-_a-z]*([0-9.]+).*")
+       message(FATAL_ERROR "libtool found appears not to be Apple's libtool: ${LIBTOOL_MACOS}"
+       )
+     endif()
 diff --git a/cpp/src/arrow/acero/source_node.cc b/cpp/src/arrow/acero/source_node.cc
 index 0f5840676..cf68bfdcb 100644
 --- a/cpp/src/arrow/acero/source_node.cc

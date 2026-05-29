@@ -55,6 +55,11 @@ struct BaseDistanceBatchWithScoreUnquantized {
       return CosineMinusInnerProductDistanceBatchWithScoreUnquantized<
           ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim,
                                                             out);
+    } else if constexpr (std::is_same_v<DistanceType<ValueType, 1, 1>,
+                                        SquaredEuclidean<ValueType, 1, 1>>) {
+      return SquaredEuclideanDistanceBatchWithScoreUnquantized<
+          ValueType, BatchSize, PrefetchStep>::ComputeBatch(m, q, num, dim,
+                                                            out);
     }
 
     _ComputeBatch(m, q, num, dim, out);
@@ -75,7 +80,7 @@ struct CosineMinusInnerProductDistanceBatchWithScoreUnquantized<
 
   static inline void ComputeBatch(const int8_t **vecs, const int8_t *query,
                                   size_t num_vecs, size_t dim, float *results) {
-    size_t original_dim = dim - 20;
+    size_t original_dim = dim - 24;
 
     ImplType::ComputeBatch(vecs, query, num_vecs, original_dim, results);
   }
@@ -87,7 +92,7 @@ struct CosineMinusInnerProductDistanceBatchWithScoreUnquantized<
 
   static void QueryPreprocess(void *query, size_t dim) {
     if (auto func = ImplType::GetQueryPreprocessFunc(); func != nullptr) {
-      return func(query, dim - 20);
+      return func(query, dim - 24);
     }
   }
 };
@@ -134,7 +139,7 @@ struct MinusInnerProductDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
       float ms = m_tail[2];
       float &result = results[i];
       if (ImplType::GetQueryPreprocessFunc() != nullptr) {
-        int int_sum = reinterpret_cast<const int *>(m_tail)[3];
+        int int_sum = reinterpret_cast<const int *>(m_tail)[4];
         result -= 128 * int_sum;
       }
       result = -(ma * qa * result + mb * qa * qs + qb * ma * ms +
@@ -192,7 +197,7 @@ struct SquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
                                                        PrefetchStep>;
   static void ComputeBatch(const int8_t **vecs, const int8_t *query,
                            size_t num_vecs, size_t dim, float *results) {
-    const size_t original_dim = dim - 16;
+    const size_t original_dim = dim - 20;
     ailego::DistanceBatch::InnerProductDistanceBatch<
         int8_t, BatchSize, PrefetchStep>::ComputeBatch(vecs, query, num_vecs,
                                                        original_dim, results);
@@ -206,17 +211,21 @@ struct SquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
 
     const float sum = qa * qs;
     const float sum2 = qa * qa * qs2;
-    for (int i = 0; i < num_vecs; ++i) {
+    for (size_t i = 0; i < num_vecs; ++i) {
       const float *m_tail = reinterpret_cast<const float *>(
           reinterpret_cast<const uint8_t *>(vecs[i]) + original_dim);
       float ma = m_tail[0];
       float mb = m_tail[1];
       float ms = m_tail[2];
       float ms2 = m_tail[3];
-      *results = ma * ma * ms2 + sum2 - 2 * ma * qa * *results +
-                 (mb - qb) * (mb - qb) * original_dim +
-                 2 * (mb - qb) * (ms * ma - sum);
-      ++results;
+      float &result = results[i];
+      if (ImplType::GetQueryPreprocessFunc() != nullptr) {
+        int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
+        result -= 128 * int8_sum;
+      }
+      result = ma * ma * ms2 + sum2 - 2 * ma * qa * result +
+               (mb - qb) * (mb - qb) * original_dim +
+               2 * (mb - qb) * (ms * ma - sum);
     }
   }
 
@@ -226,7 +235,9 @@ struct SquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
   }
 
   static void QueryPreprocess(void *query, size_t dim) {
-    return ImplType::QueryPreprocess(query, dim - 16);
+    if (auto func = ImplType::GetQueryPreprocessFunc(); func != nullptr) {
+      return func(query, dim - 20);
+    }
   }
 };
 
@@ -234,7 +245,7 @@ struct SquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
 template <size_t BatchSize, size_t PrefetchStep>
 struct SquaredEuclideanDistanceBatchWithScoreUnquantized<uint8_t, BatchSize,
                                                          PrefetchStep> {
-  static void ComputeBatch(const int8_t **vecs, const int8_t *query,
+  static void ComputeBatch(const uint8_t **vecs, const uint8_t *query,
                            size_t num_vecs, size_t dim, float *results) {
     const size_t original_dim = dim - 32;
     const size_t original_dim_in_uint8_array = original_dim >> 1;
@@ -251,7 +262,7 @@ struct SquaredEuclideanDistanceBatchWithScoreUnquantized<uint8_t, BatchSize,
 
     const float sum = qa * qs;
     const float sum2 = qa * qa * qs2;
-    for (int i = 0; i < num_vecs; ++i) {
+    for (size_t i = 0; i < num_vecs; ++i) {
       const float *m_tail = reinterpret_cast<const float *>(
           reinterpret_cast<const uint8_t *>(vecs[i]) +
           original_dim_in_uint8_array);
@@ -281,7 +292,7 @@ struct MipsSquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
                                                        PrefetchStep>;
   static void ComputeBatch(const int8_t **vecs, const int8_t *query,
                            size_t num_vecs, size_t dim, float *results) {
-    const size_t original_dim = dim - 16;
+    const size_t original_dim = dim - 20;
     ailego::DistanceBatch::InnerProductDistanceBatch<
         int8_t, BatchSize, PrefetchStep>::ComputeBatch(vecs, query, num_vecs,
                                                        original_dim, results);
@@ -295,7 +306,7 @@ struct MipsSquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
 
     const float sum = qa * qs;
     const float sum2 = qa * qa * qs2;
-    for (int i = 0; i < num_vecs; ++i) {
+    for (size_t i = 0; i < num_vecs; ++i) {
       const float *m_tail = reinterpret_cast<const float *>(
           reinterpret_cast<const int8_t *>(vecs[i]) + original_dim);
       float ma = m_tail[0];
@@ -310,7 +321,9 @@ struct MipsSquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t, BatchSize,
   }
 
   static void QueryPreprocess(void *query, size_t dim) {
-    return ImplType::QueryPreprocess(query, dim - 16);
+    if (auto func = ImplType::GetQueryPreprocessFunc(); func != nullptr) {
+      return func(query, dim - 20);
+    }
   }
 };
 
@@ -335,7 +348,7 @@ struct MipsSquaredEuclideanDistanceBatchWithScoreUnquantized<uint8_t, BatchSize,
 
     const float sum = qa * qs;
     const float sum2 = qa * qa * qs2;
-    for (int i = 0; i < num_vecs; ++i) {
+    for (size_t i = 0; i < num_vecs; ++i) {
       const float *m_tail = reinterpret_cast<const float *>(
           reinterpret_cast<const uint8_t *>(vecs[i]) +
           original_dim_in_uint8_array);

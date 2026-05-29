@@ -36,7 +36,7 @@ template <size_t M, size_t N>
 struct SquaredEuclidean<int8_t, M, N> {
   static void Compute(const int8_t *m, const int8_t *q, size_t dim,
                       float *out) {
-    const size_t d = dim - 16;
+    const size_t d = dim - 20;
     ailego::InnerProductMatrix<int8_t, M, N>::Compute(m, q, d, out);
 
     for (size_t i = 0; i < N; ++i) {
@@ -141,7 +141,7 @@ template <size_t M, size_t N>
 struct MinusInnerProduct<int8_t, M, N> {
   static void Compute(const int8_t *m, const int8_t *q, size_t dim,
                       float *out) {
-    const size_t origin_dim = dim - 16;
+    const size_t origin_dim = dim - 20;
     MinusInnerProductImplInt8<M, N>(m, q, origin_dim, out);
   }
 };
@@ -168,7 +168,7 @@ template <size_t M, size_t N>
 struct CosineMinusInnerProduct<int8_t, M, N> {
   static void Compute(const int8_t *m, const int8_t *q, size_t dim,
                       float *out) {
-    const size_t origin_dim = dim - 20;
+    const size_t origin_dim = dim - 24;
     MinusInnerProductImplInt8<M, N>(m, q, origin_dim, out);
   }
 };
@@ -195,7 +195,7 @@ template <size_t M, size_t N>
 struct MipsSquaredEuclidean<int8_t, M, N> {
   static void Compute(const int8_t *m, const int8_t *q, size_t dim,
                       float *out) {
-    const size_t d = dim - 16;
+    const size_t d = dim - 20;
     ailego::InnerProductMatrix<int8_t, M, N>::Compute(m, q, d, out);
 
     for (size_t i = 0; i < N; ++i) {

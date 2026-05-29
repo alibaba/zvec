@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <zvec/db/doc.h>
+#include <zvec/db/query.h>
 #include "db/sqlengine/common/group_by.h"
 #include "db/sqlengine/parser/node.h"
 #include "db/sqlengine/parser/sql_info.h"

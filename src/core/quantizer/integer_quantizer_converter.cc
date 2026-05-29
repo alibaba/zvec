@@ -44,7 +44,7 @@ class IntegerQuantizerConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -145,7 +145,7 @@ class IntegerQuantizerConverter : public IndexConverter {
       : data_type_(dst_type) {}
 
   //! Destructor
-  virtual ~IntegerQuantizerConverter() {}
+  ~IntegerQuantizerConverter() override {}
 
 //! Get param name
 #define P_NAME(NAME)                                                 \
@@ -414,7 +414,7 @@ class IntegerStreamingConverter : public IndexConverter {
   }
 
   //! Cleanup Converter
-  virtual int cleanup(void) override {
+  int cleanup(void) override {
     *stats_.mutable_transformed_count() = 0;
     return 0;
   }
@@ -474,7 +474,7 @@ class IntegerStreamingConverter : public IndexConverter {
       }
 
       //! Destructor
-      virtual ~Iterator(void) {}
+      ~Iterator(void) override {}
 
       //! Retrieve pointer of data
       const void *data(void) const override {
@@ -581,7 +581,10 @@ class IntegerStreamingConverter : public IndexConverter {
   static size_t ExtraDimension(IndexMeta::DataType type) {
     // The extra quantized params storage size to save for each vector
     constexpr size_t kExtraSize = 4 * sizeof(float);
-    return type == IndexMeta::DataType::DT_INT8 ? kExtraSize : kExtraSize * 2;
+    constexpr size_t kAdditionalInt32 = sizeof(int32_t);
+    return type == IndexMeta::DataType::DT_INT8
+               ? (kExtraSize + kAdditionalInt32)
+               : (kExtraSize * 2);
   }
 
   //! Members

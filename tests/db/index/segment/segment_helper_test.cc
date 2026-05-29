@@ -121,7 +121,7 @@ TEST_F(SegmentHelperTest, CompactTask_General) {
   );
 
   // Create segment task
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
 
   // Verify task creation
   ASSERT_TRUE(segment_task != nullptr);
@@ -214,7 +214,7 @@ TEST_F(SegmentHelperTest, CompactTask_ScalarIndex) {
   );
 
   // Create segment task
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
 
   // Verify task creation
   ASSERT_TRUE(segment_task != nullptr);
@@ -307,7 +307,7 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndex) {
   );
 
   // Create segment task
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
 
   // Verify task creation
   ASSERT_TRUE(segment_task != nullptr);
@@ -395,7 +395,7 @@ TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
   );
 
   // Create segment task
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
 
   // Verify task creation
   ASSERT_TRUE(segment_task != nullptr);
@@ -484,7 +484,7 @@ TEST_F(SegmentHelperTest, CompactTask_Filter) {
   );
 
   // Create and execute task
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
   ASSERT_TRUE(segment_task != nullptr);
 
   Status status = SegmentHelper::Execute(segment_task);
@@ -563,7 +563,7 @@ TEST_F(SegmentHelperTest, CompactTask_FilterAll) {
   );
 
   // Create and execute task
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
   ASSERT_TRUE(segment_task != nullptr);
 
   Status status = SegmentHelper::Execute(segment_task);

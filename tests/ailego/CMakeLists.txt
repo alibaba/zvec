@@ -1,6 +1,6 @@
 
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 file(GLOB_RECURSE ALL_TEST_SRCS *_test.cc)
 

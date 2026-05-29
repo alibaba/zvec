@@ -88,7 +88,7 @@ void Bitmap::copy(const Bitmap &rhs) {
 
   for (std::vector<Bucket *>::const_iterator iter = rhs.array_.begin();
        iter != rhs.array_.end(); ++iter) {
-    Bucket *bucket = NULL;
+    Bucket *bucket = nullptr;
     if (*iter) {
       bucket = new Bucket(*(*iter));
     }
@@ -106,14 +106,14 @@ void Bitmap::shrink_to_fit(void) {
         break;
       }
       delete (*iter);
-      *iter = NULL;
+      *iter = nullptr;
     }
     ++shrink_count;
   }
   for (; iter != array_.rend(); ++iter) {
     if ((*iter) && (*iter)->test_none()) {
       delete (*iter);
-      *iter = NULL;
+      *iter = nullptr;
     }
   }
   if (shrink_count != 0) {
@@ -139,7 +139,7 @@ void Bitmap::set(size_t num) {
   // High 16 bits
   size_t offset = num >> 16;
   if (offset >= array_.size()) {
-    array_.resize(offset + 1, NULL);
+    array_.resize(offset + 1, nullptr);
   }
 
   Bucket *&bucket = array_[offset];
@@ -154,7 +154,7 @@ void Bitmap::reset(size_t num) {
   // High 16 bits
   size_t offset = num >> 16;
   if (offset >= array_.size()) {
-    array_.resize(offset + 1, NULL);
+    array_.resize(offset + 1, nullptr);
   }
 
   if (offset < array_.size()) {
@@ -170,7 +170,7 @@ void Bitmap::flip(size_t num) {
   // High 16 bits
   uint16_t offset = (uint16_t)(num >> 16);
   if (offset >= array_.size()) {
-    array_.resize(offset + 1, NULL);
+    array_.resize(offset + 1, nullptr);
   }
 
   Bucket *&bucket = array_[offset];
@@ -193,14 +193,14 @@ void Bitmap::bitwise_and(const Bitmap &rhs) {
         dst->bitwise_and(*src);
       } else {
         delete dst;
-        dst = NULL;
+        dst = nullptr;
       }
     }
   }
   for (size_t i = overlap; i < array_.size(); ++i) {
     Bucket *&dst = array_[i];
     delete dst;
-    dst = NULL;
+    dst = nullptr;
   }
 }
 
@@ -237,7 +237,7 @@ void Bitmap::bitwise_or(const Bitmap &rhs) {
   }
   for (size_t i = overlap; i < rhs.array_.size(); ++i) {
     const Bucket *src = rhs.array_[i];
-    Bucket *bucket = NULL;
+    Bucket *bucket = nullptr;
 
     if (src) {
       bucket = new Bucket(*src);
@@ -264,7 +264,7 @@ void Bitmap::bitwise_xor(const Bitmap &rhs) {
   }
   for (size_t i = overlap; i < rhs.array_.size(); ++i) {
     const Bucket *src = rhs.array_[i];
-    Bucket *bucket = NULL;
+    Bucket *bucket = nullptr;
 
     if (src) {
       bucket = new Bucket(*src);

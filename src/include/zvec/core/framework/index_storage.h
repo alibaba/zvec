@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_module.h>
@@ -34,23 +34,35 @@ class IndexStorage : public IndexModule {
       MBT_UNKNOWN = 0,
       MBT_MMAP = 1,
       MBT_BUFFERPOOL = 2,
+      MBT_HEAP_SCRATCH = 3,
     };
 
     MemoryBlock() {}
-    MemoryBlock(ailego::BufferHandle::Pointer &&buffer_handle)
-        : type_(MemoryBlockType::MBT_BUFFERPOOL),
-          buffer_handle_(std::move(buffer_handle)) {
-      data_ = buffer_handle_->pin_vector_data();
+    MemoryBlock(ailego::VecBufferPoolHandle *buffer_pool_handle,
+                size_t block_id, void *data)
+        : type_(MemoryBlockType::MBT_BUFFERPOOL) {
+      buffer_pool_handle_ = buffer_pool_handle;
+      buffer_block_id_ = block_id;
+      data_ = data;
     }
     MemoryBlock(void *data) : type_(MemoryBlockType::MBT_MMAP), data_(data) {}
 
-    MemoryBlock(MemoryBlock &rhs) {
+    static MemoryBlock MakeOwned(void *owned) {
+      MemoryBlock mb;
+      mb.type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+      mb.data_ = owned;
+      return mb;
+    }
+
+    MemoryBlock(const MemoryBlock &rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
           this->reset(rhs.data_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
-          this->reset(rhs.buffer_handle_);
+          this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_, rhs.data_);
+          buffer_pool_handle_->acquire_one(buffer_block_id_);
           break;
         default:
           break;
@@ -63,21 +75,35 @@ class IndexStorage : public IndexModule {
           this->reset(std::move(rhs.data_));
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
-          this->reset(std::move(rhs.buffer_handle_));
+          this->reset(std::move(rhs.buffer_pool_handle_),
+                      std::move(rhs.buffer_block_id_), std::move(rhs.data_));
+          rhs.buffer_pool_handle_ = nullptr;
+          rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+          break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+          data_ = rhs.data_;
+          rhs.data_ = nullptr;
+          rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
           break;
         default:
           break;
       }
     }
 
-    MemoryBlock &operator=(MemoryBlock &rhs) {
+    MemoryBlock &operator=(const MemoryBlock &rhs) {
       if (this != &rhs) {
         switch (rhs.type_) {
           case MemoryBlockType::MBT_MMAP:
             this->reset(rhs.data_);
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
-            this->reset(rhs.buffer_handle_);
+            this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
+                        rhs.data_);
+            buffer_pool_handle_->acquire_one(buffer_block_id_);
+            break;
+          case MemoryBlockType::MBT_HEAP_SCRATCH:
+            this->reset(rhs.data_);
             break;
           default:
             break;
@@ -93,7 +119,17 @@ class IndexStorage : public IndexModule {
             this->reset(std::move(rhs.data_));
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
-            this->reset(std::move(rhs.buffer_handle_));
+            this->reset(std::move(rhs.buffer_pool_handle_),
+                        std::move(rhs.buffer_block_id_), std::move(rhs.data_));
+            rhs.buffer_pool_handle_ = nullptr;
+            rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+            break;
+          case MemoryBlockType::MBT_HEAP_SCRATCH:
+            release_owned();
+            type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+            data_ = rhs.data_;
+            rhs.data_ = nullptr;
+            rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
             break;
           default:
             break;
@@ -107,10 +143,12 @@ class IndexStorage : public IndexModule {
         case MemoryBlockType::MBT_MMAP:
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
-          if (buffer_handle_) {
-            buffer_handle_->unpin_vector_data();
-            // buffer_handle_.reset();
+          if (buffer_pool_handle_) {
+            buffer_pool_handle_->release_one(buffer_block_id_);
           }
+          break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          release_owned();
           break;
         default:
           break;
@@ -122,34 +160,25 @@ class IndexStorage : public IndexModule {
       return data_;
     }
 
-    void reset(ailego::BufferHandle::Pointer &buffer_handle) {
+    void reset(ailego::VecBufferPoolHandle *buffer_pool_handle, size_t block_id,
+               void *data) {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        buffer_handle_->unpin_vector_data();
-        buffer_handle_.reset();
+        buffer_pool_handle_->release_one(buffer_block_id_);
+      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
+        release_owned();
       }
       type_ = MemoryBlockType::MBT_BUFFERPOOL;
-      if (buffer_handle) {
-        buffer_handle_.reset(buffer_handle.release());
-      }
-      data_ = buffer_handle_->pin_vector_data();
-    }
-
-    void reset(ailego::BufferHandle::Pointer &&buffer_handle) {
-      if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        buffer_handle_->unpin_vector_data();
-        buffer_handle_.reset();
-      }
-      type_ = MemoryBlockType::MBT_BUFFERPOOL;
-      if (buffer_handle) {
-        buffer_handle_ = std::move(buffer_handle);
-      }
-      data_ = buffer_handle_->pin_vector_data();
+      buffer_pool_handle_ = buffer_pool_handle;
+      buffer_block_id_ = block_id;
+      data_ = data;
     }
 
     void reset(void *data) {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
-        buffer_handle_->unpin_vector_data();
-        buffer_handle_.reset();
+        buffer_pool_handle_->release_one(buffer_block_id_);
+        buffer_pool_handle_ = nullptr;
+      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
+        release_owned();
       }
       type_ = MemoryBlockType::MBT_MMAP;
       data_ = data;
@@ -157,7 +186,16 @@ class IndexStorage : public IndexModule {
 
     MemoryBlockType type_{MBT_UNKNOWN};
     void *data_{nullptr};
-    mutable ailego::BufferHandle::Pointer buffer_handle_{nullptr};
+    mutable ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
+    size_t buffer_block_id_{0};
+
+   private:
+    void release_owned() {
+      if (data_) {
+        ailego_free(data_);
+        data_ = nullptr;
+      }
+    }
   };
 
   struct SegmentData {
@@ -218,6 +256,15 @@ class IndexStorage : public IndexModule {
 
     //! Clone the segment
     virtual Pointer clone(void) = 0;
+
+    //! Retrieve the stable base data pointer if the storage backend supports
+    //! it (e.g. mmap-backed storage). Returns nullptr for backends with
+    //! mutable/evictable buffers (e.g. BufferStorage). When non-null the
+    //! caller may compute element addresses as base_data() + offset directly,
+    //! avoiding the full pointer chain through chunk->read().
+    virtual const uint8_t *base_data(void) const {
+      return nullptr;
+    }
   };
 
   //! Destructor
@@ -230,7 +277,7 @@ class IndexStorage : public IndexModule {
   virtual int cleanup(void) = 0;
 
   //! Open storage
-  virtual int open(const std::string &path, bool create) = 0;
+  virtual int open(const std::string &path, bool create_if_missing) = 0;
 
   //! Flush storage
   virtual int flush(void) = 0;
@@ -265,6 +312,11 @@ class IndexStorage : public IndexModule {
   //! huge page
   virtual bool isHugePage(void) const {
     return false;
+  }
+
+  //! Retrieve the memory block type of this storage
+  virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
+    return MemoryBlock::MBT_MMAP;
   }
 };
 

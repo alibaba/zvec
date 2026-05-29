@@ -398,13 +398,22 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
     features_.reserve(size);
   }
 
- private:
-  //! Disable them
-  MultiPassNumericalIndexHolder(void) = delete;
+  //! Get vector data pointer by index
+  const void *get_vector_by_index(size_t index) const {
+    if (index >= features_.size()) {
+      return nullptr;
+    }
+    return features_[index].second.data();
+  }
 
+ protected:
   //! Members
   size_t dimension_{0};
   std::vector<std::pair<uint64_t, ailego::NumericalVector<T>>> features_;
+
+ private:
+  //! Disable them
+  MultiPassNumericalIndexHolder(void) = delete;
 };
 
 /*! One-Pass Binary Index Holder
@@ -617,13 +626,22 @@ class MultiPassBinaryIndexHolder : public IndexHolder {
     features_.reserve(size);
   }
 
- private:
-  //! Disable them
-  MultiPassBinaryIndexHolder(void) = delete;
+  //! Get vector data pointer by index
+  const void *get_vector_by_index(size_t index) const {
+    if (index >= features_.size()) {
+      return nullptr;
+    }
+    return features_[index].second.data();
+  }
 
+ protected:
   //! Members
   size_t dimension_{0};
   std::vector<std::pair<uint64_t, ailego::BinaryVector<T>>> features_;
+
+ private:
+  //! Disable them
+  MultiPassBinaryIndexHolder(void) = delete;
 };
 
 /*! One-Pass Index Hybrid Holder

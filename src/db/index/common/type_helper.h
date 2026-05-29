@@ -27,10 +27,14 @@ struct IndexTypeCodeBook {
     switch (type) {
       case proto::IT_HNSW:
         return IndexType::HNSW;
+      case proto::IT_HNSW_RABITQ:
+        return IndexType::HNSW_RABITQ;
       case proto::IT_FLAT:
         return IndexType::FLAT;
       case proto::IT_IVF:
         return IndexType::IVF;
+      case proto::IT_VAMANA:
+        return IndexType::VAMANA;
       case proto::IT_INVERT:
         return IndexType::INVERT;
       default:
@@ -44,10 +48,14 @@ struct IndexTypeCodeBook {
     switch (type) {
       case IndexType::HNSW:
         return proto::IT_HNSW;
+      case IndexType::HNSW_RABITQ:
+        return proto::IT_HNSW_RABITQ;
       case IndexType::FLAT:
         return proto::IT_FLAT;
       case IndexType::IVF:
         return proto::IT_IVF;
+      case IndexType::VAMANA:
+        return proto::IT_VAMANA;
       case IndexType::INVERT:
         return proto::IT_INVERT;
       default:
@@ -61,8 +69,14 @@ struct IndexTypeCodeBook {
     switch (type) {
       case IndexType::HNSW:
         return "HNSW";
-      // case IndexType::SPARSE_HNSW:
-      //   return "SPARSE_HNSW";
+      case IndexType::HNSW_RABITQ:
+        return "HNSW_RABITQ";
+      case IndexType::FLAT:
+        return "FLAT";
+      case IndexType::IVF:
+        return "IVF";
+      case IndexType::VAMANA:
+        return "VAMANA";
       case IndexType::INVERT:
         return "INVERT";
       default:
@@ -414,6 +428,8 @@ struct QuantizeTypeCodeBook {
         return QuantizeType::INT4;
       case proto::QuantizeType::QT_INT8:
         return QuantizeType::INT8;
+      case proto::QuantizeType::QT_RABITQ:
+        return QuantizeType::RABITQ;
       default:
         return QuantizeType::UNDEFINED;
     }
@@ -427,6 +443,8 @@ struct QuantizeTypeCodeBook {
         return proto::QuantizeType::QT_INT4;
       case QuantizeType::INT8:
         return proto::QuantizeType::QT_INT8;
+      case QuantizeType::RABITQ:
+        return proto::QuantizeType::QT_RABITQ;
       default:
         return proto::QuantizeType::QT_UNDEFINED;
     }
@@ -440,6 +458,8 @@ struct QuantizeTypeCodeBook {
         return "INT4";
       case QuantizeType::INT8:
         return "INT8";
+      case QuantizeType::RABITQ:
+        return "RABITQ";
       default:
         return "UNDEFINED";
     }

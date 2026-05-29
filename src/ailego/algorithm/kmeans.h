@@ -19,7 +19,6 @@
 #include <random>
 #include <ailego/container/vector_array.h>
 #include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/hamming_distance_matrix.h>
 #include <ailego/math/inner_product_matrix.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
@@ -673,164 +672,6 @@ class NibbleKmeansContext {
   std::vector<Cluster> clusters_{};
 };
 
-/*! Binary K-Means Context
- */
-template <typename T, size_t BATCH_COUNT = 32u>
-class BinaryKmeansContext {
- public:
-  //! constexpr variables
-  constexpr static size_t BatchCount = BATCH_COUNT;
-
-  //! Type of values
-  using ValueType = typename std::remove_cv<T>::type;
-  using StoreType = typename std::remove_cv<T>::type;
-
-  // Check supporting type
-  static_assert(std::is_same<ValueType, uint32_t>::value ||
-                    std::is_same<ValueType, uint64_t>::value,
-                "ValueType must be uint32_t or uint64_t");
-
-  /*! K-Means Context Cluster
-   */
-  class Cluster {
-   public:
-    //! Constructor
-    Cluster(size_t dim) : accum_(dim, 0) {}
-
-    //! Constructor
-    Cluster(const Cluster &rhs)
-        : cost_(rhs.cost_), count_(rhs.count_), accum_(rhs.accum_) {}
-
-    //! Constructor
-    Cluster(Cluster &&rhs)
-        : cost_(rhs.cost_), count_(rhs.count_), accum_(std::move(rhs.accum_)) {}
-
-    //! Assignment
-    Cluster &operator=(const Cluster &rhs) {
-      cost_ = rhs.cost_;
-      count_ = rhs.count_;
-      accum_ = rhs.accum_;
-      return *this;
-    }
-
-    //! Assignment
-    Cluster &operator=(Cluster &&rhs) {
-      cost_ = rhs.cost_;
-      count_ = rhs.count_;
-      accum_ = std::move(rhs.accum_);
-      return *this;
-    }
-
-    //! Append a vector
-    void append(const ValueType *vec, size_t dim, float dist) {
-      ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
-      mutex_.lock();
-      cost_ += dist;
-      count_ += 1;
-
-      const uint8_t *arr = reinterpret_cast<const uint8_t *>(vec);
-      for (size_t i = 0; i != dim; ++i) {
-        if (arr[i >> 3] & (1u << (i & 7))) {
-          accum_[i] += 1;
-        }
-      }
-      mutex_.unlock();
-    }
-
-    //! Retrieve the centroid of vectors
-    void centroid(ValueType *out, size_t dim) const {
-      ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
-      uint8_t *arr = reinterpret_cast<uint8_t *>(out);
-      size_t half = count_ >> 1;
-      for (size_t i = 0; i != dim; ++i) {
-        if (accum_[i] > half) {
-          arr[i >> 3] |= static_cast<uint8_t>(1 << (i & 0x7));
-        } else {
-          arr[i >> 3] &= ~static_cast<uint8_t>(1 << (i & 0x7));
-        }
-      }
-    }
-
-    //! Retrieve squared error
-    double cost(void) const {
-      return cost_;
-    }
-
-    //! Retrieve feature count
-    size_t count(void) const {
-      return count_;
-    }
-
-   private:
-    SpinMutex mutex_{};
-    double cost_{0.0};
-    size_t count_{0u};
-    std::vector<uint32_t> accum_{};
-  };
-
-  //! operator []
-  const Cluster &operator[](size_t i) const {
-    return clusters_[i];
-  }
-
-  //! operator []
-  Cluster &operator[](size_t i) {
-    return clusters_[i];
-  }
-
-  //! Clear the context
-  void clear(void) {
-    clusters_.clear();
-  }
-
-  //! Reset the context
-  void reset(size_t k_value, size_t dim) {
-    clusters_.clear();
-    clusters_.resize(k_value, dim);
-  }
-
-  //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters(void) const {
-    return clusters_;
-  }
-
-  //! Compute the distance between matrix and query (batch)
-  template <size_t N>
-  static void BatchDistance(const ValueType *m, const ValueType *q, size_t dim,
-                            float *out) {
-    HammingDistanceMatrix<ValueType, BatchCount, N>::Compute(m, q, dim, out);
-  }
-
-  //! Compute the distance between matrix and query (single)
-  static void Distance(const ValueType *m, const ValueType *q, size_t dim,
-                       float *out) {
-    HammingDistanceMatrix<ValueType, 1, 1>::Compute(m, q, dim, out);
-  }
-
-  //! Transpose a matrix
-  static void MatrixTranspose(const ValueType *src, size_t dim, T *dst) {
-    MatrixHelper::Transpose<ValueType, BatchCount>(
-        src, (dim >> 3) / sizeof(ValueType), dst);
-  }
-
-  //! Reverse transpose a matrix
-  static void MatrixReverseTranspose(const ValueType *src, size_t dim, T *dst) {
-    MatrixHelper::ReverseTranspose<ValueType, BatchCount>(
-        src, (dim >> 3) / sizeof(ValueType), dst);
-  }
-
-  //! Compute Norm2
-  static void Norm2(ValueType * /*data*/, size_t /*dim*/, float *norm) {
-    *norm = 0;
-  }
-
- private:
-  //! Members
-  std::vector<Cluster> clusters_{};
-};
-
 /*! Numerical InnerProduct K-Means Context
  */
 template <typename T, size_t BATCH_COUNT = 32u>
@@ -1194,12 +1035,6 @@ using NumericalKmeans =
 template <typename T, typename TPool,
           typename TContext = NibbleKmeansContext<T>>
 using NibbleKmeans = LloydCluster<T, TPool, TContext, NibbleVectorArray<T>>;
-
-/*! Binary K-Means cluster algorithm
- */
-template <typename T, typename TPool,
-          typename TContext = BinaryKmeansContext<T>>
-using BinaryKmeans = LloydCluster<T, TPool, TContext, BinaryVectorArray<T>>;
 
 /*! Numerical K-Means cluster algorithm
  */

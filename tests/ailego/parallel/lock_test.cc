@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
 #include <mutex>
 #include <ailego/parallel/lock.h>
 #include <gtest/gtest.h>

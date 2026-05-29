@@ -1,6 +1,6 @@
 
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/option.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 if(APPLE)
   set(APPLE_FRAMEWORK_LIBS
@@ -18,18 +18,33 @@ if(APPLE)
 endif()
 
 file(GLOB_RECURSE ALL_TEST_SRCS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *_test.cc)
+
+if(MSVC)
+  #TODO(windows): should include these UTs
+  set(_MSVC_EXCLUDE_TESTS
+    "storage/mmap_store_test.cc"
+    "storage/mem_store_test.cc"
+    "column/inverted_column/inverted_indexer_util_test.cc"
+    "segment/segment_test.cc"
+  )
+  foreach(_excl ${_MSVC_EXCLUDE_TESTS})
+    list(FILTER ALL_TEST_SRCS EXCLUDE REGEX "${_excl}")
+  endforeach()
+endif()
+
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
   cc_gmock(
     NAME ${CC_TARGET} STRICT
     LIBS zvec_db
+    zvec_ailego
     zvec_proto
     core_metric_static
     core_utility_static
     core_quantizer_static
     core_knn_hnsw core_knn_hnsw_sparse sparsehash
     core_knn_flat core_knn_flat_sparse core_knn_ivf
-    core_mix_reducer
+    core_knn_hnsw_rabitq core_mix_reducer
     Arrow::arrow_dataset
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}

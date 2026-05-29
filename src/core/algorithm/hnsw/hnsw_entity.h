@@ -138,7 +138,11 @@ struct HNSWHeader {
 
 struct NeighborsHeader {
   uint32_t neighbor_cnt;
+#ifdef _MSC_VER
+  node_id_t neighbors[];
+#else
   node_id_t neighbors[0];
+#endif
 };
 
 struct Neighbors {
@@ -147,8 +151,8 @@ struct Neighbors {
   Neighbors(uint32_t cnt_in, const node_id_t *data_in)
       : cnt{cnt_in}, data{data_in} {}
 
-  Neighbors(IndexStorage::MemoryBlock &&mem_block)
-      : neighbor_block{std::move(mem_block)} {
+  Neighbors(const IndexStorage::MemoryBlock &mem_block)
+      : neighbor_block{mem_block} {
     auto hd = reinterpret_cast<const NeighborsHeader *>(neighbor_block.data());
     cnt = hd->neighbor_cnt;
     data = hd->neighbors;
@@ -165,6 +169,165 @@ struct Neighbors {
   uint32_t cnt;
   const node_id_t *data;
   IndexStorage::MemoryBlock neighbor_block;
+};
+
+//! Lightweight MemoryBlock for mmap mode: zero-cost construction/destruction
+struct MmapMemoryBlock {
+  MmapMemoryBlock() = default;
+  explicit MmapMemoryBlock(void *data) : data_(data) {}
+
+  MmapMemoryBlock(const MmapMemoryBlock &) = default;
+  MmapMemoryBlock &operator=(const MmapMemoryBlock &) = default;
+  MmapMemoryBlock(MmapMemoryBlock &&) = default;
+  MmapMemoryBlock &operator=(MmapMemoryBlock &&) = default;
+  ~MmapMemoryBlock() = default;
+
+  const void *data() const {
+    return data_;
+  }
+
+  void reset(void *data) {
+    data_ = data;
+  }
+
+  void *data_{nullptr};
+};
+
+//! Lightweight MemoryBlock for buffer pool mode: release on destruction
+struct BufferPoolMemoryBlock {
+  BufferPoolMemoryBlock() = default;
+
+  BufferPoolMemoryBlock(ailego::VecBufferPoolHandle *handle, size_t block_id,
+                        void *data)
+      : buffer_pool_handle_(handle), buffer_block_id_(block_id), data_(data) {}
+
+  static BufferPoolMemoryBlock MakeOwned(void *owned_data) {
+    BufferPoolMemoryBlock b;
+    b.owns_buffer_ = true;
+    b.data_ = owned_data;
+    return b;
+  }
+
+  BufferPoolMemoryBlock(const BufferPoolMemoryBlock &rhs)
+      : buffer_pool_handle_(rhs.buffer_pool_handle_),
+        buffer_block_id_(rhs.buffer_block_id_),
+        data_(rhs.data_) {
+    if (rhs.owns_buffer_) {
+      owns_buffer_ = false;
+      buffer_pool_handle_ = nullptr;
+    } else if (buffer_pool_handle_) {
+      buffer_pool_handle_->acquire_one(buffer_block_id_);
+    }
+  }
+
+  BufferPoolMemoryBlock &operator=(const BufferPoolMemoryBlock &rhs) {
+    if (this != &rhs) {
+      release();
+      buffer_pool_handle_ = rhs.buffer_pool_handle_;
+      buffer_block_id_ = rhs.buffer_block_id_;
+      data_ = rhs.data_;
+      if (rhs.owns_buffer_) {
+        owns_buffer_ = false;
+        buffer_pool_handle_ = nullptr;
+      } else if (buffer_pool_handle_) {
+        buffer_pool_handle_->acquire_one(buffer_block_id_);
+      }
+    }
+    return *this;
+  }
+
+  BufferPoolMemoryBlock(BufferPoolMemoryBlock &&rhs) noexcept
+      : buffer_pool_handle_(rhs.buffer_pool_handle_),
+        buffer_block_id_(rhs.buffer_block_id_),
+        owns_buffer_(rhs.owns_buffer_),
+        data_(rhs.data_) {
+    rhs.buffer_pool_handle_ = nullptr;
+    rhs.owns_buffer_ = false;
+    rhs.data_ = nullptr;
+  }
+
+  BufferPoolMemoryBlock &operator=(BufferPoolMemoryBlock &&rhs) noexcept {
+    if (this != &rhs) {
+      release();
+      buffer_pool_handle_ = rhs.buffer_pool_handle_;
+      buffer_block_id_ = rhs.buffer_block_id_;
+      owns_buffer_ = rhs.owns_buffer_;
+      data_ = rhs.data_;
+      rhs.buffer_pool_handle_ = nullptr;
+      rhs.owns_buffer_ = false;
+      rhs.data_ = nullptr;
+    }
+    return *this;
+  }
+
+  ~BufferPoolMemoryBlock() {
+    release();
+  }
+
+  const void *data() const {
+    return data_;
+  }
+
+  void reset(ailego::VecBufferPoolHandle *handle, size_t block_id, void *data) {
+    release();
+    buffer_pool_handle_ = handle;
+    buffer_block_id_ = block_id;
+    data_ = data;
+  }
+
+ private:
+  void release() {
+    if (owns_buffer_) {
+      if (data_) {
+        ailego_free(data_);
+      }
+      owns_buffer_ = false;
+    } else if (buffer_pool_handle_) {
+      buffer_pool_handle_->release_one(buffer_block_id_);
+      buffer_pool_handle_ = nullptr;
+    }
+    data_ = nullptr;
+  }
+
+  ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
+  size_t buffer_block_id_{0};
+  bool owns_buffer_{false};
+  void *data_{nullptr};
+};
+
+//! Typed Neighbors: holds a typed MemoryBlock to avoid runtime branching
+template <typename MemBlockType>
+struct NeighborsT {
+  NeighborsT() : cnt{0}, data{nullptr} {}
+
+  NeighborsT(uint32_t cnt_in, const node_id_t *data_in)
+      : cnt{cnt_in}, data{data_in} {}
+
+  explicit NeighborsT(const MemBlockType &mem_block)
+      : neighbor_block{mem_block} {
+    auto hd = reinterpret_cast<const NeighborsHeader *>(neighbor_block.data());
+    cnt = hd->neighbor_cnt;
+    data = hd->neighbors;
+  }
+
+  explicit NeighborsT(MemBlockType &&mem_block)
+      : neighbor_block{std::move(mem_block)} {
+    auto hd = reinterpret_cast<const NeighborsHeader *>(neighbor_block.data());
+    cnt = hd->neighbor_cnt;
+    data = hd->neighbors;
+  }
+
+  size_t size(void) const {
+    return cnt;
+  }
+
+  const node_id_t &operator[](size_t idx) const {
+    return data[idx];
+  }
+
+  uint32_t cnt;
+  const node_id_t *data;
+  MemBlockType neighbor_block;
 };
 
 //! level 0 neighbors offset
@@ -512,7 +675,7 @@ class HnswEntity {
   constexpr static uint32_t kDefaultDocsHardLimit = 1 << 30U;  // 1 billion
   constexpr static float kDefaultDocsSoftLimitRatio = 0.9f;
   constexpr static size_t kMaxChunkSize = 0xFFFFFFFF;
-  constexpr static size_t kDefaultChunkSize = 2UL * 1024UL * 1024UL;
+  constexpr static size_t kDefaultChunkSize = 2 * 1024UL * 1024UL;
   constexpr static size_t kDefaultMaxChunkCnt = 50000UL;
   constexpr static float kDefaultNeighborPruneMultiplier =
       1.0f;  // prune_cnt = upper_max_neighbor_cnt * multiplier

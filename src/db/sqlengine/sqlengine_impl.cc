@@ -70,8 +70,8 @@ Result<DocPtrList> SQLEngineImpl::execute(
   std::vector<QueryInfo::Ptr> query_infos(segments.size(), query_info.value());
   auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
-    return tl::make_unexpected(
-        Status::InternalError("Execute plan failed: ", reader.error().c_str()));
+    return tl::make_unexpected(Status::InternalError(
+        "Execute plan failed (query): ", reader.error().c_str()));
   }
   return fill_result(select_item_meta_ptrs, reader.value().get());
 }
@@ -114,8 +114,8 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
   std::vector<QueryInfo::Ptr> query_infos(segments.size(), query_info.value());
   auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
-    return tl::make_unexpected(
-        Status::InternalError("Execute plan failed: ", reader.error().c_str()));
+    return tl::make_unexpected(Status::InternalError(
+        "Execute plan failed (group_by): ", reader.error().c_str()));
   }
   return fill_group_by_result(*query_info.value(), reader.value().get());
 }
@@ -127,7 +127,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
   auto query_info = analyzer.analyze(schema, sql_info);
   if (!query_info) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "Analyze sql info failed:", query_info.error().c_str()));
+        "Analyze SQL info failed: ", query_info.error().c_str()));
   }
   profiler_->close_stage();
   LOG_DEBUG("query_info: [%s]", query_info.value()->to_string().c_str());
@@ -147,8 +147,8 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     if (filter_node == nullptr) {
       LOG_ERROR("parse filter failed. reason:[%s] filter:[%s]",
                 parser->err_msg().c_str(), request.filter_.c_str());
-      return tl::make_unexpected(
-          Status::InvalidArgument("Invalid filter:", parser->err_msg()));
+      return tl::make_unexpected(Status::InvalidArgument(
+          "Invalid filter [", request.filter_, "]: ", parser->err_msg()));
     }
   }
   if (group_by) {
@@ -156,9 +156,9 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     if (group.group_by_field.empty() || group.group_count == 0 ||
         group.group_topk == 0) {
       return tl::make_unexpected(Status::InvalidArgument(
-          "Invalid group by request: group_by", group.group_by_field,
-          " group_count: ", group.group_count,
-          " group_topk: ", group.group_topk));
+          "Invalid group_by request: group_by_field='", group.group_by_field,
+          "', group_count=", group.group_count,
+          ", group_topk=", group.group_topk));
     }
   }
 
@@ -169,8 +169,8 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
   if (!err_msg.empty()) {
     LOG_ERROR("QueryAgent, message to sql info failed, err_msg: %s",
               err_msg.c_str());
-    return tl::make_unexpected(
-        Status::InvalidArgument("To sql info failed:", err_msg));
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Convert message to SQL info failed: ", err_msg));
   }
   LOG_DEBUG("Sql info is %s", sql_info->to_string().c_str());
   return parse_sql_info(*collection, std::move(sql_info));
@@ -195,10 +195,11 @@ SQLEngineImpl::search_by_query_info(
   return plan_info.value()->execute_to_reader();
 }
 
-#define GET_FIELD_FROM_RECORD_BATCH(res, field_name)                         \
-  auto res = record_batch.GetColumnByName(field_name);                       \
-  if (!res) {                                                                \
-    return Status::InternalError("Get column by name failed: ", field_name); \
+#define GET_FIELD_FROM_RECORD_BATCH(res, field_name)                    \
+  auto res = record_batch.GetColumnByName(field_name);                  \
+  if (!res) {                                                           \
+    return Status::InternalError("Column not found in record batch: [", \
+                                 field_name, "]");                      \
   }
 
 template <typename T>
@@ -223,8 +224,10 @@ Status fill_doc_sparse_vector(const arrow::StructArray *typed_arr,
     auto value_data = values->GetView(i);
     uint32_t count = indice_data.size() / sizeof(uint32_t);
     if (count != value_data.size() / sizeof(VectorType)) {
-      return Status::InvalidArgument("Dimension not match:", count, " vs ",
-                                     value_data.size() / sizeof(VectorType));
+      return Status::InvalidArgument(
+          "Sparse vector indices and values size mismatch [", field_name,
+          "]: indices count=", count,
+          " vs values count=", value_data.size() / sizeof(VectorType));
     }
     (*doc_it)->set(
         field_name,
@@ -243,9 +246,10 @@ Status fill_doc_vector(const arrow::BinaryArray *typed_arr,
     if (no_null || !typed_arr->IsNull(i)) {
       auto data = typed_arr->GetView(i);
       if ((size_t)dimension != data.size() / sizeof(VectorType)) {
-        return Status::InvalidArgument("Dimension not match:", dimension,
-                                       " vs ",
-                                       data.size() / sizeof(VectorType));
+        return Status::InvalidArgument(
+            "Vector dimension not match [", field_name,
+            "]: expected dimension=", dimension,
+            " vs actual dimension=", data.size() / sizeof(VectorType));
       }
       (*doc_it)->set(field_name, std::vector<VectorType>(
                                      (const VectorType *)&data[0],
@@ -410,8 +414,9 @@ Status fill_doc_field(const std::shared_ptr<arrow::Array> &chunk,
           (arrow::StructArray *)chunk.get(), field_schema.name(), doc_it);
 
     default:
-      return Status::InvalidArgument("Datatype not supported:",
-                                     field_schema.data_type());
+      return Status::InvalidArgument("Unsupported data type for field [",
+                                     field_schema.name(),
+                                     "]: data_type=", field_schema.data_type());
   }
   return Status::OK();
 }
@@ -483,8 +488,9 @@ Result<DocPtrList> SQLEngineImpl::fill_result(
   while (true) {
     auto read_res = reader->ReadNext(&record_batch);
     if (!read_res.ok()) {
-      return tl::make_unexpected(Status::InternalError(
-          "Read record batch failed: ", read_res.ToString()));
+      return tl::make_unexpected(
+          Status::InternalError("Read next record batch failed (fill_result): ",
+                                read_res.ToString()));
     }
     if (record_batch == nullptr) {
       break;
@@ -516,7 +522,7 @@ Result<GroupResults> SQLEngineImpl::fill_group_by_result(
     auto read_res = reader->ReadNext(&record_batch);
     if (!read_res.ok()) {
       return tl::make_unexpected(Status::InternalError(
-          "Read record batch failed: ", read_res.ToString()));
+          "Read next record batch failed (group_by): ", read_res.ToString()));
     }
     if (record_batch == nullptr) {
       break;
@@ -532,8 +538,8 @@ Result<GroupResults> SQLEngineImpl::fill_group_by_result(
     }
     auto group_id_array = record_batch->GetColumnByName(kFieldGroupId);
     if (!group_id_array) {
-      return tl::make_unexpected(
-          Status::InternalError("Get group_id_array failed"));
+      return tl::make_unexpected(Status::InternalError(
+          "Column not found in record batch: [", kFieldGroupId, "]"));
     }
     arrow::StringArray *typed_arr =
         static_cast<arrow::StringArray *>(group_id_array.get());

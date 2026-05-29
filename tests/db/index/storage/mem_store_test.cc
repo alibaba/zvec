@@ -66,7 +66,7 @@ Doc CreateDoc(const uint64_t doc_id) {
 
 void InsertDoc(const MemForwardStore::Ptr &store, const uint64_t start_doc_id,
                const uint64_t end_doc_id) {
-  srand(time(NULL));
+  srand(time(nullptr));
   for (auto doc_id = start_doc_id; doc_id < end_doc_id; doc_id++) {
     if (store) {
       Doc new_doc = CreateDoc(doc_id);
@@ -807,12 +807,13 @@ TEST_F(MemStoreTest, ThreadSafety) {
   std::vector<std::future<void>> futures;
 
   for (int t = 0; t < num_threads; ++t) {
-    futures.push_back(std::async(std::launch::async, [this, t]() {
-      for (int i = 0; i < inserts_per_thread; ++i) {
-        uint64_t doc_id = t * inserts_per_thread + i;
-        store_->insert(CreateDoc(doc_id));
-      }
-    }));
+    futures.push_back(
+        std::async(std::launch::async, [this, t, inserts_per_thread]() {
+          for (int i = 0; i < inserts_per_thread; ++i) {
+            uint64_t doc_id = t * inserts_per_thread + i;
+            store_->insert(CreateDoc(doc_id));
+          }
+        }));
   }
 
   // Wait for all threads to complete

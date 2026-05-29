@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <zvec/db/doc.h>
+#include <zvec/db/query.h>
 #include <zvec/db/status.h>
 #include "db/common/profiler.h"
 #include "db/index/segment/segment.h"

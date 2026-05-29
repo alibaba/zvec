@@ -22,6 +22,7 @@
 #include <arrow/status.h>
 #include <parquet/arrow/reader.h>
 #include <zvec/ailego/buffer/buffer_manager.h>
+#include <zvec/ailego/buffer/parquet_hash_table.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/index/storage/store_helper.h"
 #include "lazy_record_batch_reader.h"
@@ -188,14 +189,14 @@ TablePtr BufferPoolForwardStore::fetch(const std::vector<std::string> &columns,
   std::vector<std::vector<std::pair<int, std::shared_ptr<arrow::Scalar>>>>
       sorted_scalars(col_indices.size());
 
-  auto &buf_mgr = ailego::BufferManager::Instance();
   for (const auto &[rg_id, pairs] : rg_to_local) {
     for (size_t i = 0; i < col_indices.size(); ++i) {
       int col_idx = col_indices[i];
-      auto buffer_id = ailego::BufferID::ParquetID(file_path_, col_idx, rg_id);
-      auto buffer_handle = buf_mgr.acquire(buffer_id);
-      auto col_chunked_array = buffer_handle.pin_parquet_data();
-
+      auto buffer_id = ailego::ParquetBufferID(file_path_, col_idx, rg_id);
+      auto buffer_handle =
+          ailego::ParquetBufferPool::get_instance().acquire_buffer(buffer_id);
+      std::shared_ptr<arrow::ChunkedArray> col_chunked_array =
+          buffer_handle.data();
       if (!col_chunked_array) {
         LOG_ERROR(
             "Failed to pin parquet data for file: %s, column: %d, row_group: "
@@ -315,12 +316,13 @@ ExecBatchPtr BufferPoolForwardStore::fetch(
   int64_t offset = GetRowGroupOffset(rg_id);
 
   std::vector<arrow::Datum> scalars;
-  auto &buf_mgr = ailego::BufferManager::Instance();
   for (size_t i = 0; i < col_indices.size(); ++i) {
     int col_idx = col_indices[i];
-    auto buffer_id = ailego::BufferID::ParquetID(file_path_, col_idx, rg_id);
-    auto buffer_handle = buf_mgr.acquire(buffer_id);
-    auto col_chunked_array = buffer_handle.pin_parquet_data();
+    auto buffer_id = ailego::ParquetBufferID(file_path_, col_idx, rg_id);
+    auto buffer_handle =
+        ailego::ParquetBufferPool::get_instance().acquire_buffer(buffer_id);
+    std::shared_ptr<arrow::ChunkedArray> col_chunked_array =
+        buffer_handle.data();
 
     if (!col_chunked_array) {
       LOG_ERROR(

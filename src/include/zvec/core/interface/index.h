@@ -31,6 +31,7 @@
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
+#include "zvec/core/framework/index_provider.h"
 
 namespace zvec::core_interface {
 
@@ -153,6 +154,12 @@ class Index {
   core::IndexStreamer::Pointer index_searcher() {
     return streamer_;
   }
+
+  core::IndexProvider::Pointer create_index_provider() const {
+    return streamer_->create_provider();
+  }
+
+  static std::string get_metric_name(MetricType metric_type, bool is_sparse);
 
  protected:
   int _sparse_fetch(const uint32_t doc_id,
@@ -278,6 +285,13 @@ class HNSWIndex : public Index {
  public:
   HNSWIndex() = default;
 
+  //! Retrieve the storage mode of the underlying HNSW streamer entity.
+  //! Returns a string among {"mmap", "buffer_pool", "contiguous"}.
+  //! Intended for introspection and debug/testing usage. Returns empty
+  //! string when the streamer has not been initialized or is of an
+  //! unexpected type (e.g. the sparse branch).
+  std::string storage_mode() const;
+
  protected:
   virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
@@ -287,9 +301,42 @@ class HNSWIndex : public Index {
   int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param) override;
 
-
  private:
   HNSWIndexParam param_{};
+};
+
+class VamanaIndex : public Index {
+ public:
+  VamanaIndex() = default;
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+  int _get_coarse_search_topk(
+      const BaseIndexQueryParam::Pointer &search_param) override;
+
+ private:
+  VamanaIndexParam param_{};
+};
+
+class HNSWRabitqIndex : public Index {
+ public:
+  HNSWRabitqIndex() = default;
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+  int _get_coarse_search_topk(
+      const BaseIndexQueryParam::Pointer &search_param) override;
+
+ private:
+  HNSWRabitqIndexParam param_{};
 };
 
 

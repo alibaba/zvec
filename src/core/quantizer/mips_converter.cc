@@ -86,7 +86,7 @@ class MipsConverterHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -214,7 +214,7 @@ class MipsConverterForcedHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -343,7 +343,7 @@ class MipsConverterHalfHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -453,7 +453,7 @@ class MipsConverterHalfHolder : public IndexHolder {
 class MipsConverter : public IndexConverter {
  public:
   //! Destructor
-  virtual ~MipsConverter(void) {}
+  ~MipsConverter(void) override {}
 
   //! Initialize Converter
   int init(const IndexMeta &mt, const ailego::Params &params) override {
@@ -532,7 +532,7 @@ class MipsConverter : public IndexConverter {
     switch (holder->data_type()) {
       case IndexMeta::DataType::DT_FP16:
         for (; iter->is_valid(); iter->next()) {
-          float score;
+          float score = 0.0f;
           ailego::Norm2Matrix<ailego::Float16, 1>::Compute(
               reinterpret_cast<const ailego::Float16 *>(iter->data()), dim,
               &score);
@@ -549,7 +549,7 @@ class MipsConverter : public IndexConverter {
 
       case IndexMeta::DataType::DT_FP32:
         for (; iter->is_valid(); iter->next()) {
-          float score;
+          float score = 0.0f;
           ailego::Norm2Matrix<float, 1>::Compute(
               reinterpret_cast<const float *>(iter->data()), dim, &score);
 

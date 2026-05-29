@@ -19,13 +19,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Union, final
 
 import numpy as np
-from _zvec import _Collection
-from _zvec.param import _VectorQuery
+from _zvec import _Collection, _MultiQuery
+from _zvec.param import _SubQuery, _VectorQuery
 
 from ..extension import ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
 from ..model.doc import Doc
-from ..model.param.vector_query import VectorQuery
+from ..model.param.query import Query
 from ..model.schema import CollectionSchema
 from ..typing import DataType
 
@@ -66,7 +66,7 @@ class QueryContext:
         topk: int,
         filter: Optional[str] = None,
         include_vector: bool = False,
-        queries: Optional[list[VectorQuery]] = None,
+        queries: Optional[list[Query]] = None,
         output_fields: Optional[list[str]] = None,
         reranker: Optional[ReRanker] = None,
     ):
@@ -142,7 +142,7 @@ class QueryExecutor(ABC):
         return core_vector
 
     def _do_build_query_with_vector(
-        self, ctx: QueryContext, query: VectorQuery, collection: _Collection
+        self, ctx: QueryContext, query: Query, collection: _Collection
     ) -> _VectorQuery:
         core_vector = self._do_build_query_wo_vector(ctx)
         core_vector.field_name = query.field_name
@@ -290,10 +290,43 @@ class MultiVectorQueryExecutor(SingleVectorQueryExecutor):
                 raise ValueError(f"Query field name '{field}' appears more than once")
             seen_fields.add(field)
 
+    def execute(self, ctx: QueryContext, collection: _Collection) -> list[Doc]:
+        # 1. validate query
+        self._do_validate(ctx)
+        # 2. build query vectors
+        query_vectors = self._do_build(ctx, collection)
+        if not query_vectors:
+            raise ValueError("No query to execute")
+
+        # Fast path: use C++ MultiQuery for multi-vector with C++ reranker
+        if len(query_vectors) > 1 and ctx.reranker is not None:
+            cpp_reranker = ctx.reranker._get_object()
+            if cpp_reranker is not None:
+                mvq = _MultiQuery()
+                mvq.queries = [self._to_sub_query(vq) for vq in query_vectors]
+                mvq.topk = ctx.topk
+                if ctx.filter:
+                    mvq.filter = ctx.filter
+                mvq.include_vector = ctx.include_vector
+                if ctx.output_fields:
+                    mvq.output_fields = ctx.output_fields
+                mvq.reranker = cpp_reranker
+                docs = collection.Query(mvq)
+                return [convert_to_py_doc(doc, self._schema) for doc in docs]
+
+        # 3. execute query (fallback to Python path)
+        docs = self._do_execute(query_vectors, collection)
+        # 4. merge and rerank result
+        return self._do_merge_rerank_results(ctx, docs)
+
     def _do_execute(
         self, vectors: list[_VectorQuery], collection: _Collection
     ) -> dict[str, list[Doc]]:
         return super()._do_execute(vectors, collection)
+
+    @staticmethod
+    def _to_sub_query(vq: _VectorQuery) -> _SubQuery:
+        return _SubQuery.from_vector_query(vq)
 
 
 class QueryExecutorFactory:

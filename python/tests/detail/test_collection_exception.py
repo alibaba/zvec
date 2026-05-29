@@ -26,8 +26,8 @@ from zvec import (
     Collection,
     Doc,
     FieldSchema,
+    Query,
     VectorSchema,
-    VectorQuery,
 )
 
 
@@ -182,11 +182,11 @@ class TestCollectionExceptionHandling:
             "Expected exception for missing ids parameter"
         )
 
-    def test_query_missing_vectorquery_field_name(self, test_collection: Collection):
+    def test_query_missing_query_field_name(self, test_collection: Collection):
         with pytest.raises(Exception) as exc_info:
-            result = test_collection.query(vectors=[VectorQuery()])
+            result = test_collection.query([Query()])
         assert exc_info.value is not None, (
-            "Expected exception for missing VectorQuery field_name parameter"
+            "Expected exception for missing Query field_name parameter"
         )
 
     def test_add_column_missing_field_schema(self, test_collection: Collection):

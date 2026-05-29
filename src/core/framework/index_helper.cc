@@ -78,11 +78,11 @@ int IndexHelper::DeserializeFromStorage(IndexStorage *storage,
 
   uint32_t crc = segment->data_crc();
   size_t len = segment->data_size();
-  const void *data = nullptr;
-
-  if (segment->read(0, &data, len) != len) {
+  IndexStorage::MemoryBlock block;
+  if (segment->read(0, block, len) != len) {
     return IndexError_ReadData;
   }
+  const void *data = block.data();
   if (crc != 0u && ailego::Crc32c::Hash(data, len, 0u) != crc) {
     return IndexError_InvalidChecksum;
   }
@@ -110,7 +110,7 @@ class TwoPassIndexHolder : public IndexHolder {
         : holder_(owner), front_iter_(std::move(iter)) {}
 
     //! Destructor
-    virtual ~FirstPassIterator(void) {}
+    ~FirstPassIterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -151,7 +151,7 @@ class TwoPassIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~SecondPassIterator(void) {}
+    ~SecondPassIterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {

@@ -45,7 +45,9 @@ TEST(File, General) {
 }
 
 TEST(File, MakePath) {
-  EXPECT_TRUE(File::MakePath(""));
+  EXPECT_FALSE(File::MakePath(""));
+  std::cout << FileHelper::GetLastErrorString() << std::endl;
+
   EXPECT_TRUE(File::MakePath("."));
   EXPECT_TRUE(File::MakePath(".."));
   EXPECT_TRUE(File::MakePath("../"));
@@ -233,7 +235,7 @@ TEST(File, MemoryMap) {
   const char *file_path = "file_map_testing.tmp";
   size_t file_size = 2u * 1024u * 1024u + 12u * 1024;
   size_t map_offset = MemoryHelper::PageSize() * 16;
-  size_t map_size = file_size - MemoryHelper::PageSize();
+  size_t map_size = file_size - map_offset;
 
   File::Delete(file_path);
   EXPECT_FALSE(File::IsRegular(file_path));

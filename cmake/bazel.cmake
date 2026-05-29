@@ -301,7 +301,7 @@
 ##      )
 ##
 
-cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 include(CMakeParseArguments)
 
 # Using AppleClang instead of Clang (Compiler id)
@@ -314,11 +314,26 @@ enable_testing()
 
 # Add unittest target
 if(NOT TARGET unittest)
-  add_custom_target(
-      unittest
-      COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-      --build-config $<CONFIGURATION>
-    )
+  if(IOS)
+    # iOS: build-only target; tests are run on simulator separately
+    add_custom_target(unittest)
+  else()
+    include(ProcessorCount)
+    ProcessorCount(NPROC)
+    if(NPROC EQUAL 0)
+      set(NPROC 1)
+    endif()
+    math(EXPR PARALLEL_JOBS "${NPROC} - 1")
+    if(PARALLEL_JOBS LESS 1)
+      set(PARALLEL_JOBS 1)
+    endif()
+    add_custom_target(
+        unittest
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        --build-config $<CONFIGURATION>
+        --parallel ${PARALLEL_JOBS}
+      )
+  endif()
 endif()
 
 # Directories of target output
@@ -365,11 +380,24 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
+if(APPLE OR ANDROID)
+    option(CLANG_USE_LIBCXX "Use libc++ instead of libstdc++" ON)
+else()
+    option(CLANG_USE_LIBCXX "Use libc++ instead of libstdc++" OFF)
+endif()
+
+set(CLANG_STDLIB_OPTION "")
+if(CLANG_USE_LIBCXX)
+    set(CLANG_STDLIB_OPTION "-stdlib=libc++")
+else()
+    set(CLANG_STDLIB_OPTION "-stdlib=libstdc++")
+endif()
+
 if(NOT MSVC)
   # Use color in diagnostics
   set(
       _COMPILER_FLAGS
-      "$<$<C_COMPILER_ID:Clang>:-fcolor-diagnostics;-stdlib=libc++>"
+      "$<$<C_COMPILER_ID:Clang>:-fcolor-diagnostics;${CLANG_STDLIB_OPTION}>"
       "$<$<C_COMPILER_ID:AppleClang>:-fcolor-diagnostics>"
       "$<$<C_COMPILER_ID:GNU>:-fdiagnostics-color=always>"
     )
@@ -379,7 +407,14 @@ if(NOT MSVC)
     )
   unset(_COMPILER_FLAGS)
 else()
-  # Replace the default compiling flags
+  option(ZVEC_USE_STATIC_CRT "Use static CRT (/MT) instead of dynamic CRT (/MD), default=ON" ON)
+
+  if(ZVEC_USE_STATIC_CRT)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+  else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+  endif()
+
   set(
       _COMPILER_FLAGS
       CMAKE_CXX_FLAGS
@@ -393,14 +428,21 @@ else()
       CMAKE_C_FLAGS_RELWITHDEBINFO
       CMAKE_C_FLAGS_MINSIZEREL
     )
-  foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
-    string(REPLACE "/MT" "/MD" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
-    string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
-  endforeach()
+  if(ZVEC_USE_STATIC_CRT)
+    foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
+      string(REPLACE "/MD" "/MT" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+      string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+    endforeach()
+  else()
+    foreach(COMPILER_FLAG ${_COMPILER_FLAGS})
+      string(REPLACE "/MT" "/MD" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+      string(REGEX REPLACE "/W[0-9]" "" ${COMPILER_FLAG} "${${COMPILER_FLAG}}")
+    endforeach()
+  endif()
   unset(_COMPILER_FLAGS)
+
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-  # Build shared library as default
-  set(BUILD_SHARED_LIBS ON)
+  set(BUILD_SHARED_LIBS OFF)
 endif()
 
 set(CMAKE_C_FLAGS_ASAN ${CMAKE_C_FLAGS_DEBUG})
@@ -431,6 +473,7 @@ set(
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:Clang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:AppleClang>:--coverage>>"
     "$<$<CONFIG:COVERAGE>:$<$<CXX_COMPILER_ID:GNU>:--coverage>>"
+    "$<$<CONFIG:COVERAGE>:-fprofile-update=atomic>"
   )
 
 # C/C++ strict compile flags
@@ -460,7 +503,7 @@ endif()
 # C/C++ strict link flags
 set(
     BAZEL_CC_STRICT_LINK_FLAGS
-    "$<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>"
+    "$<$<CXX_COMPILER_ID:Clang>:${CLANG_STDLIB_OPTION}>"
     ${BAZEL_CC_ASAN_COMPILE_FLAGS}
     ${BAZEL_CC_COVERAGE_COMPILE_FLAGS}
   )
@@ -479,7 +522,7 @@ set(
 # C/C++ unstrict link flags
 set(
     BAZEL_CC_UNSTRICT_LINK_FLAGS
-    "$<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>"
+    "$<$<CXX_COMPILER_ID:Clang>:${CLANG_STDLIB_OPTION}>"
     ${BAZEL_CC_ASAN_COMPILE_FLAGS}
     ${BAZEL_CC_COVERAGE_COMPILE_FLAGS}
   )
@@ -557,9 +600,16 @@ macro(_add_library _NAME _OPTION)
   add_library(
       ${_NAME}_static STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
     )
-  add_library(
-      ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
-    )
+  if(IOS)
+    # iOS: create the main target as static too (no shared libs on iOS)
+    add_library(
+        ${_NAME} STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
+  else()
+    add_library(
+        ${_NAME} SHARED ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+      )
+  endif()
   add_dependencies(${_NAME} ${_NAME}_static)
   if(NOT MSVC)
     set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
@@ -572,14 +622,19 @@ function(_targets_link_dependencies _NAME)
     if(TARGET ${LIB})
       list(APPEND LIBS_DEPS ${LIB})
       list(
-          APPEND LIBS_INCS 
+          APPEND LIBS_INCS
           "$<TARGET_PROPERTY:${LIB},INTERFACE_INCLUDE_DIRECTORIES>"
+        )
+      list(
+          APPEND LIBS_SYSTEM_INCS
+          "$<TARGET_PROPERTY:${LIB},INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>"
         )
     endif()
   endforeach()
 
   if(LIBS_DEPS)
     add_dependencies(${_NAME} ${LIBS_DEPS})
+    target_include_directories(${_NAME} SYSTEM PRIVATE "${LIBS_SYSTEM_INCS}")
     target_include_directories(${_NAME} PRIVATE "${LIBS_INCS}")
   endif()
 endfunction()
@@ -590,45 +645,50 @@ function(_target_link_libraries _NAME)
     if(NOT _COLLECT_ALWAYS_LINK_VISITED)
       set(_COLLECT_ALWAYS_LINK_VISITED "" PARENT_SCOPE)
     endif()
-    
+
     set(LOCAL_RESULT "")
     foreach(LIB ${LIB_LIST})
       if(NOT TARGET ${LIB})
         continue()
       endif()
-      
+
       list(FIND _COLLECT_ALWAYS_LINK_VISITED ${LIB} ALREADY_VISITED)
       if(NOT ALREADY_VISITED EQUAL -1)
         continue()
       endif()
-      
+
       list(APPEND _COLLECT_ALWAYS_LINK_VISITED ${LIB})
       set(_COLLECT_ALWAYS_LINK_VISITED "${_COLLECT_ALWAYS_LINK_VISITED}" PARENT_SCOPE)
-      
+
       get_target_property(ALWAYS_LINK ${LIB} ALWAYS_LINK)
       if(ALWAYS_LINK)
         list(APPEND LOCAL_RESULT ${LIB})
+      elseif(MSVC AND TARGET ${LIB}_static)
+        get_target_property(_SIBLING_AL ${LIB}_static ALWAYS_LINK)
+        if(_SIBLING_AL)
+          list(APPEND LOCAL_RESULT ${LIB}_static)
+        endif()
       endif()
-      
+
       get_target_property(DEP_LIBS ${LIB} INTERFACE_LINK_LIBRARIES)
       if(DEP_LIBS)
         _collect_always_link_libs("${DEP_LIBS}" DEP_ALWAYS_LINK_LIBS)
         list(APPEND LOCAL_RESULT ${DEP_ALWAYS_LINK_LIBS})
       endif()
-      
+
       get_target_property(LINK_LIBS ${LIB} LINK_LIBRARIES)
       if(LINK_LIBS)
         _collect_always_link_libs("${LINK_LIBS}" LINK_ALWAYS_LINK_LIBS)
         list(APPEND LOCAL_RESULT ${LINK_ALWAYS_LINK_LIBS})
       endif()
     endforeach()
-    
+
     list(REMOVE_DUPLICATES LOCAL_RESULT)
     set(${RESULT_VAR} "${LOCAL_RESULT}" PARENT_SCOPE)
   endfunction()
-  
+
   _collect_always_link_libs("${ARGN}" ALL_ALWAYS_LINK_LIBS)
-  
+
   set(ALL_LIBS_TO_PROCESS ${ARGN})
   foreach(ALWAYS_LIB ${ALL_ALWAYS_LINK_LIBS})
     list(FIND ARGN ${ALWAYS_LIB} FOUND_INDEX)
@@ -636,9 +696,33 @@ function(_target_link_libraries _NAME)
       list(APPEND ALL_LIBS_TO_PROCESS ${ALWAYS_LIB})
     endif()
   endforeach()
-  
+
   list(REMOVE_DUPLICATES ALL_LIBS_TO_PROCESS)
-  
+
+  # On MSVC, each DLL has its own copy of template statics (e.g. Factory
+  # singletons), so registrations inside a DLL are invisible to the exe.
+  # Substitute SHARED libs with their ALWAYS_LINK _static counterparts and
+  # use /WHOLEARCHIVE so all registration code lives in the same module.
+  if(MSVC)
+    set(_SUBSTITUTED_LIBS "")
+    foreach(LIB ${ALL_LIBS_TO_PROCESS})
+      if(TARGET ${LIB} AND TARGET ${LIB}_static)
+        get_target_property(_LIB_TYPE ${LIB} TYPE)
+        get_target_property(_STATIC_AL ${LIB}_static ALWAYS_LINK)
+        if("${_LIB_TYPE}" STREQUAL "SHARED_LIBRARY" AND _STATIC_AL)
+          list(APPEND _SUBSTITUTED_LIBS ${LIB}_static)
+          list(APPEND ALL_ALWAYS_LINK_LIBS ${LIB}_static)
+          continue()
+        endif()
+      endif()
+      list(APPEND _SUBSTITUTED_LIBS ${LIB})
+    endforeach()
+    set(ALL_LIBS_TO_PROCESS ${_SUBSTITUTED_LIBS})
+    if(ALL_ALWAYS_LINK_LIBS)
+      list(REMOVE_DUPLICATES ALL_ALWAYS_LINK_LIBS)
+    endif()
+  endif()
+
   foreach(LIB ${ALL_LIBS_TO_PROCESS})
     if(NOT TARGET ${LIB})
       list(APPEND LINK_LIBS ${LIB})
@@ -652,14 +736,14 @@ function(_target_link_libraries _NAME)
     endif()
 
     if(NOT MSVC)
-      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+      if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
         list(APPEND LINK_LIBS -Wl,--whole-archive ${LIB} -Wl,--no-whole-archive)
       else()
         list(APPEND LINK_LIBS -Wl,-force_load ${LIB})
       endif()
     else()
-      # Microsoft Visual C++
-      list(APPEND LINK_LIBS /WHOLEARCHIVE:$<TARGET_FILE:${LIB}>)
+      # TODO(windows): revert maybe
+      list(APPEND MSVC_WHOLEARCHIVE_OPTS /WHOLEARCHIVE:$<TARGET_FILE:${LIB}>)
       get_target_property(OTHER_LINK_LIBS ${LIB} INTERFACE_LINK_LIBRARIES)
       if(OTHER_LINK_LIBS)
         foreach(OTHER_LIB ${OTHER_LINK_LIBS})
@@ -678,6 +762,9 @@ function(_target_link_libraries _NAME)
   endforeach()
 
   target_link_libraries(${_NAME} ${LINK_LIBS})
+  if(MSVC_WHOLEARCHIVE_OPTS)
+    target_link_options(${_NAME} PRIVATE ${MSVC_WHOLEARCHIVE_OPTS})
+  endif()
   if(LIBS_DEPS)
     add_dependencies(${_NAME} ${LIBS_DEPS})
     target_include_directories(${_NAME} PRIVATE "${LIBS_INCS}")
@@ -952,6 +1039,13 @@ function(cc_binary)
   endif()
   add_executable(${CC_ARGS_NAME} ${CC_ARGS_SRCS})
 
+  # iOS: set bundle properties for simulator/device installation
+  if(IOS)
+    set_target_properties(${CC_ARGS_NAME} PROPERTIES
+      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+    )
+  endif()
+
   if(CC_ARGS_PACKED)
     install(
         TARGETS ${CC_ARGS_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -992,7 +1086,32 @@ function(cc_test)
     string(REPLACE "-" "_" MACRO_PREFIX "${CC_ARGS_NAME}")
     list(APPEND CC_ARGS_DEFS ${MACRO_PREFIX}_VERSION="${CC_ARGS_VERSION}")
   endif()
+  # iOS: add sandbox helper to redirect CWD to writable directory
+  if(IOS)
+    list(APPEND CC_ARGS_SRCS "${PROJECT_ROOT_DIR}/tests/ios_test_sandbox.cc")
+    # Arrow's iOS code references CoreFoundation symbols; link Apple frameworks
+    list(APPEND CC_ARGS_LDFLAGS
+      -framework CoreFoundation
+      -framework CoreGraphics
+      -framework CoreData
+      -framework CoreText
+      -framework Security
+      -framework Foundation
+      -Wl,-U,_MallocExtension_ReleaseFreeMemory
+      -Wl,-U,_ProfilerStart
+      -Wl,-U,_ProfilerStop
+      -Wl,-U,_RegisterThriftProtocol
+    )
+  endif()
+
   add_executable(${CC_ARGS_NAME} EXCLUDE_FROM_ALL ${CC_ARGS_SRCS})
+
+  # iOS: set bundle properties for simulator/device installation
+  if(IOS)
+    set_target_properties(${CC_ARGS_NAME} PROPERTIES
+      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+    )
+  endif()
 
   _cc_target_properties(
       NAME "${CC_ARGS_NAME}"
@@ -1006,16 +1125,18 @@ function(cc_test)
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
     )
   add_dependencies(unittest ${CC_ARGS_NAME})
+  set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CC_ARGS_NAME}")
+  file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(
       unittest.${CC_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
       DEPENDS ${CC_ARGS_NAME}
     )
   add_test(
       NAME ${CC_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
     )
 endfunction()
 
@@ -1170,7 +1291,18 @@ function(_find_gtest)
   else()
     # Find gtest using target names
     set(FIND_GTEST_INCS "" CACHE STRING "GTest includes")
-    set(FIND_GTEST_LIBS "gtest;gtest_main" CACHE STRING "GTest libraries")
+    if(ANDROID)
+      # On Android, use a custom main that calls _exit() to skip static
+      # destructors and avoid glog/gflags teardown crashes.
+      if(NOT TARGET zvec_gtest_main)
+        add_library(zvec_gtest_main STATIC
+          ${PROJECT_ROOT_DIR}/tests/android_gtest_main.cc)
+        target_link_libraries(zvec_gtest_main PUBLIC gtest)
+      endif()
+      set(FIND_GTEST_LIBS "gtest;zvec_gtest_main" CACHE STRING "GTest libraries")
+    else()
+      set(FIND_GTEST_LIBS "gtest;gtest_main" CACHE STRING "GTest libraries")
+    endif()
   endif()
 endfunction()
 
@@ -1217,7 +1349,18 @@ function(_find_gmock)
   else()
     # Find gmock using target names
     set(FIND_GMOCK_INCS "" CACHE STRING "GMock includes")
-    set(FIND_GMOCK_LIBS "gmock;gmock_main" CACHE STRING "GMock libraries")
+    if(ANDROID)
+      # On Android, use a custom main that calls _exit() to skip static
+      # destructors and avoid glog/gflags teardown crashes.
+      if(NOT TARGET zvec_gmock_main)
+        add_library(zvec_gmock_main STATIC
+          ${PROJECT_ROOT_DIR}/tests/android_gmock_main.cc)
+        target_link_libraries(zvec_gmock_main PUBLIC gmock gtest)
+      endif()
+      set(FIND_GMOCK_LIBS "gmock;zvec_gmock_main" CACHE STRING "GMock libraries")
+    else()
+      set(FIND_GMOCK_LIBS "gmock;gmock_main" CACHE STRING "GMock libraries")
+    endif()
   endif()
 endfunction()
 
@@ -1313,6 +1456,9 @@ function(cc_proto_library)
 
   _find_protobuf("${CC_ARGS_PROTOBUF_VERSION}")
   set(CC_PROTOBUF_PROTOC ${CC_PROTOBUF_PROTOC_${CC_ARGS_PROTOBUF_VERSION}})
+  if(DEFINED GLOBAL_CC_PROTOBUF_PROTOC)
+    set(CC_PROTOBUF_PROTOC ${GLOBAL_CC_PROTOBUF_PROTOC})
+  endif()
   set(CC_PROTOBUF_INCS ${CC_PROTOBUF_INCS_${CC_ARGS_PROTOBUF_VERSION}})
   set(CC_PROTOBUF_LIBS ${CC_PROTOBUF_LIBS_${CC_ARGS_PROTOBUF_VERSION}})
 
@@ -1796,16 +1942,18 @@ function(cuda_test)
       "${CUDA_ARGS_UNPARSED_ARGUMENTS}"
     )
   add_dependencies(unittest ${CUDA_ARGS_NAME})
+  set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CUDA_ARGS_NAME}")
+  file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(
       unittest.${CUDA_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CUDA_ARGS_NAME}> "${CUDA_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
       DEPENDS ${CUDA_ARGS_NAME}
     )
   add_test(
       NAME ${CUDA_ARGS_NAME}
       COMMAND $<TARGET_FILE:${CUDA_ARGS_NAME}> "${CUDA_ARGS_ARGS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
     )
 endfunction()
 
@@ -2071,7 +2219,7 @@ function(_fetch_content)
 
   set(
       CMAKELISTS_CONTENT
-      "cmake_minimum_required(VERSION 3.1)\n"
+      "cmake_minimum_required(VERSION 3.13)\n"
       "project(${DL_ARGS_NAME})\n"
       "include(ExternalProject)\n"
       "ExternalProject_Add(\n"

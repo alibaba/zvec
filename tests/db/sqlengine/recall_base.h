@@ -153,7 +153,7 @@ inline Doc CreateDoc(const uint64_t doc_id) {
 inline Status InsertDoc(const Segment::Ptr &segment,
                         const uint64_t start_doc_id,
                         const uint64_t end_doc_id) {
-  srand(time(NULL));
+  srand(time(nullptr));
   long long create_total = 0;
   long long insert_total = 0;
   for (auto doc_id = start_doc_id; doc_id < end_doc_id; doc_id++) {
@@ -253,6 +253,7 @@ inline Segment::Ptr RecallTest::create_segment() {
   SegmentOptions options;
   options.read_only_ = false;
   options.enable_mmap_ = true;
+  options.max_buffer_size_ = 256 * 1024;
 
   auto result =
       Segment::CreateAndOpen(GetPath(), *collection_schema_, 0, 0, id_map,

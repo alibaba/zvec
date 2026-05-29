@@ -17,6 +17,7 @@
 #include <iostream>
 #include <vector>
 #include <gtest/gtest.h>
+#include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -35,15 +36,15 @@ static inline size_t RandomDimension(void) {
 static size_t DIMENSION = RandomDimension();
 class FlatBuilderTest : public testing::Test {
  protected:
-  void SetUp(void);
-  void TearDown(void);
+  void SetUp(void) override;
+  void TearDown(void) override;
 
  public:
   static std::string dir_;
   static IndexMeta meta_;
 };
 
-std::string FlatBuilderTest ::dir_("flat_builder_test");
+std::string FlatBuilderTest ::dir_("flat_builder_test/");
 IndexMeta FlatBuilderTest::meta_;
 
 void FlatBuilderTest::SetUp(void) {
@@ -54,9 +55,7 @@ void FlatBuilderTest::SetUp(void) {
 
 //! self-check column-major and row-major search.
 void FlatBuilderTest::TearDown(void) {
-  char cmdBuf[100];
-  snprintf(cmdBuf, 100, "rm -rf %s", dir_.c_str());
-  system(cmdBuf);
+  zvec::test_util::RemoveTestPath(dir_);
 }
 
 void build_process(IndexBuilder::Pointer &builder,
@@ -68,7 +67,7 @@ void build_process(IndexBuilder::Pointer &builder,
   auto dumper = IndexFactory::CreateDumper("FileDumper");
   ASSERT_NE(dumper, nullptr);
 
-  std::string path = FlatBuilderTest::dir_ + "/TestGeneral";
+  std::string path = FlatBuilderTest::dir_ + "TestGeneral";
   ASSERT_EQ(0, dumper->create(path));
   ASSERT_EQ(0, builder->dump(dumper));
   ASSERT_EQ(0, dumper->close());
@@ -119,18 +118,6 @@ TEST_F(FlatBuilderTest, TestInt8WithRandomDimension) {
   ASSERT_EQ(0, builder->init(meta_, params));
 }
 
-TEST_F(FlatBuilderTest, TestBinaryInvalidColumnMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim + 2);
-  meta_.set_major_order(IndexMeta::MO_COLUMN);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
-}
-
 TEST_F(FlatBuilderTest, TestBuildWithRowMajor) {
   meta_.set_metric("SquaredEuclidean", 0, Params());
   meta_.set_major_order(IndexMeta::MO_ROW);
@@ -138,7 +125,7 @@ TEST_F(FlatBuilderTest, TestBuildWithRowMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -166,7 +153,7 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithRowMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(DIMENSION);
@@ -186,35 +173,6 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithRowMajor) {
   EXPECT_EQ(0, ret);
 }
 
-TEST_F(FlatBuilderTest, TestBinaryBuildWithRowMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_ROW);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-
-  int ret = builder->train(holder);
-  EXPECT_EQ(0, ret);
-
-  ret = builder->build(holder);
-  EXPECT_EQ(0, ret);
-}
-
 TEST_F(FlatBuilderTest, TestBuildWithColumnMajor) {
   meta_.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta_.set_metric("SquaredEuclidean", 0, Params());
@@ -223,7 +181,7 @@ TEST_F(FlatBuilderTest, TestBuildWithColumnMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -252,7 +210,7 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithColumnMajor) {
   ASSERT_NE(builder, nullptr);
   Params params;
   ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder = std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(dim);
   size_t doc_cnt = 128UL;
@@ -271,35 +229,6 @@ TEST_F(FlatBuilderTest, TestInt8BuildWithColumnMajor) {
   EXPECT_EQ(0, ret);
 }
 
-TEST_F(FlatBuilderTest, TestBinaryBuildWithColumnMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_COLUMN);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  ASSERT_EQ(0, builder->init(meta_, params));
-  std::string path = dir_ + "/TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-
-  int ret = builder->train(holder);
-  EXPECT_EQ(0, ret);
-
-  ret = builder->build(holder);
-  EXPECT_EQ(0, ret);
-}
-
 TEST_F(FlatBuilderTest, TestWithRowMajor) {
   meta_.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta_.set_metric("SquaredEuclidean", 0, Params());
@@ -307,7 +236,7 @@ TEST_F(FlatBuilderTest, TestWithRowMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -332,7 +261,7 @@ TEST_F(FlatBuilderTest, TestInt8WithRowMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(DIMENSION);
@@ -350,32 +279,6 @@ TEST_F(FlatBuilderTest, TestInt8WithRowMajor) {
   ASSERT_EQ(0, builder->cleanup());
 }
 
-TEST_F(FlatBuilderTest, TestBinaryWithRowMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_ROW);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  std::string path = dir_ + "/TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-  build_process(builder, holder);
-
-  // cleanup and rebuild
-  ASSERT_EQ(0, builder->cleanup());
-}
-
 TEST_F(FlatBuilderTest, TestWithColumnMajor) {
   meta_.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta_.set_metric("SquaredEuclidean", 0, Params());
@@ -383,7 +286,7 @@ TEST_F(FlatBuilderTest, TestWithColumnMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder =
       std::make_shared<OnePassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
@@ -409,7 +312,7 @@ TEST_F(FlatBuilderTest, TestInt8WithColumnMajor) {
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
   ASSERT_NE(builder, nullptr);
   Params params;
-  std::string path = dir_ + "/TestGeneral";
+  std::string path = dir_ + "TestGeneral";
 
   auto holder = std::make_shared<OnePassIndexHolder<IndexMeta::DT_INT8>>(dim);
   size_t doc_cnt = 128UL;
@@ -417,32 +320,6 @@ TEST_F(FlatBuilderTest, TestInt8WithColumnMajor) {
     NumericalVector<int8_t> vec(dim);
     for (size_t j = 0; j < dim; ++j) {
       vec[j] = (int8_t)(i % 128);
-    }
-    ASSERT_TRUE(holder->emplace(i, vec));
-  }
-  build_process(builder, holder);
-
-  // cleanup and rebuild
-  ASSERT_EQ(0, builder->cleanup());
-}
-
-TEST_F(FlatBuilderTest, TestBinaryWithColumnMajor) {
-  size_t dim = (DIMENSION + 31) / 32 * 32;
-  meta_.set_metric("Hamming", 0, Params());
-  meta_.set_meta(IndexMeta::DT_BINARY32, dim);
-  meta_.set_major_order(IndexMeta::MO_COLUMN);
-  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("FlatBuilder");
-  ASSERT_NE(builder, nullptr);
-  Params params;
-  std::string path = dir_ + "/TestGeneral";
-
-  auto holder =
-      std::make_shared<OnePassIndexHolder<IndexMeta::DT_BINARY32>>(dim);
-  size_t doc_cnt = 128UL;
-  for (size_t i = 0; i < doc_cnt; i++) {
-    BinaryVector<uint32_t> vec(dim);
-    for (size_t j = 0; j < dim && j < i; ++j) {
-      vec.set(j);
     }
     ASSERT_TRUE(holder->emplace(i, vec));
   }

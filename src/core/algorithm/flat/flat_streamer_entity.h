@@ -389,7 +389,6 @@ class FlatStreamerEntity {
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
-  StreamerLinearMeta meta_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};
   std::unordered_map<uint64_t, VectorLocation> key_info_map_{};
@@ -401,6 +400,7 @@ class FlatStreamerEntity {
   uint32_t vec_unit_size_{0};
   uint32_t vec_cols_{0};
   mutable std::string vec_buf_{};
+  StreamerLinearMeta meta_{};
 };
 
 }  // namespace core

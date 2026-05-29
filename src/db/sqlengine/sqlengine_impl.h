@@ -18,7 +18,7 @@
 #include <memory>
 #include <vector>
 #include <arrow/api.h>
-#include <zvec/db/doc.h>
+#include <zvec/db/query.h>
 #include <zvec/db/schema.h>
 #include "analyzer/query_info.h"
 #include "common/group_by.h"

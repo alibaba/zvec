@@ -16,6 +16,9 @@
 
 #include <memory>
 #include <zvec/core/interface/index_param.h>
+#include "zvec/core/framework/index_provider.h"
+#include "zvec/core/framework/index_reformer.h"
+#include "zvec/core/interface/index.h"
 
 namespace zvec::core_interface {
 
@@ -30,7 +33,7 @@ template <typename ActualIndexParamBuilderType, typename ActualIndexParamType>
 class BaseIndexParamBuilder {  //  : public
                                //  std::enable_shared_from_this<Resource>
  public:
-  BaseIndexParamBuilder() : param(std::make_shared<ActualIndexParamType>()) {};
+  BaseIndexParamBuilder() : param(std::make_shared<ActualIndexParamType>()) {}
   virtual ~BaseIndexParamBuilder() = default;
 
   ActualIndexParamBuilderType &WithVersion(int version) {
@@ -142,8 +145,86 @@ class HNSWIndexParamBuilder
     param->ef_construction = ef_construction;
     return *this;
   }
+  HNSWIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
+    param->use_contiguous_memory = use_contiguous_memory;
+    return *this;
+  }
 
   std::shared_ptr<HNSWIndexParam> Build() override {
+    return param;
+  }
+};
+
+class HNSWRabitqIndexParamBuilder
+    : public BaseIndexParamBuilder<HNSWRabitqIndexParamBuilder,
+                                   HNSWRabitqIndexParam> {
+ public:
+  HNSWRabitqIndexParamBuilder() = default;
+  HNSWRabitqIndexParamBuilder &WithM(int m) {
+    param->m = m;
+    return *this;
+  }
+  HNSWRabitqIndexParamBuilder &WithEFConstruction(int ef_construction) {
+    param->ef_construction = ef_construction;
+    return *this;
+  }
+  HNSWRabitqIndexParamBuilder &WithTotalBits(int total_bits) {
+    param->total_bits = total_bits;
+    return *this;
+  }
+  HNSWRabitqIndexParamBuilder &WithNumClusters(int num_clusters) {
+    param->num_clusters = num_clusters;
+    return *this;
+  }
+  HNSWRabitqIndexParamBuilder &WithSampleCount(int sample_count) {
+    param->sample_count = sample_count;
+    return *this;
+  }
+  HNSWRabitqIndexParamBuilder &WithReformer(
+      core::IndexReformer::Pointer reformer) {
+    param->reformer = std::move(reformer);
+    return *this;
+  }
+  HNSWRabitqIndexParamBuilder &WithProvider(
+      core::IndexProvider::Pointer provider) {
+    param->provider = std::move(provider);
+    return *this;
+  }
+  std::shared_ptr<HNSWRabitqIndexParam> Build() override {
+    return param;
+  }
+};
+
+class VamanaIndexParamBuilder
+    : public BaseIndexParamBuilder<VamanaIndexParamBuilder, VamanaIndexParam> {
+ public:
+  VamanaIndexParamBuilder() = default;
+  VamanaIndexParamBuilder &WithMaxDegree(int max_degree) {
+    param->max_degree = max_degree;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithSearchListSize(int search_list_size) {
+    param->search_list_size = search_list_size;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithAlpha(float alpha) {
+    param->alpha = alpha;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithMaxOcclusionSize(int max_occlusion_size) {
+    param->max_occlusion_size = max_occlusion_size;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithSaturateGraph(bool saturate_graph) {
+    param->saturate_graph = saturate_graph;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
+    param->use_contiguous_memory = use_contiguous_memory;
+    return *this;
+  }
+
+  std::shared_ptr<VamanaIndexParam> Build() override {
     return param;
   }
 };
@@ -288,6 +369,36 @@ class IVFQueryParamBuilder
 
   IVFQueryParam::Pointer build() {
     return std::make_shared<IVFQueryParam>(std::move(m_param));
+  }
+};
+
+// HNSW-Rabitq builder (adds ef_search field)
+class HNSWRabitqQueryParamBuilder
+    : public BaseIndexQueryParamBuilder<HNSWRabitqQueryParam,
+                                        HNSWRabitqQueryParamBuilder> {
+ public:
+  HNSWRabitqQueryParamBuilder &with_ef_search(int ef_search) {
+    m_param.ef_search = ef_search;
+    return *this;
+  }
+
+  HNSWRabitqQueryParam::Pointer build() {
+    return std::make_shared<HNSWRabitqQueryParam>(std::move(m_param));
+  }
+};
+
+// Vamana builder (adds ef_search field)
+class VamanaQueryParamBuilder
+    : public BaseIndexQueryParamBuilder<VamanaQueryParam,
+                                        VamanaQueryParamBuilder> {
+ public:
+  VamanaQueryParamBuilder &with_ef_search(int ef_search) {
+    m_param.ef_search = ef_search;
+    return *this;
+  }
+
+  VamanaQueryParam::Pointer build() {
+    return std::make_shared<VamanaQueryParam>(std::move(m_param));
   }
 };
 

@@ -23,6 +23,7 @@
 #include <zvec/core/framework/index_filter.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/interface/constants.h>
+#include "zvec/core/framework/index_framework.h"
 
 namespace zvec::core_interface {
 #define MAX_DIMENSION 65536
@@ -61,6 +62,8 @@ enum class IndexType {
   kFlat,
   kIVF,  // it's actual a two-layer index
   kHNSW,
+  kHNSWRabitq,
+  kVamana,
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };
@@ -80,7 +83,8 @@ enum class QuantizerType {
   kAQ,
   kFP16,
   kInt8,
-  kInt4
+  kInt4,
+  kRabitq,
 };
 
 struct SerializableBase {
@@ -183,6 +187,16 @@ struct HNSWQueryParam : public BaseIndexQueryParam {
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<HNSWQueryParam>(*this);
+  }
+};
+
+struct HNSWRabitqQueryParam : public BaseIndexQueryParam {
+  using Pointer = std::shared_ptr<HNSWRabitqQueryParam>;
+
+  uint32_t ef_search = kDefaultHnswEfSearch;
+
+  BaseIndexQueryParam::Pointer Clone() const override {
+    return std::make_shared<HNSWRabitqQueryParam>(*this);
   }
 };
 
@@ -296,6 +310,7 @@ struct HNSWIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<HNSWIndexParam>;
   int m = kDefaultHnswNeighborCnt;
   int ef_construction = kDefaultHnswEfConstruction;
+  bool use_contiguous_memory = false;
 
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}
@@ -307,6 +322,79 @@ struct HNSWIndexParam : public BaseIndexParam {
 
   HNSWIndexParam(MetricType metric, int dim, int m, int ef_construction)
       : BaseIndexParam(IndexType::kHNSW, metric, dim),
+        m(m),
+        ef_construction(ef_construction) {}
+
+ protected:
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+};
+
+struct VamanaIndexParam : public BaseIndexParam {
+  using Pointer = std::shared_ptr<VamanaIndexParam>;
+  int max_degree = kDefaultVamanaMaxDegree;
+  int search_list_size = kDefaultVamanaSearchListSize;
+  float alpha = kDefaultVamanaAlpha;
+  int max_occlusion_size = kDefaultVamanaMaxOcclusionSize;
+  bool saturate_graph = kDefaultVamanaSaturateGraph;
+  bool use_contiguous_memory = false;
+
+  VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
+
+  VamanaIndexParam(int max_degree, int search_list_size, float alpha)
+      : BaseIndexParam(IndexType::kVamana),
+        max_degree(max_degree),
+        search_list_size(search_list_size),
+        alpha(alpha) {}
+
+  VamanaIndexParam(MetricType metric, int dim, int max_degree,
+                   int search_list_size, float alpha)
+      : BaseIndexParam(IndexType::kVamana, metric, dim),
+        max_degree(max_degree),
+        search_list_size(search_list_size),
+        alpha(alpha) {}
+
+ protected:
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+};
+
+struct VamanaQueryParam : public BaseIndexQueryParam {
+  using Pointer = std::shared_ptr<VamanaQueryParam>;
+
+  uint32_t ef_search = kDefaultVamanaEfSearch;
+
+  BaseIndexQueryParam::Pointer Clone() const override {
+    return std::make_shared<VamanaQueryParam>(*this);
+  }
+};
+
+struct HNSWRabitqIndexParam : public BaseIndexParam {
+  using Pointer = std::shared_ptr<HNSWRabitqIndexParam>;
+
+  // HNSW parameters
+  int m = kDefaultHnswNeighborCnt;
+  int ef_construction = kDefaultHnswEfConstruction;
+
+  // Rabitq parameters
+  int total_bits = kDefaultRabitqTotalBits;
+  int num_clusters = kDefaultRabitqNumClusters;
+  int sample_count = 0;
+  core::IndexProvider::Pointer provider = nullptr;
+  core::IndexReformer::Pointer reformer = nullptr;
+
+  // Constructors with delegation
+  HNSWRabitqIndexParam() : BaseIndexParam(IndexType::kHNSWRabitq) {}
+
+  HNSWRabitqIndexParam(int m, int ef_construction)
+      : BaseIndexParam(IndexType::kHNSWRabitq),
+        m(m),
+        ef_construction(ef_construction) {}
+
+  HNSWRabitqIndexParam(MetricType metric, int dim, int m, int ef_construction)
+      : BaseIndexParam(IndexType::kHNSWRabitq, metric, dim),
         m(m),
         ef_construction(ef_construction) {}
 

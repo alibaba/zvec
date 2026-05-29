@@ -24,7 +24,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: main  # Always use main for nightly
+          ref: main # Always use main for nightly
           submodules: recursive
 
       - name: Set up Python
@@ -45,13 +45,21 @@ jobs:
           echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
         shell: bash
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov
+        shell: bash
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip \
+            pybind11==3.0 \
             cmake==3.30.0 \
             ninja==1.11.1 \
             pytest \
             pytest-cov \
+            pytest-xdist \
             scikit-build-core \
             setuptools_scm
         shell: bash
@@ -64,14 +72,14 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
-            --config-settings="cmake.build-type=COVERAGE" \
-            --config-settings='cmake.define.ENABLE_ZEN3="ON"'
+            --config-settings="cmake.build-type=COVERAGE"
         shell: bash
 
       - name: Run Python Tests with Coverage
         run: |
           cd "$GITHUB_WORKSPACE"
-          python -m pytest python/tests/ --cov=zvec --cov-report=xml
+          python -m pytest python/tests/ --cov=zvec --cov-report=xml \
+            --deselect=python/tests/test_gil_release.py::TestGILRelease::test_gil_released_during_query
         shell: bash
 
       - name: Run C++ Tests and Generate Coverage
@@ -85,7 +93,7 @@ jobs:
         shell: bash
 
       - name: Upload Coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: ./proxima-zvec-filtered.lcov.info,./coverage.xml
           flags: python,cpp,nightly

@@ -71,6 +71,7 @@ static const std::string MMAPFILE_STORAGE_FORCE_FLUSH =
     "proxima.mmap_file.storage.force_flush";
 static const std::string MMAPFILE_STORAGE_SEGMENT_META_CAPACITY =
     "proxima.mmap_file.storage.segment_meta_capacity";
+
 //! MipsConverter
 static const std::string MIPS_CONVERTER_M_VALUE =
     "proxima.mips.converter.m_value";

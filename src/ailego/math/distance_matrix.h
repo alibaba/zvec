@@ -16,6 +16,5 @@
 
 #include "cosine_distance_matrix.h"
 #include "euclidean_distance_matrix.h"
-#include "hamming_distance_matrix.h"
 #include "inner_product_matrix.h"
 #include "mips_euclidean_distance_matrix.h"

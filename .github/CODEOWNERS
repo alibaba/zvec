@@ -1,0 +1,38 @@
+# CODEOWNERS - Auto-assign reviewers based on file paths
+# Documentation: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: feihongxu0824 reviews everything not covered below
+*                       @feihongxu0824
+
+# .github directory
+/.github/               @Cuiyus
+/python/                @Cuiyus
+
+# cmake, examples, scripts
+/cmake/                 @egolearner
+/examples/              @egolearner
+/scripts/               @egolearner
+
+# src/db, tests
+/src/db/                @zhourrr
+/tests/db               @zhourrr
+
+# src/core, src/turbo
+/src/core/              @richyreachy
+/src/turbo/             @richyreachy
+
+# src/ailego
+/src/ailego/            @iaojnh
+/tests/ailego           @iaojnh
+/tests/core             @iaojnh
+
+# tools
+/tools/                 @JalinWang
+
+# src/binding
+/src/binding/           @Cuiyus
+
+# src/include, thirdparty, .gitmodules
+/src/include/           @chinaux
+/thirdparty/            @chinaux
+.gitmodules             @chinaux

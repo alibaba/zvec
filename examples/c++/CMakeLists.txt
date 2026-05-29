@@ -2,125 +2,77 @@ cmake_minimum_required(VERSION 3.13)
 cmake_policy(SET CMP0077 NEW)
 project(zvec-example-c++)
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Enable compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# --- Paths to Zvec and dependencies ---
+# --- Paths to Zvec ---
+# Allow custom host build directory, default to "build"
+if(NOT DEFINED HOST_BUILD_DIR)
+    set(HOST_BUILD_DIR "build")
+endif()
+
 set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
-set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../build/lib)
-set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../build/external/usr/local/lib)
+set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
 
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR})
-link_directories(${ZVEC_LIB_DIR} ${ZVEC_DEPENDENCY_LIB_DIR})
+link_directories(${ZVEC_LIB_DIR})
 
-# --- Determine debug/release library names ---
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(GLOG_LIB glogd)
-    set(GFLAGS_LIB gflags_nothreads_debug)
-    set(PROTOBUF_LIB protobufd)
-else()
-    set(GLOG_LIB glog)
-    set(GFLAGS_LIB gflags_nothreads)
-    set(PROTOBUF_LIB protobuf)
+# Support multi-config builds (MSVC puts libs in Debug/Release subdirectories)
+if(CMAKE_BUILD_TYPE)
+    link_directories(${ZVEC_LIB_DIR}/${CMAKE_BUILD_TYPE})
+endif()
+if(WIN32)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# --- Dependency groups ---
 find_package(Threads REQUIRED)
 
-set(zvec_ailego_deps
-    arrow
-    parquet
-    arrow_bundled_dependencies
-    ${CMAKE_THREAD_LIBS_INIT}
-    ${CMAKE_DL_LIBS}
+# --- Create INTERFACE target for libzvec (all-in-one C++ shared library) ---
+# libzvec.so/.dylib/.dll already bundles all zvec internal components
+# (zvec_db, zvec_core, zvec_ailego, zvec_turbo), so no individual dependency
+# libraries need to be specified by the consumer.
+add_library(zvec-lib INTERFACE)
+target_link_libraries(zvec-lib INTERFACE
+    zvec
+    Threads::Threads
 )
-
-set(zvec_core_deps
-    # empty
-)
-
-set(zvec_db_deps
-    roaring
-    rocksdb
-    arrow
-    arrow_acero
-    arrow_bundled_dependencies
-    arrow_compute
-    arrow_dataset
-    parquet
-    antlr4-runtime
-    ${GLOG_LIB}
-    ${GFLAGS_LIB}
-    ${PROTOBUF_LIB}
-    lz4
-)
-
-# --- Create INTERFACE targets for Zvec components ---
-
-# zvec_ailego: links libzvec_ailego.a + its deps
-add_library(zvec-ailego INTERFACE)
-target_link_libraries(zvec-ailego INTERFACE
-    -lzvec_ailego
-    ${zvec_ailego_deps}
-)
-
-# zvec_core: links libzvec_core.a via special flags (handled externally), but declare logical deps
-add_library(zvec-core INTERFACE)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(zvec-core INTERFACE
-        -Wl,--whole-archive
-        zvec_core
-        -Wl,--no-whole-archive
-        -Wl,--start-group
-        zvec-ailego
-        ${zvec_core_deps}
-        -Wl,--end-group
-    )
-elseif(APPLE)
-    target_link_libraries(zvec-core INTERFACE
-        -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_core.a
-        zvec-ailego
-        ${zvec_core_deps}
-    )
-else()
-    message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
+if(NOT WIN32)
+    target_link_libraries(zvec-lib INTERFACE ${CMAKE_DL_LIBS})
 endif()
 
-# zvec_db: links libzvec_db.a + all deps
-add_library(zvec-db INTERFACE)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(zvec-db INTERFACE
-        zvec_db
-        zvec-core
-        zvec-ailego
-        -Wl,--start-group
-        ${zvec_db_deps}
-        -Wl,--end-group
-    )
-elseif(APPLE)
-    target_link_libraries(zvec-db INTERFACE
-        zvec_db
-        zvec-core
-        zvec-ailego
-        ${zvec_db_deps}
-    )
-endif()
-
-
-# --- Main executable ---
+# --- Executables ---
 add_executable(db-example db/main.cc)
-target_link_libraries(db-example PRIVATE
-    zvec-db
-)
+target_link_libraries(db-example PRIVATE zvec-lib)
+if(ANDROID)
+    target_link_libraries(db-example PRIVATE log)
+endif()
 
 add_executable(core-example core/main.cc)
-target_link_libraries(core-example PRIVATE
-    zvec-core
-)
+target_link_libraries(core-example PRIVATE zvec-lib)
 
 add_executable(ailego-example ailego/main.cc)
-target_link_libraries(ailego-example PRIVATE
-    zvec-ailego
-)
+target_link_libraries(ailego-example PRIVATE zvec-lib)
+
+# Strip symbols to reduce executable size
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
+    add_custom_command(TARGET db-example POST_BUILD
+        COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:db-example>"
+        COMMENT "Stripping symbols from db-example")
+    add_custom_command(TARGET core-example POST_BUILD
+        COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:core-example>"
+        COMMENT "Stripping symbols from core-example")
+    add_custom_command(TARGET ailego-example POST_BUILD
+        COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:ailego-example>"
+        COMMENT "Stripping symbols from ailego-example")
+endif()
+
+# Optimize for size
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
+    set_property(TARGET db-example core-example ailego-example
+                 PROPERTY COMPILE_FLAGS "-Os")
+    set_property(TARGET db-example core-example ailego-example
+                 PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()

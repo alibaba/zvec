@@ -78,7 +78,7 @@ TEST(Crc32c, Crc32c) {
 }
 
 TEST(Crc32c, Crc32cChecksum) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   {
@@ -118,7 +118,7 @@ TEST(Crc32c, Crc32cChecksum) {
 }
 
 TEST(Crc32c, Crc32cBenchmark) {
-  srand((uint32_t)time(NULL));
+  srand((uint32_t)time(nullptr));
   srand((uint32_t)rand());
 
   size_t len = 100000;

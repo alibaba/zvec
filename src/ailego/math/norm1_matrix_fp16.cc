@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <zvec/ailego/internal/platform.h>
+#include "ailego/internal/cpu_features.h"
 #include "norm1_matrix.h"
 #include "norm_matrix_fp16.i"
 
@@ -73,9 +74,13 @@ void Norm1Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
                                       float *out) {
 #if defined(__ARM_NEON)
   NORM_FP16_1_NEON(m, dim, out, )
-#elif defined(__AVX512F__)
-  NORM_FP16_1_AVX512(m, dim, out, )
 #else
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    NORM_FP16_1_AVX512(m, dim, out, )
+    return;
+  }
+#endif
   NORM_FP16_1_AVX(m, dim, out, )
 #endif
 }

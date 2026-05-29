@@ -15,8 +15,15 @@ from __future__ import annotations
 
 from .collection import Collection
 from .doc import Doc
-from .param.vector_query import VectorQuery
+from .param.query import Query, VectorQuery
 from .schema.collection_schema import CollectionSchema
 from .schema.field_schema import FieldSchema
 
-__all__ = ["Collection", "CollectionSchema", "Doc", "FieldSchema", "VectorQuery"]
+__all__ = [
+    "Collection",
+    "CollectionSchema",
+    "Doc",
+    "FieldSchema",
+    "Query",
+    "VectorQuery",
+]

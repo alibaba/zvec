@@ -56,7 +56,7 @@ static float MipsSquaredEuclidean(const FixedVector<int8_t, N> &lhs,
 static float ConvertAndComputeByMips(const int8_t *lhs, const int8_t *rhs,
                                      size_t dim, size_t m_value, float e2) {
   float squ = 0.0f;
-  float lhs_vec[dim + m_value];
+  std::vector<float> lhs_vec(dim + m_value);
   const float eta = std::sqrt(e2);
   for (size_t i = 0; i < dim; ++i) {
     float val = lhs[i] * eta;
@@ -67,7 +67,7 @@ static float ConvertAndComputeByMips(const int8_t *lhs, const int8_t *rhs,
     lhs_vec[i] = 0.5f - squ;
     squ *= squ;
   }
-  float rhs_vec[dim + m_value];
+  std::vector<float> rhs_vec(dim + m_value);
   squ = 0.0f;
   for (size_t i = 0; i < dim; ++i) {
     float val = rhs[i] * eta;
@@ -78,7 +78,8 @@ static float ConvertAndComputeByMips(const int8_t *lhs, const int8_t *rhs,
     rhs_vec[i] = 0.5f - squ;
     squ *= squ;
   }
-  return ailego::Distance::SquaredEuclidean(lhs_vec, rhs_vec, dim + m_value);
+  return ailego::Distance::SquaredEuclidean(lhs_vec.data(), rhs_vec.data(),
+                                            dim + m_value);
 }
 
 template <size_t N>
@@ -99,16 +100,18 @@ TEST(DistanceMatrix, GeneralRepeatedQuadraticInjection) {
   const float epsilon = 1e-6;
   const uint32_t dim = std::uniform_int_distribution<uint32_t>(2, 128)(gen);
   const uint32_t count = std::uniform_int_distribution<uint32_t>(1, 1000)(gen);
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < count; ++i) {
-    int8_t vec1[dim];
-    int8_t vec2[dim];
+    std::vector<int8_t> vec1(dim);
+    std::vector<int8_t> vec2(dim);
     for (size_t d = 0; d < dim; ++d) {
       vec1[d] = dist(gen);
       vec2[d] = dist(gen);
     }
-    ASSERT_NEAR(ConvertAndComputeByMips(vec1, vec2, dim, m_val, e2),
-                MipsSquaredEuclidean(vec1, vec2, dim, m_val, e2), epsilon);
+    ASSERT_NEAR(
+        ConvertAndComputeByMips(vec1.data(), vec2.data(), dim, m_val, e2),
+        MipsSquaredEuclidean(vec1.data(), vec2.data(), dim, m_val, e2),
+        epsilon);
   }
 }
 
@@ -190,7 +193,7 @@ void TestSquaredEuclideanMatrixRepeatedQuadraticInjection(void) {
   std::vector<float> result1(batch_size * query_size);
   std::vector<float> result2(batch_size * query_size);
 
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
@@ -399,7 +402,7 @@ void MipsRepeatedQuadraticInjectionBenchMark(void) {
   std::vector<int8_t> query2(query_matrix_size);
 
   std::mt19937 gen((std::random_device())());
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
@@ -417,7 +420,7 @@ void MipsRepeatedQuadraticInjectionBenchMark(void) {
                   dimension / 4, query_size);
 
   ElapsedTime elapsed_time;
-  float results[batch_size * query_size];
+  std::vector<float> results(batch_size * query_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") INT8 " << dimension << "d, "
             << batch_size << " * " << query_size << " * " << block_size
@@ -446,7 +449,7 @@ void MipsRepeatedQuadraticInjectionBenchMark(void) {
     const int8_t *matrix_batch = &matrix2[i * batch_size * dimension];
 
     MipsSquaredEuclideanDistanceMatrix<int8_t, batch_size, query_size>::Compute(
-        matrix_batch, &query2[0], dimension, m_val, e2, results);
+        matrix_batch, &query2[0], dimension, m_val, e2, results.data());
   }
   std::cout
       << "* N Batched MipsSquaredErclidean(RepeatedQuadraticInjection) (us) \t"
@@ -517,7 +520,7 @@ static float MipsSquaredEuclidean(const FixedVector<int8_t, N> &lhs,
 static float ConvertAndComputeByMips(const int8_t *lhs, const int8_t *rhs,
                                      size_t dim, float e2) {
   float squ = 0.0f;
-  float lhs_vec[dim + 1];
+  std::vector<float> lhs_vec(dim + 1);
   const float eta = std::sqrt(e2);
   for (size_t i = 0; i < dim; ++i) {
     float val = lhs[i] * eta;
@@ -525,20 +528,21 @@ static float ConvertAndComputeByMips(const int8_t *lhs, const int8_t *rhs,
     squ += val * val;
   }
   float norm2;
-  ailego::SquaredNorm2Matrix<float, 1>::Compute(lhs_vec, dim, &norm2);
+  ailego::SquaredNorm2Matrix<float, 1>::Compute(lhs_vec.data(), dim, &norm2);
   lhs_vec[dim] = std::sqrt(1 - norm2);
 
-  float rhs_vec[dim + 1];
+  std::vector<float> rhs_vec(dim + 1);
   squ = 0.0f;
   for (size_t i = 0; i < dim; ++i) {
     float val = rhs[i] * eta;
     rhs_vec[i] = val;
     squ += val * val;
   }
-  ailego::SquaredNorm2Matrix<float, 1>::Compute(rhs_vec, dim, &norm2);
+  ailego::SquaredNorm2Matrix<float, 1>::Compute(rhs_vec.data(), dim, &norm2);
   rhs_vec[dim] = std::sqrt(1 - norm2);
   std::cout << "squ: " << squ << std::endl;
-  return ailego::Distance::SquaredEuclidean(lhs_vec, rhs_vec, dim + 1);
+  return ailego::Distance::SquaredEuclidean(lhs_vec.data(), rhs_vec.data(),
+                                            dim + 1);
 }
 
 template <size_t N>
@@ -557,16 +561,17 @@ TEST(DistanceMatrix, GeneralSphericalInjection) {
   const float epsilon = 1e-6;
   const uint32_t dim = std::uniform_int_distribution<uint32_t>(2, 128)(gen);
   const uint32_t count = std::uniform_int_distribution<uint32_t>(1, 1000)(gen);
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < count; ++i) {
-    int8_t vec1[dim];
-    int8_t vec2[dim];
+    std::vector<int8_t> vec1(dim);
+    std::vector<int8_t> vec2(dim);
     for (size_t d = 0; d < dim; ++d) {
       vec1[d] = dist(gen);
       vec2[d] = dist(gen);
     }
-    ASSERT_NEAR(ConvertAndComputeByMips(vec1, vec2, dim, e2),
-                MipsSquaredEuclidean(vec1, vec2, dim, e2), epsilon);
+    ASSERT_NEAR(ConvertAndComputeByMips(vec1.data(), vec2.data(), dim, e2),
+                MipsSquaredEuclidean(vec1.data(), vec2.data(), dim, e2),
+                epsilon);
   }
 }
 
@@ -644,7 +649,7 @@ void TestSquaredEuclideanMatrixSphericalInjection(void) {
   std::vector<float> result1(batch_size * query_size);
   std::vector<float> result2(batch_size * query_size);
 
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
@@ -848,7 +853,7 @@ void MipsSphericalInjectionBenchMark(void) {
   std::vector<int8_t> query2(query_matrix_size);
 
   std::mt19937 gen((std::random_device())());
-  std::uniform_int_distribution<int8_t> dist(-127, 127);
+  std::uniform_int_distribution<int16_t> dist(-127, 127);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
@@ -878,7 +883,7 @@ void MipsSphericalInjectionBenchMark(void) {
   }
   const float e2 = 0.98f / squared_l2_norm;
   ElapsedTime elapsed_time;
-  float results[batch_size * query_size];
+  std::vector<float> results(batch_size * query_size);
 
   std::cout << "# (" << IntelIntrinsics() << ") INT8 " << dimension << "d, "
             << batch_size << " * " << query_size << " * " << block_size
@@ -906,7 +911,7 @@ void MipsSphericalInjectionBenchMark(void) {
     const int8_t *matrix_batch = &matrix2[i * batch_size * dimension];
 
     MipsSquaredEuclideanDistanceMatrix<int8_t, batch_size, query_size>::Compute(
-        matrix_batch, &query2[0], dimension, e2, results);
+        matrix_batch, &query2[0], dimension, e2, results.data());
   }
   std::cout << "* N Batched MipsSquaredErclidean(SphericalInjection) (us) \t"
             << elapsed_time.micro_seconds() << std::endl;
