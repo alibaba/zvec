@@ -528,6 +528,13 @@ TEST_F(FtsRecallTest, FtsSearchWithFilter_TopkRespected) {
   EXPECT_LE(result->size(), 1u);
 }
 
+// An FTS field can only be used as a query target, not as a filter condition.
+// Putting the FTS field ("content") in the WHERE filter must be rejected.
+TEST_F(FtsRecallTest, FtsFieldNotAllowedInFilter) {
+  auto result = fts_search_with_filter("apple", "content = 'apple'");
+  ASSERT_FALSE(result.has_value());
+}
+
 // ============================================================
 // Repeated-term linearity: the AST rewriter collapses a repeated term into a
 // single TermNode whose boost equals the occurrence count. With linear boost
