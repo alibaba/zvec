@@ -47,8 +47,8 @@ std::string col_path = "test_collection";
 class CollectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    zvec::ailego::MemoryLimitPool::get_instance().init(
-        2 * 1024ll * 1024ll * 1024ll);
+    zvec::ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll *
+                                                       1024ll);
     FileHelper::RemoveDirectory(col_path);
   }
 
@@ -183,7 +183,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
     ASSERT_TRUE(result1.has_value());
     auto col1 = result1.value();
   };
-  // func(true);
+  func(true);
   func(false);
 }
 
@@ -484,7 +484,7 @@ TEST_F(CollectionTest, Feature_Insert_General) {
     ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
   };
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     func(enable_mmap, false, false);
     func(enable_mmap, true, true);
     func(enable_mmap, true, false);
@@ -904,7 +904,7 @@ TEST_F(CollectionTest, Feature_Upsert_General) {
     ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
   };
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     func(enable_mmap, false, false);
     func(enable_mmap, true, true);
     func(enable_mmap, true, false);
@@ -1190,7 +1190,7 @@ TEST_F(CollectionTest, Feature_Update_General) {
     check_doc(doc_count);
   };
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     func(enable_mmap, 99);
     func(enable_mmap, 100);
     func(enable_mmap, 101);
@@ -1527,7 +1527,7 @@ TEST_F(CollectionTest, Feature_Delete_General) {
     check_doc(doc_count);
   };
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     func(enable_mmap, 99);
     func(enable_mmap, 100);
     func(enable_mmap, 101);
@@ -1673,7 +1673,7 @@ TEST_F(CollectionTest, Feature_DeleteByFilter_General) {
     check_doc(doc_count);
   };
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     func(enable_mmap, 99);
     func(enable_mmap, 100);
     func(enable_mmap, 101);
@@ -1861,7 +1861,7 @@ TEST_F(CollectionTest, Feature_MixedWrite_General) {
       ASSERT_EQ(stats.doc_count, i + 1);
     }
   };
-  // func(true);
+  func(true);
   func(false);
 }
 
@@ -1894,7 +1894,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_General) {
     s = collection->CreateIndex("dense_fp32_invalid", index_params);
     ASSERT_FALSE(s.ok());
   };
-  // func(true);
+  func(true);
   func(false);
 }
 
@@ -2323,7 +2323,7 @@ TEST_F(CollectionTest, Feature_DropIndex_General) {
     ASSERT_EQ(stats.doc_count, 0);
     ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
   };
-  // func(true);
+  func(true);
   func(false);
 }
 
@@ -2615,7 +2615,7 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     std::cout << "check success 3" << std::endl;
   };
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     func(enable_mmap, 0);
     func(enable_mmap, 4);
   }
@@ -2773,7 +2773,7 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   };
 
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     run_repeated_optimize_test(enable_mmap,
                                std::make_shared<FlatIndexParams>(
                                    MetricType::IP, QuantizeType::UNDEFINED));
@@ -3537,7 +3537,7 @@ TEST_F(CollectionTest, Feature_Query_General) {
     }
   };
 
-  for (bool enable_mmap : {/*true,*/ false}) {
+  for (bool enable_mmap : {true, false}) {
     func(enable_mmap, "dense_fp32");
     func(enable_mmap, "sparse_fp32");
   }
@@ -4222,7 +4222,7 @@ TEST_F(CollectionTest, Feature_AddColumn_General) {
       }
     }
   };
-  // func(true);
+  func(true);
   func(false);
 }
 
