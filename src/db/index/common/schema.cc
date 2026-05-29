@@ -549,6 +549,16 @@ FieldSchemaPtrList CollectionSchema::vector_fields() const {
   return vector_fields;
 }
 
+FieldSchemaPtrList CollectionSchema::invert_fields() const {
+  FieldSchemaPtrList invert;
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::INVERT) {
+      invert.push_back(field);
+    }
+  }
+  return invert;
+}
+
 bool CollectionSchema::has_fts_field() const {
   for (const auto &field : fields_) {
     if (field->index_type() == IndexType::FTS) {

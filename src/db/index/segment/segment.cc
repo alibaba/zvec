@@ -1989,7 +1989,7 @@ Status SegmentImpl::create_scalar_index(const std::vector<std::string> &columns,
     s = invert_indexers_->create_snapshot(new_invert_index_path);
     CHECK_RETURN_STATUS(s);
 
-    auto inverted_fields_ptr = collection_schema_->forward_fields_with_index();
+    auto inverted_fields_ptr = collection_schema_->invert_fields();
     std::vector<FieldSchema> inverted_fields;
     std::vector<std::string> inverted_field_names;
     for (auto field : inverted_fields_ptr) {
@@ -3033,7 +3033,7 @@ Status SegmentImpl::reopen_invert_indexer(bool read_only) {
 
   // build invert index fields
   std::vector<std::string> inverted_field_names;
-  auto inverted_fields_ptr = collection_schema_->forward_fields_with_index();
+  auto inverted_fields_ptr = collection_schema_->invert_fields();
   std::vector<FieldSchema> inverted_fields;
   for (auto field : inverted_fields_ptr) {
     inverted_fields.push_back(*field);

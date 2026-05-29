@@ -149,7 +149,8 @@ class FieldSchema {
   }
 
   bool has_invert_index() const {
-    return !is_vector_field() && index_params_ != nullptr;
+    return !is_vector_field() && index_params_ != nullptr &&
+           index_params_->type() == IndexType::INVERT;
   }
 
   bool is_array_type() const {
@@ -350,6 +351,8 @@ class CollectionSchema {
   FieldSchemaPtrList forward_fields() const;
 
   FieldSchemaPtrList forward_fields_with_index() const;
+
+  FieldSchemaPtrList invert_fields() const;
 
   std::vector<std::string> forward_field_names() const;
 
