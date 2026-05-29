@@ -118,8 +118,12 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
     return Status::OK();
   }
 
-  std::shared_ptr<RowIdFilter> row_id_filter =
-      std::make_shared<RowIdFilter>(std::move(delete_row_id_bitmap));
+  std::shared_ptr<RowIdFilter> row_id_filter;
+  // filter=nullptr( create_compaction_task rebuild=false ) or no deletion
+  if (!delete_row_id_bitmap.isEmpty()) {
+    row_id_filter =
+        std::make_shared<RowIdFilter>(std::move(delete_row_id_bitmap));
+  }
 
   s = ReduceVectorIndex(schema, input_segments, output_segment_path,
                         row_id_filter, block_id_generator, min_doc_id,
