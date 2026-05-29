@@ -716,8 +716,7 @@ static int do_build_db() {
     zvec::FileHelper::RemoveDirectory(FLAGS_index);
   }
 
-  // Build schema: pk (implicit) + FTS field + dummy vector field (required
-  // by segment layer).
+  // Build schema: pk (implicit) + FTS field.
   // Build FtsIndexParams from FLAGS_extra_params so that the tokenizer
   // pipeline configuration (e.g. enable_simple_closet) matches raw mode.
   auto db_fts_params = build_fts_index_params(FLAGS_extra_params);
@@ -725,12 +724,6 @@ static int do_build_db() {
   CollectionSchema schema("fts_bench");
   schema.add_field(std::make_shared<FieldSchema>(FLAGS_field, DataType::STRING,
                                                  false, db_fts_params));
-  // Segment layer requires at least one vector field.  Do NOT set
-  // index_params: fts_bench links with PACKED mode which strips core-layer
-  // metric static registrations, so creating a vector index would fail with
-  // "Failed to create metric".  An unindexed vector field is sufficient.
-  schema.add_field(std::make_shared<FieldSchema>(
-      "__dummy_vec", DataType::VECTOR_FP32, 4, /*nullable=*/true));
 
   CollectionOptions options;
   options.read_only_ = false;
@@ -803,8 +796,6 @@ static int do_build_db() {
       Doc doc;
       doc.set_pk(entry.corpus_id);
       doc.set<std::string>(FLAGS_field, entry.content);
-      // dummy vector (nullable field still needs a value for WAL/forward)
-      doc.set<std::vector<float>>("__dummy_vec", {0.0f, 0.0f, 0.0f, 0.0f});
       docs.push_back(std::move(doc));
     }
     auto insert_result = collection->Insert(docs);
@@ -1350,12 +1341,12 @@ static int do_search_db() {
 
       const QueryEntry &entry = queries[query_idx];
 
-      VectorQuery vq;
-      vq.field_name_ = FLAGS_field;
+      SearchQuery vq;
+      vq.target_.field_name_ = FLAGS_field;
       vq.topk_ = FLAGS_topk;
-      Fts fts;
+      FtsClause fts;
       fts.match_string_ = entry.match_text;
-      vq.fts_ = fts;
+      vq.target_.clause_ = fts;
 
       uint64_t elapsed_us = 0;
       std::vector<std::string> retrieved_corpus_ids;
