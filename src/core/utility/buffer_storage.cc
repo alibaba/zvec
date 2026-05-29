@@ -62,8 +62,15 @@ class BufferStorage : public IndexStorage {
     ~WrappedSegment(void) override {}
 
     //! Retrieve size of data
+    //!
+    //! data_size / padding_size are mutated lock-free by concurrent
+    //! writers (write/resize) and observed by concurrent readers on the
+    //! lock-free hot path.  Use acquire/release ordering so weakly-ordered
+    //! ARM (e.g. Android arm64) cannot see stale values that would cause
+    //! read() to truncate len to 0.
     size_t data_size(void) const override {
-      return static_cast<size_t>(segment_info_->segment.meta()->data_size);
+      return static_cast<size_t>(__atomic_load_n(
+          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE));
     }
 
     //! Retrieve crc of data
@@ -73,7 +80,8 @@ class BufferStorage : public IndexStorage {
 
     //! Retrieve size of padding
     size_t padding_size(void) const override {
-      return static_cast<size_t>(segment_info_->segment.meta()->padding_size);
+      return static_cast<size_t>(__atomic_load_n(
+          &segment_info_->segment.meta()->padding_size, __ATOMIC_ACQUIRE));
     }
 
     //! Retrieve capacity of segment
@@ -91,7 +99,8 @@ class BufferStorage : public IndexStorage {
                   owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      const size_t data_size = segment_info_->segment.meta()->data_size;
+      const size_t data_size = __atomic_load_n(
+          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE);
       if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
         if (offset > data_size) {
           offset = data_size;
@@ -121,7 +130,8 @@ class BufferStorage : public IndexStorage {
         *data = nullptr;
         return 0;
       }
-      const size_t data_size = segment_info_->segment.meta()->data_size;
+      const size_t data_size = __atomic_load_n(
+          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE);
       if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
         if (offset > data_size) {
           offset = data_size;
@@ -199,7 +209,8 @@ class BufferStorage : public IndexStorage {
             owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      const size_t data_size = segment_info_->segment.meta()->data_size;
+      const size_t data_size = __atomic_load_n(
+          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE);
       if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
         if (offset > data_size) {
           offset = data_size;
@@ -283,21 +294,37 @@ class BufferStorage : public IndexStorage {
         return 0;
       }
       auto meta = segment_info_->segment.meta();
-      {
-        std::lock_guard<std::mutex> meta_latch(meta_mtx_);
-        if (offset + len > meta->data_size) {
-          meta->data_size = offset + len;
-          meta->padding_size = capacity_ - meta->data_size;
-        }
-      }
       size_t abs_offset = segment_info_->segment_header_start_offset +
                           segment_info_->segment_header->content_offset +
-                          segment_info_->segment.meta()->data_index + offset;
+                          meta->data_index + offset;
+      // Write the bytes BEFORE publishing the new data_size to readers.
+      // Lock-free readers observe data_size with acquire ordering; the
+      // release-store below establishes happens-before with the page
+      // contents written above.  Publishing data_size first (the previous
+      // ordering) allowed a reader on weakly-ordered ARM to see the new
+      // length but still read stale page contents -- or, in the inverse
+      // direction, see a stale length and truncate len to 0
+      // (root cause of "Read sparse vector failed ... ret=0").
       if (owner_->buffer_pool_handle_->write_range(
               abs_offset, len, static_cast<const char *>(data)) != 0) {
         LOG_ERROR("write() page-cache write_range failed at abs_offset=%zu",
                   abs_offset);
         return 0;
+      }
+      {
+        std::lock_guard<std::mutex> meta_latch(meta_mtx_);
+        uint64_t cur =
+            __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
+        if (offset + len > cur) {
+          uint64_t new_size = offset + len;
+          // padding_size is paired with data_size; publish it first
+          // (relaxed) so readers that acquire data_size see a
+          // consistent (data_size + padding_size == capacity_) pair.
+          __atomic_store_n(&meta->padding_size, capacity_ - new_size,
+                           __ATOMIC_RELAXED);
+          __atomic_store_n(&meta->data_size, new_size,
+                           __ATOMIC_RELEASE);
+        }
       }
       // Mark dirty unconditionally even when data_size did not grow:
       // fixed-size in-place rewrites (e.g. chunk_meta_segment) must still
@@ -321,12 +348,18 @@ class BufferStorage : public IndexStorage {
       bool changed = false;
       {
         std::lock_guard<std::mutex> meta_latch(meta_mtx_);
-        if (meta->data_size != size) {
+        uint64_t cur =
+            __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
+        if (cur != size) {
           if (size > capacity_) {
             size = capacity_;
           }
-          meta->data_size = size;
-          meta->padding_size = capacity_ - size;
+          // See write() for the publish ordering rationale: padding first
+          // (relaxed), then release-store data_size so concurrent lock-free
+          // readers observe a consistent pair.
+          __atomic_store_n(&meta->padding_size, capacity_ - size,
+                           __ATOMIC_RELAXED);
+          __atomic_store_n(&meta->data_size, size, __ATOMIC_RELEASE);
           changed = true;
         }
       }
