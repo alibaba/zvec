@@ -103,6 +103,10 @@ class BufferStorage : public IndexStorage {
                           segment_info_->segment.meta()->data_index + offset;
       if (!owner_->buffer_pool_handle_->read_range(abs_offset, len,
                                                    static_cast<char *>(buf))) {
+        LOG_ERROR(
+            "WrappedSegment::fetch: read_range failed, file[%s], id[%zu], "
+            "abs_offset=%zu, len=%zu",
+            owner_->file_name_.c_str(), segment_id_, abs_offset, len);
         return 0;
       }
       return len;
@@ -136,6 +140,11 @@ class BufferStorage : public IndexStorage {
         char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
                                                                  len, page_id);
         if (!raw) {
+          LOG_ERROR(
+              "WrappedSegment::read: single-page acquire failed, file[%s], "
+              "id[%zu], abs_offset=%zu, len=%zu, page=%zu",
+              owner_->file_name_.c_str(), segment_id_, abs_offset, len,
+              first_page);
           *data = nullptr;
           return 0;
         }
@@ -146,16 +155,29 @@ class BufferStorage : public IndexStorage {
         return len;
       }
       // Cross-page path: see file-level banner.  C11 aligned_alloc requires
-      // size to be a multiple of alignment.
-      const size_t kAlign = 4096UL;
+      // size to be a multiple of alignment, and alignment must be a power
+      // of two; kVectorPageSize is sysconf(_SC_PAGESIZE) which satisfies
+      // both, and matches the buffer-pool's actual page granularity across
+      // platforms (e.g. 4K on Linux, 16K on iOS arm64 / some Android arm64).
+      const size_t kAlign = ailego::kVectorPageSize;
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
       char *tmp =
           static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
       if (!tmp) {
+        LOG_ERROR(
+            "WrappedSegment::read: cross-page alloc failed, file[%s], "
+            "id[%zu], abs_offset=%zu, len=%zu, alloc_size=%zu, align=%zu",
+            owner_->file_name_.c_str(), segment_id_, abs_offset, len,
+            alloc_size, kAlign);
         *data = nullptr;
         return 0;
       }
       if (!owner_->buffer_pool_handle_->read_range(abs_offset, len, tmp)) {
+        LOG_ERROR(
+            "WrappedSegment::read: cross-page read_range failed, file[%s], "
+            "id[%zu], abs_offset=%zu, len=%zu, first_page=%zu, last_page=%zu",
+            owner_->file_name_.c_str(), segment_id_, abs_offset, len,
+            first_page, last_page);
         ailego_free(tmp);
         *data = nullptr;
         return 0;
@@ -203,10 +225,13 @@ class BufferStorage : public IndexStorage {
         return len;
       }
       // C11 aligned_alloc requires the requested size to be a multiple of
-      // the alignment; round len up to the next 4K boundary.  Without this
-      // glibc treats the call as undefined behaviour and silently corrupts
-      // heap metadata (manifesting later as `corrupted size vs. prev_size`).
-      const size_t kAlign = 4096UL;
+      // the alignment, and alignment must be a power of two.  Use the
+      // buffer-pool page granularity (sysconf(_SC_PAGESIZE)) which is the
+      // actual page size across platforms (e.g. 4K on Linux, 16K on iOS
+      // arm64 / some Android arm64), avoiding a hard-coded 4K mismatch.
+      // Without correct alignment some libcs (notably Bionic) silently
+      // return NULL or corrupt heap metadata.
+      const size_t kAlign = ailego::kVectorPageSize;
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
       char *tmp =
           static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));

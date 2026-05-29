@@ -545,6 +545,10 @@ char *VecBufferPoolHandle::get_single_page(size_t file_offset, size_t len,
   out_page_id = first_page;
   char *page = pool_.acquire_buffer(first_page, 50);
   if (!page) {
+    LOG_ERROR(
+        "VecBufferPoolHandle::get_single_page: acquire_buffer failed, "
+        "file_offset=%zu, len=%zu, page=%zu, page_size=%zu",
+        file_offset, len, first_page, kVectorPageSize);
     return nullptr;
   }
   return page + (file_offset - first_page * kVectorPageSize);
@@ -562,6 +566,11 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
   for (size_t pg = first_page; pg <= last_page; ++pg) {
     char *page = pool_.acquire_buffer(pg, 50);
     if (!page) {
+      LOG_ERROR(
+          "VecBufferPoolHandle::read_range: acquire_buffer failed, "
+          "file_offset=%zu, len=%zu, page=%zu, first_page=%zu, last_page=%zu, "
+          "page_size=%zu",
+          file_offset, len, pg, first_page, last_page, kVectorPageSize);
       return false;
     }
     size_t page_start = pg * kVectorPageSize;
