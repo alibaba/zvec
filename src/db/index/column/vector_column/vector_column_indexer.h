@@ -98,6 +98,10 @@ class VectorColumnIndexer {
     return index_file_path_;
   }
 
+  const FieldSchema &field_schema() const {
+    return field_schema_;
+  }
+
   size_t doc_count() const {
     if (index == nullptr) {
       return -1;

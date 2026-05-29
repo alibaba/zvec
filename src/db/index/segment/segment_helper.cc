@@ -631,12 +631,32 @@ Status SegmentHelper::ReduceVectorIndex(
       return merge_options;
     };
 
-    auto can_reuse_first_indexer = [&](auto &&fetch_indexers) {
+    auto indexer_quantize_type = [](const VectorColumnIndexer::Ptr &indexer) {
+      auto params = std::dynamic_pointer_cast<VectorIndexParams>(
+          indexer->field_schema().index_params());
+      return params ? params->quantize_type() : QuantizeType::UNDEFINED;
+    };
+
+    auto can_reuse_first_indexer = [&](auto &&fetch_indexers,
+                                       const FieldSchema &output_field) {
       if (filter != nullptr || input_segments.size() <= 1) {
         return false;
       }
+      auto output_index_type = output_field.index_type();
+      auto output_params = std::dynamic_pointer_cast<VectorIndexParams>(
+          output_field.index_params());
+      auto output_quantize_type =
+          output_params ? output_params->quantize_type() : QuantizeType::UNDEFINED;
       for (const auto &input_segment : input_segments) {
-        if (fetch_indexers(input_segment).size() != 1) {
+        auto indexers = fetch_indexers(input_segment);
+        if (indexers.size() != 1) {
+          return false;
+        }
+        const auto &input_field = indexers.front()->field_schema();
+        if (input_field.index_type() != output_index_type) {
+          return false;
+        }
+        if (indexer_quantize_type(indexers.front()) != output_quantize_type) {
           return false;
         }
       }
@@ -663,7 +683,7 @@ Status SegmentHelper::ReduceVectorIndex(
       auto merge_options = build_merge_options();
       bool reused_base_index = false;
 
-      if (can_reuse_first_indexer(fetch_indexers)) {
+      if (can_reuse_first_indexer(fetch_indexers, index_field)) {
         auto first_indexer = fetch_indexers(input_segments.front())[0];
         if (FileHelper::CopyFile(first_indexer->index_file_path(),
                                  output_index_path)) {
