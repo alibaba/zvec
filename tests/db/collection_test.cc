@@ -1867,6 +1867,7 @@ TEST_F(CollectionTest, Feature_MixedWrite_General) {
 
 TEST_F(CollectionTest, Feature_CreateIndex_General) {
   auto func = [&](bool enable_mmap) {
+    FileHelper::RemoveDirectory(col_path);
     // create empty collection
     auto schema = TestHelper::CreateNormalSchema();
     auto options = CollectionOptions{false, enable_mmap, 64 * 1024 * 1024};
@@ -2256,6 +2257,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
 
 TEST_F(CollectionTest, Feature_DropIndex_General) {
   auto func = [&](bool enable_mmap) {
+    FileHelper::RemoveDirectory(col_path);
     // create empty collection
     auto schema = TestHelper::CreateSchemaWithVectorIndex();
     auto options = CollectionOptions{false, enable_mmap, 64 * 1024 * 1204};
@@ -4158,6 +4160,7 @@ TEST_F(CollectionTest, Feature_GroupByQuery) {}
 
 TEST_F(CollectionTest, Feature_AddColumn_General) {
   auto func = [&](bool enable_mmap) {
+    FileHelper::RemoveDirectory(col_path);
     // create collection
     int doc_count = 1000;
     auto schema = TestHelper::CreateNormalSchema();
