@@ -726,7 +726,7 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndexThreeSegmentsRegression) {
 
   CompactTask task(GetColPath(), schema, {seg1, seg2, seg3}, 3, nullptr,
                    forward_use_parquet, 1);
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
   ASSERT_TRUE(segment_task != nullptr);
 
   auto status = SegmentHelper::Execute(segment_task);
@@ -791,7 +791,7 @@ TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegressio
 
   CompactTask task(GetColPath(), schema, {seg1, seg2, seg3}, 3, nullptr,
                    forward_use_parquet, 1);
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
   ASSERT_TRUE(segment_task != nullptr);
 
   auto status = SegmentHelper::Execute(segment_task);
@@ -851,7 +851,7 @@ TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
 
   CompactTask task(GetColPath(), schema, {seg1, seg2}, 2, filter,
                    forward_use_parquet, 1);
-  auto segment_task = SegmentTask::CreateComapctTask(task);
+  auto segment_task = SegmentTask::CreateCompactTask(task);
   ASSERT_TRUE(segment_task != nullptr);
 
   auto status = SegmentHelper::Execute(segment_task);
