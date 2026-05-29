@@ -20,10 +20,6 @@
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_logger.h>
 
-#if !defined(_MSC_VER)
-#include <unistd.h>
-#endif
-
 #if defined(_MSC_VER)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -53,6 +49,16 @@ static ssize_t zvec_pwrite(int fd, const void *buf, size_t count,
     return -1;
   }
   return static_cast<ssize_t>(bytes_written);
+}
+#else
+#include <unistd.h>
+static inline ssize_t zvec_pread(int fd, void *buf, size_t count,
+                                 size_t offset) {
+  return ::pread(fd, buf, count, static_cast<off_t>(offset));
+}
+static inline ssize_t zvec_pwrite(int fd, const void *buf, size_t count,
+                                  size_t offset) {
+  return ::pwrite(fd, buf, count, static_cast<off_t>(offset));
 }
 #endif
 
@@ -266,18 +272,14 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
   }
 }
 
-VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
-                             bool create) {
+VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
   file_name_ = filename;
-  writable_ = writable || create;
+  writable_ = writable;
 #if defined(_MSC_VER)
-  int flags = writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC | _O_BINARY)
-                                  : (O_RDWR | _O_BINARY))
-                        : (O_RDONLY | _O_BINARY);
+  int flags = writable_ ? (O_RDWR | _O_BINARY) : (O_RDONLY | _O_BINARY);
   fd_ = _open(filename.c_str(), flags, 0644);
 #else
-  int flags =
-      writable_ ? (create ? (O_RDWR | O_CREAT | O_TRUNC) : O_RDWR) : O_RDONLY;
+  int flags = writable_ ? O_RDWR : O_RDONLY;
   fd_ = ::open(filename.c_str(), flags, 0644);
 #endif
   if (fd_ < 0) {
@@ -322,11 +324,7 @@ int VecBufferPool::init() {
     page_table_.set_flush_callback([fd, &name](block_id_t /*block_id*/,
                                                char *buf, size_t sz,
                                                size_t off) -> int {
-#if defined(_MSC_VER)
       ssize_t w = zvec_pwrite(fd, buf, sz, off);
-#else
-      ssize_t w = ::pwrite(fd, buf, sz, off);
-#endif
       if (w != static_cast<ssize_t>(sz)) {
         LOG_ERROR(
             "Buffer pool flush failed: file[%s], offset[%zu], "
@@ -381,11 +379,7 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
   if (expected_bytes < kVectorPageSize) {
     std::memset(buffer + expected_bytes, 0, kVectorPageSize - expected_bytes);
   }
-#if defined(_MSC_VER)
   ssize_t read_bytes = zvec_pread(fd_, buffer, expected_bytes, page_offset);
-#else
-  ssize_t read_bytes = pread(fd_, buffer, expected_bytes, page_offset);
-#endif
   if (read_bytes != static_cast<ssize_t>(expected_bytes)) {
     LOG_ERROR(
         "Buffer pool failed to read file at offset: file[%s], page_id[%zu], "
@@ -398,11 +392,7 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
 }
 
 int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
-#if defined(_MSC_VER)
   ssize_t read_bytes = zvec_pread(fd_, buffer, length, offset);
-#else
-  ssize_t read_bytes = pread(fd_, buffer, length, offset);
-#endif
   if (read_bytes != static_cast<ssize_t>(length)) {
     LOG_ERROR(
         "Buffer pool failed to read file at offset: file[%s], offset[%zu], "
@@ -456,11 +446,7 @@ int VecBufferPool::write_meta(size_t offset, size_t length,
               file_name_.c_str());
     return -1;
   }
-#if defined(_MSC_VER)
   ssize_t w = zvec_pwrite(fd_, buffer, length, offset);
-#else
-  ssize_t w = ::pwrite(fd_, buffer, length, offset);
-#endif
   if (w != static_cast<ssize_t>(length)) {
     LOG_ERROR(
         "Buffer pool failed to write meta: file[%s], offset[%zu], "

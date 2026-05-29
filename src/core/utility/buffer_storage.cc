@@ -394,7 +394,7 @@ class BufferStorage : public IndexStorage {
     // Open in writable mode when the caller expects to modify the index
     // (create_if_missing=true implies write intent, same as MMapFileStorage).
     buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
-        path, /*writable=*/create_if_missing, /*create=*/false);
+        path, /*writable=*/create_if_missing);
     buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
         buffer_pool_->get_handle());
     int ret = ParseToMapping();
@@ -419,18 +419,18 @@ class BufferStorage : public IndexStorage {
   // caller holds either single-threaded open() or AllShardsExclusiveLatch.
   // Do NOT add an internal lock here -- std::shared_mutex is not reentrant.
   int ParseHeader(size_t offset, IndexFormat::MetaHeader *out) {
-    std::unique_ptr<char[]> buffer(new char[sizeof(*out)]);
-    if (buffer_pool_handle_->get_meta(offset, sizeof(*out), buffer.get()) !=
-        0) {
+    constexpr size_t kHeaderSize = sizeof(IndexFormat::MetaHeader);
+    std::unique_ptr<char[]> buffer(new char[kHeaderSize]);
+    if (buffer_pool_handle_->get_meta(offset, kHeaderSize, buffer.get()) != 0) {
       LOG_ERROR("Get segment header failed.");
       return IndexError_Runtime;
     }
-    memcpy(out, buffer.get(), sizeof(*out));
-    if (out->meta_header_size != sizeof(IndexFormat::MetaHeader)) {
+    memcpy(out, buffer.get(), kHeaderSize);
+    if (out->meta_header_size != kHeaderSize) {
       LOG_ERROR("Header meta size is invalid.");
       return IndexError_InvalidLength;
     }
-    if (ailego::Crc32c::Hash(out, sizeof(*out), out->header_crc) !=
+    if (ailego::Crc32c::Hash(out, kHeaderSize, out->header_crc) !=
         out->header_crc) {
       LOG_ERROR("Header meta checksum is invalid.");
       return IndexError_InvalidChecksum;

@@ -201,8 +201,7 @@ class VecBufferPool {
 
   static constexpr size_t kMutexBucketCount = 64UL * 1024UL;
 
-  VecBufferPool(const std::string &filename, bool writable = false,
-                bool create = false);
+  VecBufferPool(const std::string &filename, bool writable = false);
   ~VecBufferPool() {
     // Flush any remaining dirty blocks before tearing down memory/fd so that
     // writes are not silently lost. Safe to call even in read-only mode.
