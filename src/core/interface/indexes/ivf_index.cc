@@ -90,13 +90,16 @@ int IVFIndex::Open(const std::string &file_path,
       // MMapFileReadStorage so the freshly-dumped file can be reopened.
       storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
       if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
+        LOG_ERROR(
+            "Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
-        LOG_ERROR("Failed to init MMapFileReadStorage (IVF buffer-pool fallback), path: %s, err: %s",
-                  file_path_.c_str(), core::IndexError::What(ret));
+        LOG_ERROR(
+            "Failed to init MMapFileReadStorage (IVF buffer-pool fallback), "
+            "path: %s, err: %s",
+            file_path_.c_str(), core::IndexError::What(ret));
         return ret;
       }
       break;
