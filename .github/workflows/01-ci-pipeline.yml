@@ -18,6 +18,7 @@ on:
       - '.github/workflows/_build_wheel_job.yml'
       - '.github/workflows/continuous_bench.yml'
       - '.github/workflows/nightly_coverage.yml'
+      - '.github/workflows/07-linux-riscv-build.yml'
       - '.github/workflows/docker/**'
       - '.github/workflows/scripts/**'
   merge_group:
@@ -91,11 +92,6 @@ jobs:
       platform: linux-x64-clang
       os: ubuntu-24.04
       compiler: clang
-
-  build-and-test-linux-riscv64:
-    name: Build & Test (linux-riscv64)
-    needs: lint
-    uses: ./.github/workflows/07-linux-riscv-build.yml
 
   build-android:
     name: Build & Test (android)

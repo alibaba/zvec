@@ -1,7 +1,10 @@
-name: Linux RISC-V Build
+name: Nightly Linux RISC-V Build
 
 on:
-  workflow_call:
+  schedule:
+    - cron: '0 16 * * *'
+
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,6 +22,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
+          ref: main
           submodules: recursive
 
       - name: Install build dependencies
