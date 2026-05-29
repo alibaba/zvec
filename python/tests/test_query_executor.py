@@ -31,13 +31,16 @@ from zvec.executor.query_executor import (
 )
 from zvec import (
     RrfReRanker,
+    WeightedReRanker,
     HnswQueryParam,
     CollectionSchema,
     VectorSchema,
     DataType,
+    MetricType,
     Query,
     VectorQuery,
 )
+from zvec.extension.multi_vector_reranker import CallbackReRanker
 
 
 # ----------------------------
@@ -209,6 +212,37 @@ class TestQueryContext:
         assert ctx.output_fields == output_fields
         assert ctx.include_vector is True
 
+    def test_properties_with_weighted_reranker(self):
+        queries = [Query(field_name="test")]
+        reranker = WeightedReRanker(
+            topn=10,
+            metrics={"test": MetricType.L2},
+            weights={"test": 1.0},
+        )
+
+        ctx = QueryContext(
+            topk=5,
+            queries=queries,
+            reranker=reranker,
+        )
+
+        assert ctx.reranker == reranker
+        assert ctx.reranker.weights == {"test": 1.0}
+        assert ctx.reranker.metrics == {"test": MetricType.L2}
+
+    def test_properties_with_callback_reranker(self):
+        queries = [Query(field_name="test")]
+        cb = lambda query_results, topn: []
+        reranker = CallbackReRanker(callback=cb, topn=10)
+
+        ctx = QueryContext(
+            topk=5,
+            queries=queries,
+            reranker=reranker,
+        )
+
+        assert ctx.reranker == reranker
+
     def test_core_vectors_setter(self):
         ctx = QueryContext(topk=10)
         core_vectors = [MagicMock()]
@@ -300,6 +334,31 @@ class TestMultiVectorQueryExecutor:
         executor = MultiVectorQueryExecutor(schema)
         queries = [Query(field_name="test1"), Query(field_name="test2")]
         reranker = RrfReRanker()
+        ctx = QueryContext(topk=10, queries=queries, reranker=reranker)
+
+        executor._do_validate(ctx)
+
+    def test_do_validate_multiple_queries_with_weighted_reranker(self):
+        schema = MockCollectionSchema()
+        executor = MultiVectorQueryExecutor(schema)
+        queries = [Query(field_name="test1"), Query(field_name="test2")]
+        reranker = WeightedReRanker(
+            topn=10,
+            metrics={"test1": MetricType.L2, "test2": MetricType.L2},
+            weights={"test1": 0.7, "test2": 0.3},
+        )
+        ctx = QueryContext(topk=10, queries=queries, reranker=reranker)
+
+        executor._do_validate(ctx)
+
+    def test_do_validate_multiple_queries_with_callback_reranker(self):
+        schema = MockCollectionSchema()
+        executor = MultiVectorQueryExecutor(schema)
+        queries = [Query(field_name="test1"), Query(field_name="test2")]
+        reranker = CallbackReRanker(
+            callback=lambda query_results, topn: [],
+            topn=10,
+        )
         ctx = QueryContext(topk=10, queries=queries, reranker=reranker)
 
         executor._do_validate(ctx)

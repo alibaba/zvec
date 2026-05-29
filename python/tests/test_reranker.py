@@ -20,6 +20,7 @@ import os
 
 from zvec import Doc, MetricType
 from zvec.extension.multi_vector_reranker import (
+    CallbackReRanker,
     RrfReRanker,
     WeightedReRanker,
 )
@@ -75,16 +76,17 @@ class TestRrfReRanker:
 # ----------------------------
 class TestWeightedReRanker:
     def test_init(self):
+        metrics = {"vector1": MetricType.L2, "vector2": MetricType.COSINE}
         weights = {"vector1": 0.7, "vector2": 0.3}
         reranker = WeightedReRanker(
             topn=5,
             rerank_field="content",
-            metric=MetricType.L2,
+            metrics=metrics,
             weights=weights,
         )
         assert reranker.topn == 5
         assert reranker.rerank_field == "content"
-        assert reranker.metric == MetricType.L2
+        assert reranker.metrics == metrics
         assert reranker.weights == weights
 
     def test_normalize_score(self):
@@ -106,8 +108,9 @@ class TestWeightedReRanker:
             reranker._normalize_score(1.0, "unsupported_metric")
 
     def test_rerank(self):
+        metrics = {"vector1": MetricType.L2, "vector2": MetricType.L2}
         weights = {"vector1": 0.7, "vector2": 0.3}
-        reranker = WeightedReRanker(topn=3, weights=weights, metric=MetricType.L2)
+        reranker = WeightedReRanker(topn=3, weights=weights, metrics=metrics)
 
         doc1 = Doc(id="1", score=0.8)
         doc2 = Doc(id="2", score=0.7)
@@ -122,8 +125,69 @@ class TestWeightedReRanker:
         for doc in results:
             assert hasattr(doc, "score")
 
+    def test_rerank_missing_metric_raises(self):
+        metrics = {"vector1": MetricType.L2}
+        reranker = WeightedReRanker(topn=3, metrics=metrics)
+
+        doc1 = Doc(id="1", score=0.8)
+        query_results = {"vector1": [doc1], "vector2": [doc1]}
+
+        with pytest.raises(ValueError, match="no metric type specified"):
+            reranker.rerank(query_results)
+
+
+# ----------------------------
+# CallbackReRanker Test Case
+# ----------------------------
+class TestCallbackReRanker:
+    def test_init(self):
+        def my_callback(query_results, topn):
+            return []
+
+        reranker = CallbackReRanker(callback=my_callback, topn=5)
+        assert reranker.topn == 5
+
+    def test_rerank(self):
+        def my_callback(query_results, topn):
+            all_docs = []
+            for docs in query_results.values():
+                all_docs.extend(docs)
+            all_docs.sort(key=lambda d: d.score, reverse=True)
+            return all_docs[:topn]
+
+        reranker = CallbackReRanker(callback=my_callback, topn=3)
+
+        doc1 = Doc(id="1", score=0.8)
+        doc2 = Doc(id="2", score=0.9)
+        doc3 = Doc(id="3", score=0.7)
+        doc4 = Doc(id="4", score=0.6)
+
+        query_results = {"vector1": [doc1, doc2], "vector2": [doc3, doc4]}
+
+        results = reranker.rerank(query_results)
+
+        assert len(results) == 3
         scores = [doc.score for doc in results]
         assert scores == sorted(scores, reverse=True)
+
+    def test_callback_with_topn(self):
+        received_topn = []
+
+        def my_callback(query_results, topn):
+            received_topn.append(topn)
+            return []
+
+        reranker = CallbackReRanker(callback=my_callback, topn=7)
+        reranker.rerank({"v1": [Doc(id="1", score=0.5)]})
+
+        assert received_topn == [7]
+
+    def test_get_object_returns_cpp_reranker(self):
+        def my_callback(query_results, topn):
+            return []
+
+        reranker = CallbackReRanker(callback=my_callback)
+        assert reranker._get_object() is not None
 
 
 # ----------------------------

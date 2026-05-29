@@ -96,7 +96,7 @@ class LikeTest : public testing::Test {
 
 
 TEST_F(LikeTest, ForwardLikeAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "name like '%'";
@@ -112,7 +112,7 @@ TEST_F(LikeTest, ForwardLikeAll) {
 }
 
 TEST_F(LikeTest, InvertLikeAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "invert_name like '%'";
@@ -128,7 +128,7 @@ TEST_F(LikeTest, InvertLikeAll) {
 }
 
 TEST_F(LikeTest, ForwardPrefixLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "name like 'user-22%'";
@@ -145,7 +145,7 @@ TEST_F(LikeTest, ForwardPrefixLike) {
 }
 
 TEST_F(LikeTest, InvertPrefixLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "invert_name like 'user-22%'";
@@ -162,7 +162,7 @@ TEST_F(LikeTest, InvertPrefixLike) {
 }
 
 TEST_F(LikeTest, ForwardSuffixLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "name like '%ser-22'";
@@ -179,7 +179,7 @@ TEST_F(LikeTest, ForwardSuffixLike) {
 }
 
 TEST_F(LikeTest, NotExtendedInvertSuffixLikeRunAsForward) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "invert_name like '%ser-22'";
@@ -196,7 +196,7 @@ TEST_F(LikeTest, NotExtendedInvertSuffixLikeRunAsForward) {
 }
 
 TEST_F(LikeTest, ExtendedInvertSuffixLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "extended_invert_name like '%ser-22'";
@@ -213,7 +213,7 @@ TEST_F(LikeTest, ExtendedInvertSuffixLike) {
 }
 
 TEST_F(LikeTest, ForwardMiddleLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "name like 'user%2'";
@@ -232,7 +232,7 @@ TEST_F(LikeTest, ForwardMiddleLike) {
 }
 
 TEST_F(LikeTest, ExtendedInvertMiddleLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "extended_invert_name like 'user%2'";
@@ -251,7 +251,7 @@ TEST_F(LikeTest, ExtendedInvertMiddleLike) {
 }
 
 TEST_F(LikeTest, UnderScore) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "name like 'user-_2'";
@@ -270,7 +270,7 @@ TEST_F(LikeTest, UnderScore) {
 }
 
 TEST_F(LikeTest, InvertUnderScoreRunAsForward) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = "invert_name like 'user-_2'";
@@ -289,7 +289,7 @@ TEST_F(LikeTest, InvertUnderScoreRunAsForward) {
 }
 
 TEST_F(LikeTest, ForwardEscapePercent) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = R"(name like 'user-\%%')";
@@ -305,7 +305,7 @@ TEST_F(LikeTest, ForwardEscapePercent) {
 }
 
 TEST_F(LikeTest, InvertEscapePercent) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = R"(invert_name like 'user-\%%')";
@@ -321,7 +321,7 @@ TEST_F(LikeTest, InvertEscapePercent) {
 }
 
 TEST_F(LikeTest, ForwardEscapeUnderscore) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = R"(name like 'user-\_%')";
@@ -337,7 +337,7 @@ TEST_F(LikeTest, ForwardEscapeUnderscore) {
 }
 
 TEST_F(LikeTest, InvertEscapeUnderscore) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = R"(invert_name like 'user-\_%')";
@@ -353,7 +353,7 @@ TEST_F(LikeTest, InvertEscapeUnderscore) {
 }
 
 TEST_F(LikeTest, NoPercentRunAsEqual) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name"};
   query.topk_ = 200;
   query.filter_ = R"(invert_name like 'user-22')";

@@ -124,7 +124,7 @@ class ContainTest : public testing::Test {
 
 
 TEST_F(ContainTest, ContainAllInt32) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "i32_array contain_all (";
@@ -153,7 +153,7 @@ TEST_F(ContainTest, ContainAllInt32) {
 }
 
 TEST_F(ContainTest, ContainAllInt64) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "i64_array contain_all (";
@@ -182,7 +182,7 @@ TEST_F(ContainTest, ContainAllInt64) {
 }
 
 TEST_F(ContainTest, ContainAllUint32) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "u32_array contain_all (";
@@ -211,7 +211,7 @@ TEST_F(ContainTest, ContainAllUint32) {
 }
 
 TEST_F(ContainTest, ContainAllUint64) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "u64_array contain_all (";
@@ -240,7 +240,7 @@ TEST_F(ContainTest, ContainAllUint64) {
 }
 
 TEST_F(ContainTest, ContainAllFp32) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "fp32_array contain_all (";
@@ -269,7 +269,7 @@ TEST_F(ContainTest, ContainAllFp32) {
 }
 
 TEST_F(ContainTest, ContainAllFp64) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "fp64_array contain_all (";
@@ -298,7 +298,7 @@ TEST_F(ContainTest, ContainAllFp64) {
 }
 
 TEST_F(ContainTest, ContainAllString) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "str_array contain_all (";
@@ -327,7 +327,7 @@ TEST_F(ContainTest, ContainAllString) {
 }
 
 TEST_F(ContainTest, ContainAnyInt32) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "i32_array contain_any (98,99,100)";
@@ -349,7 +349,7 @@ TEST_F(ContainTest, ContainAnyInt32) {
 }
 
 TEST_F(ContainTest, ContainAnyInt64) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "i64_array contain_any (98,99,100)";
@@ -371,7 +371,7 @@ TEST_F(ContainTest, ContainAnyInt64) {
 }
 
 TEST_F(ContainTest, ContainAnyUint32) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "u32_array contain_any (98,99,100)";
@@ -393,7 +393,7 @@ TEST_F(ContainTest, ContainAnyUint32) {
 }
 
 TEST_F(ContainTest, ContainAnyUint64) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "u64_array contain_any (98,99,100)";
@@ -415,7 +415,7 @@ TEST_F(ContainTest, ContainAnyUint64) {
 }
 
 TEST_F(ContainTest, ContainAnyFp32) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "fp32_array contain_any (98,99,100)";
@@ -437,7 +437,7 @@ TEST_F(ContainTest, ContainAnyFp32) {
 }
 
 TEST_F(ContainTest, ContainAnyFp64) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "fp64_array contain_any (98,99,100)";
@@ -459,7 +459,7 @@ TEST_F(ContainTest, ContainAnyFp64) {
 }
 
 TEST_F(ContainTest, ContainAnyString) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
   query.filter_ = "str_array contain_any ('name98','name99','name100')";

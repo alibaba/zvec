@@ -24,7 +24,7 @@ namespace zvec::sqlengine {
 class InvertRecallTest : public RecallTest {};
 
 TEST_F(InvertRecallTest, Eq) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_age = 1";
@@ -47,7 +47,7 @@ TEST_F(InvertRecallTest, Eq) {
 }
 
 TEST_F(InvertRecallTest, Gt) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_id > 1000";
@@ -70,7 +70,7 @@ TEST_F(InvertRecallTest, Gt) {
 }
 
 TEST_F(InvertRecallTest, Ge) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_id >= 1000";
@@ -93,7 +93,7 @@ TEST_F(InvertRecallTest, Ge) {
 }
 
 TEST_F(InvertRecallTest, Lt) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_id < 100";
@@ -116,7 +116,7 @@ TEST_F(InvertRecallTest, Lt) {
 }
 
 TEST_F(InvertRecallTest, Le) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_id <= 100";
@@ -139,7 +139,7 @@ TEST_F(InvertRecallTest, Le) {
 }
 
 TEST_F(InvertRecallTest, And) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_id <= 100 and invert_id > 50";
@@ -162,7 +162,7 @@ TEST_F(InvertRecallTest, And) {
 }
 
 TEST_F(InvertRecallTest, Or) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_id < 100 or invert_id > 200";
@@ -186,7 +186,7 @@ TEST_F(InvertRecallTest, Or) {
 }
 
 TEST_F(InvertRecallTest, StrEq) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_name = 'user_1'";
@@ -209,7 +209,7 @@ TEST_F(InvertRecallTest, StrEq) {
 }
 
 TEST_F(InvertRecallTest, StrGe) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_name >= 'user_1'";
@@ -235,7 +235,7 @@ TEST_F(InvertRecallTest, StrGe) {
 }
 
 TEST_F(InvertRecallTest, StrIn) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_name IN ('user_1', 'user_2')";
@@ -264,7 +264,7 @@ TEST_F(InvertRecallTest, StrIn) {
 }
 
 TEST_F(InvertRecallTest, StrNotIn) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_name NOT IN ('user_1', 'user_2')";
@@ -293,7 +293,7 @@ TEST_F(InvertRecallTest, StrNotIn) {
 }
 
 TEST_F(InvertRecallTest, StrLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_name like 'user\\_9%'";
@@ -324,7 +324,7 @@ TEST_F(InvertRecallTest, StrLike) {
 }
 
 TEST_F(InvertRecallTest, ContainAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set contain_all (";
@@ -359,7 +359,7 @@ TEST_F(InvertRecallTest, ContainAll) {
 }
 
 TEST_F(InvertRecallTest, NotContainAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set not contain_all (";
@@ -395,7 +395,7 @@ TEST_F(InvertRecallTest, NotContainAll) {
 }
 
 TEST_F(InvertRecallTest, ContainAny) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set contain_any (98,99,100)";
@@ -423,7 +423,7 @@ TEST_F(InvertRecallTest, ContainAny) {
 }
 
 TEST_F(InvertRecallTest, NotContainAny) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set not contain_any (98,99,100)";
@@ -452,7 +452,7 @@ TEST_F(InvertRecallTest, NotContainAny) {
 }
 
 TEST_F(InvertRecallTest, BoolContainAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_bool_array contain_all (true, false)";
@@ -477,7 +477,7 @@ TEST_F(InvertRecallTest, BoolContainAll) {
 }
 
 TEST_F(InvertRecallTest, BoolContainAny) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_bool_array contain_any (true)";
@@ -505,7 +505,7 @@ TEST_F(InvertRecallTest, BoolContainAny) {
 }
 
 TEST_F(InvertRecallTest, ContainAllEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set contain_all ()";
@@ -533,7 +533,7 @@ TEST_F(InvertRecallTest, ContainAllEmptySet) {
 }
 
 TEST_F(InvertRecallTest, NotContainAllEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set not contain_all ()";
@@ -546,7 +546,7 @@ TEST_F(InvertRecallTest, NotContainAllEmptySet) {
 }
 
 TEST_F(InvertRecallTest, ContainAnyEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set contain_any ()";
@@ -559,7 +559,7 @@ TEST_F(InvertRecallTest, ContainAnyEmptySet) {
 }
 
 TEST_F(InvertRecallTest, NotContainAnyEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_category_set not contain_any ()";
@@ -587,7 +587,7 @@ TEST_F(InvertRecallTest, NotContainAnyEmptySet) {
 }
 
 TEST_F(InvertRecallTest, IsNull) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_optional_age is null";
@@ -610,7 +610,7 @@ TEST_F(InvertRecallTest, IsNull) {
 }
 
 TEST_F(InvertRecallTest, IsNotNull) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_optional_age is not null";
@@ -636,7 +636,7 @@ TEST_F(InvertRecallTest, IsNotNull) {
 }
 
 TEST_F(InvertRecallTest, BoolEqTrue) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_bool = TRuE";
@@ -659,7 +659,7 @@ TEST_F(InvertRecallTest, BoolEqTrue) {
 }
 
 TEST_F(InvertRecallTest, BoolEqFalse) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "invert_bool = false";
@@ -687,7 +687,7 @@ TEST_F(InvertRecallTest, BoolEqFalse) {
 }
 
 TEST_F(InvertRecallTest, ArrayLengthGe) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "array_length(invert_category_set) >= 32";
@@ -715,7 +715,7 @@ TEST_F(InvertRecallTest, ArrayLengthGe) {
 }
 
 TEST_F(InvertRecallTest, ArrayLengthEq) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "array_length(invert_category_set) = 32";
@@ -740,7 +740,7 @@ TEST_F(InvertRecallTest, ArrayLengthEq) {
 }
 
 TEST_F(InvertRecallTest, MultiSegment) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>();
   query.topk_ = 200;
   query.include_vector_ = true;

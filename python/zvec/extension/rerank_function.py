@@ -67,3 +67,15 @@ class RerankFunction(ABC):
                 with updated ``score`` fields.
         """
         ...
+
+    def _get_object(self):
+        """Return the underlying C++ Reranker instance, if available.
+
+        This is used internally by the query executor to pass the reranker
+        to the C++ MultiQuery method. Subclasses that wrap a C++ reranker
+        should override this method.
+
+        Returns:
+            The C++ Reranker shared pointer, or None if not available.
+        """
+        return None  # noqa: RET501

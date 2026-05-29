@@ -482,7 +482,10 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Doc::Ptr Fetch(uint64_t doc_id) override {
+  Doc::Ptr Fetch(uint64_t doc_id,
+                 const std::optional<std::vector<std::string>> &output_fields =
+                     std::nullopt,
+                 bool include_vector = true) override {
     return nullptr;
   }
 

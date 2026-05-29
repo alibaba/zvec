@@ -14,10 +14,11 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
-#include <zvec/db/doc.h>
 #include <zvec/db/options.h>
+#include <zvec/db/query.h>
 #include <zvec/db/stats.h>
 #include <zvec/db/status.h>
 
@@ -96,13 +97,17 @@ class Collection {
 
   virtual Status DeleteByFilter(const std::string &filter) = 0;
 
-  virtual Result<DocPtrList> Query(const VectorQuery &query) const = 0;
+  virtual Result<DocPtrList> Query(const SearchQuery &query) const = 0;
+
+  virtual Result<DocPtrList> Query(const MultiQuery &query) const = 0;
 
   virtual Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const = 0;
 
-  virtual Result<DocPtrMap> Fetch(
-      const std::vector<std::string> &pks) const = 0;
+  virtual Result<DocPtrMap> Fetch(const std::vector<std::string> &pks,
+                                  const std::optional<std::vector<std::string>>
+                                      &output_fields = std::nullopt,
+                                  bool include_vector = true) const = 0;
 
  public:
   //! Debug-only: retrieve the storage mode string of an HNSW index on the
