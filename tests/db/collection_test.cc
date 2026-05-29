@@ -5177,3 +5177,111 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
   col.reset();
   FileHelper::RemoveDirectory(col_path);
 }
+
+// CreateIndex/DropIndex must explicitly reject index types they don't
+// support (today: anything other than vector index types or INVERT).  This
+// keeps a hypothetically supported-looking call like CreateIndex(field, Fts)
+// from silently routing through the scalar/invert path and corrupting state.
+TEST_F(CollectionTest, CornerCase_CreateOrDropIndex_UnsupportedTypes) {
+  auto build_schema = [](bool with_fts) {
+    auto schema = std::make_shared<CollectionSchema>("fts_dyn");
+    schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+    schema->add_field(std::make_shared<FieldSchema>(
+        "content", DataType::STRING, false,
+        with_fts ? std::make_shared<FtsIndexParams>() : nullptr));
+    schema->add_field(std::make_shared<FieldSchema>(
+        "vec", DataType::VECTOR_FP32, 4, false,
+        std::make_shared<FlatIndexParams>(MetricType::IP)));
+    return schema;
+  };
+  auto make_doc = [](uint64_t id, const std::string &title,
+                     const std::string &content) {
+    Doc d;
+    d.set_pk("pk_" + std::to_string(id));
+    d.set<std::string>("title", title);
+    d.set<std::string>("content", content);
+    d.set<std::vector<float>>("vec", std::vector<float>(4, float(id) + 0.1f));
+    return d;
+  };
+  auto fts_search = [](Collection::Ptr &col, const std::string &term) {
+    VectorQuery vq;
+    vq.field_name_ = "content";
+    vq.topk_ = 10;
+    Fts fts_q;
+    fts_q.query_string_ = term;
+    vq.fts_ = fts_q;
+    return col->Query(vq);
+  };
+
+  // Case 1: CreateIndex(FtsIndexParams) and CreateIndex(nullptr) on a column
+  // declared without an FTS index — both should be rejected up front and
+  // leave the schema unchanged.
+  {
+    FileHelper::RemoveDirectory(col_path);
+    auto schema = build_schema(/*with_fts=*/false);
+    auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                                CollectionOptions{false, true});
+    ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+    auto col = create_res.value();
+
+    std::vector<Doc> docs;
+    docs.push_back(make_doc(0, "intro", "hello world"));
+    docs.push_back(make_doc(1, "guide", "hello foo"));
+    docs.push_back(make_doc(2, "more", "nothing here"));
+    ASSERT_TRUE(col->Insert(docs).has_value());
+    ASSERT_TRUE(col->Flush().ok());
+
+    auto s_fts =
+        col->CreateIndex("content", std::make_shared<FtsIndexParams>());
+    ASSERT_FALSE(s_fts.ok());
+    ASSERT_EQ(s_fts.code(), StatusCode::NOT_SUPPORTED);
+
+    auto s_null = col->CreateIndex("content", nullptr);
+    ASSERT_FALSE(s_null.ok());
+    ASSERT_EQ(s_null.code(), StatusCode::INVALID_ARGUMENT);
+
+    // Schema must not be mutated by the rejected calls.
+    ASSERT_EQ(col->Schema().value(), *schema);
+
+    // Subsequent FTS query still fails because the column was never indexed,
+    // but it's a query-side validation error rather than a corruption symptom.
+    auto q = fts_search(col, "hello");
+    ASSERT_FALSE(q.has_value());
+
+    col.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
+
+  // Case 2: DropIndex on an FTS column is rejected (we don't tear down FTS
+  // physical state through DropIndex today), and the FTS index remains usable.
+  {
+    FileHelper::RemoveDirectory(col_path);
+    auto schema = build_schema(/*with_fts=*/true);
+    auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                                CollectionOptions{false, true});
+    ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+    auto col = create_res.value();
+
+    std::vector<Doc> docs;
+    docs.push_back(make_doc(0, "intro", "hello world"));
+    docs.push_back(make_doc(1, "guide", "hello foo"));
+    ASSERT_TRUE(col->Insert(docs).has_value());
+    ASSERT_TRUE(col->Flush().ok());
+    auto baseline = fts_search(col, "hello");
+    ASSERT_TRUE(baseline.has_value());
+    ASSERT_EQ(baseline.value().size(), 2u);
+
+    auto s = col->DropIndex("content");
+    ASSERT_FALSE(s.ok());
+    ASSERT_EQ(s.code(), StatusCode::NOT_SUPPORTED);
+
+    // Schema and FTS index untouched.
+    ASSERT_EQ(col->Schema().value(), *schema);
+    auto q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value());
+    ASSERT_EQ(q.value().size(), 2u);
+
+    col.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
+}
