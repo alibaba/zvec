@@ -639,7 +639,7 @@ Status SegmentHelper::ReduceVectorIndex(
 
     auto can_reuse_first_indexer = [&](auto &&fetch_indexers,
                                        const FieldSchema &output_field) {
-      if (filter != nullptr || input_segments.size() <= 1) {
+      if (filter != nullptr || input_segments.empty()) {
         return false;
       }
       auto output_index_type = output_field.index_type();
