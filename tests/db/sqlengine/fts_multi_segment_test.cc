@@ -92,12 +92,12 @@ class FtsMultiSegmentTest : public ::testing::Test {
 
   Result<DocPtrList> fts_search(const std::string &query_string,
                                 int topk = 10) {
-    VectorQuery vq;
+    SearchQuery vq;
     vq.topk_ = topk;
-    vq.field_name_ = "content";
-    Fts fts;
+    vq.target_.field_name_ = "content";
+    FtsClause fts;
     fts.query_string_ = query_string;
-    vq.fts_ = fts;
+    vq.target_.clause_ = fts;
     return engine_->execute(schema_, vq, segments_);
   }
 

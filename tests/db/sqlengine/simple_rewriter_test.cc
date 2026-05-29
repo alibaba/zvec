@@ -188,7 +188,7 @@ class SimpleRewriterTest : public testing::Test {
   static void TearDownTestSuite() {}
 
   QueryInfo::Ptr parse(const std::string &filter) {
-    VectorQuery query;
+    SearchQuery query;
     query.output_fields_ = {"*"};
     query.topk_ = 11;
     query.include_vector_ = false;

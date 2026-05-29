@@ -18,7 +18,7 @@
 #include <memory>
 #include <vector>
 #include <arrow/api.h>
-#include <zvec/db/doc.h>
+#include <zvec/db/query.h>
 #include <zvec/db/schema.h>
 #include "analyzer/query_info.h"
 #include "common/group_by.h"
@@ -36,7 +36,7 @@ class SQLEngineImpl : public SQLEngine {
 
   //! Parse pb request
   Result<QueryInfo::Ptr> parse_request(CollectionSchema::Ptr collection,
-                                       const VectorQuery &request,
+                                       const SearchQuery &request,
                                        std::shared_ptr<GroupBy> group_by);
 
   //! Perform search with given query_info, segments and index filter
@@ -46,7 +46,7 @@ class SQLEngineImpl : public SQLEngine {
       std::vector<sqlengine::QueryInfo::Ptr> *query_infos);
 
   Result<DocPtrList> execute(
-      CollectionSchema::Ptr collection, const VectorQuery &query,
+      CollectionSchema::Ptr collection, const SearchQuery &query,
       const std::vector<Segment::Ptr> &segments) override;
 
   Result<GroupResults> execute_group_by(
@@ -72,7 +72,7 @@ class SQLEngineImpl : public SQLEngine {
   //! Parse FTS query into a FtsCondInfo (AST + field name).
   Result<FtsCondInfo::Ptr> parse_fts_query(
       CollectionSchema::Ptr collection, const std::string &field_name,
-      const Fts &fts, const QueryParams::Ptr &query_params);
+      const FtsClause &fts, const QueryParams::Ptr &query_params);
 
  private:
   zvec::Profiler::Ptr profiler_;

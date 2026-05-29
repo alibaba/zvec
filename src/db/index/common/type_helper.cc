@@ -13,9 +13,52 @@
 // limitations under the License.
 
 #include "type_helper.h"
+#include <algorithm>
+#include <cstring>
+#include <numeric>
+#include <vector>
 #include <zvec/core/framework/index_meta.h>
 
 namespace zvec {
+
+bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,
+                              size_t value_byte_size) {
+  if (n <= 1) {
+    return false;
+  }
+  bool already_sorted = true;
+  for (size_t i = 1; i < n; ++i) {
+    if (indices[i] == indices[i - 1]) {
+      return true;
+    }
+    if (indices[i] < indices[i - 1]) {
+      already_sorted = false;
+      break;
+    }
+  }
+  if (already_sorted) {
+    return false;
+  }
+  std::vector<size_t> perm(n);
+  std::iota(perm.begin(), perm.end(), size_t{0});
+  std::sort(perm.begin(), perm.end(),
+            [&](size_t a, size_t b) { return indices[a] < indices[b]; });
+  std::vector<uint32_t> sorted_indices(n);
+  std::vector<char> sorted_values(n * value_byte_size);
+  for (size_t i = 0; i < n; ++i) {
+    sorted_indices[i] = indices[perm[i]];
+    std::memcpy(sorted_values.data() + i * value_byte_size,
+                values + perm[i] * value_byte_size, value_byte_size);
+  }
+  std::memcpy(indices, sorted_indices.data(), n * sizeof(uint32_t));
+  std::memcpy(values, sorted_values.data(), n * value_byte_size);
+  for (size_t i = 1; i < n; ++i) {
+    if (indices[i] == indices[i - 1]) {
+      return true;
+    }
+  }
+  return false;
+}
 
 core::IndexMeta::DataType DataTypeCodeBook::to_data_type(DataType type) {
   switch (type) {

@@ -89,12 +89,12 @@ TEST_F(FtsQueryTest, BasicFtsQuery) {
   ASSERT_TRUE(insert_res.has_value()) << insert_res.error().message();
 
   // FTS query: search for "hello"
-  VectorQuery vq;
-  vq.field_name_ = "content";
+  SearchQuery vq;
+  vq.target_.field_name_ = "content";
   vq.topk_ = 10;
-  Fts fts;
+  FtsClause fts;
   fts.query_string_ = "hello";
-  vq.fts_ = fts;
+  vq.target_.clause_ = fts;
 
   auto query_res = col->Query(vq);
   ASSERT_TRUE(query_res.has_value()) << query_res.error().message();
@@ -114,12 +114,12 @@ TEST_F(FtsQueryTest, FtsQueryEmptyField) {
   ASSERT_TRUE(result.has_value());
   auto col = result.value();
 
-  VectorQuery vq;
-  vq.field_name_ = "";  // empty
+  SearchQuery vq;
+  vq.target_.field_name_ = "";  // empty
   vq.topk_ = 10;
-  Fts fts;
+  FtsClause fts;
   fts.query_string_ = "hello";
-  vq.fts_ = fts;
+  vq.target_.clause_ = fts;
 
   auto query_res = col->Query(vq);
   ASSERT_FALSE(query_res.has_value());
@@ -139,12 +139,12 @@ TEST_F(FtsQueryTest, FtsQueryNoMatch) {
   auto insert_res = col->Insert(docs);
   ASSERT_TRUE(insert_res.has_value());
 
-  VectorQuery vq;
-  vq.field_name_ = "content";
+  SearchQuery vq;
+  vq.target_.field_name_ = "content";
   vq.topk_ = 10;
-  Fts fts;
+  FtsClause fts;
   fts.query_string_ = "nonexistent_term_xyz";
-  vq.fts_ = fts;
+  vq.target_.clause_ = fts;
 
   auto query_res = col->Query(vq);
   ASSERT_TRUE(query_res.has_value());

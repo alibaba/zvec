@@ -56,7 +56,7 @@ SQLEngineImpl::SQLEngineImpl(zvec::Profiler::Ptr profiler)
     : profiler_(std::move(profiler)) {}
 
 Result<DocPtrList> SQLEngineImpl::execute(
-    CollectionSchema::Ptr collection, const VectorQuery &query,
+    CollectionSchema::Ptr collection, const SearchQuery &query,
     const std::vector<Segment::Ptr> &segments) {
   if (segments.empty()) {
     return DocPtrList{};
@@ -82,18 +82,14 @@ Result<DocPtrList> SQLEngineImpl::execute(
   return fill_result(select_item_meta_ptrs, reader.value().get());
 }
 
-VectorQuery from_group_by(const GroupByVectorQuery &gq) {
-  VectorQuery vq;
-  vq.field_name_ = gq.field_name_;
-  vq.query_vector_ = gq.query_vector_;
-  vq.query_sparse_indices_ = gq.query_sparse_indices_;
-  vq.query_sparse_values_ = gq.query_sparse_values_;
-  vq.filter_ = gq.filter_;
-  vq.include_vector_ = gq.include_vector_;
-  vq.query_params_ = gq.query_params_;
-  vq.output_fields_ = gq.output_fields_;
-  vq.topk_ = 0;
-  return vq;
+SearchQuery from_group_by(const GroupByVectorQuery &gq) {
+  SearchQuery sq;
+  sq.target_ = gq.target_;
+  sq.filter_ = gq.filter_;
+  sq.include_vector_ = gq.include_vector_;
+  sq.output_fields_ = gq.output_fields_;
+  sq.topk_ = 0;
+  return sq;
 }
 
 Result<GroupResults> SQLEngineImpl::execute_group_by(
@@ -103,7 +99,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
     return GroupResults{};
   }
 
-  VectorQuery query = from_group_by(group_by_query);
+  SearchQuery query = from_group_by(group_by_query);
   auto query_info = parse_request(
       collection, query,
       std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
@@ -128,7 +124,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
 
 Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
     CollectionSchema::Ptr collection, const std::string &field_name,
-    const Fts &fts, const QueryParams::Ptr &query_params) {
+    const FtsClause &fts, const QueryParams::Ptr &query_params) {
   // Exactly one of query_string_ or match_string_ must be provided.
   bool has_query = !fts.query_string_.empty();
   bool has_match_string = !fts.match_string_.empty();
@@ -248,7 +244,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
 }
 
 Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
-    CollectionSchema::Ptr collection, const VectorQuery &request,
+    CollectionSchema::Ptr collection, const SearchQuery &request,
     std::shared_ptr<GroupBy> group_by) {
   profiler_->open_stage("message_to_sqlinfo");
   sqlengine::SQLInfo::Ptr sql_info;
@@ -288,10 +284,10 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
 
   // If the request carries an FTS query, parse it and attach to SelectInfo
   // so that query_analyzer can propagate it to QueryInfo.
-  if (request.fts_.has_value()) {
+  if (const auto *fts_clause = request.target_.get_fts_clause()) {
     auto fts_result =
-        parse_fts_query(collection, request.field_name_, request.fts_.value(),
-                        request.query_params_);
+        parse_fts_query(collection, request.target_.field_name_, *fts_clause,
+                        request.target_.query_params_);
     if (!fts_result) {
       return tl::make_unexpected(fts_result.error());
     }

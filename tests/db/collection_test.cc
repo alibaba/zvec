@@ -34,6 +34,7 @@
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/options.h"
+#include "zvec/db/reranker.h"
 #include "zvec/db/schema.h"
 #include "zvec/db/status.h"
 #include "zvec/db/type.h"
@@ -93,7 +94,8 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
   ASSERT_FALSE(col->Delete({}).has_value());
   ASSERT_FALSE(col->DeleteByFilter("").ok());
   ASSERT_FALSE(col->Fetch({}).has_value());
-  ASSERT_FALSE(col->Query({}).has_value());
+  ASSERT_FALSE(col->Query(SearchQuery{}).has_value());
+  ASSERT_FALSE(col->Query(MultiQuery{}).has_value());
   ASSERT_FALSE(col->GroupByQuery({}).has_value());
   ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
   ASSERT_FALSE(col->DropIndex("").ok());
@@ -1903,9 +1905,9 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
               << ", code: " << GetDefaultMessage(s.code()) << std::endl;
     ASSERT_TRUE(s.ok());
 
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = doc_count;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
     query.include_vector_ = true;
     auto field_scheama = schema->get_vector_field(field_name);
     ASSERT_NE(field_scheama, nullptr);
@@ -1925,37 +1927,36 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
         vector_fp16 = std::vector<ailego::Float16>(field_scheama->dimension(),
                                                    ailego::Float16(1.0f));
         vector_fp16[0] = 0;
-        query.query_vector_.assign(
-            (char *)vector_fp16.data(),
-            vector_fp16.size() * sizeof(ailego::Float16));
+        query.target_.set_vector(
+            std::string((char *)vector_fp16.data(),
+                        vector_fp16.size() * sizeof(ailego::Float16)));
       } else if (field_scheama->data_type() == DataType::VECTOR_FP32) {
         vector = std::vector<float>(field_scheama->dimension(), 1);
         vector[0] = 0;
-        query.query_vector_.assign((char *)vector.data(),
-                                   vector.size() * sizeof(float));
+        query.target_.set_vector(
+            std::string((char *)vector.data(), vector.size() * sizeof(float)));
       } else {
         vector_int8 = std::vector<int8_t>(field_scheama->dimension(), 1);
         vector_int8[0] = 0;
-        query.query_vector_.assign((char *)vector_int8.data(),
-                                   vector_int8.size() * sizeof(int8_t));
+        query.target_.set_vector(std::string(
+            (char *)vector_int8.data(), vector_int8.size() * sizeof(int8_t)));
       }
     } else {
       if (field_scheama->data_type() == DataType::SPARSE_VECTOR_FP32) {
         sparse_vector = {{1}, {1}};
-        query.query_sparse_indices_.assign(
-            (char *)sparse_vector.first.data(),
-            sparse_vector.first.size() * sizeof(uint32_t));
-        query.query_sparse_values_.assign(
-            (char *)sparse_vector.second.data(),
-            sparse_vector.second.size() * sizeof(float));
+        query.target_.set_sparse_vector(
+            std::string((char *)sparse_vector.first.data(),
+                        sparse_vector.first.size() * sizeof(uint32_t)),
+            std::string((char *)sparse_vector.second.data(),
+                        sparse_vector.second.size() * sizeof(float)));
       } else {
         sparse_vector_fp16 = {{1}, {ailego::Float16(1.0f)}};
-        query.query_sparse_indices_.assign(
-            (char *)sparse_vector_fp16.first.data(),
-            sparse_vector_fp16.first.size() * sizeof(uint32_t));
-        query.query_sparse_values_.assign(
-            (char *)sparse_vector_fp16.second.data(),
-            sparse_vector_fp16.second.size() * sizeof(ailego::Float16));
+        query.target_.set_sparse_vector(
+            std::string((char *)sparse_vector_fp16.first.data(),
+                        sparse_vector_fp16.first.size() * sizeof(uint32_t)),
+            std::string(
+                (char *)sparse_vector_fp16.second.data(),
+                sparse_vector_fp16.second.size() * sizeof(ailego::Float16)));
       }
     }
     auto query_result = collection->Query(query);
@@ -2814,15 +2815,16 @@ TEST_F(CollectionTest, Feature_Optimize_MetricType) {
       auto query_doc = TestHelper::CreateDoc(i, *schema);
       // std::cout << query_doc.to_detail_string() << std::endl;
 
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = 10;
       query.include_vector_ = true;
-      query.field_name_ = "dense_fp32";
+      query.target_.field_name_ = "dense_fp32";
 
       auto vector = query_doc.get<std::vector<float>>("dense_fp32");
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
 
 
       auto result = collection->Query(query);
@@ -3327,9 +3329,9 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
   auto query_doc = TestHelper::CreateDoc(1, *schema);
 
   {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 1024;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);
     ASSERT_NE(field_scheama, nullptr);
@@ -3338,18 +3340,18 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
     if (field_scheama->is_dense_vector()) {
       auto vector = query_doc.get<std::vector<float>>(field_name);
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
     } else {
       auto sparse_vector =
           query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
               field_name);
-      query.query_sparse_indices_.assign(
-          (char *)sparse_vector.value().first.data(),
-          sparse_vector.value().first.size() * sizeof(uint32_t));
-      query.query_sparse_values_.assign(
-          (char *)sparse_vector.value().second.data(),
-          sparse_vector.value().second.size() * sizeof(float));
+      query.target_.set_sparse_vector(
+          std::string((char *)sparse_vector.value().first.data(),
+                      sparse_vector.value().first.size() * sizeof(uint32_t)),
+          std::string((char *)sparse_vector.value().second.data(),
+                      sparse_vector.value().second.size() * sizeof(float)));
     }
     query.include_vector_ = true;
 
@@ -3359,9 +3361,9 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
   }
 
   {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 100001;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
 
     auto field_scheama = schema->get_vector_field(field_name);
     ASSERT_NE(field_scheama, nullptr);
@@ -3370,18 +3372,18 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
     if (field_scheama->is_dense_vector()) {
       auto vector = query_doc.get<std::vector<float>>(field_name);
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
     } else {
       auto sparse_vector =
           query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
               field_name);
-      query.query_sparse_indices_.assign(
-          (char *)sparse_vector.value().first.data(),
-          sparse_vector.value().first.size() * sizeof(uint32_t));
-      query.query_sparse_values_.assign(
-          (char *)sparse_vector.value().second.data(),
-          sparse_vector.value().second.size() * sizeof(float));
+      query.target_.set_sparse_vector(
+          std::string((char *)sparse_vector.value().first.data(),
+                      sparse_vector.value().first.size() * sizeof(uint32_t)),
+          std::string((char *)sparse_vector.value().second.data(),
+                      sparse_vector.value().second.size() * sizeof(float)));
     }
     query.include_vector_ = true;
 
@@ -3391,9 +3393,9 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
   }
 
   {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 1024;
-    query.field_name_ = field_name;
+    query.target_.field_name_ = field_name;
     query.output_fields_ = std::make_optional<std::vector<std::string>>(
         std::vector<std::string>(1025));
 
@@ -3404,18 +3406,18 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
     if (field_scheama->is_dense_vector()) {
       auto vector = query_doc.get<std::vector<float>>(field_name);
       ASSERT_TRUE(vector.has_value());
-      query.query_vector_.assign((char *)vector.value().data(),
-                                 vector.value().size() * sizeof(float));
+      query.target_.set_vector(
+          std::string((char *)vector.value().data(),
+                      vector.value().size() * sizeof(float)));
     } else {
       auto sparse_vector =
           query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
               field_name);
-      query.query_sparse_indices_.assign(
-          (char *)sparse_vector.value().first.data(),
-          sparse_vector.value().first.size() * sizeof(uint32_t));
-      query.query_sparse_values_.assign(
-          (char *)sparse_vector.value().second.data(),
-          sparse_vector.value().second.size() * sizeof(float));
+      query.target_.set_sparse_vector(
+          std::string((char *)sparse_vector.value().first.data(),
+                      sparse_vector.value().first.size() * sizeof(uint32_t)),
+          std::string((char *)sparse_vector.value().second.data(),
+                      sparse_vector.value().second.size() * sizeof(float)));
     }
     query.include_vector_ = true;
 
@@ -3446,9 +3448,9 @@ TEST_F(CollectionTest, Feature_Query_General) {
       auto query_doc = TestHelper::CreateDoc(i, *schema);
       // std::cout << query_doc.to_detail_string() << std::endl;
 
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = 10;
-      query.field_name_ = field_name;
+      query.target_.field_name_ = field_name;
 
       auto field_scheama = schema->get_vector_field(field_name);
       ASSERT_NE(field_scheama, nullptr);
@@ -3457,18 +3459,18 @@ TEST_F(CollectionTest, Feature_Query_General) {
       if (field_scheama->is_dense_vector()) {
         auto vector = query_doc.get<std::vector<float>>(field_name);
         ASSERT_TRUE(vector.has_value());
-        query.query_vector_.assign((char *)vector.value().data(),
-                                   vector.value().size() * sizeof(float));
+        query.target_.set_vector(
+            std::string((char *)vector.value().data(),
+                        vector.value().size() * sizeof(float)));
       } else {
         auto sparse_vector =
             query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
                 field_name);
-        query.query_sparse_indices_.assign(
-            (char *)sparse_vector.value().first.data(),
-            sparse_vector.value().first.size() * sizeof(uint32_t));
-        query.query_sparse_values_.assign(
-            (char *)sparse_vector.value().second.data(),
-            sparse_vector.value().second.size() * sizeof(float));
+        query.target_.set_sparse_vector(
+            std::string((char *)sparse_vector.value().first.data(),
+                        sparse_vector.value().first.size() * sizeof(uint32_t)),
+            std::string((char *)sparse_vector.value().second.data(),
+                        sparse_vector.value().second.size() * sizeof(float)));
       }
       query.include_vector_ = true;
 
@@ -3517,7 +3519,7 @@ TEST_F(CollectionTest, Feature_Query_Empty) {
       auto query_doc = TestHelper::CreateDoc(i, *schema);
       // std::cout << query_doc.to_detail_string() << std::endl;
 
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = topk;
       query.include_vector_ = true;
 
@@ -3560,7 +3562,7 @@ TEST_F(CollectionTest, Feature_Query_WithoutVector_CreateScalarIndex) {
     std::cout << stats.to_string_formatted() << std::endl;
 
     // validate query result
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = topk;
     query.include_vector_ = true;
     query.filter_ = filter;
@@ -3646,7 +3648,7 @@ TEST_F(CollectionTest, Feature_Query_WithoutVector_WithScalarIndex) {
     std::cout << stats.to_string_formatted() << std::endl;
 
     // validate query result
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = topk;
     query.include_vector_ = true;
     query.filter_ = filter;
@@ -3675,6 +3677,438 @@ TEST_F(CollectionTest, Feature_Query_WithoutVector_WithScalarIndex) {
        "array_bool contain_any (true)", 1);
   func(5, 20, "array_int32", std::make_shared<InvertIndexParams>(true),
        "array_int32 contain_any (1)", 1);
+}
+
+// =============================================================================
+// MultiQuery Tests
+// =============================================================================
+
+TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  // Test 1: Empty queries should fail
+  {
+    MultiQuery mvq;
+    mvq.topk = 10;
+    mvq.reranker = std::make_shared<RrfReranker>(60);
+    auto result = collection->Query(mvq);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
+  }
+
+  // Test 2: No reranker with multiple queries should fail
+  {
+    MultiQuery mvq;
+    mvq.topk = 10;
+    auto query_doc = TestHelper::CreateDoc(1, *schema);
+
+    SubQuery vq1;
+    vq1.num_candidates_ = 10;
+    vq1.target_.field_name_ = "dense_fp32";
+    auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vector.has_value());
+    std::get<VectorClause>(vq1.target_.clause_)
+        .query_vector_.assign((char *)vector.value().data(),
+                              vector.value().size() * sizeof(float));
+    mvq.queries.push_back(vq1);
+
+    SubQuery vq2;
+    vq2.num_candidates_ = 10;
+    vq2.target_.field_name_ = "dense_fp16";
+    auto vector2 = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vector2.has_value());
+    std::get<VectorClause>(vq2.target_.clause_)
+        .query_vector_.assign((char *)vector2.value().data(),
+                              vector2.value().size() * sizeof(float));
+    mvq.queries.push_back(vq2);
+
+    auto result = collection->Query(mvq);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
+  }
+
+  // Test 3: Invalid field name should fail
+  {
+    MultiQuery mvq;
+    mvq.topk = 10;
+    mvq.reranker = std::make_shared<RrfReranker>(60);
+
+    SubQuery vq1;
+    vq1.num_candidates_ = 10;
+    vq1.target_.field_name_ = "nonexistent_field";
+    std::get<VectorClause>(vq1.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq1);
+
+    SubQuery vq2;
+    vq2.num_candidates_ = 10;
+    vq2.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq2.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq2);
+
+    auto result = collection->Query(mvq);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
+  }
+
+  // Test 4: Duplicate field names should fail
+  {
+    MultiQuery mvq;
+    mvq.topk = 10;
+    mvq.reranker = std::make_shared<RrfReranker>(60);
+
+    SubQuery vq1;
+    vq1.num_candidates_ = 10;
+    vq1.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq1.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq1);
+
+    SubQuery vq2;
+    vq2.num_candidates_ = 10;
+    vq2.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq2.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq2);
+
+    auto result = collection->Query(mvq);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
+  }
+}
+
+TEST_F(CollectionTest, Feature_MultiQuery_SingleFieldWithReranker) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  // Single query with reranker should fail (requires at least 2 sub-queries)
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+
+  MultiQuery mvq;
+  mvq.topk = 10;
+  mvq.reranker = std::make_shared<RrfReranker>(60);
+
+  SubQuery vq;
+  vq.num_candidates_ = 10;
+  vq.target_.field_name_ = "dense_fp32";
+  auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+  ASSERT_TRUE(vector.has_value());
+  std::get<VectorClause>(vq.target_.clause_)
+      .query_vector_.assign((char *)vector.value().data(),
+                            vector.value().size() * sizeof(float));
+  mvq.queries.push_back(vq);
+
+  auto result = collection->Query(mvq);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
+}
+
+TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldRRF) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+
+  MultiQuery mvq;
+  mvq.topk = 10;
+  mvq.reranker = std::make_shared<RrfReranker>(60);
+
+  // Query dense_fp32 and dense_fp16 fields with different vectors
+  auto vector1 = query_doc.get<std::vector<float>>("dense_fp32");
+  ASSERT_TRUE(vector1.has_value());
+
+  {
+    SubQuery vq;
+    vq.num_candidates_ = 10;
+    vq.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq.target_.clause_)
+        .query_vector_.assign((char *)vector1.value().data(),
+                              vector1.value().size() * sizeof(float));
+    mvq.queries.push_back(vq);
+  }
+
+  // Query sparse_fp32 field
+  auto sparse =
+      query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+          "sparse_fp32");
+  ASSERT_TRUE(sparse.has_value());
+
+  {
+    SubQuery vq;
+    vq.num_candidates_ = 10;
+    vq.target_.field_name_ = "sparse_fp32";
+    std::get<VectorClause>(vq.target_.clause_)
+        .sparse_indices_.assign((char *)sparse.value().first.data(),
+                                sparse.value().first.size() * sizeof(uint32_t));
+    std::get<VectorClause>(vq.target_.clause_)
+        .sparse_values_.assign((char *)sparse.value().second.data(),
+                               sparse.value().second.size() * sizeof(float));
+    mvq.queries.push_back(vq);
+  }
+
+  auto result = collection->Query(mvq);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_GT(result.value().size(), 0u);
+  EXPECT_LE(result.value().size(), 10u);
+
+  // All results should have valid scores (RRF fused)
+  for (const auto &doc : result.value()) {
+    EXPECT_NE(doc->score(), 0.0f);
+  }
+}
+
+TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldWeighted) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+
+  MultiQuery mvq;
+  mvq.topk = 10;
+  std::map<std::string, double> weights = {{"dense_fp32", 0.7},
+                                           {"sparse_fp32", 0.3}};
+  mvq.reranker = std::make_shared<WeightedReranker>(weights);
+
+  // Query dense_fp32 field
+  {
+    SubQuery vq;
+    vq.num_candidates_ = 10;
+    vq.target_.field_name_ = "dense_fp32";
+    auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vector.has_value());
+    std::get<VectorClause>(vq.target_.clause_)
+        .query_vector_.assign((char *)vector.value().data(),
+                              vector.value().size() * sizeof(float));
+    mvq.queries.push_back(vq);
+  }
+
+  // Query sparse_fp32 field
+  {
+    SubQuery vq;
+    vq.num_candidates_ = 10;
+    vq.target_.field_name_ = "sparse_fp32";
+    auto sparse =
+        query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+            "sparse_fp32");
+    ASSERT_TRUE(sparse.has_value());
+    std::get<VectorClause>(vq.target_.clause_)
+        .sparse_indices_.assign((char *)sparse.value().first.data(),
+                                sparse.value().first.size() * sizeof(uint32_t));
+    std::get<VectorClause>(vq.target_.clause_)
+        .sparse_values_.assign((char *)sparse.value().second.data(),
+                               sparse.value().second.size() * sizeof(float));
+    mvq.queries.push_back(vq);
+  }
+
+  auto result = collection->Query(mvq);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_GT(result.value().size(), 0u);
+  EXPECT_LE(result.value().size(), 10u);
+}
+
+TEST_F(CollectionTest, Feature_MultiQuery_WithFilter) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+
+  MultiQuery mvq;
+  mvq.topk = 10;
+  mvq.filter = "int32 > 50";
+  mvq.reranker = std::make_shared<RrfReranker>(60);
+
+  SubQuery vq1;
+  vq1.num_candidates_ = 10;
+  vq1.target_.field_name_ = "dense_fp32";
+  auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+  ASSERT_TRUE(vector.has_value());
+  std::get<VectorClause>(vq1.target_.clause_)
+      .query_vector_.assign((char *)vector.value().data(),
+                            vector.value().size() * sizeof(float));
+  mvq.queries.push_back(vq1);
+
+  auto sparse =
+      query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+          "sparse_fp32");
+  ASSERT_TRUE(sparse.has_value());
+  SubQuery vq2;
+  vq2.num_candidates_ = 10;
+  vq2.target_.field_name_ = "sparse_fp32";
+  std::get<VectorClause>(vq2.target_.clause_)
+      .sparse_indices_.assign((char *)sparse.value().first.data(),
+                              sparse.value().first.size() * sizeof(uint32_t));
+  std::get<VectorClause>(vq2.target_.clause_)
+      .sparse_values_.assign((char *)sparse.value().second.data(),
+                             sparse.value().second.size() * sizeof(float));
+  mvq.queries.push_back(vq2);
+
+  auto result = collection->Query(mvq);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_GT(result.value().size(), 0u);
+  EXPECT_LE(result.value().size(), 10u);
+}
+
+TEST_F(CollectionTest, Feature_MultiQuery_WithOutputFields) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+
+  MultiQuery mvq;
+  mvq.topk = 5;
+  mvq.include_vector = false;
+  mvq.output_fields = std::make_optional<std::vector<std::string>>(
+      std::vector<std::string>{"int32", "string"});
+  mvq.reranker = std::make_shared<RrfReranker>(60);
+
+  SubQuery vq1;
+  vq1.num_candidates_ = 10;
+  vq1.target_.field_name_ = "dense_fp32";
+  auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+  ASSERT_TRUE(vector.has_value());
+  std::get<VectorClause>(vq1.target_.clause_)
+      .query_vector_.assign((char *)vector.value().data(),
+                            vector.value().size() * sizeof(float));
+  mvq.queries.push_back(vq1);
+
+  auto sparse =
+      query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+          "sparse_fp32");
+  ASSERT_TRUE(sparse.has_value());
+  SubQuery vq2;
+  vq2.num_candidates_ = 10;
+  vq2.target_.field_name_ = "sparse_fp32";
+  std::get<VectorClause>(vq2.target_.clause_)
+      .sparse_indices_.assign((char *)sparse.value().first.data(),
+                              sparse.value().first.size() * sizeof(uint32_t));
+  std::get<VectorClause>(vq2.target_.clause_)
+      .sparse_values_.assign((char *)sparse.value().second.data(),
+                             sparse.value().second.size() * sizeof(float));
+  mvq.queries.push_back(vq2);
+
+  auto result = collection->Query(mvq);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_GT(result.value().size(), 0u);
+  EXPECT_LE(result.value().size(), 5u);
+}
+
+TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 100;
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, doc_count);
+  ASSERT_NE(collection, nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(1, *schema);
+
+  // Use CallbackReranker with a lambda that merges and sorts by score
+  bool callback_invoked = false;
+  auto callback_fn = [&callback_invoked](
+                         const std::map<std::string, DocPtrList> &query_results,
+                         int topn) -> DocPtrList {
+    callback_invoked = true;
+    DocPtrList all_docs;
+    for (const auto &[_, docs] : query_results) {
+      for (const auto &doc : docs) {
+        all_docs.push_back(doc);
+      }
+    }
+    std::sort(all_docs.begin(), all_docs.end(),
+              [](const Doc::Ptr &a, const Doc::Ptr &b) {
+                return a->score() > b->score();
+              });
+    if (static_cast<int>(all_docs.size()) > topn) {
+      all_docs.resize(topn);
+    }
+    return all_docs;
+  };
+
+  MultiQuery mvq;
+  mvq.topk = 10;
+  mvq.reranker = std::make_shared<CallbackReranker>(callback_fn);
+
+  // Query dense_fp32 field
+  {
+    SubQuery vq;
+    vq.num_candidates_ = 10;
+    vq.target_.field_name_ = "dense_fp32";
+    auto vector = query_doc.get<std::vector<float>>("dense_fp32");
+    ASSERT_TRUE(vector.has_value());
+    std::get<VectorClause>(vq.target_.clause_)
+        .query_vector_.assign((char *)vector.value().data(),
+                              vector.value().size() * sizeof(float));
+    mvq.queries.push_back(vq);
+  }
+
+  // Query sparse_fp32 field
+  {
+    SubQuery vq;
+    vq.num_candidates_ = 10;
+    vq.target_.field_name_ = "sparse_fp32";
+    auto sparse =
+        query_doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
+            "sparse_fp32");
+    ASSERT_TRUE(sparse.has_value());
+    std::get<VectorClause>(vq.target_.clause_)
+        .sparse_indices_.assign((char *)sparse.value().first.data(),
+                                sparse.value().first.size() * sizeof(uint32_t));
+    std::get<VectorClause>(vq.target_.clause_)
+        .sparse_values_.assign((char *)sparse.value().second.data(),
+                               sparse.value().second.size() * sizeof(float));
+    mvq.queries.push_back(vq);
+  }
+
+  auto result = collection->Query(mvq);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_TRUE(callback_invoked);
+  EXPECT_GT(result.value().size(), 0u);
+  EXPECT_LE(result.value().size(), 10u);
+
+  // Verify results are sorted by score descending
+  for (size_t i = 1; i < result.value().size(); ++i) {
+    EXPECT_GE(result.value()[i - 1]->score(), result.value()[i]->score());
+  }
 }
 
 TEST_F(CollectionTest, Feature_GroupByQuery) {}
@@ -3725,7 +4159,7 @@ TEST_F(CollectionTest, Feature_AddColumn_General) {
 
   // validate query result
   for (int i = 1; i < 2; i++) {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 10;
     query.include_vector_ = true;
 
@@ -3911,7 +4345,7 @@ TEST_F(CollectionTest, Feature_AlterColumn_General) {
 
   // validate query result
   for (int i = 1; i < 2; i++) {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 10;
     query.include_vector_ = true;
 
@@ -4005,7 +4439,7 @@ TEST_F(CollectionTest, Feature_AlterColumn_CornerCase) {
 
     // validate query result
     for (int i = 1; i < 2; i++) {
-      VectorQuery query;
+      SearchQuery query;
       query.topk_ = 10;
       query.include_vector_ = true;
 
@@ -4961,13 +5395,13 @@ TEST_F(CollectionTest, Feature_Query_NullableFilter_WithoutIndex) {
     ASSERT_EQ(stats.doc_count, total);
 
     auto query_doc = TestHelper::CreateDoc(1, *schema);
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = total;
-    query.field_name_ = "dense_fp32";
+    query.target_.field_name_ = "dense_fp32";
     auto vec = query_doc.get<std::vector<float>>("dense_fp32");
     ASSERT_TRUE(vec.has_value());
-    query.query_vector_.assign((char *)vec.value().data(),
-                               vec.value().size() * sizeof(float));
+    query.target_.set_vector(std::string((char *)vec.value().data(),
+                                         vec.value().size() * sizeof(float)));
     query.filter_ = "int32 > 0";
     query.output_fields_ = std::vector<std::string>{"int32"};
 
@@ -5142,12 +5576,12 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
   ASSERT_EQ(col->Stats().value().doc_count, 5u);
 
   auto fts_search = [&](const std::string &term) {
-    VectorQuery vq;
-    vq.field_name_ = "content";
+    SearchQuery vq;
+    vq.target_.field_name_ = "content";
     vq.topk_ = 10;
-    Fts fts_q;
+    FtsClause fts_q;
     fts_q.query_string_ = term;
-    vq.fts_ = fts_q;
+    vq.target_.clause_ = fts_q;
     auto r = col->Query(vq);
     EXPECT_TRUE(r.has_value()) << r.error().message();
     return r.has_value() ? r.value() : DocPtrList{};
@@ -5180,8 +5614,9 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
 
 // CreateIndex/DropIndex must explicitly reject index types they don't
 // support (today: anything other than vector index types or INVERT).  This
-// keeps a hypothetically supported-looking call like CreateIndex(field, Fts)
-// from silently routing through the scalar/invert path and corrupting state.
+// keeps a hypothetically supported-looking call like CreateIndex(field,
+// FtsClause) from silently routing through the scalar/invert path and
+// corrupting state.
 TEST_F(CollectionTest, CornerCase_CreateOrDropIndex_UnsupportedTypes) {
   auto build_schema = [](bool with_fts) {
     auto schema = std::make_shared<CollectionSchema>("fts_dyn");
@@ -5204,12 +5639,12 @@ TEST_F(CollectionTest, CornerCase_CreateOrDropIndex_UnsupportedTypes) {
     return d;
   };
   auto fts_search = [](Collection::Ptr &col, const std::string &term) {
-    VectorQuery vq;
-    vq.field_name_ = "content";
+    SearchQuery vq;
+    vq.target_.field_name_ = "content";
     vq.topk_ = 10;
-    Fts fts_q;
+    FtsClause fts_q;
     fts_q.query_string_ = term;
-    vq.fts_ = fts_q;
+    vq.target_.clause_ = fts_q;
     return col->Query(vq);
   };
 

@@ -31,7 +31,7 @@
 namespace zvec::sqlengine {
 
 // ============================================================
-// FTS Recall Test fixture (real Segment + SQLEngine::execute via VectorQuery)
+// FTS Recall Test fixture (real Segment + SQLEngine::execute via SearchQuery)
 // ============================================================
 
 class FtsRecallTest : public ::testing::Test {
@@ -56,63 +56,63 @@ class FtsRecallTest : public ::testing::Test {
     FileHelper::RemoveDirectory(seg_path_);
   }
 
-  // Helper: execute FTS query_string search via VectorQuery
+  // Helper: execute FTS query_string search via SearchQuery
   Result<DocPtrList> fts_search(const std::string &query_string,
                                 int topk = 10) {
-    VectorQuery vq;
+    SearchQuery vq;
     vq.topk_ = topk;
-    vq.field_name_ = "content";
-    Fts fts;
+    vq.target_.field_name_ = "content";
+    FtsClause fts;
     fts.query_string_ = query_string;
-    vq.fts_ = fts;
+    vq.target_.clause_ = fts;
     return engine_->execute(schema_, vq, segments_);
   }
 
-  // Helper: execute FTS match_string search via VectorQuery
+  // Helper: execute FTS match_string search via SearchQuery
   Result<DocPtrList> fts_match(const std::string &match_string,
                                const std::string &default_op = "",
                                int topk = 10) {
-    VectorQuery vq;
+    SearchQuery vq;
     vq.topk_ = topk;
-    vq.field_name_ = "content";
-    Fts fts;
+    vq.target_.field_name_ = "content";
+    FtsClause fts;
     fts.match_string_ = match_string;
-    vq.fts_ = fts;
+    vq.target_.clause_ = fts;
     if (!default_op.empty()) {
       auto fts_qp = std::make_shared<zvec::FtsQueryParams>();
       fts_qp->set_default_operator(default_op);
-      vq.query_params_ = fts_qp;
+      vq.target_.query_params_ = fts_qp;
     }
     return engine_->execute(schema_, vq, segments_);
   }
 
-  // Helper: execute FTS query_string with default_operator via VectorQuery
+  // Helper: execute FTS query_string with default_operator via SearchQuery
   Result<DocPtrList> fts_query_with_op(const std::string &query_string,
                                        const std::string &default_op,
                                        int topk = 10) {
-    VectorQuery vq;
+    SearchQuery vq;
     vq.topk_ = topk;
-    vq.field_name_ = "content";
-    Fts fts;
+    vq.target_.field_name_ = "content";
+    FtsClause fts;
     fts.query_string_ = query_string;
-    vq.fts_ = fts;
+    vq.target_.clause_ = fts;
     auto fts_qp = std::make_shared<zvec::FtsQueryParams>();
     fts_qp->set_default_operator(default_op);
-    vq.query_params_ = fts_qp;
+    vq.target_.query_params_ = fts_qp;
     return engine_->execute(schema_, vq, segments_);
   }
 
-  // Helper: execute FTS query_string with WHERE filter via VectorQuery
+  // Helper: execute FTS query_string with WHERE filter via SearchQuery
   Result<DocPtrList> fts_search_with_filter(const std::string &query_string,
                                             const std::string &filter,
                                             int topk = 10) {
-    VectorQuery vq;
+    SearchQuery vq;
     vq.topk_ = topk;
-    vq.field_name_ = "content";
+    vq.target_.field_name_ = "content";
     vq.filter_ = filter;
-    Fts fts;
+    FtsClause fts;
     fts.query_string_ = query_string;
-    vq.fts_ = fts;
+    vq.target_.clause_ = fts;
     return engine_->execute(schema_, vq, segments_);
   }
 
@@ -346,23 +346,23 @@ TEST_F(FtsRecallTest, LeadingNotIsRejected) {
 
 // Both query_string_ and match_string_ empty
 TEST_F(FtsRecallTest, BothEmptyReturnsError) {
-  VectorQuery vq;
+  SearchQuery vq;
   vq.topk_ = 10;
-  vq.field_name_ = "content";
-  vq.fts_ = Fts{};  // both fields empty
+  vq.target_.field_name_ = "content";
+  vq.target_.clause_ = FtsClause{};  // both fields empty
   auto result = engine_->execute(schema_, vq, segments_);
   EXPECT_FALSE(result.has_value());
 }
 
 // Both query_string_ and match_string_ set
 TEST_F(FtsRecallTest, BothSetReturnsError) {
-  VectorQuery vq;
+  SearchQuery vq;
   vq.topk_ = 10;
-  vq.field_name_ = "content";
-  Fts fts;
+  vq.target_.field_name_ = "content";
+  FtsClause fts;
   fts.query_string_ = "apple";
   fts.match_string_ = "banana";
-  vq.fts_ = fts;
+  vq.target_.clause_ = fts;
   auto result = engine_->execute(schema_, vq, segments_);
   EXPECT_FALSE(result.has_value());
 }
@@ -480,23 +480,23 @@ TEST_F(FtsRecallTest, DefaultOperatorInvalid_Rejected) {
 
 // Empty field_name should fail
 TEST_F(FtsRecallTest, EmptyFieldNameReturnsError) {
-  VectorQuery vq;
+  SearchQuery vq;
   vq.topk_ = 10;
-  vq.field_name_ = "";
-  Fts fts;
+  vq.target_.field_name_ = "";
+  FtsClause fts;
   fts.query_string_ = "apple";
-  vq.fts_ = fts;
+  vq.target_.clause_ = fts;
   auto result = engine_->execute(schema_, vq, segments_);
   EXPECT_FALSE(result.has_value());
 }
 
 // Empty query_string (with field_name set) should fail
 TEST_F(FtsRecallTest, EmptyQueryStringReturnsError) {
-  VectorQuery vq;
+  SearchQuery vq;
   vq.topk_ = 10;
-  vq.field_name_ = "content";
+  vq.target_.field_name_ = "content";
   // Both query_string_ and match_string_ empty -> error
-  vq.fts_ = Fts{};
+  vq.target_.clause_ = FtsClause{};
   auto result = engine_->execute(schema_, vq, segments_);
   EXPECT_FALSE(result.has_value());
 }

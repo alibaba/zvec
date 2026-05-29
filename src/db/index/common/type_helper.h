@@ -14,11 +14,18 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/db/type.h>
 #include "proto/zvec.pb.h"
 
 namespace zvec {
+
+//! Sort sparse (indices, values) pairs in place by index ascending and report
+//! whether any duplicate index exists. value_byte_size is the per-value stride.
+bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,
+                              size_t value_byte_size);
 
 //! Index Type Codebook
 struct IndexTypeCodeBook {
