@@ -52,22 +52,24 @@ struct QueryTarget {
   const VectorClause *get_vector_clause() const {
     return std::get_if<VectorClause>(&clause_);
   }
+
+ private:
+  // Resets clause_ to an empty VectorClause unless it already holds one.
+  VectorClause &ensure_vector_clause() {
+    if (!std::holds_alternative<VectorClause>(clause_)) {
+      clause_ = VectorClause{};
+    }
+    return std::get<VectorClause>(clause_);
+  }
 };
 
-inline VectorClause &ensure_vector_clause(QueryTarget &target) {
-  if (!std::holds_alternative<VectorClause>(target.clause_)) {
-    target.clause_ = VectorClause{};
-  }
-  return std::get<VectorClause>(target.clause_);
-}
-
 inline void QueryTarget::set_vector(std::string vector) {
-  ensure_vector_clause(*this).query_vector_ = std::move(vector);
+  ensure_vector_clause().query_vector_ = std::move(vector);
 }
 
 inline void QueryTarget::set_sparse_vector(std::string indices,
                                            std::string values) {
-  auto &vc = ensure_vector_clause(*this);
+  auto &vc = ensure_vector_clause();
   vc.sparse_indices_ = std::move(indices);
   vc.sparse_values_ = std::move(values);
 }
@@ -78,8 +80,10 @@ struct SearchQuery {
   std::string filter_;
   bool include_vector_{false};
   bool include_doc_id_{false};
-  // select * by default, select no field if output_fields_ is empty, select
-  // specific fields if output_fields_ is not empty
+  // Field selection:
+  //   nullopt   -> select all fields (select *)
+  //   empty     -> select no field
+  //   non-empty -> select only the listed fields
   std::optional<std::vector<std::string>> output_fields_;
 
   // FtsClause currently bypasses validation (FTS not yet implemented).
@@ -90,8 +94,10 @@ struct GroupByVectorQuery {
   QueryTarget target_;
   std::string filter_;
   bool include_vector_{false};
-  // select * by default, select no field if output_fields_ is empty, select
-  // specific fields if output_fields_ is not empty
+  // Field selection:
+  //   nullopt   -> select all fields (select *)
+  //   empty     -> select no field
+  //   non-empty -> select only the listed fields
   std::optional<std::vector<std::string>> output_fields_;
   std::string group_by_field_name_;
   uint32_t group_count_{2};
@@ -118,6 +124,10 @@ struct MultiQuery {
   std::string filter;
   bool include_vector{false};
   bool include_doc_id_{false};
+  // Field selection:
+  //   nullopt   -> select all fields (select *)
+  //   empty     -> select no field
+  //   non-empty -> select only the listed fields
   std::optional<std::vector<std::string>> output_fields;
   std::shared_ptr<Reranker> reranker{nullptr};
 };
