@@ -24,7 +24,7 @@ namespace zvec::sqlengine {
 class ForwardRecallTest : public RecallTest {};
 
 TEST_F(ForwardRecallTest, Basic) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
 
@@ -48,7 +48,7 @@ TEST_F(ForwardRecallTest, Basic) {
 }
 
 TEST_F(ForwardRecallTest, BasicWithDocId) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.include_doc_id_ = true;
@@ -74,7 +74,7 @@ TEST_F(ForwardRecallTest, BasicWithDocId) {
 }
 
 TEST_F(ForwardRecallTest, OutputNoFields) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>{};
   query.topk_ = 200;
 
@@ -94,7 +94,7 @@ TEST_F(ForwardRecallTest, OutputNoFields) {
 }
 
 TEST_F(ForwardRecallTest, DenseVector) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "dense"};
   query.topk_ = 200;
   query.include_vector_ = true;
@@ -121,7 +121,7 @@ TEST_F(ForwardRecallTest, DenseVector) {
 }
 
 TEST_F(ForwardRecallTest, SparseVector) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "sparse"};
   query.topk_ = 200;
   query.include_vector_ = true;
@@ -160,7 +160,7 @@ TEST_F(ForwardRecallTest, SparseVector) {
 }
 
 TEST_F(ForwardRecallTest, MultiSegment) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = std::vector<std::string>();
   query.topk_ = 200;
   query.include_vector_ = true;
@@ -206,7 +206,7 @@ TEST_F(ForwardRecallTest, MultiSegment) {
 }
 
 TEST_F(ForwardRecallTest, Eq) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "age = 1";
@@ -229,7 +229,7 @@ TEST_F(ForwardRecallTest, Eq) {
 }
 
 TEST_F(ForwardRecallTest, Gt) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "id > 1000";
@@ -252,7 +252,7 @@ TEST_F(ForwardRecallTest, Gt) {
 }
 
 TEST_F(ForwardRecallTest, Ge) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "id >= 1000";
@@ -275,7 +275,7 @@ TEST_F(ForwardRecallTest, Ge) {
 }
 
 TEST_F(ForwardRecallTest, Lt) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "id < 100";
@@ -298,7 +298,7 @@ TEST_F(ForwardRecallTest, Lt) {
 }
 
 TEST_F(ForwardRecallTest, Le) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "id <= 100";
@@ -321,7 +321,7 @@ TEST_F(ForwardRecallTest, Le) {
 }
 
 TEST_F(ForwardRecallTest, And) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "id <= 100 and id > 50";
@@ -344,7 +344,7 @@ TEST_F(ForwardRecallTest, And) {
 }
 
 TEST_F(ForwardRecallTest, Or) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "id < 100 or id > 200";
@@ -368,7 +368,7 @@ TEST_F(ForwardRecallTest, Or) {
 }
 
 TEST_F(ForwardRecallTest, StrEq) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "name = 'user_1'";
@@ -391,7 +391,7 @@ TEST_F(ForwardRecallTest, StrEq) {
 }
 
 TEST_F(ForwardRecallTest, StrGe) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "name >= 'user_1'";
@@ -417,7 +417,7 @@ TEST_F(ForwardRecallTest, StrGe) {
 }
 
 TEST_F(ForwardRecallTest, StrIn) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "name IN ('user_1', 'user_2')";
@@ -446,7 +446,7 @@ TEST_F(ForwardRecallTest, StrIn) {
 }
 
 TEST_F(ForwardRecallTest, StrNotIn) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "name NOT IN ('user_1', 'user_2')";
@@ -475,7 +475,7 @@ TEST_F(ForwardRecallTest, StrNotIn) {
 }
 
 TEST_F(ForwardRecallTest, StrLike) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "name like 'user_9%'";
@@ -506,7 +506,7 @@ TEST_F(ForwardRecallTest, StrLike) {
 }
 
 TEST_F(ForwardRecallTest, IsNull) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "optional_age is null";
@@ -529,7 +529,7 @@ TEST_F(ForwardRecallTest, IsNull) {
 }
 
 TEST_F(ForwardRecallTest, IsNotNull) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "optional_age is not null";
@@ -555,7 +555,7 @@ TEST_F(ForwardRecallTest, IsNotNull) {
 }
 
 TEST_F(ForwardRecallTest, IsNullNoResult) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "age is null";
@@ -568,7 +568,7 @@ TEST_F(ForwardRecallTest, IsNullNoResult) {
 }
 
 TEST_F(ForwardRecallTest, ContainAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set contain_all (";
@@ -603,7 +603,7 @@ TEST_F(ForwardRecallTest, ContainAll) {
 }
 
 TEST_F(ForwardRecallTest, NotContainAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set not contain_all (";
@@ -639,7 +639,7 @@ TEST_F(ForwardRecallTest, NotContainAll) {
 }
 
 TEST_F(ForwardRecallTest, ContainAny) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set contain_any (98,99,100)";
@@ -667,7 +667,7 @@ TEST_F(ForwardRecallTest, ContainAny) {
 }
 
 TEST_F(ForwardRecallTest, NotContainAny) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set not contain_any (98,99,100)";
@@ -696,7 +696,7 @@ TEST_F(ForwardRecallTest, NotContainAny) {
 }
 
 TEST_F(ForwardRecallTest, BoolContainAll) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "bool_array contain_all (true, false)";
@@ -721,7 +721,7 @@ TEST_F(ForwardRecallTest, BoolContainAll) {
 }
 
 TEST_F(ForwardRecallTest, BoolContainAny) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "bool_array contain_any (true)";
@@ -749,7 +749,7 @@ TEST_F(ForwardRecallTest, BoolContainAny) {
 }
 
 TEST_F(ForwardRecallTest, ContainAllEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set contain_all ()";
@@ -777,7 +777,7 @@ TEST_F(ForwardRecallTest, ContainAllEmptySet) {
 }
 
 TEST_F(ForwardRecallTest, NotContainAllEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set not contain_all ()";
@@ -790,7 +790,7 @@ TEST_F(ForwardRecallTest, NotContainAllEmptySet) {
 }
 
 TEST_F(ForwardRecallTest, ContainAnyEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set contain_any ()";
@@ -803,7 +803,7 @@ TEST_F(ForwardRecallTest, ContainAnyEmptySet) {
 }
 
 TEST_F(ForwardRecallTest, NotContainAnyEmptySet) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "category_set not contain_any ()";
@@ -831,7 +831,7 @@ TEST_F(ForwardRecallTest, NotContainAnyEmptySet) {
 }
 
 TEST_F(ForwardRecallTest, BoolEqTrue) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "bool = TRuE";
@@ -854,7 +854,7 @@ TEST_F(ForwardRecallTest, BoolEqTrue) {
 }
 
 TEST_F(ForwardRecallTest, BoolEqFalse) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "bool = false";
@@ -882,7 +882,7 @@ TEST_F(ForwardRecallTest, BoolEqFalse) {
 }
 
 TEST_F(ForwardRecallTest, ArrayLengthEq) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "array_length(category_set) = 32";
@@ -907,7 +907,7 @@ TEST_F(ForwardRecallTest, ArrayLengthEq) {
 }
 
 TEST_F(ForwardRecallTest, ArrayLengthGe) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   query.filter_ = "array_length(category_set) >= 32";

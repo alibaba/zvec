@@ -23,13 +23,13 @@ namespace zvec::sqlengine {
 class VectorRecallTest : public RecallTest {};
 
 TEST_F(VectorRecallTest, Basic) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   std::vector<float> feature(4, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);
@@ -52,14 +52,14 @@ TEST_F(VectorRecallTest, Basic) {
 }
 
 TEST_F(VectorRecallTest, HybridInvertFilter) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.filter_ = "invert_id >= 1";
   query.topk_ = 200;
   std::vector<float> feature(4, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);
@@ -83,14 +83,14 @@ TEST_F(VectorRecallTest, HybridInvertFilter) {
 }
 
 TEST_F(VectorRecallTest, HybridInvertFilterBfByKeys) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.filter_ = "invert_id < 199";
   query.topk_ = 199;
   std::vector<float> feature(4, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);
@@ -113,14 +113,14 @@ TEST_F(VectorRecallTest, HybridInvertFilterBfByKeys) {
 }
 
 TEST_F(VectorRecallTest, HybridForwardFilter) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.filter_ = "id >= 1";
   query.topk_ = 200;
   std::vector<float> feature(4, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);
@@ -144,14 +144,14 @@ TEST_F(VectorRecallTest, HybridForwardFilter) {
 }
 
 TEST_F(VectorRecallTest, HybridInvertForwardFilter) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name", "age"};
   query.filter_ = "invert_id >= 1 and id <= 100";
   query.topk_ = 200;
   std::vector<float> feature(4, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);
@@ -175,16 +175,17 @@ TEST_F(VectorRecallTest, HybridInvertForwardFilter) {
 }
 
 TEST_F(VectorRecallTest, Sparse) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age"};
   query.topk_ = 200;
   std::vector<float> feature(4, 1.0);
   std::vector<uint32_t> indices{0, 1, 2, 3};
-  query.query_sparse_indices_.assign((const char *)indices.data(),
-                                     indices.size() * sizeof(uint32_t));
-  query.query_sparse_values_.assign((const char *)feature.data(),
-                                    feature.size() * sizeof(float));
-  query.field_name_ = "sparse";
+  query.target_.set_sparse_vector(
+      std::string((const char *)indices.data(),
+                  indices.size() * sizeof(uint32_t)),
+      std::string((const char *)feature.data(),
+                  feature.size() * sizeof(float)));
+  query.target_.field_name_ = "sparse";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);
@@ -218,13 +219,13 @@ TEST_F(VectorRecallTest, DeleteFilter) {
     segments_[0]->Delete("pk_" + std::to_string(i));
   }
 
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name", "age"};
   query.topk_ = 100;
   std::vector<float> feature(4, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);
@@ -249,14 +250,14 @@ TEST_F(VectorRecallTest, DeleteFilter) {
 
 TEST_F(VectorRecallTest, HybridInvertForwardDeleteFilter) {
   // In previous test, docs[0-4000) has been deleted
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"name", "age"};
   query.filter_ = "invert_id >= 6000 and id < 6080";
   query.topk_ = 100;
   std::vector<float> feature(4, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense";
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(collection_schema_, query, segments_);

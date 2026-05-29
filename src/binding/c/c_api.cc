@@ -4840,12 +4840,13 @@ bool zvec_query_params_flat_get_is_using_refiner(
 }
 
 // =============================================================================
-// VectorQuery implementation - owns zvec::VectorQuery via raw pointer
+// Query implementation - owns zvec::SearchQuery via raw pointer
+// (external C symbol naming kept for ABI compatibility)
 // =============================================================================
 
 zvec_vector_query_t *zvec_vector_query_create(void) {
-  ZVEC_TRY_RETURN_NULL("Failed to create VectorQuery",
-                       auto *query = new zvec::VectorQuery();
+  ZVEC_TRY_RETURN_NULL("Failed to create query object",
+                       auto *query = new zvec::SearchQuery();
                        query->topk_ = 10; query->include_doc_id_ = true;
                        query->include_vector_ = false;
                        return reinterpret_cast<zvec_vector_query_t *>(query);)
@@ -4854,7 +4855,7 @@ zvec_vector_query_t *zvec_vector_query_create(void) {
 
 void zvec_vector_query_destroy(zvec_vector_query_t *query) {
   if (query) {
-    delete reinterpret_cast<zvec::VectorQuery *>(query);
+    delete reinterpret_cast<zvec::SearchQuery *>(query);
   }
 }
 
@@ -4863,14 +4864,14 @@ zvec_error_code_t zvec_vector_query_set_topk(zvec_vector_query_t *query, int top
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   ptr->topk_ = topk;
   return ZVEC_OK;
 }
 
 int zvec_vector_query_get_topk(const zvec_vector_query_t *query) {
   if (!query) return 10;
-  auto *ptr = reinterpret_cast<const zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<const zvec::SearchQuery *>(query);
   return ptr->topk_;
 }
 
@@ -4880,15 +4881,16 @@ zvec_error_code_t zvec_vector_query_set_field_name(zvec_vector_query_t *query,
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<zvec::VectorQuery *>(query);
-  ptr->field_name_ = field_name ? field_name : "";
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  ptr->target_.field_name_ = field_name ? field_name : "";
   return ZVEC_OK;
 }
 
 const char *zvec_vector_query_get_field_name(const zvec_vector_query_t *query) {
   if (!query) return nullptr;
-  auto *ptr = reinterpret_cast<const zvec::VectorQuery *>(query);
-  return ptr->field_name_.empty() ? nullptr : ptr->field_name_.c_str();
+  auto *ptr = reinterpret_cast<const zvec::SearchQuery *>(query);
+  return ptr->target_.field_name_.empty() ? nullptr
+                                          : ptr->target_.field_name_.c_str();
 }
 
 zvec_error_code_t zvec_vector_query_set_query_vector(zvec_vector_query_t *query,
@@ -4899,8 +4901,8 @@ zvec_error_code_t zvec_vector_query_set_query_vector(zvec_vector_query_t *query,
                    "Vector query pointer or data is null/empty");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<zvec::VectorQuery *>(query);
-  ptr->query_vector_.assign(static_cast<const char *>(data), size);
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
 
@@ -4910,14 +4912,14 @@ zvec_error_code_t zvec_vector_query_set_filter(zvec_vector_query_t *query,
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   ptr->filter_ = filter ? filter : "";
   return ZVEC_OK;
 }
 
 const char *zvec_vector_query_get_filter(const zvec_vector_query_t *query) {
   if (!query) return nullptr;
-  auto *ptr = reinterpret_cast<const zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<const zvec::SearchQuery *>(query);
   return ptr->filter_.empty() ? nullptr : ptr->filter_.c_str();
 }
 
@@ -4927,14 +4929,14 @@ zvec_error_code_t zvec_vector_query_set_include_vector(zvec_vector_query_t *quer
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   ptr->include_vector_ = include;
   return ZVEC_OK;
 }
 
 bool zvec_vector_query_get_include_vector(const zvec_vector_query_t *query) {
   if (!query) return false;
-  auto *ptr = reinterpret_cast<const zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<const zvec::SearchQuery *>(query);
   return ptr->include_vector_;
 }
 
@@ -4944,14 +4946,14 @@ zvec_error_code_t zvec_vector_query_set_include_doc_id(zvec_vector_query_t *quer
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   ptr->include_doc_id_ = include;
   return ZVEC_OK;
 }
 
 bool zvec_vector_query_get_include_doc_id(const zvec_vector_query_t *query) {
   if (!query) return false;
-  auto *ptr = reinterpret_cast<const zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<const zvec::SearchQuery *>(query);
   return ptr->include_doc_id_;
 }
 
@@ -4962,7 +4964,7 @@ zvec_error_code_t zvec_vector_query_set_output_fields(zvec_vector_query_t *query
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   if (!fields || count == 0) {
     ptr->output_fields_ = std::nullopt;
   } else {
@@ -4984,7 +4986,7 @@ zvec_error_code_t zvec_vector_query_get_output_fields(const zvec_vector_query_t 
                    "Query, fields, or count pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  auto *ptr = reinterpret_cast<const zvec::VectorQuery *>(query);
+  auto *ptr = reinterpret_cast<const zvec::SearchQuery *>(query);
 
   if (!ptr->output_fields_.has_value()) {
     *fields = nullptr;
@@ -5007,7 +5009,7 @@ zvec_error_code_t zvec_vector_query_get_output_fields(const zvec_vector_query_t 
 
 // =============================================================================
 // Type-safe query params attachment functions (transfer ownership to
-// VectorQuery)
+// query object)
 // =============================================================================
 
 zvec_error_code_t zvec_vector_query_set_query_params(zvec_vector_query_t *query,
@@ -5021,12 +5023,11 @@ zvec_error_code_t zvec_vector_query_set_query_params(zvec_vector_query_t *query,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  auto *query_ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
 
-  // Cast to QueryParams* and transfer ownership via shared_ptr
-  // The params pointer is now owned by VectorQuery's shared_ptr
+  // Cast to QueryParams* and transfer ownership via shared_ptr.
   auto *params_ptr = reinterpret_cast<zvec::QueryParams *>(params);
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -5040,11 +5041,11 @@ zvec_error_code_t zvec_vector_query_set_hnsw_params(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  auto *query_ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::HnswQueryParams *>(hnsw_params);
 
   // Transfer ownership via shared_ptr (polymorphic conversion)
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -5057,10 +5058,10 @@ zvec_error_code_t zvec_vector_query_set_ivf_params(zvec_vector_query_t *query,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  auto *query_ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::IVFQueryParams *>(ivf_params);
 
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -5073,10 +5074,10 @@ zvec_error_code_t zvec_vector_query_set_flat_params(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
 
-  auto *query_ptr = reinterpret_cast<zvec::VectorQuery *>(query);
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::FlatQueryParams *>(flat_params);
 
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -5109,7 +5110,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_field_name(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
-  ptr->field_name_ = field_name ? field_name : "";
+  ptr->target_.field_name_ = field_name ? field_name : "";
   return ZVEC_OK;
 }
 
@@ -5117,7 +5118,8 @@ const char *zvec_group_by_vector_query_get_field_name(
     const zvec_group_by_vector_query_t *query) {
   if (!query) return nullptr;
   auto *ptr = reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
-  return ptr->field_name_.empty() ? nullptr : ptr->field_name_.c_str();
+  return ptr->target_.field_name_.empty() ? nullptr
+                                          : ptr->target_.field_name_.c_str();
 }
 
 zvec_error_code_t zvec_group_by_vector_query_set_group_by_field_name(
@@ -5186,7 +5188,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
-  ptr->query_vector_.assign(static_cast<const char *>(data), size);
+  ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
 
@@ -5288,7 +5290,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_query_params(
   auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::QueryParams *>(params);
 
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -5305,7 +5307,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_hnsw_params(
   auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::HnswQueryParams *>(hnsw_params);
 
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -5321,7 +5323,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_ivf_params(
   auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::IVFQueryParams *>(ivf_params);
 
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -5337,7 +5339,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_flat_params(
   auto *query_ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
   auto *params_ptr = reinterpret_cast<zvec::FlatQueryParams *>(flat_params);
 
-  query_ptr->query_params_.reset(params_ptr);
+  query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
 }
@@ -6338,9 +6340,9 @@ zvec_error_code_t zvec_collection_query(const zvec_collection_t *collection,
           reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(
               collection);
 
-      // Cast zvec_vector_query_t* to zvec::VectorQuery* directly
+      // zvec_vector_query_t wraps zvec::SearchQuery internally.
       auto *internal_query =
-          reinterpret_cast<const zvec::VectorQuery *>(query);
+          reinterpret_cast<const zvec::SearchQuery *>(query);
 
       auto result = (*coll_ptr)->Query(*internal_query);
       zvec_error_code_t error_code = handle_expected_result(result);

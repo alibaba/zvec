@@ -252,7 +252,7 @@ void ZVecPyCollection::bind_dml_methods(
 void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
   col.def("Query",
-          [](const Collection &self, const VectorQuery &query) {
+          [](const Collection &self, const SearchQuery &query) {
             Result<DocPtrList> result;
             {
               py::gil_scoped_release release;

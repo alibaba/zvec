@@ -53,7 +53,7 @@ class SqlEngineTest : public testing::Test {
 
 TEST_F(SqlEngineTest, Forward) {
   std::vector<Segment::Ptr> segments = {std::make_shared<MockSegment>()};
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age", "tag_list"};
   query.topk_ = 11;
   // query.filter_ = "id > 3 and score < 0.1";
@@ -76,20 +76,19 @@ TEST_F(SqlEngineTest, Forward) {
 
 TEST_F(SqlEngineTest, Vector) {
   std::vector<Segment::Ptr> segments = {std::make_shared<MockSegment>()};
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "score"};
   query.topk_ = 11;
   query.filter_ = "id > 3 and score < 0.1";
   if (const char *env_var = std::getenv("FILTER"); env_var != nullptr) {
     query.filter_ = env_var;
   }
-  // query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.query_sparse_indices_ = "[0, 1, 2, 3]";
-  query.query_sparse_values_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "vector";
+  // query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.set_sparse_vector("[0, 1, 2, 3]", "[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "vector";
   query.include_vector_ = true;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(schema_, query, segments);
@@ -101,7 +100,7 @@ TEST_F(SqlEngineTest, Vector) {
 
 TEST_F(SqlEngineTest, Invert) {
   std::vector<Segment::Ptr> segments = {std::make_shared<MockSegment>()};
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "age", "score"};
   query.topk_ = 11;
   // query.filter_ = "name = 'test_name'";
@@ -122,11 +121,11 @@ TEST_F(SqlEngineTest, Invert) {
 TEST_F(SqlEngineTest, MultiSegments) {
   std::vector<Segment::Ptr> segments = {std::make_shared<MockSegment>(),
                                         std::make_shared<MockSegment>()};
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"id", "name", "age", "score"};
   query.topk_ = 11;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "vector";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "vector";
   // query.filter_ = "name = 'test_name'";
   if (const char *env_var = std::getenv("FILTER"); env_var != nullptr) {
     query.filter_ = env_var;
@@ -151,13 +150,12 @@ TEST_F(SqlEngineTest, GroupBy) {
   if (const char *env_var = std::getenv("FILTER"); env_var != nullptr) {
     query.filter_ = env_var;
   }
-  // query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.query_sparse_indices_ = "[0, 1, 2, 3]";
-  query.query_sparse_values_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "vector";
+  // query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.set_sparse_vector("[0, 1, 2, 3]", "[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "vector";
   query.include_vector_ = true;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute_group_by(schema_, query, segments);

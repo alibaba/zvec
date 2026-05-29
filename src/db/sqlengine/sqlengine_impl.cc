@@ -50,7 +50,7 @@ SQLEngineImpl::SQLEngineImpl(zvec::Profiler::Ptr profiler)
     : profiler_(std::move(profiler)) {}
 
 Result<DocPtrList> SQLEngineImpl::execute(
-    CollectionSchema::Ptr collection, const VectorQuery &query,
+    CollectionSchema::Ptr collection, const SearchQuery &query,
     const std::vector<Segment::Ptr> &segments) {
   if (segments.empty()) {
     return DocPtrList{};
@@ -76,18 +76,14 @@ Result<DocPtrList> SQLEngineImpl::execute(
   return fill_result(select_item_meta_ptrs, reader.value().get());
 }
 
-VectorQuery from_group_by(const GroupByVectorQuery &gq) {
-  VectorQuery vq;
-  vq.field_name_ = gq.field_name_;
-  vq.query_vector_ = gq.query_vector_;
-  vq.query_sparse_indices_ = gq.query_sparse_indices_;
-  vq.query_sparse_values_ = gq.query_sparse_values_;
-  vq.filter_ = gq.filter_;
-  vq.include_vector_ = gq.include_vector_;
-  vq.query_params_ = gq.query_params_;
-  vq.output_fields_ = gq.output_fields_;
-  vq.topk_ = 0;
-  return vq;
+SearchQuery from_group_by(const GroupByVectorQuery &gq) {
+  SearchQuery sq;
+  sq.target_ = gq.target_;
+  sq.filter_ = gq.filter_;
+  sq.include_vector_ = gq.include_vector_;
+  sq.output_fields_ = gq.output_fields_;
+  sq.topk_ = 0;
+  return sq;
 }
 
 Result<GroupResults> SQLEngineImpl::execute_group_by(
@@ -97,7 +93,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
     return GroupResults{};
   }
 
-  VectorQuery query = from_group_by(group_by_query);
+  SearchQuery query = from_group_by(group_by_query);
   auto query_info = parse_request(
       collection, query,
       std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
@@ -135,7 +131,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
 }
 
 Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
-    CollectionSchema::Ptr collection, const VectorQuery &request,
+    CollectionSchema::Ptr collection, const SearchQuery &request,
     std::shared_ptr<GroupBy> group_by) {
   profiler_->open_stage("message_to_sqlinfo");
   sqlengine::SQLInfo::Ptr sql_info;

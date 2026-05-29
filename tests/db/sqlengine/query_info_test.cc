@@ -86,14 +86,14 @@ class QueryInfoTest : public testing::Test {
 
 
 TEST_F(QueryInfoTest, BasicQueryRequest) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
   auto ret = engine->parse_request(schema, query, nullptr);
@@ -116,21 +116,24 @@ TEST_F(QueryInfoTest, BasicQueryRequest) {
   auto vector_cond = new_query_info->vector_cond_info();
   EXPECT_EQ(1, vector_cond->batch());
   EXPECT_EQ("face_feature", vector_cond->vector_field_name());
-  EXPECT_EQ(query.query_vector_, vector_cond->vector_term());
-  EXPECT_EQ(query.query_sparse_indices_, vector_cond->vector_sparse_indices());
-  EXPECT_EQ(query.query_sparse_values_, vector_cond->vector_sparse_values());
-  EXPECT_EQ(query.query_params_, vector_cond->query_params());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).query_vector_,
+            vector_cond->vector_term());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_indices_,
+            vector_cond->vector_sparse_indices());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_values_,
+            vector_cond->vector_sparse_values());
+  EXPECT_EQ(query.target_.query_params_, vector_cond->query_params());
 }
 
 TEST_F(QueryInfoTest, QueryRequestWithFilter) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
   query.filter_ = "name<3 or name=4 or 1-dash_score_field='test'";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
@@ -154,10 +157,13 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter) {
   auto vector_cond = new_query_info->vector_cond_info();
   EXPECT_EQ(1, vector_cond->batch());
   EXPECT_EQ("face_feature", vector_cond->vector_field_name());
-  EXPECT_EQ(query.query_vector_, vector_cond->vector_term());
-  EXPECT_EQ(query.query_sparse_indices_, vector_cond->vector_sparse_indices());
-  EXPECT_EQ(query.query_sparse_values_, vector_cond->vector_sparse_values());
-  EXPECT_EQ(query.query_params_, vector_cond->query_params());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).query_vector_,
+            vector_cond->vector_term());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_indices_,
+            vector_cond->vector_sparse_indices());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_values_,
+            vector_cond->vector_sparse_values());
+  EXPECT_EQ(query.target_.query_params_, vector_cond->query_params());
 
   EXPECT_TRUE(new_query_info->filter_cond());
   // (nullptr) and (xxx)
@@ -204,14 +210,14 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter) {
 }
 
 TEST_F(QueryInfoTest, QueryRequestWithIncludeVector) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
   query.include_vector_ = true;
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
@@ -236,21 +242,24 @@ TEST_F(QueryInfoTest, QueryRequestWithIncludeVector) {
   auto vector_cond = new_query_info->vector_cond_info();
   EXPECT_EQ(1, vector_cond->batch());
   EXPECT_EQ("face_feature", vector_cond->vector_field_name());
-  EXPECT_EQ(query.query_vector_, vector_cond->vector_term());
-  EXPECT_EQ(query.query_sparse_indices_, vector_cond->vector_sparse_indices());
-  EXPECT_EQ(query.query_sparse_values_, vector_cond->vector_sparse_values());
-  EXPECT_EQ(query.query_params_, vector_cond->query_params());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).query_vector_,
+            vector_cond->vector_term());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_indices_,
+            vector_cond->vector_sparse_indices());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_values_,
+            vector_cond->vector_sparse_values());
+  EXPECT_EQ(query.target_.query_params_, vector_cond->query_params());
 }
 
 TEST_F(QueryInfoTest, OR_ANCESTOR) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
   query.filter_ = "name=1 and (name=2 or name=3)";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
@@ -260,14 +269,14 @@ TEST_F(QueryInfoTest, OR_ANCESTOR) {
 }
 
 TEST_F(QueryInfoTest, QueryRequestWithInFilter) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 10;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
   query.filter_ =
       "name=3 or name in (1, 2, 3) or category not in (\"a\", \"b\", \"c\")";
 
@@ -294,7 +303,8 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilter) {
   EXPECT_EQ(1, vector_cond->batch());
   EXPECT_EQ("face_feature", vector_cond->vector_field_name());
   std::vector<float> data{1.1, 2.2, 3.3, 4.4};
-  EXPECT_EQ(query.query_vector_, vector_cond->vector_term());
+  EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).query_vector_,
+            vector_cond->vector_term());
 
   EXPECT_TRUE(new_query_info->filter_cond());
   // (nullptr) and (xxx)
@@ -350,14 +360,14 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilter) {
 
 
 TEST_F(QueryInfoTest, QueryRequestWithInFilterWrong) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
   auto ret = engine->parse_request(schema, query, nullptr);
@@ -381,14 +391,14 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilterWrong) {
 }
 
 TEST_F(QueryInfoTest, QueryRequestWithInFilterNum1024) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 10;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
 
   std::string filter_str;
   for (int i = 0; i < 1024; i++) {
@@ -425,14 +435,14 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilterNum1024) {
 
 
 TEST_F(QueryInfoTest, QueryRequestWithFilter_contain) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 10;
-  query.query_vector_ = "[0.1, 0.2, 0.3, 0.4]";
-  query.field_name_ = "face_feature";
+  query.target_.set_vector("[0.1, 0.2, 0.3, 0.4]");
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
-  query.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
-  query.query_params_->set_radius(0.8F);
+  query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
+  query.target_.query_params_->set_radius(0.8F);
   query.filter_ =
       R"( name_array contain_all (1, 2, 3) and )"
       R"( (name_array not contain_all (4, 5) or category_array contain_any
@@ -582,7 +592,7 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter_contain) {
 }
 
 TEST_F(QueryInfoTest, SelectNonExistField) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"category_array", "not_exist_field"};
   query.topk_ = 11;
   query.include_vector_ = false;
@@ -595,7 +605,7 @@ TEST_F(QueryInfoTest, SelectNonExistField) {
 }
 
 TEST_F(QueryInfoTest, ContainAllExceedLimit) {
-  VectorQuery query;
+  SearchQuery query;
   query.topk_ = 200;
   query.filter_ = "name_array not contain_all (";
   for (int i = 0; i <= 32; i++) {
@@ -614,7 +624,7 @@ TEST_F(QueryInfoTest, ContainAllExceedLimit) {
 }
 
 TEST_F(QueryInfoTest, ContainAnyExceedLimit) {
-  VectorQuery query;
+  SearchQuery query;
   query.topk_ = 200;
   query.filter_ = "name_array not contain_any (";
   for (int i = 0; i <= 32; i++) {
@@ -633,7 +643,7 @@ TEST_F(QueryInfoTest, ContainAnyExceedLimit) {
 }
 
 TEST_F(QueryInfoTest, ArrayLengthNonExistField) {
-  VectorQuery query;
+  SearchQuery query;
   query.topk_ = 200;
   query.filter_ = "array_length(not_exist_field) > 1";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
@@ -644,7 +654,7 @@ TEST_F(QueryInfoTest, ArrayLengthNonExistField) {
 }
 
 TEST_F(QueryInfoTest, ArrayLengthOnNonArrayField) {
-  VectorQuery query;
+  SearchQuery query;
   query.topk_ = 200;
   query.filter_ = "array_length(name) > 1";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
@@ -655,7 +665,7 @@ TEST_F(QueryInfoTest, ArrayLengthOnNonArrayField) {
 }
 
 TEST_F(QueryInfoTest, ArrayLengthInvalidArgument) {
-  VectorQuery query;
+  SearchQuery query;
   query.topk_ = 200;
   query.filter_ = "array_length(name_array) > '1'";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
@@ -667,7 +677,7 @@ TEST_F(QueryInfoTest, ArrayLengthInvalidArgument) {
 }
 
 TEST_F(QueryInfoTest, ArrayLengthInvalidOp) {
-  VectorQuery query;
+  SearchQuery query;
   query.topk_ = 200;
   query.filter_ = "array_length(name_array) like '%'";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());

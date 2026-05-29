@@ -27,7 +27,7 @@ class SQLEngine {
   virtual ~SQLEngine();
 
   virtual Result<DocPtrList> execute(
-      CollectionSchema::Ptr collection, const VectorQuery &query,
+      CollectionSchema::Ptr collection, const SearchQuery &query,
       const std::vector<Segment::Ptr> &segments) = 0;
 
   virtual Result<GroupResults> execute_group_by(

@@ -118,7 +118,7 @@ class CollectionImpl : public Collection {
 
   Status DeleteByFilter(const std::string &filter) override;
 
-  Result<DocPtrList> Query(const VectorQuery &query) const override;
+  Result<DocPtrList> Query(const SearchQuery &query) const override;
 
   Result<DocPtrList> Query(const MultiQuery &query) const override;
 
@@ -1560,7 +1560,7 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
-  VectorQuery query;
+  SearchQuery query;
   query.filter_ = filter;
   query.topk_ = INT32_MAX;
   query.output_fields_ = std::vector<std::string>{};
@@ -1584,14 +1584,14 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
   return Status::OK();
 }
 
-Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
+Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
-  VectorQuery sanitized = query;
+  SearchQuery sanitized = query;
   auto s = sanitized.validate_and_sanitize(
-      schema_->get_vector_field(sanitized.field_name_));
+      schema_->get_vector_field(sanitized.target_.field_name_));
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();
@@ -1622,9 +1622,9 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
     return DocPtrList();
   }
 
-  // Convert SubVectorQuery to VectorQuery and validate
+  // Convert each SubQuery to a SearchQuery and validate.
   std::set<std::string> seen_fields;
-  std::vector<VectorQuery> converted_queries;
+  std::vector<SearchQuery> converted_queries;
   converted_queries.reserve(query.queries.size());
 
   for (const auto &sub : query.queries) {
@@ -1640,31 +1640,26 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
           "Vector field not found: ", target.field_name_));
     }
 
-    VectorQuery vq;
-    vq.topk_ = sub.num_candidates_;
-    vq.field_name_ = target.field_name_;
-    const auto &vec_clause = std::get<VectorClause>(target.clause_);
-    vq.query_vector_ = vec_clause.query_vector_;
-    vq.query_sparse_indices_ = vec_clause.sparse_indices_;
-    vq.query_sparse_values_ = vec_clause.sparse_values_;
-    vq.query_params_ = target.query_params_;
-    vq.filter_ = query.filter;
-    vq.include_vector_ = query.include_vector;
-    vq.include_doc_id_ = query.include_doc_id_;
-    vq.output_fields_ = query.output_fields;
+    SearchQuery sq;
+    sq.target_ = target;
+    sq.topk_ = sub.num_candidates_;
+    sq.filter_ = query.filter;
+    sq.include_vector_ = query.include_vector;
+    sq.include_doc_id_ = query.include_doc_id_;
+    sq.output_fields_ = query.output_fields;
 
-    auto s = vq.validate_and_sanitize(field_schema);
+    auto s = sq.validate_and_sanitize(field_schema);
     CHECK_RETURN_STATUS_EXPECTED(s);
-    converted_queries.push_back(std::move(vq));
+    converted_queries.push_back(std::move(sq));
   }
 
-  // Execute each VectorQuery concurrently and collect results per field
+  // Execute each sub-query concurrently and collect results per field.
   std::vector<std::future<Result<DocPtrList>>> futures;
   futures.reserve(converted_queries.size());
-  for (const auto &vq : converted_queries) {
+  for (const auto &sq : converted_queries) {
     futures.push_back(std::async(std::launch::async, [&]() {
       auto engine = sqlengine::SQLEngine::create(std::make_shared<Profiler>());
-      return engine->execute(schema_, vq, segments);
+      return engine->execute(schema_, sq, segments);
     }));
   }
 
@@ -1674,7 +1669,8 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
     if (!result.has_value()) {
       return tl::make_unexpected(result.error());
     }
-    query_results[converted_queries[i].field_name_] = std::move(result.value());
+    query_results[converted_queries[i].target_.field_name_] =
+        std::move(result.value());
   }
 
   // Merge and rerank results
