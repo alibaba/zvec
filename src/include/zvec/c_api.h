@@ -1032,6 +1032,37 @@ typedef struct zvec_vector_query_t zvec_vector_query_t;
  */
 typedef struct zvec_group_by_vector_query_t zvec_group_by_vector_query_t;
 
+/**
+ * @brief Document object (opaque pointer, forward declaration for reranker
+ * callback)
+ */
+typedef struct zvec_doc_t zvec_doc_t;
+
+/**
+ * @brief Reranker structure (opaque pointer)
+ * Aligned with zvec::Reranker
+ * Use zvec_reranker_create_rrf() or zvec_reranker_create_weighted() to create
+ * and zvec_reranker_destroy() to destroy
+ */
+typedef struct zvec_reranker_t zvec_reranker_t;
+typedef struct zvec_collection_schema_t zvec_collection_schema_t;
+
+/**
+ * @brief Multi-query query structure (opaque pointer)
+ * Aligned with zvec::MultiQuery
+ * Use zvec_multi_query_create() to create and
+ * zvec_multi_query_destroy() to destroy
+ */
+typedef struct zvec_multi_query_t zvec_multi_query_t;
+
+/**
+ * @brief Sub-query structure for multi-query (opaque pointer)
+ * Aligned with zvec::SubQuery
+ * Use zvec_sub_query_create() to create and
+ * zvec_sub_query_destroy() to destroy
+ */
+typedef struct zvec_sub_query_t zvec_sub_query_t;
+
 
 // =============================================================================
 // Query Parameters Management Functions
@@ -1704,6 +1735,268 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_group_by_vector_query_set_flat_params(
     zvec_group_by_vector_query_t *query, zvec_flat_query_params_t *flat_params);
 
+// -----------------------------------------------------------------------------
+// zvec_reranker_t (Reranker)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create an RRF (Reciprocal Rank Fusion) reranker
+ * @param rank_constant RRF rank constant (default: 60)
+ * @return zvec_reranker_t* Pointer to the newly created reranker
+ */
+ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
+zvec_reranker_create_rrf(int rank_constant);
+
+/**
+ * @brief Create a Weighted reranker
+ * @param fields Array of field names
+ * @param weights Array of weights corresponding to fields
+ * @param field_count Number of field/weight entries
+ * @return zvec_reranker_t* Pointer to the newly created reranker
+ */
+ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL zvec_reranker_create_weighted(
+    const char **fields, const double *weights, size_t field_count);
+
+/**
+ * @brief Destroy reranker
+ * @param reranker Reranker pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_reranker_destroy(zvec_reranker_t *reranker);
+
+/**
+ * @brief Get RRF rank constant (only valid for RRF reranker)
+ * @param reranker Reranker pointer
+ * @return int Rank constant, or -1 if not an RRF reranker
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_reranker_get_rank_constant(const zvec_reranker_t *reranker);
+
+// -----------------------------------------------------------------------------
+// zvec_multi_query_t (Multi Query)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create multi-query query
+ * @return zvec_multi_query_t* Pointer to the newly created multi query
+ */
+ZVEC_EXPORT zvec_multi_query_t *ZVEC_CALL zvec_multi_query_create(void);
+
+/**
+ * @brief Destroy multi-query query
+ * @param query Multi query pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_multi_query_destroy(zvec_multi_query_t *query);
+
+/**
+ * @brief Add a sub-query to the multi-query query
+ * @param query Multi query pointer
+ * @param sub_query Sub-query to add (copied, caller retains ownership)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_add_sub_query(
+    zvec_multi_query_t *query, const zvec_sub_query_t *sub_query);
+
+/**
+ * @brief Get number of sub-queries
+ * @param query Multi query pointer
+ * @return size_t Number of sub-queries
+ */
+ZVEC_EXPORT size_t ZVEC_CALL
+zvec_multi_query_get_sub_query_count(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set topk
+ * @param query Multi-vector query pointer
+ * @param topk Number of results
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_topk(zvec_multi_query_t *query, int topk);
+
+/**
+ * @brief Get topk
+ * @param query Multi-vector query pointer
+ * @return int Number of results
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_multi_query_get_topk(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set filter expression
+ * @param query Multi-vector query pointer
+ * @param filter Filter expression string
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_filter(zvec_multi_query_t *query, const char *filter);
+
+/**
+ * @brief Get filter expression
+ * @param query Multi-vector query pointer
+ * @return const char* Filter expression (owned by query, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_multi_query_get_filter(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set whether to include vector data in results
+ * @param query Multi-vector query pointer
+ * @param include Whether to include vectors
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_include_vector(zvec_multi_query_t *query, bool include);
+
+/**
+ * @brief Get whether to include vector data in results
+ * @param query Multi-vector query pointer
+ * @return bool Whether to include vectors
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_multi_query_get_include_vector(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set output fields
+ * @param query Multi-vector query pointer
+ * @param fields Array of field names
+ * @param count Number of fields
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_output_fields(
+    zvec_multi_query_t *query, const char **fields, size_t count);
+
+/**
+ * @brief Get output fields
+ * @param query Multi-vector query pointer
+ * @param[out] fields Output array of field names (allocated by library)
+ * @param[out] count Number of fields
+ * @return zvec_error_code_t Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual string pointers
+ *       are owned by the query and must NOT be freed.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_get_output_fields(
+    zvec_multi_query_t *query, const char ***fields, size_t *count);
+
+/**
+ * @brief Set reranker (copies shared pointer, caller must still destroy
+ * reranker)
+ * @param query Multi-vector query pointer
+ * @param reranker Reranker pointer (remains valid, caller must call
+ *        zvec_reranker_destroy after use)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_reranker(
+    zvec_multi_query_t *query, zvec_reranker_t *reranker);
+
+// -----------------------------------------------------------------------------
+// zvec_sub_query_t (Sub-Query for Multi Query)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create sub-query
+ * @return zvec_sub_query_t* Pointer to the newly created
+ * sub-query
+ */
+ZVEC_EXPORT zvec_sub_query_t *ZVEC_CALL zvec_sub_query_create(void);
+
+/**
+ * @brief Destroy sub-query
+ * @param query Sub-query pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_sub_query_destroy(zvec_sub_query_t *query);
+
+/**
+ * @brief Set number of candidates to retrieve per field
+ * @param query Sub-query pointer
+ * @param num_candidates Number of candidates
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_sub_query_set_num_candidates(zvec_sub_query_t *query, int num_candidates);
+
+/**
+ * @brief Get number of candidates
+ * @param query Sub-query pointer
+ * @return int Number of candidates
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_sub_query_get_num_candidates(const zvec_sub_query_t *query);
+
+/**
+ * @brief Set field name
+ * @param query Sub-query pointer
+ * @param field_name Field name
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_sub_query_set_field_name(zvec_sub_query_t *query, const char *field_name);
+
+/**
+ * @brief Get field name
+ * @param query Sub-query pointer
+ * @return const char* Field name (owned by query, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_sub_query_get_field_name(const zvec_sub_query_t *query);
+
+/**
+ * @brief Set query vector data
+ * @param query Sub-query pointer
+ * @param data Vector data pointer
+ * @param size Data size in bytes
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_query_vector(
+    zvec_sub_query_t *query, const void *data, size_t size);
+
+/**
+ * @brief Set sparse vector indices
+ * @param query Sub-query pointer
+ * @param indices Array of uint32_t indices
+ * @param count Number of indices
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_sparse_indices(
+    zvec_sub_query_t *query, const uint32_t *indices, size_t count);
+
+/**
+ * @brief Set sparse vector values
+ * @param query Sub-query pointer
+ * @param values Array of float values
+ * @param count Number of values
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_sparse_values(
+    zvec_sub_query_t *query, const float *values, size_t count);
+
+/**
+ * @brief Set HNSW query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param hnsw_params HNSW query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_hnsw_params(
+    zvec_sub_query_t *query, zvec_hnsw_query_params_t *hnsw_params);
+
+/**
+ * @brief Set IVF query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param ivf_params IVF query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_ivf_params(
+    zvec_sub_query_t *query, zvec_ivf_query_params_t *ivf_params);
+
+/**
+ * @brief Set Flat query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param flat_params Flat query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_flat_params(
+    zvec_sub_query_t *query, zvec_flat_query_params_t *flat_params);
 // =============================================================================
 // Collection Options and Statistics (Opaque Pointer Pattern)
 // =============================================================================
@@ -2023,16 +2316,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_field_schema_validate(
 // =============================================================================
 // Collection Schema Structures (Opaque Pointer Pattern)
 // =============================================================================
-
-/**
- * @brief Collection schema handle (opaque pointer)
- *
- * Internally maps to zvec::CollectionSchema* (raw pointer).
- * Created by zvec_collection_schema_create() and destroyed by
- * zvec_collection_schema_destroy(). Caller owns the pointer and must explicitly
- * destroy it.
- */
-typedef struct zvec_collection_schema_t zvec_collection_schema_t;
 
 /**
  * @brief Create collection schema
@@ -2477,13 +2760,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_alter_column(
     const char *new_name, const zvec_field_schema_t *new_schema);
 
 /**
- * @brief Document structure (opaque pointer mode)
- * Internal implementation details are not visible to the outside, and
- * operations are performed through API functions
- */
-typedef struct zvec_doc_t zvec_doc_t;
-
-/**
  * @brief Per-document status returned by detailed DML APIs.
  * @note Uses ordered style: result index corresponds to input document index.
  *       Caller should access pk by index from the original input array.
@@ -2643,6 +2919,19 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_delete_by_filter(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
     const zvec_collection_t *collection, const zvec_vector_query_t *query,
+    zvec_doc_t ***results, size_t *result_count);
+
+/**
+ * @brief Multi-query with multiple sub-queries and re-ranking
+ * @param collection Collection handle
+ * @param query Multi-query query parameters pointer
+ * @param[out] results Returned document array (needs to be freed by calling
+ * zvec_docs_free)
+ * @param[out] result_count Number of returned results
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_multi_query(
+    const zvec_collection_t *collection, const zvec_multi_query_t *query,
     zvec_doc_t ***results, size_t *result_count);
 
 /**

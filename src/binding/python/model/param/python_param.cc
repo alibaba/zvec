@@ -17,6 +17,7 @@
 #include <pybind11/stl.h>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/index_params.h>
+#include <zvec/db/query.h>
 #include "python_doc.h"
 
 namespace zvec {
@@ -1372,6 +1373,25 @@ Args:
 }
 
 void ZVecPyParams::bind_vector_query(py::module_ &m) {
+  // Bind SubQuery (used by MultiQuery)
+  py::class_<SubQuery>(m, "_SubQuery")
+      .def(py::init<>())
+      .def_readwrite("num_candidates", &SubQuery::num_candidates_)
+      .def_static(
+          "from_vector_query",
+          [](const VectorQuery &vq) {
+            SubQuery sub;
+            sub.num_candidates_ = vq.topk_;
+            sub.target_.field_name_ = vq.field_name_;
+            auto &clause = std::get<VectorClause>(sub.target_.clause_);
+            clause.query_vector_ = vq.query_vector_;
+            clause.sparse_indices_ = vq.query_sparse_indices_;
+            clause.sparse_values_ = vq.query_sparse_values_;
+            sub.target_.query_params_ = vq.query_params_;
+            return sub;
+          },
+          py::arg("vector_query"), "Create a SubQuery from a VectorQuery");
+
   py::class_<VectorQuery>(m, "_VectorQuery")
       .def(py::init<>())
       // properties

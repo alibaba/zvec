@@ -27,10 +27,16 @@ from zvec import (
     InvertIndexParam,
     LogLevel,
     LogType,
+    MetricType,
     OptimizeOption,
     StatusCode,
     Query,
     VectorSchema,
+)
+from zvec.extension.multi_vector_reranker import (
+    CallbackReRanker,
+    RrfReRanker,
+    WeightedReRanker,
 )
 
 # ==================== Common ====================
@@ -61,7 +67,16 @@ def collection_schema():
                 index_param=HnswIndexParam(),
             ),
             VectorSchema(
+                "dense2",
+                DataType.VECTOR_FP32,
+                dimension=128,
+                index_param=HnswIndexParam(),
+            ),
+            VectorSchema(
                 "sparse", DataType.SPARSE_VECTOR_FP32, index_param=HnswIndexParam()
+            ),
+            VectorSchema(
+                "sparse2", DataType.SPARSE_VECTOR_FP32, index_param=HnswIndexParam()
             ),
         ],
     )
@@ -78,7 +93,12 @@ def single_doc():
     return Doc(
         id=f"{id}",
         fields={"id": id, "name": "test", "weight": 80.0, "height": id + 140},
-        vectors={"dense": [id + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
+        vectors={
+            "dense": [id + 0.1] * 128,
+            "dense2": [id + 0.2] * 128,
+            "sparse": {1: 1.0, 2: 2.0, 3: 3.0},
+            "sparse2": {4: 1.5, 5: 2.5, 6: 3.5},
+        },
     )
 
 
@@ -88,7 +108,12 @@ def multiple_docs():
         Doc(
             id=f"{id}",
             fields={"id": id, "name": "test", "weight": 80.0, "height": 210},
-            vectors={"dense": [id + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
+            vectors={
+                "dense": [id + 0.1] * 128,
+                "dense2": [id + 0.2] * 128,
+                "sparse": {1: 1.0, 2: 2.0, 3: 3.0},
+                "sparse2": {4: 1.5, 5: 2.5, 6: 3.5},
+            },
         )
         for id in range(1, 101)
     ]
@@ -182,9 +207,11 @@ class TestCollectionDDL:
         assert test_collection.stats is not None
         stats = test_collection.stats
         assert stats.doc_count == 0
-        assert len(stats.index_completeness) == 2
+        assert len(stats.index_completeness) == 4
         assert stats.index_completeness["dense"] == 1
+        assert stats.index_completeness["dense2"] == 1
         assert stats.index_completeness["sparse"] == 1
+        assert stats.index_completeness["sparse2"] == 1
 
 
 # ----------------------------
@@ -449,7 +476,12 @@ class TestCollectionInsert:
                 "id": 1,
                 "name": "test",
             },
-            vectors={"dense": [1 + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
+            vectors={
+                "dense": [1 + 0.1] * 128,
+                "dense2": [1 + 0.2] * 128,
+                "sparse": {1: 1.0, 2: 2.0, 3: 3.0},
+                "sparse2": {4: 1.5, 5: 2.5, 6: 3.5},
+            },
         )
         result = test_collection.insert(doc)
         assert bool(result)
@@ -465,7 +497,12 @@ class TestCollectionInsert:
         # without id, name
         doc = Doc(
             id="0",
-            vectors={"dense": [1 + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
+            vectors={
+                "dense": [1 + 0.1] * 128,
+                "dense2": [1 + 0.2] * 128,
+                "sparse": {1: 1.0, 2: 2.0, 3: 3.0},
+                "sparse2": {4: 1.5, 5: 2.5, 6: 3.5},
+            },
         )
         with pytest.raises(ValueError) as e:
             # ValueError: Invalid doc: field[id] is required but not provided
@@ -478,7 +515,12 @@ class TestCollectionInsert:
             fields={
                 "id": 1,
             },
-            vectors={"dense": [1 + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
+            vectors={
+                "dense": [1 + 0.1] * 128,
+                "dense2": [1 + 0.2] * 128,
+                "sparse": {1: 1.0, 2: 2.0, 3: 3.0},
+                "sparse2": {4: 1.5, 5: 2.5, 6: 3.5},
+            },
         )
         with pytest.raises(ValueError) as e:
             test_collection.insert(doc)
@@ -494,7 +536,12 @@ class TestCollectionInsert:
                 "id": 1,
                 "name": "test",
             },
-            vectors={"dense": [1 + 0.1] * 128, "sparse": {1: 1.0, 2: 2.0, 3: 3.0}},
+            vectors={
+                "dense": [1 + 0.1] * 128,
+                "dense2": [1 + 0.2] * 128,
+                "sparse": {1: 1.0, 2: 2.0, 3: 3.0},
+                "sparse2": {4: 1.5, 5: 2.5, 6: 3.5},
+            },
         )
         result = test_collection.insert(doc)
         assert bool(result)
@@ -969,70 +1016,243 @@ class TestCollectionQuery:
     def test_collection_query_multi_vector_with_same_field(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        with pytest.raises(ValueError):
+        # Multi-vector query on same field without reranker should raise ValueError
+        with pytest.raises(ValueError, match="Reranker is required"):
             collection_with_multiple_docs.query(
                 [
                     Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
-                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                    Query(field_name="dense", vector=multiple_docs[1].vector("dense")),
                 ]
             )
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
+        # Same field name with reranker should also raise ValueError
+        reranker = RrfReRanker(topn=10, rank_constant=60)
+        with pytest.raises(ValueError, match="appears more than once"):
+            collection_with_multiple_docs.query(
+                [
+                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                    Query(field_name="dense", vector=multiple_docs[1].vector("dense")),
+                ],
+                topk=10,
+                reranker=reranker,
+            )
+
     def test_collection_query_by_dense_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        result = collection_with_multiple_docs.query(
+            Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+            topk=10,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_by_sparse_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        result = collection_with_multiple_docs.query(
+            Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
+            topk=10,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_by_dense_vector_with_filter(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        result = collection_with_multiple_docs.query(
+            Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+            topk=10,
+            filter="id > 50",
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
+        for doc in result:
+            assert int(doc.id) > 50
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_by_sparse_vector_with_filter(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        result = collection_with_multiple_docs.query(
+            Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
+            topk=10,
+            filter="id > 50",
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
+        for doc in result:
+            assert int(doc.id) > 50
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_with_rrf_reranker_by_multi_dense_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        """Test multi-vector query with RRF reranker on multiple dense vectors."""
+        reranker = RrfReRanker(topn=10, rank_constant=60)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                Query(field_name="dense2", vector=multiple_docs[0].vector("dense2")),
+            ],
+            topk=10,
+            reranker=reranker,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
+        # Results should have RRF-fused scores
+        for doc in result:
+            assert hasattr(doc, "score")
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_with_rrf_reranker_by_multi_sparse_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        """Test multi-vector query with RRF reranker on multiple sparse vectors."""
+        reranker = RrfReRanker(topn=10, rank_constant=60)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
+                Query(
+                    field_name="sparse2",
+                    vector=multiple_docs[0].vector("sparse2"),
+                ),
+            ],
+            topk=10,
+            reranker=reranker,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_with_rrf_reranker_by_hybrid_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        """Test multi-vector query with RRF reranker combining dense + sparse."""
+        reranker = RrfReRanker(topn=10, rank_constant=60)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
+            ],
+            topk=10,
+            reranker=reranker,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_with_weighted_reranker_by_multi_dense_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        """Test multi-vector query with Weighted reranker on multiple dense vectors."""
+        metrics = {"dense": MetricType.IP, "dense2": MetricType.IP}
+        weights = {"dense": 0.6, "dense2": 0.4}
+        reranker = WeightedReRanker(topn=10, metrics=metrics, weights=weights)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                Query(field_name="dense2", vector=multiple_docs[0].vector("dense2")),
+            ],
+            topk=10,
+            reranker=reranker,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_with_weighted_reranker_by_multi_sparse_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        """Test multi-vector query with Weighted reranker on multiple sparse vectors."""
+        metrics = {"sparse": MetricType.IP, "sparse2": MetricType.IP}
+        weights = {"sparse": 0.6, "sparse2": 0.4}
+        reranker = WeightedReRanker(topn=10, metrics=metrics, weights=weights)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
+                Query(
+                    field_name="sparse2",
+                    vector=multiple_docs[0].vector("sparse2"),
+                ),
+            ],
+            topk=10,
+            reranker=reranker,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
 
-    @pytest.mark.skip(reason="TODO: This test case is pending implementation")
     def test_collection_query_with_weighted_reranker_by_hybrid_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
-        pass
+        """Test multi-vector query with Weighted reranker combining dense + sparse."""
+        metrics = {"dense": MetricType.IP, "sparse": MetricType.IP}
+        weights = {"dense": 0.7, "sparse": 0.3}
+        reranker = WeightedReRanker(topn=10, metrics=metrics, weights=weights)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
+            ],
+            topk=10,
+            reranker=reranker,
+        )
+        assert len(result) > 0
+        assert len(result) <= 10
+
+    def test_collection_query_with_callback_reranker_by_multi_dense_vector(
+        self, collection_with_multiple_docs: Collection, multiple_docs
+    ):
+        """Test multi-vector query with CallbackReRanker (Python callback via C++)."""
+        callback_invoked = []
+
+        def my_rerank_callback(query_results, topn):
+            callback_invoked.append(True)
+            all_docs = []
+            for docs in query_results.values():
+                all_docs.extend(docs)
+            seen = set()
+            unique_docs = []
+            for doc in all_docs:
+                if doc.pk() not in seen:
+                    seen.add(doc.pk())
+                    unique_docs.append(doc)
+            unique_docs.sort(key=lambda d: d.score(), reverse=True)
+            return unique_docs[:topn]
+
+        reranker = CallbackReRanker(callback=my_rerank_callback, topn=10)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                Query(field_name="dense2", vector=multiple_docs[0].vector("dense2")),
+            ],
+            topk=10,
+            reranker=reranker,
+        )
+        assert len(callback_invoked) == 1
+        assert len(result) > 0
+        assert len(result) <= 10
+
+    def test_collection_query_with_callback_reranker_by_hybrid_vector(
+        self, collection_with_multiple_docs: Collection, multiple_docs
+    ):
+        """Test multi-vector query with CallbackReRanker combining dense + sparse."""
+
+        def my_rerank_callback(query_results, topn):
+            all_docs = []
+            for docs in query_results.values():
+                all_docs.extend(docs)
+            seen = set()
+            unique_docs = []
+            for doc in all_docs:
+                if doc.pk() not in seen:
+                    seen.add(doc.pk())
+                    unique_docs.append(doc)
+            unique_docs.sort(key=lambda d: d.score(), reverse=True)
+            return unique_docs[:topn]
+
+        reranker = CallbackReRanker(callback=my_rerank_callback, topn=5)
+        result = collection_with_multiple_docs.query(
+            [
+                Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
+                Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
+            ],
+            topk=5,
+            reranker=reranker,
+        )
+        assert len(result) > 0
+        assert len(result) <= 5

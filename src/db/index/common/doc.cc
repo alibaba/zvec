@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/db/doc.h>
+#include <zvec/db/query.h>
 #include "db/common/constants.h"
 #include "db/index/common/type_helper.h"
 

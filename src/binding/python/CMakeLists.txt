@@ -10,6 +10,7 @@ set(SRC_LISTS
         binding.cc
         model/python_collection.cc
         model/python_doc.cc
+        model/python_reranker.cc
         model/param/python_param.cc
         model/schema/python_schema.cc
         model/common/python_config.cc

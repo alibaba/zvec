@@ -11,23 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 #pragma once
 
-#include <zvec/db/query.h>
-#include "db/sqlengine/common/group_by.h"
-#include "db/sqlengine/parser/node.h"
-#include "db/sqlengine/parser/sql_info.h"
+#include <pybind11/pybind11.h>
+#include <zvec/db/reranker.h>
 
-namespace zvec::sqlengine {
+namespace py = pybind11;
 
-class SQLInfoHelper {
+namespace zvec {
+
+class ZVecPyReranker {
  public:
-  //! Perform QueryRequest to sql info conversion:
-  static bool MessageToSQLInfo(const VectorQuery *query, Node::Ptr filter_node,
-                               std::shared_ptr<GroupBy> group_by,
-                               sqlengine::SQLInfo::Ptr *sql_info,
-                               std::string *err_msg);
+  ZVecPyReranker() = delete;
+
+ public:
+  static void Initialize(py::module_ &m);
 };
 
-}  // namespace zvec::sqlengine
+}  // namespace zvec

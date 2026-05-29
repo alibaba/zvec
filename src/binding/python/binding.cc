@@ -16,6 +16,7 @@
 #include "python_config.h"
 #include "python_doc.h"
 #include "python_param.h"
+#include "python_reranker.h"
 #include "python_schema.h"
 #include "python_type.h"
 
@@ -26,6 +27,7 @@ PYBIND11_MODULE(_zvec, m) {
   ZVecPyTyping::Initialize(m);
   ZVecPyParams::Initialize(m);
   ZVecPySchemas::Initialize(m);
+  ZVecPyReranker::Initialize(m);
   ZVecPyConfig::Initialize(m);
   ZVecPyDoc::Initialize(m);
   ZVecPyCollection::Initialize(m);

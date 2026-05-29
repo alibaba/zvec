@@ -261,6 +261,19 @@ void ZVecPyCollection::bind_dql_methods(
             // return DocPtrList
             return unwrap_expected(result);
           })
+      // MultiQuery: multi query with reranker
+      .def(
+          "Query",
+          [](const Collection &self, const MultiQuery &query) {
+            Result<DocPtrList> result;
+            {
+              py::gil_scoped_release release;
+              result = self.Query(query);
+            }
+            // return DocPtrList
+            return unwrap_expected(result);
+          },
+          py::arg("query"), "Execute a multi query with re-ranking.")
       .def("GroupByQuery",
            [](const Collection &self, const GroupByVectorQuery &query) {
              Result<GroupResults> result;

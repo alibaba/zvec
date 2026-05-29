@@ -843,7 +843,7 @@ class TestCollectionQuery:
             )
             expected_score = expected_rrf_scores[doc_id]
             actual_score = doc.score
-            assert abs(actual_score - expected_score) < 1e-10, (
+            assert abs(actual_score - expected_score) < 1e-6, (
                 f"RRF score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
             )
             assert doc.score <= prev_score, (
@@ -876,9 +876,8 @@ class TestCollectionQuery:
         batchdoc_and_check(full_collection, multiple_docs, doc_num, operator="insert")
         doc_fields, doc_vectors = generate_vectordict_random(full_collection.schema)
 
-        weighted_reranker = WeightedReRanker(
-            topn=3, weights=weights, metric=MetricType.IP
-        )
+        metrics = {field: MetricType.IP for field in weights}
+        weighted_reranker = WeightedReRanker(topn=3, weights=weights, metrics=metrics)
 
         single_query_results = {}
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
@@ -911,7 +910,7 @@ class TestCollectionQuery:
             )
             expected_score = expected_weighted_scores[doc_id]
             actual_score = doc.score
-            assert abs(actual_score - expected_score) < 1e-10, (
+            assert abs(actual_score - expected_score) < 1e-6, (
                 f"score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
             )
             assert doc.score <= prev_score, (

@@ -15,8 +15,10 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <variant>
@@ -29,6 +31,7 @@
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/options.h>
+#include <zvec/db/reranker.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
@@ -116,6 +119,8 @@ class CollectionImpl : public Collection {
   Status DeleteByFilter(const std::string &filter) override;
 
   Result<DocPtrList> Query(const VectorQuery &query) const override;
+
+  Result<DocPtrList> Query(const MultiQuery &query) const override;
 
   Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const override;
@@ -1595,6 +1600,86 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
   }
 
   return sql_engine_->execute(schema_, sanitized, segments);
+}
+
+Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  if (query.queries.size() < 2) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("Query requires at least 2 sub-queries"));
+  }
+
+  if (!query.reranker) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("Reranker is required for multi-vector query"));
+  }
+
+  auto segments = get_all_segments();
+  if (segments.empty()) {
+    return DocPtrList();
+  }
+
+  // Convert SubVectorQuery to VectorQuery and validate
+  std::set<std::string> seen_fields;
+  std::vector<VectorQuery> converted_queries;
+  converted_queries.reserve(query.queries.size());
+
+  for (const auto &sub : query.queries) {
+    const auto &target = sub.target_;
+    auto [_, inserted] = seen_fields.insert(target.field_name_);
+    if (!inserted) {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "Duplicate field name in multi-vector query: ", target.field_name_));
+    }
+    auto *field_schema = schema_->get_vector_field(target.field_name_);
+    if (!field_schema) {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "Vector field not found: ", target.field_name_));
+    }
+
+    VectorQuery vq;
+    vq.topk_ = sub.num_candidates_;
+    vq.field_name_ = target.field_name_;
+    const auto &vec_clause = std::get<VectorClause>(target.clause_);
+    vq.query_vector_ = vec_clause.query_vector_;
+    vq.query_sparse_indices_ = vec_clause.sparse_indices_;
+    vq.query_sparse_values_ = vec_clause.sparse_values_;
+    vq.query_params_ = target.query_params_;
+    vq.filter_ = query.filter;
+    vq.include_vector_ = query.include_vector;
+    vq.include_doc_id_ = query.include_doc_id_;
+    vq.output_fields_ = query.output_fields;
+
+    auto s = vq.validate_and_sanitize(field_schema);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    converted_queries.push_back(std::move(vq));
+  }
+
+  // Execute each VectorQuery concurrently and collect results per field
+  std::vector<std::future<Result<DocPtrList>>> futures;
+  futures.reserve(converted_queries.size());
+  for (const auto &vq : converted_queries) {
+    futures.push_back(std::async(std::launch::async, [&]() {
+      auto engine = sqlengine::SQLEngine::create(std::make_shared<Profiler>());
+      return engine->execute(schema_, vq, segments);
+    }));
+  }
+
+  std::map<std::string, DocPtrList> query_results;
+  for (size_t i = 0; i < converted_queries.size(); ++i) {
+    auto result = futures[i].get();
+    if (!result.has_value()) {
+      return tl::make_unexpected(result.error());
+    }
+    query_results[converted_queries[i].field_name_] = std::move(result.value());
+  }
+
+  // Merge and rerank results
+  query.reranker->bind_schema(schema_);
+  return query.reranker->rerank(query_results, query.topk);
 }
 
 Result<GroupResults> CollectionImpl::GroupByQuery(

@@ -4127,6 +4127,231 @@ void test_actual_vector_queries(void) {
   TEST_END();
 }
 
+void test_reranker_functions(void) {
+  TEST_START();
+
+  // Test 1: Create RRF reranker
+  zvec_reranker_t *rrf = zvec_reranker_create_rrf(60);
+  TEST_ASSERT(rrf != NULL);
+  if (rrf) {
+    TEST_ASSERT(zvec_reranker_get_rank_constant(rrf) == 60);
+    zvec_reranker_destroy(rrf);
+  }
+
+  // Test 2: Create RRF reranker with different rank constant
+  zvec_reranker_t *rrf2 = zvec_reranker_create_rrf(100);
+  TEST_ASSERT(rrf2 != NULL);
+  if (rrf2) {
+    TEST_ASSERT(zvec_reranker_get_rank_constant(rrf2) == 100);
+    zvec_reranker_destroy(rrf2);
+  }
+
+  // Test 3: Create Weighted reranker
+  const char *fields[] = {"embedding1", "embedding2"};
+  double weights[] = {0.7, 0.3};
+  zvec_reranker_t *weighted = zvec_reranker_create_weighted(fields, weights, 2);
+  TEST_ASSERT(weighted != NULL);
+  if (weighted) {
+    TEST_ASSERT(zvec_reranker_get_rank_constant(weighted) == -1);
+    zvec_reranker_destroy(weighted);
+  }
+
+  // Test 4: Create Weighted reranker with no fields
+  zvec_reranker_t *weighted2 = zvec_reranker_create_weighted(NULL, NULL, 0);
+  TEST_ASSERT(weighted2 != NULL);
+  if (weighted2) {
+    zvec_reranker_destroy(weighted2);
+  }
+
+  // Test 5: NULL reranker operations
+  TEST_ASSERT(zvec_reranker_get_rank_constant(NULL) == -1);
+  zvec_reranker_destroy(NULL);  // Should not crash
+
+  TEST_END();
+}
+
+// ==================== Multi-query reranker test helpers ====================
+
+typedef struct {
+  zvec_collection_t *collection;
+  zvec_collection_schema_t *schema;
+  zvec_doc_t *docs[4];
+  float e1_v1[4], e2_v1[4];
+  char temp_dir[64];
+} multi_query_fixture_t;
+
+static int setup_multi_query_fixture(multi_query_fixture_t *f,
+                                     const char *dir_name,
+                                     const char *schema_name) {
+  snprintf(f->temp_dir, sizeof(f->temp_dir), "./%s", dir_name);
+  f->collection = NULL;
+  f->schema = zvec_collection_schema_create(schema_name);
+  if (!f->schema) return 0;
+
+  zvec_field_schema_t *id_field =
+      zvec_field_schema_create("id", ZVEC_DATA_TYPE_INT64, false, 0);
+  zvec_collection_schema_add_field(f->schema, id_field);
+
+  for (int i = 0; i < 2; i++) {
+    const char *name = i == 0 ? "embedding1" : "embedding2";
+    zvec_index_params_t *hnsw = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+    zvec_index_params_set_metric_type(hnsw, ZVEC_METRIC_TYPE_L2);
+    zvec_index_params_set_hnsw_params(hnsw, 16, 100);
+    zvec_field_schema_t *vec =
+        zvec_field_schema_create(name, ZVEC_DATA_TYPE_VECTOR_FP32, false, 4);
+    zvec_field_schema_set_index_params(vec, hnsw);
+    zvec_collection_schema_add_field(f->schema, vec);
+    zvec_index_params_destroy(hnsw);
+  }
+
+  zvec_error_code_t err = zvec_collection_create_and_open(
+      f->temp_dir, f->schema, NULL, &f->collection);
+  if (err != ZVEC_OK || !f->collection) return 0;
+
+  float e1[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {.7f, .7f, 0, 0}};
+  float e2[4][4] = {{0, 1, 0, 0}, {1, 0, 0, 0}, {0, 0, 0, 1}, {.5f, .5f, 0, 0}};
+  memcpy(f->e1_v1, e1[0], sizeof(f->e1_v1));
+  memcpy(f->e2_v1, e2[0], sizeof(f->e2_v1));
+
+  for (int i = 0; i < 4; i++) {
+    f->docs[i] = zvec_doc_create();
+    zvec_doc_set_pk(f->docs[i], zvec_test_make_pk(i + 1));
+    zvec_doc_add_field_by_value(f->docs[i], "id", ZVEC_DATA_TYPE_INT64,
+                                &(int64_t){i + 1}, sizeof(int64_t));
+    zvec_doc_add_field_by_value(f->docs[i], "embedding1",
+                                ZVEC_DATA_TYPE_VECTOR_FP32, e1[i],
+                                sizeof(e1[i]));
+    zvec_doc_add_field_by_value(f->docs[i], "embedding2",
+                                ZVEC_DATA_TYPE_VECTOR_FP32, e2[i],
+                                sizeof(e2[i]));
+  }
+
+  size_t success_count, error_count;
+  err = zvec_collection_insert(f->collection, (const zvec_doc_t **)f->docs, 4,
+                               &success_count, &error_count);
+  if (err != ZVEC_OK || success_count != 4) return 0;
+
+  zvec_collection_flush(f->collection);
+  return 1;
+}
+
+static void teardown_multi_query_fixture(multi_query_fixture_t *f) {
+  for (int i = 0; i < 4; i++) zvec_doc_destroy(f->docs[i]);
+  zvec_collection_destroy(f->collection);
+  zvec_collection_schema_destroy(f->schema);
+  cleanup_temp_directory(f->temp_dir);
+}
+
+static int execute_multi_query_with_reranker(const multi_query_fixture_t *f,
+                                             zvec_reranker_t *reranker,
+                                             int topk, int num_candidates) {
+  zvec_multi_query_t *mvq = zvec_multi_query_create();
+  if (!mvq) return -1;
+  zvec_multi_query_set_topk(mvq, topk);
+  zvec_multi_query_set_include_vector(mvq, false);
+
+  zvec_sub_query_t *vq1 = zvec_sub_query_create();
+  zvec_sub_query_set_field_name(vq1, "embedding1");
+  zvec_sub_query_set_query_vector(vq1, f->e1_v1, sizeof(f->e1_v1));
+  zvec_sub_query_set_num_candidates(vq1, num_candidates);
+  zvec_multi_query_add_sub_query(mvq, vq1);
+
+  zvec_sub_query_t *vq2 = zvec_sub_query_create();
+  zvec_sub_query_set_field_name(vq2, "embedding2");
+  zvec_sub_query_set_query_vector(vq2, f->e2_v1, sizeof(f->e2_v1));
+  zvec_sub_query_set_num_candidates(vq2, num_candidates);
+  zvec_multi_query_add_sub_query(mvq, vq2);
+
+  zvec_multi_query_set_reranker(mvq, reranker);
+
+  zvec_doc_t **results = NULL;
+  size_t result_count = 0;
+  zvec_error_code_t err =
+      zvec_collection_multi_query(f->collection, mvq, &results, &result_count);
+
+  int ret = -1;
+  if (err == ZVEC_OK && results != NULL) {
+    ret = (int)result_count;
+    zvec_docs_free(results, result_count);
+  }
+
+  zvec_sub_query_destroy(vq1);
+  zvec_sub_query_destroy(vq2);
+  zvec_multi_query_destroy(mvq);
+  return ret;
+}
+
+// ==================== Multi-query reranker tests ====================
+
+void test_multi_vector_query_with_rrf_reranker(void) {
+  TEST_START();
+
+  multi_query_fixture_t f;
+  TEST_ASSERT(setup_multi_query_fixture(&f, "zvec_test_mq_rrf", "mq_rrf"));
+
+  zvec_reranker_t *rrf = zvec_reranker_create_rrf(60);
+  TEST_ASSERT(rrf != NULL);
+
+  int count = execute_multi_query_with_reranker(&f, rrf, 3, 3);
+  TEST_ASSERT(count > 0);
+  TEST_ASSERT(count <= 3);
+
+  zvec_reranker_destroy(rrf);
+
+  // MultiQuery property setters/getters
+  zvec_multi_query_t *mvq2 = zvec_multi_query_create();
+  TEST_ASSERT(mvq2 != NULL);
+  zvec_multi_query_set_topk(mvq2, 5);
+  TEST_ASSERT(zvec_multi_query_get_topk(mvq2) == 5);
+
+  zvec_multi_query_set_filter(mvq2, "id > 1");
+  TEST_ASSERT(strcmp(zvec_multi_query_get_filter(mvq2), "id > 1") == 0);
+
+  zvec_multi_query_set_include_vector(mvq2, true);
+  TEST_ASSERT(zvec_multi_query_get_include_vector(mvq2) == true);
+
+  const char *out_fields[] = {"id"};
+  zvec_multi_query_set_output_fields(mvq2, out_fields, 1);
+  const char **got_fields = NULL;
+  size_t field_count = 0;
+  zvec_error_code_t err =
+      zvec_multi_query_get_output_fields(mvq2, &got_fields, &field_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(field_count == 1);
+  if (field_count > 0) {
+    TEST_ASSERT(strcmp(got_fields[0], "id") == 0);
+    zvec_free((char *)got_fields);
+  }
+
+  zvec_multi_query_destroy(mvq2);
+
+  teardown_multi_query_fixture(&f);
+
+  TEST_END();
+}
+
+void test_multi_vector_query_with_weighted_reranker(void) {
+  TEST_START();
+
+  multi_query_fixture_t f;
+  TEST_ASSERT(
+      setup_multi_query_fixture(&f, "zvec_test_mq_weighted", "mq_weighted"));
+
+  const char *fields[] = {"embedding1", "embedding2"};
+  double weights[] = {0.7, 0.3};
+  zvec_reranker_t *weighted = zvec_reranker_create_weighted(fields, weights, 2);
+  TEST_ASSERT(weighted != NULL);
+
+  int count = execute_multi_query_with_reranker(&f, weighted, 3, 3);
+  TEST_ASSERT(count > 0);
+  TEST_ASSERT(count <= 3);
+
+  zvec_reranker_destroy(weighted);
+  teardown_multi_query_fixture(&f);
+
+  TEST_END();
+}
+
 void test_index_creation_and_management(void) {
   TEST_START();
 
@@ -5448,7 +5673,9 @@ int main(void) {
   // Query tests
   test_query_params_functions();
   test_actual_vector_queries();
-
+  test_reranker_functions();
+  test_multi_vector_query_with_rrf_reranker();
+  test_multi_vector_query_with_weighted_reranker();
   // Performance tests
   // test_performance_benchmarks();
 
