@@ -1555,3 +1555,166 @@ class TestColumnDDL:
             result = basic_collection.insert(doc)
 
         assert SCHEMA_VALIDATE_ERROR_MSG in str(exc_info.value)
+
+    def test_add_column_then_query_returns_new_field(
+        self, basic_collection: Collection
+    ):
+        """Regression test for issue #426: query() should return fields added via add_column()."""
+        basic_collection.add_column(
+            field_schema=FieldSchema("score", DataType.INT64, nullable=True),
+        )
+
+        docs = [
+            Doc(
+                id="1",
+                fields={"id": 1, "name": "alice", "weight": 60.0, "score": 100},
+                vectors={
+                    "dense": generate_constant_vector(1, 128),
+                    "sparse": generate_sparse_vector(1),
+                },
+            ),
+            Doc(
+                id="2",
+                fields={"id": 2, "name": "bob", "weight": 70.0, "score": 200},
+                vectors={
+                    "dense": generate_constant_vector(2, 128),
+                    "sparse": generate_sparse_vector(2),
+                },
+            ),
+        ]
+        result = basic_collection.insert(docs)
+        assert all(r.ok() for r in result)
+
+        # Query with explicit output_fields
+        query_result = basic_collection.query(
+            Query(field_name="dense", vector=generate_constant_vector(1, 128)),
+            topk=2,
+            output_fields=["score"],
+        )
+        assert len(query_result) == 2
+        for doc in query_result:
+            assert "score" in doc.fields, (
+                f"Doc {doc.id} missing 'score' field after add_column (output_fields explicit)"
+            )
+            assert doc.fields["score"] in (100, 200)
+
+        # Query with select-all (no output_fields)
+        query_result_all = basic_collection.query(
+            Query(field_name="dense", vector=generate_constant_vector(1, 128)),
+            topk=2,
+        )
+        assert len(query_result_all) == 2
+        for doc in query_result_all:
+            assert "score" in doc.fields, (
+                f"Doc {doc.id} missing 'score' field after add_column (select all)"
+            )
+
+    def test_alter_column_rename_then_query_returns_new_name(
+        self, basic_collection: Collection
+    ):
+        """Regression test: query() should use the new field name after alter_column rename."""
+        docs = [
+            Doc(
+                id="1",
+                fields={"id": 1, "name": "alice", "weight": 60.0},
+                vectors={
+                    "dense": generate_constant_vector(1, 128),
+                    "sparse": generate_sparse_vector(1),
+                },
+            ),
+            Doc(
+                id="2",
+                fields={"id": 2, "name": "bob", "weight": 70.0},
+                vectors={
+                    "dense": generate_constant_vector(2, 128),
+                    "sparse": generate_sparse_vector(2),
+                },
+            ),
+        ]
+        result = basic_collection.insert(docs)
+        assert all(r.ok() for r in result)
+
+        # Rename 'weight' -> 'mass'
+        basic_collection.alter_column("weight", new_name="mass")
+
+        # Query with explicit output_fields using new name
+        query_result = basic_collection.query(
+            Query(field_name="dense", vector=generate_constant_vector(1, 128)),
+            topk=2,
+            output_fields=["mass"],
+        )
+        assert len(query_result) == 2
+        for doc in query_result:
+            assert "mass" in doc.fields, (
+                f"Doc {doc.id} missing 'mass' field after alter_column rename"
+            )
+            assert "weight" not in doc.fields, (
+                f"Doc {doc.id} still has old name 'weight' after rename"
+            )
+
+        # Query with select-all
+        query_result_all = basic_collection.query(
+            Query(field_name="dense", vector=generate_constant_vector(1, 128)),
+            topk=2,
+        )
+        assert len(query_result_all) == 2
+        for doc in query_result_all:
+            assert "mass" in doc.fields, (
+                f"Doc {doc.id} missing 'mass' in select-all after alter_column rename"
+            )
+            assert "weight" not in doc.fields, (
+                f"Doc {doc.id} still has old name 'weight' in select-all after rename"
+            )
+
+    def test_drop_column_then_query_excludes_dropped_field(
+        self, basic_collection: Collection
+    ):
+        """Regression test: query() should not return fields removed via drop_column()."""
+        basic_collection.add_column(
+            field_schema=FieldSchema("score", DataType.INT64, nullable=True),
+        )
+
+        docs = [
+            Doc(
+                id="1",
+                fields={"id": 1, "name": "alice", "weight": 60.0, "score": 100},
+                vectors={
+                    "dense": generate_constant_vector(1, 128),
+                    "sparse": generate_sparse_vector(1),
+                },
+            ),
+            Doc(
+                id="2",
+                fields={"id": 2, "name": "bob", "weight": 70.0, "score": 200},
+                vectors={
+                    "dense": generate_constant_vector(2, 128),
+                    "sparse": generate_sparse_vector(2),
+                },
+            ),
+        ]
+        result = basic_collection.insert(docs)
+        assert all(r.ok() for r in result)
+
+        # Verify field exists before drop
+        query_before = basic_collection.query(
+            Query(field_name="dense", vector=generate_constant_vector(1, 128)),
+            topk=2,
+        )
+        assert all("score" in doc.fields for doc in query_before)
+
+        # Drop the column
+        basic_collection.drop_column("score")
+
+        # Query after drop - 'score' should not appear
+        query_after = basic_collection.query(
+            Query(field_name="dense", vector=generate_constant_vector(1, 128)),
+            topk=2,
+        )
+        assert len(query_after) == 2
+        for doc in query_after:
+            assert "score" not in doc.fields, (
+                f"Doc {doc.id} still has 'score' after drop_column"
+            )
+            assert "name" in doc.fields, (
+                f"Doc {doc.id} missing 'name' - other fields should still be present"
+            )
