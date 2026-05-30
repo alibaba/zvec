@@ -1448,8 +1448,8 @@ class BufferStorage : public IndexStorage {
   // up to the true OOM boundary.
   struct ArenaBlock {
     char *base{nullptr};
-    size_t size{0};   // Total bytes in this arena (4K-aligned).
-    size_t used{0};   // Bytes already handed out (4K-aligned).
+    size_t size{0};  // Total bytes in this arena (4K-aligned).
+    size_t used{0};  // Bytes already handed out (4K-aligned).
   };
   // Caller MUST hold tmp_buffers_mutex_.  alloc_size MUST be a
   // multiple of 4096.  Returns nullptr only if scudo cannot satisfy a
@@ -1466,8 +1466,7 @@ class BufferStorage : public IndexStorage {
       }
     }
     size_t new_size = alloc_size > kArenaSize ? alloc_size : kArenaSize;
-    char *p =
-        static_cast<char *>(ailego_aligned_malloc(new_size, kAlign));
+    char *p = static_cast<char *>(ailego_aligned_malloc(new_size, kAlign));
     if (!p) {
       return nullptr;
     }
