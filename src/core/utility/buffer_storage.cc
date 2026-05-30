@@ -223,8 +223,16 @@ class BufferStorage : public IndexStorage {
       // large-page platforms.
       static constexpr size_t kAlign = 4096UL;
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      char *tmp =
-          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
+      // Allocate a 4K-aligned slot from the per-storage arena pool.
+      // This batches page-aligned allocation: under heap fragmentation
+      // (notably Android Bionic scudo), one large posix_memalign per
+      // arena via the secondary (mmap-backed) allocator is far more
+      // reliable than many independent posix_memalign(4K, 4K) calls.
+      char *tmp = nullptr;
+      {
+        std::lock_guard<std::mutex> tmp_latch(owner_->tmp_buffers_mutex_);
+        tmp = owner_->tmp_arena_alloc_locked(alloc_size);
+      }
       if (!tmp) {
         LOG_ERROR(
             "WrappedSegment::read: cross-page alloc failed, file[%s], "
@@ -240,13 +248,11 @@ class BufferStorage : public IndexStorage {
             "id[%zu], abs_offset=%zu, len=%zu, first_page=%zu, last_page=%zu",
             owner_->file_name_.c_str(), segment_id_, abs_offset, len,
             first_page, last_page);
-        ailego_free(tmp);
+        // The arena slot is intentionally not rolled back: rolling back
+        // would require holding the arena lock across read_range, while
+        // the worst-case leak per failed read is one slot (alloc_size).
         *data = nullptr;
         return 0;
-      }
-      {
-        std::lock_guard<std::mutex> tmp_latch(owner_->tmp_buffers_mutex_);
-        owner_->tmp_buffers_.push_back(tmp);
       }
       *data = tmp;
       return len;
@@ -998,9 +1004,9 @@ class BufferStorage : public IndexStorage {
     memset(&footer_, 0, sizeof(footer_));
     {
       std::lock_guard<std::mutex> tmp_latch(tmp_buffers_mutex_);
-      for (char *p : tmp_buffers_) {
-        if (p) {
-          ailego_free(p);
+      for (const ArenaBlock &b : tmp_buffers_) {
+        if (b.base) {
+          ailego_free(b.base);
         }
       }
       tmp_buffers_.clear();
@@ -1427,7 +1433,48 @@ class BufferStorage : public IndexStorage {
         delete;
   };
 
-  std::vector<char *> tmp_buffers_{};
+  // Arena slab for cross-page temp buffers handed out by
+  // WrappedSegment::read(const void**).  The legacy contract requires
+  // every returned pointer to stay valid until close_index(), so slots
+  // are never freed individually -- they are carved out of large
+  // 4K-aligned arenas which are released in bulk.
+  //
+  // Why an arena instead of one posix_memalign(4K, 4K) per read:
+  // Android Bionic scudo's small-class chunk pool is prone to large-
+  // alignment starvation under fragmentation (we observed sporadic
+  // posix_memalign(4096, 4096) returning ENOMEM even with plenty of
+  // free memory).  A single large request (>= kArenaSize) is served
+  // from scudo's secondary allocator (mmap-backed), which is reliable
+  // up to the true OOM boundary.
+  struct ArenaBlock {
+    char *base{nullptr};
+    size_t size{0};   // Total bytes in this arena (4K-aligned).
+    size_t used{0};   // Bytes already handed out (4K-aligned).
+  };
+  // Caller MUST hold tmp_buffers_mutex_.  alloc_size MUST be a
+  // multiple of 4096.  Returns nullptr only if scudo cannot satisfy a
+  // fresh arena allocation, i.e. effectively true OOM.
+  char *tmp_arena_alloc_locked(size_t alloc_size) {
+    static constexpr size_t kAlign = 4096UL;
+    static constexpr size_t kArenaSize = 1UL << 20;  // 1 MiB
+    if (!tmp_buffers_.empty()) {
+      ArenaBlock &back = tmp_buffers_.back();
+      if (back.base && back.size - back.used >= alloc_size) {
+        char *out = back.base + back.used;
+        back.used += alloc_size;
+        return out;
+      }
+    }
+    size_t new_size = alloc_size > kArenaSize ? alloc_size : kArenaSize;
+    char *p =
+        static_cast<char *>(ailego_aligned_malloc(new_size, kAlign));
+    if (!p) {
+      return nullptr;
+    }
+    tmp_buffers_.push_back(ArenaBlock{p, new_size, alloc_size});
+    return p;
+  }
+  std::vector<ArenaBlock> tmp_buffers_{};
   mutable std::mutex tmp_buffers_mutex_{};
 
   // buffer manager
