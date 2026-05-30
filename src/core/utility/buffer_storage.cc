@@ -313,8 +313,7 @@ class BufferStorage : public IndexStorage {
       }
       {
         std::lock_guard<std::mutex> meta_latch(meta_mtx_);
-        uint64_t cur =
-            __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
+        uint64_t cur = __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
         if (offset + len > cur) {
           uint64_t new_size = offset + len;
           // padding_size is paired with data_size; publish it first
@@ -322,8 +321,7 @@ class BufferStorage : public IndexStorage {
           // consistent (data_size + padding_size == capacity_) pair.
           __atomic_store_n(&meta->padding_size, capacity_ - new_size,
                            __ATOMIC_RELAXED);
-          __atomic_store_n(&meta->data_size, new_size,
-                           __ATOMIC_RELEASE);
+          __atomic_store_n(&meta->data_size, new_size, __ATOMIC_RELEASE);
         }
       }
       // Mark dirty unconditionally even when data_size did not grow:
@@ -348,8 +346,7 @@ class BufferStorage : public IndexStorage {
       bool changed = false;
       {
         std::lock_guard<std::mutex> meta_latch(meta_mtx_);
-        uint64_t cur =
-            __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
+        uint64_t cur = __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
         if (cur != size) {
           if (size > capacity_) {
             size = capacity_;
