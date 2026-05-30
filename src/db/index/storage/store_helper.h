@@ -267,12 +267,7 @@ inline arrow::Status ConvertScalarVectorToArrayByType(
         return arrow::Status::Invalid(
             "Cannot convert empty vector to list array");
       }
-
-      auto list_type = std::dynamic_pointer_cast<arrow::ListType>(type);
-      if (!list_type) {
-        return arrow::Status::TypeError("Expected ListType for LIST scalar");
-      }
-
+      auto list_type = std::static_pointer_cast<arrow::ListType>(type);
       std::unique_ptr<arrow::ArrayBuilder> value_builder;
       ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(),
                                              list_type->value_type(),
@@ -287,10 +282,9 @@ inline arrow::Status ConvertScalarVectorToArrayByType(
           continue;
         }
 
-        auto list_scalar = std::dynamic_pointer_cast<arrow::ListScalar>(scalar);
-        if (!list_scalar) {
-          return arrow::Status::TypeError("Expected ListScalar for LIST type");
-        }
+        // Same rationale: scalar->type->id() == LIST implies the
+        // scalar IS a ListScalar; avoid RTTI-dependent cast.
+        auto list_scalar = std::static_pointer_cast<arrow::ListScalar>(scalar);
 
         ARROW_RETURN_NOT_OK(builder.Append());
         auto value_builder_ptr = builder.value_builder();
@@ -371,12 +365,10 @@ inline arrow::Status AppendFieldValueToBuilder(
     }
     case arrow::Type::LIST: {
       auto list_builder = dynamic_cast<arrow::ListBuilder *>(builder);
-      auto list_type =
-          std::dynamic_pointer_cast<arrow::ListType>(field->type());
-
-      if (!list_type) {
-        return arrow::Status::TypeError("Field type is not ListType");
-      }
+      // Use static_pointer_cast: the switch guarantees type == LIST;
+      // dynamic_pointer_cast fails on Android due to RTTI divergence
+      // when Arrow is linked as a static archive.
+      auto list_type = std::static_pointer_cast<arrow::ListType>(field->type());
 
       auto value_type = list_type->value_type()->id();
 
@@ -699,8 +691,9 @@ inline arrow::Status BuildArrayFromIndicesWithType(
       return BuildArrayFromIndices<arrow::BinaryArray, arrow::BinaryBuilder>(
           chunked_array, indices_in_table, out_array);
     case arrow::Type::LIST: {
-      auto list_type =
-          std::dynamic_pointer_cast<arrow::ListType>(col_data_type);
+      // static_pointer_cast: switch guarantees type == LIST; avoids
+      // Android RTTI divergence with Arrow static archive.
+      auto list_type = std::static_pointer_cast<arrow::ListType>(col_data_type);
       return BuildListArrayFromIndices(chunked_array, indices_in_table,
                                        list_type, out_array);
     }
