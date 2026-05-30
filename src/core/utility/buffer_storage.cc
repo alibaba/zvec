@@ -31,6 +31,54 @@
 
 namespace zvec {
 namespace core {
+namespace {
+
+// Cross-compiler helpers for lock-free 64-bit acquire/release access
+// to SegmentMeta::data_size / padding_size.
+//
+// These fields are POD (uint64_t) inside a serialised struct so we cannot
+// change their type to std::atomic<>; std::atomic_ref is C++20 and the
+// project targets C++17.  GCC/Clang have native __atomic_* builtins that
+// emit single ldar/stlr on arm64 and plain mov on x86_64.  MSVC lacks
+// these builtins, so we fall back to volatile load/store paired with a
+// std::atomic_thread_fence, which is correct on all targets MSVC ships
+// (x86_64 / arm64 desktop) and equivalent in cost.
+inline uint64_t bs_load_acquire(const uint64_t *p) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __atomic_load_n(p, __ATOMIC_ACQUIRE);
+#else
+  uint64_t v = *static_cast<const volatile uint64_t *>(p);
+  std::atomic_thread_fence(std::memory_order_acquire);
+  return v;
+#endif
+}
+
+inline uint64_t bs_load_relaxed(const uint64_t *p) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __atomic_load_n(p, __ATOMIC_RELAXED);
+#else
+  return *static_cast<const volatile uint64_t *>(p);
+#endif
+}
+
+inline void bs_store_release(uint64_t *p, uint64_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+  __atomic_store_n(p, v, __ATOMIC_RELEASE);
+#else
+  std::atomic_thread_fence(std::memory_order_release);
+  *static_cast<volatile uint64_t *>(p) = v;
+#endif
+}
+
+inline void bs_store_relaxed(uint64_t *p, uint64_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+  __atomic_store_n(p, v, __ATOMIC_RELAXED);
+#else
+  *static_cast<volatile uint64_t *>(p) = v;
+#endif
+}
+
+}  // namespace
 
 // The legacy read(const void**) overload guarantees the returned pointer
 // stays valid until close_index().  Single-page reads pin the page
@@ -69,8 +117,8 @@ class BufferStorage : public IndexStorage {
     //! ARM (e.g. Android arm64) cannot see stale values that would cause
     //! read() to truncate len to 0.
     size_t data_size(void) const override {
-      return static_cast<size_t>(__atomic_load_n(
-          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE));
+      return static_cast<size_t>(
+          bs_load_acquire(&segment_info_->segment.meta()->data_size));
     }
 
     //! Retrieve crc of data
@@ -80,8 +128,8 @@ class BufferStorage : public IndexStorage {
 
     //! Retrieve size of padding
     size_t padding_size(void) const override {
-      return static_cast<size_t>(__atomic_load_n(
-          &segment_info_->segment.meta()->padding_size, __ATOMIC_ACQUIRE));
+      return static_cast<size_t>(
+          bs_load_acquire(&segment_info_->segment.meta()->padding_size));
     }
 
     //! Retrieve capacity of segment
@@ -99,8 +147,8 @@ class BufferStorage : public IndexStorage {
                   owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      const size_t data_size = __atomic_load_n(
-          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE);
+      const size_t data_size =
+          bs_load_acquire(&segment_info_->segment.meta()->data_size);
       if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
         if (offset > data_size) {
           offset = data_size;
@@ -130,8 +178,8 @@ class BufferStorage : public IndexStorage {
         *data = nullptr;
         return 0;
       }
-      const size_t data_size = __atomic_load_n(
-          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE);
+      const size_t data_size =
+          bs_load_acquire(&segment_info_->segment.meta()->data_size);
       if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
         if (offset > data_size) {
           offset = data_size;
@@ -166,10 +214,14 @@ class BufferStorage : public IndexStorage {
       }
       // Cross-page path: see file-level banner.  C11 aligned_alloc requires
       // size to be a multiple of alignment, and alignment must be a power
-      // of two; kVectorPageSize is sysconf(_SC_PAGESIZE) which satisfies
-      // both, and matches the buffer-pool's actual page granularity across
-      // platforms (e.g. 4K on Linux, 16K on iOS arm64 / some Android arm64).
-      const size_t kAlign = ailego::kVectorPageSize;
+      // of two.  Use a fixed 4096-byte alignment for the dst buffer: 4K is
+      // the minimum page granularity across all supported platforms
+      // (always a divisor of the 16K/64K page sizes used on Apple Silicon
+      // and some Android arm64 configurations) and is sufficient for the
+      // downstream SIMD/DMA-friendly access contract.  Pinning kAlign to
+      // 4096 also avoids over-allocating 16KB per cross-page read on
+      // large-page platforms.
+      static constexpr size_t kAlign = 4096UL;
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
       char *tmp =
           static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
@@ -209,8 +261,8 @@ class BufferStorage : public IndexStorage {
             owner_->file_name_.c_str(), segment_id_);
         return 0;
       }
-      const size_t data_size = __atomic_load_n(
-          &segment_info_->segment.meta()->data_size, __ATOMIC_ACQUIRE);
+      const size_t data_size =
+          bs_load_acquire(&segment_info_->segment.meta()->data_size);
       if (ailego_unlikely(offset > data_size || len > data_size - offset)) {
         if (offset > data_size) {
           offset = data_size;
@@ -236,13 +288,10 @@ class BufferStorage : public IndexStorage {
         return len;
       }
       // C11 aligned_alloc requires the requested size to be a multiple of
-      // the alignment, and alignment must be a power of two.  Use the
-      // buffer-pool page granularity (sysconf(_SC_PAGESIZE)) which is the
-      // actual page size across platforms (e.g. 4K on Linux, 16K on iOS
-      // arm64 / some Android arm64), avoiding a hard-coded 4K mismatch.
-      // Without correct alignment some libcs (notably Bionic) silently
-      // return NULL or corrupt heap metadata.
-      const size_t kAlign = ailego::kVectorPageSize;
+      // the alignment, and alignment must be a power of two.  See the
+      // sibling read(const void**) overload above for the rationale of
+      // pinning kAlign to a fixed 4096 instead of sysconf(_SC_PAGESIZE).
+      static constexpr size_t kAlign = 4096UL;
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
       char *tmp =
           static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
@@ -313,15 +362,14 @@ class BufferStorage : public IndexStorage {
       }
       {
         std::lock_guard<std::mutex> meta_latch(meta_mtx_);
-        uint64_t cur = __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
+        uint64_t cur = bs_load_relaxed(&meta->data_size);
         if (offset + len > cur) {
           uint64_t new_size = offset + len;
           // padding_size is paired with data_size; publish it first
           // (relaxed) so readers that acquire data_size see a
           // consistent (data_size + padding_size == capacity_) pair.
-          __atomic_store_n(&meta->padding_size, capacity_ - new_size,
-                           __ATOMIC_RELAXED);
-          __atomic_store_n(&meta->data_size, new_size, __ATOMIC_RELEASE);
+          bs_store_relaxed(&meta->padding_size, capacity_ - new_size);
+          bs_store_release(&meta->data_size, new_size);
         }
       }
       // Mark dirty unconditionally even when data_size did not grow:
@@ -346,7 +394,7 @@ class BufferStorage : public IndexStorage {
       bool changed = false;
       {
         std::lock_guard<std::mutex> meta_latch(meta_mtx_);
-        uint64_t cur = __atomic_load_n(&meta->data_size, __ATOMIC_RELAXED);
+        uint64_t cur = bs_load_relaxed(&meta->data_size);
         if (cur != size) {
           if (size > capacity_) {
             size = capacity_;
@@ -354,9 +402,8 @@ class BufferStorage : public IndexStorage {
           // See write() for the publish ordering rationale: padding first
           // (relaxed), then release-store data_size so concurrent lock-free
           // readers observe a consistent pair.
-          __atomic_store_n(&meta->padding_size, capacity_ - size,
-                           __ATOMIC_RELAXED);
-          __atomic_store_n(&meta->data_size, size, __ATOMIC_RELEASE);
+          bs_store_relaxed(&meta->padding_size, capacity_ - size);
+          bs_store_release(&meta->data_size, size);
           changed = true;
         }
       }
