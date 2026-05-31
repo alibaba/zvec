@@ -120,8 +120,10 @@ TEST(FtsAstRewriterTest, AndDedupsRepeatedTerms) {
 }
 
 TEST(FtsAstRewriterTest, DifferentOccurDoesNotMerge) {
-  // OR(apple, +apple) — same term, different modifiers must NOT collapse;
-  // dedup keys include the must/must_not bits so the two stay distinct.
+  // OR(apple, +apple) — the +apple becomes a must clause, plain apple becomes
+  // should. After canonicalization into AND(apple, ?apple) and dedup (same term
+  // text, same must/must_not bits post-canonicalization), they merge into a
+  // single term with boost=2.0.
   std::vector<FtsAstNodePtr> children;
   children.push_back(term("apple"));
   children.push_back(term("apple", /*must=*/true));
@@ -129,8 +131,8 @@ TEST(FtsAstRewriterTest, DifferentOccurDoesNotMerge) {
 
   simplify(ast);
 
-  ASSERT_EQ(ast->type(), FtsNodeType::OR);
-  EXPECT_EQ(as_or(*ast).children.size(), 2u);
+  ASSERT_EQ(ast->type(), FtsNodeType::TERM);
+  EXPECT_FLOAT_EQ(ast->boost, 2.0f);
 }
 
 // --- Conflict ---
@@ -451,6 +453,98 @@ TEST(FtsAstRewriterTest, OrWithoutMustNotIsLeftAlone) {
 
   ASSERT_EQ(ast->type(), FtsNodeType::OR);
   EXPECT_EQ(as_or(*ast).children.size(), 2u);
+}
+
+// --- OR must canonicalization ---
+
+TEST(FtsAstRewriterTest, OrWithMustChildrenCanonicalizesToAnd) {
+  // OR(foo, +bar, baz, +bay) → AND(bar, bay, ?OR(foo, baz))
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("foo"));
+  children.push_back(term("bar", /*must=*/true));
+  children.push_back(term("baz"));
+  children.push_back(term("bay", /*must=*/true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+  const auto &n = as_and(*ast);
+  ASSERT_EQ(n.children.size(), 3u);
+  // First two children: bar, bay (must terms, must flag cleared)
+  EXPECT_EQ(as_term(*n.children[0]).term, "bar");
+  EXPECT_FALSE(n.children[0]->must);
+  EXPECT_FALSE(n.children[0]->should);
+  EXPECT_EQ(as_term(*n.children[1]).term, "bay");
+  EXPECT_FALSE(n.children[1]->must);
+  EXPECT_FALSE(n.children[1]->should);
+  // Third child: ?OR(foo, baz) with should=true
+  ASSERT_EQ(n.children[2]->type(), FtsNodeType::OR);
+  EXPECT_TRUE(n.children[2]->should);
+  const auto &should_or = as_or(*n.children[2]);
+  ASSERT_EQ(should_or.children.size(), 2u);
+  EXPECT_EQ(as_term(*should_or.children[0]).term, "foo");
+  EXPECT_EQ(as_term(*should_or.children[1]).term, "baz");
+}
+
+TEST(FtsAstRewriterTest, OrWithSingleMustAndSingleShouldFoldsCorrectly) {
+  // OR(foo, +bar) → AND(bar, ?foo)
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("foo"));
+  children.push_back(term("bar", /*must=*/true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+  const auto &n = as_and(*ast);
+  ASSERT_EQ(n.children.size(), 2u);
+  EXPECT_EQ(as_term(*n.children[0]).term, "bar");
+  EXPECT_FALSE(n.children[0]->should);
+  EXPECT_EQ(as_term(*n.children[1]).term, "foo");
+  EXPECT_TRUE(n.children[1]->should);
+}
+
+TEST(FtsAstRewriterTest, OrWithAllMustNoShouldChildren) {
+  // OR(+bar, +bay) → AND(bar, bay) — no should part
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("bar", /*must=*/true));
+  children.push_back(term("bay", /*must=*/true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+  const auto &n = as_and(*ast);
+  ASSERT_EQ(n.children.size(), 2u);
+  EXPECT_EQ(as_term(*n.children[0]).term, "bar");
+  EXPECT_EQ(as_term(*n.children[1]).term, "bay");
+}
+
+TEST(FtsAstRewriterTest, OrWithMustAndMustNotCanonicalizesCorrectly) {
+  // OR(foo, +bar, -baz) → must_not is processed first, then must
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("foo"));
+  children.push_back(term("bar", /*must=*/true));
+  children.push_back(term("baz", /*must=*/false, /*must_not=*/true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  // Should become AND-like structure with bar required, baz excluded
+  ASSERT_EQ(ast->type(), FtsNodeType::AND);
+}
+
+TEST(FtsAstRewriterTest, OrWithSingleMustNoShouldFoldsToTerm) {
+  // OR(+bar) → bar (single-child fold after must canonicalization)
+  std::vector<FtsAstNodePtr> children;
+  children.push_back(term("bar", /*must=*/true));
+  auto ast = or_node(std::move(children));
+
+  simplify(ast);
+
+  ASSERT_EQ(ast->type(), FtsNodeType::TERM);
+  EXPECT_EQ(as_term(*ast).term, "bar");
 }
 
 // --- Leaf untouched ---

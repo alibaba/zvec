@@ -39,6 +39,8 @@ enum class FtsNodeType {
 struct FtsAstNode {
   bool must{false};      // Prefix + means must
   bool must_not{false};  // Prefix - / right-hand side of AND NOT means must_not
+  bool should{
+      false};  // SHOULD semantics: does not affect matching, only scoring
   // Per-node scoring weight. Currently meaningful only on TermNode / PhraseNode
   // (composite nodes inherit boost from their scored leaves). Repeated terms in
   // a sibling list are collapsed by the AST rewriter into a single node whose
@@ -53,13 +55,16 @@ struct FtsAstNode {
   virtual std::string text() const = 0;
 
  protected:
-  // Helper: prepend +/- modifier prefix
+  // Helper: prepend +/-/? modifier prefix
   std::string modifier_prefix() const {
     if (must) {
       return "+";
     }
     if (must_not) {
       return "-";
+    }
+    if (should) {
+      return "?";
     }
     return "";
   }

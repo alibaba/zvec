@@ -300,56 +300,68 @@ void simplify_or(FtsAstNodePtr &node) {
   flatten_or_children(n.children);
   merge_duplicate_siblings(n.children);
 
-  // OR with no remaining positive children matches nothing. (must_not children
-  // inside an OR mean "exclude from the disjunction"; with no positive base
-  // the result is empty.)
-  bool any_positive = false;
+  // Classify children into must (+), must_not (-), and plain buckets.
   size_t mustnot_count = 0;
+  size_t must_count = 0;
   for (const auto &c : n.children) {
     if (c->must_not) {
       ++mustnot_count;
-    } else {
-      any_positive = true;
+    } else if (c->must) {
+      ++must_count;
     }
   }
-  if (!any_positive) {
+
+  // OR with only must_not children has no positive base → matches nothing.
+  if (mustnot_count == n.children.size()) {
     node = make_empty_like(n);
     return;
   }
 
-  // Canonicalize OR-with-must_not into AND(OR(positives), must_nots...). After
-  // this, an OrNode never carries must_not children, so the iterator builder
-  // can drop its special-case wrapping. Conflict cases like `apple -apple` end
-  // up inside the new AND where and_has_mustnot_conflict catches them and
-  // collapses the whole subtree to EmptyNode for free.
-  if (mustnot_count > 0) {
-    std::vector<FtsAstNodePtr> positives;
-    std::vector<FtsAstNodePtr> negatives;
-    positives.reserve(n.children.size() - mustnot_count);
-    negatives.reserve(mustnot_count);
+  // Canonicalize OR-with-modifiers into AND:
+  //   - must_not children  → AND exclusions
+  //   - must children      → AND required clauses (must flag cleared)
+  //   - plain children     → positive base (if no must) or SHOULD scoring
+  // Conflict cases like `+apple -apple` end up inside the new AND where
+  // and_has_mustnot_conflict catches them and collapses to EmptyNode.
+  if (mustnot_count > 0 || must_count > 0) {
+    std::vector<FtsAstNodePtr> must_children;
+    std::vector<FtsAstNodePtr> mustnot_children;
+    std::vector<FtsAstNodePtr> plain_children;
     for (auto &c : n.children) {
       if (c->must_not) {
-        negatives.push_back(std::move(c));
+        mustnot_children.push_back(std::move(c));
+      } else if (c->must) {
+        c->must = false;
+        must_children.push_back(std::move(c));
       } else {
-        positives.push_back(std::move(c));
+        plain_children.push_back(std::move(c));
       }
     }
 
-    FtsAstNodePtr positive_part;
-    if (positives.size() == 1) {
-      positive_part = std::move(positives[0]);
-    } else {
-      auto inner_or = std::make_unique<OrNode>();
-      inner_or->children = std::move(positives);
-      positive_part = std::move(inner_or);
+    auto wrap = std::make_unique<AndNode>();
+    wrap->children = std::move(must_children);
+
+    if (!plain_children.empty()) {
+      FtsAstNodePtr plain_part;
+      if (plain_children.size() == 1) {
+        plain_part = std::move(plain_children[0]);
+      } else {
+        auto inner_or = std::make_unique<OrNode>();
+        inner_or->children = std::move(plain_children);
+        plain_part = std::move(inner_or);
+      }
+      // When must children exist, plain terms become SHOULD (scoring only);
+      // otherwise they are the positive base of the AND.
+      if (must_count > 0) {
+        plain_part->should = true;
+      }
+      wrap->children.push_back(std::move(plain_part));
     }
 
-    auto wrap = std::make_unique<AndNode>();
-    wrap->children.reserve(1 + negatives.size());
-    wrap->children.push_back(std::move(positive_part));
-    for (auto &mn : negatives) {
+    for (auto &mn : mustnot_children) {
       wrap->children.push_back(std::move(mn));
     }
+
     wrap->must = n.must;
     wrap->must_not = n.must_not;
     wrap->boost = n.boost;

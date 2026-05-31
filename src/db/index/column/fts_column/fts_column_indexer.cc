@@ -451,11 +451,13 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
 
   std::vector<DocIteratorPtr> must_iterators;
   std::vector<DocIteratorPtr> must_not_iterators;
+  std::vector<DocIteratorPtr> should_iterators;
   size_t batched_cursor = 0;
 
   for (size_t i = 0; i < and_node.children.size(); ++i) {
     const auto &child = and_node.children[i];
     const bool is_must_not = child->must_not;
+    const bool is_should = child->should;
 
     DocIteratorPtr iter;
     if (batched_cursor < term_child_indices.size() &&
@@ -480,7 +482,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     }
 
     if (!iter) {
-      if (!is_must_not) {
+      if (!is_must_not && !is_should) {
         return DocIteratorPtr{nullptr};
       }
       continue;
@@ -488,6 +490,8 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
 
     if (is_must_not) {
       must_not_iterators.push_back(std::move(iter));
+    } else if (is_should) {
+      should_iterators.push_back(std::move(iter));
     } else {
       must_iterators.push_back(std::move(iter));
     }
@@ -497,12 +501,14 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     return DocIteratorPtr{nullptr};
   }
 
-  if (must_iterators.size() == 1 && must_not_iterators.empty()) {
+  if (must_iterators.size() == 1 && must_not_iterators.empty() &&
+      should_iterators.empty()) {
     return std::move(must_iterators[0]);
   }
 
   return std::make_unique<ConjunctionIterator>(std::move(must_iterators),
-                                               std::move(must_not_iterators));
+                                               std::move(must_not_iterators),
+                                               std::move(should_iterators));
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
@@ -526,21 +532,23 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
 
   auto term_raw_postings = batch_get_postings(term_key_slices);
 
-  // Invariant: the AST rewriter (fts::simplify) lifts any must_not children
-  // out of OrNode into a wrapping AndNode before we get here, so the loop
-  // below only ever sees SHOULD-style positives. A must_not child reaching
-  // this point indicates a caller that bypassed simplify — bail out loudly
-  // rather than silently produce wrong scores.
+  // Invariant: the AST rewriter (fts::simplify) lifts both must_not and must
+  // children out of OrNode into a wrapping AndNode before we get here, so the
+  // loop below only ever sees plain positives. A must_not or must child
+  // reaching this point indicates a caller that bypassed simplify — bail out
+  // loudly rather than silently produce wrong results.
   std::vector<DocIteratorPtr> positive_iterators;
   size_t batched_cursor = 0;
 
   for (size_t i = 0; i < or_node.children.size(); ++i) {
     const auto &child = or_node.children[i];
-    if (child->must_not) {
+    if (child->must_not || child->must) {
       LOG_ERROR(
-          "build_or_iterator: must_not child reached OR (rewriter bypassed)");
+          "build_or_iterator: must/must_not child reached OR "
+          "(rewriter bypassed)");
       return tl::make_unexpected(Status::InternalError(
-          "FtsColumnIndexer::build_or_iterator: OR contains must_not child"));
+          "FtsColumnIndexer::build_or_iterator: OR contains must/must_not "
+          "child"));
     }
 
     DocIteratorPtr iter;

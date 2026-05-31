@@ -579,6 +579,93 @@ TEST_F(FtsColumnIndexerTest, SearchTopLevelMustNotIsRejected) {
 }
 
 // ============================================================
+// search() - must inside OR (should semantics)
+// ============================================================
+
+TEST_F(FtsColumnIndexerTest, SearchMustInOrOnlyReturnsDocsMatchingAllMust) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "foo bar baz bay").has_value());
+  EXPECT_TRUE(indexer->insert(1, "bar bay").has_value());
+  EXPECT_TRUE(indexer->insert(2, "foo baz").has_value());
+  EXPECT_TRUE(indexer->insert(3, "foo bar").has_value());
+
+  // "+bar +bay foo baz" — bar and bay must both match
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "+bar +bay foo baz", 10, &results));
+
+  std::unordered_set<uint64_t> doc_ids;
+  for (const auto &r : results) {
+    doc_ids.insert(r.doc_id);
+  }
+  // doc 0 (foo bar baz bay) and doc 1 (bar bay) match
+  EXPECT_TRUE(doc_ids.count(0));
+  EXPECT_TRUE(doc_ids.count(1));
+  // doc 2 (foo baz) and doc 3 (foo bar) should NOT match
+  EXPECT_FALSE(doc_ids.count(2));
+  EXPECT_FALSE(doc_ids.count(3));
+}
+
+TEST_F(FtsColumnIndexerTest, SearchMustInOrShouldBoostScore) {
+  auto indexer = make_indexer();
+  // Both docs contain the must terms (bar, bay)
+  // Doc 0 also contains should terms (foo, baz) → should score higher
+  EXPECT_TRUE(indexer->insert(0, "foo bar baz bay").has_value());
+  EXPECT_TRUE(indexer->insert(1, "bar bay").has_value());
+
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "+bar +bay foo baz", 10, &results));
+  ASSERT_EQ(results.size(), 2u);
+
+  // Doc 0 should score higher than doc 1 due to should-term contributions
+  EXPECT_EQ(results[0].doc_id, 0ull);
+  EXPECT_GT(results[0].score, results[1].score);
+}
+
+TEST_F(FtsColumnIndexerTest, SearchSingleMustInOrFiltersCorrectly) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "hello foo").has_value());
+  EXPECT_TRUE(indexer->insert(2, "world foo").has_value());
+
+  // "+hello world foo" — hello must match
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "+hello world foo", 10, &results));
+
+  std::unordered_set<uint64_t> doc_ids;
+  for (const auto &r : results) {
+    doc_ids.insert(r.doc_id);
+  }
+  EXPECT_TRUE(doc_ids.count(0));
+  EXPECT_TRUE(doc_ids.count(1));
+  // doc 2 does not contain hello → excluded
+  EXPECT_FALSE(doc_ids.count(2));
+}
+
+TEST_F(FtsColumnIndexerTest, SearchAllMustNoShouldWorksLikeAnd) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "hello foo").has_value());
+
+  // "+hello +world" — both must match, no should terms
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "+hello +world", 10, &results));
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
+}
+
+TEST_F(FtsColumnIndexerTest, SearchWithoutMustUnchanged) {
+  auto indexer = make_indexer();
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+  EXPECT_TRUE(indexer->insert(1, "hello foo").has_value());
+  EXPECT_TRUE(indexer->insert(2, "bar baz").has_value());
+
+  // "hello world" (no must) — pure OR, matches any doc with hello or world
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "hello world", 10, &results));
+  EXPECT_EQ(results.size(), 2u);
+}
+
+// ============================================================
 // BM25 stats are updated in real-time after insert
 // ============================================================
 

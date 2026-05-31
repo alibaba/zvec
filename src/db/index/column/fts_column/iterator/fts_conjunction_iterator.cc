@@ -19,9 +19,11 @@ namespace zvec::fts {
 
 ConjunctionIterator::ConjunctionIterator(
     std::vector<DocIteratorPtr> must_iterators,
-    std::vector<DocIteratorPtr> must_not_iterators)
+    std::vector<DocIteratorPtr> must_not_iterators,
+    std::vector<DocIteratorPtr> should_iterators)
     : must_iterators_(std::move(must_iterators)),
-      must_not_iterators_(std::move(must_not_iterators)) {
+      must_not_iterators_(std::move(must_not_iterators)),
+      should_iterators_(std::move(should_iterators)) {
   // Sort must iterators by cost (ascending) so the cheapest leads
   std::sort(must_iterators_.begin(), must_iterators_.end(),
             [](const DocIteratorPtr &a, const DocIteratorPtr &b) {
@@ -30,6 +32,9 @@ ConjunctionIterator::ConjunctionIterator(
   // Compute and cache max_score in base class field
   float total = 0.0f;
   for (auto &iter : must_iterators_) {
+    total += iter->cached_max_score_;
+  }
+  for (auto &iter : should_iterators_) {
     total += iter->cached_max_score_;
   }
   cached_max_score_ = total;
@@ -165,6 +170,12 @@ float ConjunctionIterator::score() {
   for (auto &iter : must_iterators_) {
     total += iter->score();
   }
+  for (auto &iter : should_iterators_) {
+    uint32_t doc = iter->advance(cached_doc_id_);
+    if (doc == cached_doc_id_ && iter->matches()) {
+      total += iter->score();
+    }
+  }
   return total;
 }
 
@@ -179,6 +190,9 @@ uint64_t ConjunctionIterator::cost() const {
 float ConjunctionIterator::max_score() const {
   float total = 0.0f;
   for (auto &iter : must_iterators_) {
+    total += iter->max_score();
+  }
+  for (auto &iter : should_iterators_) {
     total += iter->max_score();
   }
   return total;

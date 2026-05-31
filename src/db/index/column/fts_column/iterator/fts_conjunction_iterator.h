@@ -32,9 +32,12 @@ class ConjunctionIterator : public DocIterator {
   /*! Construct a conjunction iterator.
    *  \param must_iterators      Sub-iterators that must all match (AND)
    *  \param must_not_iterators  Sub-iterators whose matches are excluded (NOT)
+   *  \param should_iterators    Sub-iterators that contribute to scoring but
+   *                             do not affect matching (optional boost)
    */
   ConjunctionIterator(std::vector<DocIteratorPtr> must_iterators,
-                      std::vector<DocIteratorPtr> must_not_iterators);
+                      std::vector<DocIteratorPtr> must_not_iterators,
+                      std::vector<DocIteratorPtr> should_iterators = {});
 
   uint32_t next_doc() override;
   //! Internal-driven filter skip: pushes filter into the lead iterator so
@@ -63,6 +66,7 @@ class ConjunctionIterator : public DocIterator {
   // must_iterators_[0] is the lead (lowest cost)
   std::vector<DocIteratorPtr> must_iterators_;
   std::vector<DocIteratorPtr> must_not_iterators_;
+  std::vector<DocIteratorPtr> should_iterators_;
   float min_competitive_score_{0.0f};
 };
 
