@@ -47,13 +47,13 @@ class QueryInfo {
     using Ptr = std::shared_ptr<QueryVectorCondInfo>;
 
     QueryVectorCondInfo(const FieldSchema *vector_schema,
-                        const std::string &vector_term,
+                        std::string vector_term,
                         core::IndexMeta::DataType core_data_type, int dimension,
                         std::string vector_sparse_indices,
                         std::string vector_sparse_values,
                         QueryParams::Ptr query_params)
         : vector_schema_(vector_schema),
-          vector_term_(vector_term),
+          vector_term_(std::move(vector_term)),
           data_type_(core_data_type),
           dimension_(dimension),
           vector_sparse_indices_(std::move(vector_sparse_indices)),

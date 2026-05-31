@@ -56,13 +56,13 @@ SQLEngineImpl::SQLEngineImpl(zvec::Profiler::Ptr profiler)
     : profiler_(std::move(profiler)) {}
 
 Result<DocPtrList> SQLEngineImpl::execute(
-    CollectionSchema::Ptr collection, const SearchQuery &query,
+    CollectionSchema::Ptr collection, SearchQuery query,
     const std::vector<Segment::Ptr> &segments) {
   if (segments.empty()) {
     return DocPtrList{};
   }
 
-  auto query_info = parse_request(collection, query, nullptr);
+  auto query_info = parse_request(collection, std::move(query), nullptr);
   if (!query_info) {
     return tl::make_unexpected(query_info.error());
   }
@@ -244,7 +244,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
 }
 
 Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
-    CollectionSchema::Ptr collection, const SearchQuery &request,
+    CollectionSchema::Ptr collection, SearchQuery request,
     std::shared_ptr<GroupBy> group_by) {
   profiler_->open_stage("message_to_sqlinfo");
   sqlengine::SQLInfo::Ptr sql_info;
@@ -271,9 +271,9 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     }
   }
 
-  sqlengine::SQLInfoHelper::MessageToSQLInfo(&request, std::move(filter_node),
-                                             std::move(group_by), &sql_info,
-                                             &err_msg);
+  sqlengine::SQLInfoHelper::MessageToSQLInfo(
+      std::move(request), std::move(filter_node), std::move(group_by),
+      &sql_info, &err_msg);
   profiler_->close_stage();
   if (!err_msg.empty()) {
     LOG_ERROR("QueryAgent, message to sql info failed, err_msg: %s",

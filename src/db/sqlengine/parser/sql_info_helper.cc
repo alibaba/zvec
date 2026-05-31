@@ -26,16 +26,17 @@ namespace zvec::sqlengine {
 
 using namespace zvec;
 
-Node::Ptr handle_vector(const SearchQuery &request, std::string * /*err_msg*/) {
-  const auto *vc = request.target_.get_vector_clause();
+Node::Ptr handle_vector(SearchQuery *request, std::string * /*err_msg*/) {
+  auto *vc = request->target_.get_vector_clause();
   if (vc == nullptr) {
     return nullptr;
   }
   Node::Ptr rel_exp = std::make_shared<Node>(NodeOp::T_EQ);
-  rel_exp->set_left(std::make_shared<IDNode>(request.target_.field_name_));
+  rel_exp->set_left(std::make_shared<IDNode>(request->target_.field_name_));
   rel_exp->set_right(std::make_shared<VectorMatrixNode>(
-      vc->query_vector_, vc->sparse_indices_, vc->sparse_values_,
-      request.target_.query_params_));
+      std::move(vc->query_vector_), std::move(vc->sparse_indices_),
+      std::move(vc->sparse_values_),
+      std::move(request->target_.query_params_)));
   return rel_exp;
 }
 
@@ -65,16 +66,15 @@ void handle_query_field(const SearchQuery *query, SelectInfo *selected_info) {
   }
 }
 
-bool SQLInfoHelper::MessageToSQLInfo(const SearchQuery *query,
-                                     Node::Ptr filter_node,
+bool SQLInfoHelper::MessageToSQLInfo(SearchQuery query, Node::Ptr filter_node,
                                      std::shared_ptr<GroupBy> group_by,
                                      sqlengine::SQLInfo::Ptr *sql_info,
                                      std::string *err_msg) {
   Node::Ptr index_params_node_ptr = nullptr;
-  if (const auto *vc = query->target_.get_vector_clause();
+  if (const auto *vc = query.target_.get_vector_clause();
       vc != nullptr &&
       (!vc->query_vector_.empty() || !vc->sparse_indices_.empty())) {
-    index_params_node_ptr = handle_vector(*query, err_msg);
+    index_params_node_ptr = handle_vector(&query, err_msg);
     if (index_params_node_ptr == nullptr) {
       return false;
     }
@@ -92,13 +92,13 @@ bool SQLInfoHelper::MessageToSQLInfo(const SearchQuery *query,
   }
 
   SelectInfo::Ptr select_info = std::make_shared<SelectInfo>("");
-  handle_query_field(query, select_info.get());
+  handle_query_field(&query, select_info.get());
   select_info->set_search_cond(cond_expr);
 
-  uint32_t topk = query->topk_;
+  uint32_t topk = query.topk_;
   select_info->set_limit(topk);
-  select_info->set_include_vector(query->include_vector_);
-  select_info->set_include_doc_id(query->include_doc_id_);
+  select_info->set_include_vector(query.include_vector_);
+  select_info->set_include_doc_id(query.include_doc_id_);
 
   select_info->set_group_by(std::move(group_by));
   //
