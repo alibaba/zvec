@@ -5908,6 +5908,29 @@ zvec_error_code_t zvec_sub_query_set_query_vector(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_sub_query_set_sparse_vector(
+    zvec_sub_query_t *query, const uint32_t *indices, const float *values,
+    size_t count) {
+  if (!query || (!indices && count > 0) || (!values && count > 0)) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Sub-vector query, indices or values pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  auto &payload = std::get<zvec::VectorClause>(ptr->target_.clause_);
+  if (count == 0) {
+    payload.sparse_indices_.clear();
+    payload.sparse_values_.clear();
+    return ZVEC_OK;
+  }
+  payload.sparse_indices_.assign(
+      reinterpret_cast<const char *>(indices), count * sizeof(uint32_t));
+  payload.sparse_values_.assign(
+      reinterpret_cast<const char *>(values), count * sizeof(float));
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_sub_query_set_sparse_indices(
     zvec_sub_query_t *query, const uint32_t *indices, size_t count) {
   if (!query || (!indices && count > 0)) {

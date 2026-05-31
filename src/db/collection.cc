@@ -14,7 +14,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <filesystem>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -1628,13 +1627,14 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
   if (query.queries.size() < 2) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("Query requires at least 2 sub-queries"));
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Invalid query: MultiQuery requires at least 2 sub-queries, got ",
+        query.queries.size()));
   }
 
   if (!query.reranker) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("Reranker is required for multi-vector query"));
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Invalid query: MultiQuery requires a reranker"));
   }
 
   auto segments = get_all_segments();

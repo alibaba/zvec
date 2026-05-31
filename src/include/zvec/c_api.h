@@ -2168,6 +2168,18 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_query_vector(
     zvec_sub_query_t *query, const void *data, size_t size);
 
 /**
+ * @brief Set sparse vector indices and values
+ * @param query Sub-query pointer
+ * @param indices Array of uint32_t indices
+ * @param values Array of float values
+ * @param count Number of sparse vector entries
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_sparse_vector(
+    zvec_sub_query_t *query, const uint32_t *indices, const float *values,
+    size_t count);
+
+/**
  * @brief Set sparse vector indices
  * @param query Sub-query pointer
  * @param indices Array of uint32_t indices

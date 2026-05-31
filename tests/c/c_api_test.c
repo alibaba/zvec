@@ -4562,6 +4562,19 @@ void test_multi_vector_query_with_rrf_reranker(void) {
     zvec_free((char *)got_fields);
   }
 
+  zvec_sub_query_t *sparse_query = zvec_sub_query_create();
+  TEST_ASSERT(sparse_query != NULL);
+  uint32_t sparse_indices[] = {1, 3};
+  float sparse_values[] = {0.25f, 0.75f};
+  err = zvec_sub_query_set_sparse_vector(sparse_query, sparse_indices,
+                                         sparse_values, 2);
+  TEST_ASSERT(err == ZVEC_OK);
+  err = zvec_sub_query_set_sparse_vector(sparse_query, NULL, sparse_values, 2);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_sub_query_set_sparse_vector(sparse_query, sparse_indices, NULL, 2);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_sub_query_destroy(sparse_query);
+
   zvec_multi_query_destroy(mvq2);
 
   teardown_multi_query_fixture(&f);
