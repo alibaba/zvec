@@ -15,11 +15,16 @@
 #include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <numeric>
 #include <random>
 #include <vector>
 #include <gtest/gtest.h>
 #include "db/index/column/fts_column/bm25_scorer.h"
+#include "db/index/column/fts_column/posting/bitpacked_simd_scalar.h"
+#if defined(__SSE4_1__)
+#include "db/index/column/fts_column/posting/bitpacked_simd_sse41.h"
+#endif
 
 using namespace zvec::fts;
 
@@ -134,6 +139,79 @@ TEST_P(BitPackingTest, PackUnpackRoundTripSmall) {
         << "Mismatch at index " << i << " with bitwidth " << (int)bitwidth;
   }
 }
+
+// The scalar full-block packer must round-trip on its own. This exercises the
+// portable (non-SIMD) path directly regardless of the host CPU, so the
+// architecture used by ARM / no-SSE builds is always covered even when tests
+// run on x86.
+TEST_P(BitPackingTest, ScalarFullBlockRoundTrip) {
+  const uint8_t bitwidth = GetParam();
+  if (bitwidth == 0) return;
+
+  const uint32_t count = 128;
+  const uint32_t mask =
+      (bitwidth == 32) ? 0xFFFFFFFFu : ((1u << bitwidth) - 1u);
+
+  std::vector<uint32_t> values(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    values[i] = (i * 2654435761u + 7u) & mask;  // pseudo-random, deterministic
+  }
+
+  alignas(16) uint8_t packed[32 * 16];
+  simd::scalar_pack_uint32_128(values.data(), bitwidth, packed);
+
+  alignas(16) uint32_t decoded[count];
+  simd::scalar_unpack_uint32_128(packed, bitwidth, decoded);
+
+  for (uint32_t i = 0; i < count; ++i) {
+    EXPECT_EQ(decoded[i], values[i])
+        << "Mismatch at index " << i << " with bitwidth "
+        << static_cast<int>(bitwidth);
+  }
+}
+
+#if defined(__SSE4_1__)
+// Cross-architecture portability guard: the scalar full-block packer must
+// produce byte-identical output to the SSE4.1 SIMD packer, and each must be
+// able to decode the other's output. If the scalar fallback ever diverged from
+// the SIMD layout again (the original cross-arch corruption bug), an index
+// built on x86 would be silently mis-decoded on ARM/no-SSE and vice versa.
+TEST_P(BitPackingTest, ScalarLayoutMatchesSimd) {
+  const uint8_t bitwidth = GetParam();
+  if (bitwidth == 0) return;
+
+  const uint32_t count = 128;
+  const uint32_t mask =
+      (bitwidth == 32) ? 0xFFFFFFFFu : ((1u << bitwidth) - 1u);
+
+  std::vector<uint32_t> values(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    values[i] = (i * 40503u + 12345u) & mask;  // deterministic
+  }
+
+  const size_t packed_size = static_cast<size_t>(bitwidth) * 16;
+  alignas(16) uint8_t scalar_packed[32 * 16];
+  alignas(16) uint8_t simd_packed[32 * 16];
+  simd::scalar_pack_uint32_128(values.data(), bitwidth, scalar_packed);
+  simd::sse41_pack_uint32_128(values.data(), bitwidth, simd_packed);
+
+  EXPECT_EQ(0, std::memcmp(scalar_packed, simd_packed, packed_size))
+      << "Scalar and SIMD packed bytes differ for bitwidth "
+      << static_cast<int>(bitwidth) << " — on-disk format is not portable";
+
+  // SIMD decodes scalar-packed bytes.
+  alignas(16) uint32_t simd_decoded[count];
+  simd::sse41_unpack_uint32_128(scalar_packed, bitwidth, simd_decoded);
+  // Scalar decodes SIMD-packed bytes.
+  alignas(16) uint32_t scalar_decoded[count];
+  simd::scalar_unpack_uint32_128(simd_packed, bitwidth, scalar_decoded);
+
+  for (uint32_t i = 0; i < count; ++i) {
+    EXPECT_EQ(simd_decoded[i], values[i]) << "SIMD-decode-of-scalar @" << i;
+    EXPECT_EQ(scalar_decoded[i], values[i]) << "scalar-decode-of-SIMD @" << i;
+  }
+}
+#endif  // defined(__SSE4_1__)
 
 // Test all bitwidths from 1 to 32
 INSTANTIATE_TEST_SUITE_P(AllBitwidths, BitPackingTest,

@@ -25,12 +25,13 @@ void scalar_max_128(const uint32_t *deltas, const uint32_t *tfs,
                     const uint32_t *doc_lens, size_t start, uint32_t count,
                     uint32_t &max_delta, uint32_t &max_tf, uint32_t &max_dl);
 
-/// Scalar fallback: pack 128 uint32 values at \p bitwidth bits each into \p out
-/// using FastPForLib::fastpackwithoutmask (32 values at a time, 4 iterations).
+/// Scalar fallback: pack 128 uint32 values at \p bitwidth bits each into \p
+/// out, producing the SAME interleaved byte layout as the SSE/AVX2 SIMD packer
+/// so that indexes remain portable across architectures.
 void scalar_pack_uint32_128(const uint32_t *in, uint8_t bitwidth, uint8_t *out);
 
 /// Scalar fallback: unpack 128 uint32 values at \p bitwidth bits each from
-/// \p in using FastPForLib::fastunpack (32 values at a time, 4 iterations).
+/// \p in, reading the SAME interleaved byte layout as the SSE/AVX2 SIMD packer.
 void scalar_unpack_uint32_128(const uint8_t *in, uint8_t bitwidth,
                               uint32_t *out);
 

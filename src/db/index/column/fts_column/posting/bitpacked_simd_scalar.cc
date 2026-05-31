@@ -39,33 +39,51 @@ void scalar_max_128(const uint32_t *deltas, const uint32_t *tfs,
 }
 
 // ------------------------------------------------------------
-// scalar_pack_uint32_128
+// scalar_pack_uint32_128 / scalar_unpack_uint32_128
 // ------------------------------------------------------------
+//
+// These produce / consume the SAME byte layout as the SSE/AVX2 SIMD packers
+// (SIMD_fastpackwithoutmask_32 / SIMD_fastunpack_32), so an index encoded on
+// one architecture can be decoded on another. The SIMD layout interleaves the
+// 128 values across 4 lanes: lane L (0..3), read across the bitwidth output
+// __m128i words, holds the scalar bit-packing of the 32 values
+// { in[L], in[4+L], in[8+L], ..., in[124+L] }. We reproduce that exactly by
+// packing each lane independently with FastPForLib::fastpackwithoutmask and
+// interleaving the resulting 32-bit words at 128-bit (4-lane) granularity.
 
 void scalar_pack_uint32_128(const uint32_t *in, uint8_t bitwidth,
                             uint8_t *out) {
-  // Scalar fastpack processes 32 values at a time; loop 4 times for 128.
   const size_t total_bytes =
       BitPackedPostingList::simd_packed_byte_size(bitwidth);
   std::memset(out, 0, total_bytes);
 
   uint32_t *out32 = reinterpret_cast<uint32_t *>(out);
-  for (uint32_t g = 0; g < 4; ++g) {
-    FastPForLib::fastpackwithoutmask(in + g * 32, out32, bitwidth);
-    out32 += bitwidth;
+  for (uint32_t lane = 0; lane < 4; ++lane) {
+    uint32_t lane_in[32];
+    for (uint32_t k = 0; k < 32; ++k) {
+      lane_in[k] = in[k * 4 + lane];
+    }
+    alignas(16) uint32_t lane_packed[32] = {};
+    FastPForLib::fastpackwithoutmask(lane_in, lane_packed, bitwidth);
+    for (uint32_t j = 0; j < bitwidth; ++j) {
+      out32[j * 4 + lane] = lane_packed[j];
+    }
   }
 }
-
-// ------------------------------------------------------------
-// scalar_unpack_uint32_128
-// ------------------------------------------------------------
 
 void scalar_unpack_uint32_128(const uint8_t *in, uint8_t bitwidth,
                               uint32_t *out) {
   const uint32_t *in32 = reinterpret_cast<const uint32_t *>(in);
-  for (uint32_t g = 0; g < 4; ++g) {
-    FastPForLib::fastunpack(in32, out + g * 32, bitwidth);
-    in32 += bitwidth;
+  for (uint32_t lane = 0; lane < 4; ++lane) {
+    alignas(16) uint32_t lane_packed[32] = {};
+    for (uint32_t j = 0; j < bitwidth; ++j) {
+      lane_packed[j] = in32[j * 4 + lane];
+    }
+    uint32_t lane_out[32];
+    FastPForLib::fastunpack(lane_packed, lane_out, bitwidth);
+    for (uint32_t k = 0; k < 32; ++k) {
+      out[k * 4 + lane] = lane_out[k];
+    }
   }
 }
 
