@@ -522,7 +522,8 @@ Status QueryAnalyzer::check_and_convert_vector(
     // for format vector = [,,,]
     QueryVectorMatrixNode::Ptr vector_node =
         std::dynamic_pointer_cast<QueryVectorMatrixNode>(vector_value_node);
-    // we only have vector matrix, other info is not available
+    // Consume the vector payload; this node is detached from the search
+    // condition after conversion.
     auto vector_data = vector_node->take_node();
     auto core_data_type =
         DataTypeCodeBook::to_data_type(vector_meta->data_type());
