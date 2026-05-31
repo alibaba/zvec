@@ -143,6 +143,8 @@ Result<void> FtsColumnIndexer::close() {
         "FtsColumnIndexer::close: not opened. field=", field_name_));
   }
 
+  ctx_ = nullptr;
+  tokenizer_pipeline_.reset();
   postings_cf_ = nullptr;
   positions_cf_ = nullptr;
   term_freq_cf_.store(nullptr, std::memory_order_release);
@@ -328,7 +330,11 @@ Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
     --cf_counter_;
   }
 
-  float max_score_val = 0.0f;
+  // WAND upper bound.  When max_tf_cf is available we compute the tight
+  // score(df, max_tf, min_dl).  Otherwise fall back to the formula-derived
+  // bound idf*(k1+1), which is still a valid upper bound yet much tighter
+  // than +inf, so WAND pruning remains effective.
+  float max_score_val = scorer_->max_score_bound(df);
   if (max_tf_cf) {
     WandOptimizer wand;
     if (wand.open(scorer_, ctx_, max_tf_cf, 0) == 0) {

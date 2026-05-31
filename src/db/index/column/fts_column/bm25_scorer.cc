@@ -91,6 +91,16 @@ float BM25Scorer::idf(uint64_t term_doc_freq) const {
   return std::log((total_docs - df + 0.5f) / (df + 0.5f) + 1.0f);
 }
 
+float BM25Scorer::max_score_bound(uint64_t term_doc_freq) const {
+  const float idf_value = idf(term_doc_freq);
+  if (idf_value <= 0.0f) {
+    return 0.0f;
+  }
+  // tf→infinity limit: tf_norm → (k1 + 1), so idf*(k1+1) upper-bounds the
+  // score for any (tf, doc_len).
+  return idf_value * (params_.k1 + 1.0f);
+}
+
 float BM25Scorer::score(uint64_t term_doc_freq, uint32_t term_freq,
                         uint32_t doc_len) const {
   // Take a single snapshot so that IDF and TF normalization use the same

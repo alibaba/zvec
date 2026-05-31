@@ -38,7 +38,7 @@ namespace zvec::fts {
 //   [Header 16B] [SkipList N*12B] [Block0] [Block1] ...
 //
 // Block layout:
-//   [BlockHeader 12B] [packed_deltas] [packed_tfs] [packed_dlens]
+//   [BlockHeader 16B] [packed_deltas] [packed_tfs] [packed_dlens]
 
 namespace {
 

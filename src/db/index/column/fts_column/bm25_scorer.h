@@ -127,6 +127,14 @@ class BM25Scorer {
    */
   float idf(uint64_t term_doc_freq) const;
 
+  /*! Compute a tight WAND upper-bound score for a term without knowing
+   *  per-document tf / doc_len.  Uses the identity  lim_{tf→∞} tf_norm = k1+1
+   *  so the bound is  idf(df) * (k1 + 1).
+   *  \param term_doc_freq  Document frequency of this term in segment (df)
+   *  \return upper-bound score (0 when IDF ≤ 0)
+   */
+  float max_score_bound(uint64_t term_doc_freq) const;
+
   /*! Calculate BM25 score using a pre-computed IDF value.
    *  Avoids recomputing log() on every call — IDF is constant per term.
    *  \param idf_value      Pre-computed IDF value (from idf())

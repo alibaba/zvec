@@ -602,4 +602,216 @@ TEST_F(FtsRecallTest, MatchStringRepeatedTermPreservesUnion) {
   EXPECT_EQ(plain_pks, repeated_pks);
 }
 
+// ============================================================
+// FTS delete / upsert end-to-end tests (per-test fixture)
+// ============================================================
+
+class FtsRecallDeleteTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    seg_path_ = "./fts_recall_delete_test_" +
+                std::to_string(reinterpret_cast<uintptr_t>(this));
+    FileHelper::RemoveDirectory(seg_path_);
+    FileHelper::CreateDirectory(seg_path_);
+
+    auto fts_params = std::make_shared<FtsIndexParams>(
+        "whitespace", std::vector<std::string>{"lowercase"}, "");
+    auto invert_params = std::make_shared<InvertIndexParams>(true);
+    schema_ = std::make_shared<CollectionSchema>(
+        "fts_delete_test",
+        std::vector<FieldSchema::Ptr>{
+            std::make_shared<FieldSchema>("content", DataType::STRING, false,
+                                          fts_params),
+            std::make_shared<FieldSchema>("tag", DataType::INT32, false,
+                                          invert_params),
+            std::make_shared<FieldSchema>(
+                "vec", DataType::VECTOR_FP32, 4, false,
+                std::make_shared<FlatIndexParams>(MetricType::L2)),
+        });
+
+    auto segment_meta = std::make_shared<SegmentMeta>();
+    segment_meta->set_id(0);
+    auto id_map = IDMap::CreateAndOpen("fts_delete_test", seg_path_ + "/id_map",
+                                       true, false);
+    auto delete_store = std::make_shared<DeleteStore>("fts_delete_test");
+
+    Version v1;
+    v1.set_schema(*schema_);
+    std::string v_path = seg_path_ + "/manifest";
+    FileHelper::CreateDirectory(v_path);
+    auto vm = VersionManager::Create(v_path, v1);
+    ASSERT_TRUE(vm.has_value());
+
+    BlockMeta mem_block;
+    mem_block.id_ = 0;
+    mem_block.type_ = BlockType::SCALAR;
+    mem_block.min_doc_id_ = 0;
+    mem_block.max_doc_id_ = 0;
+    mem_block.doc_count_ = 0;
+    segment_meta->set_writing_forward_block(mem_block);
+
+    SegmentOptions options;
+    options.read_only_ = false;
+    options.enable_mmap_ = true;
+    options.max_buffer_size_ = 256 * 1024;
+
+    auto result = Segment::CreateAndOpen(seg_path_, *schema_, 0, 0, id_map,
+                                         delete_store, vm.value(), options);
+    ASSERT_TRUE(result.has_value());
+    segment_ = result.value();
+    segments_.push_back(segment_);
+
+    engine_ = SQLEngine::create(std::make_shared<Profiler>());
+
+    insert_docs();
+  }
+
+  void TearDown() override {
+    segments_.clear();
+    segment_.reset();
+    engine_.reset();
+    schema_.reset();
+    FileHelper::RemoveDirectory(seg_path_);
+  }
+
+  void insert_docs() {
+    // doc_id 0: "apple banana cherry"        tag=1
+    // doc_id 1: "banana date elderberry"     tag=2
+    // doc_id 2: "cherry fig grape"           tag=1
+    // doc_id 3: "apple fig honeydew"         tag=2
+    // doc_id 4: "date grape kiwi"            tag=1
+    struct Entry {
+      std::string content;
+      int32_t tag;
+    };
+    std::vector<Entry> entries = {
+        {"apple banana cherry", 1}, {"banana date elderberry", 2},
+        {"cherry fig grape", 1},    {"apple fig honeydew", 2},
+        {"date grape kiwi", 1},
+    };
+    for (size_t i = 0; i < entries.size(); ++i) {
+      Doc doc;
+      doc.set_pk("pk_" + std::to_string(i));
+      doc.set_doc_id(i);
+      doc.set<std::string>("content", entries[i].content);
+      doc.set<int32_t>("tag", entries[i].tag);
+      auto status = segment_->Insert(doc);
+      ASSERT_TRUE(status.ok())
+          << "Insert doc " << i << " failed: " << status.c_str();
+    }
+  }
+
+  Result<DocPtrList> fts_search(const std::string &query_string,
+                                int topk = 10) {
+    SearchQuery vq;
+    vq.topk_ = topk;
+    vq.target_.field_name_ = "content";
+    FtsClause fts;
+    fts.query_string_ = query_string;
+    vq.target_.clause_ = fts;
+    return engine_->execute(schema_, vq, segments_);
+  }
+
+  std::set<std::string> collect_pks(const DocPtrList &docs) {
+    std::set<std::string> pks;
+    for (const auto &d : docs) {
+      pks.insert(d->pk());
+    }
+    return pks;
+  }
+
+  std::string seg_path_;
+  CollectionSchema::Ptr schema_;
+  Segment::Ptr segment_;
+  std::vector<Segment::Ptr> segments_;
+  SQLEngine::Ptr engine_;
+};
+
+// Delete doc 0 ("apple banana cherry"), then search "apple":
+// before: {0, 3}, after: {3} only.
+TEST_F(FtsRecallDeleteTest, DeletedDocExcludedFromSearch) {
+  auto before = fts_search("apple");
+  ASSERT_TRUE(before.has_value()) << before.error().c_str();
+  EXPECT_TRUE(collect_pks(*before).count("pk_0"));
+
+  auto s = segment_->Delete("pk_0");
+  ASSERT_TRUE(s.ok()) << s.c_str();
+
+  auto after = fts_search("apple");
+  ASSERT_TRUE(after.has_value()) << after.error().c_str();
+  auto pks = collect_pks(*after);
+  EXPECT_FALSE(pks.count("pk_0"));
+  EXPECT_TRUE(pks.count("pk_3"));
+}
+
+// Delete all docs matching "banana" (0, 1), verify "banana" returns empty.
+TEST_F(FtsRecallDeleteTest, DeleteAllMatchingDocsReturnsEmpty) {
+  auto s1 = segment_->Delete("pk_0");
+  ASSERT_TRUE(s1.ok()) << s1.c_str();
+  auto s2 = segment_->Delete("pk_1");
+  ASSERT_TRUE(s2.ok()) << s2.c_str();
+
+  auto result = fts_search("banana");
+  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  EXPECT_TRUE(result->empty());
+}
+
+// Upsert doc 0 with new content, verify old content no longer matches
+// and new content is searchable.
+TEST_F(FtsRecallDeleteTest, UpsertUpdatesSearchableContent) {
+  // Before: "apple" matches {0, 3}
+  auto before = fts_search("apple");
+  ASSERT_TRUE(before.has_value()) << before.error().c_str();
+  EXPECT_EQ(before->size(), 2u);
+
+  // Upsert pk_0 with completely different content
+  Doc updated;
+  updated.set_pk("pk_0");
+  updated.set<std::string>("content", "mango pineapple watermelon");
+  updated.set<int32_t>("tag", 1);
+  auto s = segment_->Upsert(updated);
+  ASSERT_TRUE(s.ok()) << s.c_str();
+
+  // "apple" should now only match doc 3
+  auto after_apple = fts_search("apple");
+  ASSERT_TRUE(after_apple.has_value()) << after_apple.error().c_str();
+  ASSERT_EQ(after_apple->size(), 1u);
+  EXPECT_EQ((*after_apple)[0]->pk(), "pk_3");
+
+  // "pineapple" should match the upserted doc
+  auto after_new = fts_search("pineapple");
+  ASSERT_TRUE(after_new.has_value()) << after_new.error().c_str();
+  ASSERT_EQ(after_new->size(), 1u);
+  EXPECT_EQ((*after_new)[0]->pk(), "pk_0");
+}
+
+// Delete a doc, then search with AND: "cherry AND fig" was {2},
+// delete doc 2 → empty.
+TEST_F(FtsRecallDeleteTest, DeleteAffectsConjunctionQuery) {
+  auto before = fts_search("cherry AND fig");
+  ASSERT_TRUE(before.has_value()) << before.error().c_str();
+  ASSERT_EQ(before->size(), 1u);
+  EXPECT_EQ((*before)[0]->pk(), "pk_2");
+
+  auto s = segment_->Delete("pk_2");
+  ASSERT_TRUE(s.ok()) << s.c_str();
+
+  auto after = fts_search("cherry AND fig");
+  ASSERT_TRUE(after.has_value()) << after.error().c_str();
+  EXPECT_TRUE(after->empty());
+}
+
+// Delete a doc, flush, then verify deleted doc stays excluded.
+TEST_F(FtsRecallDeleteTest, DeletePersistsAcrossFlush) {
+  auto s = segment_->Delete("pk_4");
+  ASSERT_TRUE(s.ok()) << s.c_str();
+
+  auto flush_s = segment_->flush();
+  ASSERT_TRUE(flush_s.ok()) << flush_s.c_str();
+
+  auto result = fts_search("kiwi");
+  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  EXPECT_TRUE(result->empty());
+}
+
 }  // namespace zvec::sqlengine

@@ -407,7 +407,7 @@ TEST_F(FtsParserTest, OnlyParenthesesReturnsNull) {
   EXPECT_EQ(ast, nullptr);
 }
 
-TEST_F(FtsParserTest, UnclosedPhraseReturnsNull) {
+TEST_F(FtsParserTest, UnclosedPhraseParsesAsTerm) {
   // An unclosed double-quote causes the DQUOTA_STRING rule to fail.  The
   // remaining characters are absorbed by the TERM catch-all rule, so the
   // query parses as a single term rather than returning nullptr.

@@ -428,6 +428,31 @@ TEST_F(FtsColumnIndexerTest, SearchExplicitOr) {
   ASSERT_EQ(results.size(), 2u);
 }
 
+// Regression: with an unknown WAND upper bound (side CFs dropped while postings
+// are still Roaring — the dump-time transient), the per-term max_score must be
+// +inf so the disjunction pivot never prunes the term. A 0 bound over-pruned:
+// once the top-k threshold rose, higher-scoring docs were dropped.
+TEST_F(FtsColumnIndexerTest, SearchRoaringDroppedSideCfsDoesNotOverPrune) {
+  auto indexer = make_indexer();
+  // doc0..2 match only "alpha"; doc3 also matches the rarer "beta", giving it
+  // the strictly highest BM25 score.
+  EXPECT_TRUE(indexer->insert(0, "alpha").has_value());
+  EXPECT_TRUE(indexer->insert(1, "alpha").has_value());
+  EXPECT_TRUE(indexer->insert(2, "alpha").has_value());
+  EXPECT_TRUE(indexer->insert(3, "alpha beta").has_value());
+
+  // Drop side CFs before converting postings to BitPacked: term iterators take
+  // the Roaring path with an unknown WAND upper bound.
+  indexer->reset_side_cfs();
+
+  // topk=1 raises the threshold to score(doc0) after the first hit. A 0 bound
+  // would then prune the rest and wrongly return doc0; doc3 must survive.
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "alpha OR beta", 1, &results));
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 3ull);
+}
+
 TEST_F(FtsColumnIndexerTest, SearchImplicitAdjacency) {
   auto indexer = make_indexer();
   EXPECT_TRUE(indexer->insert(0, "hello world").has_value());

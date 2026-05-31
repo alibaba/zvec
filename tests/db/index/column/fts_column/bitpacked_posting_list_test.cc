@@ -689,6 +689,113 @@ TEST(BitPackedPostingListTest, OpenWithBadMagic) {
 }
 
 // ============================================================
+// Cross-path encode/decode: verify that posting lists encoded via the
+// dispatch path (SIMD on x86) are correctly decodable by the scalar
+// fallback.  This guards against the full encode() pipeline drifting
+// from the scalar decoder — the low-level ScalarLayoutMatchesSimd test
+// only covers the pack/unpack primitives, not the complete block
+// layout produced by encode().
+// ============================================================
+
+TEST(BitPackedPostingListTest, EncodeDecodeScalarCrossDecode) {
+  BM25Scorer scorer = make_scorer(1000, 50000);
+  // 300 docs → 2 full blocks (128 each) + 1 tail block (44)
+  const size_t count = 300;
+  std::vector<uint32_t> doc_ids(count);
+  std::vector<uint32_t> tfs(count);
+  std::vector<uint32_t> doc_lens(count);
+
+  for (size_t i = 0; i < count; ++i) {
+    doc_ids[i] = static_cast<uint32_t>(i * 7 + 3);
+    tfs[i] = static_cast<uint32_t>((i % 15) + 1);
+    doc_lens[i] = static_cast<uint32_t>(30 + (i % 100));
+  }
+
+  std::string encoded = BitPackedPostingList::encode(
+      doc_ids.data(), tfs.data(), doc_lens.data(), count, count, scorer);
+
+  // Parse the header
+  BitPackedPostingList::Header hdr{};
+  std::memcpy(&hdr, encoded.data(), sizeof(hdr));
+  ASSERT_EQ(hdr.magic, BitPackedPostingList::MAGIC);
+  ASSERT_EQ(hdr.num_docs, count);
+
+  const auto *skip = reinterpret_cast<const BitPackedPostingList::BlockMeta *>(
+      encoded.data() + BitPackedPostingList::HEADER_SIZE);
+
+  // Manually decode each block using the scalar path and verify
+  std::vector<uint32_t> decoded_doc_ids;
+  for (uint32_t b = 0; b < hdr.num_blocks; ++b) {
+    const char *block_ptr = encoded.data() + skip[b].block_offset;
+    BitPackedPostingList::BlockHeader bhdr{};
+    std::memcpy(&bhdr, block_ptr, sizeof(bhdr));
+
+    const uint8_t *packed =
+        reinterpret_cast<const uint8_t *>(block_ptr + sizeof(bhdr));
+    const bool is_full =
+        (bhdr.num_docs == BitPackedPostingList::DOCS_PER_BLOCK);
+
+    // Decode doc_id deltas using explicit scalar path
+    alignas(16) uint32_t deltas[BitPackedPostingList::DOCS_PER_BLOCK]{};
+    if (is_full) {
+      simd::scalar_unpack_uint32_128(packed, bhdr.bitwidth_id, deltas);
+    } else {
+      BitPackedPostingList::unpack_uint32(packed, bhdr.bitwidth_id,
+                                          bhdr.num_docs, deltas);
+    }
+
+    // Reconstruct absolute doc_ids via prefix-sum
+    uint32_t prev = bhdr.min_doc_id;
+    decoded_doc_ids.push_back(prev);
+    for (uint32_t i = 1; i < bhdr.num_docs; ++i) {
+      prev += deltas[i];
+      decoded_doc_ids.push_back(prev);
+    }
+
+    const size_t id_bytes =
+        is_full ? BitPackedPostingList::simd_packed_byte_size(bhdr.bitwidth_id)
+                : BitPackedPostingList::packed_byte_size(bhdr.bitwidth_id,
+                                                         bhdr.num_docs);
+    const uint8_t *tf_packed = packed + id_bytes;
+    alignas(16) uint32_t decoded_tfs[BitPackedPostingList::DOCS_PER_BLOCK]{};
+    if (is_full) {
+      simd::scalar_unpack_uint32_128(tf_packed, bhdr.bitwidth_tf, decoded_tfs);
+    } else {
+      BitPackedPostingList::unpack_uint32(tf_packed, bhdr.bitwidth_tf,
+                                          bhdr.num_docs, decoded_tfs);
+    }
+
+    const size_t tf_bytes =
+        is_full ? BitPackedPostingList::simd_packed_byte_size(bhdr.bitwidth_tf)
+                : BitPackedPostingList::packed_byte_size(bhdr.bitwidth_tf,
+                                                         bhdr.num_docs);
+    const uint8_t *dl_packed = tf_packed + tf_bytes;
+    alignas(16) uint32_t decoded_dls[BitPackedPostingList::DOCS_PER_BLOCK]{};
+    if (is_full) {
+      simd::scalar_unpack_uint32_128(dl_packed, bhdr.bitwidth_dl, decoded_dls);
+    } else {
+      BitPackedPostingList::unpack_uint32(dl_packed, bhdr.bitwidth_dl,
+                                          bhdr.num_docs, decoded_dls);
+    }
+
+    const size_t start =
+        static_cast<size_t>(b) * BitPackedPostingList::DOCS_PER_BLOCK;
+    for (uint32_t i = 0; i < bhdr.num_docs; ++i) {
+      EXPECT_EQ(decoded_tfs[i], tfs[start + i])
+          << "TF mismatch block " << b << " index " << i;
+      EXPECT_EQ(decoded_dls[i], doc_lens[start + i])
+          << "DocLen mismatch block " << b << " index " << i;
+    }
+  }
+
+  ASSERT_EQ(decoded_doc_ids.size(), count);
+  for (size_t i = 0; i < count; ++i) {
+    EXPECT_EQ(decoded_doc_ids[i], doc_ids[i])
+        << "DocId mismatch at index " << i;
+  }
+}
+
+// ============================================================
 // Consistency: advance() vs sequential next_doc()
 // ============================================================
 

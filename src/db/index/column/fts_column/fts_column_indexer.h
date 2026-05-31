@@ -103,9 +103,10 @@ class FtsColumnIndexer {
                            BM25Params bm25_params = BM25Params{});
 
   /*! Release all CF pointers and reset internal state.
-   *  Thread-safe: waits for in-flight search() calls to drain before
-   *  invalidating any state. Must be called before the underlying
-   *  RocksdbStore is closed.
+   *  Must be called before the underlying RocksdbStore is closed.
+   *  The caller is responsible for ensuring no concurrent search() or
+   *  reset_side_cfs() call is in flight — this method does NOT drain
+   *  or wait for them.
    *  \return Result<void> on success, or Status on failure (e.g. already
    *  closed).
    */
@@ -225,7 +226,6 @@ class FtsColumnIndexer {
   // doc_len when computing the WAND max_score for Roaring-format postings.
   std::atomic<uint32_t> min_doc_len_{std::numeric_limits<uint32_t>::max()};
 
-  mutable std::atomic<int> counter_{0};
   std::atomic<bool> opened_{false};
 
   // --- Write-path statistics ---
