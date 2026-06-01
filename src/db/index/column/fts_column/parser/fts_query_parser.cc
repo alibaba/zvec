@@ -68,6 +68,23 @@ std::string strip_quotes(const std::string &quoted) {
   return quoted;
 }
 
+// Remove lexer-level escape backslashes: \X → X.
+// The lexer uses backslash sequences to include special characters inside
+// terms (ESCAPED_CHAR) and quoted strings (DQUOTA_STRING). After tokenization
+// boundaries are determined, the backslashes must be stripped so downstream
+// tokenizer pipelines see the intended literal characters.
+std::string unescape(std::string text) {
+  size_t write = 0;
+  for (size_t i = 0; i < text.size(); ++i) {
+    if (text[i] == '\\' && i + 1 < text.size()) {
+      ++i;
+    }
+    text[write++] = text[i];
+  }
+  text.resize(write);
+  return text;
+}
+
 // Propagate must/must_not modifier to the root of an already-built AST node.
 // Now that must/must_not live on the FtsAstNode base class, this works
 // uniformly for terms, phrases and composite (AND/OR) sub-expressions.
@@ -114,7 +131,7 @@ FtsAstNodePtr build_fts_atom(FtsParser::Fts_atomContext *atom_ctx, bool is_must,
   }
 
   if (primary_ctx->fts_term() != nullptr) {
-    std::string term_text = primary_ctx->fts_term()->getText();
+    std::string term_text = unescape(primary_ctx->fts_term()->getText());
     auto tokens = pipeline.process(term_text);
     if (tokens.empty()) {
       // Term filtered out (e.g. stop-word, pure punctuation). Returning
@@ -151,7 +168,7 @@ FtsAstNodePtr build_fts_atom(FtsParser::Fts_atomContext *atom_ctx, bool is_must,
 
   if (primary_ctx->fts_phrase() != nullptr) {
     std::string raw = primary_ctx->fts_phrase()->getText();
-    std::string phrase_text = strip_quotes(raw);
+    std::string phrase_text = unescape(strip_quotes(raw));
     auto tokens = pipeline.process(phrase_text);
     auto phrase_node = std::make_unique<PhraseNode>();
     phrase_node->must = is_must;

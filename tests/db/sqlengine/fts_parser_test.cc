@@ -787,4 +787,89 @@ TEST_F(FtsParserTest, AllPunctuationPhraseYieldsEmptyTerms) {
   EXPECT_TRUE(as_phrase(*ast).terms.empty());
 }
 
+// ============================================================
+// Unescape: backslash removal for TERM and PHRASE paths.
+// Uses WhitespaceTokenizer (no filter) so that special characters are
+// preserved in tokens — this lets us observe whether unescape() actually
+// stripped the backslashes.
+// ============================================================
+
+class FtsParserUnescapeTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    FtsIndexParams params;
+    params.tokenizer_name = "whitespace";
+    params.filters = {};
+    pipeline_ = TokenizerFactory::create(params);
+    ASSERT_NE(pipeline_, nullptr);
+  }
+
+  FtsAstNodePtr parse(const std::string &query) {
+    return parser_.parse(query, pipeline_);
+  }
+
+  static const TermNode &as_term(const FtsAstNode &node) {
+    EXPECT_EQ(node.type(), FtsNodeType::TERM);
+    return static_cast<const TermNode &>(node);
+  }
+
+  static const PhraseNode &as_phrase(const FtsAstNode &node) {
+    EXPECT_EQ(node.type(), FtsNodeType::PHRASE);
+    return static_cast<const PhraseNode &>(node);
+  }
+
+ private:
+  FtsQueryParser parser_;
+  TokenizerPipelinePtr pipeline_;
+};
+
+TEST_F(FtsParserUnescapeTest, TermEscapedPlusBecomesLiteralPlus) {
+  // Lexer token: C\+\+ (with backslashes). After unescape: C++.
+  // WhitespaceTokenizer preserves the '+' in the token text.
+  auto ast = parse(R"(C\+\+)");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::TERM);
+  EXPECT_EQ(as_term(*ast).term, "C++");
+}
+
+TEST_F(FtsParserUnescapeTest, TermEscapedMinusBecomesLiteralMinus) {
+  // "a\-b" after unescape → "a-b" kept intact by whitespace tokenizer.
+  auto ast = parse(R"(a\-b)");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::TERM);
+  EXPECT_EQ(as_term(*ast).term, "a-b");
+}
+
+TEST_F(FtsParserUnescapeTest, TermEscapedBackslashBecomesLiteralBackslash) {
+  // "path\\dir" — lexer sees ESCAPED_CHAR(\\), unescape yields "path\dir".
+  auto ast = parse(R"(path\\dir)");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::TERM);
+  EXPECT_EQ(as_term(*ast).term, "path\\dir");
+}
+
+TEST_F(FtsParserUnescapeTest, PhraseEscapedQuoteBecomesLiteralQuote) {
+  // Phrase: "hello \"world\"" — after strip_quotes + unescape:
+  // 'hello "world"' — whitespace tokenizer splits on space to:
+  // ["hello", "\"world\""]
+  auto ast = parse(R"("hello \"world\"")");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::PHRASE);
+  const auto &phrase = as_phrase(*ast);
+  ASSERT_EQ(phrase.terms.size(), 2u);
+  EXPECT_EQ(phrase.terms[0], "hello");
+  EXPECT_EQ(phrase.terms[1], "\"world\"");
+}
+
+TEST_F(FtsParserUnescapeTest, PhraseEscapedBackslashBecomesLiteral) {
+  // Phrase: "a\\b" — after strip+unescape: "a\b" (one backslash, no space),
+  // whitespace tokenizer keeps it as single token.
+  auto ast = parse(R"("a\\b")");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::PHRASE);
+  const auto &phrase = as_phrase(*ast);
+  ASSERT_EQ(phrase.terms.size(), 1u);
+  EXPECT_EQ(phrase.terms[0], "a\\b");
+}
+
 }  // namespace zvec::fts
