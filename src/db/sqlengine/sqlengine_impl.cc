@@ -55,32 +55,6 @@ SQLEngine::~SQLEngine() = default;
 SQLEngineImpl::SQLEngineImpl(zvec::Profiler::Ptr profiler)
     : profiler_(std::move(profiler)) {}
 
-class ProfilerStageGuard {
- public:
-  ProfilerStageGuard(const Profiler::Ptr &profiler, const std::string &name)
-      : profiler_(profiler) {
-    active_ = profiler_ && profiler_->open_stage(name) == 0;
-  }
-
-  ~ProfilerStageGuard() {
-    close();
-  }
-
-  void close() {
-    if (active_) {
-      profiler_->close_stage();
-      active_ = false;
-    }
-  }
-
-  ProfilerStageGuard(const ProfilerStageGuard &) = delete;
-  ProfilerStageGuard &operator=(const ProfilerStageGuard &) = delete;
-
- private:
-  Profiler::Ptr profiler_;
-  bool active_{false};
-};
-
 Result<DocPtrList> SQLEngineImpl::execute(
     CollectionSchema::Ptr collection, SearchQuery query,
     const std::vector<Segment::Ptr> &segments) {
@@ -257,7 +231,7 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
 
 Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
     const CollectionSchema &schema, const SQLInfo::Ptr &sql_info) {
-  ProfilerStageGuard stage_guard(profiler_, "analyze_sql_info");
+  ScopedProfilerStage stage_guard(profiler_, "analyze_sql_info");
   QueryAnalyzer analyzer;
   auto query_info = analyzer.analyze(schema, sql_info);
   if (!query_info) {
@@ -271,7 +245,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
 Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
     CollectionSchema::Ptr collection, SearchQuery request,
     std::shared_ptr<GroupBy> group_by) {
-  ProfilerStageGuard stage_guard(profiler_, "build_sql_info");
+  ScopedProfilerStage stage_guard(profiler_, "build_sql_info");
   Node::Ptr filter_node;
   if (!request.filter_.empty()) {
     ZVecParser::Ptr parser = ZVecParser::create();
@@ -334,7 +308,7 @@ SQLEngineImpl::search_by_query_info(
     std::vector<sqlengine::QueryInfo::Ptr> *query_infos) {
   global_init();
 
-  ProfilerStageGuard stage_guard(profiler_, "build_query_plan");
+  ScopedProfilerStage stage_guard(profiler_, "build_query_plan");
   QueryPlanner planner(collection.get());
   auto plan_info =
       planner.make_plan(segments, profiler_->trace_id(), query_infos);

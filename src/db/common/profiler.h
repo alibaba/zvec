@@ -14,6 +14,8 @@
 #pragma once
 
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 #include <zvec/ailego/encoding/json.h>
 #include <zvec/ailego/logger/logger.h>
@@ -196,6 +198,33 @@ class ScopedLatency {
 
   //! Profiler handler
   Profiler::Ptr profiler_;
+};
+
+//! RAII helper that closes a profiler stage on every exit path.
+class ScopedProfilerStage {
+ public:
+  ScopedProfilerStage(Profiler::Ptr profiler, const std::string &name)
+      : profiler_(std::move(profiler)) {
+    active_ = profiler_ && profiler_->open_stage(name) == 0;
+  }
+
+  ~ScopedProfilerStage() {
+    close();
+  }
+
+  void close() {
+    if (active_) {
+      profiler_->close_stage();
+      active_ = false;
+    }
+  }
+
+  ScopedProfilerStage(const ScopedProfilerStage &) = delete;
+  ScopedProfilerStage &operator=(const ScopedProfilerStage &) = delete;
+
+ private:
+  Profiler::Ptr profiler_;
+  bool active_{false};
 };
 
 }  // namespace zvec
