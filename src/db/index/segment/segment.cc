@@ -49,7 +49,6 @@
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
-#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "db/index/common/index_filter.h"
@@ -61,11 +60,7 @@
 #include "db/index/storage/mmap_forward_store.h"
 #include "db/index/storage/store_helper.h"
 #include "db/index/storage/wal/wal_file.h"
-#include "zvec/ailego/container/params.h"
-#include "zvec/core/framework/index_factory.h"
-#include "zvec/core/framework/index_meta.h"
 #include "zvec/core/framework/index_provider.h"
-#include "zvec/core/framework/index_reformer.h"
 #include "column_merging_reader.h"
 #include "sql_expr_parser.h"
 
@@ -429,7 +424,6 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
  private:
   std::shared_ptr<const SegmentImpl> segment_;
   std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers_;
-  std::vector<uint64_t> offsets_;
   std::shared_ptr<arrow::Schema> projected_schema_;
   bool need_local_doc_id_ = false;
   size_t current_reader_index_;
@@ -2767,6 +2761,8 @@ RecordBatchReaderPtr SegmentImpl::scan(
   std::map<std::pair<int64_t, int64_t>,
            std::vector<std::shared_ptr<arrow::ipc::RecordBatchReader>>>
       block_groups;
+  bool need_local_row_id =
+      std::find(columns.begin(), columns.end(), LOCAL_ROW_ID) != columns.end();
 
   for (size_t i = 0; i < scalar_blocks.size() && i < persist_stores_.size();
        ++i) {
@@ -2778,6 +2774,9 @@ RecordBatchReaderPtr SegmentImpl::scan(
       if (block.contain_column(col)) {
         interested_cols.push_back(col);
       }
+    }
+    if (interested_cols.empty() && need_local_row_id) {
+      interested_cols.push_back(GLOBAL_DOC_ID);
     }
 
     if (interested_cols.empty()) {
@@ -2794,7 +2793,16 @@ RecordBatchReaderPtr SegmentImpl::scan(
   }
 
   if (memory_store_ && memory_store_->num_rows() > 0) {
-    auto reader = memory_store_->scan(columns);
+    std::vector<std::string> memory_scan_columns;
+    for (const auto &col : columns) {
+      if (col != LOCAL_ROW_ID) {
+        memory_scan_columns.push_back(col);
+      }
+    }
+    if (memory_scan_columns.empty()) {
+      memory_scan_columns.push_back(GLOBAL_DOC_ID);
+    }
+    auto reader = memory_store_->scan(memory_scan_columns);
     if (reader) {
       auto &mem_block = segment_meta_->writing_forward_block().value();
       auto key = std::make_pair(mem_block.min_doc_id(), mem_block.max_doc_id());
@@ -2869,17 +2877,6 @@ SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
     }
 
     projected_schema_ = arrow::schema(selected_fields);
-
-    auto segment_meta = segment_->meta();
-    const auto &blocks = segment_meta->persisted_blocks();
-    for (const auto &block : blocks) {
-      if (block.type() != BlockType::SCALAR) continue;
-      offsets_.push_back(block.min_doc_id_);
-    }
-    if (segment_meta->has_writing_forward_block()) {
-      const auto &mem_block = segment_meta->writing_forward_block().value();
-      offsets_.push_back(mem_block.min_doc_id_);
-    }
   }
 }
 
@@ -2924,9 +2921,6 @@ arrow::Status SegmentImpl::CombinedRecordBatchReader::ReadNext(
     }
 
     current_reader_index_++;
-    if (current_reader_index_ < readers_.size()) {
-      local_doc_id_ = offsets_[current_reader_index_];
-    }
   }
 
   *batch = nullptr;

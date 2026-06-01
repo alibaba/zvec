@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <filesystem>
 #include <iostream>
 #define private public
 #define protected public
@@ -34,7 +33,6 @@
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/version_manager.h"
-#include "db/index/storage/store_helper.h"
 #include "db/index/storage/wal/wal_file.h"
 #include "utils/utils.h"
 #include "zvec/db/options.h"
@@ -474,6 +472,40 @@ TEST_P(SegmentTest, CheckOrderWithLocalRowID) {
 
   EXPECT_EQ(actual_ids, expected_ids)
       << "ID column values don't match expected order";
+}
+
+TEST_P(SegmentTest, ScanLocalRowIDIsSegmentLocal) {
+  options.max_buffer_size_ = 1 * 1024;
+
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 100, id_map, delete_store, version_manager, options,
+      100, 25);
+  ASSERT_TRUE(segment != nullptr);
+
+  auto combined_reader = segment->scan({LOCAL_ROW_ID, "id"});
+  ASSERT_TRUE(combined_reader != nullptr);
+
+  std::shared_ptr<arrow::RecordBatch> batch;
+  std::vector<uint64_t> actual_ids;
+  while (true) {
+    auto status = combined_reader->ReadNext(&batch);
+    ASSERT_TRUE(status.ok()) << status.ToString();
+    if (batch == nullptr) break;
+
+    ASSERT_EQ(batch->num_columns(), 2);
+    auto id_array =
+        std::dynamic_pointer_cast<arrow::UInt64Array>(batch->column(0));
+    ASSERT_TRUE(id_array != nullptr);
+    for (int64_t i = 0; i < id_array->length(); ++i) {
+      actual_ids.push_back(id_array->Value(i));
+    }
+  }
+
+  std::vector<uint64_t> expected_ids;
+  for (uint64_t i = 0; i < 25; ++i) {
+    expected_ids.push_back(i);
+  }
+  EXPECT_EQ(actual_ids, expected_ids);
 }
 
 TEST_P(SegmentTest, CheckOrderWithLocalRowIDMiddle) {
