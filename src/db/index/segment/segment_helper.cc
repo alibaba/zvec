@@ -633,12 +633,6 @@ Status SegmentHelper::ReduceVectorIndex(
       return merge_options;
     };
 
-    auto indexer_quantize_type = [](const VectorColumnIndexer::Ptr &indexer) {
-      auto params = std::dynamic_pointer_cast<VectorIndexParams>(
-          indexer->field_schema().index_params());
-      return params ? params->quantize_type() : QuantizeType::UNDEFINED;
-    };
-
     using FetchIndexersFn =
         std::vector<VectorColumnIndexer::Ptr> (Segment::*)(const std::string &)
             const;
@@ -661,12 +655,12 @@ Status SegmentHelper::ReduceVectorIndex(
       if (first_field.index_type() != output_field.index_type()) {
         return false;
       }
-      auto output_params = std::dynamic_pointer_cast<VectorIndexParams>(
-          output_field.index_params());
-      auto output_quantize_type =
-          output_params ? output_params->quantize_type() : QuantizeType::UNDEFINED;
-      return indexer_quantize_type(first_indexers.front()) ==
-             output_quantize_type;
+      auto quantize_type_of = [](const FieldSchema &f) {
+        auto params =
+            std::dynamic_pointer_cast<VectorIndexParams>(f.index_params());
+        return params ? params->quantize_type() : QuantizeType::UNDEFINED;
+      };
+      return quantize_type_of(first_field) == quantize_type_of(output_field);
     };
 
     auto collect_merge_indexers = [&](FetchIndexersFn fetch,
