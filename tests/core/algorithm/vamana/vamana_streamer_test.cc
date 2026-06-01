@@ -713,6 +713,78 @@ TEST_F(VamanaStreamerTest, TestKnnConcurrentAddAndSearch) {
   searchFuture.wait();
 }
 
+// Test concurrent build (parallel add_impl) which was crashing due to
+// unprotected node_chunks_ / node_chunk_bases_ access during chunk allocation.
+TEST_F(VamanaStreamerTest, TestConcurrentBuild) {
+  constexpr size_t dim = kDim;
+  constexpr size_t total_vectors = 5000;
+  constexpr size_t thread_count = 4;
+
+  ailego::Params params;
+  params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 32U);
+  params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 100U);
+  params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+  params.set(PARAM_VAMANA_STREAMER_EF, 64U);
+  params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 500U);
+  params.set(PARAM_VAMANA_STREAMER_MAX_INDEX_SIZE, 50U * 1024U * 1024U);
+
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+
+  auto streamer = IndexFactory::CreateStreamer("VamanaStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(meta, params));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ailego::Params stg_params;
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "TestConcurrentBuild", true));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  // Parallel insertion from multiple threads (mimics local_builder behavior)
+  std::atomic<int> error_count{0};
+  std::vector<std::future<void>> futures;
+
+  for (size_t t = 0; t < thread_count; ++t) {
+    futures.push_back(std::async(std::launch::async, [&, t]() {
+      auto ctx = streamer->create_context();
+      ASSERT_TRUE(!!ctx);
+      IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+      NumericalVector<float> vec(dim);
+
+      for (size_t i = t; i < total_vectors; i += thread_count) {
+        for (size_t j = 0; j < dim; ++j) {
+          vec[j] = static_cast<float>(i) + static_cast<float>(j) * 0.01f;
+        }
+        int ret = streamer->add_impl(i, vec.data(), qmeta, ctx);
+        if (ret != 0) {
+          error_count.fetch_add(1);
+          return;
+        }
+      }
+    }));
+  }
+
+  for (auto &f : futures) {
+    f.wait();
+  }
+  ASSERT_EQ(0, error_count.load());
+
+  // Verify search still works correctly after concurrent build
+  auto search_ctx = streamer->create_context();
+  ASSERT_TRUE(!!search_ctx);
+  search_ctx->set_topk(1);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+  NumericalVector<float> vec(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    vec[j] = 0.0f;
+  }
+  ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, search_ctx));
+  auto &result = search_ctx->result();
+  ASSERT_GT(result.size(), 0UL);
+}
+
 }  // namespace core
 }  // namespace zvec
 
