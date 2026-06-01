@@ -34,6 +34,7 @@ int HnswRabitqStreamerEntity::init(size_t max_doc_cnt) {
   std::lock_guard<std::mutex> lock(mutex_);
   broker_ = std::make_shared<HnswRabitqChunkBroker>(stats_);
   upper_neighbor_index_ = std::make_shared<NIHashMap>();
+  upper_neighbor_rw_mutex_ = std::make_shared<std::shared_mutex>();
   keys_map_lock_ = std::make_shared<ailego::SharedMutex>();
   keys_map_ = std::make_shared<HashMap<key_t, node_id_t>>();
   if (!keys_map_ || !upper_neighbor_index_ || !broker_ || !keys_map_lock_) {
@@ -697,8 +698,9 @@ const HnswRabitqEntity::Pointer HnswRabitqStreamerEntity::clone() const {
       new (std::nothrow) HnswRabitqStreamerEntity(
           stats_, header(), chunk_size_, node_index_mask_bits_,
           upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
-          upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
-          std::move(node_chunks), std::move(upper_neighbor_chunks), broker_);
+          upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
+          keys_map_, use_key_info_map_, std::move(node_chunks),
+          std::move(upper_neighbor_chunks), broker_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswRabitqStreamerEntity new failed");
   }

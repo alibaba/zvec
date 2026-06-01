@@ -84,15 +84,22 @@ int IVFIndex::Open(const std::string &file_path,
       break;
     }
     case StorageOptions::StorageType::kBufferPool: {
-      storage_ = core::IndexFactory::CreateStorage("BufferStorage");
+      // NOTE: IVF index is dumped via FileDumper (plain binary file), which is
+      // not compatible with BufferStorage's IndexFormat layout (header/footer
+      // chain). Until IVF gains a BufferStorage-aware dump path, fall back to
+      // MMapFileReadStorage so the freshly-dumped file can be reopened.
+      storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
       if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create BufferStorage");
+        LOG_ERROR(
+            "Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
-        LOG_ERROR("Failed to init BufferStorage, path: %s, err: %s",
-                  file_path_.c_str(), core::IndexError::What(ret));
+        LOG_ERROR(
+            "Failed to init MMapFileReadStorage (IVF buffer-pool fallback), "
+            "path: %s, err: %s",
+            file_path_.c_str(), core::IndexError::What(ret));
         return ret;
       }
       break;
