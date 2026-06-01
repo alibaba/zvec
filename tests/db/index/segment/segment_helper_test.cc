@@ -129,22 +129,45 @@ class SegmentHelperTest : public testing::Test {
     return {executed, std::move(seg_ret.value())};
   }
 
+  // Returns the indexer's underlying VectorIndexParams::type(), defaulting to
+  // FLAT if the params can't be downcast (matches the freshly-inserted state).
+  static IndexType IndexerType(const VectorColumnIndexer::Ptr &indexer) {
+    auto params = std::dynamic_pointer_cast<VectorIndexParams>(
+        indexer->field_schema().index_params());
+    return params ? params->type() : IndexType::FLAT;
+  }
+
+  // Run CreateVectorIndexTask on `segment` for `column` with `index_params`,
+  // then reload the segment so its in-memory indexer reflects the new index
+  // (matching collection.cc's post-optimize reload path).
+  void OptimizeSegmentToVectorIndex(const Segment::Ptr &segment,
+                                    const CollectionSchema &schema,
+                                    const std::string &column,
+                                    const IndexParams::Ptr &index_params) {
+    CreateVectorIndexTask task(segment, column, index_params, 1);
+    auto segment_task = SegmentTask::CreateCreateVectorIndexTask(task);
+    ASSERT_NE(segment_task, nullptr);
+    ASSERT_TRUE(SegmentHelper::Execute(segment_task).ok());
+    auto executed = std::get<CreateVectorIndexTask>(segment_task->task_info());
+    ASSERT_NE(executed.output_segment_meta_, nullptr);
+    ASSERT_TRUE(
+        segment
+            ->reload_vector_index(schema, executed.output_segment_meta_,
+                                  executed.output_vector_indexers_,
+                                  executed.output_quant_vector_indexers_)
+            .ok());
+  }
+
   // Mimic the normal insertion lifecycle: small segments accumulate vectors
   // in flat storage (no vector index built yet), then compaction merges them
-  // into a single segment whose vector column is finally built per schema.
-  void RunFlatSegmentsMergeIntoVectorIndexTest(
+  // into a single segment whose vector column is built per schema.
+  void RunOptimizedSegmentsCompactReuseTest(
       const IndexParams::Ptr &vector_index_params,
       IndexType expected_output_type) {
     auto schema = test::TestHelper::CreateSchemaWithVectorIndex(
         false, col_name, vector_index_params);
     auto version_manager = CreateVersionManager(*schema);
     auto write_options = WriteOptions();
-
-    auto indexer_type = [](const VectorColumnIndexer::Ptr &indexer) {
-      auto params = std::dynamic_pointer_cast<VectorIndexParams>(
-          indexer->field_schema().index_params());
-      return params ? params->type() : IndexType::FLAT;
-    };
 
     constexpr int kSegCount = 3;
     constexpr int kDocsPerSeg = 300;
@@ -155,9 +178,16 @@ class SegmentHelperTest : public testing::Test {
           version_manager, write_options, i * kDocsPerSeg, kDocsPerSeg);
       ASSERT_NE(seg, nullptr);
       ASSERT_TRUE(seg->flush().ok());
+
+      if (i == 0) {
+        OptimizeSegmentToVectorIndex(seg, *schema, "dense_fp32",
+                                     vector_index_params);
+      }
       auto in_indexers = seg->get_vector_indexer("dense_fp32");
       ASSERT_FALSE(in_indexers.empty());
-      ASSERT_EQ(indexer_type(in_indexers.front()), IndexType::FLAT);
+
+      ASSERT_EQ(IndexerType(in_indexers.front()),
+                i == 0 ? expected_output_type : IndexType::FLAT);
       segs.push_back(seg);
     }
 
@@ -171,7 +201,7 @@ class SegmentHelperTest : public testing::Test {
 
     auto out_indexers = output_segment->get_vector_indexer("dense_fp32");
     ASSERT_FALSE(out_indexers.empty());
-    EXPECT_EQ(indexer_type(out_indexers.front()), expected_output_type);
+    EXPECT_EQ(IndexerType(out_indexers.front()), expected_output_type);
   }
 
   std::string col_name = "test_segment_helper";
@@ -564,25 +594,25 @@ TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegressio
   ASSERT_GT(output_segment->get_quant_vector_indexer("dense_fp32").size(), 0u);
 }
 
-TEST_F(SegmentHelperTest, CompactTask_FlatSegmentsMergeIntoHnsw) {
-  RunFlatSegmentsMergeIntoVectorIndexTest(
+TEST_F(SegmentHelperTest, CompactTask_HnswSegmentsCompactReuseFirstIndexer) {
+  RunOptimizedSegmentsCompactReuseTest(
       std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200),
       IndexType::HNSW);
 }
 
-TEST_F(SegmentHelperTest, CompactTask_FlatSegmentsMergeIntoIvf) {
-  RunFlatSegmentsMergeIntoVectorIndexTest(
+TEST_F(SegmentHelperTest, CompactTask_IvfSegmentsCompactReuseFirstIndexer) {
+  RunOptimizedSegmentsCompactReuseTest(
       std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
                                        QuantizeType::UNDEFINED),
       IndexType::IVF);
 }
 
 #if RABITQ_SUPPORTED
-TEST_F(SegmentHelperTest, CompactTask_FlatSegmentsMergeIntoHnswRabitq) {
-  RunFlatSegmentsMergeIntoVectorIndexTest(
-      std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7, 256, 16, 200,
-                                              0),
-      IndexType::HNSW_RABITQ);
+TEST_F(SegmentHelperTest,
+       CompactTask_HnswRabitqSegmentsCompactReuseFirstIndexer) {
+  RunOptimizedSegmentsCompactReuseTest(std::make_shared<HnswRabitqIndexParams>(
+                                           MetricType::IP, 7, 256, 16, 200, 0),
+                                       IndexType::HNSW_RABITQ);
 }
 #endif
 
