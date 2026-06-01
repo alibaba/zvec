@@ -630,46 +630,36 @@ Status SegmentHelper::ReduceVectorIndex(
       return (seg.get()->*fetch)(field->name());
     };
 
-    // Only the first segment's index file is reused as the merge base, so
-    // tail segments just need to be mergeable — Merge() already handles that.
-    auto can_reuse_first_indexer = [&](FetchIndexersFn fetch,
-                                       const FieldSchema &output_field) {
-      if (filter != nullptr || input_segments.empty()) {
-        return false;
-      }
-      if (output_field.index_type() != IndexType::HNSW &&
-          output_field.index_type() != IndexType::HNSW_RABITQ &&
-          output_field.index_type() != IndexType::FLAT) {
-        // Builder-rebuild indexes (IVF, VAMANA) fall back to the full-rebuild
-        // merge.
-        return false;
-      }
-      auto first_indexers = fetch_from(input_segments.front(), fetch);
-      if (first_indexers.size() != 1) {
-        return false;
-      }
-      const auto &first_field = first_indexers.front()->field_schema();
-      if (first_field.index_type() != output_field.index_type()) {
-        return false;
-      }
-      auto quantize_type_of = [](const FieldSchema &f) {
-        auto params =
-            std::dynamic_pointer_cast<VectorIndexParams>(f.index_params());
-        return params ? params->quantize_type() : QuantizeType::UNDEFINED;
-      };
-      return quantize_type_of(first_field) == quantize_type_of(output_field);
-    };
-
-    auto collect_merge_indexers = [&](FetchIndexersFn fetch,
-                                      size_t start_index) {
-      std::vector<VectorColumnIndexer::Ptr> merge_indexers;
-      for (size_t i = start_index; i < input_segments.size(); ++i) {
-        auto to_merge_indexers = fetch_from(input_segments[i], fetch);
-        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
-                              to_merge_indexers.end());
-      }
-      return merge_indexers;
-    };
+    // Only the first indexer's file is reused as the merge base; the
+    // remaining indexers are merged in via Merge(). A single input segment
+    // may carry multiple indexers (e.g. a writing segment with several flat
+    // indexers, or a persisted segment dumped from one), so the reuse
+    // decision is made over the flattened indexer list, not per-segment.
+    auto can_reuse_first_indexer =
+        [&](const std::vector<VectorColumnIndexer::Ptr> &indexers,
+            const FieldSchema &output_field) {
+          if (filter != nullptr || indexers.empty()) {
+            return false;
+          }
+          if (output_field.index_type() != IndexType::HNSW &&
+              output_field.index_type() != IndexType::HNSW_RABITQ &&
+              output_field.index_type() != IndexType::FLAT) {
+            // Builder-rebuild indexes (IVF, VAMANA) fall back to the
+            // full-rebuild merge.
+            return false;
+          }
+          const auto &first_field = indexers.front()->field_schema();
+          if (first_field.index_type() != output_field.index_type()) {
+            return false;
+          }
+          auto quantize_type_of = [](const FieldSchema &f) {
+            auto params =
+                std::dynamic_pointer_cast<VectorIndexParams>(f.index_params());
+            return params ? params->quantize_type() : QuantizeType::UNDEFINED;
+          };
+          return quantize_type_of(first_field) ==
+                 quantize_type_of(output_field);
+        };
 
     auto merge_with_optional_reuse =
         [&](const std::string &output_index_path, const FieldSchema &index_field, FetchIndexersFn fetch,
@@ -684,23 +674,30 @@ Status SegmentHelper::ReduceVectorIndex(
           std::make_shared<VectorColumnIndexer>(output_index_path, index_field);
       bool reused_base_index = false;
 
-      if (can_reuse_first_indexer(fetch, index_field)) {
-        auto first_indexer = fetch_from(input_segments.front(), fetch)[0];
-        LOG_INFO("Reusing first segment's index as merge base. "
-                 "field[%s] src[%s] dst[%s] tail_segments[%zu]",
+      std::vector<VectorColumnIndexer::Ptr> source_indexers;
+      for (const auto &seg : input_segments) {
+        auto seg_indexers = fetch_from(seg, fetch);
+        source_indexers.insert(source_indexers.end(), seg_indexers.begin(),
+                               seg_indexers.end());
+      }
+
+      if (can_reuse_first_indexer(source_indexers, index_field)) {
+        const auto &first_indexer = source_indexers.front();
+        LOG_INFO("Reusing first indexer as merge base. "
+                 "field[%s] src[%s] dst[%s] tail_indexers[%zu]",
                  index_field.name().c_str(),
                  first_indexer->index_file_path().c_str(),
-                 output_index_path.c_str(), input_segments.size() - 1);
+                 output_index_path.c_str(), source_indexers.size() - 1);
         if (FileHelper::CopyFile(first_indexer->index_file_path(),
                                  output_index_path)) {
-          // Reuse first segment's index as the merge base to avoid rebuilding
+          // Reuse first indexer's file as the merge base to avoid rebuilding
           // it; open the copied file in-place (create_new=false).
           s = vector_indexer->Open(
               vector_column_params::ReadOptions{true, false});
           CHECK_RETURN_STATUS(s);
 
-          auto merge_indexers = collect_merge_indexers(fetch, 1);
-          s = vector_indexer->Merge(merge_indexers, filter, merge_options);
+          source_indexers.erase(source_indexers.begin());
+          s = vector_indexer->Merge(source_indexers, filter, merge_options);
           CHECK_RETURN_STATUS(s);
           reused_base_index = true;
         } else {
@@ -714,8 +711,7 @@ Status SegmentHelper::ReduceVectorIndex(
         s = vector_indexer->Open(vector_column_params::ReadOptions{true, true});
         CHECK_RETURN_STATUS(s);
 
-        auto merge_indexers = collect_merge_indexers(fetch, 0);
-        s = vector_indexer->Merge(merge_indexers, filter, merge_options);
+        s = vector_indexer->Merge(source_indexers, filter, merge_options);
         CHECK_RETURN_STATUS(s);
       }
 
