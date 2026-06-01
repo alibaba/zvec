@@ -411,7 +411,6 @@ class SegmentImpl : public Segment,
 class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
  public:
   CombinedRecordBatchReader(
-      std::shared_ptr<const SegmentImpl> segment,
       std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers,
       const std::vector<std::string> &columns);
 
@@ -422,13 +421,12 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
   arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch> *batch) override;
 
  private:
-  std::shared_ptr<const SegmentImpl> segment_;
   std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers_;
   std::shared_ptr<arrow::Schema> projected_schema_;
-  bool need_segment_row_id_ = false;
+  bool emit_segment_row_id_ = false;
   size_t current_reader_index_;
-  size_t next_segment_row_id_;
-  int segment_row_id_col_index_ = -1;
+  uint64_t next_segment_row_id_to_emit_;
+  int segment_row_id_output_col_index_ = -1;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -2773,7 +2771,7 @@ RecordBatchReaderPtr SegmentImpl::scan(
   std::map<std::pair<int64_t, int64_t>,
            std::vector<std::shared_ptr<arrow::ipc::RecordBatchReader>>>
       block_groups;
-  bool need_segment_row_id =
+  bool emit_segment_row_id =
       std::find(columns.begin(), columns.end(), LOCAL_ROW_ID) != columns.end();
 
   for (size_t i = 0; i < scalar_blocks.size() && i < persist_stores_.size();
@@ -2787,7 +2785,7 @@ RecordBatchReaderPtr SegmentImpl::scan(
         interested_cols.push_back(col);
       }
     }
-    if (interested_cols.empty() && need_segment_row_id) {
+    if (interested_cols.empty() && emit_segment_row_id) {
       interested_cols.push_back(GLOBAL_DOC_ID);
     }
 
@@ -2854,8 +2852,8 @@ RecordBatchReaderPtr SegmentImpl::scan(
     }
   }
 
-  return std::make_shared<CombinedRecordBatchReader>(
-      shared_from_this(), std::move(merged_readers), columns);
+  return std::make_shared<CombinedRecordBatchReader>(std::move(merged_readers),
+                                                     columns);
 }
 
 
@@ -2864,13 +2862,11 @@ RecordBatchReaderPtr SegmentImpl::scan(
 ////////////////////////////////////////////////////////////////////////////////////
 
 SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
-    std::shared_ptr<const SegmentImpl> segment,
     std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers,
     const std::vector<std::string> &columns)
-    : segment_(segment),
-      readers_(std::move(readers)),
+    : readers_(std::move(readers)),
       current_reader_index_(0),
-      next_segment_row_id_(0) {
+      next_segment_row_id_to_emit_(0) {
   if (!readers_.empty()) {
     auto schema = readers_[0]->schema();
     std::vector<std::shared_ptr<arrow::Field>> selected_fields;
@@ -2879,8 +2875,8 @@ SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
       if (col_name == LOCAL_ROW_ID) {
         selected_fields.push_back(
             arrow::field(LOCAL_ROW_ID, arrow::uint64(), false));
-        need_segment_row_id_ = true;
-        segment_row_id_col_index_ = static_cast<int>(i);
+        emit_segment_row_id_ = true;
+        segment_row_id_output_col_index_ = static_cast<int>(i);
       } else {
         if (auto field = schema->GetFieldByName(col_name); field) {
           selected_fields.push_back(field);
@@ -2908,24 +2904,25 @@ arrow::Status SegmentImpl::CombinedRecordBatchReader::ReadNext(
       return status;
     }
 
-    if (need_segment_row_id_ && *batch) {
+    if (emit_segment_row_id_ && *batch) {
       auto num_rows = (*batch)->num_rows();
       arrow::UInt64Builder builder;
       ARROW_RETURN_NOT_OK(builder.Reserve(num_rows));
 
       for (int64_t i = 0; i < num_rows; ++i) {
-        builder.UnsafeAppend(next_segment_row_id_++);
+        builder.UnsafeAppend(next_segment_row_id_to_emit_++);
       }
       std::shared_ptr<arrow::Array> segment_row_id_array;
       ARROW_RETURN_NOT_OK(builder.Finish(&segment_row_id_array));
 
       auto result =
-          (*batch)->AddColumn(segment_row_id_col_index_,
+          (*batch)->AddColumn(segment_row_id_output_col_index_,
                               projected_schema_->GetFieldByName(LOCAL_ROW_ID),
                               std::move(segment_row_id_array));
-      if (result.ok()) {
-        *batch = std::move(result.ValueOrDie());
+      if (!result.ok()) {
+        return result.status();
       }
+      *batch = std::move(result.ValueOrDie());
     }
 
     if (*batch) {
