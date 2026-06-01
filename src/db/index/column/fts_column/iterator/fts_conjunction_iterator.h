@@ -62,12 +62,23 @@ class ConjunctionIterator : public DocIterator {
   // Check if candidate doc_id is excluded by any must_not iterator
   bool is_excluded(uint32_t candidate);
 
+  // Block-Max: skip blocks whose score upper bound cannot compete.
+  // Returns the first candidate whose block can potentially compete,
+  // or NO_MORE_DOCS if exhausted.
+  uint32_t skip_non_competitive_blocks(uint32_t candidate);
+
  private:
   // must_iterators_[0] is the lead (lowest cost)
   std::vector<DocIteratorPtr> must_iterators_;
   std::vector<DocIteratorPtr> must_not_iterators_;
   std::vector<DocIteratorPtr> should_iterators_;
   float min_competitive_score_{0.0f};
+  // Block-Max: upper bound of doc_id range already verified as competitive
+  uint32_t block_max_up_to_{0};
+  // optIsRequired: must-only block_max sum for current block
+  float must_block_max_sum_{0.0f};
+  // optIsRequired: whether should iterators are upgraded to required
+  bool opt_is_required_{false};
 };
 
 }  // namespace zvec::fts
