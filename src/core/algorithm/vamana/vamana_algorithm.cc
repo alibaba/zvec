@@ -355,10 +355,9 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
           if (dist_selected_to_candidate <= 0.0f) {
             occlude_factor[j] = std::numeric_limits<float>::max();
           } else {
-            occlude_factor[j] = std::max(
-                occlude_factor[j],
-                (candidates[j].second + dist_offset) /
-                    dist_selected_to_candidate);
+            occlude_factor[j] = std::max(occlude_factor[j],
+                                         (candidates[j].second + dist_offset) /
+                                             dist_selected_to_candidate);
           }
         }
       }
