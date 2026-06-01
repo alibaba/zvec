@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <iostream>
+#include <sstream>  // NOLINT(misc-include-cleaner): protects <sstream> from the private/public test macro below.
 #define private public
 #define protected public
 #include "db/index/segment/segment.h"
