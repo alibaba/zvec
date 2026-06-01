@@ -118,8 +118,10 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
     return Status::OK();
   }
 
+  // Leave row_id_filter null when there are no deletes or
+  // create_compaction_task with rebuild=false, so downstream merge
+  // can take a faster per-doc path that skips the filter callback entirely.
   std::shared_ptr<RowIdFilter> row_id_filter;
-  // filter=nullptr( create_compaction_task rebuild=false ) or no deletion
   if (!delete_row_id_bitmap.isEmpty()) {
     row_id_filter =
         std::make_shared<RowIdFilter>(std::move(delete_row_id_bitmap));
@@ -637,7 +639,14 @@ Status SegmentHelper::ReduceVectorIndex(
       return params ? params->quantize_type() : QuantizeType::UNDEFINED;
     };
 
-    auto can_reuse_first_indexer = [&](auto &&fetch_indexers,
+    using FetchIndexersFn =
+        std::vector<VectorColumnIndexer::Ptr> (Segment::*)(const std::string &)
+            const;
+    auto fetch_from = [&](const Segment::Ptr &seg, FetchIndexersFn fetch) {
+      return (seg.get()->*fetch)(field->name());
+    };
+
+    auto can_reuse_first_indexer = [&](FetchIndexersFn fetch,
                                        const FieldSchema &output_field) {
       if (filter != nullptr || input_segments.empty()) {
         return false;
@@ -648,7 +657,7 @@ Status SegmentHelper::ReduceVectorIndex(
       auto output_quantize_type =
           output_params ? output_params->quantize_type() : QuantizeType::UNDEFINED;
       for (const auto &input_segment : input_segments) {
-        auto indexers = fetch_indexers(input_segment);
+        auto indexers = fetch_from(input_segment, fetch);
         if (indexers.size() != 1) {
           return false;
         }
@@ -663,11 +672,11 @@ Status SegmentHelper::ReduceVectorIndex(
       return true;
     };
 
-    auto collect_merge_indexers = [&](auto &&fetch_indexers,
+    auto collect_merge_indexers = [&](FetchIndexersFn fetch,
                                       size_t start_index) {
       std::vector<VectorColumnIndexer::Ptr> merge_indexers;
       for (size_t i = start_index; i < input_segments.size(); ++i) {
-        auto to_merge_indexers = fetch_indexers(input_segments[i]);
+        auto to_merge_indexers = fetch_from(input_segments[i], fetch);
         merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
                               to_merge_indexers.end());
       }
@@ -675,34 +684,39 @@ Status SegmentHelper::ReduceVectorIndex(
     };
 
     auto merge_with_optional_reuse =
-        [&](const std::string &output_index_path, const FieldSchema &index_field,
-            auto &&fetch_indexers,
+        [&](const std::string &output_index_path, const FieldSchema &index_field, FetchIndexersFn fetch,
             VectorColumnIndexer::Ptr *merged_indexer) -> Status {
       auto vector_indexer =
           std::make_shared<VectorColumnIndexer>(output_index_path, index_field);
       auto merge_options = build_merge_options();
       bool reused_base_index = false;
 
-      if (can_reuse_first_indexer(fetch_indexers, index_field)) {
-        auto first_indexer = fetch_indexers(input_segments.front())[0];
+      if (can_reuse_first_indexer(fetch, index_field)) {
+        auto first_indexer = fetch_from(input_segments.front(), fetch)[0];
         if (FileHelper::CopyFile(first_indexer->index_file_path(),
                                  output_index_path)) {
-          // Reuse first segment index as merge base to avoid rebuilding it.
-          s = vector_indexer->Open({true, false});
+          // Reuse first segment's index as the merge base to avoid rebuilding
+          // it; open the copied file in-place (create_new=false).
+          s = vector_indexer->Open(
+              vector_column_params::ReadOptions{true, false});
           CHECK_RETURN_STATUS(s);
 
-          auto merge_indexers = collect_merge_indexers(fetch_indexers, 1);
+          auto merge_indexers = collect_merge_indexers(fetch, 1);
           s = vector_indexer->Merge(merge_indexers, filter, merge_options);
           CHECK_RETURN_STATUS(s);
           reused_base_index = true;
+        } else {
+          LOG_WARN("Failed to copy %s to %s; falling back to full rebuild",
+                   first_indexer->index_file_path().c_str(),
+                   output_index_path.c_str());
         }
       }
 
       if (!reused_base_index) {
-        s = vector_indexer->Open({true, true});
+        s = vector_indexer->Open(vector_column_params::ReadOptions{true, true});
         CHECK_RETURN_STATUS(s);
 
-        auto merge_indexers = collect_merge_indexers(fetch_indexers, 0);
+        auto merge_indexers = collect_merge_indexers(fetch, 0);
         s = vector_indexer->Merge(merge_indexers, filter, merge_options);
         CHECK_RETURN_STATUS(s);
       }
@@ -724,10 +738,7 @@ Status SegmentHelper::ReduceVectorIndex(
           output_segment_path, field->name(), vector_block_id);
 
       s = merge_with_optional_reuse(vector_index_path, *field,
-                                    [&](const Segment::Ptr &input_segment) {
-            return input_segment->get_vector_indexer(field->name());
-          },
-                                    nullptr);
+                                    &Segment::get_vector_indexer, nullptr);
       CHECK_RETURN_STATUS(s);
 
       BlockMeta new_block_meta;
@@ -748,12 +759,9 @@ Status SegmentHelper::ReduceVectorIndex(
           MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
 
       VectorColumnIndexer::Ptr vector_indexer;
-      s = merge_with_optional_reuse(
-          vector_index_path, *field_without_quantize,
-          [&](const Segment::Ptr &input_segment) {
-            return input_segment->get_vector_indexer(field->name());
-          },
-          &vector_indexer);
+      s = merge_with_optional_reuse(vector_index_path, *field_without_quantize,
+                                    &Segment::get_vector_indexer,
+                                    &vector_indexer);
       CHECK_RETURN_STATUS(s);
 
       // The training step (for RABITQ) and the subsequent quantize merge both
@@ -784,12 +792,9 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      s = merge_with_optional_reuse(
-          vector_quan_index_path, *field_for_quantize,
-          [&](const Segment::Ptr &input_segment) {
-            return input_segment->get_quant_vector_indexer(field->name());
-          },
-          nullptr);
+      s = merge_with_optional_reuse(vector_quan_index_path, *field_for_quantize,
+                                    &Segment::get_quant_vector_indexer,
+                                    nullptr);
       CHECK_RETURN_STATUS(s);
 
       s = vector_indexer->Close();
