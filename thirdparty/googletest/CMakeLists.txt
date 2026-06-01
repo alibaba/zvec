@@ -20,6 +20,14 @@ add_subdirectory(googletest-1.10.0)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
+# googletest hardcodes /Zi in internal_utils.cmake; append /Z7 to override it (MSVC last-flag-wins)
+if(MSVC)
+    target_compile_options(gtest PRIVATE /Z7)
+    target_compile_options(gtest_main PRIVATE /Z7)
+    target_compile_options(gmock PRIVATE /Z7)
+    target_compile_options(gmock_main PRIVATE /Z7)
+endif()
+
 mark_target_includes_system(gtest gtest_main gmock gmock_main)
 
 get_target_property(GTEST_INCLUDE_DIRS gtest INTERFACE_INCLUDE_DIRECTORIES)
