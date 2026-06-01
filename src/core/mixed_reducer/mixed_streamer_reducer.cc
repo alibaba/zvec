@@ -146,7 +146,12 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
   std::vector<int> read_results(streamers_.size(), -1);
   // TODO: use id instead of key
-  uint32_t id_offset = 0, next_id = 0;
+  // When merging into a non-empty target (e.g. reusing one input as base),
+  // append new docs after the existing ones instead of overwriting from 0.
+  uint32_t id_offset = 0;
+  uint32_t next_id = is_sparse_
+                         ? target_streamer_->create_sparse_provider()->count()
+                         : target_streamer_->create_provider()->count();
 
   if (is_sparse_) {
     for (size_t i = 0; i < num_of_add_threads_; i++) {
