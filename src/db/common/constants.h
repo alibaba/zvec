@@ -26,6 +26,8 @@ const uint32_t MIN_MEMORY_LIMIT_BYTES = 100 * 1024 * 1024;
 
 const uint64_t INVALID_DOC_ID = UINT64_MAX;
 
+// Synthetic local row id column exposed as "_zvec_row_id_". Higher layers
+// define which local ID space it represents at their boundary.
 const std::string LOCAL_ROW_ID = "_zvec_row_id_";
 
 const std::string GLOBAL_DOC_ID = "_zvec_g_doc_id_";

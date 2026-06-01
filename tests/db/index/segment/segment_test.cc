@@ -856,6 +856,23 @@ TEST_P(SegmentTest, DeleteDoc) {
   EXPECT_EQ(count, 8);
 }
 
+TEST_P(SegmentTest, DocCountFilterIDSpaceWithNonZeroGlobalDocID) {
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 100, id_map, delete_store, version_manager, options,
+      0, 10);
+  ASSERT_TRUE(segment != nullptr);
+
+  auto status = segment->Delete("pk_5");
+  EXPECT_TRUE(status.ok()) << "Delete by pk failed: " << status.message();
+
+  status = segment->Delete(103);
+  EXPECT_TRUE(status.ok()) << "Delete by global doc id failed: "
+                           << status.message();
+
+  EXPECT_EQ(segment->doc_count(segment->get_filter()), 8);
+  EXPECT_EQ(segment->doc_count(delete_store->make_filter()), 8);
+}
+
 TEST_P(SegmentTest, DeleteBatch) {
   int doc_count = 10;
   auto segment = test::TestHelper::CreateSegmentWithDoc(

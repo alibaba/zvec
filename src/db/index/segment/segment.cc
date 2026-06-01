@@ -297,7 +297,7 @@ class SegmentImpl : public Segment,
   Status append_wal(const Doc &doc);
   Status update_version(uint32_t delete_snapshot_path_suffix);
 
-  Result<uint64_t> get_global_doc_id(uint32_t local_id) const;
+  Result<uint64_t> get_global_doc_id(uint32_t segment_doc_id) const;
 
   BlockID allocate_block_id();
 
@@ -425,10 +425,10 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
   std::shared_ptr<const SegmentImpl> segment_;
   std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers_;
   std::shared_ptr<arrow::Schema> projected_schema_;
-  bool need_local_doc_id_ = false;
+  bool need_segment_row_id_ = false;
   size_t current_reader_index_;
-  size_t local_doc_id_;
-  int local_doc_id_col_index_ = -1;
+  size_t next_segment_row_id_;
+  int segment_row_id_col_index_ = -1;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -580,8 +580,16 @@ SegmentMeta::Ptr SegmentImpl::meta() const {
 uint64_t SegmentImpl::doc_count(const IndexFilter::Ptr filter) {
   uint64_t doc_count = doc_ids_.size();
   if (filter) {
-    for (const auto &doc_id : doc_ids_) {
-      if (filter->is_filtered(doc_id)) {
+    // SegmentImpl::filter_ is used by vector/invert indexes and accepts
+    // segment-local row IDs. Collection-level delete filters accept global
+    // doc IDs, so keep the conversion explicit at this boundary.
+    const bool filter_uses_segment_row_id = filter == filter_;
+    for (size_t segment_doc_id = 0; segment_doc_id < doc_ids_.size();
+         ++segment_doc_id) {
+      const uint64_t filter_id = filter_uses_segment_row_id
+                                     ? segment_doc_id
+                                     : doc_ids_[segment_doc_id];
+      if (filter->is_filtered(filter_id)) {
         doc_count--;
       }
     }
@@ -1427,7 +1435,7 @@ Doc::Ptr SegmentImpl::Fetch(
       const auto &block_offsets =
           get_persist_block_offsets(BlockType::VECTOR_INDEX, field->name());
       auto block_offset = block_offsets[block_idx];
-      auto local_row = segment_doc_id - block_offset;
+      auto block_doc_id = segment_doc_id - block_offset;
 
       auto column_name = field->name();
       auto iter = vector_indexers_.find(column_name);
@@ -1439,12 +1447,12 @@ Doc::Ptr SegmentImpl::Fetch(
           continue;
         }
         auto vector_indexer = vector_indexers[block_idx];
-        auto fetch_result = vector_indexer->Fetch(local_row);
+        auto fetch_result = vector_indexer->Fetch(block_doc_id);
         if (!fetch_result) {
           LOG_ERROR(
-              "vector indexer fetch failed, local_row: %d, block_idx: %d, "
+              "vector indexer fetch failed, block_doc_id: %d, block_idx: %d, "
               "segment_doc_id: %d",
-              local_row, block_idx, segment_doc_id);
+              block_doc_id, block_idx, segment_doc_id);
           return nullptr;
         }
         const auto &vector_buffer = fetch_result.value();
@@ -1466,18 +1474,18 @@ Doc::Ptr SegmentImpl::Fetch(
             p_block_offsets.empty()
                 ? 0
                 : p_block_offsets.back() + p_block_metas.back().doc_count_;
-        int local_row = segment_doc_id - mem_block_offset;
+        int block_doc_id = segment_doc_id - mem_block_offset;
         auto column_name = field->name();
         auto iter = memory_vector_indexers_.find(column_name);
         if (iter != memory_vector_indexers_.end()) {
           auto vector_indexer = iter->second;
-          auto fetch_result = vector_indexer->Fetch(local_row);
+          auto fetch_result = vector_indexer->Fetch(block_doc_id);
           if (!fetch_result.has_value()) {
             LOG_ERROR(
                 "vector indexer fetch failed, column: %s, doc_count: %lu, "
-                "mem_block_offset: %d, local_row: %d",
+                "mem_block_offset: %d, block_doc_id: %d",
                 field->name().c_str(), vector_indexer->doc_count(),
-                mem_block_offset, local_row);
+                mem_block_offset, block_doc_id);
             continue;
           }
           const auto &vector_buffer = fetch_result.value();
@@ -2337,13 +2345,13 @@ TablePtr SegmentImpl::fetch_perf(
   std::vector<std::shared_ptr<arrow::ChunkedArray>> chunk_arrays;
   chunk_arrays.resize(columns.size());
 
-  bool need_local_doc_id = false;
-  size_t local_doc_id_col_index = 0;
+  bool need_segment_row_id = false;
+  size_t segment_row_id_col_index = 0;
 
   for (size_t i = 0; i < columns.size(); ++i) {
     if (columns[i] == LOCAL_ROW_ID) {
-      need_local_doc_id = true;
-      local_doc_id_col_index = i;
+      need_segment_row_id = true;
+      segment_row_id_col_index = i;
       chunk_arrays[i] = nullptr;
       continue;
     }
@@ -2381,11 +2389,11 @@ TablePtr SegmentImpl::fetch_perf(
     result_arrays[i] = array;
   }
 
-  if (need_local_doc_id) {
+  if (need_segment_row_id) {
     std::vector<uint64_t> values;
     values.reserve(indices.size());
-    for (const auto idx : indices) {
-      values.push_back(idx);
+    for (const auto segment_doc_id : indices) {
+      values.push_back(segment_doc_id);
     }
 
     arrow::UInt64Builder builder;
@@ -2400,7 +2408,7 @@ TablePtr SegmentImpl::fetch_perf(
       LOG_ERROR("Failed to finish builder: %s", s.message().c_str());
       return nullptr;
     }
-    result_arrays[local_doc_id_col_index] = array;
+    result_arrays[segment_row_id_col_index] = array;
   }
 
   return arrow::Table::Make(result_schema, result_arrays,
@@ -2415,11 +2423,11 @@ TablePtr SegmentImpl::fetch_normal(
   std::vector<std::vector<std::pair<int, std::shared_ptr<arrow::Scalar>>>>
       column_results(columns.size());
 
-  // Collect local_doc_id values if needed
-  std::vector<std::pair<int, uint64_t>> local_doc_id_values;
+  // Collect segment-local row IDs when LOCAL_ROW_ID is requested.
+  std::vector<std::pair<int, uint64_t>> segment_row_id_values;
 
   // Group fetch requests by block: block_index -> {column -> [(output_row,
-  // local_row)]}
+  // block_row)]}
   //   block_index >= 0: persisted store
   //   block_index == -1: memory store
   std::map<int, std::map<std::string, std::vector<std::pair<int, int>>>>
@@ -2430,26 +2438,27 @@ TablePtr SegmentImpl::fetch_normal(
   const auto &block_offsets = get_persist_block_offsets(BlockType::SCALAR);
   const auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
 
-  // Phase 1: Map each (doc_id, column) to its block and local row
+  // Phase 1: Map each (segment_doc_id, column) to its block and block-local
+  // row.
   for (int output_row = 0; output_row < static_cast<int>(indices.size());
        ++output_row) {
-    int doc_id = indices[output_row];
+    int segment_doc_id = indices[output_row];
 
     for (size_t col_index = 0; col_index < columns.size(); ++col_index) {
       const std::string &col = columns[col_index];
       if (col == LOCAL_ROW_ID) {
-        local_doc_id_values.emplace_back(output_row, doc_id);
+        segment_row_id_values.emplace_back(output_row, segment_doc_id);
         continue;
       }
       int offset_idx = -1;
-      int block_index =
-          find_persist_block_id(BlockType::SCALAR, doc_id, col, &offset_idx);
+      int block_index = find_persist_block_id(BlockType::SCALAR, segment_doc_id,
+                                              col, &offset_idx);
 
-      int local_row = -1;
+      int block_row = -1;
       if (block_index != -1 && offset_idx > -1 &&
           offset_idx < static_cast<int>(block_offsets.size())) {
-        local_row = doc_id - block_offsets[offset_idx];
-        block_request_map[block_index][col].emplace_back(output_row, local_row);
+        block_row = segment_doc_id - block_offsets[offset_idx];
+        block_request_map[block_index][col].emplace_back(output_row, block_row);
         continue;
       }
 
@@ -2461,15 +2470,17 @@ TablePtr SegmentImpl::fetch_normal(
                 : block_offsets.back() + block_metas.back().doc_count_;
         const auto &mem_block = segment_meta_->writing_forward_block().value();
 
-        if (mem_offset <= doc_id &&
-            doc_id < mem_offset + static_cast<int>(mem_block.doc_count_)) {
-          local_row = doc_id - mem_offset;
-          block_request_map[-1][col].emplace_back(output_row, local_row);
+        if (mem_offset <= segment_doc_id &&
+            segment_doc_id <
+                mem_offset + static_cast<int>(mem_block.doc_count_)) {
+          block_row = segment_doc_id - mem_offset;
+          block_request_map[-1][col].emplace_back(output_row, block_row);
           continue;
         }
       }
 
-      LOG_ERROR("Document ID %d not found in segment %d", doc_id, meta()->id());
+      LOG_ERROR("Segment doc ID %d not found in segment %d", segment_doc_id,
+                meta()->id());
       return nullptr;
     }
   }
@@ -2477,7 +2488,7 @@ TablePtr SegmentImpl::fetch_normal(
   // Phase 2: Execute batched fetch per block
   for (const auto &[block_index, col_to_rows] : block_request_map) {
     std::vector<std::string> fetch_columns;
-    std::vector<int> fetch_local_rows;
+    std::vector<int> fetch_block_rows;
     std::vector<std::pair<int, int>>
         output_to_result_index;  // (output_row, result_pos)
 
@@ -2487,20 +2498,20 @@ TablePtr SegmentImpl::fetch_normal(
     }
 
     // all column has same output size, here just take first column
-    for (const auto &[output_row, local_row] :
+    for (const auto &[output_row, block_row] :
          col_to_rows.at(fetch_columns[0])) {
-      fetch_local_rows.push_back(local_row);
+      fetch_block_rows.push_back(block_row);
       output_to_result_index.emplace_back(
-          output_row, static_cast<int>(fetch_local_rows.size() - 1));
+          output_row, static_cast<int>(fetch_block_rows.size() - 1));
     }
 
     std::shared_ptr<arrow::Table> block_table;
     if (block_index >= 0 &&
         block_index < static_cast<int>(persist_stores_.size())) {
       block_table =
-          persist_stores_[block_index]->fetch(fetch_columns, fetch_local_rows);
+          persist_stores_[block_index]->fetch(fetch_columns, fetch_block_rows);
     } else if (block_index == -1 && memory_store_) {
-      block_table = memory_store_->fetch(fetch_columns, fetch_local_rows);
+      block_table = memory_store_->fetch(fetch_columns, fetch_block_rows);
     }
 
     if (!block_table || block_table->num_rows() == 0) {
@@ -2524,7 +2535,7 @@ TablePtr SegmentImpl::fetch_normal(
       }
       auto flat_array = flat_array_res.ValueOrDie();
 
-      for (size_t j = 0; j < fetch_local_rows.size(); ++j) {
+      for (size_t j = 0; j < fetch_block_rows.size(); ++j) {
         auto scalar_result = flat_array->GetScalar(j);
         if (!scalar_result.ok()) continue;
         int output_row = output_to_result_index[j].first;
@@ -2537,14 +2548,14 @@ TablePtr SegmentImpl::fetch_normal(
   // Phase 3: Construct result arrays
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
-  bool need_local_doc_id = false;
-  size_t local_doc_id_col_index = -1;
+  bool need_segment_row_id = false;
+  size_t segment_row_id_col_index = -1;
 
   for (size_t col_index = 0; col_index < columns.size(); ++col_index) {
     const std::string &col = columns[col_index];
     if (col == LOCAL_ROW_ID) {
-      need_local_doc_id = true;
-      local_doc_id_col_index = col_index;
+      need_segment_row_id = true;
+      segment_row_id_col_index = col_index;
       continue;
     }
 
@@ -2576,13 +2587,13 @@ TablePtr SegmentImpl::fetch_normal(
     }
   }
 
-  // Add LOCAL_ROW_ID array if requested
-  if (need_local_doc_id) {
-    std::sort(local_doc_id_values.begin(), local_doc_id_values.end());
+  // Add segment-local values for the LOCAL_ROW_ID column.
+  if (need_segment_row_id) {
+    std::sort(segment_row_id_values.begin(), segment_row_id_values.end());
     std::vector<uint64_t> values;
-    values.reserve(local_doc_id_values.size());
-    for (const auto &[row, id] : local_doc_id_values) {
-      values.push_back(id);
+    values.reserve(segment_row_id_values.size());
+    for (const auto &[row, segment_row_id] : segment_row_id_values) {
+      values.push_back(segment_row_id);
     }
 
     arrow::UInt64Builder builder;
@@ -2597,7 +2608,7 @@ TablePtr SegmentImpl::fetch_normal(
       LOG_ERROR("Failed to finish builder: %s", s.message().c_str());
       return nullptr;
     }
-    result_arrays[local_doc_id_col_index] = std::move(array);
+    result_arrays[segment_row_id_col_index] = std::move(array);
   }
 
   // Wrap arrays into ChunkedArray and build final table
@@ -2664,7 +2675,7 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
-                                int doc_id) const {
+                                int segment_doc_id) const {
   if (columns.empty()) {
     LOG_ERROR("Empty columns");
     return nullptr;
@@ -2703,12 +2714,12 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 
   if (is_in_single_persist_store) {
     int offset_idx = -1;
-    int block_index = find_persist_block_id(BlockType::SCALAR, doc_id,
+    int block_index = find_persist_block_id(BlockType::SCALAR, segment_doc_id,
                                             columns[0], &offset_idx);
     if (block_index != -1 && offset_idx > -1 &&
         offset_idx < static_cast<int>(block_offsets.size())) {
-      int local_row = doc_id - block_offsets[offset_idx];
-      return persist_stores_[block_index]->fetch(columns, local_row);
+      int block_row = segment_doc_id - block_offsets[offset_idx];
+      return persist_stores_[block_index]->fetch(columns, block_row);
     }
 
     // Check memory store
@@ -2719,14 +2730,15 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
               : block_offsets.back() + block_metas.back().doc_count_;
       const auto &mem_block = segment_meta_->writing_forward_block().value();
 
-      if (mem_offset <= doc_id &&
-          doc_id < mem_offset + static_cast<int>(mem_block.doc_count_)) {
-        int local_row = doc_id - mem_offset;
-        return memory_store_->fetch(columns, local_row);
+      if (mem_offset <= segment_doc_id &&
+          segment_doc_id <
+              mem_offset + static_cast<int>(mem_block.doc_count_)) {
+        int block_row = segment_doc_id - mem_offset;
+        return memory_store_->fetch(columns, block_row);
       }
     }
   } else {
-    auto table = fetch(columns, std::vector<int>{doc_id});
+    auto table = fetch(columns, std::vector<int>{segment_doc_id});
     if (table) {
       std::vector<arrow::Datum> datums;
       for (const auto &col : table->columns()) {
@@ -2743,7 +2755,7 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
     }
   }
 
-  LOG_ERROR("Document ID %d not found in persist segment", doc_id);
+  LOG_ERROR("Segment doc ID %d not found in persist segment", segment_doc_id);
   return nullptr;
 }
 
@@ -2761,7 +2773,7 @@ RecordBatchReaderPtr SegmentImpl::scan(
   std::map<std::pair<int64_t, int64_t>,
            std::vector<std::shared_ptr<arrow::ipc::RecordBatchReader>>>
       block_groups;
-  bool need_local_row_id =
+  bool need_segment_row_id =
       std::find(columns.begin(), columns.end(), LOCAL_ROW_ID) != columns.end();
 
   for (size_t i = 0; i < scalar_blocks.size() && i < persist_stores_.size();
@@ -2775,7 +2787,7 @@ RecordBatchReaderPtr SegmentImpl::scan(
         interested_cols.push_back(col);
       }
     }
-    if (interested_cols.empty() && need_local_row_id) {
+    if (interested_cols.empty() && need_segment_row_id) {
       interested_cols.push_back(GLOBAL_DOC_ID);
     }
 
@@ -2858,7 +2870,7 @@ SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
     : segment_(segment),
       readers_(std::move(readers)),
       current_reader_index_(0),
-      local_doc_id_(0) {
+      next_segment_row_id_(0) {
   if (!readers_.empty()) {
     auto schema = readers_[0]->schema();
     std::vector<std::shared_ptr<arrow::Field>> selected_fields;
@@ -2867,8 +2879,8 @@ SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
       if (col_name == LOCAL_ROW_ID) {
         selected_fields.push_back(
             arrow::field(LOCAL_ROW_ID, arrow::uint64(), false));
-        need_local_doc_id_ = true;
-        local_doc_id_col_index_ = static_cast<int>(i);
+        need_segment_row_id_ = true;
+        segment_row_id_col_index_ = static_cast<int>(i);
       } else {
         if (auto field = schema->GetFieldByName(col_name); field) {
           selected_fields.push_back(field);
@@ -2896,21 +2908,21 @@ arrow::Status SegmentImpl::CombinedRecordBatchReader::ReadNext(
       return status;
     }
 
-    if (need_local_doc_id_ && *batch) {
+    if (need_segment_row_id_ && *batch) {
       auto num_rows = (*batch)->num_rows();
       arrow::UInt64Builder builder;
       ARROW_RETURN_NOT_OK(builder.Reserve(num_rows));
 
       for (int64_t i = 0; i < num_rows; ++i) {
-        builder.UnsafeAppend(local_doc_id_++);
+        builder.UnsafeAppend(next_segment_row_id_++);
       }
-      std::shared_ptr<arrow::Array> local_id_array;
-      ARROW_RETURN_NOT_OK(builder.Finish(&local_id_array));
+      std::shared_ptr<arrow::Array> segment_row_id_array;
+      ARROW_RETURN_NOT_OK(builder.Finish(&segment_row_id_array));
 
       auto result =
-          (*batch)->AddColumn(local_doc_id_col_index_,
+          (*batch)->AddColumn(segment_row_id_col_index_,
                               projected_schema_->GetFieldByName(LOCAL_ROW_ID),
-                              std::move(local_id_array));
+                              std::move(segment_row_id_array));
       if (result.ok()) {
         *batch = std::move(result.ValueOrDie());
       }
@@ -4398,14 +4410,13 @@ BlockID SegmentImpl::allocate_block_id() {
   return block_id_allocator_.fetch_add(1);
 }
 
-Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t local_id) const {
+Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t segment_doc_id) const {
   std::lock_guard lock(seg_mtx_);
-  if (local_id >= doc_ids_.size()) {
+  if (segment_doc_id >= doc_ids_.size()) {
     return tl::make_unexpected(
-        Status::InvalidArgument("local_id out of range"));
+        Status::InvalidArgument("segment_doc_id out of range"));
   }
-  // global doc_id
-  return doc_ids_[local_id];
+  return doc_ids_[segment_doc_id];
 }
 
 

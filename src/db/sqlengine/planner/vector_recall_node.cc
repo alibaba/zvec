@@ -67,7 +67,7 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
 arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
   auto state_ptr = std::make_shared<State>(shared_from_this());
   return [state_ptr = std::move(state_ptr)]() mutable
-         -> arrow::Future<std::optional<cp::ExecBatch>> {
+             -> arrow::Future<std::optional<cp::ExecBatch>> {
     auto &state = *state_ptr;
     if (!state.iter_) {
       auto vector_ret = state.self_->prepare();
@@ -168,19 +168,20 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   // set filter after brute force check
   query_params.filter = doc_filter_->empty() ? nullptr : doc_filter_.get();
   if (const auto &group_by = query_info_->group_by(); group_by) {
-    auto group_fun = [this, &group_by](uint64_t row_id) -> std::string {
+    auto group_fun = [this, &group_by](uint64_t segment_row_id) -> std::string {
       auto table = segment_->fetch({group_by->group_by_field},
-                                   std::vector<int>{(int)row_id});
+                                   std::vector<int>{(int)segment_row_id});
       static std::string kEmpty;
       if (!table) {
-        LOG_ERROR("Fetch group by field failed: field[%s] row_id[%zu]",
-                  group_by->group_by_field.c_str(), (size_t)row_id);
+        LOG_ERROR("Fetch group by field failed: field[%s] segment_row_id[%zu]",
+                  group_by->group_by_field.c_str(), (size_t)segment_row_id);
         return kEmpty;
       }
       if (table->num_rows() != 1) {
         LOG_ERROR(
-            "Fetch group by field failed: field[%s] row_id[%zu] rows[%zu]",
-            group_by->group_by_field.c_str(), (size_t)row_id,
+            "Fetch group by field failed: field[%s] segment_row_id[%zu] "
+            "rows[%zu]",
+            group_by->group_by_field.c_str(), (size_t)segment_row_id,
             (size_t)table->num_rows());
         return kEmpty;
       }

@@ -147,7 +147,7 @@ class Segment {
                          const std::vector<int> &indices) const = 0;
 
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                             int index) const = 0;
+                             int segment_doc_id) const = 0;
 
   // caller should hold segment shared_ptr for segment handle the indexer's
   // lifetime
