@@ -4496,23 +4496,19 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     cf_names.push_back(name + kFtsPositionsSuffix);  // positions
 
     per_cf_merge_ops[name] = std::make_shared<fts::FtsPostingsMerge>();
+    per_cf_merge_ops[name + kFtsMaxTfSuffix] =
+        std::make_shared<fts::FtsMaxTfMerge>();
 
     // Side CFs (_tf / _max_tf / _doc_len) are present in mutable segments
     // that have not yet been dumped.  After dump,
     // convert_postings_to_bitpacked() inlines their payloads into BitPacked
-    // postings and the CFs are dropped.
-    //
-    // When opening an existing segment (create=false), we always include the
-    // side CF names so that segments closed without dump (e.g. graceful
-    // shutdown with only flush) can still perform accurate BM25 scoring via
-    // the Roaring posting path.  If the CFs were already dropped (post-dump
-    // immutable segment), the open will fail and we retry without them.
+    // postings and the CFs are dropped.  When opening (!create), we pass
+    // empty column_names so RocksdbContext::open auto-discovers existing CFs
+    // via ListColumnFamilies — side CFs are included only when present.
     if (create) {
       cf_names.push_back(name + kFtsTfSuffix);
       cf_names.push_back(name + kFtsMaxTfSuffix);
       cf_names.push_back(name + kFtsDocLenSuffix);
-      per_cf_merge_ops[name + kFtsMaxTfSuffix] =
-          std::make_shared<fts::FtsMaxTfMerge>();
     }
   }
   cf_names.push_back(kFtsStatCfName);
@@ -4520,39 +4516,18 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   fts_ctx_ = std::make_shared<RocksdbContext>();
   Status s;
 
-  // Whether side CFs are available after open
-  bool has_side_cfs = create;
-
   bool enable_hash_skiplist = true;
   if (create) {
     s = fts_ctx_->create(RocksdbContext::Args{
         fts_path, cf_names, nullptr, per_cf_merge_ops, enable_hash_skiplist});
   } else {
-    // Try opening with side CFs first (un-dumped mutable segment).
-    // If they don't exist (post-dump), retry without them.
-    std::vector<std::string> cf_names_with_side = cf_names;
-    auto per_cf_merge_ops_with_side = per_cf_merge_ops;
-    for (const auto &field : fts_fields) {
-      const auto &name = field->name();
-      cf_names_with_side.push_back(name + kFtsTfSuffix);
-      cf_names_with_side.push_back(name + kFtsMaxTfSuffix);
-      cf_names_with_side.push_back(name + kFtsDocLenSuffix);
-      per_cf_merge_ops_with_side[name + kFtsMaxTfSuffix] =
-          std::make_shared<fts::FtsMaxTfMerge>();
-    }
+    // Auto-discover existing CFs via ListColumnFamilies (empty column_names).
+    // per_cf_merge_ops covers both base and side CFs; entries for CFs that
+    // were dropped after dump are harmlessly ignored.
     s = fts_ctx_->open(
-        RocksdbContext::Args{fts_path, cf_names_with_side, nullptr,
-                             per_cf_merge_ops_with_side, enable_hash_skiplist},
+        RocksdbContext::Args{
+            fts_path, {}, nullptr, per_cf_merge_ops, enable_hash_skiplist},
         options_.read_only_);
-    if (s.ok()) {
-      has_side_cfs = true;
-    } else {
-      // Side CFs not found (immutable segment after dump) — retry without.
-      fts_ctx_ = std::make_shared<RocksdbContext>();
-      s = fts_ctx_->open(
-          RocksdbContext::Args{fts_path, cf_names, nullptr, per_cf_merge_ops},
-          options_.read_only_);
-    }
   }
   if (!s.ok()) {
     LOG_ERROR("open_fts_indexers: failed to %s FTS RocksDB at [%s]: %s",
@@ -4567,16 +4542,13 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     const auto &name = field->name();
     auto *postings_cf = fts_ctx_->get_cf(name);
     auto *positions_cf = fts_ctx_->get_cf(name + kFtsPositionsSuffix);
-    // Side CF handles are available when the segment has not been dumped
-    // (side CFs still exist).  For dumped immutable segments the handles
-    // are nullptr and FtsColumnIndexer falls back to BitPacked inline
-    // payloads or tf=1/doc_len=1 defaults.
-    auto *term_freq_cf =
-        has_side_cfs ? fts_ctx_->get_cf(name + kFtsTfSuffix) : nullptr;
-    auto *max_tf_cf =
-        has_side_cfs ? fts_ctx_->get_cf(name + kFtsMaxTfSuffix) : nullptr;
-    auto *doc_len_cf =
-        has_side_cfs ? fts_ctx_->get_cf(name + kFtsDocLenSuffix) : nullptr;
+    // Side CF handles are non-null when the segment has not been dumped
+    // (side CFs still exist).  For dumped immutable segments get_cf returns
+    // nullptr and FtsColumnIndexer falls back to BitPacked inline payloads
+    // or tf=1/doc_len=1 defaults.
+    auto *term_freq_cf = fts_ctx_->get_cf(name + kFtsTfSuffix);
+    auto *max_tf_cf = fts_ctx_->get_cf(name + kFtsMaxTfSuffix);
+    auto *doc_len_cf = fts_ctx_->get_cf(name + kFtsDocLenSuffix);
 
     auto indexer = std::make_shared<fts::FtsColumnIndexer>();
 
