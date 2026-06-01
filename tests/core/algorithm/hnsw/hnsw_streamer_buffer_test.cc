@@ -5,7 +5,6 @@
 #include <ailego/utility/memory_helper.h>
 #include <algorithm/hnsw/hnsw_params.h>
 #include <gtest/gtest.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"

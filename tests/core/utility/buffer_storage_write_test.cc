@@ -21,7 +21,6 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>

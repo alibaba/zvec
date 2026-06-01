@@ -21,7 +21,6 @@
 #include <arrow/result.h>
 #include <arrow/status.h>
 #include <parquet/arrow/reader.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/ailego/buffer/parquet_hash_table.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/index/storage/store_helper.h"

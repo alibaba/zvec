@@ -114,7 +114,7 @@ class ParquetBufferPool {
     ParquetBufferPool *pool;
     ParquetBufferID id;
     // Only reduces the reference count but does not actually release the
-    // buffer, since the buffer memory is managed by the BufferManager.
+    // buffer, since the buffer memory is managed by the ParquetBufferPool.
     void operator()(arrow::Buffer *) {
       return;
     }
