@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include "utils/utils.h"
+#include "zvec/db/index_params.h"
 #include "zvec/db/status.h"
 #include "zvec/db/type.h"
 
@@ -1411,6 +1412,35 @@ TEST(SearchQuery, ValidateAndSanitize) {
     query.target_.query_params_ = nullptr;
     s = query.validate_and_sanitize(&schema);
     EXPECT_TRUE(s.ok());
+  }
+
+  // A vector clause and an FTS clause are mutually exclusive by construction:
+  // target_.clause_ is a variant that holds exactly one of them.
+  {
+    auto fts_params = std::make_shared<FtsIndexParams>();
+    FieldSchema fts_schema("content", DataType::STRING, false, fts_params);
+
+    // FTS query with proper FTS field schema -> OK
+    SearchQuery fts_only;
+    fts_only.target_.field_name_ = "content";
+    fts_only.topk_ = 10;
+    FtsClause fts_test;
+    fts_test.query_string_ = "test";
+    fts_only.target_.clause_ = fts_test;
+    auto s = fts_only.validate_and_sanitize(&fts_schema);
+    EXPECT_TRUE(s.ok());
+
+    // FTS query with nullptr schema -> fail (field not found)
+    s = fts_only.validate_and_sanitize(nullptr);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+
+    // FTS query with vector field schema -> fail (type mismatch)
+    FieldSchema vec_schema("embedding", DataType::VECTOR_FP32, 128, false,
+                           std::make_shared<HnswIndexParams>(MetricType::L2));
+    s = fts_only.validate_and_sanitize(&vec_schema);
+    EXPECT_FALSE(s.ok());
+    EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 }
 

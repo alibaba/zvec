@@ -144,6 +144,28 @@ proto::InvertIndexParams ProtoConverter::ToPb(const InvertIndexParams *params) {
   return params_pb;
 }
 
+// FtsIndexParams
+FtsIndexParams::Ptr ProtoConverter::FromPb(
+    const proto::FtsIndexParams &params_pb) {
+  std::vector<std::string> filters;
+  filters.reserve(params_pb.filters_size());
+  for (const auto &filter : params_pb.filters()) {
+    filters.push_back(filter);
+  }
+  return std::make_shared<FtsIndexParams>(
+      params_pb.tokenizer_name(), std::move(filters), params_pb.extra_params());
+}
+
+proto::FtsIndexParams ProtoConverter::ToPb(const FtsIndexParams *params) {
+  proto::FtsIndexParams params_pb;
+  params_pb.set_tokenizer_name(params->tokenizer_name());
+  for (const auto &filter : params->filters()) {
+    params_pb.add_filters(filter);
+  }
+  params_pb.set_extra_params(params->extra_params());
+  return params_pb;
+}
+
 // FieldSchema
 FieldSchema::Ptr ProtoConverter::FromPb(const proto::FieldSchema &schema_pb) {
   auto schema = std::make_shared<FieldSchema>();
@@ -215,6 +237,8 @@ IndexParams::Ptr ProtoConverter::FromPb(const proto::IndexParams &params_pb) {
     return ProtoConverter::FromPb(params_pb.hnsw_rabitq());
   } else if (params_pb.has_vamana()) {
     return ProtoConverter::FromPb(params_pb.vamana());
+  } else if (params_pb.has_fts()) {
+    return ProtoConverter::FromPb(params_pb.fts());
   }
 
   return nullptr;
@@ -283,6 +307,13 @@ proto::IndexParams ProtoConverter::ToPb(const IndexParams *params) {
       if (vamana_params) {
         params_pb.mutable_vamana()->CopyFrom(
             ProtoConverter::ToPb(vamana_params));
+      }
+      break;
+    }
+    case IndexType::FTS: {
+      auto fts_params = dynamic_cast<const FtsIndexParams *>(params);
+      if (fts_params) {
+        params_pb.mutable_fts()->CopyFrom(ProtoConverter::ToPb(fts_params));
       }
       break;
     }

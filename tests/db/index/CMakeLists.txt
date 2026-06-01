@@ -54,3 +54,10 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   )
   cc_test_suite(zvec_index ${CC_TARGET})
 endforeach()
+
+# Inject TEST_SOURCE_DIR for fts_column_indexer_test so it can locate testdata/
+if(TARGET fts_column_indexer_test)
+  target_compile_definitions(fts_column_indexer_test PRIVATE
+    TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/column/fts_column"
+    JIEBA_DICT_DIR="${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+endif()

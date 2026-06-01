@@ -145,4 +145,14 @@ if(BUILD_PYTHON_BINDINGS)
 
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+
+    # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
+    # out of the box. python/zvec/__init__.py resolves this directory via
+    # importlib.resources and registers it with set_default_jieba_dict_dir().
+    set(ZVEC_JIEBA_DICT_SRC
+        "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+    install(FILES
+        "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
+        "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
+        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict)
 endif()

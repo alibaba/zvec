@@ -22,6 +22,8 @@
 #include <zvec/db/schema.h>
 #include "analyzer/query_info.h"
 #include "common/group_by.h"
+#include "db/index/column/fts_column/fts_query_ast.h"
+#include "db/index/column/fts_column/parser/fts_query_parser.h"
 #include "db/sqlengine/common/util.h"
 #include "db/sqlengine/parser/sql_info.h"
 #include "db/sqlengine/sqlengine.h"
@@ -66,6 +68,11 @@ class SQLEngineImpl : public SQLEngine {
 
   Result<GroupResults> fill_group_by_result(const QueryInfo &query_info,
                                             arrow::RecordBatchReader *reader);
+
+  //! Parse FTS query into a FtsCondInfo (AST + field name).
+  Result<FtsCondInfo::Ptr> parse_fts_query(
+      CollectionSchema::Ptr collection, const std::string &field_name,
+      const FtsClause &fts, const QueryParams::Ptr &query_params);
 
  private:
   zvec::Profiler::Ptr profiler_;

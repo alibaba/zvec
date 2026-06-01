@@ -43,6 +43,7 @@ TEST_F(ConfigTest, InitializeWithDefaultConfig) {
   ASSERT_GT(GlobalConfig::Instance().query_thread_count(), 0);
   ASSERT_EQ(GlobalConfig::Instance().invert_to_forward_scan_ratio(), 0.9f);
   ASSERT_EQ(GlobalConfig::Instance().brute_force_by_keys_ratio(), 0.1f);
+  ASSERT_EQ(GlobalConfig::Instance().fts_brute_force_by_keys_ratio(), 0.05f);
   ASSERT_GT(GlobalConfig::Instance().optimize_thread_count(), 0);
 }
 
@@ -150,6 +151,16 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidRatios) {
   ASSERT_NE(status.message().find(
                 "brute_force_by_keys_ratio must be between 0 and 1"),
             std::string::npos);
+
+  // Test invalid fts_brute_force_by_keys_ratio
+  config.brute_force_by_keys_ratio = 0.1f;       // Reset to valid value
+  config.fts_brute_force_by_keys_ratio = -0.5f;  // Invalid value
+  status = config_instance.Validate(config);
+  ASSERT_FALSE(status.ok());
+  ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+  ASSERT_NE(status.message().find(
+                "fts_brute_force_by_keys_ratio must be between 0 and 1"),
+            std::string::npos);
 }
 
 TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
@@ -209,4 +220,26 @@ TEST_F(ConfigTest, LogConfigPolymorphism) {
 
   ASSERT_EQ(console_config->GetLoggerType(), CONSOLE_LOG_TYPE_NAME);
   ASSERT_EQ(file_config->GetLoggerType(), FILE_LOG_TYPE_NAME);
+}
+
+// jieba_dict_dir is the only ConfigData field that can be written outside
+// of Initialize() — language SDKs call set_default_jieba_dict_dir() at
+// module-load to register the dict path they bundled. The setter is
+// independent of the Initialize() one-shot lifecycle.
+TEST_F(ConfigTest, JiebaDictDirSetterIsIndependentOfInitialize) {
+  auto saved = GlobalConfig::Instance().jieba_dict_dir();
+
+  // Setter works regardless of whether Initialize was called.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-A");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-A");
+
+  // Last writer wins.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-B");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-B");
+
+  // Empty clears.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "");
+
+  GlobalConfig::Instance().set_default_jieba_dict_dir(saved);
 }

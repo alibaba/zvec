@@ -48,6 +48,10 @@ struct ProtoConverter {
       const proto::InvertIndexParams &params_pb);
   static proto::InvertIndexParams ToPb(const InvertIndexParams *params);
 
+  // FtsIndexParams
+  static FtsIndexParams::Ptr FromPb(const proto::FtsIndexParams &params_pb);
+  static proto::FtsIndexParams ToPb(const FtsIndexParams *params);
+
   // IndexParams
   static IndexParams::Ptr FromPb(const proto::IndexParams &params_pb);
   static proto::IndexParams ToPb(const IndexParams *params);
