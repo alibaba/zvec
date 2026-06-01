@@ -27,7 +27,7 @@ namespace core {
 HnswSparseStreamer::HnswSparseStreamer() : entity_(stats_) {}
 
 HnswSparseStreamer::~HnswSparseStreamer() {
-  if (state_ == STATE_INITED) {
+  if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
 }

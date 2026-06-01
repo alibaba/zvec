@@ -526,10 +526,20 @@ Status SegmentImpl::close() {
     }
   }
   vector_indexers_.clear();
+  for (const auto &[name, indexers] : quant_vector_indexers_) {
+    for (auto indexer : indexers) {
+      indexer->Close();
+    }
+  }
+  quant_vector_indexers_.clear();
   for (auto [name, indexer] : memory_vector_indexers_) {
     indexer->Close();
   }
   memory_vector_indexers_.clear();
+  for (auto [name, indexer] : quant_memory_vector_indexers_) {
+    indexer->Close();
+  }
+  quant_memory_vector_indexers_.clear();
 
   return Status::OK();
 }

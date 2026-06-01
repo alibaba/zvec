@@ -47,6 +47,8 @@ std::string col_path = "test_collection";
 class CollectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    zvec::ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll *
+                                                       1024ll);
     FileHelper::RemoveDirectory(col_path);
   }
 
@@ -57,128 +59,132 @@ class CollectionTest : public ::testing::Test {
 };
 
 TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
-  CollectionOptions options;
-  options.read_only_ = false;
-  options.enable_mmap_ = true;
+  auto func = [&](bool enable_mmap) {
+    CollectionOptions options;
+    options.read_only_ = false;
+    options.enable_mmap_ = enable_mmap;
 
-  std::string path = "./demo";
+    std::string path = "./demo";
 
-  ailego::FileHelper::RemoveDirectory(path.c_str());
+    ailego::FileHelper::RemoveDirectory(path.c_str());
 
-  auto schema = TestHelper::CreateNormalSchema();
-  auto result = Collection::CreateAndOpen(path, *schema, options);
-  if (!result.has_value()) {
-    std::cout << result.error().message() << std::endl;
-  }
-  ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(ailego::FileHelper::IsExist(path.c_str()));
+    auto schema = TestHelper::CreateNormalSchema();
+    auto result = Collection::CreateAndOpen(path, *schema, options);
+    if (!result.has_value()) {
+      std::cout << result.error().message() << std::endl;
+    }
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(ailego::FileHelper::IsExist(path.c_str()));
 
-  auto col = result.value();
-  ASSERT_EQ(col->Path(), path);
-  ASSERT_EQ(col->Schema(), *schema);
-  ASSERT_EQ(col->Options(), options);
-  auto stats = col->Stats().value();
-  ASSERT_TRUE(stats.doc_count == 0);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
-  ASSERT_EQ(stats.index_completeness["dense_fp16"], 1);
-  // ASSERT_EQ(stats.index_completeness["dense_fp64"], 1);
-  ASSERT_EQ(stats.index_completeness["sparse_fp32"], 1);
-  ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
+    auto col = result.value();
+    ASSERT_EQ(col->Path(), path);
+    ASSERT_EQ(col->Schema(), *schema);
+    ASSERT_EQ(col->Options(), options);
+    auto stats = col->Stats().value();
+    ASSERT_TRUE(stats.doc_count == 0);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    ASSERT_EQ(stats.index_completeness["dense_fp16"], 1);
+    // ASSERT_EQ(stats.index_completeness["dense_fp64"], 1);
+    ASSERT_EQ(stats.index_completeness["sparse_fp32"], 1);
+    ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
 
-  ASSERT_EQ(col->Destroy(), Status::OK());
+    ASSERT_EQ(col->Destroy(), Status::OK());
 
-  // after destroyed, every interface should return error
-  std::vector<Doc> empty_docs;
-  ASSERT_FALSE(col->Insert(empty_docs).has_value());
-  ASSERT_FALSE(col->Update(empty_docs).has_value());
-  ASSERT_FALSE(col->Delete({}).has_value());
-  ASSERT_FALSE(col->DeleteByFilter("").ok());
-  ASSERT_FALSE(col->Fetch({}).has_value());
-  ASSERT_FALSE(col->Query(SearchQuery{}).has_value());
-  ASSERT_FALSE(col->Query(MultiQuery{}).has_value());
-  ASSERT_FALSE(col->GroupByQuery({}).has_value());
-  ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
-  ASSERT_FALSE(col->DropIndex("").ok());
-  ASSERT_FALSE(col->AddColumn(nullptr, "").ok());
-  ASSERT_FALSE(col->AlterColumn("", "", nullptr).ok());
-  ASSERT_FALSE(col->DropColumn("").ok());
-  ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
-  ASSERT_FALSE(col->Optimize().ok());
-  ASSERT_FALSE(col->Flush().ok());
-  ASSERT_FALSE(col->Destroy().ok());
-  ASSERT_FALSE(col->Options().has_value());
-  ASSERT_FALSE(col->Path().has_value());
-  ASSERT_FALSE(col->Stats().has_value());
-  ASSERT_FALSE(col->Schema().has_value());
+    // after destroyed, every interface should return error
+    std::vector<Doc> empty_docs;
+    ASSERT_FALSE(col->Insert(empty_docs).has_value());
+    ASSERT_FALSE(col->Update(empty_docs).has_value());
+    ASSERT_FALSE(col->Delete({}).has_value());
+    ASSERT_FALSE(col->DeleteByFilter("").ok());
+    ASSERT_FALSE(col->Fetch({}).has_value());
+    ASSERT_FALSE(col->Query(SearchQuery{}).has_value());
+    ASSERT_FALSE(col->Query(MultiQuery{}).has_value());
+    ASSERT_FALSE(col->GroupByQuery({}).has_value());
+    ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
+    ASSERT_FALSE(col->DropIndex("").ok());
+    ASSERT_FALSE(col->AddColumn(nullptr, "").ok());
+    ASSERT_FALSE(col->AlterColumn("", "", nullptr).ok());
+    ASSERT_FALSE(col->DropColumn("").ok());
+    ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
+    ASSERT_FALSE(col->Optimize().ok());
+    ASSERT_FALSE(col->Flush().ok());
+    ASSERT_FALSE(col->Destroy().ok());
+    ASSERT_FALSE(col->Options().has_value());
+    ASSERT_FALSE(col->Path().has_value());
+    ASSERT_FALSE(col->Stats().has_value());
+    ASSERT_FALSE(col->Schema().has_value());
 
-  ASSERT_FALSE(ailego::FileHelper::IsExist(path.c_str()));
+    ASSERT_FALSE(ailego::FileHelper::IsExist(path.c_str()));
 
-  // recreate
-  result = Collection::CreateAndOpen(path, *schema, options);
-  ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(ailego::FileHelper::IsExist(path.c_str()));
+    // recreate
+    result = Collection::CreateAndOpen(path, *schema, options);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(ailego::FileHelper::IsExist(path.c_str()));
 
-  col = std::move(result.value());
-  col.reset();
-  col = nullptr;
+    col = std::move(result.value());
+    col.reset();
+    col = nullptr;
 
-  ASSERT_TRUE(ailego::FileHelper::IsExist(path.c_str()));
+    ASSERT_TRUE(ailego::FileHelper::IsExist(path.c_str()));
 
-  // reopen
-  result = Collection::Open(path, options);
-  ASSERT_TRUE(result.has_value());
-  col = std::move(result.value());
-  col.reset();
+    // reopen
+    result = Collection::Open(path, options);
+    ASSERT_TRUE(result.has_value());
+    col = std::move(result.value());
+    col.reset();
 
-  // reopen with read-only
-  options.read_only_ = true;
-  result = Collection::Open(path, options);
-  if (!result.has_value()) {
-    std::cout << result.error().message() << std::endl;
-  }
-  ASSERT_TRUE(result.has_value());
-  col = result.value();
+    // reopen with read-only
+    options.read_only_ = true;
+    result = Collection::Open(path, options);
+    if (!result.has_value()) {
+      std::cout << result.error().message() << std::endl;
+    }
+    ASSERT_TRUE(result.has_value());
+    col = result.value();
 
-  ASSERT_EQ(col->Path(), path);
-  ASSERT_EQ(col->Schema(), *schema);
-  ASSERT_EQ(col->Options(), options);
-  stats = col->Stats().value();
-  ASSERT_TRUE(stats.doc_count == 0);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
-  ASSERT_EQ(stats.index_completeness["dense_fp16"], 1);
-  // ASSERT_EQ(stats.index_completeness["dense_fp64"], 1);
-  ASSERT_EQ(stats.index_completeness["sparse_fp32"], 1);
-  ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
+    ASSERT_EQ(col->Path(), path);
+    ASSERT_EQ(col->Schema(), *schema);
+    ASSERT_EQ(col->Options(), options);
+    stats = col->Stats().value();
+    ASSERT_TRUE(stats.doc_count == 0);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    ASSERT_EQ(stats.index_completeness["dense_fp16"], 1);
+    // ASSERT_EQ(stats.index_completeness["dense_fp64"], 1);
+    ASSERT_EQ(stats.index_completeness["sparse_fp32"], 1);
+    ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
 
-  // when open with read-only, write operation should fail
-  ASSERT_FALSE(col->Flush().ok());
-  ASSERT_FALSE(col->Destroy().ok());
-  ASSERT_FALSE(col->Insert(empty_docs).has_value());
-  ASSERT_FALSE(col->Update(empty_docs).has_value());
-  ASSERT_FALSE(col->Delete({}).has_value());
-  ASSERT_FALSE(col->DeleteByFilter("").ok());
-  ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
-  ASSERT_FALSE(col->DropIndex("").ok());
-  ASSERT_FALSE(col->AddColumn(nullptr, "").ok());
-  ASSERT_FALSE(col->AlterColumn("", "", nullptr).ok());
-  ASSERT_FALSE(col->DropColumn("").ok());
-  ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
-  ASSERT_FALSE(col->Optimize().ok());
+    // when open with read-only, write operation should fail
+    ASSERT_FALSE(col->Flush().ok());
+    ASSERT_FALSE(col->Destroy().ok());
+    ASSERT_FALSE(col->Insert(empty_docs).has_value());
+    ASSERT_FALSE(col->Update(empty_docs).has_value());
+    ASSERT_FALSE(col->Delete({}).has_value());
+    ASSERT_FALSE(col->DeleteByFilter("").ok());
+    ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
+    ASSERT_FALSE(col->DropIndex("").ok());
+    ASSERT_FALSE(col->AddColumn(nullptr, "").ok());
+    ASSERT_FALSE(col->AlterColumn("", "", nullptr).ok());
+    ASSERT_FALSE(col->DropColumn("").ok());
+    ASSERT_FALSE(col->CreateIndex("", nullptr).ok());
+    ASSERT_FALSE(col->Optimize().ok());
 
-  // two threads open with read_only
-  result = Collection::Open(path, options);
-  if (!result.has_value()) {
-    std::cout << result.error().message() << std::endl;
-  }
-  ASSERT_TRUE(result.has_value());
-  col = result.value();
+    // two threads open with read_only
+    result = Collection::Open(path, options);
+    if (!result.has_value()) {
+      std::cout << result.error().message() << std::endl;
+    }
+    ASSERT_TRUE(result.has_value());
+    col = result.value();
 
-  auto result1 = Collection::Open(path, options);
-  if (!result1.has_value()) {
-    std::cout << result1.error().message() << std::endl;
-  }
-  ASSERT_TRUE(result1.has_value());
-  auto col1 = result1.value();
+    auto result1 = Collection::Open(path, options);
+    if (!result1.has_value()) {
+      std::cout << result1.error().message() << std::endl;
+    }
+    ASSERT_TRUE(result1.has_value());
+    auto col1 = result1.value();
+  };
+  func(true);
+  func(false);
 }
 
 TEST_F(CollectionTest, Feature_CreateAndOpen_Empty) {
@@ -391,13 +397,13 @@ TEST_F(CollectionTest, Feature_Write_Batch_Validate) {
 }
 
 TEST_F(CollectionTest, Feature_Insert_General) {
-  auto func = [&](bool schema_nullable, bool doc_nullable,
+  auto func = [&](bool enable_mmap, bool schema_nullable, bool doc_nullable,
                   int doc_count = 1000) {
     FileHelper::RemoveDirectory(col_path);
 
     // create with normal schema
     auto schema = TestHelper::CreateNormalSchema(schema_nullable);
-    auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 100 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, doc_nullable);
 
@@ -478,14 +484,16 @@ TEST_F(CollectionTest, Feature_Insert_General) {
     ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
   };
 
-  func(false, false);
-  func(true, true);
-  func(true, false);
-  func(false, true);
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, false, false);
+    func(enable_mmap, true, true);
+    func(enable_mmap, true, false);
+    func(enable_mmap, false, true);
 
-  func(false, false, 0);
-  func(false, false, 1);
-  func(false, false, 2);
+    func(enable_mmap, false, false, 0);
+    func(enable_mmap, false, false, 1);
+    func(enable_mmap, false, false, 2);
+  }
 }
 
 TEST_F(CollectionTest, Feature_Insert_ScalarIndex) {
@@ -809,13 +817,13 @@ TEST_F(CollectionTest, Feature_Insert_Duplicate) {
 }
 
 TEST_F(CollectionTest, Feature_Upsert_General) {
-  auto func = [&](bool schema_nullable, bool doc_nullable,
+  auto func = [&](bool enable_mmap, bool schema_nullable, bool doc_nullable,
                   int doc_count = 1000) {
     FileHelper::RemoveDirectory(col_path);
 
     // create with normal schema
     auto schema = TestHelper::CreateNormalSchema(schema_nullable);
-    auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 100 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, doc_nullable, true);
 
@@ -896,14 +904,16 @@ TEST_F(CollectionTest, Feature_Upsert_General) {
     ASSERT_EQ(stats.index_completeness["sparse_fp16"], 1);
   };
 
-  func(false, false);
-  func(true, true);
-  func(true, false);
-  func(false, true);
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, false, false);
+    func(enable_mmap, true, true);
+    func(enable_mmap, true, false);
+    func(enable_mmap, false, true);
 
-  func(false, false, 0);
-  func(false, false, 1);
-  func(false, false, 2);
+    func(enable_mmap, false, false, 0);
+    func(enable_mmap, false, false, 1);
+    func(enable_mmap, false, false, 2);
+  }
 }
 
 TEST_F(CollectionTest, Feature_Upsert_Incremental) {
@@ -1096,9 +1106,9 @@ TEST_F(CollectionTest, Feature_Upsert_Nullable) {
 
 
 TEST_F(CollectionTest, Feature_Update_General) {
-  auto func = [&](int doc_count) {
+  auto func = [&](bool enable_mmap, int doc_count) {
     auto schema = TestHelper::CreateNormalSchema();
-    auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 100 * 1024 * 1024};
     FileHelper::RemoveDirectory(col_path);
 
     // insert first
@@ -1180,10 +1190,12 @@ TEST_F(CollectionTest, Feature_Update_General) {
     check_doc(doc_count);
   };
 
-  func(99);
-  func(100);
-  func(101);
-  func(1000);
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, 99);
+    func(enable_mmap, 100);
+    func(enable_mmap, 101);
+    func(enable_mmap, 1000);
+  }
 }
 
 TEST_F(CollectionTest, Feature_Update_Incremental) {
@@ -1437,9 +1449,9 @@ TEST_F(CollectionTest, Feature_Update_Empty) {
 }
 
 TEST_F(CollectionTest, Feature_Delete_General) {
-  auto func = [&](int doc_count) {
+  auto func = [&](bool enable_mmap, int doc_count) {
     auto schema = TestHelper::CreateNormalSchema();
-    auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 100 * 1024 * 1024};
     FileHelper::RemoveDirectory(col_path);
 
     // insert first
@@ -1515,10 +1527,12 @@ TEST_F(CollectionTest, Feature_Delete_General) {
     check_doc(doc_count);
   };
 
-  func(99);
-  func(100);
-  func(101);
-  func(1000);
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, 99);
+    func(enable_mmap, 100);
+    func(enable_mmap, 101);
+    func(enable_mmap, 1000);
+  }
 }
 
 TEST_F(CollectionTest, Feature_Delete_Repeated) {
@@ -1578,9 +1592,9 @@ TEST_F(CollectionTest, Feature_Delete_Repeated) {
 }
 
 TEST_F(CollectionTest, Feature_DeleteByFilter_General) {
-  auto func = [&](int doc_count) {
+  auto func = [&](bool enable_mmap, int doc_count) {
     auto schema = TestHelper::CreateNormalSchema();
-    auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 100 * 1024 * 1024};
     FileHelper::RemoveDirectory(col_path);
 
     // insert first
@@ -1659,10 +1673,12 @@ TEST_F(CollectionTest, Feature_DeleteByFilter_General) {
     check_doc(doc_count);
   };
 
-  func(99);
-  func(100);
-  func(101);
-  func(1000);
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, 99);
+    func(enable_mmap, 100);
+    func(enable_mmap, 101);
+    func(enable_mmap, 1000);
+  }
 }
 
 TEST_F(CollectionTest, Feature_DeleteByFilter_ScalarIndex) {
@@ -1755,122 +1771,132 @@ TEST_F(CollectionTest, Feature_DeleteByFilter_ScalarIndex) {
 }
 
 TEST_F(CollectionTest, Feature_MixedWrite_General) {
-  // case1: insert -> upsert -> update -> delete
-  auto schema = TestHelper::CreateNormalSchema();
-  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
-  FileHelper::RemoveDirectory(col_path);
+  auto func = [&](bool enable_mmap) {
+    // case1: insert -> upsert -> update -> delete
+    auto schema = TestHelper::CreateNormalSchema();
+    auto options = CollectionOptions{false, enable_mmap, 100 * 1024 * 1024};
+    FileHelper::RemoveDirectory(col_path);
 
-  // insert first
-  auto collection =
-      TestHelper::CreateCollectionWithDoc(col_path, *schema, options, 0, 0);
+    // insert first
+    auto collection =
+        TestHelper::CreateCollectionWithDoc(col_path, *schema, options, 0, 0);
 
-  for (int i = 0; i < 100; i++) {
-    // std::cout << "insert: " << i << std::endl;
+    for (int i = 0; i < 100; i++) {
+      // std::cout << "insert: " << i << std::endl;
 
-    // insert
-    auto new_doc = TestHelper::CreateDoc(i, *schema);
-    std::vector<Doc> new_docs = {new_doc};
-    auto res = collection->Insert(new_docs);
-    ASSERT_TRUE(res.has_value());
-    ASSERT_TRUE(res.value()[0].ok());
+      // insert
+      auto new_doc = TestHelper::CreateDoc(i, *schema);
+      std::vector<Doc> new_docs = {new_doc};
+      auto res = collection->Insert(new_docs);
+      ASSERT_TRUE(res.has_value());
+      ASSERT_TRUE(res.value()[0].ok());
 
-    // fetch
-    auto docs = collection->Fetch({TestHelper::MakePK(i)});
-    ASSERT_TRUE(docs.has_value());
-    ASSERT_EQ(docs.value().size(), 1);
-    ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
-    ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
+      // fetch
+      auto docs = collection->Fetch({TestHelper::MakePK(i)});
+      ASSERT_TRUE(docs.has_value());
+      ASSERT_EQ(docs.value().size(), 1);
+      ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
+      ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
 
-    auto stats = collection->Stats().value();
-    ASSERT_EQ(stats.doc_count, i + 1);
+      auto stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, i + 1);
 
-    // upsert
-    new_doc = TestHelper::CreateDoc(i + 1, *schema, TestHelper::MakePK(i));
-    new_docs = {new_doc};
-    res = collection->Upsert(new_docs);
-    ASSERT_TRUE(res.has_value());
-    ASSERT_TRUE(res.value()[0].ok());
+      // upsert
+      new_doc = TestHelper::CreateDoc(i + 1, *schema, TestHelper::MakePK(i));
+      new_docs = {new_doc};
+      res = collection->Upsert(new_docs);
+      ASSERT_TRUE(res.has_value());
+      ASSERT_TRUE(res.value()[0].ok());
 
-    // fetch
-    docs = collection->Fetch({TestHelper::MakePK(i)}).value();
-    ASSERT_TRUE(docs.has_value());
-    ASSERT_EQ(docs.value().size(), 1);
-    ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
-    ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
+      // fetch
+      docs = collection->Fetch({TestHelper::MakePK(i)}).value();
+      ASSERT_TRUE(docs.has_value());
+      ASSERT_EQ(docs.value().size(), 1);
+      ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
+      ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
 
-    stats = collection->Stats().value();
-    ASSERT_EQ(stats.doc_count, i + 1);
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, i + 1);
 
-    // update
-    new_doc = TestHelper::CreateDoc(i + 2, *schema, TestHelper::MakePK(i));
-    new_docs = {new_doc};
-    res = collection->Update(new_docs);
-    ASSERT_TRUE(res.has_value());
-    ASSERT_TRUE(res.value()[0].ok());
+      // update
+      new_doc = TestHelper::CreateDoc(i + 2, *schema, TestHelper::MakePK(i));
+      new_docs = {new_doc};
+      res = collection->Update(new_docs);
+      ASSERT_TRUE(res.has_value());
+      ASSERT_TRUE(res.value()[0].ok());
 
-    // fetch
-    docs = collection->Fetch({TestHelper::MakePK(i)}).value();
-    ASSERT_TRUE(docs.has_value());
-    ASSERT_EQ(docs.value().size(), 1);
-    ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
-    ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
+      // fetch
+      docs = collection->Fetch({TestHelper::MakePK(i)}).value();
+      ASSERT_TRUE(docs.has_value());
+      ASSERT_EQ(docs.value().size(), 1);
+      ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
+      ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
 
-    stats = collection->Stats().value();
-    ASSERT_EQ(stats.doc_count, i + 1);
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, i + 1);
 
-    // delete
-    res = collection->Delete({TestHelper::MakePK(i)});
-    ASSERT_TRUE(res.has_value());
-    ASSERT_TRUE(res.value()[0].ok());
+      // delete
+      res = collection->Delete({TestHelper::MakePK(i)});
+      ASSERT_TRUE(res.has_value());
+      ASSERT_TRUE(res.value()[0].ok());
 
-    stats = collection->Stats().value();
-    ASSERT_EQ(stats.doc_count, i);
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, i);
 
-    // insert again
-    new_doc = TestHelper::CreateDoc(i, *schema);
-    new_docs = {new_doc};
-    res = collection->Insert(new_docs);
-    ASSERT_TRUE(res.has_value());
-    ASSERT_TRUE(res.value()[0].ok());
+      // insert again
+      new_doc = TestHelper::CreateDoc(i, *schema);
+      new_docs = {new_doc};
+      res = collection->Insert(new_docs);
+      ASSERT_TRUE(res.has_value());
+      ASSERT_TRUE(res.value()[0].ok());
 
-    // fetch
-    docs = collection->Fetch({TestHelper::MakePK(i)});
-    ASSERT_TRUE(docs.has_value());
-    ASSERT_EQ(docs.value().size(), 1);
-    ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
-    ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
+      // fetch
+      docs = collection->Fetch({TestHelper::MakePK(i)});
+      ASSERT_TRUE(docs.has_value());
+      ASSERT_EQ(docs.value().size(), 1);
+      ASSERT_EQ(docs.value().count(TestHelper::MakePK(i)), 1);
+      ASSERT_EQ(new_doc, *docs.value()[TestHelper::MakePK(i)]);
 
-    stats = collection->Stats().value();
-    ASSERT_EQ(stats.doc_count, i + 1);
-  }
+      stats = collection->Stats().value();
+      ASSERT_EQ(stats.doc_count, i + 1);
+    }
+  };
+  func(true);
+  func(false);
 }
 
 TEST_F(CollectionTest, Feature_CreateIndex_General) {
-  // create empty collection
-  auto schema = TestHelper::CreateNormalSchema();
-  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
-  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
-                                                        options, 0, 0, false);
+  auto func = [&](bool enable_mmap) {
+    FileHelper::RemoveDirectory(col_path);
+    // create empty collection
+    auto schema = TestHelper::CreateNormalSchema();
+    auto options = CollectionOptions{false, enable_mmap, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                          options, 0, 0, false);
 
-  ASSERT_TRUE(collection->Flush().ok());
-  auto stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, 0);
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, 0);
 
-  auto index_params = std::make_shared<HnswIndexParams>(MetricType::IP);
-  auto s = collection->CreateIndex("dense_fp32", index_params);
-  if (!s.ok()) {
-    std::cout << "status: " << s.message() << std::endl;
-    ASSERT_TRUE(false);
-  }
-  auto new_index_params = std::make_shared<HnswIndexParams>(MetricType::COSINE);
-  s = collection->CreateIndex("dense_fp32", index_params);
-  if (!s.ok()) {
-    std::cout << "status: " << s.message() << std::endl;
-    ASSERT_TRUE(false);
-  }
+    auto index_params = std::make_shared<HnswIndexParams>(MetricType::IP);
+    auto s = collection->CreateIndex("dense_fp32", index_params);
+    if (!s.ok()) {
+      std::cout << "status: " << s.message() << std::endl;
+      ASSERT_TRUE(false);
+    }
+    auto new_index_params =
+        std::make_shared<HnswIndexParams>(MetricType::COSINE);
+    s = collection->CreateIndex("dense_fp32", index_params);
+    if (!s.ok()) {
+      std::cout << "status: " << s.message() << std::endl;
+      ASSERT_TRUE(false);
+    }
 
-  s = collection->CreateIndex("dense_fp32_invalid", index_params);
-  ASSERT_FALSE(s.ok());
+    s = collection->CreateIndex("dense_fp32_invalid", index_params);
+    ASSERT_FALSE(s.ok());
+  };
+  func(true);
+  func(false);
 }
 
 TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
@@ -2229,72 +2255,77 @@ TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
 }
 
 TEST_F(CollectionTest, Feature_DropIndex_General) {
-  // create empty collection
-  auto schema = TestHelper::CreateSchemaWithVectorIndex();
-  auto options = CollectionOptions{false, true, 64 * 1024 * 1204};
-  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
-                                                        options, 0, 0, false);
+  auto func = [&](bool enable_mmap) {
+    FileHelper::RemoveDirectory(col_path);
+    // create empty collection
+    auto schema = TestHelper::CreateSchemaWithVectorIndex();
+    auto options = CollectionOptions{false, enable_mmap, 64 * 1024 * 1204};
+    auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                          options, 0, 0, false);
 
-  ASSERT_TRUE(collection->Flush().ok());
-  auto stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, 0);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, 0);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-  ASSERT_EQ(collection->Schema(), *schema);
+    ASSERT_EQ(collection->Schema(), *schema);
 
 
-  auto s = collection->DropIndex("dense_fp32_invalid");
-  ASSERT_FALSE(s.ok());
+    auto s = collection->DropIndex("dense_fp32_invalid");
+    ASSERT_FALSE(s.ok());
 
-  s = collection->DropIndex("dense_fp32");
-  if (!s.ok()) {
-    std::cout << "drop index err: " << s.message() << std::endl;
-  }
-  ASSERT_TRUE(s.ok());
+    s = collection->DropIndex("dense_fp32");
+    if (!s.ok()) {
+      std::cout << "drop index err: " << s.message() << std::endl;
+    }
+    ASSERT_TRUE(s.ok());
 
-  s = collection->DropIndex("dense_fp32");
-  ASSERT_TRUE(s.ok());
+    s = collection->DropIndex("dense_fp32");
+    ASSERT_TRUE(s.ok());
 
-  auto new_schema = std::make_shared<CollectionSchema>(*schema);
-  s = new_schema->drop_index("dense_fp32");
-  ASSERT_TRUE(s.ok());
-  ASSERT_EQ(*new_schema, collection->Schema());
+    auto new_schema = std::make_shared<CollectionSchema>(*schema);
+    s = new_schema->drop_index("dense_fp32");
+    ASSERT_TRUE(s.ok());
+    ASSERT_EQ(*new_schema, collection->Schema());
 
-  stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, 0);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, 0);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-  ASSERT_EQ(*collection->Schema()
-                 .value()
-                 .get_vector_field("dense_fp32")
-                 ->index_params(),
-            DefaultVectorIndexParams);
+    ASSERT_EQ(*collection->Schema()
+                   .value()
+                   .get_vector_field("dense_fp32")
+                   ->index_params(),
+              DefaultVectorIndexParams);
 
-  s = collection->DropIndex("dense_fp32");
-  if (!s.ok()) {
-    std::cout << "drop index err: " << s.message() << std::endl;
-  }
-  ASSERT_TRUE(s.ok());
+    s = collection->DropIndex("dense_fp32");
+    if (!s.ok()) {
+      std::cout << "drop index err: " << s.message() << std::endl;
+    }
+    ASSERT_TRUE(s.ok());
 
-  auto schema1 = collection->Schema().value();
+    auto schema1 = collection->Schema().value();
 
-  collection.reset();
+    collection.reset();
 
-  auto result = Collection::Open(col_path, options);
-  ASSERT_TRUE(result.has_value());
+    auto result = Collection::Open(col_path, options);
+    ASSERT_TRUE(result.has_value());
 
-  collection = std::move(result.value());
-  auto schema2 = collection->Schema().value();
+    collection = std::move(result.value());
+    auto schema2 = collection->Schema().value();
 
-  if (schema1 != schema2) {
-    std::cout << "schema1: " << schema1.to_string_formatted() << std::endl;
-    std::cout << "schema2: " << schema2.to_string_formatted() << std::endl;
-  }
-  ASSERT_EQ(schema1, schema2);
+    if (schema1 != schema2) {
+      std::cout << "schema1: " << schema1.to_string_formatted() << std::endl;
+      std::cout << "schema2: " << schema2.to_string_formatted() << std::endl;
+    }
+    ASSERT_EQ(schema1, schema2);
 
-  stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, 0);
-  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, 0);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+  };
+  func(true);
+  func(false);
 }
 
 TEST_F(CollectionTest, Feature_DropIndex_Vector) {
@@ -2526,14 +2557,14 @@ TEST_F(CollectionTest, Feature_DropIndex_AfterCreate) {
 }
 
 TEST_F(CollectionTest, Feature_Optimize_General) {
-  auto func = [](int concurrency) {
+  auto func = [](bool enable_mmap, int concurrency) {
     FileHelper::RemoveDirectory(col_path);
 
     int doc_count = 1000;
 
     // create empty collection
     auto schema = TestHelper::CreateSchemaWithVectorIndex();
-    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 64 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
 
@@ -2585,12 +2616,15 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     std::cout << "check success 3" << std::endl;
   };
 
-  func(0);
-  func(4);
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, 0);
+    func(enable_mmap, 4);
+  }
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
-  auto run_repeated_optimize_test = [&](IndexParams::Ptr index_params) {
+  auto run_repeated_optimize_test = [&](bool enable_mmap,
+                                        IndexParams::Ptr index_params) {
     ASSERT_NE(index_params, nullptr);
     SCOPED_TRACE(testing::Message()
                  << "index_params=" << index_params->to_string());
@@ -2599,7 +2633,7 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     int doc_count = 1000;
     auto schema =
         TestHelper::CreateSchemaWithVectorIndex(false, "demo", index_params);
-    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 64 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
 
@@ -2740,22 +2774,31 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   };
 
 
-  run_repeated_optimize_test(std::make_shared<FlatIndexParams>(
-      MetricType::IP, QuantizeType::UNDEFINED));
-  run_repeated_optimize_test(
-      std::make_shared<FlatIndexParams>(MetricType::IP, QuantizeType::FP16));
-  run_repeated_optimize_test(std::make_shared<HnswIndexParams>(
-      MetricType::IP, 16, 200, QuantizeType::UNDEFINED));
-  run_repeated_optimize_test(std::make_shared<HnswIndexParams>(
-      MetricType::IP, 16, 200, QuantizeType::FP16));
-  run_repeated_optimize_test(std::make_shared<IVFIndexParams>(
-      MetricType::IP, 10, 4, false, QuantizeType::UNDEFINED));
-  run_repeated_optimize_test(std::make_shared<IVFIndexParams>(
-      MetricType::IP, 10, 4, false, QuantizeType::FP16));
+  for (bool enable_mmap : {true, false}) {
+    run_repeated_optimize_test(enable_mmap,
+                               std::make_shared<FlatIndexParams>(
+                                   MetricType::IP, QuantizeType::UNDEFINED));
+    run_repeated_optimize_test(
+        enable_mmap,
+        std::make_shared<FlatIndexParams>(MetricType::IP, QuantizeType::FP16));
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<HnswIndexParams>(
+                         MetricType::IP, 16, 200, QuantizeType::UNDEFINED));
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200,
+                                                       QuantizeType::FP16));
+    run_repeated_optimize_test(enable_mmap, std::make_shared<IVFIndexParams>(
+                                                MetricType::IP, 10, 4, false,
+                                                QuantizeType::UNDEFINED));
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<IVFIndexParams>(
+                         MetricType::IP, 10, 4, false, QuantizeType::FP16));
 #if RABITQ_SUPPORTED
-  run_repeated_optimize_test(std::make_shared<HnswRabitqIndexParams>(
-      MetricType::IP, 7, 256, 16, 200, 0));
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7,
+                                                             256, 16, 200, 0));
 #endif
+  }
 }
 
 TEST_F(CollectionTest, Feature_Optimize_MetricType) {
@@ -3428,13 +3471,13 @@ TEST_F(CollectionTest, Feature_Query_Validate) {
 }
 
 TEST_F(CollectionTest, Feature_Query_General) {
-  auto func = [&](std::string field_name) {
+  auto func = [&](bool enable_mmap, std::string field_name) {
     FileHelper::RemoveDirectory(col_path);
 
     int doc_count = 1000;
     // create with normal schema
     auto schema = TestHelper::CreateNormalSchema();
-    auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+    auto options = CollectionOptions{false, enable_mmap, 100 * 1024 * 1024};
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count);
 
@@ -3496,8 +3539,10 @@ TEST_F(CollectionTest, Feature_Query_General) {
     }
   };
 
-  func("dense_fp32");
-  func("sparse_fp32");
+  for (bool enable_mmap : {true, false}) {
+    func(enable_mmap, "dense_fp32");
+    func(enable_mmap, "sparse_fp32");
+  }
 }
 
 TEST_F(CollectionTest, Feature_Query_Empty) {
@@ -4114,69 +4159,96 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 TEST_F(CollectionTest, Feature_GroupByQuery) {}
 
 TEST_F(CollectionTest, Feature_AddColumn_General) {
-  // create collection
-  int doc_count = 1000;
-  auto schema = TestHelper::CreateNormalSchema();
-  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
-  auto collection = TestHelper::CreateCollectionWithDoc(
-      col_path, *schema, options, 0, doc_count, false);
+  auto func = [&](bool enable_mmap) {
+    FileHelper::RemoveDirectory(col_path);
+    // create collection
+    int doc_count = 1000;
+    auto schema = TestHelper::CreateNormalSchema();
+    auto options = CollectionOptions{false, enable_mmap, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(
+        col_path, *schema, options, 0, doc_count, false);
 
-  ASSERT_TRUE(collection->Flush().ok());
-  auto stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, doc_count);
-  auto field_schema =
-      std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
-  auto s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
-  if (!s.ok()) {
-    std::cout << "status: " << s.message() << std::endl;
-    ASSERT_TRUE(false);
-  }
-  auto new_schema = collection->Schema().value();
-  ASSERT_TRUE(new_schema.has_field("add_int32"));
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    auto field_schema =
+        std::make_shared<FieldSchema>("add_int32", DataType::INT32, false);
+    auto s = collection->AddColumn(field_schema, "int32", AddColumnOptions());
+    if (!s.ok()) {
+      std::cout << "status: " << s.message() << std::endl;
+      ASSERT_TRUE(false);
+    }
+    auto new_schema = collection->Schema().value();
+    ASSERT_TRUE(new_schema.has_field("add_int32"));
 
-  stats = collection->Stats().value();
-  ASSERT_EQ(stats.doc_count, doc_count);
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
 
-  auto check_doc = [&](int doc_count) {
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, new_schema);
-      auto result = collection->Fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      ASSERT_NE(doc, nullptr);
-      if (*doc != expect_doc) {
-        std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-        std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                  << std::endl;
+    auto check_doc = [&](int doc_count) {
+      for (int i = 0; i < doc_count; i++) {
+        auto expect_doc = TestHelper::CreateDoc(i, new_schema);
+        auto result = collection->Fetch({expect_doc.pk()});
+        ASSERT_TRUE(result.has_value());
+        ASSERT_EQ(result.value().size(), 1);
+        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+        auto doc = result.value()[expect_doc.pk()];
+        ASSERT_NE(doc, nullptr);
+        if (*doc != expect_doc) {
+          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
+          std::cout << "expect_doc:" << expect_doc.to_detail_string()
+                    << std::endl;
+        }
+        ASSERT_EQ(*doc, expect_doc);
       }
-      ASSERT_EQ(*doc, expect_doc);
+    };
+
+    check_doc(doc_count);
+
+    // validate query result
+    for (int i = 1; i < 2; i++) {
+      SearchQuery query;
+      query.topk_ = 10;
+      query.include_vector_ = true;
+
+      auto result = collection->Query(query);
+      if (!result.has_value()) {
+        std::cout << "err: " << result.error().message() << std::endl;
+      }
+      ASSERT_TRUE(result.has_value());
+      ASSERT_EQ(result.value().size(), std::min(query.topk_, doc_count));
+
+      auto fields_name = new_schema.all_field_names();
+      for (int j = 0; j < std::min(query.topk_, doc_count); j++) {
+        auto result_doc = result.value()[j];
+        auto doc_fields_names = result_doc->field_names();
+        ASSERT_TRUE(vectors_equal_when_sorted(fields_name, doc_fields_names));
+      }
+    }
+    check_doc(doc_count);
+
+    // validate query result
+    for (int i = 1; i < 2; i++) {
+      SearchQuery query;
+      query.topk_ = 10;
+      query.include_vector_ = true;
+
+      auto result = collection->Query(query);
+      if (!result.has_value()) {
+        std::cout << "err: " << result.error().message() << std::endl;
+      }
+      ASSERT_TRUE(result.has_value());
+      ASSERT_EQ(result.value().size(), std::min(query.topk_, doc_count));
+
+      auto fields_name = new_schema.all_field_names();
+      for (int j = 0; j < std::min(query.topk_, doc_count); j++) {
+        auto result_doc = result.value()[j];
+        auto doc_fields_names = result_doc->field_names();
+        ASSERT_TRUE(vectors_equal_when_sorted(fields_name, doc_fields_names));
+      }
     }
   };
-
-  check_doc(doc_count);
-
-  // validate query result
-  for (int i = 1; i < 2; i++) {
-    SearchQuery query;
-    query.topk_ = 10;
-    query.include_vector_ = true;
-
-    auto result = collection->Query(query);
-    if (!result.has_value()) {
-      std::cout << "err: " << result.error().message() << std::endl;
-    }
-    ASSERT_TRUE(result.has_value());
-    ASSERT_EQ(result.value().size(), std::min(query.topk_, doc_count));
-
-    auto fields_name = new_schema.all_field_names();
-    for (int j = 0; j < std::min(query.topk_, doc_count); j++) {
-      auto result_doc = result.value()[j];
-      auto doc_fields_names = result_doc->field_names();
-      ASSERT_TRUE(vectors_equal_when_sorted(fields_name, doc_fields_names));
-    }
-  }
+  func(true);
+  func(false);
 }
 
 TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {

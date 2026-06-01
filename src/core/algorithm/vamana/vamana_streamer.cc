@@ -26,7 +26,7 @@ namespace core {
 VamanaStreamer::VamanaStreamer() = default;
 
 VamanaStreamer::~VamanaStreamer() {
-  if (state_ == STATE_INITED) {
+  if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
 }
