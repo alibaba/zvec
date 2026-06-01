@@ -38,7 +38,6 @@ class CombinedVectorColumnIndexer {
       const vector_column_params::VectorData &vector_data,
       const vector_column_params::QueryParams &query_params);
 
-  // segment_doc_id is segment-local, not block-local.
   virtual Result<vector_column_params::VectorDataBuffer> Fetch(
       uint32_t segment_doc_id) const;
 
