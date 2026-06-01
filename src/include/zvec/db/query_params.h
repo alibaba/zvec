@@ -14,6 +14,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/type.h>
 
@@ -195,6 +196,27 @@ class VamanaQueryParams : public QueryParams {
 
  private:
   int ef_search_;
+};
+
+class FtsQueryParams : public QueryParams {
+ public:
+  using Ptr = std::shared_ptr<FtsQueryParams>;
+
+  FtsQueryParams() : QueryParams(IndexType::FTS) {}
+  ~FtsQueryParams() override = default;
+
+  const std::string &default_operator() const {
+    return default_operator_;
+  }
+
+  void set_default_operator(const std::string &default_operator) {
+    default_operator_ = default_operator;
+  }
+
+ private:
+  // Default boolean operator for adjacent bare terms.
+  // Supported values (case-insensitive): "OR" (default), "AND".
+  std::string default_operator_;
 };
 
 }  // namespace zvec

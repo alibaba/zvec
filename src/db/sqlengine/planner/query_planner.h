@@ -22,6 +22,7 @@
 #include <zvec/db/status.h>
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/analyzer/query_info.h"
+#include "db/sqlengine/planner/doc_filter.h"
 #include "plan_info.h"
 
 namespace zvec::sqlengine {
@@ -59,6 +60,15 @@ class QueryPlanner {
   Result<PlanInfo::Ptr> forward_scan(
       Segment::Ptr seg, QueryInfo::Ptr query_info,
       std::unique_ptr<arrow::compute::Expression> forward_filter);
+  Result<PlanInfo::Ptr> fts_scan(
+      Segment::Ptr seg, QueryInfo::Ptr query_info,
+      std::unique_ptr<arrow::compute::Expression> forward_filter,
+      bool single_stage_search);
+
+  static DocFilter::Ptr build_doc_filter(
+      const Segment::Ptr &seg, const QueryInfo::Ptr &query_info,
+      std::unique_ptr<arrow::compute::Expression> &forward_filter,
+      bool single_stage_search);
 
   static int get_batch_size(const QueryInfo &info, bool has_later_filter);
 

@@ -629,6 +629,27 @@ float zvec_config_data_get_brute_force_by_keys_ratio(
   return cpp_config->brute_force_by_keys_ratio;
 }
 
+zvec_error_code_t zvec_config_data_set_fts_brute_force_by_keys_ratio(
+    zvec_config_data_t *config, float ratio) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::ConfigData *>(config);
+  cpp_config->fts_brute_force_by_keys_ratio = ratio;
+  return ZVEC_OK;
+}
+
+float zvec_config_data_get_fts_brute_force_by_keys_ratio(
+    const zvec_config_data_t *config) {
+  if (!config) {
+    return 0.0f;
+  }
+  auto *cpp_config =
+      reinterpret_cast<const zvec::GlobalConfig::ConfigData *>(config);
+  return cpp_config->fts_brute_force_by_keys_ratio;
+}
+
 zvec_error_code_t zvec_config_data_set_optimize_thread_count(
     zvec_config_data_t *config, uint32_t thread_count) {
   if (!config) {
@@ -648,6 +669,27 @@ uint32_t zvec_config_data_get_optimize_thread_count(
   auto *cpp_config =
       reinterpret_cast<const zvec::GlobalConfig::ConfigData *>(config);
   return cpp_config->optimize_thread_count;
+}
+
+zvec_error_code_t zvec_config_data_set_jieba_dict_dir(
+    zvec_config_data_t *config, const char *dir) {
+  if (!config) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::ConfigData *>(config);
+  cpp_config->jieba_dict_dir = (dir != nullptr) ? std::string(dir) : "";
+  return ZVEC_OK;
+}
+
+const char *zvec_config_data_get_jieba_dict_dir(
+    const zvec_config_data_t *config) {
+  if (!config) {
+    return "";
+  }
+  auto *cpp_config =
+      reinterpret_cast<const zvec::GlobalConfig::ConfigData *>(config);
+  return cpp_config->jieba_dict_dir.c_str();
 }
 
 
@@ -703,6 +745,18 @@ zvec_error_code_t zvec_shutdown(void) {
 
 bool zvec_is_initialized(void) {
   return g_initialized.load();
+}
+
+void zvec_set_default_jieba_dict_dir(const char *dir) {
+  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(
+      (dir != nullptr) ? std::string(dir) : std::string());
+}
+
+const char *zvec_get_default_jieba_dict_dir(void) {
+  // Thread-local buffer keeps c_str() valid until the next call on this thread.
+  thread_local std::string cached;
+  cached = zvec::GlobalConfig::Instance().jieba_dict_dir();
+  return cached.c_str();
 }
 
 // =============================================================================
@@ -880,6 +934,16 @@ static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
       return invert_params
                  ? std::make_shared<zvec::InvertIndexParams>(*invert_params)
                  : nullptr;
+    }
+    case zvec::IndexType::FTS: {
+      auto *fts_params =
+          dynamic_cast<const zvec::FtsIndexParams *>(cpp_params);
+      // FtsIndexParams is not copy-constructible; rebuild from accessors.
+      return fts_params ? std::make_shared<zvec::FtsIndexParams>(
+                              fts_params->tokenizer_name(),
+                              fts_params->filters(),
+                              fts_params->extra_params())
+                        : nullptr;
     }
     default:
       return nullptr;
@@ -1302,6 +1366,11 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
               new zvec::InvertIndexParams(true,    // enable_range_optimization
                                           false);  // enable_extended_wildcard
           break;
+        case ZVEC_INDEX_TYPE_FTS:
+          // Defaults align with FtsIndexParams default ctor:
+          //   tokenizer="standard", filters=["lowercase"], extra="".
+          cpp_params = new zvec::FtsIndexParams();
+          break;
         case ZVEC_INDEX_TYPE_HNSW:
           cpp_params =
               new zvec::HnswIndexParams(
@@ -1634,6 +1703,77 @@ zvec_error_code_t zvec_index_params_get_invert_params(const zvec_index_params_t 
     *out_enable_range_opt = invert_params->enable_range_optimization();
   if (out_enable_wildcard)
     *out_enable_wildcard = invert_params->enable_extended_wildcard();
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_set_fts_params(
+    zvec_index_params_t *params, const char *tokenizer_name,
+    const zvec_string_array_t *filters, const char *extra_params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not FTS index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+  auto *fts_params = dynamic_cast<zvec::FtsIndexParams *>(cpp_params);
+  if (!fts_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not FTS index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (tokenizer_name) {
+    fts_params->set_tokenizer_name(std::string(tokenizer_name));
+  }
+  if (filters) {
+    std::vector<std::string> filter_vec;
+    filter_vec.reserve(filters->count);
+    for (size_t i = 0; i < filters->count; ++i) {
+      const auto &item = filters->strings[i];
+      filter_vec.emplace_back(item.data ? item.data : "",
+                              item.data ? item.length : 0);
+    }
+    fts_params->set_filters(std::move(filter_vec));
+  }
+  if (extra_params) {
+    fts_params->set_extra_params(std::string(extra_params));
+  }
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_fts_params(
+    const zvec_index_params_t *params, const char **out_tokenizer_name,
+    zvec_string_array_t **out_filters, const char **out_extra_params) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not FTS index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+  auto *fts_params = dynamic_cast<const zvec::FtsIndexParams *>(cpp_params);
+  if (!fts_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Invalid params or not FTS index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (out_tokenizer_name) {
+    *out_tokenizer_name = fts_params->tokenizer_name().c_str();
+  }
+  if (out_extra_params) {
+    *out_extra_params = fts_params->extra_params().c_str();
+  }
+  if (out_filters) {
+    const auto &filters = fts_params->filters();
+    zvec_string_array_t *arr = zvec_string_array_create(filters.size());
+    if (!arr) {
+      SET_LAST_ERROR(ZVEC_ERROR_RESOURCE_EXHAUSTED,
+                     "Failed to allocate filters string array");
+      return ZVEC_ERROR_RESOURCE_EXHAUSTED;
+    }
+    for (size_t i = 0; i < filters.size(); ++i) {
+      zvec_string_array_add(arr, i, filters[i].c_str());
+    }
+    *out_filters = arr;
+  }
   return ZVEC_OK;
 }
 
@@ -2484,6 +2624,8 @@ const char *zvec_index_type_to_string(zvec_index_type_t index_type) {
       return "FLAT";
     case ZVEC_INDEX_TYPE_INVERT:
       return "INVERT";
+    case ZVEC_INDEX_TYPE_FTS:
+      return "FTS";
     default:
       return "UNKNOWN_INDEX_TYPE";
   }
@@ -4840,6 +4982,47 @@ bool zvec_query_params_flat_get_is_using_refiner(
 }
 
 // =============================================================================
+// FtsQueryParams implementation - wrapper around zvec::FtsQueryParams
+// =============================================================================
+
+zvec_fts_query_params_t *zvec_query_params_fts_create(
+    const char *default_operator) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create FtsQueryParams",
+      auto *params = new zvec::FtsQueryParams();
+      if (default_operator && *default_operator) {
+        params->set_default_operator(std::string(default_operator));
+      } return reinterpret_cast<zvec_fts_query_params_t *>(params);)
+  return nullptr;
+}
+
+void zvec_query_params_fts_destroy(zvec_fts_query_params_t *params) {
+  if (params) {
+    delete reinterpret_cast<zvec::FtsQueryParams *>(params);
+  }
+}
+
+zvec_error_code_t zvec_query_params_fts_set_default_operator(
+    zvec_fts_query_params_t *params, const char *default_operator) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "FTS query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::FtsQueryParams *>(params);
+  ptr->set_default_operator(std::string(default_operator ? default_operator
+                                                         : ""));
+  return ZVEC_OK;
+}
+
+const char *zvec_query_params_fts_get_default_operator(
+    const zvec_fts_query_params_t *params) {
+  if (!params) return nullptr;
+  auto *ptr = reinterpret_cast<const zvec::FtsQueryParams *>(params);
+  return ptr->default_operator().c_str();
+}
+
+// =============================================================================
 // Query implementation - owns zvec::SearchQuery via raw pointer
 // (external C symbol naming kept for ABI compatibility)
 // =============================================================================
@@ -5080,6 +5263,97 @@ zvec_error_code_t zvec_vector_query_set_flat_params(
   query_ptr->target_.query_params_.reset(params_ptr);
 
   return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_vector_query_set_fts_params(
+    zvec_vector_query_t *query, zvec_fts_query_params_t *fts_params) {
+  if (!query || !fts_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Query or FTS params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  auto *params_ptr = reinterpret_cast<zvec::FtsQueryParams *>(fts_params);
+
+  query_ptr->target_.query_params_.reset(params_ptr);
+
+  return ZVEC_OK;
+}
+
+// =============================================================================
+// Fts payload implementation - wrapper around zvec::FtsClause (value type)
+// =============================================================================
+
+zvec_fts_t *zvec_fts_create(void) {
+  ZVEC_TRY_RETURN_NULL("Failed to create Fts payload",
+                       auto *fts = new zvec::FtsClause();
+                       return reinterpret_cast<zvec_fts_t *>(fts);)
+  return nullptr;
+}
+
+void zvec_fts_destroy(zvec_fts_t *fts) {
+  if (fts) {
+    delete reinterpret_cast<zvec::FtsClause *>(fts);
+  }
+}
+
+zvec_error_code_t zvec_fts_set_query_string(zvec_fts_t *fts,
+                                            const char *query_string) {
+  if (!fts) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Fts pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::FtsClause *>(fts);
+  ptr->query_string_ = query_string ? query_string : "";
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_fts_set_match_string(zvec_fts_t *fts,
+                                            const char *match_string) {
+  if (!fts) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Fts pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::FtsClause *>(fts);
+  ptr->match_string_ = match_string ? match_string : "";
+  return ZVEC_OK;
+}
+
+const char *zvec_fts_get_query_string(const zvec_fts_t *fts) {
+  if (!fts) return nullptr;
+  auto *ptr = reinterpret_cast<const zvec::FtsClause *>(fts);
+  return ptr->query_string_.c_str();
+}
+
+const char *zvec_fts_get_match_string(const zvec_fts_t *fts) {
+  if (!fts) return nullptr;
+  auto *ptr = reinterpret_cast<const zvec::FtsClause *>(fts);
+  return ptr->match_string_.c_str();
+}
+
+zvec_error_code_t zvec_vector_query_set_fts(zvec_vector_query_t *query,
+                                            const zvec_fts_t *fts) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Vector query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *query_ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  if (!fts) {
+    // Clearing FTS resets the target to an empty vector clause.
+    query_ptr->target_.clause_ = zvec::VectorClause{};
+  } else {
+    query_ptr->target_.clause_ = *reinterpret_cast<const zvec::FtsClause *>(fts);
+  }
+  return ZVEC_OK;
+}
+
+const zvec_fts_t *zvec_vector_query_get_fts(const zvec_vector_query_t *query) {
+  if (!query) return nullptr;
+  auto *query_ptr = reinterpret_cast<const zvec::SearchQuery *>(query);
+  const auto *fc = std::get_if<zvec::FtsClause>(&query_ptr->target_.clause_);
+  if (!fc) return nullptr;
+  return reinterpret_cast<const zvec_fts_t *>(fc);
 }
 
 // =============================================================================

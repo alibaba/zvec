@@ -53,6 +53,14 @@ struct QueryTarget {
     return std::get_if<VectorClause>(&clause_);
   }
 
+  // nullptr when clause_ holds a non-FtsClause alternative.
+  FtsClause *get_fts_clause() {
+    return std::get_if<FtsClause>(&clause_);
+  }
+  const FtsClause *get_fts_clause() const {
+    return std::get_if<FtsClause>(&clause_);
+  }
+
  private:
   // Resets clause_ to an empty VectorClause unless it already holds one.
   VectorClause &ensure_vector_clause() {

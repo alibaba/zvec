@@ -139,6 +139,16 @@ class FileHelper {
         ailego::StringHelper::Concat("scalar.index.", block_id, ".rocksdb"));
   }
 
+  // e.g.: **/seg1/fts.rocksdb
+  static const std::string MakeFtsIndexPath(const std::string &path,
+                                            uint32_t seg_id) {
+    return ailego::FileHelper::PathJoin(path, seg_id, "fts.rocksdb");
+  }
+
+  static const std::string MakeFtsIndexPath(const std::string &seg_path) {
+    return ailego::FileHelper::PathJoin(seg_path, "fts.rocksdb");
+  }
+
   static const std::string MakeVectorIndexPath(const std::string &path,
                                                const std::string &column,
                                                uint32_t seg_id,

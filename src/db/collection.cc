@@ -41,6 +41,7 @@
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/index_filter.h"
+#include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/segment.h"
 #include "db/index/segment/segment_helper.h"
@@ -56,6 +57,7 @@ enum class WriteMode : uint8_t {
   UPDATE,
   UPSERT,
 };
+
 
 Collection::~Collection() = default;
 
@@ -453,6 +455,10 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
+  if (index_params == nullptr) {
+    return Status::InvalidArgument("CreateIndex: index_params is null");
+  }
+
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
   auto s = new_schema->add_index(column_name, index_params);
   CHECK_RETURN_STATUS(s);
@@ -525,10 +531,14 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   if (is_vector_field) {
     tasks = build_create_vector_index_task(persist_segments, column_name,
                                            index_params, options.concurrency_);
-
-  } else {
+  } else if (index_params->type() == IndexType::INVERT) {
     tasks = build_create_scalar_index_task(persist_segments, column_name,
                                            index_params, options.concurrency_);
+  } else {
+    return Status::NotSupported(
+        "CreateIndex: index type [",
+        IndexTypeCodeBook::AsString(index_params->type()),
+        "] is not supported");
   }
 
   if (tasks.empty()) {
@@ -660,8 +670,6 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
 
   Version new_version = version_manager_->get_current_version();
 
-  bool is_vector_field = field->is_vector_field();
-
   if (writing_segment_->doc_count() > 0) {
     s = writing_segment_->dump();
     CHECK_RETURN_STATUS(s);
@@ -709,11 +717,18 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
 
   auto persist_segments = get_all_persist_segments();
 
+  bool is_vector_field = field->is_vector_field();
+
   std::vector<SegmentTask::Ptr> tasks;
   if (is_vector_field) {
     tasks = build_drop_vector_index_task(persist_segments, column_name);
-  } else {
+  } else if (field->index_params()->type() == IndexType::INVERT) {
     tasks = build_drop_scalar_index_task(persist_segments, column_name);
+  } else {
+    return Status::NotSupported(
+        "DropIndex: index type [",
+        IndexTypeCodeBook::AsString(field->index_params()->type()),
+        "] on column[", column_name, "] is not supported");
   }
 
   if (tasks.empty()) {
@@ -1590,8 +1605,13 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
   SearchQuery sanitized = query;
-  auto s = sanitized.validate_and_sanitize(
-      schema_->get_vector_field(sanitized.target_.field_name_));
+  // When field_name_ is set, use get_field to retrieve the schema uniformly.
+  // validate_and_sanitize checks that the field type matches the query type
+  // (FTS query requires an FTS field, vector query requires a vector field).
+  const auto &field_name = sanitized.target_.field_name_;
+  const FieldSchema *field_schema =
+      field_name.empty() ? nullptr : schema_->get_field(field_name);
+  auto s = sanitized.validate_and_sanitize(field_schema);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();

@@ -400,6 +400,11 @@ Result<QueryInfo::Ptr> QueryAnalyzer::create_queryinfo_from_sqlinfo(
   // set group by
   query_info->set_group_by(select_info->group_by());
 
+  // set fts query
+  if (select_info->has_fts_query()) {
+    query_info->set_fts_cond_info(select_info->fts_cond_info());
+  }
+
   return query_info;
 }
 

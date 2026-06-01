@@ -177,6 +177,24 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       data.brute_force_by_keys_ratio = static_cast<float>(v);
     }
 
+    // set fts_brute_force_by_keys_ratio
+    if (has_key(config_dict, "fts_brute_force_by_keys_ratio")) {
+      auto v =
+          get_if<double>(config_dict, "fts_brute_force_by_keys_ratio").value();
+      if (v < 0.0 || v > 1.0) {
+        throw py::value_error(
+            "fts_brute_force_by_keys_ratio must be in [0.0, 1.0]");
+      }
+      data.fts_brute_force_by_keys_ratio = static_cast<float>(v);
+    }
+
+    // jieba_dict_dir: optional override of the SDK-registered default.
+    // Empty value is a no-op (Initialize preserves the SDK default).
+    if (has_key(config_dict, "jieba_dict_dir")) {
+      data.jieba_dict_dir =
+          get_if<std::string>(config_dict, "jieba_dict_dir").value();
+    }
+
     // initialize (contains validate)
     Status status = GlobalConfig::Instance().Initialize(data);
     if (!status.ok()) {
@@ -184,6 +202,21 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
     }
     return py::none();
   });
+
+  // Process-wide setter, independent of Initialize(); called by __init__.py
+  // on import to register the wheel-bundled dict path.
+  m.def(
+      "set_default_jieba_dict_dir",
+      [](const std::string &dir) {
+        GlobalConfig::Instance().set_default_jieba_dict_dir(dir);
+      },
+      pybind11::arg("dir"),
+      "Register the process-wide default jieba dict directory.");
+
+  m.def(
+      "get_default_jieba_dict_dir",
+      []() -> std::string { return GlobalConfig::Instance().jieba_dict_dir(); },
+      "Read the currently registered default jieba dict directory.");
 }
 
 

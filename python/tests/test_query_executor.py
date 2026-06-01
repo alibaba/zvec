@@ -259,7 +259,9 @@ class TestNoVectorQueryExecutor:
     def test_do_validate_with_queries(self):
         schema = MockCollectionSchema()
         executor = NoVectorQueryExecutor(schema)
-        ctx = QueryContext(topk=10, queries=[Query(field_name="test")])
+        ctx = QueryContext(
+            topk=10, queries=[Query(field_name="test", vector=[0.1, 0.2, 0.3])]
+        )
 
         with pytest.raises(
             ValueError, match="Collection does not support query with vector or id"
