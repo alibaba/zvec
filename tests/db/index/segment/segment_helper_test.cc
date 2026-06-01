@@ -129,6 +129,51 @@ class SegmentHelperTest : public testing::Test {
     return {executed, std::move(seg_ret.value())};
   }
 
+  // Mimic the normal insertion lifecycle: small segments accumulate vectors
+  // in flat storage (no vector index built yet), then compaction merges them
+  // into a single segment whose vector column is finally built per schema.
+  void RunFlatSegmentsMergeIntoVectorIndexTest(
+      const IndexParams::Ptr &vector_index_params,
+      IndexType expected_output_type) {
+    auto schema = test::TestHelper::CreateSchemaWithVectorIndex(
+        false, col_name, vector_index_params);
+    auto version_manager = CreateVersionManager(*schema);
+    auto write_options = WriteOptions();
+
+    auto indexer_type = [](const VectorColumnIndexer::Ptr &indexer) {
+      auto params = std::dynamic_pointer_cast<VectorIndexParams>(
+          indexer->field_schema().index_params());
+      return params ? params->type() : IndexType::FLAT;
+    };
+
+    constexpr int kSegCount = 3;
+    constexpr int kDocsPerSeg = 300;
+    std::vector<Segment::Ptr> segs;
+    for (int i = 0; i < kSegCount; i++) {
+      auto seg = test::TestHelper::CreateSegmentWithDoc(
+          col_path, *schema, i, i * kDocsPerSeg, id_map, delete_store,
+          version_manager, write_options, i * kDocsPerSeg, kDocsPerSeg);
+      ASSERT_NE(seg, nullptr);
+      ASSERT_TRUE(seg->flush().ok());
+      auto in_indexers = seg->get_vector_indexer("dense_fp32");
+      ASSERT_FALSE(in_indexers.empty());
+      ASSERT_EQ(indexer_type(in_indexers.front()), IndexType::FLAT);
+      segs.push_back(seg);
+    }
+
+    auto [compact_task, output_segment] =
+        RunCompactAndOpen(schema, segs, kSegCount, nullptr, version_manager);
+
+    ASSERT_NE(output_segment, nullptr);
+    ASSERT_EQ(output_segment->doc_count(), kSegCount * kDocsPerSeg);
+    ASSERT_NE(output_segment->Fetch(0), nullptr);
+    ASSERT_NE(output_segment->Fetch(kSegCount * kDocsPerSeg - 1), nullptr);
+
+    auto out_indexers = output_segment->get_vector_indexer("dense_fp32");
+    ASSERT_FALSE(out_indexers.empty());
+    EXPECT_EQ(indexer_type(out_indexers.front()), expected_output_type);
+  }
+
   std::string col_name = "test_segment_helper";
   std::string col_path = "./test_collection";
   IDMap::Ptr id_map;
@@ -518,6 +563,28 @@ TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegressio
   ASSERT_GT(output_segment->get_vector_indexer("dense_fp32").size(), 0u);
   ASSERT_GT(output_segment->get_quant_vector_indexer("dense_fp32").size(), 0u);
 }
+
+TEST_F(SegmentHelperTest, CompactTask_FlatSegmentsMergeIntoHnsw) {
+  RunFlatSegmentsMergeIntoVectorIndexTest(
+      std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200),
+      IndexType::HNSW);
+}
+
+TEST_F(SegmentHelperTest, CompactTask_FlatSegmentsMergeIntoIvf) {
+  RunFlatSegmentsMergeIntoVectorIndexTest(
+      std::make_shared<IVFIndexParams>(MetricType::IP, 10, 4, false,
+                                       QuantizeType::UNDEFINED),
+      IndexType::IVF);
+}
+
+#if RABITQ_SUPPORTED
+TEST_F(SegmentHelperTest, CompactTask_FlatSegmentsMergeIntoHnswRabitq) {
+  RunFlatSegmentsMergeIntoVectorIndexTest(
+      std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7, 256, 16, 200,
+                                              0),
+      IndexType::HNSW_RABITQ);
+}
+#endif
 
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
