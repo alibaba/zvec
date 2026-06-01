@@ -65,16 +65,15 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
 }
 
 arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
+  using ExecBatchFuture = arrow::Future<std::optional<cp::ExecBatch>>;
   auto state_ptr = std::make_shared<State>(shared_from_this());
-  return [state_ptr = std::move(state_ptr)]() mutable
-             -> arrow::Future<std::optional<cp::ExecBatch>> {
+  return [state_ptr = std::move(state_ptr)]() mutable -> ExecBatchFuture {
     auto &state = *state_ptr;
     if (!state.iter_) {
       auto vector_ret = state.self_->prepare();
       if (!vector_ret) {
-        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("prepare vector failed:",
-                                          vector_ret.error().c_str()));
+        return ExecBatchFuture::MakeFinished(arrow::Status::ExecutionError(
+            "prepare vector failed:", vector_ret.error().c_str()));
       }
       state.vector_result_ = vector_ret.value();
       state.iter_ = state.vector_result_->create_iterator();
@@ -83,19 +82,16 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
     // check if there is any data
     if (!state.iter_->valid()) {
       // return empty optional to indicate end
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          std::nullopt);
+      return ExecBatchFuture::MakeFinished(std::nullopt);
     }
 
     auto record_batch = state.collect_batch();
     if (!record_batch.ok()) {
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          arrow::Status::ExecutionError("collect batch failed:",
-                                        record_batch.status().ToString()));
+      return ExecBatchFuture::MakeFinished(arrow::Status::ExecutionError(
+          "collect batch failed:", record_batch.status().ToString()));
     }
     cp::ExecBatch exec_batch(*record_batch.ValueOrDie());
-    return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-        std::move(exec_batch));
+    return ExecBatchFuture::MakeFinished(std::move(exec_batch));
   };
 }
 
