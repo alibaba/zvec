@@ -646,30 +646,27 @@ Status SegmentHelper::ReduceVectorIndex(
       return (seg.get()->*fetch)(field->name());
     };
 
+    // Only the first segment's index file is reused as the merge base, so
+    // tail segments just need to be mergeable — Merge() already handles that.
     auto can_reuse_first_indexer = [&](FetchIndexersFn fetch,
                                        const FieldSchema &output_field) {
       if (filter != nullptr || input_segments.empty()) {
         return false;
       }
-      auto output_index_type = output_field.index_type();
+      auto first_indexers = fetch_from(input_segments.front(), fetch);
+      if (first_indexers.size() != 1) {
+        return false;
+      }
+      const auto &first_field = first_indexers.front()->field_schema();
+      if (first_field.index_type() != output_field.index_type()) {
+        return false;
+      }
       auto output_params = std::dynamic_pointer_cast<VectorIndexParams>(
           output_field.index_params());
       auto output_quantize_type =
           output_params ? output_params->quantize_type() : QuantizeType::UNDEFINED;
-      for (const auto &input_segment : input_segments) {
-        auto indexers = fetch_from(input_segment, fetch);
-        if (indexers.size() != 1) {
-          return false;
-        }
-        const auto &input_field = indexers.front()->field_schema();
-        if (input_field.index_type() != output_index_type) {
-          return false;
-        }
-        if (indexer_quantize_type(indexers.front()) != output_quantize_type) {
-          return false;
-        }
-      }
-      return true;
+      return indexer_quantize_type(first_indexers.front()) ==
+             output_quantize_type;
     };
 
     auto collect_merge_indexers = [&](FetchIndexersFn fetch,
