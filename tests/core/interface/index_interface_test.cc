@@ -1699,6 +1699,16 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
            .build());
 
   // HNSWRabitq with custom total_bits
+  // Reformer must be re-created with matching total_bits to keep ex_bits
+  // consistent between reformer and entity.
+  RabitqConverter converter2;
+  Params converter2_params;
+  converter2_params.set(PARAM_RABITQ_TOTAL_BITS, 2u);
+  converter2.init(*index_meta_ptr_, converter2_params);
+  ASSERT_EQ(converter2.train(holder), 0);
+  std::shared_ptr<IndexReformer> index_reformer2;
+  ASSERT_EQ(converter2.to_reformer(&index_reformer2), 0);
+
   func(HNSWRabitqIndexParamBuilder()
            .WithMetricType(MetricType::kL2sq)
            .WithDataType(DataType::DT_FP32)
@@ -1707,7 +1717,7 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
            .WithEFConstruction(100)
            .WithTotalBits(2)
            .WithProvider(holder)
-           .WithReformer(index_reformer)
+           .WithReformer(index_reformer2)
            .Build(),
        HNSWRabitqQueryParamBuilder()
            .with_topk(10)
@@ -1731,53 +1741,55 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
   // build_then_search builds an index from scratch (with use_contiguous_memory
   // possibly enabled), closes it, then reopens with the same params and runs a
   // search for each inserted vector, asserting top-1 is itself.
-  auto build_then_search = [&](const BaseIndexParam::Pointer &param,
-                               const BaseIndexQueryParam::Pointer &query_param) {
-    zvec::test_util::RemoveTestFiles(index_name);
+  auto build_then_search =
+      [&](const BaseIndexParam::Pointer &param,
+          const BaseIndexQueryParam::Pointer &query_param) {
+        zvec::test_util::RemoveTestFiles(index_name);
 
-    // Phase 1: build & persist.
-    {
-      auto index = IndexFactory::CreateAndInitIndex(*param);
-      ASSERT_NE(nullptr, index);
-      ASSERT_EQ(0, index->Open(index_name,
-                               {StorageOptions::StorageType::kMMAP, true}));
+        // Phase 1: build & persist.
+        {
+          auto index = IndexFactory::CreateAndInitIndex(*param);
+          ASSERT_NE(nullptr, index);
+          ASSERT_EQ(0, index->Open(index_name,
+                                   {StorageOptions::StorageType::kMMAP, true}));
 
-      std::vector<float> vec(kDimension);
-      for (uint32_t i = 0; i < kNumDocs; ++i) {
-        for (uint32_t d = 0; d < kDimension; ++d) {
-          vec[d] = static_cast<float>(i);
+          std::vector<float> vec(kDimension);
+          for (uint32_t i = 0; i < kNumDocs; ++i) {
+            for (uint32_t d = 0; d < kDimension; ++d) {
+              vec[d] = static_cast<float>(i);
+            }
+            VectorData data{DenseVector{vec.data()}};
+            ASSERT_EQ(0, index->Add(data, i));
+          }
+          ASSERT_EQ(0, index->Train());
+          ASSERT_EQ(0, index->Close());
         }
-        VectorData data{DenseVector{vec.data()}};
-        ASSERT_EQ(0, index->Add(data, i));
-      }
-      ASSERT_EQ(0, index->Train());
-      ASSERT_EQ(0, index->Close());
-    }
 
-    // Phase 2: reopen with same params (contiguous memory takes effect here)
-    // and search.
-    {
-      auto index = IndexFactory::CreateAndInitIndex(*param);
-      ASSERT_NE(nullptr, index);
-      ASSERT_EQ(0, index->Open(index_name,
-                               {StorageOptions::StorageType::kMMAP, false}));
+        // Phase 2: reopen with same params (contiguous memory takes effect
+        // here) and search.
+        {
+          auto index = IndexFactory::CreateAndInitIndex(*param);
+          ASSERT_NE(nullptr, index);
+          ASSERT_EQ(0,
+                    index->Open(index_name,
+                                {StorageOptions::StorageType::kMMAP, false}));
 
-      std::vector<float> q(kDimension);
-      for (uint32_t i = 0; i < kNumDocs; i += 50) {
-        for (uint32_t d = 0; d < kDimension; ++d) {
-          q[d] = static_cast<float>(i);
+          std::vector<float> q(kDimension);
+          for (uint32_t i = 0; i < kNumDocs; i += 50) {
+            for (uint32_t d = 0; d < kDimension; ++d) {
+              q[d] = static_cast<float>(i);
+            }
+            VectorData query{DenseVector{q.data()}};
+            SearchResult result;
+            ASSERT_EQ(0, index->Search(query, query_param, &result));
+            ASSERT_GT(result.doc_list_.size(), 0UL);
+            ASSERT_EQ(i, result.doc_list_[0].key());
+          }
+          ASSERT_EQ(0, index->Close());
         }
-        VectorData query{DenseVector{q.data()}};
-        SearchResult result;
-        ASSERT_EQ(0, index->Search(query, query_param, &result));
-        ASSERT_GT(result.doc_list_.size(), 0UL);
-        ASSERT_EQ(i, result.doc_list_[0].key());
-      }
-      ASSERT_EQ(0, index->Close());
-    }
 
-    zvec::test_util::RemoveTestFiles(index_name);
-  };
+        zvec::test_util::RemoveTestFiles(index_name);
+      };
 
   // HNSW + use_contiguous_memory=true
   build_then_search(HNSWIndexParamBuilder()
