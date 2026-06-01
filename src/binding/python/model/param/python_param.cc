@@ -36,6 +36,8 @@ static std::string index_type_to_string(const IndexType type) {
       return "HNSW_RABITQ";
     case IndexType::VAMANA:
       return "VAMANA";
+    case IndexType::FTS:
+      return "FTS";
     default:
       return "UNDEFINED";
   }
@@ -250,6 +252,88 @@ Note: Prefix search is always enabled regardless of this setting.
               throw std::runtime_error("Invalid state for InvertIndexParams");
             return std::make_shared<InvertIndexParams>(t[0].cast<bool>(),
                                                        t[1].cast<bool>());
+          }));
+
+  // binding fts index params
+  py::class_<FtsIndexParams, IndexParams, std::shared_ptr<FtsIndexParams>>
+      fts_index_params(m, "FtsIndexParam", R"pbdoc(
+Parameters for configuring a full-text search (FTS) index.
+
+Controls the tokenizer pipeline used during indexing and querying.
+
+Attributes:
+    type (IndexType): Always ``IndexType.FTS``.
+    tokenizer_name (str): Name of the tokenizer (e.g., "standard", "jieba").
+        Default is "standard".
+    filters (list[str]): List of token filter names applied after tokenization.
+        Default is ["lowercase"].
+    extra_params (str): Additional parameters passed to the tokenizer.
+        Default is "".
+
+Examples:
+    >>> params = FtsIndexParam(tokenizer_name="jieba", filters=["lowercase"])
+    >>> print(params.tokenizer_name)
+    jieba
+)pbdoc");
+  fts_index_params
+      .def(py::init<std::string, std::vector<std::string>, std::string>(),
+           py::arg("tokenizer_name") = "standard",
+           py::arg("filters") = std::vector<std::string>{"lowercase"},
+           py::arg("extra_params") = "",
+           R"pbdoc(
+Constructs an FtsIndexParam instance.
+
+Args:
+    tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
+    filters (list[str], optional): Token filter names. Defaults to ["lowercase"].
+    extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+)pbdoc")
+      .def_property_readonly("tokenizer_name", &FtsIndexParams::tokenizer_name,
+                             "str: Name of the tokenizer.")
+      .def_property_readonly("filters", &FtsIndexParams::filters,
+                             "list[str]: Token filter names.")
+      .def_property_readonly("extra_params", &FtsIndexParams::extra_params,
+                             "str: Additional tokenizer parameters.")
+      .def(
+          "to_dict",
+          [](const FtsIndexParams &self) -> py::dict {
+            py::dict dict;
+            dict["type"] = index_type_to_string(self.type());
+            dict["tokenizer_name"] = self.tokenizer_name();
+            dict["filters"] = self.filters();
+            dict["extra_params"] = self.extra_params();
+            return dict;
+          },
+          "Convert to dictionary with all fields")
+      .def("__repr__",
+           [](const FtsIndexParams &self) -> std::string {
+             std::string filters_str = "[";
+             for (size_t i = 0; i < self.filters().size(); ++i) {
+               if (i > 0) {
+                 filters_str += ",";
+               }
+               filters_str += "\"" + self.filters()[i] + "\"";
+             }
+             filters_str += "]";
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"tokenizer_name\":\"" + self.tokenizer_name() +
+                    "\", \"filters\":" + filters_str + ", \"extra_params\":\"" +
+                    self.extra_params() + "\"}";
+           })
+      .def(py::pickle(
+          [](const FtsIndexParams &self) {
+            return py::make_tuple(self.tokenizer_name(), self.filters(),
+                                  self.extra_params());
+          },
+          [](py::tuple t) {
+            if (t.size() != 3) {
+              throw std::runtime_error("Invalid state for FtsIndexParams");
+            }
+            return std::make_shared<FtsIndexParams>(
+                t[0].cast<std::string>(), t[1].cast<std::vector<std::string>>(),
+                t[2].cast<std::string>());
           }));
 
   // binding base vector index params
@@ -1103,6 +1187,64 @@ Args:
             obj->set_is_using_refiner(t[3].cast<bool>());
             return obj;
           }));
+
+  // binding fts query params
+  py::class_<FtsQueryParams, QueryParams, std::shared_ptr<FtsQueryParams>>
+      fts_query_params(m, "FtsQueryParam", R"pbdoc(
+Query parameters for full-text search (FTS) index.
+
+Controls the default boolean operator used to combine adjacent bare terms
+in a query string.
+
+Attributes:
+    type (IndexType): Always ``IndexType.FTS``.
+    default_operator (str): Default boolean operator for adjacent bare terms.
+        Supported values (case-insensitive): "OR" (default), "AND".
+
+Examples:
+    >>> params = FtsQueryParam(default_operator="AND")
+    >>> print(params.default_operator)
+    AND
+)pbdoc");
+  fts_query_params
+      .def(py::init([](const std::string &default_operator) {
+             auto params = std::make_shared<FtsQueryParams>();
+             if (!default_operator.empty()) {
+               params->set_default_operator(default_operator);
+             }
+             return params;
+           }),
+           py::arg("default_operator") = "",
+           R"pbdoc(
+Constructs an FtsQueryParam instance.
+
+Args:
+    default_operator (str, optional): Default boolean operator for adjacent
+        bare terms. Supported: "OR", "AND". Defaults to "" (uses engine default).
+)pbdoc")
+      .def_property_readonly("default_operator",
+                             &FtsQueryParams::default_operator,
+                             "str: Default boolean operator for bare terms.")
+      .def("__repr__",
+           [](const FtsQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"default_operator\":\"" + self.default_operator() +
+                    "\"}";
+           })
+      .def(py::pickle(
+          [](const FtsQueryParams &self) {
+            return py::make_tuple(self.default_operator());
+          },
+          [](py::tuple t) {
+            if (t.size() != 1) {
+              throw std::runtime_error("Invalid state for FtsQueryParams");
+            }
+            auto obj = std::make_shared<FtsQueryParams>();
+            obj->set_default_operator(t[0].cast<std::string>());
+            return obj;
+          }));
 }
 
 void ZVecPyParams::bind_options(py::module_ &m) {  // binding collection options
@@ -1373,37 +1515,80 @@ Args:
 }
 
 void ZVecPyParams::bind_vector_query(py::module_ &m) {
+  // bind Fts
+  py::class_<FtsClause>(m, "_Fts")
+      .def(py::init<>())
+      .def_readwrite("query_string", &FtsClause::query_string_)
+      .def_readwrite("match_string", &FtsClause::match_string_)
+      .def(py::pickle(
+          [](const FtsClause &self) {
+            return py::make_tuple(self.query_string_, self.match_string_);
+          },
+          [](py::tuple t) {
+            if (t.size() != 2)
+              throw std::runtime_error("Invalid pickle data for Fts");
+            FtsClause obj{};
+            obj.query_string_ = t[0].cast<std::string>();
+            obj.match_string_ = t[1].cast<std::string>();
+            return obj;
+          }));
+
   // Bind SubQuery (used by MultiQuery)
   py::class_<SubQuery>(m, "_SubQuery")
       .def(py::init<>())
       .def_readwrite("num_candidates", &SubQuery::num_candidates_)
       .def_static(
           "from_vector_query",
-          [](const VectorQuery &vq) {
+          [](const SearchQuery &sq) {
             SubQuery sub;
-            sub.num_candidates_ = vq.topk_;
-            sub.target_.field_name_ = vq.field_name_;
-            auto &clause = std::get<VectorClause>(sub.target_.clause_);
-            clause.query_vector_ = vq.query_vector_;
-            clause.sparse_indices_ = vq.query_sparse_indices_;
-            clause.sparse_values_ = vq.query_sparse_values_;
-            sub.target_.query_params_ = vq.query_params_;
+            sub.num_candidates_ = sq.topk_;
+            sub.target_ = sq.target_;
             return sub;
           },
-          py::arg("vector_query"), "Create a SubQuery from a VectorQuery");
+          py::arg("vector_query"),
+          "Create a SubQuery from a single-target search query.");
 
-  py::class_<VectorQuery>(m, "_VectorQuery")
+  // _VectorQuery is the historical Python class name; it now wraps the
+  // single-target SearchQuery so external Python code keeps working unchanged.
+  py::class_<SearchQuery>(m, "_VectorQuery")
       .def(py::init<>())
       // properties
-      .def_readwrite("topk", &VectorQuery::topk_)
-      .def_readwrite("field_name", &VectorQuery::field_name_)
-      .def_readwrite("filter", &VectorQuery::filter_)
-      .def_readwrite("include_vector", &VectorQuery::include_vector_)
-      .def_readwrite("query_params", &VectorQuery::query_params_)
-      .def_readwrite("output_fields", &VectorQuery::output_fields_)
+      .def_readwrite("topk", &SearchQuery::topk_)
+      .def_property(
+          "field_name",
+          [](const SearchQuery &s) { return s.target_.field_name_; },
+          [](SearchQuery &s, std::string v) {
+            s.target_.field_name_ = std::move(v);
+          })
+      .def_readwrite("filter", &SearchQuery::filter_)
+      .def_readwrite("include_vector", &SearchQuery::include_vector_)
+      .def_property(
+          "query_params",
+          [](const SearchQuery &s) { return s.target_.query_params_; },
+          [](SearchQuery &s, QueryParams::Ptr p) {
+            s.target_.query_params_ = std::move(p);
+          })
+      .def_readwrite("output_fields", &SearchQuery::output_fields_)
+      .def_property(
+          "fts",
+          [](const SearchQuery &self) -> py::object {
+            const auto *fc = self.target_.get_fts_clause();
+            if (fc != nullptr) {
+              return py::cast(*fc);
+            }
+            return py::none();
+          },
+          [](SearchQuery &self, const py::object &obj) {
+            if (obj.is_none()) {
+              // Clearing FTS resets the target to an empty vector clause.
+              self.target_.clause_ = VectorClause{};
+            } else {
+              self.target_.clause_ = obj.cast<FtsClause>();
+            }
+          })
       // vector
       .def("set_vector",
-           [](VectorQuery &self, const FieldSchema &field_schema,
+           [](SearchQuery &self, const FieldSchema &field_schema,
               const py::object &obj) {
              const DataType data_type = field_schema.data_type();
 
@@ -1422,23 +1607,23 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                const auto buf = arr.request();
                switch (data_type) {
                  case DataType::VECTOR_FP32: {
-                   self.query_vector_ = serialize_vector<float>(
-                       static_cast<const float *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<float>(
+                       static_cast<const float *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_FP64: {
-                   self.query_vector_ = serialize_vector<double>(
-                       static_cast<const double *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<double>(
+                       static_cast<const double *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_INT8: {
-                   self.query_vector_ = serialize_vector<int8_t>(
-                       static_cast<const int8_t *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<int8_t>(
+                       static_cast<const int8_t *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_FP16: {
-                   self.query_vector_ = serialize_vector<uint16_t>(
-                       static_cast<const uint16_t *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<uint16_t>(
+                       static_cast<const uint16_t *>(buf.ptr), buf.size));
                    return;
                  }
                  default:
@@ -1466,8 +1651,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                                  "FLOAT");
                              return ailego::Float16(f);
                            });
-                   self.query_sparse_indices_ = std::move(indices);
-                   self.query_sparse_values_ = std::move(values);
+                   self.target_.set_sparse_vector(std::move(indices),
+                                                  std::move(values));
                    break;
                  }
                  case DataType::SPARSE_VECTOR_FP32: {
@@ -1477,8 +1662,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                              h, "Sparse value[" + std::to_string(idx) + "]",
                              "FLOAT");
                        });
-                   self.query_sparse_indices_ = std::move(indices);
-                   self.query_sparse_values_ = std::move(values);
+                   self.target_.set_sparse_vector(std::move(indices),
+                                                  std::move(values));
                    break;
                  }
                  default:
@@ -1494,16 +1679,17 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
            })
       .def(
           "get_vector",
-          [](const VectorQuery &self,
+          [](const SearchQuery &self,
              const FieldSchema &field_schema) -> py::object {
             DataType data_type = field_schema.data_type();
+            const VectorClause *vc = self.target_.get_vector_clause();
             if (FieldSchema::is_dense_vector_field(data_type)) {
-              if (self.query_vector_.empty()) {
+              if (vc == nullptr || vc->query_vector_.empty()) {
                 throw std::runtime_error("No dense vector has been set");
               }
 
-              size_t byte_size = self.query_vector_.size();
-              const void *data = self.query_vector_.data();
+              size_t byte_size = vc->query_vector_.size();
+              const void *data = vc->query_vector_.data();
 
               switch (data_type) {
                 case DataType::VECTOR_FP32: {
@@ -1549,29 +1735,29 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
               }
             }
             if (FieldSchema::is_sparse_vector_field(data_type)) {
-              if (self.query_sparse_indices_.empty()) {
+              if (vc == nullptr || vc->sparse_indices_.empty()) {
                 return py::dict();
               }
 
               // Deserialize indices: stored as uint32_t[]
-              size_t indices_byte_size = self.query_sparse_indices_.size();
+              size_t indices_byte_size = vc->sparse_indices_.size();
               if (indices_byte_size % sizeof(uint32_t) != 0) {
                 throw std::runtime_error(
                     "Sparse indices buffer size not aligned to uint32_t");
               }
               size_t n = indices_byte_size / sizeof(uint32_t);
               const uint32_t *indices = reinterpret_cast<const uint32_t *>(
-                  self.query_sparse_indices_.data());
+                  vc->sparse_indices_.data());
 
               // Deserialize values
               switch (data_type) {
                 case DataType::SPARSE_VECTOR_FP32: {
-                  if (self.query_sparse_values_.size() != n * sizeof(float)) {
+                  if (vc->sparse_values_.size() != n * sizeof(float)) {
                     throw std::runtime_error(
                         "Sparse FP32 values buffer size mismatch");
                   }
                   const float *values = reinterpret_cast<const float *>(
-                      self.query_sparse_values_.data());
+                      vc->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     result[py::int_(indices[i])] = py::float_(values[i]);
@@ -1579,13 +1765,12 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                   return result;
                 }
                 case DataType::SPARSE_VECTOR_FP16: {
-                  if (self.query_sparse_values_.size() !=
-                      n * sizeof(uint16_t)) {
+                  if (vc->sparse_values_.size() != n * sizeof(uint16_t)) {
                     throw std::runtime_error(
                         "Sparse FP16 values buffer size mismatch");
                   }
                   const uint16_t *raw_bits = reinterpret_cast<const uint16_t *>(
-                      self.query_sparse_values_.data());
+                      vc->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     float f = ailego::FloatHelper::ToFP32(raw_bits[i]);
@@ -1604,29 +1789,44 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
           },
           py::arg("field_schema"))
       .def(py::pickle(
-          [](const VectorQuery &self) {
-            return py::make_tuple(
-                self.topk_, self.field_name_, self.query_vector_,
-                self.query_sparse_indices_, self.query_sparse_values_,
-                self.filter_, self.include_vector_, self.output_fields_,
-                self.query_params_ ? py::cast(self.query_params_) : py::none());
+          [](const SearchQuery &self) {
+            const VectorClause *vc = self.target_.get_vector_clause();
+            const auto *fc = self.target_.get_fts_clause();
+            return py::make_tuple(self.topk_, self.target_.field_name_,
+                                  vc ? vc->query_vector_ : std::string(),
+                                  vc ? vc->sparse_indices_ : std::string(),
+                                  vc ? vc->sparse_values_ : std::string(),
+                                  self.filter_, self.include_vector_,
+                                  self.output_fields_,
+                                  self.target_.query_params_
+                                      ? py::cast(self.target_.query_params_)
+                                      : py::none(),
+                                  fc ? py::cast(*fc) : py::none());
           },
           [](py::tuple t) {
-            if (t.size() != 9)
-              throw std::runtime_error("Invalid pickle data for VectorQuery");
+            if (t.size() != 10)
+              throw std::runtime_error("Invalid pickle data for _VectorQuery");
 
-            VectorQuery obj{};
+            SearchQuery obj{};
             obj.topk_ = t[0].cast<int>();
-            obj.field_name_ = t[1].cast<std::string>();
-            obj.query_vector_ = t[2].cast<std::string>();
-            obj.query_sparse_indices_ = t[3].cast<std::string>();
-            obj.query_sparse_values_ = t[4].cast<std::string>();
+            obj.target_.field_name_ = t[1].cast<std::string>();
+            // A vector clause and an FTS clause are mutually exclusive in the
+            // variant target; restore whichever the pickle carried.
+            if (!t[9].is_none()) {
+              obj.target_.clause_ = t[9].cast<FtsClause>();
+            } else {
+              obj.target_.clause_ = VectorClause{t[2].cast<std::string>(),
+                                                 t[3].cast<std::string>(),
+                                                 t[4].cast<std::string>()};
+            }
             obj.filter_ = t[5].cast<std::string>();
             obj.include_vector_ = t[6].cast<bool>();
-            obj.output_fields_ = t[7].cast<std::vector<std::string>>();
 
+            if (!t[7].is_none()) {
+              obj.output_fields_ = t[7].cast<std::vector<std::string>>();
+            }
             if (!t[8].is_none()) {
-              obj.query_params_ = t[8].cast<QueryParams::Ptr>();
+              obj.target_.query_params_ = t[8].cast<QueryParams::Ptr>();
             }
             return obj;
           }));

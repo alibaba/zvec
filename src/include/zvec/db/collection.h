@@ -97,7 +97,7 @@ class Collection {
 
   virtual Status DeleteByFilter(const std::string &filter) = 0;
 
-  virtual Result<DocPtrList> Query(const VectorQuery &query) const = 0;
+  virtual Result<DocPtrList> Query(const SearchQuery &query) const = 0;
 
   virtual Result<DocPtrList> Query(const MultiQuery &query) const = 0;
 

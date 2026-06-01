@@ -92,15 +92,15 @@ class OptimizerTest : public testing::Test {
 
 
 TEST_F(OptimizerTest, Basic) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age > 200";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -115,15 +115,15 @@ TEST_F(OptimizerTest, Basic) {
 
 // case 1. invert subroot same as invert cond, do nothing
 TEST_F(OptimizerTest, Case1) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age > 12";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -138,15 +138,15 @@ TEST_F(OptimizerTest, Case1) {
 
 // case 2.1 invert subroot is not found, all conds are forward cond
 TEST_F(OptimizerTest, Case2_1) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age > 100 and age > 101 or age > 102";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -162,15 +162,15 @@ TEST_F(OptimizerTest, Case2_1) {
 // case 2.2 invert subroot is not found, some conds are forward cond
 // while left invert cond cannot be invert cond any more
 TEST_F(OptimizerTest, Case2_2) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age > 100 or age > 90";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -186,15 +186,15 @@ TEST_F(OptimizerTest, Case2_2) {
 
 // case 3.1 subroot is found and be part of invert cond
 TEST_F(OptimizerTest, Case3_1) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age > 100 and age > 101 and age > 10";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -210,15 +210,15 @@ TEST_F(OptimizerTest, Case3_1) {
 
 // case 3.2 subroot is found and be part of invert cond
 TEST_F(OptimizerTest, Case3_2) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age > 10 and age > 11 and age > 100";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -233,15 +233,15 @@ TEST_F(OptimizerTest, Case3_2) {
 
 // case 3.3 subroot is found and be part of invert cond
 TEST_F(OptimizerTest, Case3_3) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "(age > 10 or age > 11) and age > 100";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -257,15 +257,15 @@ TEST_F(OptimizerTest, Case3_3) {
 // case 3.4 subroot is found and be part of invert cond, but others also have
 // invert
 TEST_F(OptimizerTest, Case3_4) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age > 10 and (age > 101 and (age > 10 and age > 10))";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -281,15 +281,15 @@ TEST_F(OptimizerTest, Case3_4) {
 
 // case 4, optimize with in expr
 TEST_F(OptimizerTest, Case4) {
-  VectorQuery query;
+  SearchQuery query;
   query.output_fields_ = {"*"};
   query.topk_ = 11;
-  query.field_name_ = "face_feature";
+  query.target_.field_name_ = "face_feature";
   query.include_vector_ = false;
   query.filter_ = "age in (10, 20)";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr query_info = ret.value();
 
@@ -304,7 +304,7 @@ TEST_F(OptimizerTest, Case4) {
 
   // in and optimizable, optimize optimizable
   query.filter_ = "age in (10, 20) and age > 100";
-  ret = engine->parse_request(schema, query, nullptr);
+  ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   query_info = ret.value();
   optimized = optimizer->optimize(segment.get(), query_info.get());
@@ -312,7 +312,7 @@ TEST_F(OptimizerTest, Case4) {
 
   // in or optimizable, not optimized
   query.filter_ = "age in (10, 20) or age > 100";
-  ret = engine->parse_request(schema, query, nullptr);
+  ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   query_info = ret.value();
   optimized = optimizer->optimize(segment.get(), query_info.get());

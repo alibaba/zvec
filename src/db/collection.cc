@@ -14,8 +14,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <filesystem>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -36,11 +34,13 @@
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
+#include "db/common/global_resource.h"
 #include "db/common/profiler.h"
 #include "db/common/typedef.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/index_filter.h"
+#include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/segment.h"
 #include "db/index/segment/segment_helper.h"
@@ -56,6 +56,7 @@ enum class WriteMode : uint8_t {
   UPDATE,
   UPSERT,
 };
+
 
 Collection::~Collection() = default;
 
@@ -118,7 +119,7 @@ class CollectionImpl : public Collection {
 
   Status DeleteByFilter(const std::string &filter) override;
 
-  Result<DocPtrList> Query(const VectorQuery &query) const override;
+  Result<DocPtrList> Query(const SearchQuery &query) const override;
 
   Result<DocPtrList> Query(const MultiQuery &query) const override;
 
@@ -453,6 +454,10 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
+  if (index_params == nullptr) {
+    return Status::InvalidArgument("CreateIndex: index_params is null");
+  }
+
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
   auto s = new_schema->add_index(column_name, index_params);
   CHECK_RETURN_STATUS(s);
@@ -525,10 +530,14 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   if (is_vector_field) {
     tasks = build_create_vector_index_task(persist_segments, column_name,
                                            index_params, options.concurrency_);
-
-  } else {
+  } else if (index_params->type() == IndexType::INVERT) {
     tasks = build_create_scalar_index_task(persist_segments, column_name,
                                            index_params, options.concurrency_);
+  } else {
+    return Status::NotSupported(
+        "CreateIndex: index type [",
+        IndexTypeCodeBook::AsString(index_params->type()),
+        "] is not supported");
   }
 
   if (tasks.empty()) {
@@ -660,8 +669,6 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
 
   Version new_version = version_manager_->get_current_version();
 
-  bool is_vector_field = field->is_vector_field();
-
   if (writing_segment_->doc_count() > 0) {
     s = writing_segment_->dump();
     CHECK_RETURN_STATUS(s);
@@ -709,11 +716,18 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
 
   auto persist_segments = get_all_persist_segments();
 
+  bool is_vector_field = field->is_vector_field();
+
   std::vector<SegmentTask::Ptr> tasks;
   if (is_vector_field) {
     tasks = build_drop_vector_index_task(persist_segments, column_name);
-  } else {
+  } else if (field->index_params()->type() == IndexType::INVERT) {
     tasks = build_drop_scalar_index_task(persist_segments, column_name);
+  } else {
+    return Status::NotSupported(
+        "DropIndex: index type [",
+        IndexTypeCodeBook::AsString(field->index_params()->type()),
+        "] on column[", column_name, "] is not supported");
   }
 
   if (tasks.empty()) {
@@ -1560,13 +1574,14 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
-  VectorQuery query;
+  SearchQuery query;
   query.filter_ = filter;
   query.topk_ = INT32_MAX;
   query.output_fields_ = std::vector<std::string>{};
   query.include_doc_id_ = true;
 
-  auto ret = sql_engine_->execute(schema_, query, get_all_segments());
+  auto ret =
+      sql_engine_->execute(schema_, std::move(query), get_all_segments());
   if (!ret.has_value()) {
     return ret.error();
   }
@@ -1584,14 +1599,19 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
   return Status::OK();
 }
 
-Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
+Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
-  VectorQuery sanitized = query;
-  auto s = sanitized.validate_and_sanitize(
-      schema_->get_vector_field(sanitized.field_name_));
+  SearchQuery sanitized = query;
+  // When field_name_ is set, use get_field to retrieve the schema uniformly.
+  // validate_and_sanitize checks that the field type matches the query type
+  // (FTS query requires an FTS field, vector query requires a vector field).
+  const auto &field_name = sanitized.target_.field_name_;
+  const FieldSchema *field_schema =
+      field_name.empty() ? nullptr : schema_->get_field(field_name);
+  auto s = sanitized.validate_and_sanitize(field_schema);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();
@@ -1599,7 +1619,7 @@ Result<DocPtrList> CollectionImpl::Query(const VectorQuery &query) const {
     return DocPtrList();
   }
 
-  return sql_engine_->execute(schema_, sanitized, segments);
+  return sql_engine_->execute(schema_, std::move(sanitized), segments);
 }
 
 Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
@@ -1608,13 +1628,14 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
   if (query.queries.size() < 2) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("Query requires at least 2 sub-queries"));
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Invalid query: MultiQuery requires at least 2 sub-queries, got ",
+        query.queries.size()));
   }
 
   if (!query.reranker) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("Reranker is required for multi-vector query"));
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Invalid query: MultiQuery requires a reranker"));
   }
 
   auto segments = get_all_segments();
@@ -1622,10 +1643,15 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
     return DocPtrList();
   }
 
-  // Convert SubVectorQuery to VectorQuery and validate
+  struct PendingQuery {
+    std::string field_name;
+    SearchQuery query;
+  };
+
+  // Convert each SubQuery to a SearchQuery and validate.
   std::set<std::string> seen_fields;
-  std::vector<VectorQuery> converted_queries;
-  converted_queries.reserve(query.queries.size());
+  std::vector<PendingQuery> pending_queries;
+  pending_queries.reserve(query.queries.size());
 
   for (const auto &sub : query.queries) {
     const auto &target = sub.target_;
@@ -1640,41 +1666,49 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
           "Vector field not found: ", target.field_name_));
     }
 
-    VectorQuery vq;
-    vq.topk_ = sub.num_candidates_;
-    vq.field_name_ = target.field_name_;
-    const auto &vec_clause = std::get<VectorClause>(target.clause_);
-    vq.query_vector_ = vec_clause.query_vector_;
-    vq.query_sparse_indices_ = vec_clause.sparse_indices_;
-    vq.query_sparse_values_ = vec_clause.sparse_values_;
-    vq.query_params_ = target.query_params_;
-    vq.filter_ = query.filter;
-    vq.include_vector_ = query.include_vector;
-    vq.include_doc_id_ = query.include_doc_id_;
-    vq.output_fields_ = query.output_fields;
+    SearchQuery sq;
+    sq.target_ = target;
+    sq.topk_ = sub.num_candidates_;
+    sq.filter_ = query.filter;
+    sq.include_vector_ = query.include_vector;
+    sq.include_doc_id_ = query.include_doc_id_;
+    sq.output_fields_ = query.output_fields;
 
-    auto s = vq.validate_and_sanitize(field_schema);
+    auto s = sq.validate_and_sanitize(field_schema);
     CHECK_RETURN_STATUS_EXPECTED(s);
-    converted_queries.push_back(std::move(vq));
-  }
-
-  // Execute each VectorQuery concurrently and collect results per field
-  std::vector<std::future<Result<DocPtrList>>> futures;
-  futures.reserve(converted_queries.size());
-  for (const auto &vq : converted_queries) {
-    futures.push_back(std::async(std::launch::async, [&]() {
-      auto engine = sqlengine::SQLEngine::create(std::make_shared<Profiler>());
-      return engine->execute(schema_, vq, segments);
-    }));
+    pending_queries.push_back({target.field_name_, std::move(sq)});
   }
 
   std::map<std::string, DocPtrList> query_results;
-  for (size_t i = 0; i < converted_queries.size(); ++i) {
-    auto result = futures[i].get();
-    if (!result.has_value()) {
-      return tl::make_unexpected(result.error());
+
+  auto execute_query = [&](PendingQuery &pending) -> Result<DocPtrList> {
+    auto engine = sqlengine::SQLEngine::create(std::make_shared<Profiler>());
+    return engine->execute(schema_, std::move(pending.query), segments);
+  };
+
+  std::vector<Result<DocPtrList>> results(pending_queries.size());
+
+  // Single-segment queries have no segment-level fanout; multi-segment queries
+  // already use the query pool per sub-query.
+  if (segments.size() == 1) {
+    auto group = GlobalResource::Instance().query_thread_pool()->make_group();
+    for (size_t i = 0; i < pending_queries.size(); ++i) {
+      group->execute(
+          [&, i]() { results[i] = execute_query(pending_queries[i]); });
     }
-    query_results[converted_queries[i].field_name_] = std::move(result.value());
+    group->wait_finish();
+  } else {
+    for (size_t i = 0; i < pending_queries.size(); ++i) {
+      results[i] = execute_query(pending_queries[i]);
+    }
+  }
+
+  for (size_t i = 0; i < pending_queries.size(); ++i) {
+    if (!results[i]) {
+      return tl::make_unexpected(results[i].error());
+    }
+    query_results[pending_queries[i].field_name] =
+        std::move(results[i].value());
   }
 
   // Merge and rerank results

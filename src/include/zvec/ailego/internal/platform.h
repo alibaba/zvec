@@ -67,6 +67,7 @@ typedef unsigned int id_t;
 #define ailego_bswap64(x) _byteswap_uint64(x)
 
 #define strncasecmp _strnicmp
+#define strcasecmp _stricmp
 
 #else  // !_MSC_VER
 

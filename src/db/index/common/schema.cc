@@ -301,11 +301,11 @@ Status CollectionSchema::validate() const {
         "schema validate failed: max_doc_count_per_segment must >= ",
         MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD);
   }
-  auto v_fields = vector_fields();
-  if (v_fields.empty()) {
-    return Status::InvalidArgument(
-        "schema validate failed: vector fields is empty");
+  if (fields_.empty()) {
+    return Status::InvalidArgument("schema validate failed: collection[", name_,
+                                   "] has no fields");
   }
+  auto v_fields = vector_fields();
   if (v_fields.size() > kMaxVectorFieldSize) {
     return Status::InvalidArgument(
         "schema validate failed: collection[", name_,
@@ -547,6 +547,35 @@ FieldSchemaPtrList CollectionSchema::vector_fields() const {
     }
   }
   return vector_fields;
+}
+
+FieldSchemaPtrList CollectionSchema::invert_fields() const {
+  FieldSchemaPtrList invert;
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::INVERT) {
+      invert.push_back(field);
+    }
+  }
+  return invert;
+}
+
+bool CollectionSchema::has_fts_field() const {
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::FTS) {
+      return true;
+    }
+  }
+  return false;
+}
+
+FieldSchemaPtrList CollectionSchema::fts_fields() const {
+  FieldSchemaPtrList fts;
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::FTS) {
+      fts.push_back(field);
+    }
+  }
+  return fts;
 }
 
 uint64_t CollectionSchema::max_doc_count_per_segment() const {

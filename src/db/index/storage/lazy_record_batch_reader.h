@@ -128,7 +128,8 @@ class ParquetRecordBatchReader : public arrow::RecordBatchReader {
     std::vector<std::shared_ptr<arrow::Array>> chunks(col_indices_.size());
     if (with_cache_) {
       for (size_t col_idx = 0; col_idx < col_indices_.size(); ++col_idx) {
-        auto buffer_id = ailego::ParquetBufferID(file_path_, col_idx, rg_id);
+        auto buffer_id =
+            ailego::ParquetBufferID(file_path_, col_indices_[col_idx], rg_id);
         auto buffer_handle =
             ailego::ParquetBufferPool::get_instance().acquire_buffer(buffer_id);
         std::shared_ptr<arrow::ChunkedArray> col_chunked_array =

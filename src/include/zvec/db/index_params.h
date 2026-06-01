@@ -16,12 +16,19 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <zvec/core/interface/constants.h>
+#include <zvec/db/status.h>
 #include <zvec/db/type.h>
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
+
+namespace detail {
+struct FtsState;
+struct FtsPipelineHelper;
+}  // namespace detail
 
 /*
  * Column index params
@@ -556,6 +563,86 @@ class VamanaIndexParams : public VectorIndexParams {
   // the cost of peak memory usage.
   bool use_contiguous_memory_;
   bool use_id_map_;
+};
+
+/*
+ * FTS (Full-Text Search) index params
+ *
+ * Not copyable.  Use shared_ptr<FtsIndexParams> for shared ownership.
+ */
+class FtsIndexParams : public IndexParams {
+ public:
+  FtsIndexParams(std::string tokenizer_name = "standard",
+                 std::vector<std::string> filters = {"lowercase"},
+                 std::string extra_params = "");
+
+  // Not copyable.
+  FtsIndexParams(const FtsIndexParams &) = delete;
+  FtsIndexParams &operator=(const FtsIndexParams &) = delete;
+
+  // Movable.
+  FtsIndexParams(FtsIndexParams &&other) noexcept;
+  FtsIndexParams &operator=(FtsIndexParams &&) = delete;
+
+  ~FtsIndexParams() override;
+
+  Ptr clone() const override {
+    return std::make_shared<FtsIndexParams>(tokenizer_name_, filters_,
+                                            extra_params_);
+  }
+
+  std::string to_string() const override {
+    std::ostringstream oss;
+    oss << "{FtsIndexParams,tokenizer_name:" << tokenizer_name_ << ",filters:[";
+    for (size_t i = 0; i < filters_.size(); ++i) {
+      if (i > 0) {
+        oss << ",";
+      }
+      oss << filters_[i];
+    }
+    oss << "],extra_params:" << extra_params_ << "}";
+    return oss.str();
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    if (type() != other.type()) {
+      return false;
+    }
+    auto &other_fts = static_cast<const FtsIndexParams &>(other);
+    return tokenizer_name_ == other_fts.tokenizer_name_ &&
+           filters_ == other_fts.filters_ &&
+           extra_params_ == other_fts.extra_params_;
+  }
+
+  const std::string &tokenizer_name() const {
+    return tokenizer_name_;
+  }
+  void set_tokenizer_name(std::string tokenizer_name) {
+    tokenizer_name_ = std::move(tokenizer_name);
+  }
+
+  const std::vector<std::string> &filters() const {
+    return filters_;
+  }
+  void set_filters(std::vector<std::string> filters) {
+    filters_ = std::move(filters);
+  }
+
+  const std::string &extra_params() const {
+    return extra_params_;
+  }
+  void set_extra_params(std::string extra_params) {
+    extra_params_ = std::move(extra_params);
+  }
+
+ private:
+  std::string tokenizer_name_;
+  std::vector<std::string> filters_;
+  std::string extra_params_;
+
+  std::unique_ptr<detail::FtsState> state_;
+
+  friend struct detail::FtsPipelineHelper;
 };
 
 }  // namespace zvec

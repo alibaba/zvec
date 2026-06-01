@@ -16,6 +16,8 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <zvec/ailego/pattern/singleton.h>
 #include <zvec/db/status.h>
 
@@ -92,9 +94,16 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     uint32_t query_thread_count;
     float invert_to_forward_scan_ratio;
     float brute_force_by_keys_ratio;
+    // Independent from brute_force_by_keys_ratio: per-candidate FTS cost
+    // (phrase phase-2 IO, BM25) is higher, so a tighter default fits.
+    float fts_brute_force_by_keys_ratio;
 
     // optimize
     uint32_t optimize_thread_count;
+
+    // FTS jieba tokenizer default dict dir (lowest-priority fallback;
+    // per-field config > ZVEC_JIEBA_DICT_DIR > this). Empty by default.
+    std::string jieba_dict_dir;
 
     ConfigData();
   };
@@ -103,6 +112,11 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
   Status Initialize(const ConfigData &config);
 
   Status Validate(const ConfigData &config) const;
+
+  // Set the process-wide default jieba dict dir. Thread-safe and decoupled
+  // from Initialize() so language SDKs can call it on module load.
+  // Initialize() with a non-empty config.jieba_dict_dir overrides this.
+  void set_default_jieba_dict_dir(const std::string &dir);
 
   // Read-only accessors
   uint64_t memory_limit_bytes() const noexcept;
@@ -161,10 +175,19 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     return config_.brute_force_by_keys_ratio;
   }
 
+  //! FTS brute force by keys ratio (independent from brute_force_by_keys_ratio
+  //! because FTS per-candidate cost is higher).
+  float fts_brute_force_by_keys_ratio() const noexcept {
+    return config_.fts_brute_force_by_keys_ratio;
+  }
+
   //! Optimize thread count
   uint32_t optimize_thread_count() const noexcept {
     return config_.optimize_thread_count;
   }
+
+  //! Effective jieba dict dir. Thread-safe.
+  std::string jieba_dict_dir() const;
 
  private:
   // Configuration data
@@ -172,6 +195,9 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
   // Atomic flag to ensure initialization happens only once
   std::atomic<bool> initialized_{false};
+
+  // Guards config_ fields that may be written outside Initialize().
+  mutable std::mutex mutex_;
 };
 
 }  // namespace zvec

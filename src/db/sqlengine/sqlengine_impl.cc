@@ -14,11 +14,17 @@
 
 #include "db/sqlengine/sqlengine_impl.h"
 #include <unordered_map>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/doc.h>
+#include <zvec/db/index_params.h>
 #include <zvec/db/type.h>
 #include "db/common/constants.h"
+#include "db/index/column/fts_column/fts_ast_rewriter.h"
+#include "db/index/column/fts_column/fts_pipeline.h"
+#include "db/index/column/fts_column/fts_query_ast.h"
 #include "db/sqlengine/analyzer/query_analyzer.h"
+#include "db/sqlengine/parser/select_info.h"
 #include "db/sqlengine/parser/sql_info_helper.h"
 #include "db/sqlengine/parser/zvec_parser.h"
 #include "db/sqlengine/planner/op_register.h"
@@ -50,13 +56,13 @@ SQLEngineImpl::SQLEngineImpl(zvec::Profiler::Ptr profiler)
     : profiler_(std::move(profiler)) {}
 
 Result<DocPtrList> SQLEngineImpl::execute(
-    CollectionSchema::Ptr collection, const VectorQuery &query,
+    CollectionSchema::Ptr collection, SearchQuery query,
     const std::vector<Segment::Ptr> &segments) {
   if (segments.empty()) {
     return DocPtrList{};
   }
 
-  auto query_info = parse_request(collection, query, nullptr);
+  auto query_info = build_query_info(collection, std::move(query), nullptr);
   if (!query_info) {
     return tl::make_unexpected(query_info.error());
   }
@@ -76,18 +82,14 @@ Result<DocPtrList> SQLEngineImpl::execute(
   return fill_result(select_item_meta_ptrs, reader.value().get());
 }
 
-VectorQuery from_group_by(const GroupByVectorQuery &gq) {
-  VectorQuery vq;
-  vq.field_name_ = gq.field_name_;
-  vq.query_vector_ = gq.query_vector_;
-  vq.query_sparse_indices_ = gq.query_sparse_indices_;
-  vq.query_sparse_values_ = gq.query_sparse_values_;
-  vq.filter_ = gq.filter_;
-  vq.include_vector_ = gq.include_vector_;
-  vq.query_params_ = gq.query_params_;
-  vq.output_fields_ = gq.output_fields_;
-  vq.topk_ = 0;
-  return vq;
+SearchQuery from_group_by(const GroupByVectorQuery &gq) {
+  SearchQuery sq;
+  sq.target_ = gq.target_;
+  sq.filter_ = gq.filter_;
+  sq.include_vector_ = gq.include_vector_;
+  sq.output_fields_ = gq.output_fields_;
+  sq.topk_ = 0;
+  return sq;
 }
 
 Result<GroupResults> SQLEngineImpl::execute_group_by(
@@ -97,8 +99,8 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
     return GroupResults{};
   }
 
-  VectorQuery query = from_group_by(group_by_query);
-  auto query_info = parse_request(
+  SearchQuery query = from_group_by(group_by_query);
+  auto query_info = build_query_info(
       collection, query,
       std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
                                 group_by_query.group_topk_,
@@ -120,26 +122,130 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
   return fill_group_by_result(*query_info.value(), reader.value().get());
 }
 
+Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
+    CollectionSchema::Ptr collection, const std::string &field_name,
+    const FtsClause &fts, const QueryParams::Ptr &query_params) {
+  // Exactly one of query_string_ or match_string_ must be provided.
+  bool has_query = !fts.query_string_.empty();
+  bool has_match_string = !fts.match_string_.empty();
+  if (has_query == has_match_string) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Exactly one of query_string or match_string must be provided"));
+  }
+
+  auto *fts_query_param = dynamic_cast<FtsQueryParams *>(query_params.get());
+
+  // Determine default operator once, shared by both query_string and
+  // match_string paths. Accept "and"/"or" case-insensitively, empty means OR;
+  // any other value is a user error and must be reported, not silently
+  // downgraded to OR. strcasecmp is mapped to _stricmp on MSVC by platform.h.
+  fts::FtsDefaultOperator default_op = fts::FtsDefaultOperator::OR;
+  if (fts_query_param) {
+    const auto &op_str = fts_query_param->default_operator();
+    if (op_str.empty() || strcasecmp(op_str.c_str(), "or") == 0) {
+      default_op = fts::FtsDefaultOperator::OR;
+    } else if (strcasecmp(op_str.c_str(), "and") == 0) {
+      default_op = fts::FtsDefaultOperator::AND;
+    } else {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "FTS default_operator must be empty, 'and' or 'or' (case-insensitive)"
+          ", got: ",
+          op_str));
+    }
+  }
+
+  // Tokenizer pipeline is required by both branches: query_string needs it to
+  // tokenize phrase contents and bare terms, match_string needs it to split
+  // the natural-language input. Resolve once and share.
+  auto *field_schema = collection->get_field(field_name);
+  if (!field_schema) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("FTS field not found: ", field_name));
+  }
+  auto fts_idx_param =
+      std::dynamic_pointer_cast<FtsIndexParams>(field_schema->index_params());
+  if (!fts_idx_param) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "FTS field has no FtsIndexParams: ", field_name));
+  }
+  auto pipeline_result = detail::AcquireFtsPipeline(*fts_idx_param);
+  if (!pipeline_result.has_value()) {
+    return tl::make_unexpected(Status::InternalError(
+        "Failed to create tokenizer pipeline for field: ", field_name, " ",
+        pipeline_result.error().message()));
+  }
+  auto &pipeline = pipeline_result.value();
+
+  fts::FtsAstNodePtr ast;
+  if (has_query) {
+    // Structured query expression: parse via ANTLR grammar; phrase/term
+    // bodies are tokenized through the same pipeline used at index time.
+    fts::FtsQueryParser fts_parser;
+    ast = fts_parser.parse(fts.query_string_, pipeline, default_op);
+    if (!ast) {
+      LOG_ERROR("FTS query parse failed: %s", fts_parser.err_msg().c_str());
+      return tl::make_unexpected(Status::InvalidArgument(
+          "FTS query parse failed: ", fts_parser.err_msg()));
+    }
+  } else {
+    // Natural language match_string: tokenize and combine with default_op.
+    auto tokens = pipeline->process(fts.match_string_);
+    if (tokens.empty()) {
+      // Analyzer dropped everything → zero-doc query, not an error.
+      return std::make_shared<FtsCondInfo>(field_name,
+                                           std::make_unique<fts::EmptyNode>());
+    }
+    if (tokens.size() == 1) {
+      ast = std::make_unique<fts::TermNode>(std::move(tokens[0].text));
+    } else {
+      if (default_op == fts::FtsDefaultOperator::AND) {
+        auto and_node = std::make_unique<fts::AndNode>();
+        for (auto &token : tokens) {
+          and_node->children.push_back(
+              std::make_unique<fts::TermNode>(std::move(token.text)));
+        }
+        ast = std::move(and_node);
+      } else {
+        auto or_node = std::make_unique<fts::OrNode>();
+        for (auto &token : tokens) {
+          or_node->children.push_back(
+              std::make_unique<fts::TermNode>(std::move(token.text)));
+        }
+        ast = std::move(or_node);
+      }
+    }
+  }
+
+  // Structural rewrite: dedup repeated terms (collapsed into a single node
+  // with summed boost), flatten same-type composites for better WAND pruning,
+  // propagate EmptyNode, and detect must/must_not contradictions. The pre-
+  // rewrite AST is logged at DEBUG so the transform is auditable. LOG_DEBUG
+  // is gated by the configured log level, so ast->text() is only built when
+  // debug logging is enabled.
+  LOG_DEBUG("FTS AST before rewrite: %s", ast ? ast->text().c_str() : "<null>");
+  fts::simplify(ast);
+  LOG_DEBUG("FTS AST after rewrite : %s", ast ? ast->text().c_str() : "<null>");
+
+  return std::make_shared<FtsCondInfo>(field_name, std::move(ast));
+}
+
 Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
     const CollectionSchema &schema, const SQLInfo::Ptr &sql_info) {
-  profiler_->open_stage("analyze stage");
+  ScopedProfilerStage stage_guard(profiler_, "analyze_sql_info");
   QueryAnalyzer analyzer;
   auto query_info = analyzer.analyze(schema, sql_info);
   if (!query_info) {
     return tl::make_unexpected(Status::InvalidArgument(
         "Analyze SQL info failed: ", query_info.error().c_str()));
   }
-  profiler_->close_stage();
   LOG_DEBUG("query_info: [%s]", query_info.value()->to_string().c_str());
   return query_info.value();
 }
 
-Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
-    CollectionSchema::Ptr collection, const VectorQuery &request,
+Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
+    CollectionSchema::Ptr collection, SearchQuery request,
     std::shared_ptr<GroupBy> group_by) {
-  profiler_->open_stage("message_to_sqlinfo");
-  sqlengine::SQLInfo::Ptr sql_info;
-  std::string err_msg;
+  ScopedProfilerStage stage_guard(profiler_, "build_sql_info");
   Node::Ptr filter_node;
   if (!request.filter_.empty()) {
     ZVecParser::Ptr parser = ZVecParser::create();
@@ -162,18 +268,38 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     }
   }
 
-  sqlengine::SQLInfoHelper::MessageToSQLInfo(&request, std::move(filter_node),
-                                             std::move(group_by), &sql_info,
-                                             &err_msg);
-  profiler_->close_stage();
-  if (!err_msg.empty()) {
-    LOG_ERROR("QueryAgent, message to sql info failed, err_msg: %s",
-              err_msg.c_str());
-    return tl::make_unexpected(Status::InvalidArgument(
-        "Convert message to SQL info failed: ", err_msg));
+  FtsCondInfo::Ptr fts_cond_info;
+  if (const auto *fts_clause = request.target_.get_fts_clause()) {
+    auto fts_result =
+        parse_fts_query(collection, request.target_.field_name_, *fts_clause,
+                        request.target_.query_params_);
+    if (!fts_result) {
+      return tl::make_unexpected(fts_result.error());
+    }
+    fts_cond_info = std::move(fts_result.value());
   }
-  LOG_DEBUG("Sql info is %s", sql_info->to_string().c_str());
-  return parse_sql_info(*collection, std::move(sql_info));
+
+  auto sql_info = sqlengine::SQLInfoHelper::BuildSQLInfoFromSearchQuery(
+      std::move(request), std::move(filter_node), std::move(group_by));
+  if (!sql_info) {
+    return tl::make_unexpected(sql_info.error());
+  }
+
+  // Attach FTS info to SelectInfo so query_analyzer can propagate it to
+  // QueryInfo.
+  if (fts_cond_info) {
+    auto select_info =
+        std::dynamic_pointer_cast<SelectInfo>(sql_info.value()->base_info());
+    if (!select_info) {
+      return tl::make_unexpected(Status::InternalError(
+          "BuildSQLInfoFromSearchQuery did not produce SelectInfo"));
+    }
+    select_info->set_fts_cond_info(std::move(fts_cond_info));
+  }
+
+  LOG_DEBUG("Sql info is %s", sql_info.value()->to_string().c_str());
+  stage_guard.close();
+  return parse_sql_info(*collection, std::move(sql_info.value()));
 }
 
 Result<std::unique_ptr<arrow::RecordBatchReader>>
@@ -182,7 +308,7 @@ SQLEngineImpl::search_by_query_info(
     std::vector<sqlengine::QueryInfo::Ptr> *query_infos) {
   global_init();
 
-  profiler_->open_stage("plan stage");
+  ScopedProfilerStage stage_guard(profiler_, "build_query_plan");
   QueryPlanner planner(collection.get());
   auto plan_info =
       planner.make_plan(segments, profiler_->trace_id(), query_infos);
@@ -190,7 +316,6 @@ SQLEngineImpl::search_by_query_info(
     LOG_ERROR("plan query_info failed: [%s]", plan_info.error().c_str());
     return tl::make_unexpected(plan_info.error());
   }
-  profiler_->close_stage();
   // LOG_DEBUG("plan_info: [%s]", plan_info->to_string().c_str());
   return plan_info.value()->execute_to_reader();
 }

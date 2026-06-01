@@ -28,6 +28,7 @@ enum class IndexType : uint32_t {
   HNSW_RABITQ = 4,
   VAMANA = 5,
   INVERT = 10,
+  FTS = 11,
 };
 
 /*

@@ -231,13 +231,13 @@ int main() {
 
   // query
   {
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 10;
-    query.field_name_ = "dense";
+    query.target_.field_name_ = "dense";
     query.include_vector_ = true;
     std::vector<float> query_vector = std::vector<float>(128, 0.1);
-    query.query_vector_.assign((char *)query_vector.data(),
-                               query_vector.size() * sizeof(float));
+    query.target_.set_vector(std::string((char *)query_vector.data(),
+                                         query_vector.size() * sizeof(float)));
     auto res = coll->Query(query);
     if (!res.has_value()) {
       std::cout << res.error().message() << std::endl;

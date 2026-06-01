@@ -21,8 +21,6 @@
 #include <zvec/db/config.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#include "db/common/constants.h"
-#include "db/common/error_code.h"
 #include "db/index/common/type_helper.h"
 #include "db/sqlengine/analyzer/query_node.h"
 #include "db/sqlengine/common/util.h"
@@ -400,6 +398,11 @@ Result<QueryInfo::Ptr> QueryAnalyzer::create_queryinfo_from_sqlinfo(
   // set group by
   query_info->set_group_by(select_info->group_by());
 
+  // set fts query
+  if (select_info->has_fts_query()) {
+    query_info->set_fts_cond_info(select_info->fts_cond_info());
+  }
+
   return query_info;
 }
 
@@ -510,42 +513,35 @@ Status QueryAnalyzer::check_and_convert_vector(
                                    vector_field_name);
   }
 
-  std::string vector_term;
   uint32_t dimension = vector_meta->dimension();
-  std::string vector_sparse_indices;
-  std::string vector_sparse_values;
-  QueryParams::Ptr query_params;
 
   const QueryNode::Ptr &vector_value_node = query_rel_node->right();
 
   // for pb request
   if (vector_value_node->op() == QueryNodeOp::Q_VECTOR_MATRIX_VALUE) {
     // for format vector = [,,,]
-    const QueryVectorMatrixNode::Ptr &vector_node =
+    QueryVectorMatrixNode::Ptr vector_node =
         std::dynamic_pointer_cast<QueryVectorMatrixNode>(vector_value_node);
-    // we only have vector matrix, other info is not available
-    vector_term = vector_node->matrix();
-    vector_sparse_indices = vector_node->sparse_indices();
-    vector_sparse_values = vector_node->sparse_values();
-    query_params = vector_node->query_params();
+    // Consume the vector payload; this node is detached from the search
+    // condition after conversion.
+    auto vector_data = vector_node->take_node();
+    auto core_data_type =
+        DataTypeCodeBook::to_data_type(vector_meta->data_type());
+    if (core_data_type == core::IndexMeta::DataType::DT_UNDEFINED) {
+      return Status::InvalidArgument("invalid data type:",
+                                     (int)vector_meta->data_type());
+    }
+
+    *vector_cond = std::make_shared<QueryInfo::QueryVectorCondInfo>(
+        vector_meta, vector_data->take_matrix(), core_data_type, dimension,
+        vector_data->take_sparse_indices(), vector_data->take_sparse_values(),
+        vector_data->take_query_params());
+    return Status::OK();
   } else {
     return Status::InvalidArgument("invalid vector value node. op[",
                                    vector_value_node->op_name(), "], text[",
                                    vector_value_node->text(), "]");
   }
-
-  auto core_data_type =
-      DataTypeCodeBook::to_data_type(vector_meta->data_type());
-  if (core_data_type == core::IndexMeta::DataType::DT_UNDEFINED) {
-    return Status::InvalidArgument("invalid data type:",
-                                   (int)vector_meta->data_type());
-  }
-
-  *vector_cond = std::make_shared<QueryInfo::QueryVectorCondInfo>(
-      vector_meta, vector_term, core_data_type, dimension,
-      std::move(vector_sparse_indices), std::move(vector_sparse_values),
-      std::move(query_params));
-  return Status::OK();
 }
 
 

@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/mman.h>
 #endif
@@ -246,19 +247,19 @@ class HnswStreamerEntity : public HnswEntity {
   using NIHashMapPointer = std::shared_ptr<NIHashMap>;
 
   //! Clone construct, used by clone method in subclasses
-  HnswStreamerEntity(IndexStreamer::Stats &stats, const HNSWHeader &hd,
-                     size_t chunk_size, uint32_t node_index_mask_bits,
-                     uint32_t upper_neighbor_mask_bits, bool filter_same_key,
-                     bool get_vector_enabled,
-                     const NIHashMapPointer &upper_neighbor_index,
-                     std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
-                     const HashMapPointer<key_t, node_id_t> &keys_map,
-                     bool use_key_info_map,
-                     std::vector<Chunk::Pointer> &&node_chunks,
-                     std::vector<Chunk::Pointer> &&upper_neighbor_chunks,
-                     const ChunkBroker::Pointer &broker,
-                     std::shared_ptr<std::vector<const uint8_t *>> node_bases,
-                     std::shared_ptr<std::vector<const uint8_t *>> upper_bases)
+  HnswStreamerEntity(
+      IndexStreamer::Stats &stats, const HNSWHeader &hd, size_t chunk_size,
+      uint32_t node_index_mask_bits, uint32_t upper_neighbor_mask_bits,
+      bool filter_same_key, bool get_vector_enabled,
+      const NIHashMapPointer &upper_neighbor_index,
+      const std::shared_ptr<std::shared_mutex> &upper_neighbor_rw_mutex,
+      std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
+      const HashMapPointer<key_t, node_id_t> &keys_map, bool use_key_info_map,
+      std::vector<Chunk::Pointer> &&node_chunks,
+      std::vector<Chunk::Pointer> &&upper_neighbor_chunks,
+      const ChunkBroker::Pointer &broker,
+      std::shared_ptr<std::vector<const uint8_t *>> node_bases,
+      std::shared_ptr<std::vector<const uint8_t *>> upper_bases)
       : stats_(stats),
         chunk_size_(chunk_size),
         node_index_mask_bits_(node_index_mask_bits),
@@ -269,6 +270,7 @@ class HnswStreamerEntity : public HnswEntity {
         filter_same_key_(filter_same_key),
         get_vector_enabled_(get_vector_enabled),
         use_key_info_map_(use_key_info_map),
+        upper_neighbor_rw_mutex_(upper_neighbor_rw_mutex),
         upper_neighbor_index_(upper_neighbor_index),
         keys_map_lock_(keys_map_lock),
         keys_map_(keys_map),
@@ -323,6 +325,10 @@ class HnswStreamerEntity : public HnswEntity {
 
   inline std::pair<uint32_t, uint32_t> get_upper_neighbor_chunk_loc(
       level_t level, node_id_t id) const {
+    // Shared lock: concurrent readers are fine, but must synchronize with
+    // add_upper_neighbor's exclusive lock to avoid data-race on
+    // slots_.size() inside HnswIndexHashMap.
+    std::shared_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");
@@ -370,6 +376,10 @@ class HnswStreamerEntity : public HnswEntity {
     if (level == 0) {
       return 0;
     }
+    // Exclusive lock: protects upper_neighbor_chunks_.emplace_back() and
+    // upper_neighbor_index_->insert() from racing with concurrent find()
+    // calls in get_upper_neighbor_chunk_loc().
+    std::unique_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     Chunk::Pointer chunk;
     uint64_t chunk_offset = UINT64_MAX;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
@@ -408,14 +418,37 @@ class HnswStreamerEntity : public HnswEntity {
     meta.level = level;
     meta.index = (chunk_index << upper_neighbor_mask_bits_) |
                  (chunk_offset / upper_neighbor_size_);
+    size_t zero_start = chunk_offset;
     chunk_offset += upper_neighbor_size_ * level;
-    if (ailego_unlikely(!upper_neighbor_index_->insert(id, meta.data))) {
-      LOG_ERROR("HashMap insert value failed");
+
+    // IMPORTANT: order matters here.
+    // 1) resize so the chunk's data_size covers the new region.
+    // 2) zero-fill the new region: storage backends like BufferStorage do
+    //    NOT zero on resize -- only metadata is updated, and the underlying
+    //    page may contain stale content from a previously-evicted page.
+    //    Without this step, NeighborsHeader::neighbor_cnt is garbage and
+    //    select_entry_point()/search_neighbors() iterate over garbage
+    //    node_ids, eventually triggering find()'s assertion in
+    //    get_upper_neighbor_chunk_loc().
+    // 3) ONLY THEN publish the entry to upper_neighbor_index_, so that any
+    //    concurrent reader that finds this id already sees a properly
+    //    zeroed upper-neighbor slot.
+    if (ailego_unlikely(chunk->resize(chunk_offset) != chunk_offset)) {
+      LOG_ERROR("Chunk resize to %zu failed", (size_t)chunk_offset);
       return IndexError_Runtime;
     }
 
-    if (ailego_unlikely(chunk->resize(chunk_offset) != chunk_offset)) {
-      LOG_ERROR("Chunk resize to %zu failed", (size_t)chunk_offset);
+    // Use std::vector instead of a VLA: VLAs are a GNU extension and may
+    // produce different codegen / be rejected under clang/MSVC.
+    std::vector<char> zeros(neighbors_size, 0);
+    if (ailego_unlikely(chunk->write(zero_start, zeros.data(),
+                                     neighbors_size) != neighbors_size)) {
+      LOG_ERROR("Chunk write zeros failed");
+      return IndexError_Runtime;
+    }
+
+    if (ailego_unlikely(!upper_neighbor_index_->insert(id, meta.data))) {
+      LOG_ERROR("HashMap insert value failed");
       return IndexError_Runtime;
     }
 
@@ -529,6 +562,10 @@ class HnswStreamerEntity : public HnswEntity {
  protected:
   IndexStreamer::Stats &stats_;
   std::mutex mutex_{};
+  //! Guards upper_neighbor_index_ and upper_neighbor_chunks_ against
+  //! concurrent reads (find) and writes (insert/emplace_back).
+  //! Shared via shared_ptr so all clones synchronize on the SAME mutex.
+  mutable std::shared_ptr<std::shared_mutex> upper_neighbor_rw_mutex_{};
   size_t max_index_size_{0UL};
   uint32_t chunk_size_{kDefaultChunkSize};
   uint32_t upper_neighbor_chunk_size_{kDefaultChunkSize};

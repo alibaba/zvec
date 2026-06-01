@@ -166,7 +166,7 @@ class QueryNode : public Generic_Node<QueryNodeOp, QueryNode> {
 
   QueryNode::Ptr detach_from_invert_cond(QueryInfo *query_info_ptr);
 
-  virtual std::string text() const override;
+  std::string text() const override;
 
   virtual void set_text(std::string /*new_val*/) {
     /* for QueryConstantNode only */
@@ -218,8 +218,12 @@ class QueryVectorMatrixNode : public QueryNode {
     return node_->query_params();
   }
 
+  std::shared_ptr<VectorMatrixNode> take_node() {
+    return std::move(node_);
+  }
+
  private:
-  std::shared_ptr<const VectorMatrixNode> node_{nullptr};
+  std::shared_ptr<VectorMatrixNode> node_{nullptr};
 };
 
 class QueryConstantNode : public QueryNode {
@@ -261,7 +265,7 @@ class QueryFuncNode : public QueryNode {
   using Ptr = std::shared_ptr<QueryFuncNode>;
 
   QueryFuncNode();
-  virtual ~QueryFuncNode() = default;
+  ~QueryFuncNode() override = default;
 
   void set_func_name_node(QueryNode::Ptr func_name_node);
   const QueryNode::Ptr &get_func_name_node() const;

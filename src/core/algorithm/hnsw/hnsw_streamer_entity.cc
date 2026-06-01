@@ -37,6 +37,7 @@ int HnswStreamerEntity::init(size_t max_doc_cnt) {
   std::lock_guard<std::mutex> lock(mutex_);
   broker_ = std::make_shared<ChunkBroker>(stats_);
   upper_neighbor_index_ = std::make_shared<NIHashMap>();
+  upper_neighbor_rw_mutex_ = std::make_shared<std::shared_mutex>();
   keys_map_lock_ = std::make_shared<ailego::SharedMutex>();
   keys_map_ = std::make_shared<HashMap<key_t, node_id_t>>();
   if (!keys_map_ || !upper_neighbor_index_ || !broker_ || !keys_map_lock_) {
@@ -767,9 +768,10 @@ const HnswEntity::Pointer HnswStreamerEntity::clone() const {
   HnswStreamerEntity *entity = new (std::nothrow) HnswStreamerEntity(
       stats_, header(), chunk_size_, node_index_mask_bits_,
       upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
-      upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
-      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_,
-      node_chunk_bases_, upper_neighbor_chunk_bases_);
+      upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
+      keys_map_, use_key_info_map_, std::move(node_chunks),
+      std::move(upper_neighbor_chunks), broker_, node_chunk_bases_,
+      upper_neighbor_chunk_bases_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswStreamerEntity new failed");
   }
@@ -800,9 +802,9 @@ const HnswEntity::Pointer HnswMmapStreamerEntity::clone() const {
   auto *entity = new (std::nothrow) HnswMmapStreamerEntity(
       stats_, header(), chunk_size_, node_index_mask_bits_,
       upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
-      upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
-      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_,
-      nullptr, nullptr);
+      upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
+      keys_map_, use_key_info_map_, std::move(node_chunks),
+      std::move(upper_neighbor_chunks), broker_, nullptr, nullptr);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswMmapStreamerEntity new failed");
   }
@@ -833,9 +835,9 @@ const HnswEntity::Pointer HnswContiguousStreamerEntity::clone() const {
   auto *entity = new (std::nothrow) HnswContiguousStreamerEntity(
       stats_, header(), chunk_size_, node_index_mask_bits_,
       upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
-      upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
-      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_,
-      nullptr, nullptr);
+      upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
+      keys_map_, use_key_info_map_, std::move(node_chunks),
+      std::move(upper_neighbor_chunks), broker_, nullptr, nullptr);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswContiguousStreamerEntity new failed");
     return HnswEntity::Pointer();

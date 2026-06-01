@@ -196,6 +196,11 @@ std::string SelectInfo::to_string() {
     str += "\n";
   }
 
+  if (fts_cond_info_ != nullptr) {
+    str += "fts_cond: " + fts_cond_info_->to_string();
+    str += "\n";
+  }
+
   return str;
 }
 

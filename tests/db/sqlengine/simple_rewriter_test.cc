@@ -188,14 +188,14 @@ class SimpleRewriterTest : public testing::Test {
   static void TearDownTestSuite() {}
 
   QueryInfo::Ptr parse(const std::string &filter) {
-    VectorQuery query;
+    SearchQuery query;
     query.output_fields_ = {"*"};
     query.topk_ = 11;
     query.include_vector_ = false;
     query.filter_ = filter;
 
     auto engine = std::make_shared<SQLEngineImpl>(profiler_);
-    auto ret = engine->parse_request(schema, query, nullptr);
+    auto ret = engine->build_query_info(schema, query, nullptr);
 
     // ASSERT_TRUE(ret.has_value());
     QueryInfo::Ptr new_query_info = ret.value();
