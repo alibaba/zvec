@@ -647,6 +647,13 @@ Status SegmentHelper::ReduceVectorIndex(
       if (filter != nullptr || input_segments.empty()) {
         return false;
       }
+      if (output_field.index_type() != IndexType::HNSW &&
+          output_field.index_type() != IndexType::HNSW_RABITQ &&
+          output_field.index_type() != IndexType::FLAT) {
+        // Builder-rebuild indexes (IVF, VAMANA) fall back to the full-rebuild
+        // merge.
+        return false;
+      }
       auto first_indexers = fetch_from(input_segments.front(), fetch);
       if (first_indexers.size() != 1) {
         return false;
