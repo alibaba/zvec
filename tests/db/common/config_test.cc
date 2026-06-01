@@ -38,7 +38,8 @@ TEST_F(ConfigTest, InitializeWithDefaultConfig) {
 
   // Verify default values
   ASSERT_GT(GlobalConfig::Instance().memory_limit_bytes(), 0);
-  ASSERT_EQ(GlobalConfig::Instance().log_level(), GlobalConfig::LogLevel::WARN);
+  ASSERT_EQ(GlobalConfig::Instance().log_level(),
+            GlobalConfig::LogLevel::kWarn);
   ASSERT_EQ(GlobalConfig::Instance().log_type(), "ConsoleLogger");
   ASSERT_GT(GlobalConfig::Instance().query_thread_count(), 0);
   ASSERT_EQ(GlobalConfig::Instance().invert_to_forward_scan_ratio(), 0.9f);
@@ -50,7 +51,7 @@ TEST_F(ConfigTest, InitializeWithDefaultConfig) {
 TEST_F(ConfigTest, InitializeWithCustomConsoleLogConfig) {
   GlobalConfig::ConfigData config;
   config.log_config = std::make_shared<GlobalConfig::ConsoleLogConfig>(
-      GlobalConfig::LogLevel::DEBUG);
+      GlobalConfig::LogLevel::kDebug);
   config.memory_limit_bytes = 1024 * 1024 * 1024;  // 1GB
   config.query_thread_count = 4;
   config.optimize_thread_count = 2;
@@ -67,7 +68,7 @@ TEST_F(ConfigTest, InitializeWithCustomConsoleLogConfig) {
 TEST_F(ConfigTest, InitializeWithCustomFileLogConfig) {
   GlobalConfig::ConfigData config;
   auto file_config = std::make_shared<GlobalConfig::FileLogConfig>(
-      GlobalConfig::LogLevel::INFO, "/tmp/logs", "test.log", 1024, 14);
+      GlobalConfig::LogLevel::kInfo, "/tmp/logs", "test.log", 1024, 14);
   config.log_config = file_config;
   config.memory_limit_bytes = 2 * 1024 * 1024 * 1024ULL;  // 2GB
   config.query_thread_count = 8;
@@ -207,11 +208,11 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
 }
 
 TEST_F(ConfigTest, LogLevelEnumValues) {
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::DEBUG), 0);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::INFO), 1);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::WARN), 2);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::ERROR), 3);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::FATAL), 4);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kDebug), 0);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kInfo), 1);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kWarn), 2);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kError), 3);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kFatal), 4);
 }
 
 TEST_F(ConfigTest, LogConfigPolymorphism) {

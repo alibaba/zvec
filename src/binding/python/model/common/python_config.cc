@@ -46,12 +46,12 @@ inline bool iequals(const std::string &a, const std::string &b) {
 }
 
 GlobalConfig::LogLevel str_to_loglevel(const std::string &s) {
-  if (iequals(s, "debug")) return GlobalConfig::LogLevel::DEBUG;
-  if (iequals(s, "info")) return GlobalConfig::LogLevel::INFO;
+  if (iequals(s, "debug")) return GlobalConfig::LogLevel::kDebug;
+  if (iequals(s, "info")) return GlobalConfig::LogLevel::kInfo;
   if (iequals(s, "warn") || iequals(s, "warning"))
-    return GlobalConfig::LogLevel::WARN;
-  if (iequals(s, "error")) return GlobalConfig::LogLevel::ERROR;
-  if (iequals(s, "fatal")) return GlobalConfig::LogLevel::FATAL;
+    return GlobalConfig::LogLevel::kWarn;
+  if (iequals(s, "error")) return GlobalConfig::LogLevel::kError;
+  if (iequals(s, "fatal")) return GlobalConfig::LogLevel::kFatal;
   throw py::value_error("Invalid log level: ");
 }
 
