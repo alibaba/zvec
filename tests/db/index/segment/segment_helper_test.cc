@@ -104,7 +104,7 @@ class SegmentHelperTest : public testing::Test {
                      std::move(filter), forward_use_parquet, concurrency);
     auto segment_task = SegmentTask::CreateCompactTask(task);
     EXPECT_NE(segment_task, nullptr);
-    if (segment_task == nullptr) return {};
+    if (segment_task == nullptr) return {task, nullptr};
 
     auto status = SegmentHelper::Execute(segment_task);
     EXPECT_TRUE(status.ok()) << status.message();
