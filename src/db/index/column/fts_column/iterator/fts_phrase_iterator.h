@@ -70,6 +70,10 @@ class PhraseDocIterator : public DocIterator {
   std::vector<std::string> terms_;
   RocksdbContext *ctx_;
   rocksdb::ColumnFamilyHandle *positions_cf_;
+  // Cache matches() result per doc_id to avoid redundant $POS MultiGet when
+  // DisjunctionIterator calls matches() from both matches() and score().
+  uint32_t cached_matches_doc_id_{NO_MORE_DOCS};
+  bool cached_matches_result_{false};
 };
 
 }  // namespace zvec::fts

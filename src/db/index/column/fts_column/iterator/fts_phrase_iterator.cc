@@ -50,8 +50,13 @@ bool PhraseDocIterator::matches() {
   if (cached_doc_id_ == NO_MORE_DOCS) {
     return false;
   }
+  if (cached_doc_id_ == cached_matches_doc_id_) {
+    return cached_matches_result_;
+  }
   // Phase 2: verify position adjacency (deferred IO)
-  return verify_phrase_positions(cached_doc_id_);
+  cached_matches_doc_id_ = cached_doc_id_;
+  cached_matches_result_ = verify_phrase_positions(cached_doc_id_);
+  return cached_matches_result_;
 }
 
 float PhraseDocIterator::score() {
