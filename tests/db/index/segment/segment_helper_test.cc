@@ -72,6 +72,63 @@ class SegmentHelperTest : public testing::Test {
   }
 
  protected:
+  VersionManager::Ptr CreateVersionManager(const CollectionSchema &schema) {
+    Version version;
+    version.set_schema(schema);
+    auto vm = VersionManager::Create(col_path, version);
+    if (!vm.has_value()) {
+      throw std::runtime_error("Failed to create version manager");
+    }
+    return vm.value();
+  }
+
+  SegmentOptions WriteOptions() const {
+    return SegmentOptions{false, true, DEFAULT_MAX_BUFFER_SIZE};
+  }
+
+  struct CompactResult {
+    CompactTask compact_task;
+    Segment::Ptr output_segment;  // null when filter dropped every doc
+  };
+
+  // Execute a CompactTask end-to-end: build it, run it, move the tmp segment
+  // dir into place, and reopen the output segment in read-only mode.
+  CompactResult RunCompactAndOpen(CollectionSchema::Ptr schema,
+                                  std::vector<Segment::Ptr> segments,
+                                  SegmentID output_segment_id,
+                                  IndexFilter::Ptr filter,
+                                  const VersionManager::Ptr &version_manager,
+                                  int concurrency = 1) {
+    const bool forward_use_parquet = false;
+    CompactTask task(col_path, schema, std::move(segments), output_segment_id,
+                     std::move(filter), forward_use_parquet, concurrency);
+    auto segment_task = SegmentTask::CreateCompactTask(task);
+    EXPECT_NE(segment_task, nullptr);
+    if (segment_task == nullptr) return {};
+
+    auto status = SegmentHelper::Execute(segment_task);
+    EXPECT_TRUE(status.ok()) << status.message();
+
+    auto executed = std::get<CompactTask>(segment_task->task_info());
+    if (executed.output_segment_meta_ == nullptr) {
+      return {executed, nullptr};
+    }
+
+    auto tmp_path = FileHelper::MakeTempSegmentPath(col_path, output_segment_id);
+    auto dst_path = FileHelper::MakeSegmentPath(col_path, output_segment_id);
+    EXPECT_TRUE(FileHelper::MoveDirectory(tmp_path, dst_path));
+
+    SegmentOptions read_options{true, !forward_use_parquet,
+                                DEFAULT_MAX_BUFFER_SIZE};
+    version_manager->set_enable_mmap(!forward_use_parquet);
+    auto seg_ret = Segment::Open(col_path, *schema,
+                                 *executed.output_segment_meta_, id_map,
+                                 delete_store, version_manager, read_options);
+    EXPECT_TRUE(seg_ret.has_value());
+    if (!seg_ret.has_value()) return {executed, nullptr};
+    return {executed, std::move(seg_ret.value())};
+  }
+
   std::string col_name = "test_segment_helper";
   std::string col_path = "./test_collection";
   IDMap::Ptr id_map;
@@ -80,84 +137,29 @@ class SegmentHelperTest : public testing::Test {
 
 TEST_F(SegmentHelperTest, CompactTask_General) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
-
-  // Create segments
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 1000);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
-
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 1, 1000, id_map, delete_store, version_manager,
-      seg_options, 1000, 1000);
+      col_path, *schema, 1, 1000, id_map, delete_store, version_manager,
+      write_options, 1000, 1000);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg2->flush().ok());
-  std::cout << "seg2: " << seg2->meta()->to_string_formatted() << std::endl;
 
-  // Prepare segments for compaction
-  std::vector<Segment::Ptr> segments = {seg1, seg2};
-
-  // Create compact task
   SegmentID output_segment_id = 2;
-  CompactTask task(GetColPath(), schema, segments,
-                   output_segment_id,    // output_segment_id
-                   nullptr,              // filter
-                   forward_use_parquet,  // forward_use_parquet
-                   1                     // concurrency
-  );
+  auto [compact_task, seg3] = RunCompactAndOpen(
+      schema, {seg1, seg2}, output_segment_id, nullptr, version_manager);
 
-  // Create segment task
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-
-  // Verify task creation
-  ASSERT_TRUE(segment_task != nullptr);
-
-  // Execute the task
-  Status status = SegmentHelper::Execute(segment_task);
-  std::cout << "status: " << status.message() << std::endl;
-  ASSERT_TRUE(status.ok());
-
-  auto segment_compact_task = std::get<CompactTask>(segment_task->task_info());
-  // Verify output segment
-  auto output_segment_meta = segment_compact_task.output_segment_meta_;
-  ASSERT_EQ(output_segment_meta->id(), output_segment_id);
-  ASSERT_FALSE(output_segment_meta->writing_forward_block().has_value());
-
-  // Move segment directory
-  auto tmp_segment_path =
-      FileHelper::MakeTempSegmentPath(GetColPath(), output_segment_id);
-  auto new_segment_path =
-      FileHelper::MakeSegmentPath(GetColPath(), output_segment_id);
-  FileHelper::MoveDirectory(tmp_segment_path, new_segment_path);
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto seg3_ret = Segment::Open(
-      GetColPath(), *schema, *segment_compact_task.output_segment_meta_, id_map,
-      delete_store, version_manager, seg_options);
-  if (!seg3_ret.has_value()) {
-    std::cout << seg3_ret.error().message() << std::endl;
-    ASSERT_TRUE(false);
-  }
-
-  auto seg3 = std::move(seg3_ret.value());
+  ASSERT_NE(seg3, nullptr);
+  ASSERT_EQ(compact_task.output_segment_meta_->id(), output_segment_id);
+  ASSERT_FALSE(
+      compact_task.output_segment_meta_->writing_forward_block().has_value());
   ASSERT_EQ(seg3->id(), output_segment_id);
-
-  std::cout << seg3->meta()->to_string_formatted() << std::endl;
   ASSERT_EQ(seg3->doc_count(), seg1->doc_count() + seg2->doc_count());
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
@@ -173,84 +175,29 @@ TEST_F(SegmentHelperTest, CompactTask_General) {
 
 TEST_F(SegmentHelperTest, CompactTask_ScalarIndex) {
   auto schema = test::TestHelper::CreateSchemaWithScalarIndex(false);
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
-
-  // Create segments
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 1000);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
-
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 1, 1000, id_map, delete_store, version_manager,
-      seg_options, 1000, 1000);
+      col_path, *schema, 1, 1000, id_map, delete_store, version_manager,
+      write_options, 1000, 1000);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg2->flush().ok());
-  std::cout << "seg2: " << seg2->meta()->to_string_formatted() << std::endl;
 
-  // Prepare segments for compaction
-  std::vector<Segment::Ptr> segments = {seg1, seg2};
-
-  // Create compact task
   SegmentID output_segment_id = 2;
-  CompactTask task(GetColPath(), schema, segments,
-                   output_segment_id,    // output_segment_id
-                   nullptr,              // filter
-                   forward_use_parquet,  // forward_use_parquet
-                   1                     // concurrency
-  );
+  auto [compact_task, seg3] = RunCompactAndOpen(
+      schema, {seg1, seg2}, output_segment_id, nullptr, version_manager);
 
-  // Create segment task
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-
-  // Verify task creation
-  ASSERT_TRUE(segment_task != nullptr);
-
-  // Execute the task
-  Status status = SegmentHelper::Execute(segment_task);
-  std::cout << "status: " << status.message() << std::endl;
-  ASSERT_TRUE(status.ok());
-
-  auto segment_compact_task = std::get<CompactTask>(segment_task->task_info());
-  // Verify output segment
-  auto output_segment_meta = segment_compact_task.output_segment_meta_;
-  ASSERT_EQ(output_segment_meta->id(), output_segment_id);
-  ASSERT_FALSE(output_segment_meta->writing_forward_block().has_value());
-
-  // Move segment directory
-  auto tmp_segment_path =
-      FileHelper::MakeTempSegmentPath(GetColPath(), output_segment_id);
-  auto new_segment_path =
-      FileHelper::MakeSegmentPath(GetColPath(), output_segment_id);
-  FileHelper::MoveDirectory(tmp_segment_path, new_segment_path);
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto seg3_ret = Segment::Open(
-      GetColPath(), *schema, *segment_compact_task.output_segment_meta_, id_map,
-      delete_store, version_manager, seg_options);
-  if (!seg3_ret.has_value()) {
-    std::cout << seg3_ret.error().message() << std::endl;
-    ASSERT_TRUE(false);
-  }
-
-  auto seg3 = std::move(seg3_ret.value());
+  ASSERT_NE(seg3, nullptr);
+  ASSERT_EQ(compact_task.output_segment_meta_->id(), output_segment_id);
+  ASSERT_FALSE(
+      compact_task.output_segment_meta_->writing_forward_block().has_value());
   ASSERT_EQ(seg3->id(), output_segment_id);
-
-  std::cout << seg3->meta()->to_string_formatted() << std::endl;
   ASSERT_EQ(seg3->doc_count(), seg1->doc_count() + seg2->doc_count());
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
@@ -266,84 +213,29 @@ TEST_F(SegmentHelperTest, CompactTask_ScalarIndex) {
 
 TEST_F(SegmentHelperTest, CompactTask_VectorIndex) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
-
-  // Create segments
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 1000);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
-
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 1, 1000, id_map, delete_store, version_manager,
-      seg_options, 1000, 1000);
+      col_path, *schema, 1, 1000, id_map, delete_store, version_manager,
+      write_options, 1000, 1000);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg2->flush().ok());
-  std::cout << "seg2: " << seg2->meta()->to_string_formatted() << std::endl;
 
-  // Prepare segments for compaction
-  std::vector<Segment::Ptr> segments = {seg1, seg2};
-
-  // Create compact task
   SegmentID output_segment_id = 2;
-  CompactTask task(GetColPath(), schema, segments,
-                   output_segment_id,    // output_segment_id
-                   nullptr,              // filter
-                   forward_use_parquet,  // forward_use_parquet
-                   1                     // concurrency
-  );
+  auto [compact_task, seg3] = RunCompactAndOpen(
+      schema, {seg1, seg2}, output_segment_id, nullptr, version_manager);
 
-  // Create segment task
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-
-  // Verify task creation
-  ASSERT_TRUE(segment_task != nullptr);
-
-  // Execute the task
-  Status status = SegmentHelper::Execute(segment_task);
-  std::cout << "status: " << status.message() << std::endl;
-  ASSERT_TRUE(status.ok());
-
-  auto segment_compact_task = std::get<CompactTask>(segment_task->task_info());
-  // Verify output segment
-  auto output_segment_meta = segment_compact_task.output_segment_meta_;
-  ASSERT_EQ(output_segment_meta->id(), output_segment_id);
-  ASSERT_FALSE(output_segment_meta->writing_forward_block().has_value());
-
-  // Move segment directory
-  auto tmp_segment_path =
-      FileHelper::MakeTempSegmentPath(GetColPath(), output_segment_id);
-  auto new_segment_path =
-      FileHelper::MakeSegmentPath(GetColPath(), output_segment_id);
-  FileHelper::MoveDirectory(tmp_segment_path, new_segment_path);
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto seg3_ret = Segment::Open(
-      GetColPath(), *schema, *segment_compact_task.output_segment_meta_, id_map,
-      delete_store, version_manager, seg_options);
-  if (!seg3_ret.has_value()) {
-    std::cout << seg3_ret.error().message() << std::endl;
-    ASSERT_TRUE(false);
-  }
-
-  auto seg3 = std::move(seg3_ret.value());
+  ASSERT_NE(seg3, nullptr);
+  ASSERT_EQ(compact_task.output_segment_meta_->id(), output_segment_id);
+  ASSERT_FALSE(
+      compact_task.output_segment_meta_->writing_forward_block().has_value());
   ASSERT_EQ(seg3->id(), output_segment_id);
-
-  std::cout << seg3->meta()->to_string_formatted() << std::endl;
   ASSERT_EQ(seg3->doc_count(), seg1->doc_count() + seg2->doc_count());
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
@@ -359,86 +251,35 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndex) {
 
 TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
-
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
   std::vector<Segment::Ptr> input_segs;
-  int seg_count = 10;
-  int doc_count_per_seg = 100;
+  const int seg_count = 10;
+  const int doc_count_per_seg = 100;
   for (int i = 0; i < seg_count; i++) {
     auto seg = test::TestHelper::CreateSegmentWithDoc(
-        GetColPath(), *schema, i, i * doc_count_per_seg, id_map, delete_store,
-        version_manager, seg_options, i * doc_count_per_seg, doc_count_per_seg);
+        col_path, *schema, i, i * doc_count_per_seg, id_map, delete_store,
+        version_manager, write_options, i * doc_count_per_seg,
+        doc_count_per_seg);
     ASSERT_TRUE(seg != nullptr);
     ASSERT_TRUE(seg->flush().ok());
     input_segs.push_back(seg);
   }
 
-  // Create compact task
   SegmentID output_segment_id = seg_count;
-  CompactTask task(GetColPath(), schema, input_segs,
-                   output_segment_id,    // output_segment_id
-                   nullptr,              // filter
-                   forward_use_parquet,  // forward_use_parquet
-                   1                     // concurrency
-  );
+  auto [compact_task, seg3] = RunCompactAndOpen(
+      schema, input_segs, output_segment_id, nullptr, version_manager);
 
-  // Create segment task
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-
-  // Verify task creation
-  ASSERT_TRUE(segment_task != nullptr);
-
-  // Execute the task
-  Status status = SegmentHelper::Execute(segment_task);
-  std::cout << "status: " << status.message() << std::endl;
-  ASSERT_TRUE(status.ok());
-
-  auto segment_compact_task = std::get<CompactTask>(segment_task->task_info());
-  // Verify output segment
-  auto output_segment_meta = segment_compact_task.output_segment_meta_;
-  ASSERT_EQ(output_segment_meta->id(), output_segment_id);
-  ASSERT_FALSE(output_segment_meta->writing_forward_block().has_value());
-
-  // Move segment directory
-  auto tmp_segment_path =
-      FileHelper::MakeTempSegmentPath(GetColPath(), output_segment_id);
-  auto new_segment_path =
-      FileHelper::MakeSegmentPath(GetColPath(), output_segment_id);
-  FileHelper::MoveDirectory(tmp_segment_path, new_segment_path);
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto seg3_ret = Segment::Open(
-      GetColPath(), *schema, *segment_compact_task.output_segment_meta_, id_map,
-      delete_store, version_manager, seg_options);
-  if (!seg3_ret.has_value()) {
-    std::cout << seg3_ret.error().message() << std::endl;
-    ASSERT_TRUE(false);
-  }
-
-  auto seg3 = std::move(seg3_ret.value());
+  ASSERT_NE(seg3, nullptr);
+  ASSERT_EQ(compact_task.output_segment_meta_->id(), output_segment_id);
+  ASSERT_FALSE(
+      compact_task.output_segment_meta_->writing_forward_block().has_value());
   ASSERT_EQ(seg3->id(), output_segment_id);
-
-  std::cout << seg3->meta()->to_string_formatted() << std::endl;
   ASSERT_EQ(seg3->doc_count(), seg_count * doc_count_per_seg);
 
   for (uint64_t i = 0; i < seg3->doc_count(); i++) {
     auto doc = seg3->Fetch(i);
-    if (doc == nullptr) {
-      std::cout << "doc is null: " << i << std::endl;
-    }
     ASSERT_NE(doc, nullptr);
     auto expect_doc = test::TestHelper::CreateDoc(i, *schema);
     ASSERT_EQ(*doc, expect_doc);
@@ -447,78 +288,27 @@ TEST_F(SegmentHelperTest, CompactTask_MultipleSegments) {
 
 TEST_F(SegmentHelperTest, CompactTask_Filter) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
-
-  // Create segments
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 1000);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
 
-  // Create a simple filter
   auto filter = std::make_shared<EasyIndexFilter>(
-      [&](uint64_t id) -> bool { return id < 10; });
-  // Note: Actual filter configuration would depend on the IndexFilter
-  // implementation
+      [](uint64_t id) -> bool { return id < 10; });
 
-  // Create compact task with filter
   SegmentID output_segment_id = 1;
-  CompactTask task(GetColPath(), schema, {seg1},  // Single segment with filter
-                   output_segment_id,             // output_segment_id
-                   filter,
-                   forward_use_parquet,  // forward_use_parquet
-                   1                     // concurrency
-  );
+  auto [compact_task, seg2] = RunCompactAndOpen(
+      schema, {seg1}, output_segment_id, filter, version_manager);
 
-  // Create and execute task
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-  ASSERT_TRUE(segment_task != nullptr);
-
-  Status status = SegmentHelper::Execute(segment_task);
-  std::cout << "status: " << status.message() << std::endl;
-  ASSERT_TRUE(status.ok());
-
-  auto segment_compact_task = std::get<CompactTask>(segment_task->task_info());
-  // Verify output segment
-  auto output_segment_meta = segment_compact_task.output_segment_meta_;
-  std::cout << output_segment_meta->to_string_formatted() << std::endl;
-  ASSERT_EQ(output_segment_meta->id(), output_segment_id);
-  ASSERT_FALSE(output_segment_meta->writing_forward_block().has_value());
-
-  // Move segment directory
-  auto tmp_segment_path =
-      FileHelper::MakeTempSegmentPath(GetColPath(), output_segment_id);
-  auto new_segment_path =
-      FileHelper::MakeSegmentPath(GetColPath(), output_segment_id);
-  FileHelper::MoveDirectory(tmp_segment_path, new_segment_path);
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto seg2_ret = Segment::Open(
-      GetColPath(), *schema, *segment_compact_task.output_segment_meta_, id_map,
-      delete_store, version_manager, seg_options);
-  if (!seg2_ret.has_value()) {
-    std::cout << seg2_ret.error().message() << std::endl;
-    ASSERT_TRUE(false);
-  }
-
-  auto seg2 = std::move(seg2_ret.value());
+  ASSERT_NE(seg2, nullptr);
+  ASSERT_EQ(compact_task.output_segment_meta_->id(), output_segment_id);
+  ASSERT_FALSE(
+      compact_task.output_segment_meta_->writing_forward_block().has_value());
   ASSERT_EQ(seg2->id(), output_segment_id);
-
-  std::cout << seg2->meta()->to_string_formatted() << std::endl;
   ASSERT_EQ(seg2->doc_count(), seg1->doc_count() - 10);
 
   ASSERT_TRUE(seg1->destroy().ok());
@@ -526,58 +316,26 @@ TEST_F(SegmentHelperTest, CompactTask_Filter) {
 
 TEST_F(SegmentHelperTest, CompactTask_FilterAll) {
   auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
-
-  // Create segments
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 1000);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 1000);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
 
-  // Create a simple filter
   auto filter = std::make_shared<EasyIndexFilter>(
-      [&](uint64_t id) -> bool { return true; });
-  // Note: Actual filter configuration would depend on the IndexFilter
-  // implementation
+      [](uint64_t /*id*/) -> bool { return true; });
 
-  // Create compact task with filter
   SegmentID output_segment_id = 1;
-  CompactTask task(GetColPath(), schema, {seg1},  // Single segment with filter
-                   output_segment_id,             // output_segment_id
-                   filter,
-                   forward_use_parquet,  // forward_use_parquet
-                   1                     // concurrency
-  );
+  auto [compact_task, output_segment] = RunCompactAndOpen(
+      schema, {seg1}, output_segment_id, filter, version_manager);
 
-  // Create and execute task
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-  ASSERT_TRUE(segment_task != nullptr);
-
-  Status status = SegmentHelper::Execute(segment_task);
-  std::cout << "status: " << status.message() << std::endl;
-  ASSERT_TRUE(status.ok());
-
-  auto segment_compact_task = std::get<CompactTask>(segment_task->task_info());
-  // Verify output segment
-  auto output_segment_meta = segment_compact_task.output_segment_meta_;
-  ASSERT_EQ(output_segment_meta, nullptr);
-
-  auto tmp_segment_path =
-      FileHelper::MakeTempSegmentPath(GetColPath(), output_segment_id);
-  ASSERT_FALSE(FileHelper::DirectoryExists(tmp_segment_path));
+  ASSERT_EQ(compact_task.output_segment_meta_, nullptr);
+  ASSERT_EQ(output_segment, nullptr);
+  ASSERT_FALSE(FileHelper::DirectoryExists(
+      FileHelper::MakeTempSegmentPath(col_path, output_segment_id)));
 }
 
 TEST_F(SegmentHelperTest, CreateVectorIndexTask_AllFields) {
@@ -695,28 +453,18 @@ TEST_F(SegmentHelperTest, CreateVectorIndexTask_SingleField) {
 
 TEST_F(SegmentHelperTest, CompactTask_VectorIndexThreeSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
-
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 300);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 300);
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 1, 300, id_map, delete_store, version_manager,
-      seg_options, 300, 300);
+      col_path, *schema, 1, 300, id_map, delete_store, version_manager,
+      write_options, 300, 300);
   auto seg3 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 2, 600, id_map, delete_store, version_manager,
-      seg_options, 600, 300);
+      col_path, *schema, 2, 600, id_map, delete_store, version_manager,
+      write_options, 600, 300);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg3 != nullptr);
@@ -724,29 +472,10 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndexThreeSegmentsRegression) {
   ASSERT_TRUE(seg2->flush().ok());
   ASSERT_TRUE(seg3->flush().ok());
 
-  CompactTask task(GetColPath(), schema, {seg1, seg2, seg3}, 3, nullptr,
-                   forward_use_parquet, 1);
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-  ASSERT_TRUE(segment_task != nullptr);
+  auto [compact_task, output_segment] = RunCompactAndOpen(
+      schema, {seg1, seg2, seg3}, 3, nullptr, version_manager);
 
-  auto status = SegmentHelper::Execute(segment_task);
-  ASSERT_TRUE(status.ok());
-
-  auto compact_task = std::get<CompactTask>(segment_task->task_info());
-  ASSERT_TRUE(compact_task.output_segment_meta_ != nullptr);
-
-  auto tmp_segment_path = FileHelper::MakeTempSegmentPath(GetColPath(), 3);
-  auto new_segment_path = FileHelper::MakeSegmentPath(GetColPath(), 3);
-  ASSERT_TRUE(FileHelper::MoveDirectory(tmp_segment_path, new_segment_path));
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto output_segment_ret =
-      Segment::Open(GetColPath(), *schema, *compact_task.output_segment_meta_,
-                    id_map, delete_store, version_manager, seg_options);
-  ASSERT_TRUE(output_segment_ret.has_value());
-  auto output_segment = std::move(output_segment_ret.value());
-
+  ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), 900);
   ASSERT_NE(output_segment->Fetch(0), nullptr);
   ASSERT_NE(output_segment->Fetch(899), nullptr);
@@ -757,28 +486,18 @@ TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegressio
       false, col_name,
       std::make_shared<HnswIndexParams>(MetricType::IP, 16, 20,
                                         QuantizeType::FP16));
-
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 300);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 300);
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 1, 300, id_map, delete_store, version_manager,
-      seg_options, 300, 300);
+      col_path, *schema, 1, 300, id_map, delete_store, version_manager,
+      write_options, 300, 300);
   auto seg3 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 2, 600, id_map, delete_store, version_manager,
-      seg_options, 600, 300);
+      col_path, *schema, 2, 600, id_map, delete_store, version_manager,
+      write_options, 600, 300);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg3 != nullptr);
@@ -789,29 +508,10 @@ TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegressio
   ASSERT_GT(seg2->get_quant_vector_indexer("dense_fp32").size(), 0u);
   ASSERT_GT(seg3->get_quant_vector_indexer("dense_fp32").size(), 0u);
 
-  CompactTask task(GetColPath(), schema, {seg1, seg2, seg3}, 3, nullptr,
-                   forward_use_parquet, 1);
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-  ASSERT_TRUE(segment_task != nullptr);
+  auto [compact_task, output_segment] = RunCompactAndOpen(
+      schema, {seg1, seg2, seg3}, 3, nullptr, version_manager);
 
-  auto status = SegmentHelper::Execute(segment_task);
-  ASSERT_TRUE(status.ok());
-
-  auto compact_task = std::get<CompactTask>(segment_task->task_info());
-  ASSERT_TRUE(compact_task.output_segment_meta_ != nullptr);
-
-  auto tmp_segment_path = FileHelper::MakeTempSegmentPath(GetColPath(), 3);
-  auto new_segment_path = FileHelper::MakeSegmentPath(GetColPath(), 3);
-  ASSERT_TRUE(FileHelper::MoveDirectory(tmp_segment_path, new_segment_path));
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto output_segment_ret =
-      Segment::Open(GetColPath(), *schema, *compact_task.output_segment_meta_,
-                    id_map, delete_store, version_manager, seg_options);
-  ASSERT_TRUE(output_segment_ret.has_value());
-  auto output_segment = std::move(output_segment_ret.value());
-
+  ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), 900);
   ASSERT_NE(output_segment->Fetch(0), nullptr);
   ASSERT_NE(output_segment->Fetch(899), nullptr);
@@ -821,25 +521,15 @@ TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegressio
 
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
-
-  Version version;
-  version.set_schema(*schema);
-  auto version_manager_tmp = VersionManager::Create(col_path, version);
-  if (!version_manager_tmp.has_value()) {
-    throw std::runtime_error("Failed to create version manager");
-  }
-
-  auto version_manager = version_manager_tmp.value();
-  bool forward_use_parquet = false;
-  auto seg_options =
-      SegmentOptions{false, !forward_use_parquet, DEFAULT_MAX_BUFFER_SIZE};
+  auto version_manager = CreateVersionManager(*schema);
+  auto write_options = WriteOptions();
 
   auto seg1 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 0, 0, id_map, delete_store, version_manager,
-      seg_options, 0, 400);
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options, 0, 400);
   auto seg2 = test::TestHelper::CreateSegmentWithDoc(
-      GetColPath(), *schema, 1, 400, id_map, delete_store, version_manager,
-      seg_options, 400, 400);
+      col_path, *schema, 1, 400, id_map, delete_store, version_manager,
+      write_options, 400, 400);
   ASSERT_TRUE(seg1 != nullptr);
   ASSERT_TRUE(seg2 != nullptr);
   ASSERT_TRUE(seg1->flush().ok());
@@ -849,28 +539,9 @@ TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
     return id < 100 || (id >= 400 && id < 450);
   });
 
-  CompactTask task(GetColPath(), schema, {seg1, seg2}, 2, filter,
-                   forward_use_parquet, 1);
-  auto segment_task = SegmentTask::CreateCompactTask(task);
-  ASSERT_TRUE(segment_task != nullptr);
+  auto [compact_task, output_segment] =
+      RunCompactAndOpen(schema, {seg1, seg2}, 2, filter, version_manager);
 
-  auto status = SegmentHelper::Execute(segment_task);
-  ASSERT_TRUE(status.ok());
-
-  auto compact_task = std::get<CompactTask>(segment_task->task_info());
-  ASSERT_TRUE(compact_task.output_segment_meta_ != nullptr);
-
-  auto tmp_segment_path = FileHelper::MakeTempSegmentPath(GetColPath(), 2);
-  auto new_segment_path = FileHelper::MakeSegmentPath(GetColPath(), 2);
-  ASSERT_TRUE(FileHelper::MoveDirectory(tmp_segment_path, new_segment_path));
-
-  seg_options.read_only_ = true;
-  version_manager->set_enable_mmap(!forward_use_parquet);
-  auto output_segment_ret =
-      Segment::Open(GetColPath(), *schema, *compact_task.output_segment_meta_,
-                    id_map, delete_store, version_manager, seg_options);
-  ASSERT_TRUE(output_segment_ret.has_value());
-  auto output_segment = std::move(output_segment_ret.value());
-
+  ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), 650);
 }
