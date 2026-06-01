@@ -761,7 +761,6 @@ TEST_P(SegmentTest, Recover) {
     // Why 400 ? because in segment we just mark deleted doc
     EXPECT_EQ(total_doc, 400);
 
-    // auto filter = segment->get_filter();
     auto filter = delete_store->make_filter();
     auto actual_doc_count = segment->doc_count(filter);
     EXPECT_EQ(actual_doc_count, 100);
@@ -775,7 +774,7 @@ TEST_P(SegmentTest, UpdateDoc) {
   ASSERT_TRUE(segment != nullptr);
 
   // before update
-  uint64_t count = segment->doc_count(segment->get_filter());
+  uint64_t count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 10);
 
   // Create a new document to update
@@ -788,7 +787,7 @@ TEST_P(SegmentTest, UpdateDoc) {
   EXPECT_TRUE(status.ok()) << "Update failed: " << status.message();
 
   // after update
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 10);
 
   // Fetch the updated document and verify changes
@@ -806,7 +805,7 @@ TEST_P(SegmentTest, UpdateDocBatch) {
       0, doc_count);
   ASSERT_TRUE(segment != nullptr);
   // before update
-  uint64_t count = segment->doc_count(segment->get_filter());
+  uint64_t count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, doc_count);
 
   // Create a new document to update
@@ -818,7 +817,7 @@ TEST_P(SegmentTest, UpdateDocBatch) {
   }
 
   // after update
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, doc_count);
 
   // Fetch the updated document and verify changes
@@ -836,7 +835,7 @@ TEST_P(SegmentTest, DeleteDoc) {
   ASSERT_TRUE(segment != nullptr);
 
   // before update
-  uint64_t count = segment->doc_count(segment->get_filter());
+  uint64_t count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 10);
 
   // Delete a document by primary key
@@ -844,7 +843,7 @@ TEST_P(SegmentTest, DeleteDoc) {
   EXPECT_TRUE(status.ok()) << "Delete by pk failed: " << status.message();
 
   // after delete
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 9);
 
   // Delete a document by global doc id
@@ -852,11 +851,11 @@ TEST_P(SegmentTest, DeleteDoc) {
   EXPECT_TRUE(status.ok()) << "Delete by global doc id failed: "
                            << status.message();
 
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 8);
 }
 
-TEST_P(SegmentTest, DocCountFilterIDSpaceWithNonZeroGlobalDocID) {
+TEST_P(SegmentTest, DocCountDeleteFilterWithNonZeroGlobalDocID) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
       col_path, *schema, 0, 100, id_map, delete_store, version_manager, options,
       0, 10);
@@ -869,7 +868,7 @@ TEST_P(SegmentTest, DocCountFilterIDSpaceWithNonZeroGlobalDocID) {
   EXPECT_TRUE(status.ok()) << "Delete by global doc id failed: "
                            << status.message();
 
-  EXPECT_EQ(segment->doc_count(segment->get_filter()), 8);
+  EXPECT_EQ(segment->doc_count(), 10);
   EXPECT_EQ(segment->doc_count(delete_store->make_filter()), 8);
 }
 
@@ -881,7 +880,7 @@ TEST_P(SegmentTest, DeleteBatch) {
   ASSERT_TRUE(segment != nullptr);
 
   // before update
-  uint64_t count = segment->doc_count(segment->get_filter());
+  uint64_t count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, doc_count);
 
   for (int i = 0; i < doc_count; i++) {
@@ -890,7 +889,7 @@ TEST_P(SegmentTest, DeleteBatch) {
   }
 
   // after delete
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 0);
 }
 
@@ -902,7 +901,7 @@ TEST_P(SegmentTest, UpsertDoc) {
   ASSERT_TRUE(segment != nullptr);
 
   // before update
-  uint64_t count = segment->doc_count(segment->get_filter());
+  uint64_t count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 5);
 
   // Upsert an existing document
@@ -912,7 +911,7 @@ TEST_P(SegmentTest, UpsertDoc) {
   EXPECT_TRUE(status.ok()) << "Upsert existing doc failed: "
                            << status.message();
 
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 5);
 
   // Verify the update
@@ -926,7 +925,7 @@ TEST_P(SegmentTest, UpsertDoc) {
   status = segment->Upsert(upsert_doc2);
   EXPECT_TRUE(status.ok()) << "Upsert new doc failed: " << status.message();
 
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 6);
 
   // Verify the new document was inserted
@@ -943,7 +942,7 @@ TEST_P(SegmentTest, UpsertDocBatch) {
   ASSERT_TRUE(segment != nullptr);
 
   // before update
-  uint64_t count = segment->doc_count(segment->get_filter());
+  uint64_t count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, doc_count);
 
   for (int i = 0; i < doc_count; i++) {
@@ -962,7 +961,7 @@ TEST_P(SegmentTest, UpsertDocBatch) {
     EXPECT_TRUE(status.ok()) << "Upsert new doc failed: " << status.message();
   }
 
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, doc_count * 2);
 
   int incr_idx = 0;
@@ -1050,7 +1049,7 @@ TEST_P(SegmentTest, DocCount) {
   segment->Delete("pk_30");
 
   // Get document count again
-  count = segment->doc_count(segment->get_filter());
+  count = segment->doc_count(delete_store->make_filter());
   EXPECT_EQ(count, 47);
 }
 
@@ -1437,7 +1436,7 @@ TEST_P(SegmentTest, UpsertNonExistentDoc) {
   EXPECT_TRUE(status.ok()) << "Upsert non-existent doc should succeed: "
                            << status.message();
 
-  auto filter = segment->get_filter();
+  auto filter = delete_store->make_filter();
   uint64_t count = segment->doc_count(filter);
   EXPECT_EQ(count, 6);
 }
@@ -1525,7 +1524,7 @@ TEST_P(SegmentTest, MultipleDuplicateDeletes) {
     EXPECT_FALSE(status.ok()) << "Delete iteration " << i << " should fail";
   }
 
-  auto filter = segment->get_filter();
+  auto filter = delete_store->make_filter();
   uint64_t count = segment->doc_count(filter);
   EXPECT_EQ(count, 4);
 }

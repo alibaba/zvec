@@ -333,7 +333,7 @@ class MockSegment : public Segment {
   }
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                     int index) const override {
+                     int segment_doc_id) const override {
     LOG_ERROR("Not implemented");
     return nullptr;
   }

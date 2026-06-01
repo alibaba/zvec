@@ -64,6 +64,7 @@ class Segment {
 
   virtual SegmentMeta::Ptr meta() const = 0;
 
+  // If provided, filter is evaluated with global doc IDs.
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
 
   // for collection

@@ -223,7 +223,7 @@ class SegmentImpl : public Segment,
                  const std::vector<int> &indices) const override;
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                     int index) const override;
+                     int segment_doc_id) const override;
 
   RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const override;
@@ -578,16 +578,8 @@ SegmentMeta::Ptr SegmentImpl::meta() const {
 uint64_t SegmentImpl::doc_count(const IndexFilter::Ptr filter) {
   uint64_t doc_count = doc_ids_.size();
   if (filter) {
-    // SegmentImpl::filter_ is used by vector/invert indexes and accepts
-    // segment-local row IDs. Collection-level delete filters accept global
-    // doc IDs, so keep the conversion explicit at this boundary.
-    const bool filter_uses_segment_row_id = filter == filter_;
-    for (size_t segment_doc_id = 0; segment_doc_id < doc_ids_.size();
-         ++segment_doc_id) {
-      const uint64_t filter_id = filter_uses_segment_row_id
-                                     ? segment_doc_id
-                                     : doc_ids_[segment_doc_id];
-      if (filter->is_filtered(filter_id)) {
+    for (const auto &doc_id : doc_ids_) {
+      if (filter->is_filtered(doc_id)) {
         doc_count--;
       }
     }
