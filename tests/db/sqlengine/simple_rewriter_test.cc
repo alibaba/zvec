@@ -195,7 +195,7 @@ class SimpleRewriterTest : public testing::Test {
     query.filter_ = filter;
 
     auto engine = std::make_shared<SQLEngineImpl>(profiler_);
-    auto ret = engine->parse_request(schema, query, nullptr);
+    auto ret = engine->build_query_info(schema, query, nullptr);
 
     // ASSERT_TRUE(ret.has_value());
     QueryInfo::Ptr new_query_info = ret.value();

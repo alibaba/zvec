@@ -34,10 +34,10 @@ class SQLEngineImpl : public SQLEngine {
  public:
   SQLEngineImpl(zvec::Profiler::Ptr profiler);
 
-  //! Parse pb request
-  Result<QueryInfo::Ptr> parse_request(CollectionSchema::Ptr collection,
-                                       SearchQuery request,
-                                       std::shared_ptr<GroupBy> group_by);
+  //! Build analyzed query info from a structured search query.
+  Result<QueryInfo::Ptr> build_query_info(CollectionSchema::Ptr collection,
+                                          SearchQuery request,
+                                          std::shared_ptr<GroupBy> group_by);
 
   //! Perform search with given query_info, segments and index filter
   Result<std::unique_ptr<arrow::RecordBatchReader>> search_by_query_info(

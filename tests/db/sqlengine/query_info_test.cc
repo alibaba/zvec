@@ -96,7 +96,7 @@ TEST_F(QueryInfoTest, BasicQueryRequest) {
   query.target_.query_params_->set_radius(0.8F);
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
   QueryInfo::Ptr new_query_info = ret.value();
   auto &query_fields = new_query_info->query_fields();
@@ -137,7 +137,7 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter) {
   query.filter_ = "name<3 or name=4 or 1-dash_score_field='test'";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr new_query_info = ret.value();
   auto &query_fields = new_query_info->query_fields();
@@ -221,7 +221,7 @@ TEST_F(QueryInfoTest, QueryRequestWithIncludeVector) {
   query.include_vector_ = true;
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr new_query_info = ret.value();
   auto &query_fields = new_query_info->query_fields();
@@ -263,7 +263,7 @@ TEST_F(QueryInfoTest, OR_ANCESTOR) {
   query.filter_ = "name=1 and (name=2 or name=3)";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr new_query_info = ret.value();
 }
@@ -281,7 +281,7 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilter) {
       "name=3 or name in (1, 2, 3) or category not in (\"a\", \"b\", \"c\")";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr new_query_info = ret.value();
 
@@ -370,23 +370,23 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilterWrong) {
   query.target_.query_params_->set_radius(0.8F);
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
 
   query.filter_ = ("name in ()");
-  ret = engine->parse_request(schema, query, nullptr);
+  ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
 
   query.filter_ = ("name in (\"a\", 2, 3)");
-  ret = engine->parse_request(schema, query, nullptr);
+  ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
 
   query.filter_ = ("name in (1.1, 2, 3)");
-  ret = engine->parse_request(schema, query, nullptr);
+  ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
 
   query.filter_ = ("category in (1.1, \"b\")");
-  ret = engine->parse_request(schema, query, nullptr);
+  ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
 }
 
@@ -410,7 +410,7 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilterNum1024) {
   query.filter_ = filter_str;
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr new_query_info = ret.value();
 
@@ -451,7 +451,7 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter_contain) {
       )";
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_TRUE(ret.has_value());
   QueryInfo::Ptr new_query_info = ret.value();
   auto &query_fields = new_query_info->query_fields();
@@ -598,7 +598,7 @@ TEST_F(QueryInfoTest, SelectNonExistField) {
   query.include_vector_ = false;
 
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
   EXPECT_THAT(ret.error().message(),
               testing::HasSubstr("not defined in schema"));
@@ -616,7 +616,7 @@ TEST_F(QueryInfoTest, ContainAllExceedLimit) {
   }
   query.filter_ += ")";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
   EXPECT_THAT(ret.error().message(),
               testing::HasSubstr(
@@ -635,7 +635,7 @@ TEST_F(QueryInfoTest, ContainAnyExceedLimit) {
   }
   query.filter_ += ")";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
   EXPECT_THAT(ret.error().message(),
               testing::HasSubstr(
@@ -647,7 +647,7 @@ TEST_F(QueryInfoTest, ArrayLengthNonExistField) {
   query.topk_ = 200;
   query.filter_ = "array_length(not_exist_field) > 1";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
   EXPECT_THAT(ret.error().message(),
               testing::HasSubstr("array_length argument not found in schema"));
@@ -658,7 +658,7 @@ TEST_F(QueryInfoTest, ArrayLengthOnNonArrayField) {
   query.topk_ = 200;
   query.filter_ = "array_length(name) > 1";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
   EXPECT_THAT(ret.error().message(),
               testing::HasSubstr("array_length only support array"));
@@ -669,7 +669,7 @@ TEST_F(QueryInfoTest, ArrayLengthInvalidArgument) {
   query.topk_ = 200;
   query.filter_ = "array_length(name_array) > '1'";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
   EXPECT_THAT(
       ret.error().message(),
@@ -681,7 +681,7 @@ TEST_F(QueryInfoTest, ArrayLengthInvalidOp) {
   query.topk_ = 200;
   query.filter_ = "array_length(name_array) like '%'";
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto ret = engine->parse_request(schema, query, nullptr);
+  auto ret = engine->build_query_info(schema, query, nullptr);
   ASSERT_FALSE(ret.has_value());
   EXPECT_THAT(ret.error().message(), testing::HasSubstr("syntax error"));
 }

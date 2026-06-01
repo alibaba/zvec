@@ -26,7 +26,7 @@ namespace zvec::sqlengine {
 
 using namespace zvec;
 
-Node::Ptr handle_vector(SearchQuery *request, std::string * /*err_msg*/) {
+Node::Ptr handle_vector(SearchQuery *request) {
   auto *vc = request->target_.get_vector_clause();
   if (vc == nullptr) {
     return nullptr;
@@ -66,17 +66,18 @@ void handle_query_field(const SearchQuery *query, SelectInfo *selected_info) {
   }
 }
 
-bool SQLInfoHelper::MessageToSQLInfo(SearchQuery query, Node::Ptr filter_node,
-                                     std::shared_ptr<GroupBy> group_by,
-                                     sqlengine::SQLInfo::Ptr *sql_info,
-                                     std::string *err_msg) {
+Result<sqlengine::SQLInfo::Ptr> SQLInfoHelper::BuildSQLInfoFromSearchQuery(
+    SearchQuery query, Node::Ptr filter_node,
+    std::shared_ptr<GroupBy> group_by) {
   Node::Ptr index_params_node_ptr = nullptr;
   if (const auto *vc = query.target_.get_vector_clause();
       vc != nullptr &&
       (!vc->query_vector_.empty() || !vc->sparse_indices_.empty())) {
-    index_params_node_ptr = handle_vector(&query, err_msg);
+    index_params_node_ptr = handle_vector(&query);
     if (index_params_node_ptr == nullptr) {
-      return false;
+      return tl::make_unexpected(Status::InvalidArgument(
+          "Failed to build vector condition for field: ",
+          query.target_.field_name_));
     }
   }
 
@@ -111,8 +112,7 @@ bool SQLInfoHelper::MessageToSQLInfo(SearchQuery query, Node::Ptr filter_node,
   //   select_info->add_order_by_elem(std::move(orderby_elem_info));
   // }
 
-  *sql_info = std::make_shared<SQLInfo>(SQLInfo::SQLType::SELECT, select_info);
-  return true;
+  return std::make_shared<SQLInfo>(SQLInfo::SQLType::SELECT, select_info);
 }
 
 }  // namespace zvec::sqlengine

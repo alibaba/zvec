@@ -55,6 +55,32 @@ SQLEngine::~SQLEngine() = default;
 SQLEngineImpl::SQLEngineImpl(zvec::Profiler::Ptr profiler)
     : profiler_(std::move(profiler)) {}
 
+class ProfilerStageGuard {
+ public:
+  ProfilerStageGuard(const Profiler::Ptr &profiler, const std::string &name)
+      : profiler_(profiler) {
+    active_ = profiler_ && profiler_->open_stage(name) == 0;
+  }
+
+  ~ProfilerStageGuard() {
+    close();
+  }
+
+  void close() {
+    if (active_) {
+      profiler_->close_stage();
+      active_ = false;
+    }
+  }
+
+  ProfilerStageGuard(const ProfilerStageGuard &) = delete;
+  ProfilerStageGuard &operator=(const ProfilerStageGuard &) = delete;
+
+ private:
+  Profiler::Ptr profiler_;
+  bool active_{false};
+};
+
 Result<DocPtrList> SQLEngineImpl::execute(
     CollectionSchema::Ptr collection, SearchQuery query,
     const std::vector<Segment::Ptr> &segments) {
@@ -62,7 +88,7 @@ Result<DocPtrList> SQLEngineImpl::execute(
     return DocPtrList{};
   }
 
-  auto query_info = parse_request(collection, std::move(query), nullptr);
+  auto query_info = build_query_info(collection, std::move(query), nullptr);
   if (!query_info) {
     return tl::make_unexpected(query_info.error());
   }
@@ -100,7 +126,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
   }
 
   SearchQuery query = from_group_by(group_by_query);
-  auto query_info = parse_request(
+  auto query_info = build_query_info(
       collection, query,
       std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
                                 group_by_query.group_topk_,
@@ -231,24 +257,21 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
 
 Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
     const CollectionSchema &schema, const SQLInfo::Ptr &sql_info) {
-  profiler_->open_stage("analyze stage");
+  ProfilerStageGuard stage_guard(profiler_, "analyze_sql_info");
   QueryAnalyzer analyzer;
   auto query_info = analyzer.analyze(schema, sql_info);
   if (!query_info) {
     return tl::make_unexpected(Status::InvalidArgument(
         "Analyze SQL info failed: ", query_info.error().c_str()));
   }
-  profiler_->close_stage();
   LOG_DEBUG("query_info: [%s]", query_info.value()->to_string().c_str());
   return query_info.value();
 }
 
-Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
+Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
     CollectionSchema::Ptr collection, SearchQuery request,
     std::shared_ptr<GroupBy> group_by) {
-  profiler_->open_stage("message_to_sqlinfo");
-  sqlengine::SQLInfo::Ptr sql_info;
-  std::string err_msg;
+  ProfilerStageGuard stage_guard(profiler_, "build_sql_info");
   Node::Ptr filter_node;
   if (!request.filter_.empty()) {
     ZVecParser::Ptr parser = ZVecParser::create();
@@ -271,19 +294,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     }
   }
 
-  sqlengine::SQLInfoHelper::MessageToSQLInfo(
-      std::move(request), std::move(filter_node), std::move(group_by),
-      &sql_info, &err_msg);
-  profiler_->close_stage();
-  if (!err_msg.empty()) {
-    LOG_ERROR("QueryAgent, message to sql info failed, err_msg: %s",
-              err_msg.c_str());
-    return tl::make_unexpected(Status::InvalidArgument(
-        "Convert message to SQL info failed: ", err_msg));
-  }
-
-  // If the request carries an FTS query, parse it and attach to SelectInfo
-  // so that query_analyzer can propagate it to QueryInfo.
+  FtsCondInfo::Ptr fts_cond_info;
   if (const auto *fts_clause = request.target_.get_fts_clause()) {
     auto fts_result =
         parse_fts_query(collection, request.target_.field_name_, *fts_clause,
@@ -291,13 +302,30 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_request(
     if (!fts_result) {
       return tl::make_unexpected(fts_result.error());
     }
-    auto select_info =
-        std::dynamic_pointer_cast<SelectInfo>(sql_info->base_info());
-    select_info->set_fts_cond_info(std::move(fts_result.value()));
+    fts_cond_info = std::move(fts_result.value());
   }
 
-  LOG_DEBUG("Sql info is %s", sql_info->to_string().c_str());
-  return parse_sql_info(*collection, std::move(sql_info));
+  auto sql_info = sqlengine::SQLInfoHelper::BuildSQLInfoFromSearchQuery(
+      std::move(request), std::move(filter_node), std::move(group_by));
+  if (!sql_info) {
+    return tl::make_unexpected(sql_info.error());
+  }
+
+  // Attach FTS info to SelectInfo so query_analyzer can propagate it to
+  // QueryInfo.
+  if (fts_cond_info) {
+    auto select_info =
+        std::dynamic_pointer_cast<SelectInfo>(sql_info.value()->base_info());
+    if (!select_info) {
+      return tl::make_unexpected(Status::InternalError(
+          "BuildSQLInfoFromSearchQuery did not produce SelectInfo"));
+    }
+    select_info->set_fts_cond_info(std::move(fts_cond_info));
+  }
+
+  LOG_DEBUG("Sql info is %s", sql_info.value()->to_string().c_str());
+  stage_guard.close();
+  return parse_sql_info(*collection, std::move(sql_info.value()));
 }
 
 Result<std::unique_ptr<arrow::RecordBatchReader>>
@@ -306,7 +334,7 @@ SQLEngineImpl::search_by_query_info(
     std::vector<sqlengine::QueryInfo::Ptr> *query_infos) {
   global_init();
 
-  profiler_->open_stage("plan stage");
+  ProfilerStageGuard stage_guard(profiler_, "build_query_plan");
   QueryPlanner planner(collection.get());
   auto plan_info =
       planner.make_plan(segments, profiler_->trace_id(), query_infos);
@@ -314,7 +342,6 @@ SQLEngineImpl::search_by_query_info(
     LOG_ERROR("plan query_info failed: [%s]", plan_info.error().c_str());
     return tl::make_unexpected(plan_info.error());
   }
-  profiler_->close_stage();
   // LOG_DEBUG("plan_info: [%s]", plan_info->to_string().c_str());
   return plan_info.value()->execute_to_reader();
 }
