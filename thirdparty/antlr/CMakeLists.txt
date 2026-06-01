@@ -6,6 +6,10 @@ if(MSVC)
     set(WITH_STATIC_CRT ${ZVEC_USE_STATIC_CRT} CACHE BOOL "" FORCE)
 endif()
 add_subdirectory(antlr4/runtime/Cpp/)
+# antlr4 hardcodes /Zi in DEBUG and RELWITHDEBINFO; append /Z7 to override it (MSVC last-flag-wins)
+if(MSVC)
+    target_compile_options(antlr4_static PRIVATE /Z7)
+endif()
 
 target_include_directories(antlr4_static SYSTEM INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/antlr4/runtime/Cpp/runtime/src/"

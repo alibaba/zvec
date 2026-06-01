@@ -88,6 +88,14 @@ else()
 endif()
 
 if(MSVC)
+    set(_LZ4_EXTRA_CMAKE_ARGS "")
+    # Propagate compiler launcher (sccache) to lz4's ExternalProject
+    if(CMAKE_C_COMPILER_LAUNCHER)
+        list(APPEND _LZ4_EXTRA_CMAKE_ARGS
+            -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+            -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
+        )
+    endif()
     ExternalProject_Add(
             Lz4.BUILD
             PREFIX lz4
@@ -101,6 +109,7 @@ if(MSVC)
             -DBUILD_STATIC_LIBS=ON
             -DLZ4_BUILD_CLI=OFF
             -DLZ4_BUILD_LEGACY_LZ4C=OFF
+            ${_LZ4_EXTRA_CMAKE_ARGS}
             BUILD_COMMAND "${CMAKE_COMMAND}" --build . --config $<CONFIG> -j
             INSTALL_COMMAND "${CMAKE_COMMAND}" --install . --config $<CONFIG>
             BUILD_IN_SOURCE OFF

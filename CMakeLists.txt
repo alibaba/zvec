@@ -5,7 +5,14 @@ set(CC_CXX_STANDARD 17)
 
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
-    add_compile_options(/FS) # handle .pdb concurrency
+    # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
+    # Use CACHE FORCE so it propagates into thirdparty subdirectories that call project().
+    foreach(_cfg DEBUG RELWITHDEBINFO)
+        foreach(_lang C CXX)
+            string(REPLACE "/Zi" "/Z7" _flags "${CMAKE_${_lang}_FLAGS_${_cfg}}")
+            set(CMAKE_${_lang}_FLAGS_${_cfg} "${_flags}" CACHE STRING "" FORCE)
+        endforeach()
+    endforeach()
     add_compile_options(/EHsc) # def c++ exception behavior
     add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
     add_compile_options(/we4716) # -Werror=return-type
