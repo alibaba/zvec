@@ -622,17 +622,7 @@ Status SegmentHelper::ReduceVectorIndex(
   for (auto &field : vector_fields) {
     auto vector_index_params =
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
-
-    auto build_merge_options = [&]() {
-      vector_column_params::MergeOptions merge_options;
-      if (concurrency == 0) {
-        merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
-      } else {
-        merge_options.write_concurrency = concurrency;
-      }
-      return merge_options;
-    };
-
+    
     using FetchIndexersFn =
         std::vector<VectorColumnIndexer::Ptr> (Segment::*)(const std::string &)
             const;
@@ -684,9 +674,14 @@ Status SegmentHelper::ReduceVectorIndex(
     auto merge_with_optional_reuse =
         [&](const std::string &output_index_path, const FieldSchema &index_field, FetchIndexersFn fetch,
             VectorColumnIndexer::Ptr *merged_indexer) -> Status {
+      vector_column_params::MergeOptions merge_options;
+      if (concurrency == 0) {
+        merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
+      } else {
+        merge_options.write_concurrency = concurrency;
+      }
       auto vector_indexer =
           std::make_shared<VectorColumnIndexer>(output_index_path, index_field);
-      auto merge_options = build_merge_options();
       bool reused_base_index = false;
 
       if (can_reuse_first_indexer(fetch, index_field)) {
