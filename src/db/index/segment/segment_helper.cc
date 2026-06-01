@@ -686,6 +686,11 @@ Status SegmentHelper::ReduceVectorIndex(
 
       if (can_reuse_first_indexer(fetch, index_field)) {
         auto first_indexer = fetch_from(input_segments.front(), fetch)[0];
+        LOG_INFO("Reusing first segment's index as merge base. "
+                 "field[%s] src[%s] dst[%s] tail_segments[%zu]",
+                 index_field.name().c_str(),
+                 first_indexer->index_file_path().c_str(),
+                 output_index_path.c_str(), input_segments.size() - 1);
         if (FileHelper::CopyFile(first_indexer->index_file_path(),
                                  output_index_path)) {
           // Reuse first segment's index as the merge base to avoid rebuilding
