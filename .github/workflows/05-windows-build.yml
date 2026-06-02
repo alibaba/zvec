@@ -139,5 +139,5 @@ jobs:
 
       - name: Show sccache statistics
         if: always()
-        run: ${env:SCCACHE_PATH} --show-stats
+        run: sccache --show-stats
         shell: powershell
