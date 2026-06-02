@@ -1,0 +1,83 @@
+# =============================================================================
+# Dockerfile.linux_aarch64_glibc228
+# Purpose: Ubuntu 18.10 gcc-9 + glibc 2.28 + CMake 3.30.0 + PyBind11 build environment (arm64)
+# Warning: ubuntu:18.10 is EOL; use only for glibc 2.28 compatibility testing.
+# =============================================================================
+
+# Use official Ubuntu 18.10 (Cosmic Cuttlefish), aarch64 variant
+# glibc version: 2.28 (confirmed via `ldd --version`)
+FROM --platform=linux/arm64 ubuntu:18.10
+
+# Replace Ubuntu mirror with old-releases.ubuntu.com/ubuntu-ports for older glibc compatibility
+# Note: arm64 archives live on ports.ubuntu.com, not archive.ubuntu.com
+RUN sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://old-releases.ubuntu.com/ubuntu-ports|g' /etc/apt/sources.list
+
+# Add Ubuntu 20.04 (focal) repo for GCC 9 ONLY
+RUN echo "deb http://ports.ubuntu.com/ubuntu-ports/ focal main universe" >> /etc/apt/sources.list && \
+    echo "deb http://ports.ubuntu.com/ubuntu-ports/ focal-security main universe" >> /etc/apt/sources.list
+
+# Prevent interactive prompts & set non-root user
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC
+
+# Create non-root user for safety (optional but recommended)
+RUN useradd -m -u 1000 builder && \
+    mkdir -p /workspace && chown builder:builder /workspace
+
+# Install base system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc-9 g++-9 \
+        ninja-build git curl ca-certificates vim wget lcov gnupg clang-format-18\
+        rsync lsb-release \
+        uuid-dev zlib1g-dev libssl-dev libffi-dev \
+        pybind11-dev && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 \
+                        --slave /usr/bin/g++ g++ /usr/bin/g++-9 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Miniforge (Conda) as root, then assign to builder
+ENV MINIFORGE_VERSION="latest"
+ENV MINIFORGE_HOME="/opt/miniforge3"
+
+RUN curl -sSL "https://github.com/conda-forge/miniforge/releases/${MINIFORGE_VERSION}/download/Miniforge3-Linux-aarch64.sh" -o miniforge.sh && \
+    bash miniforge.sh -b -p ${MINIFORGE_HOME} && \
+    rm miniforge.sh && \
+    chown -R builder:builder ${MINIFORGE_HOME}
+
+# Switch to non-root user
+USER builder
+ENV PATH="${MINIFORGE_HOME}/bin:${PATH}"
+WORKDIR /workspace
+
+# Create conda envs for supported Python versions
+RUN conda create -n py310 python=3.10 -y && \
+    conda create -n py311 python=3.11 -y && \
+    conda create -n py312 python=3.12 -y
+RUN conda clean --all -f -y
+
+# Install CMake 3.30.0 from Kitware official binary
+# Ref: https://github.com/Kitware/CMake/releases/tag/v3.30.0
+RUN mkdir -p /tmp/cmake && cd /tmp/cmake && \
+    curl -sSL -o cmake.tar.gz \
+        "https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-aarch64.tar.gz" && \
+    tar -xzf cmake.tar.gz --strip-components=1 -C /tmp/cmake && \
+    mkdir -p /home/builder/.local && \
+    mv * /home/builder/.local/ && \
+    chown -R builder:builder /home/builder/.local && \
+    rm -rf /tmp/cmake
+
+# Add CMake to PATH
+ENV PATH="/home/builder/.local/bin:${PATH}"
+
+# Verify installations
+RUN cmake --version && \
+    conda info && \
+    conda env list && \
+    python --version && \
+    gcc --version && \
+    ldd --version | head -n1
+
+# Final setup
+WORKDIR /workspace

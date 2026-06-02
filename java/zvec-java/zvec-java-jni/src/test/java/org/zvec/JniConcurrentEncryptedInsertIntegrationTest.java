@@ -1,0 +1,3 @@
+package org.zvec;
+
+final class JniConcurrentEncryptedInsertIntegrationTest extends AbstractConcurrentEncryptedInsertIntegrationTest {}

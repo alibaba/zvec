@@ -6,6 +6,7 @@ set(CC_CXX_STANDARD 17)
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
     add_compile_options(/FS) # handle .pdb concurrency
+    add_compile_options(/utf-8)
     add_compile_options(/EHsc) # def c++ exception behavior
     add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
     add_compile_options(/we4716) # -Werror=return-type
@@ -73,6 +74,12 @@ message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 option(BUILD_C_BINDINGS "Build C bindings" ON)
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 
+option(BUILD_JAVA_JNI_BINDING "Build Java JNI binding" OFF)
+message(STATUS "BUILD_JAVA_JNI_BINDING:${BUILD_JAVA_JNI_BINDING}")
+
+option(BUILD_TESTS "Build tests" ON)
+message(STATUS "BUILD_TESTS:${BUILD_TESTS}")
+
 option(BUILD_TOOLS "Build tools" ON)
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
@@ -117,7 +124,17 @@ message(STATUS "USE_OSS_MIRROR:${USE_OSS_MIRROR}")
 
 cc_directory(thirdparty)
 cc_directories(src)
-cc_directories(tests)
+
+if(BUILD_TESTS)
+    cc_directories(tests)
+endif()
+
+if(BUILD_JAVA_JNI_BINDING)
+    if(NOT BUILD_C_BINDINGS)
+        message(FATAL_ERROR "BUILD_JAVA_JNI_BINDING requires BUILD_C_BINDINGS")
+    endif()
+    add_subdirectory(java/zvec-java/zvec-java-jni/src/main/native)
+endif()
 
 add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
 

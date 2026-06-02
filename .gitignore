@@ -26,6 +26,14 @@ dist
 html
 *.lcov.info
 
+# Java / Maven build outputs
+target/
+*.jar
+*.class
+*.dll
+*.dylib
+*.so
+
 # Dependencies
 /node_modules
 
@@ -51,4 +59,4 @@ allure-*
 
 !build_android.sh
 !build_ios.sh
-
+!scripts/build_java_native.sh
