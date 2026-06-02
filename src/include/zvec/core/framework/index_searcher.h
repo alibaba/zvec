@@ -36,7 +36,7 @@ class IndexSearcher : public IndexRunner {
   IndexSearcher() = default;
 
   //! Destructor
-  virtual ~IndexSearcher() = default;
+  ~IndexSearcher() override = default;
 
   //! Initialize Searcher
   virtual int init(const ailego::Params & /*params*/) = 0;

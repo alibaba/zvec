@@ -34,6 +34,7 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
   }
 
   auto *vc = target_.get_vector_clause();
+  auto *fc = target_.get_fts_clause();
   auto &field_name = target_.field_name_;
   // A "scalar-only filter" query has no vector payload — either the clause
   // is not a VectorClause (e.g., FtsClause) or its fields are all empty.
@@ -41,6 +42,12 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
                                                vc->sparse_indices_.empty());
 
   if (schema == nullptr) {
+    if (fc != nullptr) {
+      // FTS query requires a valid field_name_ that resolves to an FTS field.
+      return Status::InvalidArgument(
+          "Invalid query: fts requires a valid FTS field, but field[",
+          field_name, "] does not exist in the collection");
+    }
     if (no_vector_payload) {
       // Scalar-only filter query
       return Status::OK();
@@ -52,6 +59,17 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
           field_name,
           "] does not exist or is not a vector field in the collection");
     }
+  }
+
+  // FTS query: field must be an FTS-indexed field.
+  if (fc != nullptr) {
+    if (schema->index_type() != IndexType::FTS) {
+      return Status::InvalidArgument(
+          "Invalid query: fts requires an FTS-indexed field, but field[",
+          field_name, "] has index type ",
+          IndexTypeCodeBook::AsString(schema->index_type()));
+    }
+    return Status::OK();
   }
 
   // Schema is non-null from here on: a vector payload is required.

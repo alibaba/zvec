@@ -46,64 +46,61 @@ class HnswSparseSearcherEntity : public HnswSparseEntity {
 
   //! Make a copy of searcher entity, to support thread-safe operation.
   //! The segment in container cannot be read concurrenly
-  virtual const HnswSparseEntity::Pointer clone() const override;
+  const HnswSparseEntity::Pointer clone() const override;
 
   //! Get primary key of the node id
-  virtual key_t get_key(node_id_t id) const override;
+  key_t get_key(node_id_t id) const override;
 
   //! Get vector local id by key
   node_id_t get_id(key_t key) const;
 
   //! Get sparse vector feature data by key
-  virtual int get_sparse_vector_by_key(
+  int get_sparse_vector_by_key(
       key_t key, uint32_t *sparse_count, std::string *sparse_indices_buffer,
       std::string *sparse_values_buffer) const override;
 
   //! Get vector feature data by id
-  virtual const void *get_vector_meta(node_id_t id) const override;
+  const void *get_vector_meta(node_id_t id) const override;
 
-  virtual int get_vector_meta(const node_id_t id,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_vector_meta(const node_id_t id,
+                      IndexStorage::MemoryBlock &block) const override;
 
   //! Get vector feature data by id
-  virtual int get_vector_metas(const node_id_t *ids, uint32_t count,
-                               const void **vecs) const override;
+  int get_vector_metas(const node_id_t *ids, uint32_t count,
+                       const void **vecs) const override;
 
-  virtual int get_vector_metas(
+  int get_vector_metas(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &block_vecs) const override;
 
   //! Get vector sparse feature data by chunk index and offset
-  virtual const void *get_sparse_data(uint64_t offset,
-                                      uint32_t len) const override;
+  const void *get_sparse_data(uint64_t offset, uint32_t len) const override;
 
   //! Get sparse data from id
-  virtual const void *get_sparse_data(node_id_t id) const override;
+  const void *get_sparse_data(node_id_t id) const override;
 
-  virtual int get_sparse_data(uint64_t offset, uint32_t len,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_sparse_data(uint64_t offset, uint32_t len,
+                      IndexStorage::MemoryBlock &block) const override;
 
-  virtual int get_sparse_data(const node_id_t id,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_sparse_data(const node_id_t id,
+                      IndexStorage::MemoryBlock &block) const override;
 
   //! Get sparse data from vector
-  virtual std::pair<const void *, uint32_t> get_sparse_data_from_vector(
+  std::pair<const void *, uint32_t> get_sparse_data_from_vector(
       const void *vec) const override;
 
-  virtual int get_sparse_data_from_vector(const void *vec,
-                                          IndexStorage::MemoryBlock &block,
-                                          int &sparse_length) const override;
+  int get_sparse_data_from_vector(const void *vec,
+                                  IndexStorage::MemoryBlock &block,
+                                  int &sparse_length) const override;
 
   //! Get the node id's neighbors on graph level
-  virtual const Neighbors get_neighbors(level_t level,
-                                        node_id_t id) const override;
+  const Neighbors get_neighbors(level_t level, node_id_t id) const override;
 
-  virtual int load(const IndexStorage::Pointer &container,
-                   bool check_crc) override;
+  int load(const IndexStorage::Pointer &container, bool check_crc) override;
 
   int load_segments(bool check_crc);
 
-  virtual int cleanup(void) override;
+  int cleanup(void) override;
 
  public:
   bool is_loaded() const {

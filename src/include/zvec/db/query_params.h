@@ -14,6 +14,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/type.h>
 
@@ -79,7 +80,7 @@ class HnswQueryParams : public QueryParams {
     set_is_using_refiner(is_using_refiner);
   }
 
-  virtual ~HnswQueryParams() = default;
+  ~HnswQueryParams() override = default;
 
   int ef() const {
     return ef_;
@@ -102,7 +103,7 @@ class IVFQueryParams : public QueryParams {
     set_scale_factor(scale_factor);
   }
 
-  virtual ~IVFQueryParams() = default;
+  ~IVFQueryParams() override = default;
 
   int nprobe() const {
     return nprobe_;
@@ -136,7 +137,7 @@ class HnswRabitqQueryParams : public QueryParams {
     set_is_using_refiner(is_using_refiner);
   }
 
-  virtual ~HnswRabitqQueryParams() = default;
+  ~HnswRabitqQueryParams() override = default;
 
   int ef() const {
     return ef_;
@@ -158,7 +159,7 @@ class FlatQueryParams : public QueryParams {
     set_scale_factor(scale_factor);
   }
 
-  virtual ~FlatQueryParams() = default;
+  ~FlatQueryParams() override = default;
 
   float scale_factor() const {
     return scale_factor_;
@@ -183,7 +184,7 @@ class VamanaQueryParams : public QueryParams {
     set_is_using_refiner(is_using_refiner);
   }
 
-  virtual ~VamanaQueryParams() = default;
+  ~VamanaQueryParams() override = default;
 
   int ef_search() const {
     return ef_search_;
@@ -195,6 +196,27 @@ class VamanaQueryParams : public QueryParams {
 
  private:
   int ef_search_;
+};
+
+class FtsQueryParams : public QueryParams {
+ public:
+  using Ptr = std::shared_ptr<FtsQueryParams>;
+
+  FtsQueryParams() : QueryParams(IndexType::FTS) {}
+  ~FtsQueryParams() override = default;
+
+  const std::string &default_operator() const {
+    return default_operator_;
+  }
+
+  void set_default_operator(const std::string &default_operator) {
+    default_operator_ = default_operator;
+  }
+
+ private:
+  // Default boolean operator for adjacent bare terms.
+  // Supported values (case-insensitive): "OR" (default), "AND".
+  std::string default_operator_;
 };
 
 }  // namespace zvec

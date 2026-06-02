@@ -22,6 +22,7 @@
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/db/schema.h>
 #include "db/common/constants.h"
+#include "db/sqlengine/common/fts_cond_info.h"
 #include "db/sqlengine/common/group_by.h"
 #include "query_field_info.h"
 #include "query_node.h"
@@ -46,13 +47,13 @@ class QueryInfo {
     using Ptr = std::shared_ptr<QueryVectorCondInfo>;
 
     QueryVectorCondInfo(const FieldSchema *vector_schema,
-                        const std::string &vector_term,
+                        std::string vector_term,
                         core::IndexMeta::DataType core_data_type, int dimension,
                         std::string vector_sparse_indices,
                         std::string vector_sparse_values,
                         QueryParams::Ptr query_params)
         : vector_schema_(vector_schema),
-          vector_term_(vector_term),
+          vector_term_(std::move(vector_term)),
           data_type_(core_data_type),
           dimension_(dimension),
           vector_sparse_indices_(std::move(vector_sparse_indices)),
@@ -125,6 +126,7 @@ class QueryInfo {
     bool reverse_sort_{false};
   };
 
+
  public:
   QueryInfo() = default;
   ~QueryInfo() = default;
@@ -159,6 +161,14 @@ class QueryInfo {
 
   const QueryVectorCondInfo::Ptr &vector_cond_info() const {
     return vector_cond_info_;
+  }
+
+  void set_fts_cond_info(FtsCondInfo::Ptr value) {
+    fts_cond_info_ = std::move(value);
+  }
+
+  const FtsCondInfo::Ptr &fts_cond_info() const {
+    return fts_cond_info_;
   }
 
   void set_query_topn(uint32_t value) {
@@ -340,6 +350,7 @@ class QueryInfo {
   QueryNode::Ptr filter_cond_{nullptr};
 
   QueryVectorCondInfo::Ptr vector_cond_info_{nullptr};
+  FtsCondInfo::Ptr fts_cond_info_{nullptr};
 
   // these two are for post filtering only
   QueryNode::Ptr post_invert_cond_{nullptr};

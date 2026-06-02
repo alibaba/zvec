@@ -26,7 +26,7 @@ class HnswSparseStreamer : public IndexStreamer {
   using ContextPointer = IndexStreamer::Context::Pointer;
 
   HnswSparseStreamer(void);
-  virtual ~HnswSparseStreamer(void);
+  ~HnswSparseStreamer(void) override;
 
   HnswSparseStreamer(const HnswSparseStreamer &streamer) = delete;
   HnswSparseStreamer &operator=(const HnswSparseStreamer &streamer) = delete;

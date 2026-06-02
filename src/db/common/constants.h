@@ -80,5 +80,11 @@ const std::string INVERT_KEY_SEALED{"$ZVEC$SEALED"};
 
 const uint32_t INVERT_ID_LIST_SIZE_THRESHOLD = 3;
 
+// FTS (Full-Text Search) column family name suffixes and shared CF name
+constexpr const char *kFtsPositionsSuffix = "$POSITIONS";
+constexpr const char *kFtsTfSuffix = "$TF";
+constexpr const char *kFtsMaxTfSuffix = "$MAX_TF";
+constexpr const char *kFtsDocLenSuffix = "$DOC_LEN";
+constexpr const char *kFtsStatCfName = "$FTS_STAT";
 
 }  // namespace zvec

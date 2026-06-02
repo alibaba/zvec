@@ -208,8 +208,14 @@ class BufferStorage : public IndexStorage {
         }
         *data = raw;
         // Pin held until close_index() per the never-released contract
-        // of this overload.
-        (void)page_id;
+        // of this overload. Record the page so close_index() can release
+        // the pin before tearing down the pool; otherwise the lingering
+        // ref_count would trip ~VecBufferPool's "all blocks released"
+        // assertion.
+        {
+          std::lock_guard<std::mutex> pin_latch(owner_->pinned_pages_mutex_);
+          owner_->pinned_pages_.push_back(page_id);
+        }
         return len;
       }
       // Cross-page path: see file-level banner.  C11 aligned_alloc requires
@@ -1011,6 +1017,20 @@ class BufferStorage : public IndexStorage {
       }
       tmp_buffers_.clear();
     }
+    // Release every page pinned by the single-page read(const void**)
+    // overload (the never-released contract holds the pin until here).
+    // Each pin incremented the page table ref_count, so we must drop the
+    // matching reference before resetting the pool, otherwise
+    // ~VecBufferPool asserts that all blocks were released.
+    {
+      std::lock_guard<std::mutex> pin_latch(pinned_pages_mutex_);
+      if (buffer_pool_handle_) {
+        for (size_t pid : pinned_pages_) {
+          buffer_pool_handle_->release_one(pid);
+        }
+      }
+      pinned_pages_.clear();
+    }
     buffer_pool_handle_.reset();
     buffer_pool_.reset();
     max_segment_size_ = 0;
@@ -1475,6 +1495,16 @@ class BufferStorage : public IndexStorage {
   }
   std::vector<ArenaBlock> tmp_buffers_{};
   mutable std::mutex tmp_buffers_mutex_{};
+
+  // Page ids pinned by the single-page read(const void**) overload, which
+  // keeps the pin alive until close_index() (the never-released contract).
+  // Each pin increments the page table ref_count, so close_index() must
+  // release every recorded pin before tearing down the pool; otherwise
+  // ~VecBufferPool fires its "all blocks released" assertion. Duplicates are
+  // allowed: repeated single-page reads of the same page each take a pin and
+  // therefore each need a matching release.
+  std::vector<size_t> pinned_pages_{};
+  mutable std::mutex pinned_pages_mutex_{};
 
   // buffer manager
   std::string file_name_;

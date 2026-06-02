@@ -37,7 +37,9 @@ GlobalConfig::ConfigData::ConfigData()
       query_thread_count(CgroupUtil::getCpuLimit()),
       invert_to_forward_scan_ratio(0.9),
       brute_force_by_keys_ratio(0.1),
-      optimize_thread_count(CgroupUtil::getCpuLimit()) {}
+      fts_brute_force_by_keys_ratio(0.05),
+      optimize_thread_count(CgroupUtil::getCpuLimit()),
+      jieba_dict_dir() {}
 
 Status GlobalConfig::Validate(const ConfigData &config) const {
   if (config.memory_limit_bytes < MIN_MEMORY_LIMIT_BYTES) {
@@ -67,6 +69,13 @@ Status GlobalConfig::Validate(const ConfigData &config) const {
       config.brute_force_by_keys_ratio > 1.0f) {
     return Status::InvalidArgument(
         "brute_force_by_keys_ratio must be between 0 and 1");
+  }
+
+  // Validate fts_brute_force_by_keys_ratio (should be between 0 and 1)
+  if (config.fts_brute_force_by_keys_ratio < 0.0f ||
+      config.fts_brute_force_by_keys_ratio > 1.0f) {
+    return Status::InvalidArgument(
+        "fts_brute_force_by_keys_ratio must be between 0 and 1");
   }
 
   // Validate optimize thread count
@@ -116,7 +125,16 @@ Status GlobalConfig::Initialize(const ConfigData &config) {
   auto s = Validate(config);
   CHECK_RETURN_STATUS(s);
 
-  config_ = config;
+  // Preserve the SDK-set jieba_dict_dir when caller didn't specify one.
+  // Lock spans the bulk assign so readers never see a half-written string.
+  {
+    std::lock_guard<std::mutex> lk(mutex_);
+    std::string final_jieba = config.jieba_dict_dir.empty()
+                                  ? config_.jieba_dict_dir
+                                  : config.jieba_dict_dir;
+    config_ = config;
+    config_.jieba_dict_dir = std::move(final_jieba);
+  }
 
   s = LogUtil::Init(log_dir(), log_file_basename(), int(log_level()),
                     log_type(), log_file_size(), log_overdue_days());
@@ -129,6 +147,16 @@ Status GlobalConfig::Initialize(const ConfigData &config) {
 
   GlobalResource::Instance().initialize();
   return Status::OK();
+}
+
+void GlobalConfig::set_default_jieba_dict_dir(const std::string &dir) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  config_.jieba_dict_dir = dir;
+}
+
+std::string GlobalConfig::jieba_dict_dir() const {
+  std::lock_guard<std::mutex> lk(mutex_);
+  return config_.jieba_dict_dir;
 }
 
 uint64_t GlobalConfig::memory_limit_bytes() const noexcept {

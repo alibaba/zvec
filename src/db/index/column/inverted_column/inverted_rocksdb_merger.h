@@ -26,8 +26,8 @@ namespace zvec {
 
 class InvertedRocksdbValueMerger : public rocksdb::MergeOperator {
  public:
-  virtual bool FullMergeV2(const MergeOperationInput &merge_in,
-                           MergeOperationOutput *merge_out) const override {
+  bool FullMergeV2(const MergeOperationInput &merge_in,
+                   MergeOperationOutput *merge_out) const override {
     if (merge_in.existing_value == nullptr &&
         merge_in.operand_list.size() == 1) {
       merge_out->new_value = std::string(merge_in.operand_list[0].data(),
@@ -75,11 +75,10 @@ class InvertedRocksdbValueMerger : public rocksdb::MergeOperator {
   }
 
 
-  virtual bool PartialMerge(const rocksdb::Slice & /*key*/,
-                            const rocksdb::Slice &left_operand,
-                            const rocksdb::Slice &right_operand,
-                            std::string *new_value,
-                            rocksdb::Logger * /*logger*/) const override {
+  bool PartialMerge(const rocksdb::Slice & /*key*/,
+                    const rocksdb::Slice &left_operand,
+                    const rocksdb::Slice &right_operand, std::string *new_value,
+                    rocksdb::Logger * /*logger*/) const override {
     roaring_bitmap_t *bitmap{nullptr};
     auto s = InvertedIndexCodec::Deserialize(left_operand.data(),
                                              left_operand.size(), &bitmap);

@@ -29,7 +29,7 @@ struct IndexProvider : public IndexHolder {
   typedef std::shared_ptr<IndexProvider> Pointer;
 
   //! Destructor
-  virtual ~IndexProvider(void) {}
+  ~IndexProvider(void) override {}
 
   bool multipass() const override {
     return true;
@@ -56,7 +56,7 @@ struct IndexSparseProvider : IndexSparseHolder {
   typedef std::shared_ptr<IndexSparseProvider> Pointer;
 
   //! Destructor
-  virtual ~IndexSparseProvider(void) {}
+  ~IndexSparseProvider(void) override {}
 
   bool multipass() const override {
     return true;
@@ -82,7 +82,7 @@ class MultiPassNumericalIndexProvider : public IndexProvider {
       : holder_(dim), owner_class_("MultiPassNumericalIndexProvider") {}
 
   //! Destructor
-  virtual ~MultiPassNumericalIndexProvider(void) {}
+  ~MultiPassNumericalIndexProvider(void) override {}
 
   //! Retrieve count of elements in holder
   size_t count(void) const override {
@@ -164,7 +164,7 @@ class MultiPassBinaryIndexProvider : public IndexProvider {
       : holder_(dim), owner_class_("MultiPassBinaryIndexProvider") {}
 
   //! Destructor
-  virtual ~MultiPassBinaryIndexProvider(void) {}
+  ~MultiPassBinaryIndexProvider(void) override {}
 
   //! Retrieve count of elements in holder
   size_t count(void) const override {

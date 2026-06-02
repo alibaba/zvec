@@ -138,10 +138,10 @@ target_include_directories(zvec_shared
 # Strip symbols in release builds to reduce library size
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     if(UNIX AND NOT APPLE)
-        add_custom_command(TARGET zvec_shared POST_BUILD
-            COMMAND ${CMAKE_STRIP} $<TARGET_FILE:zvec_shared>
-            COMMENT "Stripping symbols from libzvec.so"
-        )
+        # add_custom_command(TARGET zvec_shared POST_BUILD
+        #     COMMAND ${CMAKE_STRIP} $<TARGET_FILE:zvec_shared>
+        #     COMMENT "Stripping symbols from libzvec.so"
+        # )
     elseif(APPLE)
         add_custom_command(TARGET zvec_shared POST_BUILD
             COMMAND /usr/bin/strip -x $<TARGET_FILE:zvec_shared>
