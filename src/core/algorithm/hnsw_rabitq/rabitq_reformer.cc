@@ -85,6 +85,10 @@ size_t RabitqReformer::num_clusters() const {
   return impl_->num_clusters;
 }
 
+size_t RabitqReformer::ex_bits() const {
+  return impl_->ex_bits;
+}
+
 RabitqMetricType RabitqReformer::rabitq_metric_type() const {
   return Impl::from_rabitq(impl_->metric_type);
 }

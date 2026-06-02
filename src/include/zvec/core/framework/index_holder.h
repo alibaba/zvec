@@ -96,7 +96,7 @@ struct IndexHybridHolder : public IndexHolder {
     typedef std::unique_ptr<Iterator> Pointer;
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     virtual const void *data(void) const = 0;
@@ -121,7 +121,7 @@ struct IndexHybridHolder : public IndexHolder {
   };
 
   //! Destructor
-  virtual ~IndexHybridHolder(void) {}
+  ~IndexHybridHolder(void) override {}
 
   //! Retrieve sparse count summing up over all the docs
   virtual size_t total_sparse_count(void) const = 0;
@@ -206,7 +206,7 @@ class OnePassNumericalIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -313,7 +313,7 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -434,7 +434,7 @@ class OnePassBinaryIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -541,7 +541,7 @@ class MultiPassBinaryIndexHolder : public IndexHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -662,7 +662,7 @@ class OnePassIndexHybridHolderBase : public IndexHybridHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -803,7 +803,7 @@ class MultiPassIndexHybridHolderBase : public IndexHybridHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
     const void *data(void) const override {
@@ -949,7 +949,7 @@ class OnePassIndexSparseHolderBase : public IndexSparseHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
@@ -1059,7 +1059,7 @@ class MultiPassIndexSparseHolderBase : public IndexSparseHolder {
     }
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Test if the iterator is valid
     bool is_valid(void) const override {
@@ -1679,25 +1679,25 @@ class RandomAccessIndexHolder : public IndexHolder {
     Iterator(RandomAccessIndexHolder *owner) : holder_(owner) {}
 
     //! Destructor
-    virtual ~Iterator(void) {}
+    ~Iterator(void) override {}
 
     //! Retrieve pointer of data
-    virtual const void *data(void) const override {
+    const void *data(void) const override {
       return holder_->element(id_);
     }
 
     //! Test if the iterator is valid
-    virtual bool is_valid(void) const override {
+    bool is_valid(void) const override {
       return id_ < holder_->count();
     }
 
     //! Retrieve primary key
-    virtual uint64_t key(void) const override {
+    uint64_t key(void) const override {
       return holder_->key(id_);
     }
 
     //! Next iterator
-    virtual void next(void) override {
+    void next(void) override {
       ++id_;
     }
 
@@ -1712,32 +1712,32 @@ class RandomAccessIndexHolder : public IndexHolder {
       : features_(std::make_shared<CompactIndexFeatures>(meta)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
-  virtual size_t count(void) const override {
+  size_t count(void) const override {
     return features_->count();
   }
 
   //! Retrieve dimension
-  virtual size_t dimension(void) const override {
+  size_t dimension(void) const override {
     return features_->dimension();
   }
 
   //! Retrieve type information
-  virtual IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type(void) const override {
     return features_->data_type();
   }
 
   //! Retrieve element size in bytes
-  virtual size_t element_size(void) const override {
+  size_t element_size(void) const override {
     return features_->element_size();
   }
 
   //! Retrieve if it can multi-pass
-  virtual bool multipass(void) const override {
+  bool multipass(void) const override {
     return true;
   }
 
   //! Create a new iterator
-  virtual IndexHolder::Iterator::Pointer create_iterator(void) override {
+  IndexHolder::Iterator::Pointer create_iterator(void) override {
     return IndexHolder::Iterator::Pointer(
         new RandomAccessIndexHolder::Iterator(this));
   }

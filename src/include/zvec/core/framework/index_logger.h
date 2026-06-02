@@ -92,7 +92,7 @@ struct IndexLogger : public IndexModule {
   }
 
   //! Destructor
-  virtual ~IndexLogger(void) {}
+  ~IndexLogger(void) override {}
 
   //! Initialize Logger
   virtual int init(const zvec::ailego::Params &params) = 0;

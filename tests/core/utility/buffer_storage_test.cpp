@@ -14,7 +14,6 @@
 
 #include <iostream>
 #include <gtest/gtest.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
 

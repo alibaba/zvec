@@ -23,7 +23,6 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/util/async_generator.h>
 #include <parquet/arrow/reader.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/db/status.h>
 #include "base_forward_store.h"
 
@@ -123,9 +122,6 @@ class BufferPoolForwardStore
 
   /// Number of rows in each row group
   std::vector<int64_t> row_group_row_nums_;
-
-  /// Buffer manager for caching data
-  std::shared_ptr<ailego::BufferManager> buffer_manager_;
 };
 
 }  // namespace zvec

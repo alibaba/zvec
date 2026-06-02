@@ -45,6 +45,9 @@
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
 #include "db/common/typedef.h"
+#include "db/index/column/fts_column/fts_column_indexer.h"
+#include "db/index/column/fts_column/fts_rocksdb_merge.h"
+#include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
@@ -67,6 +70,7 @@
 #include "sql_expr_parser.h"
 
 namespace zvec {
+
 
 void global_init() {
   static std::once_flag once;
@@ -159,6 +163,13 @@ class SegmentImpl : public Segment,
 
   InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &field_name) const override;
+
+  fts::FtsColumnIndexerPtr get_fts_indexer(
+      const std::string &field_name) const override;
+
+  Result<std::vector<fts::FtsResult>> fts_search(
+      const std::string &field_name, const fts::FtsAstNode &ast,
+      const fts::FtsQueryParams &params) override;
 
   const IndexFilter::Ptr get_filter() override;
 
@@ -279,6 +290,7 @@ class SegmentImpl : public Segment,
       const vector_column_params::VectorDataBuffer &buf, Doc *doc);
 
   Status insert_scalar_indexer(Doc &doc);
+  Status insert_fts_indexer(Doc &doc);
   Status insert_vector_indexer(Doc &doc);
   Status internal_insert(Doc &doc);
   Status internal_update(Doc &doc);
@@ -297,6 +309,12 @@ class SegmentImpl : public Segment,
   bool validate(const std::vector<std::string> &columns) const;
 
   Status reopen_invert_indexer(bool read_only = false);
+
+  // FTS helpers
+  Status open_fts_indexers(bool create);
+  Status close_fts_indexers();
+  Status flush_fts_indexers();
+  Status dump_fts_indexers();
 
   Status insert_array_to_invert_indexer(
       const FieldSchema::Ptr &schema,
@@ -321,6 +339,11 @@ class SegmentImpl : public Segment,
 
   // scalar index (uses segment-local doc ID)
   InvertedIndexer::Ptr invert_indexers_;
+
+  // FTS index (uses segment-local doc ID)
+  std::shared_ptr<RocksdbContext> fts_ctx_;
+  std::unordered_map<std::string, fts::FtsColumnIndexerPtr> fts_indexers_;
+  bool has_fts_{false};
 
   // vector index (uses block-local doc ID, each indexer starts from 0)
   std::unordered_map<std::string, VectorColumnIndexer::Ptr>
@@ -447,6 +470,10 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
   s = load_scalar_index_blocks();
   CHECK_RETURN_STATUS(s);
 
+  // load FTS indexes
+  s = open_fts_indexers(false);
+  CHECK_RETURN_STATUS(s);
+
   // load vector indexes
   s = load_vector_index_blocks();
   CHECK_RETURN_STATUS(s);
@@ -510,6 +537,9 @@ Status SegmentImpl::Create(const SegmentOptions &options, uint64_t min_doc_id) {
   auto s = load_scalar_index_blocks(true);
   CHECK_RETURN_STATUS(s);
 
+  s = open_fts_indexers(true);
+  CHECK_RETURN_STATUS(s);
+
   doc_id_allocator_.store(min_doc_id);
 
   return Status::OK();
@@ -520,6 +550,7 @@ Status SegmentImpl::close() {
   if (invert_indexers_) {
     invert_indexers_.reset();
   }
+  close_fts_indexers();
   for (const auto &[name, indexers] : vector_indexers_) {
     for (auto indexer : indexers) {
       indexer->Close();
@@ -828,6 +859,9 @@ Status SegmentImpl::internal_insert(Doc &doc) {
   if (!s.ok() && s.code() != StatusCode::ALREADY_EXISTS) {
     return s;
   }
+  // write FTS index
+  s = insert_fts_indexer(doc);
+  CHECK_RETURN_STATUS(s);
   // write vector index
   s = insert_vector_indexer(doc);
   if (!s.ok() && s != Status::AlreadyExists()) {
@@ -1965,7 +1999,7 @@ Status SegmentImpl::create_scalar_index(const std::vector<std::string> &columns,
     s = invert_indexers_->create_snapshot(new_invert_index_path);
     CHECK_RETURN_STATUS(s);
 
-    auto inverted_fields_ptr = collection_schema_->forward_fields_with_index();
+    auto inverted_fields_ptr = collection_schema_->invert_fields();
     std::vector<FieldSchema> inverted_fields;
     std::vector<std::string> inverted_field_names;
     for (auto field : inverted_fields_ptr) {
@@ -2153,6 +2187,9 @@ Status SegmentImpl::dump() {
     CHECK_RETURN_STATUS(s);
   }
 
+  s = dump_fts_indexers();
+  CHECK_RETURN_STATUS(s);
+
   sealed_ = true;
 
   return Status::OK();
@@ -2182,6 +2219,12 @@ Status SegmentImpl::flush() {
   // flush scalar indexer
   if (invert_indexers_) {
     s = invert_indexers_->flush();
+    CHECK_RETURN_STATUS(s);
+  }
+
+  // flush FTS indexers
+  if (has_fts_) {
+    s = flush_fts_indexers();
     CHECK_RETURN_STATUS(s);
   }
 
@@ -3000,7 +3043,7 @@ Status SegmentImpl::reopen_invert_indexer(bool read_only) {
 
   // build invert index fields
   std::vector<std::string> inverted_field_names;
-  auto inverted_fields_ptr = collection_schema_->forward_fields_with_index();
+  auto inverted_fields_ptr = collection_schema_->invert_fields();
   std::vector<FieldSchema> inverted_fields;
   for (auto field : inverted_fields_ptr) {
     inverted_fields.push_back(*field);
@@ -4426,6 +4469,214 @@ Result<Segment::Ptr> Segment::Open(const std::string &path,
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   return segment;
+}
+
+////////////////////////////////////////////////////////////////////////////////////
+// FTS integration
+////////////////////////////////////////////////////////////////////////////////////
+
+Status SegmentImpl::open_fts_indexers(bool create) {
+  if (!collection_schema_->has_fts_field()) {
+    return Status::OK();
+  }
+
+  auto fts_fields = collection_schema_->fts_fields();
+  has_fts_ = true;
+
+  auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_);
+
+  // Collect CF names and per-CF merge operators
+  std::vector<std::string> cf_names;
+  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+      per_cf_merge_ops;
+
+  for (const auto &field : fts_fields) {
+    const auto &name = field->name();
+    cf_names.push_back(name);                        // postings
+    cf_names.push_back(name + kFtsPositionsSuffix);  // positions
+
+    per_cf_merge_ops[name] = std::make_shared<fts::FtsPostingsMerge>();
+    per_cf_merge_ops[name + kFtsMaxTfSuffix] =
+        std::make_shared<fts::FtsMaxTfMerge>();
+
+    // Side CFs (_tf / _max_tf / _doc_len) are present in mutable segments
+    // that have not yet been dumped.  After dump,
+    // convert_postings_to_bitpacked() inlines their payloads into BitPacked
+    // postings and the CFs are dropped.  When opening (!create), we pass
+    // empty column_names so RocksdbContext::open auto-discovers existing CFs
+    // via ListColumnFamilies — side CFs are included only when present.
+    if (create) {
+      cf_names.push_back(name + kFtsTfSuffix);
+      cf_names.push_back(name + kFtsMaxTfSuffix);
+      cf_names.push_back(name + kFtsDocLenSuffix);
+    }
+  }
+  cf_names.push_back(kFtsStatCfName);
+
+  fts_ctx_ = std::make_shared<RocksdbContext>();
+  Status s;
+
+  bool enable_hash_skiplist = true;
+  if (create) {
+    s = fts_ctx_->create(RocksdbContext::Args{
+        fts_path, cf_names, nullptr, per_cf_merge_ops, enable_hash_skiplist});
+  } else {
+    // Auto-discover existing CFs via ListColumnFamilies (empty column_names).
+    // per_cf_merge_ops covers both base and side CFs; entries for CFs that
+    // were dropped after dump are harmlessly ignored.
+    s = fts_ctx_->open(
+        RocksdbContext::Args{
+            fts_path, {}, nullptr, per_cf_merge_ops, enable_hash_skiplist},
+        options_.read_only_);
+  }
+  if (!s.ok()) {
+    LOG_ERROR("open_fts_indexers: failed to %s FTS RocksDB at [%s]: %s",
+              create ? "create" : "open", fts_path.c_str(),
+              s.message().c_str());
+    return s;
+  }
+
+  auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
+
+  for (const auto &field : fts_fields) {
+    const auto &name = field->name();
+    auto *postings_cf = fts_ctx_->get_cf(name);
+    auto *positions_cf = fts_ctx_->get_cf(name + kFtsPositionsSuffix);
+    // Side CF handles are non-null when the segment has not been dumped
+    // (side CFs still exist).  For dumped immutable segments get_cf returns
+    // nullptr and FtsColumnIndexer falls back to BitPacked inline payloads
+    // or tf=1/doc_len=1 defaults.
+    auto *term_freq_cf = fts_ctx_->get_cf(name + kFtsTfSuffix);
+    auto *max_tf_cf = fts_ctx_->get_cf(name + kFtsMaxTfSuffix);
+    auto *doc_len_cf = fts_ctx_->get_cf(name + kFtsDocLenSuffix);
+
+    auto indexer = std::make_shared<fts::FtsColumnIndexer>();
+
+    auto ret = indexer->open(field, fts_ctx_.get(), postings_cf, positions_cf,
+                             term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
+    if (!ret.has_value()) {
+      LOG_ERROR(
+          "open_fts_indexers: FtsColumnIndexer::open failed for field[%s] "
+          "err[%s] postings_cf[%p] positions_cf[%p] stat_cf[%p]",
+          name.c_str(), ret.error().message().c_str(), (void *)postings_cf,
+          (void *)positions_cf, (void *)stat_cf);
+      return Status::InternalError("Failed to open FTS indexer: ", name, " ",
+                                   ret.error().message());
+    }
+
+    fts_indexers_[name] = indexer;
+  }
+
+  return Status::OK();
+}
+
+Status SegmentImpl::flush_fts_indexers() {
+  for (const auto &[name, indexer] : fts_indexers_) {
+    auto ret = indexer->flush();
+    if (!ret.has_value()) {
+      return Status::InternalError("FTS flush failed: ", name, " ",
+                                   ret.error().message());
+    }
+  }
+  auto s = fts_ctx_->flush();
+  CHECK_RETURN_STATUS(s);
+  return Status::OK();
+}
+
+Status SegmentImpl::close_fts_indexers() {
+  fts_indexers_.clear();
+  if (fts_ctx_) {
+    auto s = fts_ctx_->close();
+    fts_ctx_.reset();
+    return s;
+  }
+  return Status::OK();
+}
+
+Status SegmentImpl::insert_fts_indexer(Doc &doc) {
+  if (!has_fts_) {
+    return Status::OK();
+  }
+  for (const auto &field : collection_schema_->fts_fields()) {
+    auto it = fts_indexers_.find(field->name());
+    if (it == fts_indexers_.end()) {
+      return Status::InternalError("FTS indexer not found: ", field->name());
+    }
+    auto value = doc.get<std::string>(field->name());
+    if (value.has_value()) {
+      auto segment_doc_id = doc_ids_.size();
+      auto ret = it->second->insert(segment_doc_id, value.value());
+      if (!ret.has_value()) {
+        return Status::InternalError("FTS insert failed: ", field->name(), " ",
+                                     ret.error().message());
+      }
+    }
+  }
+  return Status::OK();
+}
+
+Status SegmentImpl::dump_fts_indexers() {
+  if (!has_fts_) {
+    return Status::OK();
+  }
+
+  // flush all indexers
+  for (const auto &[name, indexer] : fts_indexers_) {
+    auto ret = indexer->flush();
+    if (!ret.has_value()) {
+      return Status::InternalError("FTS flush failed during dump: ", name, " ",
+                                   ret.error().message());
+    }
+  }
+
+  // convert postings to bitpacked format
+  for (const auto &[name, indexer] : fts_indexers_) {
+    auto ret = indexer->convert_postings_to_bitpacked();
+    if (!ret.has_value()) {
+      return Status::InternalError("FTS convert_postings_to_bitpacked failed: ",
+                                   name, " ", ret.error().message());
+    }
+  }
+
+  // reset side CFs and drop $TF/$MAX_TF/$DOC_LEN CFs
+  for (const auto &[name, indexer] : fts_indexers_) {
+    indexer->reset_side_cfs();
+  }
+  for (const auto &field : collection_schema_->fts_fields()) {
+    const auto &name = field->name();
+    fts_ctx_->drop_cf(name + kFtsTfSuffix);
+    fts_ctx_->drop_cf(name + kFtsMaxTfSuffix);
+    fts_ctx_->drop_cf(name + kFtsDocLenSuffix);
+  }
+
+  return Status::OK();
+}
+
+fts::FtsColumnIndexerPtr SegmentImpl::get_fts_indexer(
+    const std::string &field_name) const {
+  auto it = fts_indexers_.find(field_name);
+  if (it != fts_indexers_.end()) {
+    return it->second;
+  }
+  return nullptr;
+}
+
+Result<std::vector<fts::FtsResult>> SegmentImpl::fts_search(
+    const std::string &field_name, const fts::FtsAstNode &ast,
+    const fts::FtsQueryParams &params) {
+  auto indexer = get_fts_indexer(field_name);
+  if (!indexer) {
+    return tl::make_unexpected(
+        Status::NotFound("FTS indexer not found: ", field_name));
+  }
+
+  auto ret = indexer->search(ast, params);
+  if (!ret.has_value()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FTS search failed: ", field_name, " ", ret.error().message()));
+  }
+
+  return std::move(ret.value());
 }
 
 }  // namespace zvec

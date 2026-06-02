@@ -56,7 +56,7 @@ class InvertedSearchResult
   explicit InvertedSearchResult(roaring_bitmap_t *bitmap) : bitmap_(bitmap) {}
 
 
-  ~InvertedSearchResult() {
+  ~InvertedSearchResult() override {
     destroy_bitmap();
   }
 
@@ -95,13 +95,13 @@ class InvertedSearchResult
       }
     }
 
-    virtual ~InvertedIndexIterator() {
+    ~InvertedIndexIterator() override {
       if (iter_) {
         roaring_free_uint32_iterator(iter_);
       }
     }
 
-    virtual idx_t doc_id() const {
+    idx_t doc_id() const override {
       if (!iter_) {
         return INVALID_DOC_ID;
       }
@@ -112,17 +112,17 @@ class InvertedSearchResult
       }
     }
 
-    virtual float score() const {
+    float score() const override {
       return 0.0f;
     }
 
-    virtual void next() {
+    void next() override {
       if (iter_ && iter_->has_value) {
         roaring_advance_uint32_iterator(iter_);
       }
     }
 
-    virtual bool valid() const {
+    bool valid() const override {
       return iter_ ? iter_->has_value : false;
     }
 

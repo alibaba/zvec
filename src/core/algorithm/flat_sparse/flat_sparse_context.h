@@ -45,7 +45,7 @@ class FlatSparseContext : public IndexContext {
       : searcher_owner_(searcher_ptr), context_type_(kSearcherContext) {}
 
   //! Destructor
-  virtual ~FlatSparseContext(void) = default;
+  ~FlatSparseContext(void) override = default;
 
   //! Set topk of search result
   void set_topk(uint32_t topk) override {

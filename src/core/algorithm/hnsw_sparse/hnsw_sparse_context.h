@@ -38,58 +38,57 @@ class HnswSparseContext : public IndexContext {
                     const HnswSparseEntity::Pointer &entity);
 
   //! Destructor
-  virtual ~HnswSparseContext();
+  ~HnswSparseContext() override;
 
  public:
   //! Set topk of search result
-  virtual void set_topk(uint32_t val) override {
+  void set_topk(uint32_t val) override {
     topk_ = val;
     topk_heap_.limit(std::max(val, ef_));
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result(void) const override {
     return results_[0];
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     return results_[idx];
   }
 
   //! Retrieve result object for output
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result(void) const override {
     return group_results_[0];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(
-      size_t idx) const override {
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
     return group_results_[idx];
   }
 
-  virtual uint32_t magic(void) const override {
+  uint32_t magic(void) const override {
     return magic_;
   }
 
   //! Set mode of debug
-  virtual void set_debug_mode(bool enable) override {
+  void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
 
   //! Retrieve mode of debug
-  virtual bool debug_mode(void) const override {
+  bool debug_mode(void) const override {
     return this->debugging();
   }
 
   //! Retrieve string of debug
-  virtual std::string debug_string(void) const override {
+  std::string debug_string(void) const override {
     char buf[4096];
     size_t size = snprintf(
         buf, sizeof(buf),
@@ -100,7 +99,7 @@ class HnswSparseContext : public IndexContext {
   }
 
   //! Update the parameters of context
-  virtual int update(const ailego::Params &params) override;
+  int update(const ailego::Params &params) override;
 
  public:
   //! Init context
@@ -313,7 +312,7 @@ class HnswSparseContext : public IndexContext {
     force_padding_topk_ = v;
   }
 
-  virtual void set_bruteforce_threshold(uint32_t v) override {
+  void set_bruteforce_threshold(uint32_t v) override {
     bruteforce_threshold_ = v;
   }
 
@@ -321,11 +320,11 @@ class HnswSparseContext : public IndexContext {
     return bruteforce_threshold_;
   }
 
-  virtual void set_fetch_vector(bool v) override {
+  void set_fetch_vector(bool v) override {
     fetch_vector_ = v;
   }
 
-  virtual bool fetch_vector() const override {
+  bool fetch_vector() const override {
     return fetch_vector_;
   }
 

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <zvec/db/query.h>
+#include <zvec/db/status.h>
 #include "db/sqlengine/common/group_by.h"
 #include "db/sqlengine/parser/node.h"
 #include "db/sqlengine/parser/sql_info.h"
@@ -23,11 +24,11 @@ namespace zvec::sqlengine {
 
 class SQLInfoHelper {
  public:
-  //! Perform QueryRequest to sql info conversion:
-  static bool MessageToSQLInfo(const SearchQuery *query, Node::Ptr filter_node,
-                               std::shared_ptr<GroupBy> group_by,
-                               sqlengine::SQLInfo::Ptr *sql_info,
-                               std::string *err_msg);
+  //! Build SQLInfo from SearchQuery. Takes query by value so callers may copy
+  //! or move it; vector payloads can be moved while building SQLInfo.
+  static Result<sqlengine::SQLInfo::Ptr> BuildSQLInfoFromSearchQuery(
+      SearchQuery query, Node::Ptr filter_node,
+      std::shared_ptr<GroupBy> group_by);
 };
 
 }  // namespace zvec::sqlengine

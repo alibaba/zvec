@@ -401,7 +401,7 @@ class IndexRunner : public IndexModule {
   IndexRunner() = default;
 
   //! Destructor
-  virtual ~IndexRunner() = default;
+  ~IndexRunner() override = default;
 
   //! Retrieve statistics
   virtual const Stats &stats(void) const = 0;

@@ -4,10 +4,6 @@ on:
   workflow_call:
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -41,7 +37,7 @@ jobs:
 
       - name: Checkout submodules
         if: steps.changed_files.outputs.any_changed == 'true'
-        run: git submodule update --init --recursive
+        run: git submodule update --init --recursive --depth 1
 
       - name: Install dependencies
         if: steps.changed_files.outputs.any_changed == 'true'
@@ -54,7 +50,7 @@ jobs:
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: clang-tidy
-          max-size: 100M
+          max-size: 500M
 
       - name: Configure CMake and export compile commands
         if: steps.changed_files.outputs.any_changed == 'true'
@@ -126,36 +122,71 @@ jobs:
           hash=$(git submodule status --recursive | awk '{print $1}' | sort | sha256sum | awk '{print $1}')
           echo "value=${hash}" >> "$GITHUB_OUTPUT"
 
-      - name: Cache third-party build artifacts
-        id: cache_thirdparty
+      - name: Restore generated headers cache
+        id: cache_headers
         if: steps.changed_files.outputs.any_changed == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
-          path: build/external
-          key: thirdparty-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch') }}-${{ steps.submodule_hash.outputs.value }}
+          path: |
+            build/external
+            build/thirdparty
+            build/src/db/proto
+          key: clang-tidy-headers-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch', 'src/db/proto/*.proto') }}-${{ steps.submodule_hash.outputs.value }}
 
-      - name: Build
-        if: steps.tidy_files.outputs.any_tidy_files == 'true'
+      - name: Build generated headers only
+        if: steps.tidy_files.outputs.any_tidy_files == 'true' && steps.cache_headers.outputs.cache-hit != 'true'
         run: |
-          ninja -C build zvec_db
+          ninja -C build clang_tidy_deps
 
-      - name: Run clang-tidy on changed files
+      - name: Save generated headers cache
+        if: steps.tidy_files.outputs.any_tidy_files == 'true' && steps.cache_headers.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            build/external
+            build/thirdparty
+            build/src/db/proto
+          key: clang-tidy-headers-${{ runner.os }}-${{ hashFiles('thirdparty/**/*.cmake', 'thirdparty/**/CMakeLists.txt', 'thirdparty/**/*.patch', 'src/db/proto/*.proto') }}-${{ steps.submodule_hash.outputs.value }}
+
+      - name: Run clang-tidy on changed files (parallel)
         if: steps.tidy_files.outputs.any_tidy_files == 'true'
         run: |
           mapfile -t files_to_check <<'TIDY_EOF'
           ${{ steps.tidy_files.outputs.all_tidy_files }}
           TIDY_EOF
 
+          log_dir=$(mktemp -d)
+          printf '%s\n' "${files_to_check[@]}" \
+            | grep -v '^\s*$' \
+            | xargs -I{} -P "$(nproc)" sh -c '
+                file="{}"
+                if [ -f "$file" ]; then
+                  log="'"$log_dir"'/$$.log"
+                  echo "$file" > "$log"
+                  if clang-tidy -p build --quiet --warnings-as-errors="*" "$file" >> "$log" 2>&1; then
+                    echo "PASS: $file"
+                    rm -f "$log"
+                  else
+                    echo "FAIL: $file"
+                  fi
+                fi'
+
           failed=0
-          for file in "${files_to_check[@]}"; do
-            [[ -z "${file// }" ]] && continue
-            if [ -f "$file" ]; then
-              echo "=== clang-tidy: $file ==="
-              clang-tidy -p build --warnings-as-errors='*' "$file" || failed=1
-            fi
+          for f in "$log_dir"/*.log; do
+            [ -e "$f" ] || break
+            failed=1
+            src=$(head -1 "$f")
+            echo ""
+            echo "::group::clang-tidy errors: $src"
+            tail -n +2 "$f"
+            echo "::endgroup::"
           done
 
-          exit $failed
+          rm -rf "$log_dir"
+          if [ "$failed" -eq 1 ]; then
+            echo "::error::clang-tidy found issues in one or more files"
+            exit 1
+          fi
 
       - name: No files to analyse
         if: steps.changed_files.outputs.any_changed == 'true' && steps.tidy_files.outputs.any_tidy_files != 'true'

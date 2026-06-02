@@ -30,7 +30,6 @@
 #include <arrow/table.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"

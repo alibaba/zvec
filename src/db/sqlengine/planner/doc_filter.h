@@ -44,8 +44,11 @@ class DocFilter : public IndexFilter {
 
   bool is_filtered(uint64_t id) const override;
 
-  //! get brute force by keys and clear `invert_filter_` if suitable
-  std::optional<std::vector<uint64_t>> get_bf_by_keys_and_update();
+  //! When invert cardinality <= \p ratio * doc_count, extract the ids and
+  //! clear invert_filter_ so the caller drives evaluation by ids instead of
+  //! bitmap-checking. Ratio is per-caller (vector vs FTS use different
+  //! GlobalConfig knobs) because per-candidate cost differs.
+  std::optional<std::vector<uint64_t>> get_bf_by_keys_and_update(float ratio);
 
   bool empty() const;
 

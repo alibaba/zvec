@@ -122,7 +122,7 @@ class SingleQueueIndexThreads : public IndexThreads {
   SingleQueueIndexThreads(void) : SingleQueueIndexThreads{false} {}
 
   //! Destructor
-  virtual ~SingleQueueIndexThreads(void) {}
+  ~SingleQueueIndexThreads(void) override {}
 
   //! Retrieve thread count in pool
   size_t count(void) const override {

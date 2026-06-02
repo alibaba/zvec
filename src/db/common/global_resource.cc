@@ -14,7 +14,6 @@
 #include "db/common/global_resource.h"
 #include <mutex>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/db/config.h>
 
 namespace zvec {

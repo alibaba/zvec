@@ -27,7 +27,7 @@ class IndexReformer : public IndexModule {
   typedef std::shared_ptr<IndexReformer> Pointer;
 
   //! Destructor
-  virtual ~IndexReformer(void) {}
+  ~IndexReformer(void) override {}
 
   //! Initialize Reformer
   virtual int init(const ailego::Params &params) = 0;
