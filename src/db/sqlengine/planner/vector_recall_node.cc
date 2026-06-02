@@ -65,15 +65,16 @@ VectorRecallNode::VectorRecallNode(Segment::Ptr segment,
 }
 
 arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
-  using ExecBatchFuture = arrow::Future<std::optional<cp::ExecBatch>>;
   auto state_ptr = std::make_shared<State>(shared_from_this());
-  return [state_ptr = std::move(state_ptr)]() mutable -> ExecBatchFuture {
+  return [state_ptr = std::move(state_ptr)]() mutable
+         -> arrow::Future<std::optional<cp::ExecBatch>> {
     auto &state = *state_ptr;
     if (!state.iter_) {
       auto vector_ret = state.self_->prepare();
       if (!vector_ret) {
-        return ExecBatchFuture::MakeFinished(arrow::Status::ExecutionError(
-            "prepare vector failed:", vector_ret.error().c_str()));
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::ExecutionError("prepare vector failed:",
+                                          vector_ret.error().c_str()));
       }
       state.vector_result_ = vector_ret.value();
       state.iter_ = state.vector_result_->create_iterator();
@@ -82,16 +83,19 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
     // check if there is any data
     if (!state.iter_->valid()) {
       // return empty optional to indicate end
-      return ExecBatchFuture::MakeFinished(std::nullopt);
+      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+          std::nullopt);
     }
 
     auto record_batch = state.collect_batch();
     if (!record_batch.ok()) {
-      return ExecBatchFuture::MakeFinished(arrow::Status::ExecutionError(
-          "collect batch failed:", record_batch.status().ToString()));
+      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+          arrow::Status::ExecutionError("collect batch failed:",
+                                        record_batch.status().ToString()));
     }
     cp::ExecBatch exec_batch(*record_batch.ValueOrDie());
-    return ExecBatchFuture::MakeFinished(std::move(exec_batch));
+    return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+        std::move(exec_batch));
   };
 }
 
@@ -164,20 +168,19 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   // set filter after brute force check
   query_params.filter = doc_filter_->empty() ? nullptr : doc_filter_.get();
   if (const auto &group_by = query_info_->group_by(); group_by) {
-    auto group_fun = [this, &group_by](uint64_t segment_row_id) -> std::string {
+    auto group_fun = [this, &group_by](uint64_t row_id) -> std::string {
       auto table = segment_->fetch({group_by->group_by_field},
-                                   std::vector<int>{(int)segment_row_id});
+                                   std::vector<int>{(int)row_id});
       static std::string kEmpty;
       if (!table) {
-        LOG_ERROR("Fetch group by field failed: field[%s] segment_row_id[%zu]",
-                  group_by->group_by_field.c_str(), (size_t)segment_row_id);
+        LOG_ERROR("Fetch group by field failed: field[%s] row_id[%zu]",
+                  group_by->group_by_field.c_str(), (size_t)row_id);
         return kEmpty;
       }
       if (table->num_rows() != 1) {
         LOG_ERROR(
-            "Fetch group by field failed: field[%s] segment_row_id[%zu] "
-            "rows[%zu]",
-            group_by->group_by_field.c_str(), (size_t)segment_row_id,
+            "Fetch group by field failed: field[%s] row_id[%zu] rows[%zu]",
+            group_by->group_by_field.c_str(), (size_t)row_id,
             (size_t)table->num_rows());
         return kEmpty;
       }
