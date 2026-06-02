@@ -3,7 +3,7 @@ index 1234567..abcdefg 100644
 --- a/runtime/Cpp/CMakeLists.txt
 +++ b/runtime/Cpp/CMakeLists.txt
 @@ -85,10 +85,10 @@ endif()
-
+ 
  set(CMAKE_CXX_FLAGS                  "${CMAKE_CXX_FLAGS} ${MY_CXX_WARNING_FLAGS}")
  if(MSVC_VERSION)
 -  set(CMAKE_CXX_FLAGS_DEBUG          "${CMAKE_CXX_FLAGS_DEBUG} /Od /Zi /MP ${MY_CXX_WARNING_FLAGS}")
