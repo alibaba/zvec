@@ -20,15 +20,16 @@ add_subdirectory(googletest-1.10.0)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 
-# googletest hardcodes /Zi in internal_utils.cmake; replace with /Z7 for sccache compatibility.
-# /Z7 embeds debug info in .obj so no .pdb is generated. Must also clear COMPILE_PDB_NAME
-# to prevent CMake from adding /Fd<path> which causes sccache to look for a nonexistent .pdb.
+# googletest hardcodes /Zi via COMPILE_FLAGS (old-style string property) in internal_utils.cmake.
+# Replace -Zi with /Z7 for sccache compatibility (/Z7 embeds debug info in .obj, no .pdb).
+# Also clear COMPILE_PDB_NAME to prevent CMake from adding /Fd<path> — sccache would try
+# to collect the nonexistent .pdb and fail.
 if(MSVC)
     foreach(_gt_target gtest gtest_main gmock gmock_main)
-        get_target_property(_gt_opts ${_gt_target} COMPILE_OPTIONS)
-        if(_gt_opts)
-            string(REPLACE "-Zi" "/Z7" _gt_opts "${_gt_opts}")
-            set_target_properties(${_gt_target} PROPERTIES COMPILE_OPTIONS "${_gt_opts}")
+        get_target_property(_gt_flags ${_gt_target} COMPILE_FLAGS)
+        if(_gt_flags)
+            string(REPLACE "-Zi" "/Z7" _gt_flags "${_gt_flags}")
+            set_target_properties(${_gt_target} PROPERTIES COMPILE_FLAGS "${_gt_flags}")
         endif()
         set_target_properties(${_gt_target} PROPERTIES COMPILE_PDB_NAME "")
     endforeach()
