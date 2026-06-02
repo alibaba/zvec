@@ -181,7 +181,7 @@ std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire(
   if (iter == table_.end()) {
     return nullptr;
   }
-  ParquetBufferContext &context = table_[buffer_id];
+  ParquetBufferContext &context = iter->second;
   while (true) {
     int current_count = context.ref_count.load(std::memory_order_acquire);
     if (current_count < 0) {
@@ -211,7 +211,7 @@ void ParquetBufferPool::release(ParquetBufferID buffer_id) {
   if (iter == table_.end()) {
     return;
   }
-  ParquetBufferContext &context = table_[buffer_id];
+  ParquetBufferContext &context = iter->second;
   if (context.ref_count.fetch_sub(1, std::memory_order_release) == 1) {
     std::atomic_thread_fence(std::memory_order_acquire);
     BlockEvictionQueue::BlockType block;
@@ -227,13 +227,14 @@ void ParquetBufferPool::evict(ParquetBufferID buffer_id) {
   if (iter == table_.end()) {
     return;
   }
-  ParquetBufferContext &context = table_[buffer_id];
+  ParquetBufferContext &context = iter->second;
   int expected = 0;
   if (context.ref_count.compare_exchange_strong(
           expected, std::numeric_limits<int>::min())) {
     MemoryLimitPool::get_instance().release_parquet(context.size);
     context.arrow = nullptr;
     context.arrow_refs.clear();
+    table_.erase(iter);
   }
 }
 
