@@ -34,57 +34,54 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
  public:
   //! Cleanup
   //! return 0 on success, or errCode in failure
-  virtual int cleanup() override;
+  int cleanup() override;
 
   //! Make a copy of streamer entity, to support thread-safe operation.
   //! The segment in container cannot be read concurrenly
-  virtual const HnswRabitqEntity::Pointer clone() const override;
+  const HnswRabitqEntity::Pointer clone() const override;
 
   //! Get primary key of the node id
-  virtual key_t get_key(node_id_t id) const override;
+  key_t get_key(node_id_t id) const override;
 
   //! Get vector feature data by key
-  virtual const void *get_vector(node_id_t id) const override;
+  const void *get_vector(node_id_t id) const override;
 
   //! Get vectors feature data by local ids
-  virtual int get_vector(const node_id_t *ids, uint32_t count,
-                         const void **vecs) const override;
+  int get_vector(const node_id_t *ids, uint32_t count,
+                 const void **vecs) const override;
 
-  virtual int get_vector(const node_id_t id,
-                         IndexStorage::MemoryBlock &block) const override;
+  int get_vector(const node_id_t id,
+                 IndexStorage::MemoryBlock &block) const override;
 
-  virtual int get_vector(
+  int get_vector(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override;
 
   //! Get the node id's neighbors on graph level
   //! Note: the neighbors cannot be modified, using the following
   //! method to get WritableNeighbors if want to
-  virtual const Neighbors get_neighbors(level_t level,
-                                        node_id_t id) const override;
+  const Neighbors get_neighbors(level_t level, node_id_t id) const override;
 
   //! Add vector and key to hnsw entity, and local id will be saved in id
-  virtual int add_vector(level_t level, key_t key, const void *vec,
-                         node_id_t *id) override;
+  int add_vector(level_t level, key_t key, const void *vec,
+                 node_id_t *id) override;
 
   //! Add vector and id to hnsw entity
-  virtual int add_vector_with_id(level_t level, node_id_t id,
-                                 const void *vec) override;
+  int add_vector_with_id(level_t level, node_id_t id, const void *vec) override;
 
-  virtual int update_neighbors(
-      level_t level, node_id_t id,
-      const std::vector<std::pair<node_id_t, ResultRecord>> &neighbors)
-      override;
+  int update_neighbors(level_t level, node_id_t id,
+                       const std::vector<std::pair<node_id_t, ResultRecord>>
+                           &neighbors) override;
 
   //! Append neighbor_id to node id neighbors on level
   //! Notice: the caller must be ensure the neighbors not full
-  virtual void add_neighbor(level_t level, node_id_t id, uint32_t size,
-                            node_id_t neighbor_id) override;
+  void add_neighbor(level_t level, node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
 
   //! Dump index by dumper
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
-  virtual void update_ep_and_level(node_id_t ep, level_t level) override;
+  void update_ep_and_level(node_id_t ep, level_t level) override;
 
   void set_use_key_info_map(bool use_id_map) {
     use_key_info_map_ = use_id_map;
@@ -99,13 +96,13 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   ~HnswRabitqStreamerEntity();
 
   //! Get vector feature data by key
-  virtual const void *get_vector_by_key(key_t key) const override {
+  const void *get_vector_by_key(key_t key) const override {
     auto id = get_id(key);
     return id == kInvalidNodeId ? nullptr : get_vector(id);
   }
 
-  virtual int get_vector_by_key(
-      const key_t key, IndexStorage::MemoryBlock &block) const override {
+  int get_vector_by_key(const key_t key,
+                        IndexStorage::MemoryBlock &block) const override {
     auto id = get_id(key);
     if (id != kInvalidNodeId) {
       return get_vector(id, block);

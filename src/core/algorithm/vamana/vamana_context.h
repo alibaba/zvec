@@ -38,44 +38,44 @@ class VamanaContext : public IndexContext {
   VamanaContext(const IndexMetric::Pointer &metric,
                 const VamanaEntity::Pointer &entity);
 
-  virtual ~VamanaContext();
+  ~VamanaContext() override;
 
-  virtual void set_topk(uint32_t val) override {
+  void set_topk(uint32_t val) override {
     topk_ = val;
     topk_heap_.limit(std::max(val, ef_));
   }
 
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result(void) const override {
     return results_[0];
   }
 
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     return results_[idx];
   }
 
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
 
-  virtual uint32_t magic(void) const override {
+  uint32_t magic(void) const override {
     return magic_;
   }
 
-  virtual void set_debug_mode(bool enable) override {
+  void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
-  virtual bool debug_mode(void) const override {
+  bool debug_mode(void) const override {
     return debug_mode_;
   }
 
-  virtual std::string debug_string(void) const override {
+  std::string debug_string(void) const override {
     char buf[4096];
     size_t size = snprintf(buf, sizeof(buf), "scan_cnt=%zu", get_scan_num());
     return std::string(buf, size);
   }
 
-  virtual int update(const ailego::Params &params) override;
+  int update(const ailego::Params &params) override;
 
   int init(ContextType type);
 

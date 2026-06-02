@@ -22,23 +22,23 @@ namespace core {
 class HnswSparseBuilderEntity : public HnswSparseEntity {
  public:
   //! Add vector and key to hnsw entity, and local id will be saved in id
-  virtual int add_vector(level_t level, key_t key, const uint32_t sparse_count,
-                         const uint32_t *sparse_indices, const void *sparse_vec,
-                         node_id_t *id) override;
+  int add_vector(level_t level, key_t key, const uint32_t sparse_count,
+                 const uint32_t *sparse_indices, const void *sparse_vec,
+                 node_id_t *id) override;
 
   //! Get primary key of the node id
-  virtual key_t get_key(node_id_t id) const override;
+  key_t get_key(node_id_t id) const override;
 
   //! Get vector feature data by key
-  virtual const void *get_vector_meta(node_id_t id) const override;
+  const void *get_vector_meta(node_id_t id) const override;
 
-  virtual int get_vector_meta(const node_id_t id,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_vector_meta(const node_id_t id,
+                      IndexStorage::MemoryBlock &block) const override;
 
   //! Batch get vectors feature data by keys
-  virtual int get_vector_metas(const node_id_t *ids, uint32_t count,
-                               const void **vecs) const override;
-  virtual int get_vector_metas(
+  int get_vector_metas(const node_id_t *ids, uint32_t count,
+                       const void **vecs) const override;
+  int get_vector_metas(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &block_vecs) const override;
 
@@ -57,43 +57,41 @@ class HnswSparseBuilderEntity : public HnswSparseEntity {
   }
 
   //! Get the node id's neighbors on graph level
-  virtual const Neighbors get_neighbors(level_t level,
-                                        node_id_t id) const override;
+  const Neighbors get_neighbors(level_t level, node_id_t id) const override;
 
   //! Replace node id in level's neighbors
-  virtual int update_neighbors(
+  int update_neighbors(
       level_t level, node_id_t id,
       const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
 
   //! add a neighbor to id in graph level
-  virtual void add_neighbor(level_t level, node_id_t id, uint32_t size,
-                            node_id_t neighbor_id) override;
+  void add_neighbor(level_t level, node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
 
   //! Get vector sparse feature data by chunk index and offset
-  virtual const void *get_sparse_data(uint64_t offset,
-                                      uint32_t len) const override;
+  const void *get_sparse_data(uint64_t offset, uint32_t len) const override;
   //! Get sparse data from id
-  virtual const void *get_sparse_data(node_id_t id) const override;
+  const void *get_sparse_data(node_id_t id) const override;
 
-  virtual int get_sparse_data(uint64_t offset, uint32_t len,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_sparse_data(uint64_t offset, uint32_t len,
+                      IndexStorage::MemoryBlock &block) const override;
 
-  virtual int get_sparse_data(const node_id_t id,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_sparse_data(const node_id_t id,
+                      IndexStorage::MemoryBlock &block) const override;
 
   //! Get sparse data from vector
-  virtual std::pair<const void *, uint32_t> get_sparse_data_from_vector(
+  std::pair<const void *, uint32_t> get_sparse_data_from_vector(
       const void *vec) const override;
 
-  virtual int get_sparse_data_from_vector(const void *vec,
-                                          IndexStorage::MemoryBlock &block,
-                                          int &sparse_length) const override;
+  int get_sparse_data_from_vector(const void *vec,
+                                  IndexStorage::MemoryBlock &block,
+                                  int &sparse_length) const override;
 
   //! Dump the hnsw graph to dumper
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Cleanup the entity
-  virtual int cleanup(void) override;
+  int cleanup(void) override;
 
  public:
   //! Constructor

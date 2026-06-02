@@ -114,25 +114,25 @@ class IVFCentroidIndex {
       Iterator(std::vector<const void *> *features) : features_(features) {}
 
       //! Destructor
-      virtual ~Iterator(void) {}
+      ~Iterator(void) override {}
 
       //! Retrieve pointer of data
-      virtual const void *data(void) const override {
+      const void *data(void) const override {
         return (*features_)[id_];
       }
 
       //! Test if the iterator is valid
-      virtual bool is_valid(void) const override {
+      bool is_valid(void) const override {
         return id_ < features_->size();
       }
 
       //! Retrieve primary key
-      virtual uint64_t key(void) const override {
+      uint64_t key(void) const override {
         return id_;
       }
 
       //! Next iterator
-      virtual void next(void) override {
+      void next(void) override {
         ++id_;
       }
 
@@ -168,32 +168,32 @@ class IVFCentroidIndex {
     }
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
-    virtual size_t count(void) const override {
+    size_t count(void) const override {
       return features_.size();
     }
 
     //! Retrieve dimension
-    virtual size_t dimension(void) const override {
+    size_t dimension(void) const override {
       return dimension_;
     }
 
     //! Retrieve type information
-    virtual IndexMeta::DataType data_type(void) const override {
+    IndexMeta::DataType data_type(void) const override {
       return data_type_;
     }
 
     //! Retrieve element size in bytes
-    virtual size_t element_size(void) const override {
+    size_t element_size(void) const override {
       return element_size_;
     }
 
     //! Retrieve if it can multi-pass
-    virtual bool multipass(void) const override {
+    bool multipass(void) const override {
       return true;
     }
 
     //! Create a new iterator
-    virtual IndexHolder::Iterator::Pointer create_iterator(void) override {
+    IndexHolder::Iterator::Pointer create_iterator(void) override {
       return IndexHolder::Iterator::Pointer(
           new CentroidsIndexHolder::Iterator(&features_));
     }

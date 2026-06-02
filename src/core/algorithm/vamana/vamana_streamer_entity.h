@@ -44,28 +44,28 @@ enum class VamanaStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
 class VamanaStreamerEntity : public VamanaEntity {
  public:
   // Virtual interface implementation
-  virtual int cleanup() override;
-  virtual const VamanaEntity::Pointer clone() const override;
-  virtual key_t get_key(node_id_t id) const override;
-  virtual const void *get_vector(node_id_t id) const override;
-  virtual int get_vector(const node_id_t id,
-                         IndexStorage::MemoryBlock &block) const override;
-  virtual int get_vector(const node_id_t *ids, uint32_t count,
-                         const void **vecs) const override;
-  virtual int get_vector(
+  int cleanup() override;
+  const VamanaEntity::Pointer clone() const override;
+  key_t get_key(node_id_t id) const override;
+  const void *get_vector(node_id_t id) const override;
+  int get_vector(const node_id_t id,
+                 IndexStorage::MemoryBlock &block) const override;
+  int get_vector(const node_id_t *ids, uint32_t count,
+                 const void **vecs) const override;
+  int get_vector(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override;
-  virtual const Neighbors get_neighbors(node_id_t id) const override;
+  const Neighbors get_neighbors(node_id_t id) const override;
 
-  virtual int add_vector(key_t key, const void *vec, node_id_t *id) override;
-  virtual int add_vector_with_id(node_id_t id, const void *vec) override;
-  virtual int update_neighbors(
+  int add_vector(key_t key, const void *vec, node_id_t *id) override;
+  int add_vector_with_id(node_id_t id, const void *vec) override;
+  int update_neighbors(
       node_id_t id,
       const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
-  virtual void add_neighbor(node_id_t id, uint32_t size,
-                            node_id_t neighbor_id) override;
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
-  virtual void update_entry_point(node_id_t ep) override;
+  void add_neighbor(node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
+  void update_entry_point(node_id_t ep) override;
 
   // --- Neighbor distance storage ---
   int ensure_dist_storage() override;
@@ -90,13 +90,13 @@ class VamanaStreamerEntity : public VamanaEntity {
   VamanaStreamerEntity(IndexStreamer::Stats &stats);
   ~VamanaStreamerEntity();
 
-  virtual const void *get_vector_by_key(key_t key) const override {
+  const void *get_vector_by_key(key_t key) const override {
     auto id = get_id(key);
     return id == kInvalidNodeId ? nullptr : get_vector(id);
   }
 
-  virtual int get_vector_by_key(
-      const key_t key, IndexStorage::MemoryBlock &block) const override {
+  int get_vector_by_key(const key_t key,
+                        IndexStorage::MemoryBlock &block) const override {
     auto id = get_id(key);
     if (id != kInvalidNodeId) {
       return get_vector(id, block);

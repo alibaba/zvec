@@ -152,7 +152,7 @@ class IndexReducerBase : public IndexModule {
   };
 
   //! Destructor
-  virtual ~IndexReducerBase(void) = default;
+  ~IndexReducerBase(void) override = default;
 
   //! Initialize Reducer
   virtual int init(const ailego::Params &params) = 0;
@@ -192,7 +192,7 @@ class IndexReducer : public IndexReducerBase {
   typedef std::shared_ptr<IndexReducer> Pointer;
 
   //! Destructor
-  virtual ~IndexReducer(void) = default;
+  ~IndexReducer(void) override = default;
 };
 
 /*! Index Sparse Reducer
@@ -203,7 +203,7 @@ class IndexSparseReducer : public IndexReducerBase {
   typedef std::shared_ptr<IndexSparseReducer> Pointer;
 
   //! Destructor
-  virtual ~IndexSparseReducer(void) = default;
+  ~IndexSparseReducer(void) override = default;
 };
 
 /*! Index Streamer Reducer
@@ -223,7 +223,7 @@ class IndexStreamerReducer : public IndexReducerBase {
       IndexStreamer::Pointer streamer,
       const IndexReformer::Pointer reformer) = 0;
 
-  virtual ~IndexStreamerReducer(void) = default;
+  ~IndexStreamerReducer(void) override = default;
 };
 }  // namespace core
 }  // namespace zvec

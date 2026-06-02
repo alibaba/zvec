@@ -26,89 +26,86 @@ class VamanaStreamer : public IndexStreamer {
   using ContextPointer = IndexStreamer::Context::Pointer;
 
   VamanaStreamer(void);
-  virtual ~VamanaStreamer(void);
+  ~VamanaStreamer(void) override;
 
   VamanaStreamer(const VamanaStreamer &) = delete;
   VamanaStreamer &operator=(const VamanaStreamer &) = delete;
 
  protected:
-  virtual int init(const IndexMeta &imeta,
-                   const ailego::Params &params) override;
+  int init(const IndexMeta &imeta, const ailego::Params &params) override;
 
-  virtual int cleanup(void) override;
+  int cleanup(void) override;
 
-  virtual Context::Pointer create_context(void) const override;
+  Context::Pointer create_context(void) const override;
 
-  virtual IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider(void) const override;
 
-  virtual int add_impl(uint64_t pkey, const void *query,
+  int add_impl(uint64_t pkey, const void *query, const IndexQueryMeta &qmeta,
+               Context::Pointer &context) override;
+
+  int add_with_id_impl(uint32_t id, const void *query,
                        const IndexQueryMeta &qmeta,
                        Context::Pointer &context) override;
 
-  virtual int add_with_id_impl(uint32_t id, const void *query,
+  int search_impl(const void *query, const IndexQueryMeta &qmeta,
+                  Context::Pointer &context) const override;
+
+  int search_impl(const void *query, const IndexQueryMeta &qmeta,
+                  uint32_t count, Context::Pointer &context) const override;
+
+  int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
+                     Context::Pointer &context) const override;
+
+  int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
+                     uint32_t count, Context::Pointer &context) const override;
+
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
                                const IndexQueryMeta &qmeta,
-                               Context::Pointer &context) override;
-
-  virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
-                          Context::Pointer &context) const override;
-
-  virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
-                          uint32_t count,
-                          Context::Pointer &context) const override;
-
-  virtual int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
-                             Context::Pointer &context) const override;
-
-  virtual int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
-                             uint32_t count,
-                             Context::Pointer &context) const override;
-
-  virtual int search_bf_by_p_keys_impl(
-      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
-      const IndexQueryMeta &qmeta, ContextPointer &context) const override {
+                               ContextPointer &context) const override {
     return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
   }
 
-  virtual int search_bf_by_p_keys_impl(
-      const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
-      const IndexQueryMeta &qmeta, uint32_t count,
-      ContextPointer &context) const override;
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta, uint32_t count,
+                               ContextPointer &context) const override;
 
-  virtual const void *get_vector(uint64_t key) const override {
+  const void *get_vector(uint64_t key) const override {
     return entity_->get_vector_by_key(key);
   }
 
-  virtual int get_vector(const uint64_t key,
-                         IndexStorage::MemoryBlock &block) const override {
+  int get_vector(const uint64_t key,
+                 IndexStorage::MemoryBlock &block) const override {
     return entity_->get_vector_by_key(key, block);
   }
 
-  virtual const void *get_vector_by_id(uint32_t id) const override {
+  const void *get_vector_by_id(uint32_t id) const override {
     return entity_->get_vector(id);
   }
 
-  virtual int get_vector_by_id(
-      const uint32_t id, IndexStorage::MemoryBlock &block) const override {
+  int get_vector_by_id(const uint32_t id,
+                       IndexStorage::MemoryBlock &block) const override {
     return entity_->get_vector(id, block);
   }
 
-  virtual int open(IndexStorage::Pointer stg) override;
+  int open(IndexStorage::Pointer stg) override;
 
-  virtual int close(void) override;
+  int close(void) override;
 
-  virtual int flush(uint64_t checkpoint) override;
+  int flush(uint64_t checkpoint) override;
 
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
-  virtual const Stats &stats(void) const override {
+  const Stats &stats(void) const override {
     return stats_;
   }
 
-  virtual const IndexMeta &meta(void) const override {
+  const IndexMeta &meta(void) const override {
     return meta_;
   }
 
-  virtual void print_debug_info() override;
+  void print_debug_info() override;
 
  private:
   inline int check_params(const void *query,

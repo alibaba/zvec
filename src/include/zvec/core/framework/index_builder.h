@@ -26,7 +26,7 @@ class IndexBuilder : public IndexRunner {
   typedef std::shared_ptr<IndexBuilder> Pointer;
 
   //! Destructor
-  virtual ~IndexBuilder(void) {}
+  ~IndexBuilder(void) override {}
 
   //! Initialize the builder
   virtual int init(const IndexMeta & /*meta*/,

@@ -237,11 +237,11 @@ class FlatIndex : public Index {
 
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
 
  private:
   FlatIndexParam param_{};
@@ -252,24 +252,23 @@ class IVFIndex : public Index {
   IVFIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
 
-  virtual int Add(const VectorData &vector, uint32_t doc_id) override;
+  int Add(const VectorData &vector, uint32_t doc_id) override;
 
-  virtual int Train() override;
+  int Train() override;
 
-  virtual int Open(const std::string &file_path,
-                   StorageOptions storage_options) override;
+  int Open(const std::string &file_path,
+           StorageOptions storage_options) override;
 
-  virtual int _dense_fetch(const uint32_t doc_id,
-                           VectorDataBuffer *vector_data_buffer) override;
-  virtual int Merge(const std::vector<Index::Pointer> &indexes,
-                    const IndexFilter &filter,
-                    const MergeOptions &options) override;
+  int _dense_fetch(const uint32_t doc_id,
+                   VectorDataBuffer *vector_data_buffer) override;
+  int Merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter, const MergeOptions &options) override;
   int GenerateHolder();
 
  private:
@@ -293,11 +292,11 @@ class HNSWIndex : public Index {
   std::string storage_mode() const;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
   int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param) override;
 
@@ -310,11 +309,11 @@ class VamanaIndex : public Index {
   VamanaIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
   int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param) override;
 
@@ -327,11 +326,11 @@ class HNSWRabitqIndex : public Index {
   HNSWRabitqIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
   int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param) override;
 

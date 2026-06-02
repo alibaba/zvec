@@ -129,7 +129,7 @@ class VectorIndexParams : public IndexParams {
         metric_type_(metric_type),
         quantize_type_(quantize_type) {}
 
-  virtual ~VectorIndexParams() = default;
+  ~VectorIndexParams() override = default;
 
   std::string vector_index_params_to_string(const std::string &class_name,
                                             MetricType metric_type,
