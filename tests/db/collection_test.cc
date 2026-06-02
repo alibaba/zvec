@@ -5711,6 +5711,10 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
 // that already has data, verify queries hit, then drop the index and verify FTS
 // is no longer available. Also covers reopen persistence.
 TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
   auto build_schema = [](bool with_fts) {
     auto schema = std::make_shared<CollectionSchema>("fts_dyn");
     schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
