@@ -93,9 +93,51 @@ void compute_one_to_many_inner_product_avx2_int8_12(
     float *results);
 #endif
 
+#if defined(__riscv_vector)
+void compute_one_to_many_inner_product_rvv_fp32_1(
+    const float *query, const float **ptrs,
+    std::array<const float *, 1> &prefetch_ptrs, size_t dimensionality,
+    float *results);
+
+void compute_one_to_many_inner_product_rvv_fp32_12(
+    const float *query, const float **ptrs,
+    std::array<const float *, 12> &prefetch_ptrs, size_t dimensionality,
+    float *results);
+#endif
+
+#if defined(__riscv_zvfh)
+void compute_one_to_many_inner_product_rvv_fp16_1(
+    const ailego::Float16 *query, const ailego::Float16 **ptrs,
+    std::array<const ailego::Float16 *, 1> &prefetch_ptrs,
+    size_t dimensionality, float *results);
+
+void compute_one_to_many_inner_product_rvv_fp16_12(
+    const ailego::Float16 *query, const ailego::Float16 **ptrs,
+    std::array<const ailego::Float16 *, 12> &prefetch_ptrs,
+    size_t dimensionality, float *results);
+#endif
+
+#if defined(__riscv_vector)
+void compute_one_to_many_inner_product_rvv_int8_1(
+    const int8_t *query, const int8_t **ptrs,
+    std::array<const int8_t *, 1> &prefetch_ptrs, size_t dimensionality,
+    float *results);
+
+void compute_one_to_many_inner_product_rvv_int8_12(
+    const int8_t *query, const int8_t **ptrs,
+    std::array<const int8_t *, 12> &prefetch_ptrs, size_t dimensionality,
+    float *results);
+#endif
+
 void InnerProductDistanceBatchImpl<float, 1>::compute_one_to_many(
     const ValueType *query, const ValueType **ptrs,
     std::array<const ValueType *, 1> &prefetch_ptrs, size_t dim, float *sums) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    return compute_one_to_many_inner_product_rvv_fp32_1(
+        query, ptrs, prefetch_ptrs, dim, sums);
+  }
+#endif
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
     return compute_one_to_many_inner_product_avx2_fp32_1(
@@ -110,6 +152,12 @@ void InnerProductDistanceBatchImpl<ailego::Float16, 1>::compute_one_to_many(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, 1> &prefetch_ptrs, size_t dim,
     float *sums) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    return compute_one_to_many_inner_product_rvv_fp16_1(
+        query, ptrs, prefetch_ptrs, dim, sums);
+  }
+#endif
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
     return compute_one_to_many_inner_product_avx512fp16_fp16_1(
@@ -135,6 +183,12 @@ void InnerProductDistanceBatchImpl<ailego::Float16, 1>::compute_one_to_many(
 void InnerProductDistanceBatchImpl<int8_t, 1>::compute_one_to_many(
     const int8_t *query, const int8_t **ptrs,
     std::array<const int8_t *, 1> &prefetch_ptrs, size_t dim, float *sums) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    return compute_one_to_many_inner_product_rvv_int8_1(
+        query, ptrs, prefetch_ptrs, dim, sums);
+  }
+#endif
 // #if defined(__AVX512BW__) // TODO: this version is problematic
 //     return compute_one_to_many_avx512_int8<ValueType, BatchSize>(
 //         query, ptrs, prefetch_ptrs, dim, sums);
@@ -167,6 +221,12 @@ InnerProductDistanceBatchImpl<int8_t, 1>::GetQueryPreprocessFunc() {
 void InnerProductDistanceBatchImpl<float, 12>::compute_one_to_many(
     const ValueType *query, const ValueType **ptrs,
     std::array<const ValueType *, 12> &prefetch_ptrs, size_t dim, float *sums) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    return compute_one_to_many_inner_product_rvv_fp32_12(
+        query, ptrs, prefetch_ptrs, dim, sums);
+  }
+#endif
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
     return compute_one_to_many_inner_product_avx2_fp32_12(
@@ -181,6 +241,12 @@ void InnerProductDistanceBatchImpl<ailego::Float16, 12>::compute_one_to_many(
     const ailego::Float16 *query, const ailego::Float16 **ptrs,
     std::array<const ailego::Float16 *, 12> &prefetch_ptrs, size_t dim,
     float *sums) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    return compute_one_to_many_inner_product_rvv_fp16_12(
+        query, ptrs, prefetch_ptrs, dim, sums);
+  }
+#endif
 #if defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
     return compute_one_to_many_inner_product_avx512fp16_fp16_12(
@@ -206,6 +272,12 @@ void InnerProductDistanceBatchImpl<ailego::Float16, 12>::compute_one_to_many(
 void InnerProductDistanceBatchImpl<int8_t, 12>::compute_one_to_many(
     const int8_t *query, const int8_t **ptrs,
     std::array<const int8_t *, 12> &prefetch_ptrs, size_t dim, float *sums) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    return compute_one_to_many_inner_product_rvv_int8_12(
+        query, ptrs, prefetch_ptrs, dim, sums);
+  }
+#endif
 // #if defined(__AVX512BW__) // TODO: this version is problematic
 //     return compute_one_to_many_avx512_int8<ValueType, BatchSize>(
 //         query, ptrs, prefetch_ptrs, dim, sums);
