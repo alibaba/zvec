@@ -52,7 +52,7 @@ jobs:
           cache-dependency-path: 'pyproject.toml'
 
       - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
 
@@ -87,10 +87,20 @@ jobs:
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=sccache'
         shell: powershell
 
+      - name: Show sccache statistics after pip install
+        if: always()
+        run: sccache --show-stats
+        shell: powershell
+
       - name: Run C++ Tests
         run: |
           cd "$env:GITHUB_WORKSPACE\build"
           cmake --build . --target unittest --config Release --parallel $env:NPROC
+        shell: powershell
+
+      - name: Show sccache statistics after tests
+        if: always()
+        run: sccache --show-stats
         shell: powershell
 
       - name: Run Python Tests
