@@ -2335,12 +2335,12 @@ TablePtr SegmentImpl::fetch_perf(
   std::vector<std::shared_ptr<arrow::ChunkedArray>> chunk_arrays;
   chunk_arrays.resize(columns.size());
 
-  bool need_segment_row_id = false;
+  bool has_segment_row_id_column = false;
   size_t segment_row_id_col_index = 0;
 
   for (size_t i = 0; i < columns.size(); ++i) {
     if (columns[i] == LOCAL_ROW_ID) {
-      need_segment_row_id = true;
+      has_segment_row_id_column = true;
       segment_row_id_col_index = i;
       chunk_arrays[i] = nullptr;
       continue;
@@ -2350,7 +2350,8 @@ TablePtr SegmentImpl::fetch_perf(
 
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
-  std::vector<std::pair<int64_t, int64_t>> indices_in_table;
+  // Parallel to segment_doc_ids: each pair is (chunk_index, row_index_in_chunk)
+  std::vector<std::pair<int64_t, int64_t>> chunk_row_indices_for_ids;
   for (const auto segment_doc_id : segment_doc_ids) {
     auto it = std::upper_bound(chunk_offsets_.begin(), chunk_offsets_.end(),
                                segment_doc_id);
@@ -2360,8 +2361,8 @@ TablePtr SegmentImpl::fetch_perf(
     }
     int chunk_index =
         static_cast<int>(std::distance(chunk_offsets_.begin(), it) - 1);
-    int64_t index_in_chunk = segment_doc_id - chunk_offsets_[chunk_index];
-    indices_in_table.emplace_back(chunk_index, index_in_chunk);
+    int64_t row_index_in_chunk = segment_doc_id - chunk_offsets_[chunk_index];
+    chunk_row_indices_for_ids.emplace_back(chunk_index, row_index_in_chunk);
   }
 
   for (size_t i = 0; i < columns.size(); ++i) {
@@ -2370,8 +2371,8 @@ TablePtr SegmentImpl::fetch_perf(
     }
     const auto &source_column = chunk_arrays[i];
     std::shared_ptr<arrow::Array> array;
-    auto status =
-        BuildArrayFromIndicesWithType(source_column, indices_in_table, &array);
+    auto status = BuildArrayFromIndicesWithType(
+        source_column, chunk_row_indices_for_ids, &array);
     if (!status.ok()) {
       LOG_ERROR("BuildArrayFromIndices failed: %s", status.ToString().c_str());
       return nullptr;
@@ -2379,7 +2380,7 @@ TablePtr SegmentImpl::fetch_perf(
     result_arrays[i] = array;
   }
 
-  if (need_segment_row_id) {
+  if (has_segment_row_id_column) {
     std::vector<uint64_t> values;
     values.reserve(segment_doc_ids.size());
     for (const auto segment_doc_id : segment_doc_ids) {
@@ -2416,8 +2417,8 @@ TablePtr SegmentImpl::fetch_normal(
   // Collect segment-local row IDs when LOCAL_ROW_ID is requested.
   std::vector<std::pair<int, uint64_t>> segment_row_id_values;
 
-  // Group fetch requests by block: block_index -> {column -> [(output_row,
-  // block_row)]}
+  // Group fetch requests by block:
+  //   block_index -> {column -> [(output_row, block_row)]}
   //   block_index >= 0: persisted store
   //   block_index == -1: memory store
   std::map<int, std::map<std::string, std::vector<std::pair<int, int>>>>
@@ -2538,13 +2539,13 @@ TablePtr SegmentImpl::fetch_normal(
   // Phase 3: Construct result arrays
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
-  bool need_segment_row_id = false;
+  bool has_segment_row_id_column = false;
   size_t segment_row_id_col_index = -1;
 
   for (size_t col_index = 0; col_index < columns.size(); ++col_index) {
     const std::string &col = columns[col_index];
     if (col == LOCAL_ROW_ID) {
-      need_segment_row_id = true;
+      has_segment_row_id_column = true;
       segment_row_id_col_index = col_index;
       continue;
     }
@@ -2578,7 +2579,7 @@ TablePtr SegmentImpl::fetch_normal(
   }
 
   // Add segment-local values for the LOCAL_ROW_ID column.
-  if (need_segment_row_id) {
+  if (has_segment_row_id_column) {
     std::sort(segment_row_id_values.begin(), segment_row_id_values.end());
     std::vector<uint64_t> values;
     values.reserve(segment_row_id_values.size());
