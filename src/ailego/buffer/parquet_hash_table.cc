@@ -141,11 +141,17 @@ ParquetBufferContextHandle ParquetBufferPool::acquire_buffer(
       return ParquetBufferContextHandle();
     }
     std::unique_lock<std::shared_mutex> lock(table_mutex_);
+    if (table_.find(buffer_id) != table_.end()) {
+      arrow = set_block_acquired(buffer_id);
+      return ParquetBufferContextHandle(buffer_id, arrow);
+    }
     if (acquire(buffer_id, table_[buffer_id]).ok()) {
       MemoryLimitPool::get_instance().acquire_parquet(table_[buffer_id].size);
       arrow = set_block_acquired(buffer_id);
       return ParquetBufferContextHandle(buffer_id, arrow);
     } else {
+      // Drop the empty entry inserted by operator[] on the failed load path.
+      table_.erase(buffer_id);
       LOG_ERROR("Failed to acquire parquet buffer: %s",
                 buffer_id.to_string().c_str());
       return ParquetBufferContextHandle();
@@ -162,6 +168,9 @@ std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::set_block_acquired(
       if (context.ref_count.compare_exchange_weak(
               current_count, current_count + 1, std::memory_order_acq_rel,
               std::memory_order_acquire)) {
+        if (current_count == 0) {
+          context.load_count.fetch_add(1, std::memory_order_relaxed);
+        }
         return context.arrow;
       }
     } else {
@@ -196,7 +205,6 @@ std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire(
       return context.arrow;
     }
   }
-  return nullptr;
 }
 
 std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire_locked(
