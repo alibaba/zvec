@@ -13,10 +13,12 @@
 // limitations under the License.
 
 #include "db/index/segment/segment_helper.h"
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <thread>
 #include <variant>
 #include <arrow/array/array_binary.h>
@@ -28,6 +30,9 @@
 #include <gtest/gtest.h>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
+#include "db/index/column/vector_column/vector_column_indexer.h"
+#include "db/index/column/vector_column/vector_column_params.h"
+#include "db/index/column/vector_column/vector_index_results.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/meta.h"
@@ -35,6 +40,7 @@
 #include "db/index/segment/segment.h"
 #include "utils/utils.h"
 #include "zvec/db/options.h"
+#include "zvec/db/query_params.h"
 #include "zvec/db/schema.h"
 
 using namespace zvec;
@@ -563,6 +569,82 @@ class SegmentCompactReuseTest
                                   executed.output_quant_vector_indexers_)
             .ok());
   }
+
+  struct ScoredDoc {
+    uint64_t doc_id;
+    float score;
+  };
+
+  // CreateDoc seeds VECTOR_FP32 with a constant vector of value (doc_id+0.1f).
+  static std::vector<float> MakeFp32QueryVector(uint64_t doc_id_value,
+                                                uint32_t dim) {
+    return std::vector<float>(dim, static_cast<float>(doc_id_value) + 0.1f);
+  }
+
+  static std::vector<ScoredDoc> RunSearch(
+      const VectorColumnIndexer::Ptr &indexer,
+      const std::vector<float> &qvec, uint32_t topk,
+      const zvec::QueryParams::Ptr &query_params) {
+    vector_column_params::QueryParams qp;
+    qp.topk = topk;
+    qp.filter = nullptr;
+    qp.fetch_vector = false;
+    qp.query_params = query_params;
+    vector_column_params::VectorData data{
+        vector_column_params::DenseVector{qvec.data()}};
+    auto results = indexer->Search(data, qp);
+    EXPECT_TRUE(results.has_value());
+    if (!results.has_value()) return {};
+    auto vec_res =
+        dynamic_cast<VectorIndexResults *>(results.value().get());
+    EXPECT_NE(vec_res, nullptr);
+    if (vec_res == nullptr) return {};
+    std::vector<ScoredDoc> out;
+    for (auto it = vec_res->create_iterator(); it->valid(); it->next()) {
+      out.push_back({it->doc_id(), it->score()});
+    }
+    return out;
+  }
+
+  // All test instantiations use IP — higher score is better.
+  static std::set<uint64_t> MergeTopKIds(
+      std::vector<std::vector<ScoredDoc>> per_seg, uint32_t topk) {
+    std::vector<ScoredDoc> all;
+    for (auto &v : per_seg)
+      for (auto &d : v) all.push_back(d);
+    std::sort(all.begin(), all.end(),
+              [](const ScoredDoc &a, const ScoredDoc &b) {
+                return a.score > b.score;
+              });
+    std::set<uint64_t> ids;
+    for (size_t i = 0; i < all.size() && ids.size() < topk; ++i) {
+      ids.insert(all[i].doc_id);
+    }
+    return ids;
+  }
+
+  static zvec::QueryParams::Ptr MakeIsLinearQueryParam(IndexType type) {
+    switch (type) {
+      case IndexType::HNSW: {
+        auto p = std::make_shared<zvec::HnswQueryParams>();
+        p->set_is_linear(true);
+        return p;
+      }
+      case IndexType::IVF: {
+        auto p = std::make_shared<zvec::IVFQueryParams>();
+        p->set_is_linear(true);
+        return p;
+      }
+      case IndexType::HNSW_RABITQ: {
+        auto p = std::make_shared<zvec::HnswRabitqQueryParams>();
+        p->set_is_linear(true);
+        return p;
+      }
+      case IndexType::FLAT:
+      default:
+        return std::make_shared<zvec::FlatQueryParams>();
+    }
+  }
 };
 
 // Mimic the normal insertion lifecycle: small segments accumulate vectors
@@ -577,6 +659,8 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
 
   constexpr int kSegCount = 3;
   constexpr int kDocsPerSeg = 300;
+  constexpr uint32_t kTopK = 10;
+  constexpr uint32_t kDim = 128;
   std::vector<Segment::Ptr> segs;
   for (int i = 0; i < kSegCount; i++) {
     auto seg = test::TestHelper::CreateSegmentWithDoc(
@@ -584,25 +668,56 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
         version_manager, write_options, i * kDocsPerSeg, kDocsPerSeg);
     ASSERT_NE(seg, nullptr);
     ASSERT_TRUE(seg->flush().ok());
+    segs.push_back(seg);
+  }
 
-    if (i == 0) {
-      for (const auto &vf : schema->vector_fields()) {
-        OptimizeSegmentToVectorIndex(seg, *schema, vf->name(),
-                                     vf->index_params());
-      }
+  // Capture groundtruth via FlatQuery on each source segment while every
+  // segment is still backed by a flat indexer (before seg[0] is optimized).
+  const std::vector<uint64_t> query_doc_values{
+      0, kDocsPerSeg, kSegCount * kDocsPerSeg - 1};
+  std::vector<std::set<uint64_t>> groundtruth;
+  groundtruth.reserve(query_doc_values.size());
+  auto flat_qp = std::make_shared<zvec::FlatQueryParams>();
+  for (uint64_t qv : query_doc_values) {
+    auto qvec = MakeFp32QueryVector(qv, kDim);
+    std::vector<std::vector<ScoredDoc>> per_seg;
+    per_seg.reserve(segs.size());
+    // Per-segment indexers use block-local doc ids (0..kDocsPerSeg-1).
+    // The compacted output indexer reindexes them sequentially across
+    // segments, so add segment offset to align id spaces before merging.
+    for (size_t s = 0; s < segs.size(); ++s) {
+      auto in_indexers = segs[s]->get_vector_indexer("dense_fp32");
+      ASSERT_FALSE(in_indexers.empty());
+      ASSERT_EQ(IndexerType(in_indexers.front()), IndexType::FLAT);
+      auto local = RunSearch(in_indexers.front(), qvec, kTopK, flat_qp);
+      const uint64_t offset = static_cast<uint64_t>(s) * kDocsPerSeg;
+      for (auto &d : local) d.doc_id += offset;
+      per_seg.push_back(std::move(local));
     }
-    // For quantized index types (e.g. HNSW_RABITQ) the built index lives in
-    // get_quant_vector_indexer; get_vector_indexer keeps the raw FLAT
-    // indexer. See CompactTask_QuantizedVectorIndexThreeSegmentsRegression.
-    const bool quantized =
-        QuantizeTypeOf(param.vector_index_params) != QuantizeType::UNDEFINED;
-    auto in_indexers = quantized ? seg->get_quant_vector_indexer("dense_fp32")
-                                 : seg->get_vector_indexer("dense_fp32");
-    ASSERT_FALSE(in_indexers.empty());
+    auto gt = MergeTopKIds(std::move(per_seg), kTopK);
+    ASSERT_EQ(gt.size(), kTopK);
+    groundtruth.push_back(std::move(gt));
+  }
 
+  // Optimize seg[0]'s vector fields to the parametric index type, mimicking
+  // the lifecycle the compact path exercises.
+  for (const auto &vf : schema->vector_fields()) {
+    OptimizeSegmentToVectorIndex(segs[0], *schema, vf->name(),
+                                 vf->index_params());
+  }
+
+  // For quantized index types (e.g. HNSW_RABITQ) the built index lives in
+  // get_quant_vector_indexer; get_vector_indexer keeps the raw FLAT
+  // indexer. See CompactTask_QuantizedVectorIndexThreeSegmentsRegression.
+  const bool quantized =
+      QuantizeTypeOf(param.vector_index_params) != QuantizeType::UNDEFINED;
+  for (int i = 0; i < kSegCount; i++) {
+    auto in_indexers = quantized
+                           ? segs[i]->get_quant_vector_indexer("dense_fp32")
+                           : segs[i]->get_vector_indexer("dense_fp32");
+    ASSERT_FALSE(in_indexers.empty());
     ASSERT_EQ(IndexerType(in_indexers.front()),
               i == 0 ? param.expected_output_type : IndexType::FLAT);
-    segs.push_back(seg);
   }
 
   auto [compact_task, output_segment] =
@@ -613,13 +728,29 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   ASSERT_NE(output_segment->Fetch(0), nullptr);
   ASSERT_NE(output_segment->Fetch(kSegCount * kDocsPerSeg - 1), nullptr);
 
-  const bool quantized =
-      QuantizeTypeOf(param.vector_index_params) != QuantizeType::UNDEFINED;
   auto out_indexers =
       quantized ? output_segment->get_quant_vector_indexer("dense_fp32")
                 : output_segment->get_vector_indexer("dense_fp32");
   ASSERT_FALSE(out_indexers.empty());
   EXPECT_EQ(IndexerType(out_indexers.front()), param.expected_output_type);
+
+  // is_linear queries on the merged indexer must reproduce the pre-compact
+  // groundtruth. Quantized indexers are allowed a small recall hit.
+  auto linear_qp = MakeIsLinearQueryParam(param.expected_output_type);
+  const double kMinRecall = quantized ? 0.8 : 1.0;
+  for (size_t qi = 0; qi < query_doc_values.size(); ++qi) {
+    auto qvec = MakeFp32QueryVector(query_doc_values[qi], kDim);
+    auto hits = RunSearch(out_indexers.front(), qvec, kTopK, linear_qp);
+    ASSERT_EQ(hits.size(), kTopK);
+    size_t intersect = 0;
+    for (const auto &h : hits) {
+      if (groundtruth[qi].count(h.doc_id)) intersect++;
+    }
+    double recall = static_cast<double>(intersect) / kTopK;
+    EXPECT_GE(recall, kMinRecall)
+        << "query[" << qi << "] (value=" << query_doc_values[qi]
+        << ") recall=" << recall;
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(Hnsw, SegmentCompactReuseTest,
