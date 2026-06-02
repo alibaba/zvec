@@ -582,9 +582,8 @@ class SegmentCompactReuseTest
   }
 
   static std::vector<ScoredDoc> RunSearch(
-      const VectorColumnIndexer::Ptr &indexer,
-      const std::vector<float> &qvec, uint32_t topk,
-      const zvec::QueryParams::Ptr &query_params) {
+      const VectorColumnIndexer::Ptr &indexer, const std::vector<float> &qvec,
+      uint32_t topk, const zvec::QueryParams::Ptr &query_params) {
     vector_column_params::QueryParams qp;
     qp.topk = topk;
     qp.filter = nullptr;
@@ -595,8 +594,7 @@ class SegmentCompactReuseTest
     auto results = indexer->Search(data, qp);
     EXPECT_TRUE(results.has_value());
     if (!results.has_value()) return {};
-    auto vec_res =
-        dynamic_cast<VectorIndexResults *>(results.value().get());
+    auto vec_res = dynamic_cast<VectorIndexResults *>(results.value().get());
     EXPECT_NE(vec_res, nullptr);
     if (vec_res == nullptr) return {};
     std::vector<ScoredDoc> out;
@@ -673,8 +671,8 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
 
   // Capture groundtruth via FlatQuery on each source segment while every
   // segment is still backed by a flat indexer (before seg[0] is optimized).
-  const std::vector<uint64_t> query_doc_values{
-      0, kDocsPerSeg, kSegCount * kDocsPerSeg - 1};
+  const std::vector<uint64_t> query_doc_values{0, kDocsPerSeg,
+                                               kSegCount * kDocsPerSeg - 1};
   std::vector<std::set<uint64_t>> groundtruth;
   groundtruth.reserve(query_doc_values.size());
   auto flat_qp = std::make_shared<zvec::FlatQueryParams>();
@@ -772,6 +770,7 @@ INSTANTIATE_TEST_SUITE_P(
                                          QuantizeType::UNDEFINED),
         IndexType::IVF}));
 
+// TODO: re-enable when rabitQ merge fixed
 #if RABITQ_SUPPORTED
 INSTANTIATE_TEST_SUITE_P(HnswRabitq, SegmentCompactReuseTest,
                          testing::Values(SegmentCompactReuseParam{
