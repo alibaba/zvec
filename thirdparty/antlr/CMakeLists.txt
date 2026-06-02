@@ -1,15 +1,16 @@
 set(ANTLR_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/antlr4)
 set(ANTLR_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/antlr4.patch)
 apply_patch_once("antlr4_fix" "${ANTLR_SRC_DIR}" "${ANTLR_PATCH}")
+if(MSVC)
+    # Replace /Zi with /Z7 for sccache compatibility (/Z7 embeds debug info in .obj, no .pdb).
+    set(ANTLR_WINDOWS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/antlr4.windows.patch)
+    apply_patch_once("antlr4_windows_fix" "${ANTLR_SRC_DIR}" "${ANTLR_WINDOWS_PATCH}")
+endif()
 
 if(MSVC)
     set(WITH_STATIC_CRT ${ZVEC_USE_STATIC_CRT} CACHE BOOL "" FORCE)
 endif()
 add_subdirectory(antlr4/runtime/Cpp/)
-# antlr4 hardcodes /Zi in DEBUG and RELWITHDEBINFO; append /Z7 to override it (MSVC last-flag-wins)
-if(MSVC)
-    target_compile_options(antlr4_static PRIVATE /Z7)
-endif()
 
 target_include_directories(antlr4_static SYSTEM INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/antlr4/runtime/Cpp/runtime/src/"

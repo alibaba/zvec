@@ -19,6 +19,11 @@ elseif(IOS)
         set(HAS_ARMV8_CRC ON CACHE INTERNAL "Force ARM CRC for iOS arm64")
     endif()
 endif()
+if(MSVC)
+    # Replace /Zi with /Z7 for sccache compatibility (/Z7 embeds debug info in .obj, no .pdb).
+    set(ROCKSDB_WINDOWS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb.windows.patch)
+    apply_patch_once("rocksdb_windows_fix" "${ROCKSDB_SRC_DIR}" "${ROCKSDB_WINDOWS_PATCH}")
+endif()
 
 set(ROCKSDB_BUILD_SHARED OFF CACHE BOOL "Disable install in rocksdb" FORCE)
 
@@ -65,10 +70,6 @@ endif()
 set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})
 add_subdirectory(rocksdb-8.1.1)
-# RocksDB hardcodes /Zi in CMAKE_CXX_FLAGS; append /Z7 to override it (MSVC last-flag-wins)
-if(MSVC)
-    target_compile_options(rocksdb PRIVATE /Z7)
-endif()
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 
 unset(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
