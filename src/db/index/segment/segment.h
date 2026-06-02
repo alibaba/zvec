@@ -64,10 +64,10 @@ class Segment {
 
   virtual SegmentMeta::Ptr meta() const = 0;
 
-  // If provided, filter is evaluated with global doc IDs.
+  // Count documents visible to an optional global-doc-ID filter.
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
 
-  // for collection
+  // ---- Schema and index mutation -----------------------------------------
   virtual Status add_column(FieldSchema::Ptr column_schema,
                             const std::string &expression,
                             const AddColumnOptions &options) = 0;
@@ -85,7 +85,6 @@ class Segment {
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *quant_vector_indexers) = 0;
 
-  // defined in segment.h cause it needs to access block_id generator
   virtual Status create_vector_index(
       const std::string &column, const IndexParams::Ptr &index_params,
       int concurrency, SegmentMeta::Ptr *new_segment_meta,
@@ -112,13 +111,11 @@ class Segment {
 
   virtual bool all_vector_index_ready() const = 0;
 
-  // defined in segment.h cause it needs to access block_id generator
   virtual Status create_scalar_index(
       const std::vector<std::string> &columns,
       const IndexParams::Ptr &index_params, SegmentMeta::Ptr *new_segment_meta,
       InvertedIndexer::Ptr *new_scalar_indexer) = 0;
 
-  // defined in segment.h cause it needs to access block_id generator
   virtual Status drop_scalar_index(
       const std::vector<std::string> &columns,
       SegmentMeta::Ptr *new_segment_meta,
@@ -128,6 +125,7 @@ class Segment {
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const InvertedIndexer::Ptr &scalar_indexer) = 0;
 
+  // ---- Data operations ----------------------------------------------------
   virtual Status Insert(Doc &doc) = 0;
 
   virtual Status Upsert(Doc &doc) = 0;
@@ -149,34 +147,31 @@ class Segment {
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
                              int segment_doc_id) const = 0;
 
-  // caller should hold segment shared_ptr for segment handle the indexer's
-  // lifetime
+  // Keep Segment alive while consuming the returned reader.
   virtual RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
+  // ---- Index accessors ----------------------------------------------------
+  // Keep Segment alive while using returned indexers.
   virtual CombinedVectorColumnIndexer::Ptr get_combined_vector_indexer(
       const std::string &field_name) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual CombinedVectorColumnIndexer::Ptr get_quant_combined_vector_indexer(
       const std::string &field_name) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual std::vector<VectorColumnIndexer::Ptr> get_vector_indexer(
       const std::string &field_name) const = 0;
 
   virtual std::vector<VectorColumnIndexer::Ptr> get_quant_vector_indexer(
       const std::string &field_name) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &field_name) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual fts::FtsColumnIndexerPtr get_fts_indexer(
       const std::string &field_name) const = 0;
 
+  // ---- Index queries and filters -----------------------------------------
   virtual Result<std::vector<fts::FtsResult>> fts_search(
       const std::string &field_name, const fts::FtsAstNode &ast,
       const fts::FtsQueryParams &params) = 0;
@@ -185,11 +180,11 @@ class Segment {
   // local row ID to a global doc ID before consulting the delete store.
   virtual const IndexFilter::Ptr get_filter() = 0;
 
-  // for others
+  // ---- Persistence and lifecycle -----------------------------------------
   virtual Status flush() = 0;
+
   virtual Status dump() = 0;
 
-  // only mark need_destroyed
   virtual Status destroy() = 0;
 };
 
