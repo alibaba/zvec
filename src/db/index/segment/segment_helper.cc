@@ -134,10 +134,7 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
   // can take a faster per-doc path that skips the filter callback entirely.
   std::shared_ptr<RowIdFilter> row_id_filter;
   if (!delete_row_id_bitmap.isEmpty()) {
-    // RowIdFilter copies the bitmap so ReduceFts below can reuse it; sharing
-    // lets the FTS reducer skip its own per-doc dense rank table.
-    std::shared_ptr<RowIdFilter> row_id_filter =
-        std::make_shared<RowIdFilter>(delete_row_id_bitmap);
+    row_id_filter = std::make_shared<RowIdFilter>(delete_row_id_bitmap);
   }
 
   s = ReduceVectorIndex(schema, input_segments, output_segment_path,
