@@ -126,7 +126,17 @@ class Segment {
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const InvertedIndexer::Ptr &scalar_indexer) = 0;
 
+  virtual Status create_fts_index(const std::string &column,
+                                  const IndexParams::Ptr &index_params,
+                                  SegmentMeta::Ptr *new_segment_meta,
+                                  FtsIndexer::Ptr *output_fts_indexer) = 0;
+
+  virtual Status drop_fts_index(const std::string &column,
+                                SegmentMeta::Ptr *new_segment_meta,
+                                FtsIndexer::Ptr *output_fts_indexer) = 0;
+
   virtual Status reload_fts_index(const CollectionSchema &schema,
+                                  const SegmentMeta::Ptr &segment_meta,
                                   const FtsIndexer::Ptr &new_fts_indexer) = 0;
 
   // ---- Data operations ----------------------------------------------------
@@ -171,15 +181,6 @@ class Segment {
 
   virtual InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &field_name) const = 0;
-
-  virtual Status create_fts_index(const std::string &column,
-                                  const IndexParams::Ptr &index_params,
-                                  SegmentMeta::Ptr *new_segment_meta,
-                                  FtsIndexer::Ptr *output_fts_indexer) = 0;
-
-  virtual Status drop_fts_index(const std::string &column,
-                                SegmentMeta::Ptr *new_segment_meta,
-                                FtsIndexer::Ptr *output_fts_indexer) = 0;
 
   // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual fts::FtsColumnIndexerPtr get_fts_indexer(

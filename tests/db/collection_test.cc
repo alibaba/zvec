@@ -5902,4 +5902,65 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     col.reset();
     FileHelper::RemoveDirectory(col_path);
   }
+
+  // Case 4: CreateIndex with different FtsIndexParams on a column that already
+  // has an FTS index — should remove the old index and rebuild with new params.
+  {
+    FileHelper::RemoveDirectory(col_path);
+    auto schema = build_schema(false);
+    CollectionOptions options{false, true};
+    auto col_res = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
+
+    std::vector<Doc> docs;
+    docs.push_back(make_doc(0, "intro", "hello world"));
+    docs.push_back(make_doc(1, "guide", "hello foo"));
+    docs.push_back(make_doc(2, "more", "nothing here"));
+    ASSERT_TRUE(col->Insert(docs).has_value());
+    ASSERT_TRUE(col->Flush().ok());
+
+    // Create FTS index with default params (tokenizer="standard").
+    auto params_v1 = std::make_shared<FtsIndexParams>("standard");
+    auto s = col->CreateIndex("content", params_v1);
+    ASSERT_TRUE(s.ok()) << s.message();
+    auto q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value()) << q.error().message();
+    ASSERT_EQ(q.value().size(), 2u);
+
+    // Re-create with different params: no lowercase filter, so indexing
+    // preserves original case and case-mismatched queries should miss.
+    auto params_v2 = std::make_shared<FtsIndexParams>(
+        "standard", std::vector<std::string>{});
+    ASSERT_NE(*params_v1, *params_v2);
+    s = col->CreateIndex("content", params_v2);
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    // Lowercase query should still hit (source text is lowercase).
+    q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value()) << q.error().message();
+    ASSERT_EQ(q.value().size(), 2u);
+
+    // Uppercase query should miss — no lowercase filter means case-sensitive.
+    q = fts_search(col, "HELLO");
+    ASSERT_TRUE(q.has_value());
+    ASSERT_EQ(q.value().size(), 0u);
+
+    // Reopen and verify persistence.
+    col.reset();
+    auto reopen_res = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    col = reopen_res.value();
+
+    q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value()) << q.error().message();
+    ASSERT_EQ(q.value().size(), 2u);
+
+    q = fts_search(col, "HELLO");
+    ASSERT_TRUE(q.has_value());
+    ASSERT_EQ(q.value().size(), 0u);
+
+    col.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
 }

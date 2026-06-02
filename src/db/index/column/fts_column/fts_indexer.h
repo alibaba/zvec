@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include "db/common/rocksdb_context.h"
@@ -34,10 +35,10 @@ class FtsIndexer {
 
   ~FtsIndexer();
 
-  // Create a new fts.rocksdb or open an existing one based on schema's
-  // fts_fields(). Returns nullptr on failure.
+  // Create a new fts.rocksdb or open an existing one. Returns nullptr on
+  // failure.
   static Ptr CreateAndOpen(const std::string &working_dir,
-                           const CollectionSchema &schema, bool create,
+                           const FieldSchemaPtrList &fts_fields, bool create,
                            bool read_only = false);
 
   // Get FtsColumnIndexer by field name.
@@ -81,7 +82,8 @@ class FtsIndexer {
   }
 
  private:
-  Status open(const CollectionSchema &schema, bool create, bool read_only);
+  Status open(const FieldSchemaPtrList &fts_fields, bool create,
+              bool read_only);
 
   std::string working_dir_;
   std::shared_ptr<RocksdbContext> fts_ctx_;

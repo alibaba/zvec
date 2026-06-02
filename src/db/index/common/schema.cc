@@ -224,6 +224,13 @@ Status FieldSchema::validate() const {
             "] does not support vector index params, but got index_type ",
             IndexTypeCodeBook::AsString(index_params_->type()));
       }
+      if (index_params_->type() == IndexType::FTS &&
+          data_type_ != DataType::STRING) {
+        return Status::InvalidArgument(
+            "schema validate failed: FTS index only supports STRING data type, "
+            "but field[",
+            name_, "] has data type ", DataTypeCodeBook::AsString(data_type_));
+      }
     }
   }
   return Status::OK();

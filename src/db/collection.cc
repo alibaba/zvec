@@ -478,6 +478,18 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
     return Status::OK();
   }
 
+  // Reject creating a non-vector index when the column already has a different
+  // non-vector index type (e.g. adding FTS when INVERT exists, or vice versa).
+  if (!field->is_vector_field() && field->index_params() != nullptr &&
+      field->index_params()->type() != index_params->type()) {
+    return Status::NotSupported(
+        "CreateIndex: column[", column_name, "] already has index type [",
+        IndexTypeCodeBook::AsString(field->index_params()->type()),
+        "], cannot create index type [",
+        IndexTypeCodeBook::AsString(index_params->type()),
+        "] on the same column");
+  }
+
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
@@ -614,7 +626,8 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
     } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
       auto fts_task = std::get<CreateFtsIndexTask>(task_info);
       s = fts_task.input_segment_->reload_fts_index(
-          *new_schema, fts_task.output_fts_indexer_);
+          *new_schema, fts_task.output_segment_meta_,
+          fts_task.output_fts_indexer_);
     }
     CHECK_RETURN_STATUS(s);
   }
@@ -833,7 +846,8 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
     } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
       auto fts_task = std::get<DropFtsIndexTask>(task_info);
       s = fts_task.input_segment_->reload_fts_index(
-          *new_schema, fts_task.output_fts_indexer_);
+          *new_schema, fts_task.output_segment_meta_,
+          fts_task.output_fts_indexer_);
     }
     CHECK_RETURN_STATUS(s);
   }

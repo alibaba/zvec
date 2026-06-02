@@ -463,6 +463,7 @@ class MockSegment : public Segment {
   }
 
   Status reload_fts_index(const CollectionSchema &schema,
+                          const SegmentMeta::Ptr &segment_meta,
                           const FtsIndexer::Ptr &new_fts_indexer) override {
     return Status::OK();
   }

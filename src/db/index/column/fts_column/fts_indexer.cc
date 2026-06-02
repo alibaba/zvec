@@ -26,19 +26,18 @@ FtsIndexer::~FtsIndexer() {
 }
 
 FtsIndexer::Ptr FtsIndexer::CreateAndOpen(const std::string &working_dir,
-                                          const CollectionSchema &schema,
+                                          const FieldSchemaPtrList &fts_fields,
                                           bool create, bool read_only) {
   auto indexer = std::make_shared<FtsIndexer>(working_dir);
-  auto s = indexer->open(schema, create, read_only);
+  auto s = indexer->open(fts_fields, create, read_only);
   if (!s.ok()) {
     return nullptr;
   }
   return indexer;
 }
 
-Status FtsIndexer::open(const CollectionSchema &schema, bool create,
+Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
                         bool read_only) {
-  auto fts_fields = schema.fts_fields();
   if (fts_fields.empty()) {
     return Status::OK();
   }
@@ -229,10 +228,24 @@ Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
   // Remove per-field stat keys.
   auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
   if (stat_cf) {
-    fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
-                          fts::make_total_docs_key(field_name));
-    fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
-                          fts::make_total_tokens_key(field_name));
+    auto rs = fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
+                                    fts::make_total_docs_key(field_name));
+    if (!rs.ok()) {
+      LOG_ERROR(
+          "FtsIndexer::remove_field_indexer: delete total_docs key "
+          "failed for field[%s]: %s",
+          field_name.c_str(), rs.ToString().c_str());
+      return Status::InternalError("delete total_docs key failed");
+    }
+    rs = fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
+                               fts::make_total_tokens_key(field_name));
+    if (!rs.ok()) {
+      LOG_ERROR(
+          "FtsIndexer::remove_field_indexer: delete total_tokens key "
+          "failed for field[%s]: %s",
+          field_name.c_str(), rs.ToString().c_str());
+      return Status::InternalError("delete total_tokens key failed");
+    }
   }
 
   return Status::OK();

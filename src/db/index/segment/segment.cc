@@ -158,15 +158,6 @@ class SegmentImpl : public Segment,
   InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &field_name) const override;
 
-  Status create_fts_index(const std::string &column,
-                          const IndexParams::Ptr &index_params,
-                          SegmentMeta::Ptr *new_segment_meta,
-                          FtsIndexer::Ptr *output_fts_indexer) override;
-
-  Status drop_fts_index(const std::string &column,
-                        SegmentMeta::Ptr *new_segment_meta,
-                        FtsIndexer::Ptr *output_fts_indexer) override;
-
   fts::FtsColumnIndexerPtr get_fts_indexer(
       const std::string &field_name) const override;
 
@@ -221,7 +212,17 @@ class SegmentImpl : public Segment,
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const InvertedIndexer::Ptr &scalar_indexer) override;
 
+  Status create_fts_index(const std::string &column,
+                          const IndexParams::Ptr &index_params,
+                          SegmentMeta::Ptr *new_segment_meta,
+                          FtsIndexer::Ptr *output_fts_indexer) override;
+
+  Status drop_fts_index(const std::string &column,
+                        SegmentMeta::Ptr *new_segment_meta,
+                        FtsIndexer::Ptr *output_fts_indexer) override;
+
   Status reload_fts_index(const CollectionSchema &schema,
+                          const SegmentMeta::Ptr &segment_meta,
                           const FtsIndexer::Ptr &new_fts_indexer) override;
 
   Status dump() override;
@@ -1968,10 +1969,17 @@ Status SegmentImpl::create_scalar_index(const std::vector<std::string> &columns,
       return Status::InvalidArgument("Invalid column name");
     }
 
-    if (field->index_params() != nullptr &&
-        *field->index_params() == *index_params) {
-      // if already indexed, just skip it
-      continue;
+    if (field->index_params() != nullptr) {
+      if (*field->index_params() == *index_params) {
+        // if already indexed with same params, just skip it
+        continue;
+      }
+      if (field->index_params()->type() != index_params->type()) {
+        return Status::InvalidArgument(
+            "create_scalar_index: field[", column, "] already has index type ",
+            IndexTypeCodeBook::AsString(field->index_params()->type()));
+      }
+      // same type but different params — will rebuild below
     }
 
     auto new_field = std::make_shared<FieldSchema>(*field);
@@ -4488,8 +4496,8 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   if (create) {
     auto block_id = allocate_block_id();
     auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
-    fts_indexer_ =
-        FtsIndexer::CreateAndOpen(fts_path, *collection_schema_, true);
+    fts_indexer_ = FtsIndexer::CreateAndOpen(
+        fts_path, collection_schema_->fts_fields(), true);
     if (!fts_indexer_) {
       return Status::InternalError("open_fts_indexers: create failed at [",
                                    fts_path, "]");
@@ -4500,8 +4508,9 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     for (const auto &block : segment_meta_->persisted_blocks()) {
       if (block.type() == BlockType::FTS_INDEX) {
         auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block.id());
-        fts_indexer_ = FtsIndexer::CreateAndOpen(fts_path, *collection_schema_,
-                                                 false, options_.read_only_);
+        fts_indexer_ = FtsIndexer::CreateAndOpen(
+            fts_path, collection_schema_->fts_fields(), false,
+            options_.read_only_);
         if (!fts_indexer_) {
           return Status::InternalError("open_fts_indexers: open failed at [",
                                        fts_path, "]");
@@ -4594,6 +4603,21 @@ Status SegmentImpl::create_fts_index(const std::string &column,
     return Status::NotFound("create_fts_index: field not found: ", column);
   }
 
+  if (field->index_params() != nullptr) {
+    if (*field->index_params() == *index_params) {
+      // Already indexed with same params, nothing to do.
+      *out_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
+      *out_fts_indexer = fts_indexer_;
+      return Status::OK();
+    }
+    if (field->index_params()->type() != index_params->type()) {
+      return Status::InvalidArgument(
+          "create_fts_index: field[", column, "] already has index type ",
+          IndexTypeCodeBook::AsString(field->index_params()->type()));
+    }
+    // Same type but different params — will rebuild below.
+  }
+
   auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
   new_segment_meta->remove_fts_index_block();
 
@@ -4606,24 +4630,33 @@ Status SegmentImpl::create_fts_index(const std::string &column,
 
   FtsIndexer::Ptr new_fts_indexer;
   if (fts_indexer_) {
-    // Snapshot existing fts DB, then open the copy with new schema.
+    // Snapshot existing fts DB, then open the copy with current schema.
     auto s = fts_indexer_->create_snapshot(new_fts_path);
     CHECK_RETURN_STATUS(s);
 
-    new_fts_indexer =
-        FtsIndexer::CreateAndOpen(new_fts_path, *new_schema, false);
+    new_fts_indexer = FtsIndexer::CreateAndOpen(
+        new_fts_path, collection_schema_->fts_fields(), false);
   } else {
     // No existing fts DB — create a fresh one.
     new_fts_indexer =
-        FtsIndexer::CreateAndOpen(new_fts_path, *new_schema, true);
+        FtsIndexer::CreateAndOpen(new_fts_path, new_schema->fts_fields(), true);
   }
   if (!new_fts_indexer) {
     FileHelper::RemoveDirectory(new_fts_path);
     return Status::InternalError("create_fts_index: failed to open snapshot");
   }
 
-  // If the snapshot didn't already contain this field's CFs, create them.
-  if (!new_fts_indexer->has_field(column)) {
+  // If the field already exists in the snapshot (params change), remove it
+  // first so we can recreate with the new params.
+  if (new_fts_indexer->has_field(column)) {
+    auto s = new_fts_indexer->remove_field_indexer(column);
+    if (!s.ok()) {
+      FileHelper::RemoveDirectory(new_fts_path);
+      return s;
+    }
+  }
+
+  {
     auto new_field_schema = std::make_shared<FieldSchema>(
         column, field->data_type(), field->nullable(), index_params);
     auto s = new_fts_indexer->create_field_indexer(*new_field_schema);
@@ -4726,8 +4759,8 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
     auto s = fts_indexer_->create_snapshot(new_fts_path);
     CHECK_RETURN_STATUS(s);
 
-    auto new_fts_indexer =
-        FtsIndexer::CreateAndOpen(new_fts_path, *new_schema, false);
+    auto new_fts_indexer = FtsIndexer::CreateAndOpen(
+        new_fts_path, collection_schema_->fts_fields(), false);
     if (!new_fts_indexer) {
       FileHelper::RemoveDirectory(new_fts_path);
       return Status::InternalError("drop_fts_index: failed to open snapshot");
@@ -4755,9 +4788,10 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
 }
 
 Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
+                                     const SegmentMeta::Ptr &segment_meta,
                                      const FtsIndexer::Ptr &new_fts_indexer) {
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
-  segment_meta_ = std::make_shared<SegmentMeta>(*segment_meta_);
+  segment_meta_ = segment_meta;
 
   if (fts_indexer_) {
     auto old_dir = fts_indexer_->working_dir();
