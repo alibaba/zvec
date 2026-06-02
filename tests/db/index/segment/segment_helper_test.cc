@@ -114,16 +114,17 @@ class SegmentHelperTest : public testing::Test {
       return {executed, nullptr};
     }
 
-    auto tmp_path = FileHelper::MakeTempSegmentPath(col_path, output_segment_id);
+    auto tmp_path =
+        FileHelper::MakeTempSegmentPath(col_path, output_segment_id);
     auto dst_path = FileHelper::MakeSegmentPath(col_path, output_segment_id);
     EXPECT_TRUE(FileHelper::MoveDirectory(tmp_path, dst_path));
 
     SegmentOptions read_options{true, !forward_use_parquet,
                                 DEFAULT_MAX_BUFFER_SIZE};
     version_manager->set_enable_mmap(!forward_use_parquet);
-    auto seg_ret = Segment::Open(col_path, *schema,
-                                 *executed.output_segment_meta_, id_map,
-                                 delete_store, version_manager, read_options);
+    auto seg_ret =
+        Segment::Open(col_path, *schema, *executed.output_segment_meta_, id_map,
+                      delete_store, version_manager, read_options);
     EXPECT_TRUE(seg_ret.has_value());
     if (!seg_ret.has_value()) return {executed, nullptr};
     return {executed, std::move(seg_ret.value())};
@@ -481,7 +482,8 @@ TEST_F(SegmentHelperTest, CompactTask_VectorIndexThreeSegmentsRegression) {
   ASSERT_NE(output_segment->Fetch(899), nullptr);
 }
 
-TEST_F(SegmentHelperTest, CompactTask_QuantizedVectorIndexThreeSegmentsRegression) {
+TEST_F(SegmentHelperTest,
+       CompactTask_QuantizedVectorIndexThreeSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex(
       false, col_name,
       std::make_shared<HnswIndexParams>(MetricType::IP, 16, 20,
@@ -536,6 +538,11 @@ class SegmentCompactReuseTest
     return params ? params->type() : IndexType::FLAT;
   }
 
+  static QuantizeType QuantizeTypeOf(const IndexParams::Ptr &params) {
+    auto vp = std::dynamic_pointer_cast<VectorIndexParams>(params);
+    return vp ? vp->quantize_type() : QuantizeType::UNDEFINED;
+  }
+
   // Run CreateVectorIndexTask on `segment` for `column` with `index_params`,
   // then reload the segment so its in-memory indexer reflects the new index
   // (matching collection.cc's post-optimize reload path).
@@ -584,7 +591,13 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
                                      vf->index_params());
       }
     }
-    auto in_indexers = seg->get_vector_indexer("dense_fp32");
+    // For quantized index types (e.g. HNSW_RABITQ) the built index lives in
+    // get_quant_vector_indexer; get_vector_indexer keeps the raw FLAT
+    // indexer. See CompactTask_QuantizedVectorIndexThreeSegmentsRegression.
+    const bool quantized =
+        QuantizeTypeOf(param.vector_index_params) != QuantizeType::UNDEFINED;
+    auto in_indexers = quantized ? seg->get_quant_vector_indexer("dense_fp32")
+                                 : seg->get_vector_indexer("dense_fp32");
     ASSERT_FALSE(in_indexers.empty());
 
     ASSERT_EQ(IndexerType(in_indexers.front()),
@@ -600,7 +613,11 @@ TEST_P(SegmentCompactReuseTest, OptimizedSegmentsReuseFirstIndexer) {
   ASSERT_NE(output_segment->Fetch(0), nullptr);
   ASSERT_NE(output_segment->Fetch(kSegCount * kDocsPerSeg - 1), nullptr);
 
-  auto out_indexers = output_segment->get_vector_indexer("dense_fp32");
+  const bool quantized =
+      QuantizeTypeOf(param.vector_index_params) != QuantizeType::UNDEFINED;
+  auto out_indexers =
+      quantized ? output_segment->get_quant_vector_indexer("dense_fp32")
+                : output_segment->get_vector_indexer("dense_fp32");
   ASSERT_FALSE(out_indexers.empty());
   EXPECT_EQ(IndexerType(out_indexers.front()), param.expected_output_type);
 }
@@ -648,9 +665,8 @@ TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   ASSERT_TRUE(seg1->flush().ok());
   ASSERT_TRUE(seg2->flush().ok());
 
-  auto filter = std::make_shared<EasyIndexFilter>([](uint64_t id) -> bool {
-    return id < 100 || (id >= 400 && id < 450);
-  });
+  auto filter = std::make_shared<EasyIndexFilter>(
+      [](uint64_t id) -> bool { return id < 100 || (id >= 400 && id < 450); });
 
   auto [compact_task, output_segment] =
       RunCompactAndOpen(schema, {seg1, seg2}, 2, filter, version_manager);
