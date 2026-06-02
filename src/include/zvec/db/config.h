@@ -36,11 +36,11 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
  public:
   enum class LogLevel : uint8_t {
-    DEBUG = 0,
-    INFO,
-    WARN,
-    ERROR,
-    FATAL,
+    kDebug = 0,
+    kInfo,
+    kWarn,
+    kError,
+    kFatal,
   };
 
   struct LogConfig {
@@ -53,7 +53,7 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
   // Console log configuration
   struct ConsoleLogConfig : LogConfig {
-    ConsoleLogConfig(LogLevel level = LogLevel::WARN) : LogConfig{level} {}
+    ConsoleLogConfig(LogLevel level = LogLevel::kWarn) : LogConfig{level} {}
 
     std::string GetLoggerType() const override {
       return CONSOLE_LOG_TYPE_NAME;
@@ -67,7 +67,7 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     uint32_t file_size;  // MB
     uint32_t overdue_days;
 
-    FileLogConfig(LogLevel level = LogLevel::WARN,
+    FileLogConfig(LogLevel level = LogLevel::kWarn,
                   std::string dir = DEFAULT_LOG_DIR,
                   std::string basename = DEFAULT_LOG_BASENAME,
                   uint32_t file_size = DEFAULT_LOG_FILE_SIZE,

@@ -61,6 +61,7 @@ class RabitqReformer : public IndexReformer {
                           HnswRabitqQueryEntity *entity) const;
 
   size_t num_clusters() const;
+  size_t ex_bits() const;
   RabitqMetricType rabitq_metric_type() const;
 
  private:

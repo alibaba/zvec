@@ -15,11 +15,6 @@
 #include "jieba_tokenizer.h"
 #include <cstdlib>
 #include <zvec/ailego/logger/logger.h>
-// Drop the ERROR macro that cppjieba's transitive <windows.h> defines so it
-// does not collide with zvec::GlobalConfig::LogLevel::ERROR below.
-#ifdef ERROR
-#undef ERROR
-#endif
 #include <zvec/db/config.h>
 
 namespace zvec::fts {
