@@ -20,6 +20,11 @@
 namespace zvec {
 namespace ailego {
 
+#if defined(__riscv_zvfh)
+float Norm2RVV(const Float16 *m, size_t dim);
+float SquaredNorm2RVV(const Float16 *m, size_t dim);
+#endif
+
 #define NORM_FP32_STEP_GENERAL SS_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SS_FP32_SSE
 #define NORM_FP32_STEP_AVX SS_FP32_AVX
@@ -53,10 +58,16 @@ namespace ailego {
 #define SS_FP16_NEON(v_m, v_sum) v_sum = vfmaq_f16(v_sum, v_m, v_m);
 
 #if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+    (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
 //! Compute the L2-norm of vectors (FP16, M=1)
 void Norm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
                                       float *out) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    *out = Norm2RVV(m, dim);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   NORM_FP16_1_NEON(m, dim, out, std::sqrt)
 #else
@@ -66,13 +77,29 @@ void Norm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
     return;
   }
 #endif
+#if defined(__AVX__)
   NORM_FP16_1_AVX(m, dim, out, std::sqrt)
+#else
+  float sum = 0.0f;
+  const ValueType *m_end = m + dim;
+  while (m != m_end) {
+    float v = static_cast<float>(*m++);
+    sum += v * v;
+  }
+  *out = std::sqrt(sum);
+#endif
 #endif
 }
 
 //! Compute the L2-norm of vectors (FP16, M=1)
 void SquaredNorm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
                                              float *out) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    *out = SquaredNorm2RVV(m, dim);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   NORM_FP16_1_NEON(m, dim, out, )
 #else
@@ -82,10 +109,20 @@ void SquaredNorm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
     return;
   }
 #endif
+#if defined(__AVX__)
   NORM_FP16_1_AVX(m, dim, out, )
+#else
+  float sum = 0.0f;
+  const ValueType *m_end = m + dim;
+  while (m != m_end) {
+    float v = static_cast<float>(*m++);
+    sum += v * v;
+  }
+  *out = sum;
+#endif
 #endif
 }
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__) || __riscv_zvfh
 
 }  // namespace ailego
 }  // namespace zvec

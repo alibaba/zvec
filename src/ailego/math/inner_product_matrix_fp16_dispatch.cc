@@ -27,6 +27,11 @@ float MinusInnerProductFp16NEON(const Float16 *lhs, const Float16 *rhs,
                                 size_t size);
 #endif
 
+#if defined(__riscv_zvfh)
+float InnerProductRVV(const Float16 *lhs, const Float16 *rhs, size_t size);
+float MinusInnerProductRVV(const Float16 *lhs, const Float16 *rhs, size_t size);
+#endif
+
 #if defined(__AVX__)
 float InnerProductFp16AVX(const Float16 *lhs, const Float16 *rhs, size_t size);
 float MinusInnerProductFp16AVX(const Float16 *lhs, const Float16 *rhs,
@@ -47,15 +52,26 @@ float MinusInnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
                                       size_t size);
 #endif
 
+<<<<<<< HEAD
 float InnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
                              size_t size);
 float MinusInnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
                                   size_t size);
 
+=======
+#if (defined(__F16C__) && defined(__AVX__)) || \
+    (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
+>>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
 void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                 const ValueType *q, size_t dim,
                                                 float *out) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    *out = InnerProductRVV(m, q, dim);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   *out = InnerProductFp16NEON(m, q, dim);
 #else
@@ -72,6 +88,7 @@ void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
   }
 #endif  //__AVX512F__
 #if defined(__AVX__)
+<<<<<<< HEAD
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     *out = InnerProductFp16AVX(m, q, dim);
     return;
@@ -79,6 +96,16 @@ void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 #endif  //__AVX__
   *out = InnerProductFp16Scalar(m, q, dim);
 
+=======
+  InnerProductAVX(m, q, dim, out);
+#else
+  float sum = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    sum += static_cast<float>(m[i] * q[i]);
+  }
+  *out = sum;
+#endif
+>>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 #endif  //__ARM_NEON
 }
 
@@ -86,6 +113,12 @@ void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                      const ValueType *q,
                                                      size_t dim, float *out) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    *out = MinusInnerProductRVV(m, q, dim);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   *out = MinusInnerProductFp16NEON(m, q, dim);
 #else
@@ -102,6 +135,7 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
   }
 #endif  //__AVX512F__
 #if defined(__AVX__)
+<<<<<<< HEAD
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     *out = MinusInnerProductFp16AVX(m, q, dim);
     return;
@@ -124,6 +158,20 @@ float InnerProductSparseInSegmentFp16AVX512FP16(uint32_t m_sparse_count,
                                                 const uint16_t *q_sparse_index,
                                                 const Float16 *q_sparse_value);
 #endif  //__AVX512FP16__
+=======
+  MinusInnerProductAVX(m, q, dim, out);
+#else
+  float sum = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    sum += static_cast<float>(m[i] * q[i]);
+  }
+  *out = -sum;
+#endif
+#endif  //__ARM_NEON
+}
+
+#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__) || __riscv_zvfh
+>>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 
 #if defined(__AVX__)
 float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,

@@ -18,6 +18,12 @@
 namespace zvec {
 namespace ailego {
 
+#if defined(__riscv_vector)
+float SquaredEuclideanDistanceRVV(const int8_t *lhs, const int8_t *rhs,
+                                  size_t size);
+float EuclideanDistanceRVV(const int8_t *lhs, const int8_t *rhs, size_t size);
+#endif
+
 #if defined(__AVX2__)
 float SquaredEuclideanDistanceInt8AVX2(const int8_t *lhs, const int8_t *rhs,
                                        size_t size);
@@ -31,17 +37,28 @@ float SquaredEuclideanDistanceInt8SSE(const int8_t *lhs, const int8_t *rhs,
 float SquaredEuclideanDistanceInt8Scalar(const int8_t *lhs, const int8_t *rhs,
                                          size_t size);
 
+<<<<<<< HEAD
+=======
+#if defined(__SSE4_1__) || defined(__riscv_vector)
+>>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 //! Compute the distance between matrix and query (INT8, M=1, N=1)
 void SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(const ValueType *m,
                                                            const ValueType *q,
                                                            size_t dim,
                                                            float *out) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    *out = SquaredEuclideanDistanceRVV(m, q, dim);
+    return;
+  }
+#endif
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
     *out = SquaredEuclideanDistanceInt8AVX2(m, q, dim);
     return;
   }
 #endif  // __AVX2__
+<<<<<<< HEAD
 
 #if defined(__SSE4_1__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
@@ -51,15 +68,36 @@ void SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(const ValueType *m,
 #endif
 
   *out = SquaredEuclideanDistanceInt8Scalar(m, q, dim);
+=======
+#if defined(__SSE4_1__)
+  *out = SquaredEuclideanDistanceSSE(m, q, dim);
+#else
+  float sum = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    sum += MathHelper::SquaredDifference(m[i], q[i]);
+  }
+  *out = sum;
+#endif
+>>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 }
 
 //! Compute the distance between matrix and query (INT8, M=1, N=1)
 void EuclideanDistanceMatrix<int8_t, 1, 1>::Compute(const ValueType *m,
                                                     const ValueType *q,
                                                     size_t dim, float *out) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    *out = EuclideanDistanceRVV(m, q, dim);
+    return;
+  }
+#endif
   SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(m, q, dim, out);
   *out = std::sqrt(*out);
 }
+<<<<<<< HEAD
+=======
+#endif  // __SSE4_1__ || __riscv_vector
+>>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 
 }  // namespace ailego
 }  // namespace zvec

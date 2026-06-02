@@ -20,6 +20,10 @@
 namespace zvec {
 namespace ailego {
 
+#if defined(__riscv_zvfh)
+float Norm1RVV(const Float16 *m, size_t dim);
+#endif
+
 #define NORM_FP32_STEP_GENERAL SA_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SA_FP32_SSE
 #define NORM_FP32_STEP_AVX SA_FP32_AVX
@@ -68,10 +72,16 @@ static const __m512 ABS_MASK_FP32_AVX512 =
 #define SA_FP16_NEON(v_m, v_sum) v_sum = vaddq_f16(vabsq_f16(v_m), v_sum);
 
 #if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+    (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
 //! Compute the L1-norm of vectors (FP16, M=1)
 void Norm1Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
                                       float *out) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    *out = Norm1RVV(m, dim);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   NORM_FP16_1_NEON(m, dim, out, )
 #else
@@ -81,10 +91,19 @@ void Norm1Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
     return;
   }
 #endif
+#if defined(__AVX__)
   NORM_FP16_1_AVX(m, dim, out, )
+#else
+  float sum = 0.0f;
+  const ValueType *m_end = m + dim;
+  while (m != m_end) {
+    sum += Float16::Absolute(*m++);
+  }
+  *out = sum;
+#endif
 #endif
 }
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__) || __riscv_zvfh
 
 }  // namespace ailego
 }  // namespace zvec

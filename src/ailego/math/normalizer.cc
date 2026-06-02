@@ -13,9 +13,39 @@
 // limitations under the License.
 
 #include "normalizer.h"
+#include <zvec/ailego/internal/platform.h>
+#include "ailego/internal/cpu_features.h"
 
 namespace zvec {
 namespace ailego {
+
+#if defined(__riscv_vector)
+static inline void NormalizeRVV(float *arr, size_t dim, float norm) {
+  while (dim != 0) {
+    const size_t vl = __riscv_vsetvl_e32m8(dim);
+    vfloat32m8_t v_arr = __riscv_vle32_v_f32m8(arr, vl);
+    v_arr = __riscv_vfdiv_vf_f32m8(v_arr, norm, vl);
+    __riscv_vse32_v_f32m8(arr, v_arr, vl);
+    arr += vl;
+    dim -= vl;
+  }
+}
+#endif  // __riscv_vector
+
+#if defined(__riscv_zvfh)
+static inline void NormalizeRVV(Float16 *arr, size_t dim, float norm) {
+  _Float16 *arr_fp16 = reinterpret_cast<_Float16 *>(arr);
+  const _Float16 norm_fp16 = static_cast<_Float16>(norm);
+  while (dim != 0) {
+    const size_t vl = __riscv_vsetvl_e16m8(dim);
+    vfloat16m8_t v_arr = __riscv_vle16_v_f16m8(arr_fp16, vl);
+    v_arr = __riscv_vfdiv_vf_f16m8(v_arr, norm_fp16, vl);
+    __riscv_vse16_v_f16m8(arr_fp16, v_arr, vl);
+    arr_fp16 += vl;
+    dim -= vl;
+  }
+}
+#endif  // __riscv_zvfh
 
 #if (defined(__ARM_NEON) && defined(__aarch64__))
 static inline void NormalizeNEON(float *arr, size_t dim, float norm) {
@@ -392,9 +422,16 @@ static inline void NormalizeSSE(float *arr, size_t dim, float norm) {
 }
 #endif  // __SSE__
 
-#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__)) || \
+    defined(__riscv_vector)
 //! Compute the norm of vector
 void Normalizer<float>::Compute(ValueType *arr, size_t dim, float norm) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    NormalizeRVV(arr, dim, norm);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   NormalizeNEON(arr, dim, norm);
 #else
@@ -410,15 +447,28 @@ void Normalizer<float>::Compute(ValueType *arr, size_t dim, float norm) {
     return;
   }
 #endif  // __AVX__
+#if !defined(__SSE__)
+  ailego_assert(arr && dim && norm);
+  for (size_t i = 0; i < dim; ++i) {
+    arr[i] /= norm;
+  }
+#else
   NormalizeSSE(arr, dim, norm);
+#endif
 #endif  // __ARM_NEON
 }
-#endif  // __SSE__ || (__ARM_NEON && __aarch64__)
+#endif  // __SSE__ || (__ARM_NEON && __aarch64__) || __riscv_vector
 
 #if (defined(__F16C__) && defined(__AVX__)) || \
-    (defined(__ARM_NEON) && defined(__aarch64__))
+    (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
 //! Compute the norm of vector
 void Normalizer<Float16>::Compute(ValueType *arr, size_t dim, float norm) {
+#if defined(__riscv_zvfh)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
+    NormalizeRVV(arr, dim, norm);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   NormalizeNEON(reinterpret_cast<float16_t *>(arr), dim, norm);
 #else
@@ -428,10 +478,17 @@ void Normalizer<Float16>::Compute(ValueType *arr, size_t dim, float norm) {
     return;
   }
 #endif  // __AVX512F__
+#if defined(__AVX__)
   NormalizeAVX(reinterpret_cast<uint16_t *>(arr), dim, norm);
+#else
+  ailego_assert(arr && dim && norm);
+  for (size_t i = 0; i < dim; ++i) {
+    arr[i] /= norm;
+  }
+#endif
 #endif  // __ARM_NEON
 }
-#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__)
+#endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__) || __riscv_zvfh
 
 }  // namespace ailego
 }  // namespace zvec

@@ -19,6 +19,11 @@
 namespace zvec {
 namespace ailego {
 
+#if defined(__riscv_vector)
+float Norm2RVV(const float *m, size_t dim);
+float SquaredNorm2RVV(const float *m, size_t dim);
+#endif
+
 #define NORM_FP32_STEP_GENERAL SS_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SS_FP32_SSE
 #define NORM_FP32_STEP_AVX SS_FP32_AVX
@@ -43,13 +48,20 @@ namespace ailego {
 //! Calculate sum of squared (NEON)
 #define SS_FP32_NEON(v_m, v_sum) v_sum = vfmaq_f32(v_sum, v_m, v_m);
 
-#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__))
+#if defined(__SSE__) || (defined(__ARM_NEON) && defined(__aarch64__)) || \
+    defined(__riscv_vector)
 //! Compute the L2-norm of vectors (FP32, M=1)
 void Norm2Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
                                     float *out) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    *out = Norm2RVV(m, dim);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   NORM_FP32_1_NEON(m, dim, out, std::sqrt)
-#else
+#elif defined(__SSE__)
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     NORM_FP32_1_AVX512(m, dim, out, std::sqrt)
@@ -63,15 +75,24 @@ void Norm2Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
   }
 #endif
   NORM_FP32_1_SSE(m, dim, out, std::sqrt)
+#else
+  SquaredNorm2Matrix<float, 1>::Compute(m, dim, out);
+  *out = std::sqrt(*out);
 #endif
 }
 
 //! Compute the squared L2-norm of vectors (FP32, M=1)
 void SquaredNorm2Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
                                            float *out) {
+#if defined(__riscv_vector)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
+    *out = SquaredNorm2RVV(m, dim);
+    return;
+  }
+#endif
 #if defined(__ARM_NEON)
   NORM_FP32_1_NEON(m, dim, out, )
-#else
+#elif defined(__SSE__)
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     NORM_FP32_1_AVX512(m, dim, out, )
@@ -85,9 +106,20 @@ void SquaredNorm2Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
   }
 #endif
   NORM_FP32_1_SSE(m, dim, out, )
+#else
+  ailego_assert(m && dim && out);
+  const ValueType *m_end = m + dim;
+  if (m != m_end) {
+    ValueType v = *m++;
+    *out = static_cast<float>(v * v);
+  }
+  while (m != m_end) {
+    ValueType v = *m++;
+    *out += static_cast<float>(v * v);
+  }
 #endif
 }
-#endif  // __SSE__ || (__ARM_NEON && __aarch64__)
+#endif  // __SSE__ || (__ARM_NEON && __aarch64__) || __riscv_vector
 
 }  // namespace ailego
 }  // namespace zvec
