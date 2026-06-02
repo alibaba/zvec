@@ -18,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 #include <variant>
+#include <roaring.hh>
 #include <arrow/record_batch.h>
 #include <arrow/status.h>
 #include <zvec/db/index_params.h>
@@ -229,6 +230,16 @@ class SegmentHelper {
       const FieldSchema &field,
       const core::IndexProvider::Pointer &raw_vector_provider,
       std::shared_ptr<FieldSchema> *out_field);
+
+  // Build a fresh FTS RocksDB under output_segment_path by streaming all
+  // FTS fields from input_segments through FtsRocksdbReducer.
+  //   - input_segments: ascending min_doc_id, contiguous doc_id range.
+  //   - delete_row_id_bitmap: deleted positions in input scan order
+  //     (shared with the vector path); empty for pure consolidation.
+  static Status ReduceFts(const CollectionSchema::Ptr &schema,
+                          const std::vector<Segment::Ptr> &input_segments,
+                          const std::string &output_segment_path,
+                          const roaring::Roaring &delete_row_id_bitmap);
 
   static arrow::Status FilterRecordBatch(
       const std::shared_ptr<arrow::RecordBatch> &batch,

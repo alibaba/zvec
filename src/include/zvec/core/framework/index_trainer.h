@@ -75,7 +75,7 @@ class IndexTrainer : public IndexModule {
   };
 
   //! Destructor
-  virtual ~IndexTrainer(void) {}
+  ~IndexTrainer(void) override {}
 
   //! Initialize Trainer
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;

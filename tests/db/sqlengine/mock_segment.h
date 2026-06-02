@@ -499,6 +499,17 @@ class MockSegment : public Segment {
     return {};
   }
 
+  fts::FtsColumnIndexerPtr get_fts_indexer(
+      const std::string &field_name) const override {
+    return nullptr;
+  }
+
+  Result<std::vector<fts::FtsResult>> fts_search(
+      const std::string &field_name, const fts::FtsAstNode &ast,
+      const fts::FtsQueryParams &params) override {
+    return std::vector<fts::FtsResult>{};
+  }
+
   Status flush() override {
     return Status::OK();
   }

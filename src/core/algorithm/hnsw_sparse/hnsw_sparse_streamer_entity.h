@@ -32,75 +32,72 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
  public:
   //! Cleanup
   //! return 0 on success, or errCode in failure
-  virtual int cleanup() override;
+  int cleanup() override;
 
   //! Make a copy of streamer entity, to support thread-safe operation.
   //! The segment in container cannot be read concurrenly
-  virtual const HnswSparseEntity::Pointer clone() const override;
+  const HnswSparseEntity::Pointer clone() const override;
 
   //! Get primary key of the node id
-  virtual key_t get_key(node_id_t id) const override;
+  key_t get_key(node_id_t id) const override;
 
   //! Get vector feature data by key
-  virtual const void *get_vector_meta(node_id_t id) const override;
+  const void *get_vector_meta(node_id_t id) const override;
 
-  virtual int get_vector_meta(const node_id_t id,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_vector_meta(const node_id_t id,
+                      IndexStorage::MemoryBlock &block) const override;
 
   //! Get vectors feature data by local ids
-  virtual int get_vector_metas(const node_id_t *ids, uint32_t count,
-                               const void **vecs) const override;
-  virtual int get_vector_metas(
+  int get_vector_metas(const node_id_t *ids, uint32_t count,
+                       const void **vecs) const override;
+  int get_vector_metas(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &block_vecs) const override;
 
   //! Get vector sparse feature data by chunk index and offset
-  virtual const void *get_sparse_data(uint64_t offset,
-                                      uint32_t len) const override;
+  const void *get_sparse_data(uint64_t offset, uint32_t len) const override;
 
   //! Get sparse data from id
-  virtual const void *get_sparse_data(node_id_t id) const override;
+  const void *get_sparse_data(node_id_t id) const override;
 
-  virtual int get_sparse_data(uint64_t offset, uint32_t len,
-                              IndexStorage::MemoryBlock &block) const override;
-  virtual int get_sparse_data(node_id_t id,
-                              IndexStorage::MemoryBlock &block) const override;
+  int get_sparse_data(uint64_t offset, uint32_t len,
+                      IndexStorage::MemoryBlock &block) const override;
+  int get_sparse_data(node_id_t id,
+                      IndexStorage::MemoryBlock &block) const override;
 
   //! Get sparse data from vector
-  virtual std::pair<const void *, uint32_t> get_sparse_data_from_vector(
+  std::pair<const void *, uint32_t> get_sparse_data_from_vector(
       const void *vec) const override;
-  virtual int get_sparse_data_from_vector(const void *vec,
-                                          IndexStorage::MemoryBlock &block,
-                                          int &sparse_length) const override;
+  int get_sparse_data_from_vector(const void *vec,
+                                  IndexStorage::MemoryBlock &block,
+                                  int &sparse_length) const override;
 
   //! Get sparse vector feature data by key
-  virtual int get_sparse_vector_by_key(
+  int get_sparse_vector_by_key(
       key_t key, uint32_t *sparse_count, std::string *sparse_indices_buffer,
       std::string *sparse_values_buffer) const override;
 
   //! Get sparse vector feature data by id
-  virtual int get_sparse_vector_by_id(
-      node_id_t id, uint32_t *sparse_count, std::string *sparse_indices_buffer,
-      std::string *sparse_values_buffer) const override;
+  int get_sparse_vector_by_id(node_id_t id, uint32_t *sparse_count,
+                              std::string *sparse_indices_buffer,
+                              std::string *sparse_values_buffer) const override;
 
   //! Get the node id's neighbors on graph level
   //! Note: the neighbors cannot be modified, using the following
   //! method to get WritableNeighbors if want to
-  virtual const Neighbors get_neighbors(level_t level,
-                                        node_id_t id) const override;
+  const Neighbors get_neighbors(level_t level, node_id_t id) const override;
 
 
   //! Add vector and key to hnsw entity, and local id will be saved in id
-  virtual int add_vector(level_t level, key_t key,
-                         const std::string &sparse_vec_buffer,
-                         uint32_t sparse_count, node_id_t *id) override;
+  int add_vector(level_t level, key_t key, const std::string &sparse_vec_buffer,
+                 uint32_t sparse_count, node_id_t *id) override;
 
   //! Add vector and id to hnsw entity
-  virtual int add_vector_with_id(level_t level, node_id_t id,
-                                 const std::string &sparse_vec,
-                                 uint32_t sparse_count) override;
+  int add_vector_with_id(level_t level, node_id_t id,
+                         const std::string &sparse_vec,
+                         uint32_t sparse_count) override;
 
-  virtual int update_neighbors(
+  int update_neighbors(
       level_t level, node_id_t id,
       const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
 
@@ -116,13 +113,13 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
 
   //! Append neighbor_id to node id neighbors on level
   //! Notice: the caller must be ensure the neighbors not full
-  virtual void add_neighbor(level_t level, node_id_t id, uint32_t size,
-                            node_id_t neighbor_id) override;
+  void add_neighbor(level_t level, node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
 
   //! Dump index by dumper
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
-  virtual void update_ep_and_level(node_id_t ep, level_t level) override;
+  void update_ep_and_level(node_id_t ep, level_t level) override;
 
  public:
   //! Constructor

@@ -20,7 +20,7 @@ from typing import Optional, Union, final
 
 import numpy as np
 from _zvec import _Collection, _MultiQuery
-from _zvec.param import _SubQuery, _VectorQuery
+from _zvec.param import _Fts, _SubQuery, _VectorQuery
 
 from ..extension import ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
@@ -141,6 +141,14 @@ class QueryExecutor(ABC):
             core_vector.output_fields = ctx.output_fields
         return core_vector
 
+    def _do_build_fts_query(self, query: Query, core_vector: _VectorQuery) -> None:
+        """Set FTS query on core_vector if the query has FTS parameters."""
+        if query.has_fts():
+            fts = _Fts()
+            fts.query_string = query.fts.query_string or ""
+            fts.match_string = query.fts.match_string or ""
+            core_vector.fts = fts
+
     def _do_build_query_with_vector(
         self, ctx: QueryContext, query: Query, collection: _Collection
     ) -> _VectorQuery:
@@ -149,25 +157,34 @@ class QueryExecutor(ABC):
         if query.param:
             core_vector.query_params = query.param
 
-        vector_schema = (
-            self._schema.vector(query.field_name) if query else self._schema.vectors[0]
-        )
-
-        if vector_schema is None:
-            raise ValueError("No vector field found")
+        # set FTS query if provided
+        self._do_build_fts_query(query, core_vector)
 
         # set output_fields
         core_vector.output_fields = ctx.output_fields
 
+        vector_schema = None
+        if query.has_vector() or query.has_id():
+            vector_schema = (
+                self._schema.vector(query.field_name)
+                if query
+                else self._schema.vectors[0]
+            )
+
+            if vector_schema is None:
+                raise ValueError("No vector field found")
+
         # set vector
         if query.has_vector():
             vec_data = query.vector
-        else:
+        elif query.has_id():
             fetched = collection.Fetch([query.id])
             doc = next(iter(fetched.values()))
             if not doc:
                 return core_vector
             vec_data = doc.get_any(vector_schema.name, vector_schema.data_type)
+        else:
+            return core_vector
 
         target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
         core_vector.set_vector(
@@ -243,13 +260,21 @@ class NoVectorQueryExecutor(QueryExecutor):
         super().__init__(schema)
 
     def _do_validate(self, ctx: QueryContext) -> None:
-        if len(ctx.queries) > 0:
-            raise ValueError("Collection does not support query with vector or id")
+        for query in ctx.queries:
+            if query.has_vector() or query.has_id():
+                raise ValueError("Collection does not support query with vector or id")
+            query._validate()
 
     def _do_build(
-        self, ctx: QueryContext, _collection: _Collection
+        self, ctx: QueryContext, collection: _Collection
     ) -> list[_VectorQuery]:
-        return [self._do_build_query_wo_vector(ctx)]
+        if len(ctx.queries) == 0:
+            return [self._do_build_query_wo_vector(ctx)]
+        # FTS-only branch in _do_build_query_with_vector skips vector resolution.
+        return [
+            self._do_build_query_with_vector(ctx, query, collection)
+            for query in ctx.queries
+        ]
 
 
 class SingleVectorQueryExecutor(NoVectorQueryExecutor):

@@ -25,6 +25,7 @@
 #include <zvec/db/options.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
+#include "db/index/column/fts_column/fts_column_indexer.h"
 #include "db/index/column/inverted_column/inverted_column_indexer.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/combined_vector_column_indexer.h"
@@ -171,6 +172,14 @@ class Segment {
   // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &field_name) const = 0;
+
+  // caller hold segment shared_ptr for segment handle the indexer's lifetime
+  virtual fts::FtsColumnIndexerPtr get_fts_indexer(
+      const std::string &field_name) const = 0;
+
+  virtual Result<std::vector<fts::FtsResult>> fts_search(
+      const std::string &field_name, const fts::FtsAstNode &ast,
+      const fts::FtsQueryParams &params) = 0;
 
   virtual const IndexFilter::Ptr get_filter() = 0;
 

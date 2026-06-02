@@ -27,59 +27,57 @@ namespace core {
 class IVFStreamer : public IndexStreamer {
  public:
   //! Initialize Searcher
-  virtual int init(const IndexMeta & /*meta*/,
-                   const ailego::Params & /*params*/) override;
+  int init(const IndexMeta & /*meta*/,
+           const ailego::Params & /*params*/) override;
 
   //! Cleanup Searcher
-  virtual int cleanup(void) override;
+  int cleanup(void) override;
 
   //! Load index from container
-  virtual int open(IndexStorage::Pointer storage) override;
+  int open(IndexStorage::Pointer storage) override;
 
-  virtual int flush(uint64_t /*check_point*/) override {
+  int flush(uint64_t /*check_point*/) override {
     return 0;
   }
-  virtual int close(void) override {
+  int close(void) override {
     return this->unload();
   }
 
   //! Unload index
-  virtual int unload(void) override;
+  int unload(void) override;
 
   //! Similarity brute force search
-  virtual int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
-                             Context::Pointer &context) const override;
+  int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
+                     Context::Pointer &context) const override;
 
   //! Similarity brute force search
-  virtual int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
-                             uint32_t count,
-                             Context::Pointer &context) const override;
+  int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
+                     uint32_t count, Context::Pointer &context) const override;
 
   //! Similarity search
-  virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
-                          Context::Pointer &context) const override;
+  int search_impl(const void *query, const IndexQueryMeta &qmeta,
+                  Context::Pointer &context) const override;
 
   //! Similarity search
-  virtual int search_impl(const void *query, const IndexQueryMeta &qmeta,
-                          uint32_t count,
-                          Context::Pointer &context) const override;
+  int search_impl(const void *query, const IndexQueryMeta &qmeta,
+                  uint32_t count, Context::Pointer &context) const override;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const override;
+  const Stats &stats(void) const override;
 
   //! Create a searcher context
-  virtual Context::Pointer create_context(void) const override;
+  Context::Pointer create_context(void) const override;
 
   //! Create a new iterator
-  virtual IndexProvider::Pointer create_provider(void) const override;
+  IndexProvider::Pointer create_provider(void) const override;
 
   //! Retrieve meta of index
-  virtual const IndexMeta &meta(void) const override {
+  const IndexMeta &meta(void) const override {
     return meta_;
   }
 
-  virtual int get_vector_by_id(
-      const uint32_t id, IndexStorage::MemoryBlock &block) const override {
+  int get_vector_by_id(const uint32_t id,
+                       IndexStorage::MemoryBlock &block) const override {
     return entity_->get_vector_by_key(id, block);
   }
 

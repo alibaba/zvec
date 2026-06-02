@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <vector>
+#include "db/sqlengine/common/fts_cond_info.h"
 #include "db/sqlengine/common/group_by.h"
 #include "base_info.h"
 #include "node.h"
@@ -69,6 +70,18 @@ class SelectInfo : public BaseInfo {
     return group_by_;
   }
 
+  void set_fts_cond_info(FtsCondInfo::Ptr value) {
+    fts_cond_info_ = std::move(value);
+  }
+
+  const FtsCondInfo::Ptr &fts_cond_info() const {
+    return fts_cond_info_;
+  }
+
+  bool has_fts_query() const {
+    return fts_cond_info_ != nullptr;
+  }
+
   std::string to_string();
 
  private:
@@ -82,6 +95,7 @@ class SelectInfo : public BaseInfo {
   int limit_{-1};
   bool include_vector_{false};
   bool include_doc_id_{false};
+  FtsCondInfo::Ptr fts_cond_info_{nullptr};
 };
 
 }  // namespace zvec::sqlengine

@@ -62,6 +62,8 @@ enum IndexType {
   IT_VAMANA = 5;
   // Invert Index
   IT_INVERT = 10;
+  // Full-Text Search Index
+  IT_FTS = 11;
 };
 
 enum QuantizeType {
@@ -131,6 +133,12 @@ message VamanaIndexParams {
   bool use_id_map = 7;
 }
 
+message FtsIndexParams {
+  string tokenizer_name = 1;
+  repeated string filters = 2;
+  string extra_params = 3;
+};
+
 message IndexParams {
   oneof params {
     InvertIndexParams invert = 1;
@@ -139,6 +147,7 @@ message IndexParams {
     IVFIndexParams ivf = 4;
     HnswRabitqIndexParams hnsw_rabitq = 5;
     VamanaIndexParams vamana = 6;
+    FtsIndexParams fts = 7;
   };
 };
 

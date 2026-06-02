@@ -30,7 +30,7 @@ class IndexStreamer : public IndexRunner {
   typedef std::shared_ptr<IndexStreamer> Pointer;
 
   //! Destructor
-  virtual ~IndexStreamer(void) = default;
+  ~IndexStreamer(void) override = default;
 
   //! Initialize the builder
   virtual int init(const IndexMeta & /*meta*/,

@@ -118,7 +118,7 @@ class Node : public Generic_Node<NodeOp, Node> {
 
   NodeType type();
 
-  virtual std::string text() const override;
+  std::string text() const override;
   std::string to_string();
 
  private:
@@ -137,7 +137,7 @@ class RangeNode : public Node {
 
   RangeNode();
   RangeNode(bool m_min_equal, bool m_max_equal);
-  virtual ~RangeNode() = default;
+  ~RangeNode() override = default;
 
   void set_min_equal(bool value);
   void set_max_equal(bool value);
@@ -171,16 +171,32 @@ class VectorMatrixNode : public Node {
     return matrix_;
   }
 
+  std::string take_matrix() {
+    return std::move(matrix_);
+  }
+
   const std::string &sparse_indices() const {
     return sparse_indices_;
+  }
+
+  std::string take_sparse_indices() {
+    return std::move(sparse_indices_);
   }
 
   const std::string &sparse_values() const {
     return sparse_values_;
   }
 
+  std::string take_sparse_values() {
+    return std::move(sparse_values_);
+  }
+
   const QueryParams::Ptr &query_params() const {
     return query_params_;
+  }
+
+  QueryParams::Ptr take_query_params() {
+    return std::move(query_params_);
   }
 
   std::string text() const override {
@@ -231,7 +247,7 @@ class FuncNode : public Node {
   using Ptr = std::shared_ptr<FuncNode>;
 
   FuncNode();
-  virtual ~FuncNode() = default;
+  ~FuncNode() override = default;
 
   void set_func_name_node(Node::Ptr func_name_node);
   const Node::Ptr &get_func_name_node();

@@ -318,6 +318,16 @@ int HnswRabitqStreamer::open(IndexStorage::Pointer stg) {
   if (ret != 0) {
     return ret;
   }
+
+  // Verify ex_bits consistency to avoid quantized data layout mismatch
+  if (reformer_->ex_bits() != entity_.ex_bits()) {
+    LOG_ERROR(
+        "ex_bits mismatch between reformer(%zu) and entity(%zu). "
+        "Reformer and entity must use the same total_bits configuration",
+        reformer_->ex_bits(), (size_t)entity_.ex_bits());
+    return IndexError_Mismatch;
+  }
+
   IndexMeta index_meta;
   ret = entity_.get_index_meta(&index_meta);
   if (ret == IndexError_NoExist) {

@@ -24,10 +24,16 @@
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
 #endif
+#include <roaring.hh>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
+#include "db/common/rocksdb_context.h"
 #include "db/common/typedef.h"
+#include "db/index/column/fts_column/fts_column_indexer.h"
+#include "db/index/column/fts_column/fts_rocksdb_merge.h"
+#include "db/index/column/fts_column/fts_rocksdb_reducer.h"
+#include "db/index/column/fts_column/fts_types.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
@@ -38,7 +44,6 @@
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_meta.h"
 #include "zvec/core/framework/index_reformer.h"
-#include "roaring.hh"
 
 namespace zvec {
 
@@ -68,7 +73,9 @@ Status SegmentHelper::Execute(SegmentTask::Ptr &task) {
 
 class RowIdFilter : public IndexFilter {
  public:
-  explicit RowIdFilter(roaring::Roaring &&delete_row_id_bitmap)
+  // Copies the bitmap so callers can keep using it (e.g. share with FTS
+  // reduce).
+  explicit RowIdFilter(const roaring::Roaring &delete_row_id_bitmap)
       : delete_row_id_bitmap_(delete_row_id_bitmap) {}
 
   bool is_filtered(uint64_t id) const override {
@@ -87,6 +94,10 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
   auto filter = task.filter_;
   auto output_segment_id = task.output_segment_id_;
 
+  // input_segments must be pre-sorted by ascending min_doc_id so the
+  // shared delete_row_id_bitmap (built by FilterRecordBatch, consumed by
+  // both vector and FTS reducers) is well-defined.  Guaranteed upstream by
+  // SegmentManager::get_segments().
   auto columns = schema->forward_field_names();
 
   // make segment path
@@ -118,8 +129,10 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
     return Status::OK();
   }
 
+  // RowIdFilter copies the bitmap so ReduceFts below can reuse it; sharing
+  // lets the FTS reducer skip its own per-doc dense rank table.
   std::shared_ptr<RowIdFilter> row_id_filter =
-      std::make_shared<RowIdFilter>(std::move(delete_row_id_bitmap));
+      std::make_shared<RowIdFilter>(delete_row_id_bitmap);
 
   s = ReduceVectorIndex(schema, input_segments, output_segment_path,
                         row_id_filter, block_id_generator, min_doc_id,
@@ -127,6 +140,12 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
   CHECK_RETURN_STATUS(s);
 
   LOG_INFO("Compacted vector index");
+
+  s = ReduceFts(schema, input_segments, output_segment_path,
+                delete_row_id_bitmap);
+  CHECK_RETURN_STATUS(s);
+
+  LOG_INFO("Compacted fts index");
 
   auto new_segment_meta = std::make_shared<SegmentMeta>();
   new_segment_meta->set_id(task.output_segment_id_);
@@ -901,6 +920,117 @@ arrow::Status SegmentHelper::FilterRecordBatch(
   *filterd = filtered_batch;
 
   return arrow::Status::OK();
+}
+
+Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
+                                const std::vector<Segment::Ptr> &input_segments,
+                                const std::string &output_segment_path,
+                                const roaring::Roaring &delete_row_id_bitmap) {
+  if (!schema->has_fts_field()) {
+    return Status::OK();
+  }
+  if (input_segments.empty()) {
+    return Status::OK();
+  }
+
+  auto fts_fields = schema->fts_fields();
+
+  // Build the destination FTS RocksDB with the post-dump CF layout:
+  // postings + positions per field, plus the shared stat CF.  Side CFs
+  // ($TF/$MAX_TF/$DOC_LEN) are skipped — the reducer writes BitPacked
+  // directly, matching the immutable-segment shape after
+  // convert_postings_to_bitpacked().
+  auto dst_fts_path = FileHelper::MakeFtsIndexPath(output_segment_path);
+  std::vector<std::string> cf_names;
+  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+      per_cf_merge_ops;
+  for (const auto &field : fts_fields) {
+    const auto &name = field->name();
+    cf_names.push_back(name);
+    cf_names.push_back(name + kFtsPositionsSuffix);
+    per_cf_merge_ops[name] = std::make_shared<fts::FtsPostingsMerge>();
+  }
+  cf_names.push_back(kFtsStatCfName);
+
+  auto dst_ctx = std::make_shared<RocksdbContext>();
+  Status s = dst_ctx->create(
+      RocksdbContext::Args{dst_fts_path, cf_names, nullptr, per_cf_merge_ops,
+                           /*enable_hash_skiplist=*/true});
+  if (!s.ok()) {
+    LOG_ERROR("ReduceFts: create destination FTS RocksDB failed at [%s]: %s",
+              dst_fts_path.c_str(), s.message().c_str());
+    return s;
+  }
+
+  // Feed segments in caller's order — matches the scan order
+  // delete_row_id_bitmap is keyed by.
+  auto *dst_stat_cf = dst_ctx->get_cf(kFtsStatCfName);
+  for (const auto &field : fts_fields) {
+    const auto &name = field->name();
+    auto *dst_postings_cf = dst_ctx->get_cf(name);
+    auto *dst_positions_cf = dst_ctx->get_cf(name + kFtsPositionsSuffix);
+
+    fts::FtsRocksdbReducer reducer;
+    auto init_ret = reducer.init(name, dst_ctx.get(), dst_postings_cf,
+                                 dst_positions_cf, dst_stat_cf);
+    if (!init_ret) {
+      auto err = init_ret.error();
+      LOG_ERROR("ReduceFts: reducer.init failed. field[%s] err[%s]",
+                name.c_str(), err.message().c_str());
+      (void)dst_ctx->close();
+      return err;
+    }
+
+    for (auto &seg : input_segments) {
+      auto src_indexer = seg->get_fts_indexer(name);
+      if (!src_indexer) {
+        auto err = Status::InternalError(
+            "ReduceFts: source segment missing FTS indexer. segment_id=",
+            seg->id(), " field=", name);
+        LOG_ERROR("%s", err.message().c_str());
+        (void)dst_ctx->close();
+        return err;
+      }
+      fts::FtsSegmentStats stats{seg->meta()->min_doc_id(),
+                                 seg->meta()->max_doc_id(),
+                                 seg->meta()->doc_count()};
+      auto feed_ret =
+          reducer.feed(stats, src_indexer->ctx(), src_indexer->postings_cf(),
+                       src_indexer->positions_cf());
+      if (!feed_ret) {
+        auto err = feed_ret.error();
+        LOG_ERROR("ReduceFts: reducer.feed failed. field[%s] err[%s]",
+                  name.c_str(), err.message().c_str());
+        (void)dst_ctx->close();
+        return err;
+      }
+    }
+
+    auto reduce_ret = reducer.reduce(delete_row_id_bitmap);
+    if (!reduce_ret) {
+      auto err = reduce_ret.error();
+      LOG_ERROR("ReduceFts: reducer.reduce failed. field[%s] err[%s]",
+                name.c_str(), err.message().c_str());
+      (void)dst_ctx->close();
+      return err;
+    }
+    (void)reducer.cleanup();
+  }
+
+  s = dst_ctx->flush();
+  if (!s.ok()) {
+    LOG_ERROR("ReduceFts: flush destination FTS RocksDB failed: %s",
+              s.message().c_str());
+    (void)dst_ctx->close();
+    return s;
+  }
+  s = dst_ctx->close();
+  if (!s.ok()) {
+    LOG_ERROR("ReduceFts: close destination FTS RocksDB failed: %s",
+              s.message().c_str());
+    return s;
+  }
+  return Status::OK();
 }
 
 Status SegmentHelper::ExecuteCreateVectorIndexTask(

@@ -21,6 +21,24 @@ if TYPE_CHECKING:
     from importlib.metadata import PackageNotFoundError
 
 
+# Register the wheel-bundled jieba dict dir so `import zvec` alone makes
+# the jieba FTS tokenizer usable. Users can still override via
+# zvec.init(jieba_dict_dir=...), zvec.set_default_jieba_dict_dir(...),
+# ZVEC_JIEBA_DICT_DIR, or per-field FtsIndexParam.extra_params.
+try:
+    from importlib.resources import files as _resource_files
+
+    from _zvec import (
+        get_default_jieba_dict_dir,
+        set_default_jieba_dict_dir,
+    )
+
+    set_default_jieba_dict_dir(str(_resource_files("zvec").joinpath("data/jieba_dict")))
+except Exception:
+    # Custom builds without bundled dict; users must configure explicitly.
+    pass
+
+
 # ==============================
 # Public API — grouped by category
 # ==============================
@@ -56,11 +74,14 @@ from .model.collection import Collection
 from .model.doc import Doc
 
 # —— Query & index parameters ——
+# —— FTS params (C++ binding) ——
 from .model.param import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
     FlatIndexParam,
+    FtsIndexParam,
+    FtsQueryParam,
     HnswIndexParam,
     HnswQueryParam,
     HnswRabitqIndexParam,
@@ -73,7 +94,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Query, VectorQuery
+from .model.param.query import Fts, Query, VectorQuery
 
 # —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
@@ -101,6 +122,8 @@ __all__ = [
     "create_and_open",
     "init",
     "open",
+    "set_default_jieba_dict_dir",
+    "get_default_jieba_dict_dir",
     # Core classes
     "Collection",
     "Doc",
@@ -112,6 +135,9 @@ __all__ = [
     # Parameters
     "Query",
     "VectorQuery",
+    "Fts",
+    "FtsIndexParam",
+    "FtsQueryParam",
     "InvertIndexParam",
     "HnswIndexParam",
     "HnswRabitqIndexParam",

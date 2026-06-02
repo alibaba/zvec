@@ -27,7 +27,7 @@ template <size_t BATCH_SIZE>
 class FlatSearcher : public IndexSearcher {
  public:
   //! Destructor
-  virtual ~FlatSearcher(void) = default;
+  ~FlatSearcher(void) override = default;
 
   //! Initialize Searcher
   int init(const ailego::Params &index_params) override {

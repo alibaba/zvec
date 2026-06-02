@@ -16,7 +16,6 @@
 
 #include <arrow/ipc/reader.h>
 #include <parquet/arrow/reader.h>
-#include <zvec/ailego/buffer/buffer_manager.h>
 #include <zvec/ailego/buffer/parquet_hash_table.h>
 #include "db/common/constants.h"
 

@@ -18,6 +18,7 @@ on:
       - '.github/workflows/_build_wheel_job.yml'
       - '.github/workflows/continuous_bench.yml'
       - '.github/workflows/nightly_coverage.yml'
+      - '.github/workflows/07-linux-riscv-build.yml'
       - '.github/workflows/docker/**'
       - '.github/workflows/scripts/**'
   merge_group:
