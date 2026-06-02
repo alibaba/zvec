@@ -130,13 +130,42 @@ struct DropScalarIndexTask {
   InvertedIndexer::Ptr output_scalar_indexer_;  // nullptr means no scalar index
 };
 
+struct CreateFtsIndexTask {
+  CreateFtsIndexTask(Segment::Ptr input_segment, std::string column,
+                     IndexParams::Ptr index_params)
+      : input_segment_(input_segment),
+        column_(std::move(column)),
+        index_params_(std::move(index_params)) {}
+
+  Segment::Ptr input_segment_;
+  std::string column_;
+  IndexParams::Ptr index_params_;
+
+  // output
+  SegmentMeta::Ptr output_segment_meta_;
+  FtsIndexer::Ptr output_fts_indexer_;
+};
+
+struct DropFtsIndexTask {
+  DropFtsIndexTask(Segment::Ptr input_segment, std::string column)
+      : input_segment_(input_segment), column_(std::move(column)) {}
+
+  Segment::Ptr input_segment_;
+  std::string column_;
+
+  // output
+  SegmentMeta::Ptr output_segment_meta_;
+  FtsIndexer::Ptr output_fts_indexer_;
+};
+
 class SegmentTask {
  public:
   using Ptr = std::shared_ptr<SegmentTask>;
 
   using TaskInfo =
       std::variant<CompactTask, CreateVectorIndexTask, DropVectorIndexTask,
-                   CreateScalarIndexTask, DropScalarIndexTask>;
+                   CreateScalarIndexTask, DropScalarIndexTask,
+                   CreateFtsIndexTask, DropFtsIndexTask>;
 
   static Ptr CreateCompactTask(const CompactTask &task) {
     return std::make_shared<SegmentTask>(task);
@@ -158,6 +187,14 @@ class SegmentTask {
     return std::make_shared<SegmentTask>(task);
   }
 
+  static Ptr CreateCreateFtsIndexTask(const CreateFtsIndexTask &task) {
+    return std::make_shared<SegmentTask>(task);
+  }
+
+  static Ptr CreateDropFtsIndexTask(const DropFtsIndexTask &task) {
+    return std::make_shared<SegmentTask>(task);
+  }
+
  public:
   SegmentTask(const CompactTask &task) : task_info_(task) {}
 
@@ -168,6 +205,10 @@ class SegmentTask {
   SegmentTask(const DropVectorIndexTask &task) : task_info_(task) {}
 
   SegmentTask(const DropScalarIndexTask &task) : task_info_(task) {}
+
+  SegmentTask(const CreateFtsIndexTask &task) : task_info_(task) {}
+
+  SegmentTask(const DropFtsIndexTask &task) : task_info_(task) {}
 
   TaskInfo &task_info() {
     return task_info_;
@@ -251,7 +292,9 @@ class SegmentHelper {
   static Status ReduceFts(const CollectionSchema::Ptr &schema,
                           const std::vector<Segment::Ptr> &input_segments,
                           const std::string &output_segment_path,
-                          const roaring::Roaring &delete_row_id_bitmap);
+                          const roaring::Roaring &delete_row_id_bitmap,
+                          std::function<BlockID()> &block_id_generator,
+                          std::vector<BlockMeta> *output_block_metas);
 
   static arrow::Status FilterRecordBatch(
       const std::shared_ptr<arrow::RecordBatch> &batch,

@@ -46,8 +46,7 @@
 #include "db/common/global_resource.h"
 #include "db/common/typedef.h"
 #include "db/index/column/fts_column/fts_column_indexer.h"
-#include "db/index/column/fts_column/fts_rocksdb_merge.h"
-#include "db/index/column/fts_column/fts_types.h"
+#include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_params.h"
@@ -159,6 +158,15 @@ class SegmentImpl : public Segment,
   InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &field_name) const override;
 
+  Status create_fts_index(const std::string &column,
+                          const IndexParams::Ptr &index_params,
+                          SegmentMeta::Ptr *new_segment_meta,
+                          FtsIndexer::Ptr *output_fts_indexer) override;
+
+  Status drop_fts_index(const std::string &column,
+                        SegmentMeta::Ptr *new_segment_meta,
+                        FtsIndexer::Ptr *output_fts_indexer) override;
+
   fts::FtsColumnIndexerPtr get_fts_indexer(
       const std::string &field_name) const override;
 
@@ -212,6 +220,9 @@ class SegmentImpl : public Segment,
   Status reload_scalar_index(
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const InvertedIndexer::Ptr &scalar_indexer) override;
+
+  Status reload_fts_index(const CollectionSchema &schema,
+                          const FtsIndexer::Ptr &new_fts_indexer) override;
 
   Status dump() override;
 
@@ -336,8 +347,7 @@ class SegmentImpl : public Segment,
   InvertedIndexer::Ptr invert_indexers_;
 
   // FTS index (uses segment-local doc ID)
-  std::shared_ptr<RocksdbContext> fts_ctx_;
-  std::unordered_map<std::string, fts::FtsColumnIndexerPtr> fts_indexers_;
+  FtsIndexer::Ptr fts_indexer_;
   bool has_fts_{false};
 
   // vector index (uses block-local doc ID, each indexer starts from 0)
@@ -4467,7 +4477,7 @@ Result<Segment::Ptr> Segment::Open(const std::string &path,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
-// FTS integration
+// FTS integration (delegated to FtsIndexer)
 ////////////////////////////////////////////////////////////////////////////////////
 
 Status SegmentImpl::open_fts_indexers(bool create) {
@@ -4475,115 +4485,46 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     return Status::OK();
   }
 
-  auto fts_fields = collection_schema_->fts_fields();
-  has_fts_ = true;
-
-  auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_);
-
-  // Collect CF names and per-CF merge operators
-  std::vector<std::string> cf_names;
-  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
-      per_cf_merge_ops;
-
-  for (const auto &field : fts_fields) {
-    const auto &name = field->name();
-    cf_names.push_back(name);                        // postings
-    cf_names.push_back(name + kFtsPositionsSuffix);  // positions
-
-    per_cf_merge_ops[name] = std::make_shared<fts::FtsPostingsMerge>();
-    per_cf_merge_ops[name + kFtsMaxTfSuffix] =
-        std::make_shared<fts::FtsMaxTfMerge>();
-
-    // Side CFs (_tf / _max_tf / _doc_len) are present in mutable segments
-    // that have not yet been dumped.  After dump,
-    // convert_postings_to_bitpacked() inlines their payloads into BitPacked
-    // postings and the CFs are dropped.  When opening (!create), we pass
-    // empty column_names so RocksdbContext::open auto-discovers existing CFs
-    // via ListColumnFamilies — side CFs are included only when present.
-    if (create) {
-      cf_names.push_back(name + kFtsTfSuffix);
-      cf_names.push_back(name + kFtsMaxTfSuffix);
-      cf_names.push_back(name + kFtsDocLenSuffix);
-    }
-  }
-  cf_names.push_back(kFtsStatCfName);
-
-  fts_ctx_ = std::make_shared<RocksdbContext>();
-  Status s;
-
-  bool enable_hash_skiplist = true;
   if (create) {
-    s = fts_ctx_->create(RocksdbContext::Args{
-        fts_path, cf_names, nullptr, per_cf_merge_ops, enable_hash_skiplist});
-  } else {
-    // Auto-discover existing CFs via ListColumnFamilies (empty column_names).
-    // per_cf_merge_ops covers both base and side CFs; entries for CFs that
-    // were dropped after dump are harmlessly ignored.
-    s = fts_ctx_->open(
-        RocksdbContext::Args{
-            fts_path, {}, nullptr, per_cf_merge_ops, enable_hash_skiplist},
-        options_.read_only_);
-  }
-  if (!s.ok()) {
-    LOG_ERROR("open_fts_indexers: failed to %s FTS RocksDB at [%s]: %s",
-              create ? "create" : "open", fts_path.c_str(),
-              s.message().c_str());
-    return s;
-  }
-
-  auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
-
-  for (const auto &field : fts_fields) {
-    const auto &name = field->name();
-    auto *postings_cf = fts_ctx_->get_cf(name);
-    auto *positions_cf = fts_ctx_->get_cf(name + kFtsPositionsSuffix);
-    // Side CF handles are non-null when the segment has not been dumped
-    // (side CFs still exist).  For dumped immutable segments get_cf returns
-    // nullptr and FtsColumnIndexer falls back to BitPacked inline payloads
-    // or tf=1/doc_len=1 defaults.
-    auto *term_freq_cf = fts_ctx_->get_cf(name + kFtsTfSuffix);
-    auto *max_tf_cf = fts_ctx_->get_cf(name + kFtsMaxTfSuffix);
-    auto *doc_len_cf = fts_ctx_->get_cf(name + kFtsDocLenSuffix);
-
-    auto indexer = std::make_shared<fts::FtsColumnIndexer>();
-
-    auto ret = indexer->open(field, fts_ctx_.get(), postings_cf, positions_cf,
-                             term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
-    if (!ret.has_value()) {
-      LOG_ERROR(
-          "open_fts_indexers: FtsColumnIndexer::open failed for field[%s] "
-          "err[%s] postings_cf[%p] positions_cf[%p] stat_cf[%p]",
-          name.c_str(), ret.error().message().c_str(), (void *)postings_cf,
-          (void *)positions_cf, (void *)stat_cf);
-      return Status::InternalError("Failed to open FTS indexer: ", name, " ",
-                                   ret.error().message());
+    auto block_id = allocate_block_id();
+    auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
+    fts_indexer_ =
+        FtsIndexer::CreateAndOpen(fts_path, *collection_schema_, true);
+    if (!fts_indexer_) {
+      return Status::InternalError("open_fts_indexers: create failed at [",
+                                   fts_path, "]");
     }
-
-    fts_indexers_[name] = indexer;
+    segment_meta_->add_persisted_block(
+        BlockMeta{block_id, BlockType::FTS_INDEX, 0, 0, 0, {}});
+  } else {
+    for (const auto &block : segment_meta_->persisted_blocks()) {
+      if (block.type() == BlockType::FTS_INDEX) {
+        auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block.id());
+        fts_indexer_ = FtsIndexer::CreateAndOpen(fts_path, *collection_schema_,
+                                                 false, options_.read_only_);
+        if (!fts_indexer_) {
+          return Status::InternalError("open_fts_indexers: open failed at [",
+                                       fts_path, "]");
+        }
+        break;
+      }
+    }
   }
 
+  has_fts_ = (fts_indexer_ != nullptr);
   return Status::OK();
 }
 
 Status SegmentImpl::flush_fts_indexers() {
-  for (const auto &[name, indexer] : fts_indexers_) {
-    auto ret = indexer->flush();
-    if (!ret.has_value()) {
-      return Status::InternalError("FTS flush failed: ", name, " ",
-                                   ret.error().message());
-    }
+  if (!fts_indexer_) {
+    return Status::OK();
   }
-  auto s = fts_ctx_->flush();
-  CHECK_RETURN_STATUS(s);
-  return Status::OK();
+  return fts_indexer_->flush();
 }
 
 Status SegmentImpl::close_fts_indexers() {
-  fts_indexers_.clear();
-  if (fts_ctx_) {
-    auto s = fts_ctx_->close();
-    fts_ctx_.reset();
-    return s;
+  if (fts_indexer_) {
+    fts_indexer_.reset();
   }
   return Status::OK();
 }
@@ -4593,17 +4534,13 @@ Status SegmentImpl::insert_fts_indexer(Doc &doc) {
     return Status::OK();
   }
   for (const auto &field : collection_schema_->fts_fields()) {
-    auto it = fts_indexers_.find(field->name());
-    if (it == fts_indexers_.end()) {
-      return Status::InternalError("FTS indexer not found: ", field->name());
-    }
     auto value = doc.get<std::string>(field->name());
     if (value.has_value()) {
       auto segment_doc_id = doc_ids_.size();
-      auto ret = it->second->insert(segment_doc_id, value.value());
-      if (!ret.has_value()) {
-        return Status::InternalError("FTS insert failed: ", field->name(), " ",
-                                     ret.error().message());
+      auto s =
+          fts_indexer_->insert(field->name(), segment_doc_id, value.value());
+      if (!s.ok()) {
+        return s;
       }
     }
   }
@@ -4611,49 +4548,18 @@ Status SegmentImpl::insert_fts_indexer(Doc &doc) {
 }
 
 Status SegmentImpl::dump_fts_indexers() {
-  if (!has_fts_) {
+  if (!has_fts_ || !fts_indexer_) {
     return Status::OK();
   }
-
-  // flush all indexers
-  for (const auto &[name, indexer] : fts_indexers_) {
-    auto ret = indexer->flush();
-    if (!ret.has_value()) {
-      return Status::InternalError("FTS flush failed during dump: ", name, " ",
-                                   ret.error().message());
-    }
-  }
-
-  // convert postings to bitpacked format
-  for (const auto &[name, indexer] : fts_indexers_) {
-    auto ret = indexer->convert_postings_to_bitpacked();
-    if (!ret.has_value()) {
-      return Status::InternalError("FTS convert_postings_to_bitpacked failed: ",
-                                   name, " ", ret.error().message());
-    }
-  }
-
-  // reset side CFs and drop $TF/$MAX_TF/$DOC_LEN CFs
-  for (const auto &[name, indexer] : fts_indexers_) {
-    indexer->reset_side_cfs();
-  }
-  for (const auto &field : collection_schema_->fts_fields()) {
-    const auto &name = field->name();
-    fts_ctx_->drop_cf(name + kFtsTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsMaxTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsDocLenSuffix);
-  }
-
-  return Status::OK();
+  return fts_indexer_->seal_all();
 }
 
 fts::FtsColumnIndexerPtr SegmentImpl::get_fts_indexer(
     const std::string &field_name) const {
-  auto it = fts_indexers_.find(field_name);
-  if (it != fts_indexers_.end()) {
-    return it->second;
+  if (!fts_indexer_) {
+    return nullptr;
   }
-  return nullptr;
+  return fts_indexer_->get(field_name);
 }
 
 Result<std::vector<fts::FtsResult>> SegmentImpl::fts_search(
@@ -4672,6 +4578,199 @@ Result<std::vector<fts::FtsResult>> SegmentImpl::fts_search(
   }
 
   return std::move(ret.value());
+}
+
+Status SegmentImpl::create_fts_index(const std::string &column,
+                                     const IndexParams::Ptr &index_params,
+                                     SegmentMeta::Ptr *out_segment_meta,
+                                     FtsIndexer::Ptr *out_fts_indexer) {
+  auto fts_params = std::dynamic_pointer_cast<FtsIndexParams>(index_params);
+  if (!fts_params) {
+    return Status::InvalidArgument("create_fts_index: not FtsIndexParams");
+  }
+
+  auto field = collection_schema_->get_field(column);
+  if (!field) {
+    return Status::NotFound("create_fts_index: field not found: ", column);
+  }
+
+  auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
+  new_segment_meta->remove_fts_index_block();
+
+  auto block_id = allocate_block_id();
+  auto new_fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
+
+  // Build a new schema that includes the new FTS field for the snapshot open.
+  auto new_schema = std::make_shared<CollectionSchema>(*collection_schema_);
+  new_schema->get_field(column)->set_index_params(index_params);
+
+  FtsIndexer::Ptr new_fts_indexer;
+  if (fts_indexer_) {
+    // Snapshot existing fts DB, then open the copy with new schema.
+    auto s = fts_indexer_->create_snapshot(new_fts_path);
+    CHECK_RETURN_STATUS(s);
+
+    new_fts_indexer =
+        FtsIndexer::CreateAndOpen(new_fts_path, *new_schema, false);
+  } else {
+    // No existing fts DB — create a fresh one.
+    new_fts_indexer =
+        FtsIndexer::CreateAndOpen(new_fts_path, *new_schema, true);
+  }
+  if (!new_fts_indexer) {
+    FileHelper::RemoveDirectory(new_fts_path);
+    return Status::InternalError("create_fts_index: failed to open snapshot");
+  }
+
+  // If the snapshot didn't already contain this field's CFs, create them.
+  if (!new_fts_indexer->has_field(column)) {
+    auto new_field_schema = std::make_shared<FieldSchema>(
+        column, field->data_type(), field->nullable(), index_params);
+    auto s = new_fts_indexer->create_field_indexer(*new_field_schema);
+    if (!s.ok()) {
+      FileHelper::RemoveDirectory(new_fts_path);
+      return s;
+    }
+  }
+
+  // Scan forward store and replay all existing documents.
+  auto reader = scan({column});
+  if (reader) {
+    uint32_t seg_doc_id = 0;
+    while (true) {
+      auto batch = reader->Next();
+      if (!batch.ok()) {
+        FileHelper::RemoveDirectory(new_fts_path);
+        return Status::InternalError("create_fts_index: scan failed: ",
+                                     batch.status().message());
+      }
+      auto batch_value = batch.ValueOrDie();
+      if (!batch_value) {
+        break;
+      }
+      auto col_idx = batch_value->schema()->GetFieldIndex(column);
+      if (col_idx < 0) {
+        seg_doc_id += batch_value->num_rows();
+        continue;
+      }
+      auto string_array = std::static_pointer_cast<arrow::StringArray>(
+          batch_value->column(col_idx));
+      for (int64_t i = 0; i < string_array->length(); ++i) {
+        if (!string_array->IsNull(i)) {
+          auto s = new_fts_indexer->insert(column, seg_doc_id,
+                                           string_array->GetString(i));
+          if (!s.ok()) {
+            FileHelper::RemoveDirectory(new_fts_path);
+            return s;
+          }
+        }
+        seg_doc_id++;
+      }
+    }
+  }
+
+  // Seal the new field (flush + convert to BitPacked + drop side CFs).
+  auto s = new_fts_indexer->seal(column);
+  if (!s.ok()) {
+    FileHelper::RemoveDirectory(new_fts_path);
+    return s;
+  }
+
+  s = new_fts_indexer->flush();
+  if (!s.ok()) {
+    FileHelper::RemoveDirectory(new_fts_path);
+    return s;
+  }
+
+  // Register the new block in segment meta.
+  BlockMeta block;
+  block.set_id(block_id);
+  block.set_type(BlockType::FTS_INDEX);
+  new_segment_meta->add_persisted_block(block);
+
+  *out_segment_meta = new_segment_meta;
+  *out_fts_indexer = new_fts_indexer;
+
+  return Status::OK();
+}
+
+Status SegmentImpl::drop_fts_index(const std::string &column,
+                                   SegmentMeta::Ptr *out_segment_meta,
+                                   FtsIndexer::Ptr *out_fts_indexer) {
+  auto field = collection_schema_->get_field(column);
+  if (!field) {
+    return Status::NotFound("drop_fts_index: field not found: ", column);
+  }
+
+  auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
+  new_segment_meta->remove_fts_index_block();
+
+  // Build a new schema without the FTS index on this column.
+  auto new_schema = std::make_shared<CollectionSchema>(*collection_schema_);
+  new_schema->get_field(column)->set_index_params(nullptr);
+
+  if (!fts_indexer_) {
+    *out_segment_meta = new_segment_meta;
+    *out_fts_indexer = nullptr;
+    return Status::OK();
+  }
+
+  // Check if other FTS fields remain after removal.
+  bool has_other_fts = new_schema->has_fts_field();
+
+  if (has_other_fts) {
+    auto block_id = allocate_block_id();
+    auto new_fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
+
+    // Snapshot and reopen without this field.
+    auto s = fts_indexer_->create_snapshot(new_fts_path);
+    CHECK_RETURN_STATUS(s);
+
+    auto new_fts_indexer =
+        FtsIndexer::CreateAndOpen(new_fts_path, *new_schema, false);
+    if (!new_fts_indexer) {
+      FileHelper::RemoveDirectory(new_fts_path);
+      return Status::InternalError("drop_fts_index: failed to open snapshot");
+    }
+
+    s = new_fts_indexer->remove_field_indexer(column);
+    CHECK_RETURN_STATUS(s);
+
+    s = new_fts_indexer->flush();
+    CHECK_RETURN_STATUS(s);
+
+    BlockMeta block;
+    block.set_id(block_id);
+    block.set_type(BlockType::FTS_INDEX);
+    new_segment_meta->add_persisted_block(block);
+
+    *out_fts_indexer = new_fts_indexer;
+  } else {
+    // Last FTS field removed — no new indexer.
+    *out_fts_indexer = nullptr;
+  }
+
+  *out_segment_meta = new_segment_meta;
+  return Status::OK();
+}
+
+Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
+                                     const FtsIndexer::Ptr &new_fts_indexer) {
+  collection_schema_ = std::make_shared<CollectionSchema>(schema);
+  segment_meta_ = std::make_shared<SegmentMeta>(*segment_meta_);
+
+  if (fts_indexer_) {
+    auto old_dir = fts_indexer_->working_dir();
+    fts_indexer_ = new_fts_indexer;
+    FileHelper::RemoveDirectory(old_dir);
+  } else {
+    fts_indexer_ = new_fts_indexer;
+  }
+
+  has_fts_ = (fts_indexer_ != nullptr);
+  fresh_persist_block_offset();
+
+  return Status::OK();
 }
 
 }  // namespace zvec

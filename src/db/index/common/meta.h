@@ -246,6 +246,16 @@ class SegmentMeta {
     persisted_blocks_ = new_persisted_blocks;
   }
 
+  void remove_fts_index_block() {
+    std::vector<BlockMeta> new_persisted_blocks;
+    for (auto &b : persisted_blocks_) {
+      if (b.type() != BlockType::FTS_INDEX) {
+        new_persisted_blocks.push_back(b);
+      }
+    }
+    persisted_blocks_ = new_persisted_blocks;
+  }
+
   void set_writing_forward_block(const BlockMeta &writing_forward_block) {
     writing_forward_block_ = writing_forward_block;
   }

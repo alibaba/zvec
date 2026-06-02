@@ -125,6 +125,7 @@ enum BlockType : uint32_t {
   SCALAR_INDEX = 2,
   VECTOR_INDEX = 3,
   VECTOR_INDEX_QUANTIZE = 4,
+  FTS_INDEX = 5,
 };
 
 

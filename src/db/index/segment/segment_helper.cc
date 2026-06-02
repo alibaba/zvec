@@ -66,6 +66,16 @@ Status SegmentHelper::Execute(SegmentTask::Ptr &task) {
   } else if (std::holds_alternative<DropScalarIndexTask>(task_info)) {
     auto &drop_index_task = std::get<DropScalarIndexTask>(task_info);
     s = ExecuteDropScalarIndexTask(drop_index_task);
+  } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
+    auto &fts_task = std::get<CreateFtsIndexTask>(task_info);
+    s = fts_task.input_segment_->create_fts_index(
+        fts_task.column_, fts_task.index_params_,
+        &fts_task.output_segment_meta_, &fts_task.output_fts_indexer_);
+  } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
+    auto &fts_task = std::get<DropFtsIndexTask>(task_info);
+    s = fts_task.input_segment_->drop_fts_index(fts_task.column_,
+                                                &fts_task.output_segment_meta_,
+                                                &fts_task.output_fts_indexer_);
   } else {
     return Status::InvalidArgument("Unknown task type");
   }
@@ -146,7 +156,7 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
   LOG_INFO("Compacted vector index");
 
   s = ReduceFts(schema, input_segments, output_segment_path,
-                delete_row_id_bitmap);
+                delete_row_id_bitmap, block_id_generator, &block_metas);
   CHECK_RETURN_STATUS(s);
 
   LOG_INFO("Compacted fts index");
@@ -973,7 +983,9 @@ arrow::Status SegmentHelper::FilterRecordBatch(
 Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
                                 const std::vector<Segment::Ptr> &input_segments,
                                 const std::string &output_segment_path,
-                                const roaring::Roaring &delete_row_id_bitmap) {
+                                const roaring::Roaring &delete_row_id_bitmap,
+                                std::function<BlockID()> &block_id_generator,
+                                std::vector<BlockMeta> *output_block_metas) {
   if (!schema->has_fts_field()) {
     return Status::OK();
   }
@@ -983,12 +995,15 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
 
   auto fts_fields = schema->fts_fields();
 
+  auto fts_block_id = block_id_generator();
+
   // Build the destination FTS RocksDB with the post-dump CF layout:
   // postings + positions per field, plus the shared stat CF.  Side CFs
   // ($TF/$MAX_TF/$DOC_LEN) are skipped — the reducer writes BitPacked
   // directly, matching the immutable-segment shape after
   // convert_postings_to_bitpacked().
-  auto dst_fts_path = FileHelper::MakeFtsIndexPath(output_segment_path);
+  auto dst_fts_path =
+      FileHelper::MakeFtsIndexPath(output_segment_path, fts_block_id);
   std::vector<std::string> cf_names;
   std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
       per_cf_merge_ops;
@@ -1078,6 +1093,12 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
               s.message().c_str());
     return s;
   }
+
+  BlockMeta fts_block;
+  fts_block.set_id(fts_block_id);
+  fts_block.set_type(BlockType::FTS_INDEX);
+  output_block_metas->push_back(fts_block);
+
   return Status::OK();
 }
 
