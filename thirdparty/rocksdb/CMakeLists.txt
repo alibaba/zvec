@@ -19,6 +19,11 @@ elseif(IOS)
         set(HAS_ARMV8_CRC ON CACHE INTERNAL "Force ARM CRC for iOS arm64")
     endif()
 endif()
+if(MSVC)
+    # Replace /Zi with /Z7 for sccache compatibility (/Z7 embeds debug info in .obj, no .pdb).
+    set(ROCKSDB_WINDOWS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb.windows.patch)
+    apply_patch_once("rocksdb_windows_fix" "${ROCKSDB_SRC_DIR}" "${ROCKSDB_WINDOWS_PATCH}")
+endif()
 
 set(ROCKSDB_BUILD_SHARED OFF CACHE BOOL "Disable install in rocksdb" FORCE)
 

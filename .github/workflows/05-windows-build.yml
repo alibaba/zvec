@@ -20,6 +20,9 @@ jobs:
           - platform: windows-2022
           - platform: windows-2025
 
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+
     steps:
       - name: Show env info
         run: |
@@ -37,6 +40,9 @@ jobs:
         run: |
           git submodule foreach --recursive 'git reset --hard && git clean -ffdx'
         shell: powershell
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -76,7 +82,9 @@ jobs:
           $env:CMAKE_BUILD_PARALLEL_LEVEL = "$env:NPROC"
           python -m pip install -v . `
             --no-build-isolation `
-            --config-settings='cmake.define.BUILD_TOOLS=ON'
+            --config-settings='cmake.define.BUILD_TOOLS=ON' `
+            --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=sccache' `
+            --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=sccache'
         shell: powershell
 
       - name: Run C++ Tests
@@ -96,7 +104,9 @@ jobs:
           cd "$env:GITHUB_WORKSPACE\examples\c++"
           mkdir build
           cd build
-          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           cmake --build . --config Release --parallel $env:NPROC
 
           # Copy zvec.dll next to the example executables so Windows can find it.
@@ -125,4 +135,9 @@ jobs:
           .\db-example.exe
           .\core-example.exe
           .\ailego-example.exe
+        shell: powershell
+
+      - name: Show sccache statistics
+        if: always()
+        run: sccache --show-stats
         shell: powershell
