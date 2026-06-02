@@ -715,20 +715,10 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      // For RABITQ: the target HNSW_RABITQ index's add_with_id_impl expects
-      // raw fp32 input (its internal reformer handles the quantization).
-      // Using get_quant_vector_indexer would return existing HNSW_RABITQ
-      // indexers whose stored data is already rabitq-encoded; feeding
-      // that encoded data through the target reformer again produces
-      // garbage.  Use the flat (raw fp32) vector indexers instead.
-      auto quant_merge_sources =
-          (vector_index_params->quantize_type() == QuantizeType::RABITQ)
-              ? collect_merge_indexers(&Segment::get_vector_indexer)
-              : collect_merge_indexers(&Segment::get_quant_vector_indexer);
-
-      s = MergeWithOptionalReuse(vector_quan_index_path, *field_for_quantize,
-                                 quant_merge_sources, filter, concurrency,
-                                 nullptr);
+      s = MergeWithOptionalReuse(
+          vector_quan_index_path, *field_for_quantize,
+          collect_merge_indexers(&Segment::get_quant_vector_indexer), filter,
+          concurrency, nullptr);
       CHECK_RETURN_STATUS(s);
 
       s = vector_indexer->Close();
