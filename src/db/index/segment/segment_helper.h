@@ -219,11 +219,10 @@ class SegmentHelper {
 
   // Merges `source_indexers` into a new VectorColumnIndexer at
   // `output_index_path`. When the first indexer is eligible for reuse (see
-  // CanReuseFirstIndexer in segment_helper.cc), its file is copied to the
-  // output path and opened in-place as the merge base; otherwise a fresh
-  // index is built from all source indexers. If `merged_indexer` is non-null,
-  // it receives the opened indexer (caller owns Close()); otherwise the
-  // indexer is closed before returning.
+  // CanReuseFirstIndexer), its file is copied to the
+  // output path and opened in-place as the merge base. If `merged_indexer` is
+  // non-null, it receives the opened indexer (caller owns Close()); otherwise
+  // the indexer is closed before returning.
   static Status MergeWithOptionalReuse(
       const std::string &output_index_path, const FieldSchema &index_field,
       std::vector<VectorColumnIndexer::Ptr> source_indexers,
