@@ -740,9 +740,9 @@ Status SegmentHelper::ReduceVectorIndex(
 namespace {
 
 // Only the first indexer's file is reused as the merge base; the remaining
-// indexers are merged in via Merge(). Reuse is restricted to streaming indexes
-// (HNSW family, FLAT). Builder-rebuild indexes (IVF, VAMANA) fall back to the
-// full-rebuild merge.
+// indexers are merged in via Merge(). Reuse is restricted to streaming
+// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ
+// fall back to the full-rebuild merge.
 bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
                           const FieldSchema &output_field,
                           const IndexFilter::Ptr &filter) {
@@ -750,7 +750,6 @@ bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
     return false;
   }
   if (output_field.index_type() != IndexType::HNSW &&
-      output_field.index_type() != IndexType::HNSW_RABITQ &&
       output_field.index_type() != IndexType::FLAT) {
     return false;
   }
