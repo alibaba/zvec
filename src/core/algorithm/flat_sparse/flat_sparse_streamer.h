@@ -31,7 +31,7 @@ class FlatSparseStreamer : public IndexStreamer {
   using ContextPointer = IndexStreamer::Context::Pointer;
 
   FlatSparseStreamer(void);
-  virtual ~FlatSparseStreamer(void);
+  ~FlatSparseStreamer(void) override;
 
   FlatSparseStreamer(const FlatSparseStreamer &streamer) = delete;
   FlatSparseStreamer &operator=(const FlatSparseStreamer &streamer) = delete;

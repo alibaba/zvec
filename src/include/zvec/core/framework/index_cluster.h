@@ -233,7 +233,7 @@ struct IndexCluster : public IndexModule {
   typedef std::vector<Centroid> CentroidList;
 
   //! Destructor
-  virtual ~IndexCluster(void) {}
+  ~IndexCluster(void) override {}
 
   //! Deserialize centroids from bundle
   static int Deserialize(const IndexMeta &meta, IndexBundle::Pointer bundle,

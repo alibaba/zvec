@@ -165,7 +165,7 @@ class IndexConverter : public IndexModule {
   };
 
   //! Destructor
-  virtual ~IndexConverter(void) {}
+  ~IndexConverter(void) override {}
 
   //! Initialize Converter
   virtual int init(const IndexMeta &meta, const ailego::Params &params) = 0;

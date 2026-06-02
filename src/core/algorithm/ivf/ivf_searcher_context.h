@@ -30,25 +30,25 @@ class IVFSearcherContext : public IndexSearcher::Context {
 
  public:
   //! Set topk of search result
-  virtual void set_topk(uint32_t k) override {
+  void set_topk(uint32_t k) override {
     topk_ = k;
     result_heap_.limit(topk_);
     result_heap_.set_threshold(this->threshold());
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result(void) const override {
     return results_[0];
   }
 
   //! Retrieve search result with index
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     ailego_assert_with(results_.size() > idx, "invalid index");
     return results_[idx];
   }
 
   //! Retrieve mutable result with index
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
@@ -58,7 +58,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Update the parameters of context
-  virtual int update(const ailego::Params &params) override {
+  int update(const ailego::Params &params) override {
     params.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
                &bruteforce_threshold_);
     params.get(PARAM_IVF_SEARCHER_SCAN_RATIO, &scan_ratio_);
@@ -79,7 +79,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   //! Retrieve magic number
-  virtual uint32_t magic(void) const override {
+  uint32_t magic(void) const override {
     return magic_;
   }
 

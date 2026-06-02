@@ -44,28 +44,32 @@ enum class VamanaStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
 class VamanaStreamerEntity : public VamanaEntity {
  public:
   // Virtual interface implementation
-  virtual int cleanup() override;
-  virtual const VamanaEntity::Pointer clone() const override;
-  virtual key_t get_key(node_id_t id) const override;
-  virtual const void *get_vector(node_id_t id) const override;
-  virtual int get_vector(const node_id_t id,
-                         IndexStorage::MemoryBlock &block) const override;
-  virtual int get_vector(const node_id_t *ids, uint32_t count,
-                         const void **vecs) const override;
-  virtual int get_vector(
+  int cleanup() override;
+  const VamanaEntity::Pointer clone() const override;
+  key_t get_key(node_id_t id) const override;
+  const void *get_vector(node_id_t id) const override;
+  int get_vector(const node_id_t id,
+                 IndexStorage::MemoryBlock &block) const override;
+  int get_vector(const node_id_t *ids, uint32_t count,
+                 const void **vecs) const override;
+  int get_vector(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override;
-  virtual const Neighbors get_neighbors(node_id_t id) const override;
+  const Neighbors get_neighbors(node_id_t id) const override;
 
-  virtual int add_vector(key_t key, const void *vec, node_id_t *id) override;
-  virtual int add_vector_with_id(node_id_t id, const void *vec) override;
-  virtual int update_neighbors(
+  int add_vector(key_t key, const void *vec, node_id_t *id) override;
+  int add_vector_with_id(node_id_t id, const void *vec) override;
+  int update_neighbors(
       node_id_t id,
       const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
-  virtual void add_neighbor(node_id_t id, uint32_t size,
-                            node_id_t neighbor_id) override;
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
-  virtual void update_entry_point(node_id_t ep) override;
+  void add_neighbor(node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
+  void update_entry_point(node_id_t ep) override;
+
+  // Calculate medoid: find the data point closest to the centroid
+  // of all vectors (DiskANN standard entry point selection).
+  node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type) override;
 
   // --- Neighbor distance storage ---
   int ensure_dist_storage() override;
@@ -90,13 +94,13 @@ class VamanaStreamerEntity : public VamanaEntity {
   VamanaStreamerEntity(IndexStreamer::Stats &stats);
   ~VamanaStreamerEntity();
 
-  virtual const void *get_vector_by_key(key_t key) const override {
+  const void *get_vector_by_key(key_t key) const override {
     auto id = get_id(key);
     return id == kInvalidNodeId ? nullptr : get_vector(id);
   }
 
-  virtual int get_vector_by_key(
-      const key_t key, IndexStorage::MemoryBlock &block) const override {
+  int get_vector_by_key(const key_t key,
+                        IndexStorage::MemoryBlock &block) const override {
     auto id = get_id(key);
     if (id != kInvalidNodeId) {
       return get_vector(id, block);
@@ -182,11 +186,16 @@ class VamanaStreamerEntity : public VamanaEntity {
   }
 
   //! Lazy chunk synchronization: fetches chunks from broker when needed.
-  //! Each clone entity has its own node_chunks_ vector, so concurrent
-  //! search threads do not race with the writer's emplace_back.
+  //! Protected by node_chunks_mutex_ to synchronize with add_vector's
+  //! emplace_back during concurrent build.
   void sync_chunks(ChunkBroker::CHUNK_TYPE type, size_t idx,
                    std::vector<Chunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(node_chunks_mutex_);
+    // Double-check after acquiring lock
+    if (idx < chunks->size()) {
       return;
     }
     for (size_t i = chunks->size(); i <= idx; ++i) {
@@ -307,6 +316,9 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   ChunkBroker::Pointer broker_;
 
+  //! Protects node_chunks_ against concurrent emplace_back from add_vector
+  //! (writer) and sync_chunks from greedy_search (reader threads during build).
+  mutable std::mutex node_chunks_mutex_{};
   mutable std::vector<Chunk::Pointer> node_chunks_{};
 
  private:
@@ -504,6 +516,17 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
   }
 
   void sync_node_chunk_bases(uint32_t chunk_idx) const {
+    std::lock_guard<std::mutex> lock(chunk_bases_mutex_);
+    // Double-check after acquiring lock to avoid redundant sync
+    if (chunk_idx < node_chunk_bases_.size()) {
+      return;
+    }
+    // Pre-reserve to match node_chunks_ capacity so that subsequent
+    // push_back never triggers reallocation — the lock-free fast path in
+    // get_node_chunk_base reads existing elements without holding the mutex.
+    if (node_chunk_bases_.capacity() < node_chunks_.capacity()) {
+      node_chunk_bases_.reserve(node_chunks_.capacity());
+    }
     sync_node_chunks(chunk_idx);
     const auto &chunks = node_chunks_;
     for (size_t i = node_chunk_bases_.size(); i <= chunk_idx; ++i) {
@@ -513,6 +536,7 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     }
   }
 
+  mutable std::mutex chunk_bases_mutex_{};
   mutable std::vector<const char *> node_chunk_bases_{};
 };
 

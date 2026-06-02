@@ -81,32 +81,32 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
     }
 
     //! Retrieve sparse count
-    virtual uint32_t sparse_count() const override {
+    uint32_t sparse_count() const override {
       return sparse_count_;
     }
 
     //! Retrieve sparse indices
-    virtual const uint32_t *sparse_indices() const override {
+    const uint32_t *sparse_indices() const override {
       return reinterpret_cast<const uint32_t *>(sparse_indices_buffer_.data());
     }
 
     //! Retrieve sparse data
-    virtual const void *sparse_data() const override {
+    const void *sparse_data() const override {
       return reinterpret_cast<const void *>(sparse_data_buffer_.data());
     }
 
     //! Test if the iterator is valid
-    virtual bool is_valid(void) const override {
+    bool is_valid(void) const override {
       return cur_id_ < entity_->doc_cnt() && valid_;
     }
 
     //! Retrieve primary key
-    virtual uint64_t key(void) const override {
+    uint64_t key(void) const override {
       return entity_->get_key(cur_id_);
     }
 
     //! Next iterator
-    virtual void next(void) override {
+    void next(void) override {
       cur_id_ = get_next_valid_id(cur_id_ + 1);
 
       if (cur_id_ < entity_->doc_cnt()) {

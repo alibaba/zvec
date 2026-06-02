@@ -26,7 +26,7 @@ class HnswSparseSearcher : public IndexSearcher {
 
  public:
   HnswSparseSearcher(void);
-  virtual ~HnswSparseSearcher(void);
+  ~HnswSparseSearcher(void) override;
 
   HnswSparseSearcher(const HnswSparseSearcher &) = delete;
   HnswSparseSearcher &operator=(const HnswSparseSearcher &) = delete;
