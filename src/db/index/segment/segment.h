@@ -143,9 +143,8 @@ class Segment {
                              &output_fields = std::nullopt,
                          bool include_vector = true) = 0;
 
-  // for sqlengine
   virtual TablePtr fetch(const std::vector<std::string> &columns,
-                         const std::vector<int> &indices) const = 0;
+                         const std::vector<int> &segment_doc_ids) const = 0;
 
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
                              int segment_doc_id) const = 0;
@@ -182,6 +181,8 @@ class Segment {
       const std::string &field_name, const fts::FtsAstNode &ast,
       const fts::FtsQueryParams &params) = 0;
 
+  // Returned filter is evaluated with segment-local row IDs. It translates the
+  // local row ID to a global doc ID before consulting the delete store.
   virtual const IndexFilter::Ptr get_filter() = 0;
 
   // for others

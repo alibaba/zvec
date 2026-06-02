@@ -220,7 +220,7 @@ class SegmentImpl : public Segment,
   Status destroy() override;
 
   TablePtr fetch(const std::vector<std::string> &columns,
-                 const std::vector<int> &indices) const override;
+                 const std::vector<int> &segment_doc_ids) const override;
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
                      int segment_doc_id) const override;
@@ -318,12 +318,12 @@ class SegmentImpl : public Segment,
 
   TablePtr fetch_normal(const std::vector<std::string> &columns,
                         const std::shared_ptr<arrow::Schema> &result_schema,
-                        const std::vector<int> &indices) const;
+                        const std::vector<int> &segment_doc_ids) const;
 
   // For performance tuning
   TablePtr fetch_perf(const std::vector<std::string> &columns,
                       const std::shared_ptr<arrow::Schema> &result_schema,
-                      const std::vector<int> &indices) const;
+                      const std::vector<int> &segment_doc_ids) const;
 
   void fresh_persist_chunked_array();
 
@@ -2331,7 +2331,7 @@ bool SegmentImpl::validate(const std::vector<std::string> &columns) const {
 TablePtr SegmentImpl::fetch_perf(
     const std::vector<std::string> &columns,
     const std::shared_ptr<arrow::Schema> &result_schema,
-    const std::vector<int> &indices) const {
+    const std::vector<int> &segment_doc_ids) const {
   std::vector<std::shared_ptr<arrow::ChunkedArray>> chunk_arrays;
   chunk_arrays.resize(columns.size());
 
@@ -2351,16 +2351,16 @@ TablePtr SegmentImpl::fetch_perf(
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
   std::vector<std::pair<int64_t, int64_t>> indices_in_table;
-  for (const auto &target_index : indices) {
+  for (const auto segment_doc_id : segment_doc_ids) {
     auto it = std::upper_bound(chunk_offsets_.begin(), chunk_offsets_.end(),
-                               target_index);
+                               segment_doc_id);
     if (it == chunk_offsets_.begin()) {
-      LOG_ERROR("Target index %d is out of bounds", target_index);
+      LOG_ERROR("Segment doc ID %d is out of bounds", segment_doc_id);
       return nullptr;
     }
     int chunk_index =
         static_cast<int>(std::distance(chunk_offsets_.begin(), it) - 1);
-    int64_t index_in_chunk = target_index - chunk_offsets_[chunk_index];
+    int64_t index_in_chunk = segment_doc_id - chunk_offsets_[chunk_index];
     indices_in_table.emplace_back(chunk_index, index_in_chunk);
   }
 
@@ -2381,8 +2381,8 @@ TablePtr SegmentImpl::fetch_perf(
 
   if (need_segment_row_id) {
     std::vector<uint64_t> values;
-    values.reserve(indices.size());
-    for (const auto segment_doc_id : indices) {
+    values.reserve(segment_doc_ids.size());
+    for (const auto segment_doc_id : segment_doc_ids) {
       values.push_back(segment_doc_id);
     }
 
@@ -2402,13 +2402,13 @@ TablePtr SegmentImpl::fetch_perf(
   }
 
   return arrow::Table::Make(result_schema, result_arrays,
-                            static_cast<int64_t>(indices.size()));
+                            static_cast<int64_t>(segment_doc_ids.size()));
 }
 
 TablePtr SegmentImpl::fetch_normal(
     const std::vector<std::string> &columns,
     const std::shared_ptr<arrow::Schema> &result_schema,
-    const std::vector<int> &indices) const {
+    const std::vector<int> &segment_doc_ids) const {
   // Store scalars per column: column_index -> (output_row, scalar)
   std::vector<std::vector<std::pair<int, std::shared_ptr<arrow::Scalar>>>>
       column_results(columns.size());
@@ -2430,9 +2430,9 @@ TablePtr SegmentImpl::fetch_normal(
 
   // Phase 1: Map each (segment_doc_id, column) to its block and block-local
   // row.
-  for (int output_row = 0; output_row < static_cast<int>(indices.size());
-       ++output_row) {
-    int segment_doc_id = indices[output_row];
+  for (int output_row = 0;
+       output_row < static_cast<int>(segment_doc_ids.size()); ++output_row) {
+    int segment_doc_id = segment_doc_ids[output_row];
 
     for (size_t col_index = 0; col_index < columns.size(); ++col_index) {
       const std::string &col = columns[col_index];
@@ -2553,7 +2553,7 @@ TablePtr SegmentImpl::fetch_normal(
     std::sort(result_vec.begin(), result_vec.end());
 
     std::vector<std::shared_ptr<arrow::Scalar>> ordered_scalars;
-    for (int i = 0; i < static_cast<int>(indices.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(segment_doc_ids.size()); ++i) {
       auto it = std::find_if(
           result_vec.begin(), result_vec.end(),
           [i](const std::pair<int, std::shared_ptr<arrow::Scalar>> &p) {
@@ -2609,11 +2609,11 @@ TablePtr SegmentImpl::fetch_normal(
   }
 
   return arrow::Table::Make(result_schema, result_columns,
-                            static_cast<int64_t>(indices.size()));
+                            static_cast<int64_t>(segment_doc_ids.size()));
 }
 
 TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
-                            const std::vector<int> &indices) const {
+                            const std::vector<int> &segment_doc_ids) const {
   if (!validate(columns)) {
     return nullptr;
   }
@@ -2644,8 +2644,8 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 
   auto result_schema = std::make_shared<arrow::Schema>(fields);
 
-  // Early return for empty indices
-  if (indices.empty()) {
+  // Early return for empty segment doc IDs.
+  if (segment_doc_ids.empty()) {
     arrow::ArrayVector empty_arrays;
     for (const auto &field : fields) {
       empty_arrays.push_back(arrow::MakeEmptyArray(field->type()).ValueOrDie());
@@ -2659,9 +2659,9 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
   }
 
   if (use_fetch_perf_) {
-    return fetch_perf(columns, result_schema, indices);
+    return fetch_perf(columns, result_schema, segment_doc_ids);
   }
-  return fetch_normal(columns, result_schema, indices);
+  return fetch_normal(columns, result_schema, segment_doc_ids);
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
