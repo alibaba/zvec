@@ -19,6 +19,7 @@
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/db/config.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
 #if RABITQ_SUPPORTED
@@ -778,6 +779,8 @@ Status SegmentHelper::MergeWithOptionalReuse(
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
+    merge_options.write_concurrency =
+        GlobalConfig::Instance().optimize_thread_count();
   } else {
     merge_options.write_concurrency = concurrency;
   }
