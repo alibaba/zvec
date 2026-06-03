@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include "zvec/ailego/internal/platform.h"
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -83,7 +84,7 @@ void BlockHeap::push_block(const float *distances, const uint32_t *nodes,
         continue;
       }
       while (bitmask) {
-        int tz = __builtin_ctz(bitmask);
+        int tz = ailego_ctz32(bitmask);
         tmp_.emplace_back(nodes[i + tz], distances[i + tz]);
         bitmask &= bitmask - 1;
       }
