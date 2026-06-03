@@ -125,8 +125,8 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 template <typename EntityType, typename HeapType>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VisitFilter &visit, VamanaDistCalculator &dc,
-                        uint32_t topk, uint32_t ef,
-                        node_id_t entry_point, uint32_t prefetch_lines) {
+                        uint32_t topk, uint32_t ef, node_id_t entry_point,
+                        uint32_t prefetch_lines) {
   const uint32_t max_deg = entity.max_degree();
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
@@ -361,13 +361,13 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
 
       if (avx2_ok) {
         auto &bpool = ctx->block_pool();
-        fast_greedy_search(entity, bpool, visit, dc, topk_v, ef_v,
-                           entry_point, prefetch_lines);
+        fast_greedy_search(entity, bpool, visit, dc, topk_v, ef_v, entry_point,
+                           prefetch_lines);
         copy_pool_to_topk(bpool, topk_heap);
       } else {
         auto &lpool = ctx->pool();
-        fast_greedy_search(entity, lpool, visit, dc, topk_v, ef_v,
-                           entry_point, prefetch_lines);
+        fast_greedy_search(entity, lpool, visit, dc, topk_v, ef_v, entry_point,
+                           prefetch_lines);
         copy_pool_to_topk(lpool, topk_heap);
       }
     } else {

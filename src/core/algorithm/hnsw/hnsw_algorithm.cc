@@ -190,9 +190,8 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 template <typename EntityType, typename HeapType>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
                            VisitFilter &visit, HnswDistCalculator &dc,
-                           uint32_t topk, uint32_t ef,
-                           node_id_t entry_point, dist_t entry_dist,
-                           uint32_t prefetch_lines) {
+                           uint32_t topk, uint32_t ef, node_id_t entry_point,
+                           dist_t entry_dist, uint32_t prefetch_lines) {
   const uint32_t max_deg = entity.max_degree(0);  // level 0 only
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
@@ -555,9 +554,9 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
         }
 
         candidates.emplace(node, cur_dist);
-      }  // end for
-    }  // end while
-  }  // end if
+      }
+    }
+  }
 }
 
 template <typename EntityType>
