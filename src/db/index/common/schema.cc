@@ -229,7 +229,7 @@ Status FieldSchema::validate() const {
         return Status::InvalidArgument(
             "schema validate failed: FTS index only supports STRING data type, "
             "but field[",
-            name_, "] has data type ", DataTypeCodeBook::AsString(data_type_));
+            name_, "]'s data_type is ", DataTypeCodeBook::AsString(data_type_));
       }
     }
   }
