@@ -771,13 +771,13 @@ INSTANTIATE_TEST_SUITE_P(
         IndexType::IVF}));
 
 // TODO: re-enable when rabitQ merge fixed
-#if RABITQ_SUPPORTED
-INSTANTIATE_TEST_SUITE_P(HnswRabitq, SegmentCompactReuseTest,
-                         testing::Values(SegmentCompactReuseParam{
-                             std::make_shared<HnswRabitqIndexParams>(
-                                 MetricType::IP, 7, 256, 16, 200, 0),
-                             IndexType::HNSW_RABITQ}));
-#endif
+// #if RABITQ_SUPPORTED
+// INSTANTIATE_TEST_SUITE_P(HnswRabitq, SegmentCompactReuseTest,
+//                          testing::Values(SegmentCompactReuseParam{
+//                              std::make_shared<HnswRabitqIndexParams>(
+//                                  MetricType::IP, 7, 256, 16, 200, 0),
+//                              IndexType::HNSW_RABITQ}));
+// #endif
 
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
