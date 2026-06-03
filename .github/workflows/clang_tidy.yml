@@ -27,9 +27,13 @@ jobs:
             **/*.cc
             **/*.cpp
             **/*.cxx
+            **/*.h
+            **/*.hpp
           files_ignore: |
             thirdparty/**
             build/**
+            src/db/sqlengine/antlr/gen/**
+            src/db/index/column/fts_column/gen/**
 
       - name: No C/C++ files changed - skip
         if: steps.changed_files.outputs.any_changed != 'true'
