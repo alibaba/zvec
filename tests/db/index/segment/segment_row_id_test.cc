@@ -176,6 +176,43 @@ TEST_P(SegmentTest, ScanLocalRowIDIsSegmentLocal) {
 }
 
 
+TEST_P(SegmentTest, ScanOnlyLocalRowIDDoesNotExposeGlobalDocID) {
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path_, *schema_, 0, 100, id_map_, delete_store_, version_manager_,
+      options_, 100, 10);
+  ASSERT_TRUE(segment != nullptr);
+
+  auto reader = segment->scan({LOCAL_ROW_ID});
+  ASSERT_TRUE(reader != nullptr);
+  ASSERT_TRUE(reader->schema() != nullptr);
+  ASSERT_EQ(reader->schema()->num_fields(), 1);
+  EXPECT_EQ(reader->schema()->field(0)->name(), LOCAL_ROW_ID);
+
+  std::shared_ptr<arrow::RecordBatch> batch;
+  std::vector<uint64_t> actual_ids;
+  while (true) {
+    auto status = reader->ReadNext(&batch);
+    ASSERT_TRUE(status.ok()) << status.ToString();
+    if (batch == nullptr) break;
+
+    ASSERT_EQ(batch->num_columns(), 1);
+    EXPECT_EQ(batch->column_name(0), LOCAL_ROW_ID);
+    auto id_array =
+        std::dynamic_pointer_cast<arrow::UInt64Array>(batch->column(0));
+    ASSERT_TRUE(id_array != nullptr);
+    for (int64_t i = 0; i < id_array->length(); ++i) {
+      actual_ids.push_back(id_array->Value(i));
+    }
+  }
+
+  std::vector<uint64_t> expected_ids;
+  for (uint64_t i = 0; i < 10; ++i) {
+    expected_ids.push_back(i);
+  }
+  EXPECT_EQ(actual_ids, expected_ids);
+}
+
+
 TEST_P(SegmentTest, DocCountDeleteFilterWithNonZeroGlobalDocID) {
   auto segment = test::TestHelper::CreateSegmentWithDoc(
       col_path_, *schema_, 0, 100, id_map_, delete_store_, version_manager_,
