@@ -553,8 +553,8 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 
         candidates.emplace(node, cur_dist);
       }  // end for
-    }    // end while
-  }      // end if
+    }  // end while
+  }  // end if
 }
 
 template <typename EntityType>
