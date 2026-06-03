@@ -281,11 +281,28 @@ class SingleVectorQueryExecutor(NoVectorQueryExecutor):
     def __init__(self, schema: CollectionSchema) -> None:
         super().__init__(schema)
 
+    def _validate_multi_query(self, ctx: QueryContext) -> None:
+        """Shared validation for multi-query: reranker required + no duplicate fields."""
+        if ctx.reranker is None:
+            raise ValueError("Reranker is required for multi-query")
+        seen_fields = set()
+        for query in ctx.queries:
+            query._validate()
+            if query.field_name in seen_fields:
+                raise ValueError(
+                    f"Query field name '{query.field_name}' appears more than once"
+                )
+            seen_fields.add(query.field_name)
+
     def _do_validate(self, ctx: QueryContext) -> None:
         if len(ctx.queries) > 1:
-            raise ValueError(
-                "Collection has only one vector field, cannot query with multiple vectors"
-            )
+            # Allow FTS + vector hybrid multi-query (requires reranker)
+            if not any(q.has_fts() for q in ctx.queries):
+                raise ValueError(
+                    "Collection has only one vector field, cannot query with multiple vectors"
+                )
+            self._validate_multi_query(ctx)
+            return
         for query in ctx.queries:
             query._validate()
 
@@ -299,22 +316,6 @@ class SingleVectorQueryExecutor(NoVectorQueryExecutor):
             vectors.append(self._do_build_query_with_vector(ctx, query, collection))
         return vectors
 
-
-class MultiVectorQueryExecutor(SingleVectorQueryExecutor):
-    def __init__(self, schema: CollectionSchema) -> None:
-        super().__init__(schema)
-
-    def _do_validate(self, ctx: QueryContext) -> None:
-        if len(ctx.queries) > 1 and ctx.reranker is None:
-            raise ValueError("Reranker is required for multi-vector query")
-        seen_fields = set()
-        for query in ctx.queries:
-            query._validate()
-            field = query.field_name
-            if field in seen_fields:
-                raise ValueError(f"Query field name '{field}' appears more than once")
-            seen_fields.add(field)
-
     def execute(self, ctx: QueryContext, collection: _Collection) -> list[Doc]:
         # 1. validate query
         self._do_validate(ctx)
@@ -323,12 +324,12 @@ class MultiVectorQueryExecutor(SingleVectorQueryExecutor):
         if not query_vectors:
             raise ValueError("No query to execute")
 
-        # Fast path: use C++ MultiQuery for multi-vector with C++ reranker
+        # Multi-query fast path: route FTS + vector hybrid to C++ MultiQuery
         if len(query_vectors) > 1 and ctx.reranker is not None:
             cpp_reranker = ctx.reranker._get_object()
             if cpp_reranker is not None:
                 mvq = _MultiQuery()
-                mvq.queries = [self._to_sub_query(vq) for vq in query_vectors]
+                mvq.queries = [_SubQuery.from_vector_query(vq) for vq in query_vectors]
                 mvq.topk = ctx.topk
                 if ctx.filter:
                     mvq.filter = ctx.filter
@@ -339,19 +340,22 @@ class MultiVectorQueryExecutor(SingleVectorQueryExecutor):
                 docs = collection.Query(mvq)
                 return [convert_to_py_doc(doc, self._schema) for doc in docs]
 
-        # 3. execute query (fallback to Python path)
+        # 3. execute query
         docs = self._do_execute(query_vectors, collection)
         # 4. merge and rerank result
         return self._do_merge_rerank_results(ctx, docs)
 
-    def _do_execute(
-        self, vectors: list[_VectorQuery], collection: _Collection
-    ) -> dict[str, list[Doc]]:
-        return super()._do_execute(vectors, collection)
 
-    @staticmethod
-    def _to_sub_query(vq: _VectorQuery) -> _SubQuery:
-        return _SubQuery.from_vector_query(vq)
+class MultiVectorQueryExecutor(SingleVectorQueryExecutor):
+    def __init__(self, schema: CollectionSchema) -> None:
+        super().__init__(schema)
+
+    def _do_validate(self, ctx: QueryContext) -> None:
+        if len(ctx.queries) > 1:
+            self._validate_multi_query(ctx)
+            return
+        for query in ctx.queries:
+            query._validate()
 
 
 class QueryExecutorFactory:

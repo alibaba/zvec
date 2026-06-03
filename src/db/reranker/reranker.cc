@@ -95,6 +95,11 @@ void WeightedReranker::bind_schema(CollectionSchema::Ptr schema) {
 
 Result<double> WeightedReranker::normalize_score(double score,
                                                  const FieldSchema &field) {
+  // FTS field: BM25 scores are non-negative; normalize via arctan to [0, 1).
+  if (field.index_type() == IndexType::FTS) {
+    return 2.0 * std::atan(score) / M_PI;
+  }
+
   auto *vip =
       dynamic_cast<const VectorIndexParams *>(field.index_params().get());
   if (!vip) {
@@ -118,10 +123,10 @@ Result<double> WeightedReranker::normalize_score(double score,
 
 Result<double> WeightedReranker::rescore(double score, int /*rank*/,
                                          const std::string &field_name) const {
-  const auto *field = schema_->get_vector_field(field_name);
+  const auto *field = schema_->get_field(field_name);
   if (!field) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "WeightedReranker: vector field not found: '", field_name + "'"));
+        "WeightedReranker: field not found: '", field_name + "'"));
   }
   auto normalized = normalize_score(score, *field);
   if (!normalized.has_value()) {

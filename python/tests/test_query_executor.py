@@ -326,9 +326,7 @@ class TestMultiVectorQueryExecutor:
         queries = [Query(field_name="test1"), Query(field_name="test2")]
         ctx = QueryContext(topk=10, queries=queries)
 
-        with pytest.raises(
-            ValueError, match="Reranker is required for multi-vector query"
-        ):
+        with pytest.raises(ValueError, match="Reranker is required for multi-query"):
             executor._do_validate(ctx)
 
     def test_do_validate_multiple_queries_with_reranker(self):
