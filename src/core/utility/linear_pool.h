@@ -15,10 +15,9 @@
 // ===========================================================================
 // Acknowledgement
 // ---------------
-// The LinearPool implementation in this file (and the accompanying Neighbor /
-// Bitset helpers) is adapted from the pyglass project, with modifications
-// (e.g. a BlockHeap-compatible reset()/push_block() interface and the use of
-// MemoryHelper for huge-page-backed allocation):
+// The LinearPool implementation in this file (and the accompanying Neighbor
+// helper) is adapted from the pyglass project, with modifications
+// (e.g. a BlockHeap-compatible reset()/push_block() interface):
 //
 //     pyglass — Graph Library for Approximate Similarity Search
 //     https://github.com/zilliztech/pyglass
@@ -52,9 +51,8 @@
 #pragma once
 
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
-#include <ailego/utility/memory_helper.h>
+#include <vector>
 
 namespace zvec {
 namespace core {
@@ -79,83 +77,24 @@ struct Neighbor {
   }
 };
 
-template <typename Block = uint64_t>
-struct Bitset {
-  constexpr static int block_size = sizeof(Block) * 8;
-  int32_t nb = 0;
-  int nbytes = 0;
-  Block *data = nullptr;
-
-  Bitset() = default;
-
-  explicit Bitset(int n)
-      : nb(n),
-        nbytes((n + block_size - 1) / block_size * sizeof(Block)),
-        data((Block *)zvec::ailego::MemoryHelper::AllocateAligned(nbytes)) {}
-
-  friend void swap(Bitset &lhs, Bitset &rhs) {
-    using std::swap;
-    swap(lhs.nb, rhs.nb);
-    swap(lhs.nbytes, rhs.nbytes);
-    swap(lhs.data, rhs.data);
-  }
-
-  Bitset(const Bitset &) = delete;
-
-  Bitset(Bitset &&rhs) {
-    swap(*this, rhs);
-  }
-
-  Bitset &operator=(const Bitset &) = delete;
-
-  Bitset &operator=(Bitset &&rhs) {
-    swap(*this, rhs);
-    return *this;
-  }
-
-  ~Bitset() {
-    if (data) {
-      zvec::ailego::MemoryHelper::FreeAligned(data, nbytes);
-    }
-  }
-
-  void reset(int32_t n) {
-    if (n != nb) {
-      *this = Bitset(n);
-    } else {
-      memset(data, 0, nbytes);
-    }
-  }
-
-  void set(int i) {
-    data[i / block_size] |= (Block(1) << (i & (block_size - 1)));
-  }
-
-  bool get(int i) const {
-    return (data[i / block_size] >> (i & (block_size - 1))) & 1;
-  }
-};
-
 }  // namespace linear_pool_impl
 
-template <typename dist_t, typename BitsetType = linear_pool_impl::Bitset<>>
+template <typename dist_t>
 struct LinearPool {
   using dist_type = dist_t;
 
   LinearPool() = default;
 
-  LinearPool(int n, int ef, int capacity)
-      : nb(n), ef_(ef), capacity_(capacity), data_(capacity_ + 1), vis(n) {}
+  LinearPool(int ef, int capacity)
+      : ef_(ef), capacity_(capacity), data_(capacity_ + 1) {}
 
   friend void swap(LinearPool &lhs, LinearPool &rhs) {
     using std::swap;
-    swap(lhs.nb, rhs.nb);
     swap(lhs.size_, rhs.size_);
     swap(lhs.cur_, rhs.cur_);
     swap(lhs.ef_, rhs.ef_);
     swap(lhs.capacity_, rhs.capacity_);
     swap(lhs.data_, rhs.data_);
-    swap(lhs.vis, rhs.vis);
   }
 
   LinearPool(const LinearPool &) = delete;
@@ -171,22 +110,17 @@ struct LinearPool {
     return *this;
   }
 
-  // reset() mirrors BlockHeap::reset(n, capacity, block_size): `n` is the
-  // visit-set capacity (number of nodes), `capacity` is the retained top-k size
-  // (stored in both ef_ and capacity_ here), and the third argument is the
-  // per-batch push upper bound, used only by BlockHeap.  LinearPool keeps a
-  // sorted array whose capacity equals `capacity` and therefore ignores the
-  // `block_size` hint.  The signature is kept identical to BlockHeap so
-  // templated greedy-search bodies can call either pool uniformly.
-  void reset(int32_t n, int32_t capacity, int32_t /*block_size_ignored*/) {
-    nb = n;
+  // Reset the pool state for a new search round.  `capacity` is the retained
+  // top-k size, `block_size` is ignored (kept for API parity with BlockHeap).
+  // Visited-node tracking is no longer owned by the pool — the caller passes
+  // a VisitFilter reference to the search loop instead.
+  void reset(int32_t capacity, int32_t /*block_size_ignored*/) {
     size_ = cur_ = 0;
     ef_ = capacity;
     capacity_ = capacity;
     if (data_.size() < static_cast<size_t>(capacity + 1)) {
       data_.resize(capacity + 1);
     }
-    vis.reset(n);
   }
 
   ailego_force_inline int find_bsearch(dist_t dist) {
@@ -263,13 +197,6 @@ struct LinearPool {
     return capacity_;
   }
 
-  void set_visited(int32_t u) {
-    vis.set(u);
-  }
-  bool check_visited(int32_t u) const {
-    return vis.get(u);
-  }
-
   constexpr static int kMask = 2147483647;
   int get_id(int id) const {
     return id & kMask;
@@ -290,9 +217,8 @@ struct LinearPool {
     }
   }
 
-  int nb, size_ = 0, cur_ = 0, ef_, capacity_;
+  int size_ = 0, cur_ = 0, ef_ = 0, capacity_ = 0;
   std::vector<linear_pool_impl::Neighbor<dist_t>> data_;
-  BitsetType vis;
 };
 
 // Copy a single-heap pool's (LinearPool/BlockHeap) distance-sorted retained

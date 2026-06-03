@@ -124,15 +124,16 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // and dispatch to the classic pointer-array batch_dist.
 template <typename EntityType, typename HeapType>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
-                        VamanaDistCalculator &dc, uint32_t topk, uint32_t ef,
+                        VisitFilter &visit, VamanaDistCalculator &dc,
+                        uint32_t topk, uint32_t ef,
                         node_id_t entry_point, uint32_t prefetch_lines) {
   const uint32_t max_deg = entity.max_degree();
   const uint32_t cap = std::max(topk, ef);
-  pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
-             static_cast<int32_t>(max_deg));
+  pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
+  visit.clear();
 
   dist_t ep_dist = dc.batch_dist(entry_point);
-  pool.set_visited(entry_point);
+  visit.set_visited(entry_point);
   pool.push_block(&ep_dist, &entry_point, 1);
 
   static constexpr uint32_t GRAPH_PO = 8;
@@ -162,8 +163,8 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
 
     for (; i < po; ++i) {
       node_id_t node = neighbors[i];
-      if (pool.check_visited(node)) continue;
-      pool.set_visited(node);
+      if (visit.visited(node)) continue;
+      visit.set_visited(node);
       const void *vec_ptr = entity.get_vector_ptr(node);
       const char *p = reinterpret_cast<const char *>(vec_ptr);
       for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
@@ -175,8 +176,8 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
     }
     for (; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
-      if (pool.check_visited(node)) continue;
-      pool.set_visited(node);
+      if (visit.visited(node)) continue;
+      visit.set_visited(node);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
       unvisited_count++;
@@ -356,15 +357,17 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
           zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
       auto &topk_heap = ctx->topk_heap();
 
+      auto &visit = ctx->visit_filter();
+
       if (avx2_ok) {
         auto &bpool = ctx->block_pool();
-        fast_greedy_search(entity, bpool, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines);
+        fast_greedy_search(entity, bpool, visit, dc, topk_v, ef_v,
+                           entry_point, prefetch_lines);
         copy_pool_to_topk(bpool, topk_heap);
       } else {
         auto &lpool = ctx->pool();
-        fast_greedy_search(entity, lpool, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines);
+        fast_greedy_search(entity, lpool, visit, dc, topk_v, ef_v,
+                           entry_point, prefetch_lines);
         copy_pool_to_topk(lpool, topk_heap);
       }
     } else {

@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
-#include "linear_pool.h"
 
 namespace zvec {
 namespace core {
@@ -43,8 +42,6 @@ namespace core {
 // instructions when running on a low-arch machine with a binary built on a
 // higher-arch host.
 struct BlockHeap {
-  using Bitset = linear_pool_impl::Bitset<>;
-
   BlockHeap() = default;
   ~BlockHeap() = default;
 
@@ -54,10 +51,11 @@ struct BlockHeap {
   BlockHeap(BlockHeap &&) = default;
   BlockHeap &operator=(BlockHeap &&) = default;
 
-  // Reset the pool state. `n` is the visit-set capacity (number of nodes),
-  // `capacity` is the retained top-k size, `block_size` is an upper bound on
-  // the per-call push_block size (used only for capacity hints).
-  void reset(int32_t n, int32_t capacity, int32_t block_size);
+  // Reset the pool state for a new search round.  `capacity` is the retained
+  // top-k size, `block_size` is an upper bound on the per-call push_block size
+  // (used only for capacity hints).  Visited-node tracking is no longer owned
+  // by the pool — the caller passes a VisitFilter reference instead.
+  void reset(int32_t capacity, int32_t block_size);
 
   // Insert a block of candidates. The distance array must have at least
   // `block_size` entries and the id array must have the same length.
@@ -83,14 +81,6 @@ struct BlockHeap {
   // Export sorted top-`length` ids (and optionally scores) — data_ is already
   // distance-sorted ascending.
   void to_sorted(uint32_t *ids, float *scores, int32_t length) const;
-
-  // Visit set helpers.
-  void set_visited(uint32_t u) {
-    vis_.set(static_cast<int>(u));
-  }
-  bool check_visited(uint32_t u) const {
-    return vis_.get(static_cast<int>(u));
-  }
 
   // Direct sorted accessors (used by search result copy-out).
   uint32_t id(int32_t i) const {
@@ -120,7 +110,6 @@ struct BlockHeap {
   int32_t ef_{0};
   int32_t block_size_{0};
   size_t cur_{0};
-  Bitset vis_;
 };
 
 }  // namespace core

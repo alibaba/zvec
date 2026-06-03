@@ -35,7 +35,7 @@
 namespace zvec {
 namespace core {
 
-void BlockHeap::reset(int32_t n, int32_t capacity, int32_t block_size) {
+void BlockHeap::reset(int32_t capacity, int32_t block_size) {
   ef_ = capacity;
   block_size_ = block_size;
   data_.clear();
@@ -46,7 +46,6 @@ void BlockHeap::reset(int32_t n, int32_t capacity, int32_t block_size) {
   tmp_.clear();
   tmp_.reserve(static_cast<size_t>(block_size));
   cur_ = 0;
-  vis_.reset(n);
 }
 
 uint32_t BlockHeap::pop() {

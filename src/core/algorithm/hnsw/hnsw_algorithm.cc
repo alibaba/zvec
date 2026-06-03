@@ -189,15 +189,16 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 // HeapType must expose reset/set_visited/check_visited/push_block/has_next/pop.
 template <typename EntityType, typename HeapType>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
-                           HnswDistCalculator &dc, uint32_t topk, uint32_t ef,
+                           VisitFilter &visit, HnswDistCalculator &dc,
+                           uint32_t topk, uint32_t ef,
                            node_id_t entry_point, dist_t entry_dist,
                            uint32_t prefetch_lines) {
   const uint32_t max_deg = entity.max_degree(0);  // level 0 only
   const uint32_t cap = std::max(topk, ef);
-  pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
-             static_cast<int32_t>(max_deg));
+  pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
+  visit.clear();
 
-  pool.set_visited(entry_point);
+  visit.set_visited(entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);
 
   static constexpr uint32_t GRAPH_PO = 8;
@@ -228,8 +229,8 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
     // Phase 1: scan first `po` neighbors with prefetch.
     for (; i < po; ++i) {
       node_id_t node = neighbors[i];
-      if (pool.check_visited(node)) continue;
-      pool.set_visited(node);
+      if (visit.visited(node)) continue;
+      visit.set_visited(node);
       const void *vec_ptr = entity.get_vector_ptr(node);
       const char *p = reinterpret_cast<const char *>(vec_ptr);
       for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
@@ -243,8 +244,8 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
     // Phase 2: scan remaining neighbors.
     for (; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
-      if (pool.check_visited(node)) continue;
-      pool.set_visited(node);
+      if (visit.visited(node)) continue;
+      visit.set_visited(node);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
       unvisited_count++;
@@ -417,15 +418,17 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
       const bool avx2_ok =
           zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
 
+      auto &visit = ctx->visit_filter();
+
       if (avx2_ok) {
         auto &bpool = ctx->block_pool();
-        fast_search_neighbors(entity, bpool, dc, topk_v, ef_v, *entry_point,
-                              *dist, prefetch_lines);
+        fast_search_neighbors(entity, bpool, visit, dc, topk_v, ef_v,
+                              *entry_point, *dist, prefetch_lines);
         copy_pool_to_topk(bpool, topk);
       } else {
         auto &lpool = ctx->pool();
-        fast_search_neighbors(entity, lpool, dc, topk_v, ef_v, *entry_point,
-                              *dist, prefetch_lines);
+        fast_search_neighbors(entity, lpool, visit, dc, topk_v, ef_v,
+                              *entry_point, *dist, prefetch_lines);
         copy_pool_to_topk(lpool, topk);
       }
     } else {
