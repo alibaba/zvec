@@ -147,7 +147,10 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
     }
     node_chunk = p.second;
     chunk_offset = 0UL;
-    node_chunks_.emplace_back(node_chunk);
+    {
+      std::lock_guard<std::mutex> chunks_lock(node_chunks_mutex_);
+      node_chunks_.emplace_back(node_chunk);
+    }
   } else {
     node_chunk = node_chunks_[chunk_index];
     chunk_offset = node_chunk->data_size();
@@ -211,7 +214,10 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
         return p.first;
       }
       node_chunk = p.second;
-      node_chunks_.emplace_back(node_chunk);
+      {
+        std::lock_guard<std::mutex> chunks_lock(node_chunks_mutex_);
+        node_chunks_.emplace_back(node_chunk);
+      }
     }
     node_chunk = node_chunks_[chunk_idx];
     chunk_offset = (node_id & node_index_mask_) * node_size();
@@ -631,6 +637,11 @@ int VamanaStreamerEntity::ensure_dist_storage() {
 
   dist_entry_size_ = static_cast<uint32_t>(max_degree() * sizeof(dist_t));
 
+  // Pre-reserve dist_chunks_ to match node_chunks_ capacity so that
+  // subsequent emplace_back in ensure_dist_chunk_for never triggers
+  // reallocation while concurrent add_node threads read dist_chunks_.
+  dist_chunks_.reserve(node_chunks_.capacity());
+
   // Calculate how many dist chunks we need for existing nodes
   uint32_t total_docs = doc_cnt();
   if (total_docs == 0) {
@@ -682,10 +693,17 @@ int VamanaStreamerEntity::ensure_dist_chunk_for(uint32_t chunk_index) {
     return dp.first;
   }
   dp.second->resize(dist_chunk_data_size);
-  while (dist_chunks_.size() <= chunk_index) {
-    dist_chunks_.emplace_back(nullptr);
+  {
+    // Protect dist_chunks_ modification against concurrent readers in
+    // get_neighbor_dists/update_neighbor_dists (called from add_node without
+    // mutex_). Uses node_chunks_mutex_ which is the same lock used by
+    // sync_chunks for CHUNK_TYPE_NEIGHBOR_DIST.
+    std::lock_guard<std::mutex> chunks_lock(node_chunks_mutex_);
+    while (dist_chunks_.size() <= chunk_index) {
+      dist_chunks_.emplace_back(nullptr);
+    }
+    dist_chunks_[chunk_index] = std::move(dp.second);
   }
-  dist_chunks_[chunk_index] = std::move(dp.second);
   return 0;
 }
 
@@ -767,6 +785,123 @@ void VamanaStreamerEntity::set_neighbor_dist(node_id_t id, uint32_t idx,
 
   uint32_t offset = loc.second + idx * sizeof(dist_t);
   dist_chunks_[loc.first]->write(offset, &dist, sizeof(dist_t));
+}
+
+// calculate_medoid: Compute the medoid (entry point) following DiskANN's
+// standard approach:
+//   1. Compute the centroid (component-wise mean) of all vectors in float
+//   space.
+//   2. Find the data point closest to this centroid using squared L2 distance
+//      in float space.
+//   3. Return that point's node ID as the medoid.
+//
+// Called at dump time to set the optimal entry point for the persisted index.
+// data_type uses IndexMeta::DataType values: DT_FP16=1, DT_FP32=2, DT_INT8=4.
+// ============================================================================
+node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
+                                                 uint32_t data_type) {
+  uint32_t n = doc_cnt();
+  if (n == 0) return kInvalidNodeId;
+  if (dimension == 0) return kInvalidNodeId;
+
+  // data_type constants matching IndexMeta::DataType
+  constexpr uint32_t DT_FP16 = 1;
+  constexpr uint32_t DT_FP32 = 2;
+  constexpr uint32_t DT_INT8 = 4;
+
+  if (data_type != DT_FP32 && data_type != DT_INT8 && data_type != DT_FP16) {
+    LOG_WARN("calculate_medoid: unsupported data_type=%u, skip", data_type);
+    return entry_point();
+  }
+
+  // Step 1: Compute centroid (mean) of all vectors in float space.
+  std::vector<float> centroid(dimension, 0.0f);
+  uint32_t valid_count = 0;
+
+  for (node_id_t i = 0; i < n; ++i) {
+    if (get_key(i) == kInvalidKey) continue;
+    const void *vec = get_vector(i);
+    if (vec == nullptr) continue;
+
+    switch (data_type) {
+      case DT_FP32: {
+        const float *fv = static_cast<const float *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) centroid[d] += fv[d];
+        break;
+      }
+      case DT_INT8: {
+        const int8_t *iv = static_cast<const int8_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d)
+          centroid[d] += static_cast<float>(iv[d]);
+        break;
+      }
+      case DT_FP16: {
+        const uint16_t *hv = static_cast<const uint16_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d)
+          centroid[d] += ailego::FloatHelper::ToFP32(hv[d]);
+        break;
+      }
+    }
+    valid_count++;
+  }
+
+  if (valid_count == 0) return kInvalidNodeId;
+  if (valid_count == 1) {
+    for (node_id_t i = 0; i < n; ++i) {
+      if (get_key(i) != kInvalidKey && get_vector(i) != nullptr) return i;
+    }
+    return kInvalidNodeId;
+  }
+
+  float inv = 1.0f / static_cast<float>(valid_count);
+  for (uint32_t d = 0; d < dimension; ++d) centroid[d] *= inv;
+
+  // Step 2: Find the data point closest to the centroid (squared L2).
+  node_id_t medoid = kInvalidNodeId;
+  float min_dist = std::numeric_limits<float>::max();
+
+  for (node_id_t i = 0; i < n; ++i) {
+    if (get_key(i) == kInvalidKey) continue;
+    const void *vec = get_vector(i);
+    if (vec == nullptr) continue;
+
+    float dist = 0.0f;
+    switch (data_type) {
+      case DT_FP32: {
+        const float *fv = static_cast<const float *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) {
+          float diff = fv[d] - centroid[d];
+          dist += diff * diff;
+        }
+        break;
+      }
+      case DT_INT8: {
+        const int8_t *iv = static_cast<const int8_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) {
+          float diff = static_cast<float>(iv[d]) - centroid[d];
+          dist += diff * diff;
+        }
+        break;
+      }
+      case DT_FP16: {
+        const uint16_t *hv = static_cast<const uint16_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) {
+          float diff = ailego::FloatHelper::ToFP32(hv[d]) - centroid[d];
+          dist += diff * diff;
+        }
+        break;
+      }
+    }
+
+    if (dist < min_dist) {
+      min_dist = dist;
+      medoid = i;
+    }
+  }
+
+  LOG_INFO("Calculated medoid: node_id=%u, min_sq_dist=%.4f, valid_docs=%u",
+           medoid, min_dist, valid_count);
+  return medoid;
 }
 
 }  // namespace core

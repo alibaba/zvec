@@ -149,6 +149,14 @@ class VamanaContext : public IndexContext {
     return batch_indices_buf_;
   }
 
+  //! Build-time distance offset cached from the metric. Used by RobustPrune
+  //! to shift the internal distance to a non-negative range before computing
+  //! the ratio-based occlude_factor. Zero for metrics whose internal distance
+  //! is already non-negative (e.g. SquaredEuclidean).
+  inline float build_distance_offset() const {
+    return build_distance_offset_;
+  }
+
   inline void set_max_scan_num(uint32_t max_scan_num) {
     max_scan_num_ = max_scan_num;
   }
@@ -306,6 +314,9 @@ class VamanaContext : public IndexContext {
   std::vector<const void *> batch_vecs_buf_;
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
+
+  //! Cached build-time distance offset (see build_distance_offset()).
+  float build_distance_offset_{0.0f};
 
   VisitFilter::Mode filter_mode_{VisitFilter::ByteMap};
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};

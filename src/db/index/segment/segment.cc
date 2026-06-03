@@ -46,10 +46,8 @@
 #include "db/common/global_resource.h"
 #include "db/common/typedef.h"
 #include "db/index/column/fts_column/fts_column_indexer.h"
-#include "db/index/column/fts_column/fts_rocksdb_merge.h"
-#include "db/index/column/fts_column/fts_types.h"
+#include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
-#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "db/index/common/index_filter.h"
@@ -61,11 +59,7 @@
 #include "db/index/storage/mmap_forward_store.h"
 #include "db/index/storage/store_helper.h"
 #include "db/index/storage/wal/wal_file.h"
-#include "zvec/ailego/container/params.h"
-#include "zvec/core/framework/index_factory.h"
-#include "zvec/core/framework/index_meta.h"
 #include "zvec/core/framework/index_provider.h"
-#include "zvec/core/framework/index_reformer.h"
 #include "column_merging_reader.h"
 #include "sql_expr_parser.h"
 
@@ -218,6 +212,19 @@ class SegmentImpl : public Segment,
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const InvertedIndexer::Ptr &scalar_indexer) override;
 
+  Status create_fts_index(const std::string &column,
+                          const IndexParams::Ptr &index_params,
+                          SegmentMeta::Ptr *new_segment_meta,
+                          FtsIndexer::Ptr *output_fts_indexer) override;
+
+  Status drop_fts_index(const std::string &column,
+                        SegmentMeta::Ptr *new_segment_meta,
+                        FtsIndexer::Ptr *output_fts_indexer) override;
+
+  Status reload_fts_index(const CollectionSchema &schema,
+                          const SegmentMeta::Ptr &segment_meta,
+                          const FtsIndexer::Ptr &new_fts_indexer) override;
+
   Status dump() override;
 
   Status flush() override;
@@ -225,10 +232,10 @@ class SegmentImpl : public Segment,
   Status destroy() override;
 
   TablePtr fetch(const std::vector<std::string> &columns,
-                 const std::vector<int> &indices) const override;
+                 const std::vector<int> &segment_doc_ids) const override;
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                     int index) const override;
+                     int segment_doc_id) const override;
 
   RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const override;
@@ -302,7 +309,7 @@ class SegmentImpl : public Segment,
   Status append_wal(const Doc &doc);
   Status update_version(uint32_t delete_snapshot_path_suffix);
 
-  Result<uint64_t> get_global_doc_id(uint32_t local_id) const;
+  Result<uint64_t> get_global_doc_id(uint32_t segment_doc_id) const;
 
   BlockID allocate_block_id();
 
@@ -323,12 +330,12 @@ class SegmentImpl : public Segment,
 
   TablePtr fetch_normal(const std::vector<std::string> &columns,
                         const std::shared_ptr<arrow::Schema> &result_schema,
-                        const std::vector<int> &indices) const;
+                        const std::vector<int> &segment_doc_ids) const;
 
   // For performance tuning
   TablePtr fetch_perf(const std::vector<std::string> &columns,
                       const std::shared_ptr<arrow::Schema> &result_schema,
-                      const std::vector<int> &indices) const;
+                      const std::vector<int> &segment_doc_ids) const;
 
   void fresh_persist_chunked_array();
 
@@ -341,8 +348,7 @@ class SegmentImpl : public Segment,
   InvertedIndexer::Ptr invert_indexers_;
 
   // FTS index (uses segment-local doc ID)
-  std::shared_ptr<RocksdbContext> fts_ctx_;
-  std::unordered_map<std::string, fts::FtsColumnIndexerPtr> fts_indexers_;
+  FtsIndexer::Ptr fts_indexer_;
   bool has_fts_{false};
 
   // vector index (uses block-local doc ID, each indexer starts from 0)
@@ -416,7 +422,6 @@ class SegmentImpl : public Segment,
 class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
  public:
   CombinedRecordBatchReader(
-      std::shared_ptr<const SegmentImpl> segment,
       std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers,
       const std::vector<std::string> &columns);
 
@@ -427,14 +432,12 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
   arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch> *batch) override;
 
  private:
-  std::shared_ptr<const SegmentImpl> segment_;
   std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers_;
-  std::vector<uint64_t> offsets_;
   std::shared_ptr<arrow::Schema> projected_schema_;
-  bool need_local_doc_id_ = false;
+  bool emit_segment_row_id_ = false;
   size_t current_reader_index_;
-  size_t local_doc_id_;
-  int local_doc_id_col_index_ = -1;
+  uint64_t next_segment_row_id_to_emit_;
+  int segment_row_id_output_col_index_ = -1;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -1433,7 +1436,7 @@ Doc::Ptr SegmentImpl::Fetch(
       const auto &block_offsets =
           get_persist_block_offsets(BlockType::VECTOR_INDEX, field->name());
       auto block_offset = block_offsets[block_idx];
-      auto local_row = segment_doc_id - block_offset;
+      auto block_doc_id = segment_doc_id - block_offset;
 
       auto column_name = field->name();
       auto iter = vector_indexers_.find(column_name);
@@ -1445,12 +1448,12 @@ Doc::Ptr SegmentImpl::Fetch(
           continue;
         }
         auto vector_indexer = vector_indexers[block_idx];
-        auto fetch_result = vector_indexer->Fetch(local_row);
+        auto fetch_result = vector_indexer->Fetch(block_doc_id);
         if (!fetch_result) {
           LOG_ERROR(
-              "vector indexer fetch failed, local_row: %d, block_idx: %d, "
+              "vector indexer fetch failed, block_doc_id: %d, block_idx: %d, "
               "segment_doc_id: %d",
-              local_row, block_idx, segment_doc_id);
+              block_doc_id, block_idx, segment_doc_id);
           return nullptr;
         }
         const auto &vector_buffer = fetch_result.value();
@@ -1472,18 +1475,18 @@ Doc::Ptr SegmentImpl::Fetch(
             p_block_offsets.empty()
                 ? 0
                 : p_block_offsets.back() + p_block_metas.back().doc_count_;
-        int local_row = segment_doc_id - mem_block_offset;
+        int block_doc_id = segment_doc_id - mem_block_offset;
         auto column_name = field->name();
         auto iter = memory_vector_indexers_.find(column_name);
         if (iter != memory_vector_indexers_.end()) {
           auto vector_indexer = iter->second;
-          auto fetch_result = vector_indexer->Fetch(local_row);
+          auto fetch_result = vector_indexer->Fetch(block_doc_id);
           if (!fetch_result.has_value()) {
             LOG_ERROR(
                 "vector indexer fetch failed, column: %s, doc_count: %lu, "
-                "mem_block_offset: %d, local_row: %d",
+                "mem_block_offset: %d, block_doc_id: %d",
                 field->name().c_str(), vector_indexer->doc_count(),
-                mem_block_offset, local_row);
+                mem_block_offset, block_doc_id);
             continue;
           }
           const auto &vector_buffer = fetch_result.value();
@@ -1966,10 +1969,17 @@ Status SegmentImpl::create_scalar_index(const std::vector<std::string> &columns,
       return Status::InvalidArgument("Invalid column name");
     }
 
-    if (field->index_params() != nullptr &&
-        *field->index_params() == *index_params) {
-      // if already indexed, just skip it
-      continue;
+    if (field->index_params() != nullptr) {
+      if (*field->index_params() == *index_params) {
+        // if already indexed with same params, just skip it
+        continue;
+      }
+      if (field->index_params()->type() != index_params->type()) {
+        return Status::InvalidArgument(
+            "create_scalar_index: field[", column, "] already has index type ",
+            IndexTypeCodeBook::AsString(field->index_params()->type()));
+      }
+      // same type but different params — will rebuild below
     }
 
     auto new_field = std::make_shared<FieldSchema>(*field);
@@ -2339,17 +2349,17 @@ bool SegmentImpl::validate(const std::vector<std::string> &columns) const {
 TablePtr SegmentImpl::fetch_perf(
     const std::vector<std::string> &columns,
     const std::shared_ptr<arrow::Schema> &result_schema,
-    const std::vector<int> &indices) const {
+    const std::vector<int> &segment_doc_ids) const {
   std::vector<std::shared_ptr<arrow::ChunkedArray>> chunk_arrays;
   chunk_arrays.resize(columns.size());
 
-  bool need_local_doc_id = false;
-  size_t local_doc_id_col_index = 0;
+  bool has_segment_row_id_column = false;
+  size_t segment_row_id_col_index = 0;
 
   for (size_t i = 0; i < columns.size(); ++i) {
     if (columns[i] == LOCAL_ROW_ID) {
-      need_local_doc_id = true;
-      local_doc_id_col_index = i;
+      has_segment_row_id_column = true;
+      segment_row_id_col_index = i;
       chunk_arrays[i] = nullptr;
       continue;
     }
@@ -2358,18 +2368,19 @@ TablePtr SegmentImpl::fetch_perf(
 
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
-  std::vector<std::pair<int64_t, int64_t>> indices_in_table;
-  for (const auto &target_index : indices) {
+  // Parallel to segment_doc_ids: each pair is (chunk_index, row_index_in_chunk)
+  std::vector<std::pair<int64_t, int64_t>> chunk_row_indices_for_ids;
+  for (const auto segment_doc_id : segment_doc_ids) {
     auto it = std::upper_bound(chunk_offsets_.begin(), chunk_offsets_.end(),
-                               target_index);
+                               segment_doc_id);
     if (it == chunk_offsets_.begin()) {
-      LOG_ERROR("Target index %d is out of bounds", target_index);
+      LOG_ERROR("Segment doc ID %d is out of bounds", segment_doc_id);
       return nullptr;
     }
     int chunk_index =
         static_cast<int>(std::distance(chunk_offsets_.begin(), it) - 1);
-    int64_t index_in_chunk = target_index - chunk_offsets_[chunk_index];
-    indices_in_table.emplace_back(chunk_index, index_in_chunk);
+    int64_t row_index_in_chunk = segment_doc_id - chunk_offsets_[chunk_index];
+    chunk_row_indices_for_ids.emplace_back(chunk_index, row_index_in_chunk);
   }
 
   for (size_t i = 0; i < columns.size(); ++i) {
@@ -2378,8 +2389,8 @@ TablePtr SegmentImpl::fetch_perf(
     }
     const auto &source_column = chunk_arrays[i];
     std::shared_ptr<arrow::Array> array;
-    auto status =
-        BuildArrayFromIndicesWithType(source_column, indices_in_table, &array);
+    auto status = BuildArrayFromIndicesWithType(
+        source_column, chunk_row_indices_for_ids, &array);
     if (!status.ok()) {
       LOG_ERROR("BuildArrayFromIndices failed: %s", status.ToString().c_str());
       return nullptr;
@@ -2387,11 +2398,11 @@ TablePtr SegmentImpl::fetch_perf(
     result_arrays[i] = array;
   }
 
-  if (need_local_doc_id) {
+  if (has_segment_row_id_column) {
     std::vector<uint64_t> values;
-    values.reserve(indices.size());
-    for (const auto idx : indices) {
-      values.push_back(idx);
+    values.reserve(segment_doc_ids.size());
+    for (const auto segment_doc_id : segment_doc_ids) {
+      values.push_back(segment_doc_id);
     }
 
     arrow::UInt64Builder builder;
@@ -2406,26 +2417,26 @@ TablePtr SegmentImpl::fetch_perf(
       LOG_ERROR("Failed to finish builder: %s", s.message().c_str());
       return nullptr;
     }
-    result_arrays[local_doc_id_col_index] = array;
+    result_arrays[segment_row_id_col_index] = array;
   }
 
   return arrow::Table::Make(result_schema, result_arrays,
-                            static_cast<int64_t>(indices.size()));
+                            static_cast<int64_t>(segment_doc_ids.size()));
 }
 
 TablePtr SegmentImpl::fetch_normal(
     const std::vector<std::string> &columns,
     const std::shared_ptr<arrow::Schema> &result_schema,
-    const std::vector<int> &indices) const {
+    const std::vector<int> &segment_doc_ids) const {
   // Store scalars per column: column_index -> (output_row, scalar)
   std::vector<std::vector<std::pair<int, std::shared_ptr<arrow::Scalar>>>>
       column_results(columns.size());
 
-  // Collect local_doc_id values if needed
-  std::vector<std::pair<int, uint64_t>> local_doc_id_values;
+  // Collect segment-local row IDs when LOCAL_ROW_ID is requested.
+  std::vector<std::pair<int, uint64_t>> segment_row_id_values;
 
-  // Group fetch requests by block: block_index -> {column -> [(output_row,
-  // local_row)]}
+  // Group fetch requests by block:
+  //   block_index -> {column -> [(output_row, block_row)]}
   //   block_index >= 0: persisted store
   //   block_index == -1: memory store
   std::map<int, std::map<std::string, std::vector<std::pair<int, int>>>>
@@ -2436,26 +2447,27 @@ TablePtr SegmentImpl::fetch_normal(
   const auto &block_offsets = get_persist_block_offsets(BlockType::SCALAR);
   const auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
 
-  // Phase 1: Map each (doc_id, column) to its block and local row
-  for (int output_row = 0; output_row < static_cast<int>(indices.size());
-       ++output_row) {
-    int doc_id = indices[output_row];
+  // Phase 1: Map each (segment_doc_id, column) to its block and block-local
+  // row.
+  for (int output_row = 0;
+       output_row < static_cast<int>(segment_doc_ids.size()); ++output_row) {
+    int segment_doc_id = segment_doc_ids[output_row];
 
     for (size_t col_index = 0; col_index < columns.size(); ++col_index) {
       const std::string &col = columns[col_index];
       if (col == LOCAL_ROW_ID) {
-        local_doc_id_values.emplace_back(output_row, doc_id);
+        segment_row_id_values.emplace_back(output_row, segment_doc_id);
         continue;
       }
       int offset_idx = -1;
-      int block_index =
-          find_persist_block_id(BlockType::SCALAR, doc_id, col, &offset_idx);
+      int block_index = find_persist_block_id(BlockType::SCALAR, segment_doc_id,
+                                              col, &offset_idx);
 
-      int local_row = -1;
+      int block_row = -1;
       if (block_index != -1 && offset_idx > -1 &&
           offset_idx < static_cast<int>(block_offsets.size())) {
-        local_row = doc_id - block_offsets[offset_idx];
-        block_request_map[block_index][col].emplace_back(output_row, local_row);
+        block_row = segment_doc_id - block_offsets[offset_idx];
+        block_request_map[block_index][col].emplace_back(output_row, block_row);
         continue;
       }
 
@@ -2467,15 +2479,17 @@ TablePtr SegmentImpl::fetch_normal(
                 : block_offsets.back() + block_metas.back().doc_count_;
         const auto &mem_block = segment_meta_->writing_forward_block().value();
 
-        if (mem_offset <= doc_id &&
-            doc_id < mem_offset + static_cast<int>(mem_block.doc_count_)) {
-          local_row = doc_id - mem_offset;
-          block_request_map[-1][col].emplace_back(output_row, local_row);
+        if (mem_offset <= segment_doc_id &&
+            segment_doc_id <
+                mem_offset + static_cast<int>(mem_block.doc_count_)) {
+          block_row = segment_doc_id - mem_offset;
+          block_request_map[-1][col].emplace_back(output_row, block_row);
           continue;
         }
       }
 
-      LOG_ERROR("Document ID %d not found in segment %d", doc_id, meta()->id());
+      LOG_ERROR("Segment doc ID %d not found in segment %d", segment_doc_id,
+                meta()->id());
       return nullptr;
     }
   }
@@ -2483,7 +2497,7 @@ TablePtr SegmentImpl::fetch_normal(
   // Phase 2: Execute batched fetch per block
   for (const auto &[block_index, col_to_rows] : block_request_map) {
     std::vector<std::string> fetch_columns;
-    std::vector<int> fetch_local_rows;
+    std::vector<int> fetch_block_rows;
     std::vector<std::pair<int, int>>
         output_to_result_index;  // (output_row, result_pos)
 
@@ -2493,20 +2507,20 @@ TablePtr SegmentImpl::fetch_normal(
     }
 
     // all column has same output size, here just take first column
-    for (const auto &[output_row, local_row] :
+    for (const auto &[output_row, block_row] :
          col_to_rows.at(fetch_columns[0])) {
-      fetch_local_rows.push_back(local_row);
+      fetch_block_rows.push_back(block_row);
       output_to_result_index.emplace_back(
-          output_row, static_cast<int>(fetch_local_rows.size() - 1));
+          output_row, static_cast<int>(fetch_block_rows.size() - 1));
     }
 
     std::shared_ptr<arrow::Table> block_table;
     if (block_index >= 0 &&
         block_index < static_cast<int>(persist_stores_.size())) {
       block_table =
-          persist_stores_[block_index]->fetch(fetch_columns, fetch_local_rows);
+          persist_stores_[block_index]->fetch(fetch_columns, fetch_block_rows);
     } else if (block_index == -1 && memory_store_) {
-      block_table = memory_store_->fetch(fetch_columns, fetch_local_rows);
+      block_table = memory_store_->fetch(fetch_columns, fetch_block_rows);
     }
 
     if (!block_table || block_table->num_rows() == 0) {
@@ -2530,7 +2544,7 @@ TablePtr SegmentImpl::fetch_normal(
       }
       auto flat_array = flat_array_res.ValueOrDie();
 
-      for (size_t j = 0; j < fetch_local_rows.size(); ++j) {
+      for (size_t j = 0; j < fetch_block_rows.size(); ++j) {
         auto scalar_result = flat_array->GetScalar(j);
         if (!scalar_result.ok()) continue;
         int output_row = output_to_result_index[j].first;
@@ -2543,14 +2557,14 @@ TablePtr SegmentImpl::fetch_normal(
   // Phase 3: Construct result arrays
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
 
-  bool need_local_doc_id = false;
-  size_t local_doc_id_col_index = -1;
+  bool has_segment_row_id_column = false;
+  size_t segment_row_id_col_index = -1;
 
   for (size_t col_index = 0; col_index < columns.size(); ++col_index) {
     const std::string &col = columns[col_index];
     if (col == LOCAL_ROW_ID) {
-      need_local_doc_id = true;
-      local_doc_id_col_index = col_index;
+      has_segment_row_id_column = true;
+      segment_row_id_col_index = col_index;
       continue;
     }
 
@@ -2558,7 +2572,7 @@ TablePtr SegmentImpl::fetch_normal(
     std::sort(result_vec.begin(), result_vec.end());
 
     std::vector<std::shared_ptr<arrow::Scalar>> ordered_scalars;
-    for (int i = 0; i < static_cast<int>(indices.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(segment_doc_ids.size()); ++i) {
       auto it = std::find_if(
           result_vec.begin(), result_vec.end(),
           [i](const std::pair<int, std::shared_ptr<arrow::Scalar>> &p) {
@@ -2582,13 +2596,13 @@ TablePtr SegmentImpl::fetch_normal(
     }
   }
 
-  // Add LOCAL_ROW_ID array if requested
-  if (need_local_doc_id) {
-    std::sort(local_doc_id_values.begin(), local_doc_id_values.end());
+  // Add segment-local values for the LOCAL_ROW_ID column.
+  if (has_segment_row_id_column) {
+    std::sort(segment_row_id_values.begin(), segment_row_id_values.end());
     std::vector<uint64_t> values;
-    values.reserve(local_doc_id_values.size());
-    for (const auto &[row, id] : local_doc_id_values) {
-      values.push_back(id);
+    values.reserve(segment_row_id_values.size());
+    for (const auto &[row, segment_row_id] : segment_row_id_values) {
+      values.push_back(segment_row_id);
     }
 
     arrow::UInt64Builder builder;
@@ -2603,7 +2617,7 @@ TablePtr SegmentImpl::fetch_normal(
       LOG_ERROR("Failed to finish builder: %s", s.message().c_str());
       return nullptr;
     }
-    result_arrays[local_doc_id_col_index] = std::move(array);
+    result_arrays[segment_row_id_col_index] = std::move(array);
   }
 
   // Wrap arrays into ChunkedArray and build final table
@@ -2614,11 +2628,11 @@ TablePtr SegmentImpl::fetch_normal(
   }
 
   return arrow::Table::Make(result_schema, result_columns,
-                            static_cast<int64_t>(indices.size()));
+                            static_cast<int64_t>(segment_doc_ids.size()));
 }
 
 TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
-                            const std::vector<int> &indices) const {
+                            const std::vector<int> &segment_doc_ids) const {
   if (!validate(columns)) {
     return nullptr;
   }
@@ -2649,8 +2663,8 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 
   auto result_schema = std::make_shared<arrow::Schema>(fields);
 
-  // Early return for empty indices
-  if (indices.empty()) {
+  // Early return for empty segment doc IDs.
+  if (segment_doc_ids.empty()) {
     arrow::ArrayVector empty_arrays;
     for (const auto &field : fields) {
       empty_arrays.push_back(arrow::MakeEmptyArray(field->type()).ValueOrDie());
@@ -2664,13 +2678,13 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
   }
 
   if (use_fetch_perf_) {
-    return fetch_perf(columns, result_schema, indices);
+    return fetch_perf(columns, result_schema, segment_doc_ids);
   }
-  return fetch_normal(columns, result_schema, indices);
+  return fetch_normal(columns, result_schema, segment_doc_ids);
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
-                                int doc_id) const {
+                                int segment_doc_id) const {
   if (columns.empty()) {
     LOG_ERROR("Empty columns");
     return nullptr;
@@ -2709,12 +2723,12 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
 
   if (is_in_single_persist_store) {
     int offset_idx = -1;
-    int block_index = find_persist_block_id(BlockType::SCALAR, doc_id,
+    int block_index = find_persist_block_id(BlockType::SCALAR, segment_doc_id,
                                             columns[0], &offset_idx);
     if (block_index != -1 && offset_idx > -1 &&
         offset_idx < static_cast<int>(block_offsets.size())) {
-      int local_row = doc_id - block_offsets[offset_idx];
-      return persist_stores_[block_index]->fetch(columns, local_row);
+      int block_row = segment_doc_id - block_offsets[offset_idx];
+      return persist_stores_[block_index]->fetch(columns, block_row);
     }
 
     // Check memory store
@@ -2725,14 +2739,15 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
               : block_offsets.back() + block_metas.back().doc_count_;
       const auto &mem_block = segment_meta_->writing_forward_block().value();
 
-      if (mem_offset <= doc_id &&
-          doc_id < mem_offset + static_cast<int>(mem_block.doc_count_)) {
-        int local_row = doc_id - mem_offset;
-        return memory_store_->fetch(columns, local_row);
+      if (mem_offset <= segment_doc_id &&
+          segment_doc_id <
+              mem_offset + static_cast<int>(mem_block.doc_count_)) {
+        int block_row = segment_doc_id - mem_offset;
+        return memory_store_->fetch(columns, block_row);
       }
     }
   } else {
-    auto table = fetch(columns, std::vector<int>{doc_id});
+    auto table = fetch(columns, std::vector<int>{segment_doc_id});
     if (table) {
       std::vector<arrow::Datum> datums;
       for (const auto &col : table->columns()) {
@@ -2749,7 +2764,7 @@ ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
     }
   }
 
-  LOG_ERROR("Document ID %d not found in persist segment", doc_id);
+  LOG_ERROR("Segment doc ID %d not found in persist segment", segment_doc_id);
   return nullptr;
 }
 
@@ -2767,6 +2782,8 @@ RecordBatchReaderPtr SegmentImpl::scan(
   std::map<std::pair<int64_t, int64_t>,
            std::vector<std::shared_ptr<arrow::ipc::RecordBatchReader>>>
       block_groups;
+  bool emit_segment_row_id =
+      std::find(columns.begin(), columns.end(), LOCAL_ROW_ID) != columns.end();
 
   for (size_t i = 0; i < scalar_blocks.size() && i < persist_stores_.size();
        ++i) {
@@ -2778,6 +2795,9 @@ RecordBatchReaderPtr SegmentImpl::scan(
       if (block.contain_column(col)) {
         interested_cols.push_back(col);
       }
+    }
+    if (interested_cols.empty() && emit_segment_row_id) {
+      interested_cols.push_back(GLOBAL_DOC_ID);
     }
 
     if (interested_cols.empty()) {
@@ -2794,7 +2814,16 @@ RecordBatchReaderPtr SegmentImpl::scan(
   }
 
   if (memory_store_ && memory_store_->num_rows() > 0) {
-    auto reader = memory_store_->scan(columns);
+    std::vector<std::string> memory_scan_columns;
+    for (const auto &col : columns) {
+      if (col != LOCAL_ROW_ID) {
+        memory_scan_columns.push_back(col);
+      }
+    }
+    if (memory_scan_columns.empty()) {
+      memory_scan_columns.push_back(GLOBAL_DOC_ID);
+    }
+    auto reader = memory_store_->scan(memory_scan_columns);
     if (reader) {
       auto &mem_block = segment_meta_->writing_forward_block().value();
       auto key = std::make_pair(mem_block.min_doc_id(), mem_block.max_doc_id());
@@ -2834,8 +2863,8 @@ RecordBatchReaderPtr SegmentImpl::scan(
     }
   }
 
-  return std::make_shared<CombinedRecordBatchReader>(
-      shared_from_this(), std::move(merged_readers), columns);
+  return std::make_shared<CombinedRecordBatchReader>(std::move(merged_readers),
+                                                     columns);
 }
 
 
@@ -2844,13 +2873,11 @@ RecordBatchReaderPtr SegmentImpl::scan(
 ////////////////////////////////////////////////////////////////////////////////////
 
 SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
-    std::shared_ptr<const SegmentImpl> segment,
     std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers,
     const std::vector<std::string> &columns)
-    : segment_(segment),
-      readers_(std::move(readers)),
+    : readers_(std::move(readers)),
       current_reader_index_(0),
-      local_doc_id_(0) {
+      next_segment_row_id_to_emit_(0) {
   if (!readers_.empty()) {
     auto schema = readers_[0]->schema();
     std::vector<std::shared_ptr<arrow::Field>> selected_fields;
@@ -2859,8 +2886,8 @@ SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
       if (col_name == LOCAL_ROW_ID) {
         selected_fields.push_back(
             arrow::field(LOCAL_ROW_ID, arrow::uint64(), false));
-        need_local_doc_id_ = true;
-        local_doc_id_col_index_ = static_cast<int>(i);
+        emit_segment_row_id_ = true;
+        segment_row_id_output_col_index_ = static_cast<int>(i);
       } else {
         if (auto field = schema->GetFieldByName(col_name); field) {
           selected_fields.push_back(field);
@@ -2869,17 +2896,6 @@ SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
     }
 
     projected_schema_ = arrow::schema(selected_fields);
-
-    auto segment_meta = segment_->meta();
-    const auto &blocks = segment_meta->persisted_blocks();
-    for (const auto &block : blocks) {
-      if (block.type() != BlockType::SCALAR) continue;
-      offsets_.push_back(block.min_doc_id_);
-    }
-    if (segment_meta->has_writing_forward_block()) {
-      const auto &mem_block = segment_meta->writing_forward_block().value();
-      offsets_.push_back(mem_block.min_doc_id_);
-    }
   }
 }
 
@@ -2899,24 +2915,25 @@ arrow::Status SegmentImpl::CombinedRecordBatchReader::ReadNext(
       return status;
     }
 
-    if (need_local_doc_id_ && *batch) {
+    if (emit_segment_row_id_ && *batch) {
       auto num_rows = (*batch)->num_rows();
       arrow::UInt64Builder builder;
       ARROW_RETURN_NOT_OK(builder.Reserve(num_rows));
 
       for (int64_t i = 0; i < num_rows; ++i) {
-        builder.UnsafeAppend(local_doc_id_++);
+        builder.UnsafeAppend(next_segment_row_id_to_emit_++);
       }
-      std::shared_ptr<arrow::Array> local_id_array;
-      ARROW_RETURN_NOT_OK(builder.Finish(&local_id_array));
+      std::shared_ptr<arrow::Array> segment_row_id_array;
+      ARROW_RETURN_NOT_OK(builder.Finish(&segment_row_id_array));
 
       auto result =
-          (*batch)->AddColumn(local_doc_id_col_index_,
+          (*batch)->AddColumn(segment_row_id_output_col_index_,
                               projected_schema_->GetFieldByName(LOCAL_ROW_ID),
-                              std::move(local_id_array));
-      if (result.ok()) {
-        *batch = std::move(result.ValueOrDie());
+                              std::move(segment_row_id_array));
+      if (!result.ok()) {
+        return result.status();
       }
+      *batch = std::move(result.ValueOrDie());
     }
 
     if (*batch) {
@@ -2924,9 +2941,6 @@ arrow::Status SegmentImpl::CombinedRecordBatchReader::ReadNext(
     }
 
     current_reader_index_++;
-    if (current_reader_index_ < readers_.size()) {
-      local_doc_id_ = offsets_[current_reader_index_];
-    }
   }
 
   *batch = nullptr;
@@ -4404,14 +4418,13 @@ BlockID SegmentImpl::allocate_block_id() {
   return block_id_allocator_.fetch_add(1);
 }
 
-Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t local_id) const {
+Result<uint64_t> SegmentImpl::get_global_doc_id(uint32_t segment_doc_id) const {
   std::lock_guard lock(seg_mtx_);
-  if (local_id >= doc_ids_.size()) {
+  if (segment_doc_id >= doc_ids_.size()) {
     return tl::make_unexpected(
-        Status::InvalidArgument("local_id out of range"));
+        Status::InvalidArgument("segment_doc_id out of range"));
   }
-  // global doc_id
-  return doc_ids_[local_id];
+  return doc_ids_[segment_doc_id];
 }
 
 
@@ -4472,7 +4485,7 @@ Result<Segment::Ptr> Segment::Open(const std::string &path,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
-// FTS integration
+// FTS integration (delegated to FtsIndexer)
 ////////////////////////////////////////////////////////////////////////////////////
 
 Status SegmentImpl::open_fts_indexers(bool create) {
@@ -4480,115 +4493,47 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     return Status::OK();
   }
 
-  auto fts_fields = collection_schema_->fts_fields();
-  has_fts_ = true;
-
-  auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_);
-
-  // Collect CF names and per-CF merge operators
-  std::vector<std::string> cf_names;
-  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
-      per_cf_merge_ops;
-
-  for (const auto &field : fts_fields) {
-    const auto &name = field->name();
-    cf_names.push_back(name);                        // postings
-    cf_names.push_back(name + kFtsPositionsSuffix);  // positions
-
-    per_cf_merge_ops[name] = std::make_shared<fts::FtsPostingsMerge>();
-    per_cf_merge_ops[name + kFtsMaxTfSuffix] =
-        std::make_shared<fts::FtsMaxTfMerge>();
-
-    // Side CFs (_tf / _max_tf / _doc_len) are present in mutable segments
-    // that have not yet been dumped.  After dump,
-    // convert_postings_to_bitpacked() inlines their payloads into BitPacked
-    // postings and the CFs are dropped.  When opening (!create), we pass
-    // empty column_names so RocksdbContext::open auto-discovers existing CFs
-    // via ListColumnFamilies — side CFs are included only when present.
-    if (create) {
-      cf_names.push_back(name + kFtsTfSuffix);
-      cf_names.push_back(name + kFtsMaxTfSuffix);
-      cf_names.push_back(name + kFtsDocLenSuffix);
-    }
-  }
-  cf_names.push_back(kFtsStatCfName);
-
-  fts_ctx_ = std::make_shared<RocksdbContext>();
-  Status s;
-
-  bool enable_hash_skiplist = true;
   if (create) {
-    s = fts_ctx_->create(RocksdbContext::Args{
-        fts_path, cf_names, nullptr, per_cf_merge_ops, enable_hash_skiplist});
-  } else {
-    // Auto-discover existing CFs via ListColumnFamilies (empty column_names).
-    // per_cf_merge_ops covers both base and side CFs; entries for CFs that
-    // were dropped after dump are harmlessly ignored.
-    s = fts_ctx_->open(
-        RocksdbContext::Args{
-            fts_path, {}, nullptr, per_cf_merge_ops, enable_hash_skiplist},
-        options_.read_only_);
-  }
-  if (!s.ok()) {
-    LOG_ERROR("open_fts_indexers: failed to %s FTS RocksDB at [%s]: %s",
-              create ? "create" : "open", fts_path.c_str(),
-              s.message().c_str());
-    return s;
-  }
-
-  auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
-
-  for (const auto &field : fts_fields) {
-    const auto &name = field->name();
-    auto *postings_cf = fts_ctx_->get_cf(name);
-    auto *positions_cf = fts_ctx_->get_cf(name + kFtsPositionsSuffix);
-    // Side CF handles are non-null when the segment has not been dumped
-    // (side CFs still exist).  For dumped immutable segments get_cf returns
-    // nullptr and FtsColumnIndexer falls back to BitPacked inline payloads
-    // or tf=1/doc_len=1 defaults.
-    auto *term_freq_cf = fts_ctx_->get_cf(name + kFtsTfSuffix);
-    auto *max_tf_cf = fts_ctx_->get_cf(name + kFtsMaxTfSuffix);
-    auto *doc_len_cf = fts_ctx_->get_cf(name + kFtsDocLenSuffix);
-
-    auto indexer = std::make_shared<fts::FtsColumnIndexer>();
-
-    auto ret = indexer->open(field, fts_ctx_.get(), postings_cf, positions_cf,
-                             term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
-    if (!ret.has_value()) {
-      LOG_ERROR(
-          "open_fts_indexers: FtsColumnIndexer::open failed for field[%s] "
-          "err[%s] postings_cf[%p] positions_cf[%p] stat_cf[%p]",
-          name.c_str(), ret.error().message().c_str(), (void *)postings_cf,
-          (void *)positions_cf, (void *)stat_cf);
-      return Status::InternalError("Failed to open FTS indexer: ", name, " ",
-                                   ret.error().message());
+    auto block_id = allocate_block_id();
+    auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
+    fts_indexer_ = FtsIndexer::CreateAndOpen(
+        fts_path, collection_schema_->fts_fields(), true);
+    if (!fts_indexer_) {
+      return Status::InternalError("open_fts_indexers: create failed at [",
+                                   fts_path, "]");
     }
-
-    fts_indexers_[name] = indexer;
+    segment_meta_->add_persisted_block(
+        BlockMeta{block_id, BlockType::FTS_INDEX, 0, 0, 0, {}});
+  } else {
+    for (const auto &block : segment_meta_->persisted_blocks()) {
+      if (block.type() == BlockType::FTS_INDEX) {
+        auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block.id());
+        fts_indexer_ = FtsIndexer::CreateAndOpen(
+            fts_path, collection_schema_->fts_fields(), false,
+            options_.read_only_);
+        if (!fts_indexer_) {
+          return Status::InternalError("open_fts_indexers: open failed at [",
+                                       fts_path, "]");
+        }
+        break;
+      }
+    }
   }
 
+  has_fts_ = (fts_indexer_ != nullptr);
   return Status::OK();
 }
 
 Status SegmentImpl::flush_fts_indexers() {
-  for (const auto &[name, indexer] : fts_indexers_) {
-    auto ret = indexer->flush();
-    if (!ret.has_value()) {
-      return Status::InternalError("FTS flush failed: ", name, " ",
-                                   ret.error().message());
-    }
+  if (!fts_indexer_) {
+    return Status::OK();
   }
-  auto s = fts_ctx_->flush();
-  CHECK_RETURN_STATUS(s);
-  return Status::OK();
+  return fts_indexer_->flush();
 }
 
 Status SegmentImpl::close_fts_indexers() {
-  fts_indexers_.clear();
-  if (fts_ctx_) {
-    auto s = fts_ctx_->close();
-    fts_ctx_.reset();
-    return s;
+  if (fts_indexer_) {
+    fts_indexer_.reset();
   }
   return Status::OK();
 }
@@ -4598,17 +4543,13 @@ Status SegmentImpl::insert_fts_indexer(Doc &doc) {
     return Status::OK();
   }
   for (const auto &field : collection_schema_->fts_fields()) {
-    auto it = fts_indexers_.find(field->name());
-    if (it == fts_indexers_.end()) {
-      return Status::InternalError("FTS indexer not found: ", field->name());
-    }
     auto value = doc.get<std::string>(field->name());
     if (value.has_value()) {
       auto segment_doc_id = doc_ids_.size();
-      auto ret = it->second->insert(segment_doc_id, value.value());
-      if (!ret.has_value()) {
-        return Status::InternalError("FTS insert failed: ", field->name(), " ",
-                                     ret.error().message());
+      auto s =
+          fts_indexer_->insert(field->name(), segment_doc_id, value.value());
+      if (!s.ok()) {
+        return s;
       }
     }
   }
@@ -4616,49 +4557,18 @@ Status SegmentImpl::insert_fts_indexer(Doc &doc) {
 }
 
 Status SegmentImpl::dump_fts_indexers() {
-  if (!has_fts_) {
+  if (!has_fts_ || !fts_indexer_) {
     return Status::OK();
   }
-
-  // flush all indexers
-  for (const auto &[name, indexer] : fts_indexers_) {
-    auto ret = indexer->flush();
-    if (!ret.has_value()) {
-      return Status::InternalError("FTS flush failed during dump: ", name, " ",
-                                   ret.error().message());
-    }
-  }
-
-  // convert postings to bitpacked format
-  for (const auto &[name, indexer] : fts_indexers_) {
-    auto ret = indexer->convert_postings_to_bitpacked();
-    if (!ret.has_value()) {
-      return Status::InternalError("FTS convert_postings_to_bitpacked failed: ",
-                                   name, " ", ret.error().message());
-    }
-  }
-
-  // reset side CFs and drop $TF/$MAX_TF/$DOC_LEN CFs
-  for (const auto &[name, indexer] : fts_indexers_) {
-    indexer->reset_side_cfs();
-  }
-  for (const auto &field : collection_schema_->fts_fields()) {
-    const auto &name = field->name();
-    fts_ctx_->drop_cf(name + kFtsTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsMaxTfSuffix);
-    fts_ctx_->drop_cf(name + kFtsDocLenSuffix);
-  }
-
-  return Status::OK();
+  return fts_indexer_->seal_all();
 }
 
 fts::FtsColumnIndexerPtr SegmentImpl::get_fts_indexer(
     const std::string &field_name) const {
-  auto it = fts_indexers_.find(field_name);
-  if (it != fts_indexers_.end()) {
-    return it->second;
+  if (!fts_indexer_) {
+    return nullptr;
   }
-  return nullptr;
+  return fts_indexer_->get(field_name);
 }
 
 Result<std::vector<fts::FtsResult>> SegmentImpl::fts_search(
@@ -4677,6 +4587,224 @@ Result<std::vector<fts::FtsResult>> SegmentImpl::fts_search(
   }
 
   return std::move(ret.value());
+}
+
+Status SegmentImpl::create_fts_index(const std::string &column,
+                                     const IndexParams::Ptr &index_params,
+                                     SegmentMeta::Ptr *out_segment_meta,
+                                     FtsIndexer::Ptr *out_fts_indexer) {
+  auto fts_params = std::dynamic_pointer_cast<FtsIndexParams>(index_params);
+  if (!fts_params) {
+    return Status::InvalidArgument("create_fts_index: not FtsIndexParams");
+  }
+
+  auto field = collection_schema_->get_field(column);
+  if (!field) {
+    return Status::NotFound("create_fts_index: field not found: ", column);
+  }
+
+  if (field->index_params() != nullptr) {
+    if (*field->index_params() == *index_params) {
+      // Already indexed with same params, nothing to do.
+      *out_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
+      *out_fts_indexer = fts_indexer_;
+      return Status::OK();
+    }
+    if (field->index_params()->type() != index_params->type()) {
+      return Status::InvalidArgument(
+          "create_fts_index: field[", column, "] already has index type ",
+          IndexTypeCodeBook::AsString(field->index_params()->type()));
+    }
+    // Same type but different params — will rebuild below.
+  }
+
+  auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
+  new_segment_meta->remove_fts_index_block();
+
+  auto block_id = allocate_block_id();
+  auto new_fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
+
+  // Build a new schema that includes the new FTS field for the snapshot open.
+  auto new_schema = std::make_shared<CollectionSchema>(*collection_schema_);
+  new_schema->get_field(column)->set_index_params(index_params);
+
+  FtsIndexer::Ptr new_fts_indexer;
+  if (fts_indexer_) {
+    // Snapshot existing fts DB, then open the copy with current schema.
+    auto s = fts_indexer_->create_snapshot(new_fts_path);
+    CHECK_RETURN_STATUS(s);
+
+    new_fts_indexer = FtsIndexer::CreateAndOpen(
+        new_fts_path, collection_schema_->fts_fields(), false);
+  } else {
+    // No existing fts DB — create a fresh one.
+    new_fts_indexer =
+        FtsIndexer::CreateAndOpen(new_fts_path, new_schema->fts_fields(), true);
+  }
+  if (!new_fts_indexer) {
+    FileHelper::RemoveDirectory(new_fts_path);
+    return Status::InternalError("create_fts_index: failed to open snapshot");
+  }
+
+  // If the field already exists in the snapshot (params change), remove it
+  // first so we can recreate with the new params.
+  if (new_fts_indexer->has_field(column)) {
+    auto s = new_fts_indexer->remove_field_indexer(column);
+    if (!s.ok()) {
+      FileHelper::RemoveDirectory(new_fts_path);
+      return s;
+    }
+  }
+
+  {
+    auto new_field_schema = std::make_shared<FieldSchema>(
+        column, field->data_type(), field->nullable(), index_params);
+    auto s = new_fts_indexer->create_field_indexer(*new_field_schema);
+    if (!s.ok()) {
+      FileHelper::RemoveDirectory(new_fts_path);
+      return s;
+    }
+  }
+
+  // Scan forward store and replay all existing documents.
+  auto reader = scan({column});
+  if (reader) {
+    uint32_t seg_doc_id = 0;
+    while (true) {
+      auto batch = reader->Next();
+      if (!batch.ok()) {
+        FileHelper::RemoveDirectory(new_fts_path);
+        return Status::InternalError("create_fts_index: scan failed: ",
+                                     batch.status().message());
+      }
+      auto batch_value = batch.ValueOrDie();
+      if (!batch_value) {
+        break;
+      }
+      auto col_idx = batch_value->schema()->GetFieldIndex(column);
+      if (col_idx < 0) {
+        seg_doc_id += batch_value->num_rows();
+        continue;
+      }
+      auto string_array = std::static_pointer_cast<arrow::StringArray>(
+          batch_value->column(col_idx));
+      for (int64_t i = 0; i < string_array->length(); ++i) {
+        if (!string_array->IsNull(i)) {
+          auto s = new_fts_indexer->insert(column, seg_doc_id,
+                                           string_array->GetString(i));
+          if (!s.ok()) {
+            FileHelper::RemoveDirectory(new_fts_path);
+            return s;
+          }
+        }
+        seg_doc_id++;
+      }
+    }
+  }
+
+  // Seal the new field (flush + convert to BitPacked + drop side CFs).
+  auto s = new_fts_indexer->seal(column);
+  if (!s.ok()) {
+    FileHelper::RemoveDirectory(new_fts_path);
+    return s;
+  }
+
+  s = new_fts_indexer->flush();
+  if (!s.ok()) {
+    FileHelper::RemoveDirectory(new_fts_path);
+    return s;
+  }
+
+  // Register the new block in segment meta.
+  BlockMeta block;
+  block.set_id(block_id);
+  block.set_type(BlockType::FTS_INDEX);
+  new_segment_meta->add_persisted_block(block);
+
+  *out_segment_meta = new_segment_meta;
+  *out_fts_indexer = new_fts_indexer;
+
+  return Status::OK();
+}
+
+Status SegmentImpl::drop_fts_index(const std::string &column,
+                                   SegmentMeta::Ptr *out_segment_meta,
+                                   FtsIndexer::Ptr *out_fts_indexer) {
+  auto field = collection_schema_->get_field(column);
+  if (!field) {
+    return Status::NotFound("drop_fts_index: field not found: ", column);
+  }
+
+  auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
+  new_segment_meta->remove_fts_index_block();
+
+  // Build a new schema without the FTS index on this column.
+  auto new_schema = std::make_shared<CollectionSchema>(*collection_schema_);
+  new_schema->get_field(column)->set_index_params(nullptr);
+
+  if (!fts_indexer_) {
+    *out_segment_meta = new_segment_meta;
+    *out_fts_indexer = nullptr;
+    return Status::OK();
+  }
+
+  // Check if other FTS fields remain after removal.
+  bool has_other_fts = new_schema->has_fts_field();
+
+  if (has_other_fts) {
+    auto block_id = allocate_block_id();
+    auto new_fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
+
+    // Snapshot and reopen without this field.
+    auto s = fts_indexer_->create_snapshot(new_fts_path);
+    CHECK_RETURN_STATUS(s);
+
+    auto new_fts_indexer = FtsIndexer::CreateAndOpen(
+        new_fts_path, collection_schema_->fts_fields(), false);
+    if (!new_fts_indexer) {
+      FileHelper::RemoveDirectory(new_fts_path);
+      return Status::InternalError("drop_fts_index: failed to open snapshot");
+    }
+
+    s = new_fts_indexer->remove_field_indexer(column);
+    CHECK_RETURN_STATUS(s);
+
+    s = new_fts_indexer->flush();
+    CHECK_RETURN_STATUS(s);
+
+    BlockMeta block;
+    block.set_id(block_id);
+    block.set_type(BlockType::FTS_INDEX);
+    new_segment_meta->add_persisted_block(block);
+
+    *out_fts_indexer = new_fts_indexer;
+  } else {
+    // Last FTS field removed — no new indexer.
+    *out_fts_indexer = nullptr;
+  }
+
+  *out_segment_meta = new_segment_meta;
+  return Status::OK();
+}
+
+Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
+                                     const SegmentMeta::Ptr &segment_meta,
+                                     const FtsIndexer::Ptr &new_fts_indexer) {
+  collection_schema_ = std::make_shared<CollectionSchema>(schema);
+  segment_meta_ = segment_meta;
+
+  if (fts_indexer_) {
+    auto old_dir = fts_indexer_->working_dir();
+    fts_indexer_ = new_fts_indexer;
+    FileHelper::RemoveDirectory(old_dir);
+  } else {
+    fts_indexer_ = new_fts_indexer;
+  }
+
+  has_fts_ = (fts_indexer_ != nullptr);
+  fresh_persist_block_offset();
+
+  return Status::OK();
 }
 
 }  // namespace zvec

@@ -19,6 +19,7 @@
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/db/config.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
 #if RABITQ_SUPPORTED
@@ -65,6 +66,16 @@ Status SegmentHelper::Execute(SegmentTask::Ptr &task) {
   } else if (std::holds_alternative<DropScalarIndexTask>(task_info)) {
     auto &drop_index_task = std::get<DropScalarIndexTask>(task_info);
     s = ExecuteDropScalarIndexTask(drop_index_task);
+  } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
+    auto &fts_task = std::get<CreateFtsIndexTask>(task_info);
+    s = fts_task.input_segment_->create_fts_index(
+        fts_task.column_, fts_task.index_params_,
+        &fts_task.output_segment_meta_, &fts_task.output_fts_indexer_);
+  } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
+    auto &fts_task = std::get<DropFtsIndexTask>(task_info);
+    s = fts_task.input_segment_->drop_fts_index(fts_task.column_,
+                                                &fts_task.output_segment_meta_,
+                                                &fts_task.output_fts_indexer_);
   } else {
     return Status::InvalidArgument("Unknown task type");
   }
@@ -129,10 +140,13 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
     return Status::OK();
   }
 
-  // RowIdFilter copies the bitmap so ReduceFts below can reuse it; sharing
-  // lets the FTS reducer skip its own per-doc dense rank table.
-  std::shared_ptr<RowIdFilter> row_id_filter =
-      std::make_shared<RowIdFilter>(delete_row_id_bitmap);
+  // Leave row_id_filter null when there are no deletes or
+  // create_compaction_task with rebuild=false, so downstream merge
+  // can take a faster per-doc path that skips the filter callback entirely.
+  std::shared_ptr<RowIdFilter> row_id_filter;
+  if (!delete_row_id_bitmap.isEmpty()) {
+    row_id_filter = std::make_shared<RowIdFilter>(delete_row_id_bitmap);
+  }
 
   s = ReduceVectorIndex(schema, input_segments, output_segment_path,
                         row_id_filter, block_id_generator, min_doc_id,
@@ -142,7 +156,7 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
   LOG_INFO("Compacted vector index");
 
   s = ReduceFts(schema, input_segments, output_segment_path,
-                delete_row_id_bitmap);
+                delete_row_id_bitmap, block_id_generator, &block_metas);
   CHECK_RETURN_STATUS(s);
 
   LOG_INFO("Compacted fts index");
@@ -636,40 +650,28 @@ Status SegmentHelper::ReduceVectorIndex(
     auto vector_index_params =
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
 
+    using FetchIndexersFn =
+        std::vector<VectorColumnIndexer::Ptr> (Segment::*)(const std::string &)
+            const;
+    auto collect_merge_indexers = [&](FetchIndexersFn fetch) {
+      std::vector<VectorColumnIndexer::Ptr> source_indexers;
+      for (const auto &seg : input_segments) {
+        auto seg_indexers = (seg.get()->*fetch)(field->name());
+        source_indexers.insert(source_indexers.end(), seg_indexers.begin(),
+                               seg_indexers.end());
+      }
+      return source_indexers;
+    };
+
     auto vector_block_id = block_id_generator();
     if (vector_index_params->quantize_type() == QuantizeType::UNDEFINED) {
       auto vector_index_path = FileHelper::MakeVectorIndexPath(
           output_segment_path, field->name(), vector_block_id);
 
-      // only create original vector indexer
-      auto vector_indexer =
-          std::make_shared<VectorColumnIndexer>(vector_index_path, *field);
-      s = vector_indexer->Open({true, true});
-      CHECK_RETURN_STATUS(s);
-
-      std::vector<VectorColumnIndexer::Ptr> merge_indexers;
-      for (auto &input_segment : input_segments) {
-        // merge_indexers should be ordered put
-        auto to_merge_indexers =
-            input_segment->get_vector_indexer(field->name());
-        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
-                              to_merge_indexers.end());
-      }
-
-      vector_column_params::MergeOptions merge_options;
-      if (concurrency == 0) {
-        merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
-      } else {
-        merge_options.write_concurrency = concurrency;
-      }
-
-      s = vector_indexer->Merge(merge_indexers, filter, merge_options);
-      CHECK_RETURN_STATUS(s);
-
-      s = vector_indexer->Flush();
-      CHECK_RETURN_STATUS(s);
-
-      s = vector_indexer->Close();
+      s = MergeWithOptionalReuse(
+          vector_index_path, *field,
+          collect_merge_indexers(&Segment::get_vector_indexer), filter,
+          concurrency, nullptr);
       CHECK_RETURN_STATUS(s);
 
       BlockMeta new_block_meta;
@@ -689,32 +691,11 @@ Status SegmentHelper::ReduceVectorIndex(
       field_without_quantize->set_index_params(
           MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
 
-      // create flat index
-      auto vector_indexer = std::make_shared<VectorColumnIndexer>(
-          vector_index_path, *field_without_quantize);
-      s = vector_indexer->Open({true, true});
-      CHECK_RETURN_STATUS(s);
-
-      std::vector<VectorColumnIndexer::Ptr> merge_indexers;
-      for (auto &input_segment : input_segments) {
-        // merge_indexers should be ordered put
-        auto to_merge_indexers =
-            input_segment->get_vector_indexer(field->name());
-        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
-                              to_merge_indexers.end());
-      }
-
-      vector_column_params::MergeOptions merge_options;
-      if (concurrency == 0) {
-        merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
-      } else {
-        merge_options.write_concurrency = concurrency;
-      }
-
-      s = vector_indexer->Merge(merge_indexers, filter, merge_options);
-      CHECK_RETURN_STATUS(s);
-
-      s = vector_indexer->Flush();
+      VectorColumnIndexer::Ptr vector_indexer;
+      s = MergeWithOptionalReuse(
+          vector_index_path, *field_without_quantize,
+          collect_merge_indexers(&Segment::get_vector_indexer), filter,
+          concurrency, &vector_indexer);
       CHECK_RETURN_STATUS(s);
 
       // The training step (for RABITQ) and the subsequent quantize merge both
@@ -745,27 +726,10 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      auto vector_indexer_quantize = std::make_shared<VectorColumnIndexer>(
-          vector_quan_index_path, *field_for_quantize);
-      s = vector_indexer_quantize->Open({true, true});
-      CHECK_RETURN_STATUS(s);
-
-      merge_indexers.clear();
-      for (auto &input_segment : input_segments) {
-        // merge_indexers should be ordered put
-        auto to_merge_indexers =
-            input_segment->get_quant_vector_indexer(field->name());
-        merge_indexers.insert(merge_indexers.end(), to_merge_indexers.begin(),
-                              to_merge_indexers.end());
-      }
-
-      s = vector_indexer_quantize->Merge(merge_indexers, filter, merge_options);
-      CHECK_RETURN_STATUS(s);
-
-      s = vector_indexer_quantize->Flush();
-      CHECK_RETURN_STATUS(s);
-
-      s = vector_indexer_quantize->Close();
+      s = MergeWithOptionalReuse(
+          vector_quan_index_path, *field_for_quantize,
+          collect_merge_indexers(&Segment::get_quant_vector_indexer), filter,
+          concurrency, nullptr);
       CHECK_RETURN_STATUS(s);
 
       s = vector_indexer->Close();
@@ -781,6 +745,100 @@ Status SegmentHelper::ReduceVectorIndex(
     }
   }
 
+  return Status::OK();
+}
+
+namespace {
+
+// Only the first indexer's file is reused as the merge base; the remaining
+// indexers are merged in via Merge(). Reuse is restricted to streaming
+// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ
+// fall back to the full-rebuild merge.
+bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
+                          const FieldSchema &output_field,
+                          const IndexFilter::Ptr &filter) {
+  if (filter != nullptr || indexers.empty()) {
+    return false;
+  }
+  if (output_field.index_type() != IndexType::HNSW &&
+      output_field.index_type() != IndexType::FLAT) {
+    return false;
+  }
+  const auto &first_field = indexers.front()->field_schema();
+  if (first_field.index_type() != output_field.index_type()) {
+    return false;
+  }
+
+  // When creating a quantized column, the fp32 indexers will be merged into a
+  // quantized vector indexer.
+  auto quantize_type_of = [](const FieldSchema &f) {
+    auto params =
+        std::dynamic_pointer_cast<VectorIndexParams>(f.index_params());
+    return params ? params->quantize_type() : QuantizeType::UNDEFINED;
+  };
+  return quantize_type_of(first_field) == quantize_type_of(output_field);
+}
+
+}  // namespace
+
+Status SegmentHelper::MergeWithOptionalReuse(
+    const std::string &output_index_path, const FieldSchema &index_field,
+    std::vector<VectorColumnIndexer::Ptr> source_indexers,
+    const IndexFilter::Ptr &filter, int concurrency,
+    VectorColumnIndexer::Ptr *merged_indexer) {
+  vector_column_params::MergeOptions merge_options;
+  if (concurrency == 0) {
+    merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
+    merge_options.write_concurrency =
+        GlobalConfig::Instance().optimize_thread_count();
+  } else {
+    merge_options.write_concurrency = concurrency;
+  }
+  auto vector_indexer =
+      std::make_shared<VectorColumnIndexer>(output_index_path, index_field);
+  bool reused_base_index = false;
+  Status s;
+
+  if (CanReuseFirstIndexer(source_indexers, index_field, filter)) {
+    const auto &first_indexer = source_indexers.front();
+    LOG_INFO(
+        "Reusing first indexer as merge base. "
+        "field[%s] src[%s] dst[%s] tail_indexers[%zu]",
+        index_field.name().c_str(), first_indexer->index_file_path().c_str(),
+        output_index_path.c_str(), source_indexers.size() - 1);
+    if (FileHelper::CopyFile(first_indexer->index_file_path(),
+                             output_index_path)) {
+      // Open the copied file in-place (create_new=false).
+      s = vector_indexer->Open(vector_column_params::ReadOptions{true, false});
+      CHECK_RETURN_STATUS(s);
+
+      source_indexers.erase(source_indexers.begin());
+      s = vector_indexer->Merge(source_indexers, filter, merge_options);
+      CHECK_RETURN_STATUS(s);
+      reused_base_index = true;
+    } else {
+      LOG_WARN("Failed to copy %s to %s; falling back to full rebuild",
+               first_indexer->index_file_path().c_str(),
+               output_index_path.c_str());
+    }
+  }
+
+  if (!reused_base_index) {
+    s = vector_indexer->Open(vector_column_params::ReadOptions{true, true});
+    CHECK_RETURN_STATUS(s);
+
+    s = vector_indexer->Merge(source_indexers, filter, merge_options);
+    CHECK_RETURN_STATUS(s);
+  }
+
+  s = vector_indexer->Flush();
+  CHECK_RETURN_STATUS(s);
+  if (merged_indexer != nullptr) {
+    *merged_indexer = vector_indexer;
+  } else {
+    s = vector_indexer->Close();
+    CHECK_RETURN_STATUS(s);
+  }
   return Status::OK();
 }
 
@@ -925,7 +983,9 @@ arrow::Status SegmentHelper::FilterRecordBatch(
 Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
                                 const std::vector<Segment::Ptr> &input_segments,
                                 const std::string &output_segment_path,
-                                const roaring::Roaring &delete_row_id_bitmap) {
+                                const roaring::Roaring &delete_row_id_bitmap,
+                                std::function<BlockID()> &block_id_generator,
+                                std::vector<BlockMeta> *output_block_metas) {
   if (!schema->has_fts_field()) {
     return Status::OK();
   }
@@ -935,12 +995,15 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
 
   auto fts_fields = schema->fts_fields();
 
+  auto fts_block_id = block_id_generator();
+
   // Build the destination FTS RocksDB with the post-dump CF layout:
   // postings + positions per field, plus the shared stat CF.  Side CFs
   // ($TF/$MAX_TF/$DOC_LEN) are skipped — the reducer writes BitPacked
   // directly, matching the immutable-segment shape after
   // convert_postings_to_bitpacked().
-  auto dst_fts_path = FileHelper::MakeFtsIndexPath(output_segment_path);
+  auto dst_fts_path =
+      FileHelper::MakeFtsIndexPath(output_segment_path, fts_block_id);
   std::vector<std::string> cf_names;
   std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
       per_cf_merge_ops;
@@ -1030,6 +1093,12 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
               s.message().c_str());
     return s;
   }
+
+  BlockMeta fts_block;
+  fts_block.set_id(fts_block_id);
+  fts_block.set_type(BlockType::FTS_INDEX);
+  output_block_metas->push_back(fts_block);
+
   return Status::OK();
 }
 

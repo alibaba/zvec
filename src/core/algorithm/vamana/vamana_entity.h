@@ -197,6 +197,17 @@ class VamanaEntity {
     header_.graph.entry_point = ep;
   }
 
+  // Calculate medoid (entry point) as the data point closest to the centroid
+  // of all vectors, following DiskANN's standard approach.
+  // Parameters:
+  //   dimension: vector dimension (number of elements per vector)
+  //   data_type: IndexMeta::DataType value (e.g. DT_FP32=2, DT_INT8=4,
+  //   DT_FP16=1)
+  // Returns the medoid node ID, or kInvalidNodeId if no valid data.
+  virtual node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type) {
+    return kInvalidNodeId;
+  }
+
   virtual int cleanup() {
     header_.clear();
     return 0;

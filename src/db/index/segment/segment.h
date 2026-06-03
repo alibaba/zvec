@@ -26,6 +26,7 @@
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include "db/index/column/fts_column/fts_column_indexer.h"
+#include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/inverted_column/inverted_column_indexer.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/combined_vector_column_indexer.h"
@@ -64,9 +65,10 @@ class Segment {
 
   virtual SegmentMeta::Ptr meta() const = 0;
 
+  // Count documents visible to an optional global-doc-ID filter.
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
 
-  // for collection
+  // ---- Schema and index mutation -----------------------------------------
   virtual Status add_column(FieldSchema::Ptr column_schema,
                             const std::string &expression,
                             const AddColumnOptions &options) = 0;
@@ -84,7 +86,6 @@ class Segment {
       std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           *quant_vector_indexers) = 0;
 
-  // defined in segment.h cause it needs to access block_id generator
   virtual Status create_vector_index(
       const std::string &column, const IndexParams::Ptr &index_params,
       int concurrency, SegmentMeta::Ptr *new_segment_meta,
@@ -111,13 +112,11 @@ class Segment {
 
   virtual bool all_vector_index_ready() const = 0;
 
-  // defined in segment.h cause it needs to access block_id generator
   virtual Status create_scalar_index(
       const std::vector<std::string> &columns,
       const IndexParams::Ptr &index_params, SegmentMeta::Ptr *new_segment_meta,
       InvertedIndexer::Ptr *new_scalar_indexer) = 0;
 
-  // defined in segment.h cause it needs to access block_id generator
   virtual Status drop_scalar_index(
       const std::vector<std::string> &columns,
       SegmentMeta::Ptr *new_segment_meta,
@@ -127,6 +126,20 @@ class Segment {
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const InvertedIndexer::Ptr &scalar_indexer) = 0;
 
+  virtual Status create_fts_index(const std::string &column,
+                                  const IndexParams::Ptr &index_params,
+                                  SegmentMeta::Ptr *new_segment_meta,
+                                  FtsIndexer::Ptr *output_fts_indexer) = 0;
+
+  virtual Status drop_fts_index(const std::string &column,
+                                SegmentMeta::Ptr *new_segment_meta,
+                                FtsIndexer::Ptr *output_fts_indexer) = 0;
+
+  virtual Status reload_fts_index(const CollectionSchema &schema,
+                                  const SegmentMeta::Ptr &segment_meta,
+                                  const FtsIndexer::Ptr &new_fts_indexer) = 0;
+
+  // ---- Data operations ----------------------------------------------------
   virtual Status Insert(Doc &doc) = 0;
 
   virtual Status Upsert(Doc &doc) = 0;
@@ -142,34 +155,30 @@ class Segment {
                              &output_fields = std::nullopt,
                          bool include_vector = true) = 0;
 
-  // for sqlengine
   virtual TablePtr fetch(const std::vector<std::string> &columns,
-                         const std::vector<int> &indices) const = 0;
+                         const std::vector<int> &segment_doc_ids) const = 0;
 
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                             int index) const = 0;
+                             int segment_doc_id) const = 0;
 
-  // caller should hold segment shared_ptr for segment handle the indexer's
-  // lifetime
+  // Keep Segment alive while consuming the returned reader.
   virtual RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
+  // ---- Index accessors ----------------------------------------------------
+  // Keep Segment alive while using returned indexers.
   virtual CombinedVectorColumnIndexer::Ptr get_combined_vector_indexer(
       const std::string &field_name) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual CombinedVectorColumnIndexer::Ptr get_quant_combined_vector_indexer(
       const std::string &field_name) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual std::vector<VectorColumnIndexer::Ptr> get_vector_indexer(
       const std::string &field_name) const = 0;
 
   virtual std::vector<VectorColumnIndexer::Ptr> get_quant_vector_indexer(
       const std::string &field_name) const = 0;
 
-  // caller hold segment shared_ptr for segment handle the indexer's lifetime
   virtual InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &field_name) const = 0;
 
@@ -177,17 +186,20 @@ class Segment {
   virtual fts::FtsColumnIndexerPtr get_fts_indexer(
       const std::string &field_name) const = 0;
 
+  // ---- Index queries and filters -----------------------------------------
   virtual Result<std::vector<fts::FtsResult>> fts_search(
       const std::string &field_name, const fts::FtsAstNode &ast,
       const fts::FtsQueryParams &params) = 0;
 
+  // Returned filter is evaluated with segment-local row IDs. It translates the
+  // local row ID to a global doc ID before consulting the delete store.
   virtual const IndexFilter::Ptr get_filter() = 0;
 
-  // for others
+  // ---- Persistence and lifecycle -----------------------------------------
   virtual Status flush() = 0;
+
   virtual Status dump() = 0;
 
-  // only mark need_destroyed
   virtual Status destroy() = 0;
 };
 

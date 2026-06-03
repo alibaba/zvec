@@ -265,6 +265,14 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
   VamanaDistCalculator &dc = ctx->dist_calculator();
   size_t n = candidates.size();
 
+  // Build-time distance offset: shifts the internal distance into a
+  // non-negative range so the ratio-based occlude_factor below is
+  // geometrically meaningful. Zero for metrics whose internal distance is
+  // already non-negative (SquaredEuclidean, etc.); 1.0 for the quantized int8
+  // Cosine / NormalizedCosine path (internal distance is -cos, so
+  // offset=1 yields 1-cos which matches DiskANN's normalized-L2 semantics).
+  const float dist_offset = ctx->build_distance_offset();
+
   // Truncate to max_occlusion_size (DiskANN's maxc parameter)
   size_t maxc = entity_.max_occlusion_size();
   if (maxc > 0 && n > maxc) {
@@ -335,15 +343,21 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
         //   dist_between)
         // where dist_to_query = candidates[j].second (distance from query to j)
         //       dist_between = batch_dists[k] (distance from selected to j)
+        //
+        // `dist_offset` shifts both distances into a non-negative range for
+        // metrics whose internal distance can be negative (e.g. quantized
+        // int8 cosine stores -cos(m,q) in [-1, 1]). Without this shift the
+        // ratio loses its geometric meaning and RobustPrune produces a
+        // poor-quality graph (low recall at low ef_search).
         for (uint32_t k = 0; k < batch_count; ++k) {
           uint32_t j = batch_indices[k];
-          float dist_selected_to_candidate = batch_dists[k];
-          if (dist_selected_to_candidate == 0.0f) {
+          float dist_selected_to_candidate = batch_dists[k] + dist_offset;
+          if (dist_selected_to_candidate <= 0.0f) {
             occlude_factor[j] = std::numeric_limits<float>::max();
           } else {
-            occlude_factor[j] =
-                std::max(occlude_factor[j],
-                         candidates[j].second / dist_selected_to_candidate);
+            occlude_factor[j] = std::max(occlude_factor[j],
+                                         (candidates[j].second + dist_offset) /
+                                             dist_selected_to_candidate);
           }
         }
       }
