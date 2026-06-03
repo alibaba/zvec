@@ -716,9 +716,9 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      // RABITQ needs raw fp32 sources, since the target reformer does the
-      // encoding; re-encoding the already-encoded quant indexers would produce
-      // garbage data.
+      // RABITQ requires raw fp32 vectors as input, because re-encoding the
+      // already-encoded quant indexers would produce garbage data. Other
+      // types require the quantized vectors as input.
       auto quant_merge_sources =
           (vector_index_params->quantize_type() == QuantizeType::RABITQ)
               ? collect_merge_indexers(&Segment::get_vector_indexer)
