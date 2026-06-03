@@ -220,12 +220,16 @@ Status FieldSchema::validate() const {
     if (index_params_) {
       if (index_params_->is_vector_index_type()) {
         return Status::InvalidArgument(
-            "schema validate failed: scalar_field's index_params only support "
-            "INVERT "
-            "index, "
-            "but field[",
-            name_, "]'s index_type is ",
+            "schema validate failed: scalar field[", name_,
+            "] does not support vector index params, but got index_type ",
             IndexTypeCodeBook::AsString(index_params_->type()));
+      }
+      if (index_params_->type() == IndexType::FTS &&
+          data_type_ != DataType::STRING) {
+        return Status::InvalidArgument(
+            "schema validate failed: FTS index only supports STRING data type, "
+            "but field[",
+            name_, "]'s data_type is ", DataTypeCodeBook::AsString(data_type_));
       }
     }
   }

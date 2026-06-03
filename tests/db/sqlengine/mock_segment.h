@@ -333,7 +333,7 @@ class MockSegment : public Segment {
   }
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                     int index) const override {
+                     int segment_doc_id) const override {
     LOG_ERROR("Not implemented");
     return nullptr;
   }
@@ -459,6 +459,25 @@ class MockSegment : public Segment {
   Status reload_scalar_index(
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const InvertedIndexer::Ptr &scalar_indexer) override {
+    return Status::OK();
+  }
+
+  Status reload_fts_index(const CollectionSchema &schema,
+                          const SegmentMeta::Ptr &segment_meta,
+                          const FtsIndexer::Ptr &new_fts_indexer) override {
+    return Status::OK();
+  }
+
+  Status create_fts_index(const std::string &column,
+                          const IndexParams::Ptr &index_params,
+                          SegmentMeta::Ptr *new_segment_meta,
+                          FtsIndexer::Ptr *output_fts_indexer) override {
+    return Status::OK();
+  }
+
+  Status drop_fts_index(const std::string &column,
+                        SegmentMeta::Ptr *new_segment_meta,
+                        FtsIndexer::Ptr *output_fts_indexer) override {
     return Status::OK();
   }
 

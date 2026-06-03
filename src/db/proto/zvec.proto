@@ -171,6 +171,7 @@ enum BlockType {
   BT_SCALAR_INDEX = 2;
   BT_VECTOR_INDEX = 3;
   BT_VECTOR_INDEX_QUANTIZE = 4;
+  BT_FTS_INDEX = 5;
 };
 
 message BlockMeta {
