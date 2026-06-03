@@ -17,18 +17,15 @@
 
 namespace zvec {
 namespace ailego {
-<<<<<<< HEAD
+
 //--------------------------------------------------
 // Dense
 //--------------------------------------------------
-=======
-
 #if defined(__riscv_vector)
 float InnerProductRVV(const float *lhs, const float *rhs, size_t size);
 float MinusInnerProductRVV(const float *lhs, const float *rhs, size_t size);
 #endif
 
->>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 #if defined(__ARM_NEON)
 float InnerProductFp32NEON(const float *lhs, const float *rhs, size_t size);
 float MinusInnerProductFp32NEON(const float *lhs, const float *rhs,
@@ -51,7 +48,6 @@ float InnerProductFp32SSE(const float *lhs, const float *rhs, size_t size);
 float MinusInnerProductFp32SSE(const float *lhs, const float *rhs, size_t size);
 #endif
 
-<<<<<<< HEAD
 float InnerProductFp32Scalar(const float *lhs, const float *rhs, size_t size);
 float MinusInnerProductFp32Scalar(const float *lhs, const float *rhs,
                                   size_t size);
@@ -59,27 +55,15 @@ float MinusInnerProductFp32Scalar(const float *lhs, const float *rhs,
 //! Compute the distance between matrix and query (FP32, M=1, N=1)
 void InnerProductMatrix<float, 1, 1>::Compute(const float *m, const float *q,
                                               size_t dim, float *out) {
-#if defined(__ARM_NEON)
-  *out = InnerProductFp32NEON(m, q, dim);
-=======
-#if defined(__SSE__) || defined(__ARM_NEON) || defined(__riscv_vector)
-//! Compute the distance between matrix and query (FP32, M=1, N=1)
-void InnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
-                                              const ValueType *q, size_t dim,
-                                              float *out) {
 #if defined(__riscv_vector)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
     *out = InnerProductRVV(m, q, dim);
     return;
   }
-  float sum = 0.0f;
-  for (size_t i = 0; i < dim; ++i) {
-    sum += m[i] * q[i];
-  }
-  *out = sum;
-#elif defined(__ARM_NEON)
-  *out = InnerProductNEON(m, q, dim);
->>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
+#endif  // __riscv_vector
+
+#if defined(__ARM_NEON)
+  *out = InnerProductFp32NEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -101,34 +85,24 @@ void InnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
     return;
   }
 #endif  // __SSE__
+
   *out = InnerProductFp32Scalar(m, q, dim);
 #endif  // __ARM_NEON
 }
 
 //! Compute the distance between matrix and query (FP32, M=1, N=1)
-<<<<<<< HEAD
 void MinusInnerProductMatrix<float, 1, 1>::Compute(const float *m,
                                                    const float *q, size_t dim,
                                                    float *out) {
-#if defined(__ARM_NEON)
-  *out = MinusInnerProductFp32NEON(m, q, dim);
-=======
-void MinusInnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
-                                                   const ValueType *q,
-                                                   size_t dim, float *out) {
 #if defined(__riscv_vector)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
     *out = MinusInnerProductRVV(m, q, dim);
     return;
   }
-  float sum = 0.0f;
-  for (size_t i = 0; i < dim; ++i) {
-    sum += m[i] * q[i];
-  }
-  *out = -sum;
-#elif defined(__ARM_NEON)
-  *out = MinusInnerProductNEON(m, q, dim);
->>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
+#endif  // __riscv_vector
+
+#if defined(__ARM_NEON)
+  *out = MinusInnerProductFp32NEON(m, q, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -150,6 +124,7 @@ void MinusInnerProductMatrix<float, 1, 1>::Compute(const ValueType *m,
     return;
   }
 #endif  // __SSE__
+
   *out = MinusInnerProductFp32Scalar(m, q, dim);
 #endif  // __ARM_NEON
 }
@@ -165,6 +140,7 @@ float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
                                          const uint16_t *q_sparse_index,
                                          const float *q_sparse_value);
 #endif
+
 float InnerProductSparseInSegmentFp32Scalar(uint32_t m_sparse_count,
                                             const uint16_t *m_sparse_index,
                                             const float *m_sparse_value,
@@ -194,9 +170,11 @@ float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
                                               q_sparse_index, q_sparse_value);
   }
 #endif
+
   return InnerProductSparseInSegmentFp32Scalar(m_sparse_count, m_sparse_index,
                                                m_sparse_value, q_sparse_count,
                                                q_sparse_index, q_sparse_value);
 }
+
 }  // namespace ailego
 }  // namespace zvec

@@ -44,14 +44,11 @@ float SquaredEuclideanDistanceFp16AVX(const Float16 *lhs, const Float16 *rhs,
                                       size_t size);
 #endif
 
-<<<<<<< HEAD
 float SquaredEuclideanDistanceFp16Scalar(const Float16 *lhs, const Float16 *rhs,
                                          size_t size);
 
-=======
 #if (defined(__F16C__) && defined(__AVX__)) || \
     (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
->>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
 void SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
                                                             const ValueType *q,
@@ -78,7 +75,6 @@ void SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
     return;
   }
 #endif
-<<<<<<< HEAD
 
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
@@ -87,19 +83,6 @@ void SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(const ValueType *m,
   }
 #endif
   *out = SquaredEuclideanDistanceFp16Scalar(m, q, dim);
-
-=======
-#if defined(__AVX__)
-  SquaredEuclideanDistanceAVX(m, q, dim, out);
-  // ACCUM_FP16_1X1_AVX(m, q, dim, out, 0ull, )
-#else
-  float sum = 0.0f;
-  for (size_t i = 0; i < dim; ++i) {
-    sum += MathHelper::SquaredDifference(m[i], q[i]);
-  }
-  *out = sum;
-#endif
->>>>>>> 05b06b8 (feat: add RVV non-batch distance operators)
 #endif  //__ARM_NEON
 }
 
