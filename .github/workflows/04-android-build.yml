@@ -31,6 +31,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-depth: 1
 
       - name: Install dependencies
         run: |
@@ -95,6 +96,14 @@ jobs:
           else
             echo "Using cached host protoc"
           fi
+
+      - name: Cache thirdparty build artifacts
+        uses: actions/cache@v5
+        with:
+          path: build_android_${{ matrix.abi }}/external
+          key: android-${{ matrix.abi }}-${{ matrix.api }}-thirdparty-${{ hashFiles('thirdparty/**/CMakeLists.txt', '.gitmodules') }}
+          restore-keys: |
+            android-${{ matrix.abi }}-${{ matrix.api }}-thirdparty-
 
       # ── Step 2: cross-compile zvec + tests for Android ─────────────────
       - name: 'Step 2: Cross-compile zvec and tests'

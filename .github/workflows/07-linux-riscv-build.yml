@@ -24,6 +24,7 @@ jobs:
         with:
           ref: main
           submodules: recursive
+          fetch-depth: 1
 
       - name: Install build dependencies
         run: |
@@ -45,6 +46,14 @@ jobs:
         with:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
+
+      - name: Cache thirdparty build artifacts
+        uses: actions/cache@v5
+        with:
+          path: build/external
+          key: linux-riscv64-thirdparty-${{ hashFiles('thirdparty/**/CMakeLists.txt', '.gitmodules') }}
+          restore-keys: |
+            linux-riscv64-thirdparty-
 
       - name: Build from source
         run: |
