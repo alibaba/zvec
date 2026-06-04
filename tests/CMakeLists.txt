@@ -6,6 +6,7 @@ include_directories(${PROJECT_ROOT_DIR})
 
 cc_directories(ailego)
 cc_directories(db)
+cc_directories(db_new)
 cc_directories(core)
 if(BUILD_C_BINDINGS)
     cc_directories(c)
