@@ -638,6 +638,11 @@ class SegmentCompactReuseTest
         p->set_is_linear(true);
         return p;
       }
+      case IndexType::VAMANA: {
+        auto p = std::make_shared<zvec::VamanaQueryParams>();
+        p->set_is_linear(true);
+        return p;
+      }
       case IndexType::FLAT:
       default:
         return std::make_shared<zvec::FlatQueryParams>();
@@ -759,9 +764,9 @@ INSTANTIATE_TEST_SUITE_P(Hnsw, SegmentCompactReuseTest,
 
 // CreateNormalSchema() only puts the test's vector_index_params on dense_fp32.
 // The other 4 vector fields are hardcoded — dense_fp16/dense_int8/sparse_fp16
-// are always FlatIndexParams, and sparse_fp32 gets the
-//   cloned params only if supports_sparse is true (utils.cc:117-124), which
-//   excludes IVF and HNSW_RABITQ — so for IVF it also falls back to FLAT.
+// are always FlatIndexParams, and sparse_fp32 gets the  cloned params only if
+// supports_sparse is true (utils.cc:117-124), which excludes IVF / HNSW_RABITQ
+// Vamana. For these cases the merged indexer should be FLAT.
 
 INSTANTIATE_TEST_SUITE_P(
     Ivf, SegmentCompactReuseTest,
@@ -777,6 +782,13 @@ INSTANTIATE_TEST_SUITE_P(HnswRabitq, SegmentCompactReuseTest,
                                  MetricType::IP, 7, 256, 16, 200, 0),
                              IndexType::HNSW_RABITQ}));
 #endif
+
+INSTANTIATE_TEST_SUITE_P(Vamana, SegmentCompactReuseTest,
+                         testing::Values(SegmentCompactReuseParam{
+                             std::make_shared<VamanaIndexParams>(
+                                 MetricType::IP, 16, 100, 1.2f, false, false,
+                                 false, QuantizeType::UNDEFINED),
+                             IndexType::VAMANA}));
 
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
