@@ -26,7 +26,8 @@ enum class IndexType : uint32_t {
   IVF = 2,
   FLAT = 3,
   HNSW_RABITQ = 4,
-  VAMANA = 5,
+  DISKANN = 5,
+  VAMANA = 6,
   INVERT = 10,
   FTS = 11,
 };

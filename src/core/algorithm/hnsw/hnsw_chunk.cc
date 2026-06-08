@@ -70,7 +70,7 @@ int ChunkBroker::load_storage(uint32_t &chunk_size) {
               chunk_meta_segment_->data_size());
     return IndexError_InvalidFormat;
   }
-  std::memcpy(&chunk_meta_, data_block.data(), size);
+  std::memcpy(static_cast<void *>(&chunk_meta_), data_block.data(), size);
   if (chunk_meta_.chunk_size != chunk_size) {
     LOG_WARN(
         "chunk_size mismatch: config=%u, index=%zu. "

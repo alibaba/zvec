@@ -33,18 +33,19 @@ static T CStringToType(const char *begin, char **endptr) {
           std::is_same<T, uint16_t>::value || std::is_same<T, uint8_t>::value ||
           std::is_same<T, float>::value || std::is_same<T, double>::value,
       "type not supported");
-  if (std::is_same<T, int32_t>::value || std::is_same<T, int16_t>::value ||
-      std::is_same<T, int8_t>::value) {
+  if constexpr (std::is_same<T, int32_t>::value ||
+                std::is_same<T, int16_t>::value ||
+                std::is_same<T, int8_t>::value) {
     return static_cast<T>(strtol(begin, endptr, 0));
-  } else if (std::is_same<T, int64_t>::value) {
+  } else if constexpr (std::is_same<T, int64_t>::value) {
     return static_cast<T>(strtoll(begin, endptr, 0));
-  } else if (std::is_same<T, uint32_t>::value ||
-             std::is_same<T, uint16_t>::value ||
-             std::is_same<T, uint8_t>::value) {
+  } else if constexpr (std::is_same<T, uint32_t>::value ||
+                       std::is_same<T, uint16_t>::value ||
+                       std::is_same<T, uint8_t>::value) {
     return static_cast<T>(strtoul(begin, endptr, 0));
-  } else if (std::is_same<T, uint64_t>::value) {
+  } else if constexpr (std::is_same<T, uint64_t>::value) {
     return static_cast<T>(strtoull(begin, endptr, 0));
-  } else if (std::is_same<T, float>::value) {
+  } else if constexpr (std::is_same<T, float>::value) {
     return static_cast<T>(strtof(begin, endptr));
   } else {
     return static_cast<T>(strtod(begin, endptr));

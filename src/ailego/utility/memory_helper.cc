@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "memory_helper.h"
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -29,6 +30,7 @@
 #include <mach/mach.h>
 #include <sys/sysctl.h>
 #endif
+#include <sys/mman.h>
 #include <unistd.h>
 #endif
 
@@ -389,6 +391,101 @@ size_t MemoryHelper::PageSize(void) {
 size_t MemoryHelper::HugePageSize(void) {
   static size_t page_size = static_cast<size_t>(2 * 1024 * 1024);
   return page_size;
+}
+
+size_t MemoryHelper::AlignHugePageSize(size_t size) {
+  const size_t page_mask = HugePageSize() - 1;
+  return (size + page_mask) & (~page_mask);
+}
+
+void *MemoryHelper::AllocateHugePage(size_t size, bool zero_fill) {
+  if (size == 0) {
+    return nullptr;
+  }
+  const size_t aligned_size = AlignHugePageSize(size);
+
+#if defined(_WIN64) || defined(_WIN32)
+  void *ptr = ::_aligned_malloc(aligned_size, PageSize());
+  if (ptr == nullptr) {
+    return nullptr;
+  }
+  if (zero_fill) {
+    std::memset(ptr, 0, aligned_size);
+  }
+  return ptr;
+#else
+  void *ptr = ::mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (ptr == MAP_FAILED) {
+    return nullptr;
+  }
+  // MADV_HUGEPAGE is a Linux-only hint for transparent huge pages. On
+  // macOS/BSD (which manage superpages differently) it is intentionally
+  // absent; skipping it only forgoes a performance hint, not correctness.
+#if defined(MADV_HUGEPAGE)
+  ::madvise(ptr, aligned_size, MADV_HUGEPAGE);
+#endif
+  // mmap with MAP_ANONYMOUS already returns zero-filled pages, so an explicit
+  // memset is only needed when the caller relies on it for a non-anonymous
+  // fallback; here it is redundant and skipped to avoid touching every page.
+  (void)zero_fill;
+  return ptr;
+#endif
+}
+
+void MemoryHelper::FreeHugePage(void *ptr, size_t size) {
+  if (ptr == nullptr) {
+    return;
+  }
+#if defined(_WIN64) || defined(_WIN32)
+  (void)size;
+  ::_aligned_free(ptr);
+#else
+  ::munmap(ptr, AlignHugePageSize(size));
+#endif
+}
+
+void *MemoryHelper::AllocateAligned(size_t size, size_t alignment,
+                                    bool zero_fill) {
+  assert(alignment != 0 && (alignment & (alignment - 1)) == 0 &&
+         "alignment must be a power of two");
+  if (size == 0) {
+    return nullptr;
+  }
+  if (size >= HugePageSize()) {
+    return AllocateHugePage(size, zero_fill);
+  }
+
+  // Small block: a regular aligned allocation avoids reserving a whole huge
+  // page. std::aligned_alloc requires the size to be a multiple of alignment.
+  const size_t aligned_size = (size + alignment - 1) / alignment * alignment;
+#if defined(_WIN64) || defined(_WIN32)
+  void *ptr = ::_aligned_malloc(aligned_size, alignment);
+#else
+  void *ptr = std::aligned_alloc(alignment, aligned_size);
+#endif
+  if (ptr == nullptr) {
+    return nullptr;
+  }
+  if (zero_fill) {
+    std::memset(ptr, 0, aligned_size);
+  }
+  return ptr;
+}
+
+void MemoryHelper::FreeAligned(void *ptr, size_t size) {
+  if (ptr == nullptr) {
+    return;
+  }
+  if (size >= HugePageSize()) {
+    FreeHugePage(ptr, size);
+    return;
+  }
+#if defined(_WIN64) || defined(_WIN32)
+  ::_aligned_free(ptr);
+#else
+  std::free(ptr);
+#endif
 }
 
 }  // namespace ailego

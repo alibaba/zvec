@@ -298,27 +298,63 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpdate) {
   uint64_t doc_count{collection->Stats().value().doc_count};
   ASSERT_EQ(doc_count, 18000) << "Document count mismatch after crash recovery";
 
-  for (int doc_id = 0; doc_id < 3500; doc_id++) {
-    Doc expected_doc;
-    if (doc_id < 3000) {
-      expected_doc = CreateTestDoc(doc_id, 0);
-    } else {
-      expected_doc = CreateTestDoc(doc_id, 3);
-    }
-    std::vector<std::string> pks{};
-    pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->Fetch(pks); res) {
-      auto map = res.value();
-      if (map.find(expected_doc.pk()) == map.end()) {
-        FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
-               << "]";
+  // Verify docs before the update range are untouched
+  for (int doc_id = 0; doc_id < 3000; doc_id++) {
+    Doc expected_doc = CreateTestDoc(doc_id, 0);
+    std::vector<std::string> pks{expected_doc.pk()};
+    auto res = collection->Fetch(pks);
+    ASSERT_TRUE(res.has_value())
+        << "Failed to fetch doc[" << expected_doc.pk() << "]";
+    auto map = res.value();
+    ASSERT_NE(map.find(expected_doc.pk()), map.end())
+        << "Returned map does not contain doc[" << expected_doc.pk() << "]";
+    const auto actual_doc = map.at(expected_doc.pk());
+    ASSERT_EQ(*actual_doc, expected_doc)
+        << "Data mismatch for doc[" << expected_doc.pk() << "]";
+  }
+
+  // For docs in the update range [3000, 15000), verify consistency:
+  // Updates are sequential, so there must be a boundary where all docs
+  // before it are version 3 (updated) and all docs after are version 0.
+  bool found_boundary = false;
+  int boundary_id = -1;
+  for (int doc_id = 3000; doc_id < 15000; doc_id++) {
+    std::string pk = "pk_" + std::to_string(doc_id);
+    std::vector<std::string> pks{pk};
+    auto res = collection->Fetch(pks);
+    ASSERT_TRUE(res.has_value()) << "Failed to fetch doc[" << pk << "]";
+    auto map = res.value();
+    ASSERT_NE(map.find(pk), map.end())
+        << "Returned map does not contain doc[" << pk << "]";
+    const auto actual_doc = map.at(pk);
+
+    Doc version0_doc = CreateTestDoc(doc_id, 0);
+    Doc version3_doc = CreateTestDoc(doc_id, 3);
+
+    if (!found_boundary) {
+      if (*actual_doc == version0_doc) {
+        // Found the boundary: this doc was NOT updated
+        found_boundary = true;
+        boundary_id = doc_id;
+      } else {
+        ASSERT_EQ(*actual_doc, version3_doc)
+            << "Doc[" << pk << "] is neither version 0 nor version 3";
       }
-      const auto actual_doc = map.at(expected_doc.pk());
-      ASSERT_EQ(*actual_doc, expected_doc)
-          << "Data mismatch for doc[" << expected_doc.pk() << "]";
     } else {
-      FAIL() << "Failed to fetch doc[" << expected_doc.pk() << "]";
+      // After boundary, all docs must be version 0 (not yet updated)
+      ASSERT_EQ(*actual_doc, version0_doc)
+          << "Doc[" << pk << "] after boundary (" << boundary_id
+          << ") should be version 0 but isn't";
     }
+  }
+
+  // The crash happened after 4s; at least some docs should have been updated
+  if (!found_boundary) {
+    // All docs in range were updated (crash happened very late) - that's fine
+  } else {
+    ASSERT_GT(boundary_id, 3000)
+        << "No documents were updated before crash - process may not have "
+           "started in time";
   }
 }
 

@@ -726,10 +726,17 @@ Status SegmentHelper::ReduceVectorIndex(
       auto vector_quan_index_path = FileHelper::MakeQuantizeVectorIndexPath(
           output_segment_path, field->name(), vector_quan_block_id);
 
-      s = MergeWithOptionalReuse(
-          vector_quan_index_path, *field_for_quantize,
-          collect_merge_indexers(&Segment::get_quant_vector_indexer), filter,
-          concurrency, nullptr);
+      // RABITQ requires raw fp32 vectors as input, because re-encoding the
+      // already-encoded quant indexers would produce garbage data. Other
+      // types require the quantized vectors as input.
+      auto quant_merge_sources =
+          (vector_index_params->quantize_type() == QuantizeType::RABITQ)
+              ? collect_merge_indexers(&Segment::get_vector_indexer)
+              : collect_merge_indexers(&Segment::get_quant_vector_indexer);
+
+      s = MergeWithOptionalReuse(vector_quan_index_path, *field_for_quantize,
+                                 quant_merge_sources, filter, concurrency,
+                                 nullptr);
       CHECK_RETURN_STATUS(s);
 
       s = vector_indexer->Close();
@@ -860,6 +867,7 @@ Status SegmentHelper::PrepareQuantizeField(
   }
 
 #if !RABITQ_SUPPORTED
+  (void)raw_vector_provider;
   return Status::NotSupported(
       "RabitQ is not supported on this platform (Linux x86_64 only)");
 #else

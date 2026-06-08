@@ -817,7 +817,7 @@ class VectorIndexParam(IndexParam):
         QuantizeType: Vector quantization type (e.g., FP16, INT8).
         """
 
-class _VectorQuery:
+class _SearchQuery:
     field_name: str
     filter: str
     include_vector: bool

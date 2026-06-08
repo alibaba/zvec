@@ -105,6 +105,11 @@ class IndexSegmentStorage : public IndexStorage {
       return IndexError_NotImplemented;
     }
 
+    //! Retrieve offset of data
+    size_t data_offset(void) const override {
+      return 0;
+    }
+
     void update_data_crc(uint32_t) override {
       return;
     }

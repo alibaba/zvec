@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "python_reranker.h"
+#include <stdexcept>
 #include <pybind11/functional.h>
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
@@ -20,9 +21,40 @@
 
 namespace zvec {
 
+namespace {
+
+inline void reranker_throw_if_error(const Status &status) {
+  switch (status.code()) {
+    case StatusCode::OK:
+      return;
+    case StatusCode::NOT_FOUND:
+      throw py::key_error(status.message());
+    case StatusCode::INVALID_ARGUMENT:
+      throw py::value_error(status.message());
+    default:
+      throw std::runtime_error(status.message());
+  }
+}
+
+inline DocPtrList unwrap_rerank_result(Result<DocPtrList> result) {
+  if (!result.has_value()) {
+    reranker_throw_if_error(result.error());
+  }
+  return std::move(result).value();
+}
+
+}  // namespace
+
 void ZVecPyReranker::Initialize(py::module_ &m) {
   // Bind Reranker base class (abstract, cannot be instantiated directly)
-  py::class_<Reranker, Reranker::Ptr>(m, "_Reranker");
+  py::class_<Reranker, Reranker::Ptr>(m, "_Reranker")
+      .def(
+          "rerank",
+          [](const Reranker &self, const std::vector<DocPtrList> &query_results,
+             int topn) {
+            return unwrap_rerank_result(self.rerank(query_results, topn));
+          },
+          py::arg("query_results"), py::arg("topn") = 10);
 
   // Bind ScoreBasedReranker intermediate class
   py::class_<ScoreBasedReranker, Reranker, std::shared_ptr<ScoreBasedReranker>>(
@@ -37,7 +69,7 @@ void ZVecPyReranker::Initialize(py::module_ &m) {
   // Bind WeightedReranker
   py::class_<WeightedReranker, ScoreBasedReranker,
              std::shared_ptr<WeightedReranker>>(m, "_WeightedReranker")
-      .def(py::init<std::map<std::string, double>>(), py::arg("weights"))
+      .def(py::init<std::vector<double>>(), py::arg("weights"))
       .def_property_readonly("weights", &WeightedReranker::weights);
 
   // Bind CallbackReranker

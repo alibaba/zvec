@@ -14,6 +14,8 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
+#include "utility/block_heap.h"
+#include "utility/linear_pool.h"
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
 #include "hnsw_dist_calculator.h"
@@ -275,6 +277,15 @@ class HnswContext : public IndexContext {
     return update_heap_;
   }
 
+  inline LinearPool<dist_t> &pool() {
+    return pool_;
+  }
+
+  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
+  inline BlockHeap &block_pool() {
+    return block_pool_;
+  }
+
   inline VisitFilter &visit_filter() {
     return visit_filter_;
   }
@@ -297,6 +308,10 @@ class HnswContext : public IndexContext {
 
   inline void set_ef(uint32_t v) {
     ef_ = v;
+  }
+
+  inline uint32_t ef(void) const {
+    return ef_;
   }
 
   inline void set_filter_mode(uint32_t v) {
@@ -530,6 +545,9 @@ class HnswContext : public IndexContext {
   uint32_t stats_get_vector_cnt_{0u};
   uint32_t stats_visit_dup_cnt_{0u};
   std::string preprocess_buffer_;
+
+  LinearPool<dist_t> pool_;
+  BlockHeap block_pool_;
 };
 
 }  // namespace core

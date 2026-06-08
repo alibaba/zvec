@@ -132,7 +132,7 @@ TEST_F(IVFBuilderTest, TestTrainWithTrainer2Level) {
   prepare_index_holder(0, 1000);
 
   Params params;
-  params.set("proxima.stratified.trainer.cluster_count", "4*2");
+  params.set("zvec.stratified.trainer.cluster_count", "4*2");
   ASSERT_EQ(0, trainer->init(index_meta_, params));
   ASSERT_EQ(0, trainer->train(threads_, holder_));
 
@@ -165,7 +165,7 @@ TEST_F(IVFBuilderTest, TestTrainWithTrainer1Level) {
   prepare_index_holder(0, 1000);
 
   Params params1;
-  params1.set("proxima.stratified.trainer.cluster_count", "4");
+  params1.set("zvec.stratified.trainer.cluster_count", "4");
   ASSERT_EQ(0, trainer->init(index_meta_, params1));
   ASSERT_EQ(0, trainer->train(threads_, holder_));
 

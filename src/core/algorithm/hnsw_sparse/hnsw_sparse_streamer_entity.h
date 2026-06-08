@@ -207,7 +207,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
       uint32_t index : 28;  // index is composite type: chunk idx, and the
                             // N th neighbors in chunk, they two composite
                             // the 28 bits location
-    };
+    } bits;
     uint32_t data;
   };
 
@@ -311,9 +311,10 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");
     auto meta = reinterpret_cast<const UpperNeighborIndexMeta *>(&it->second);
-    uint32_t chunk_idx = (meta->index) >> upper_neighbor_mask_bits_;
-    uint32_t offset = (((meta->index) & upper_neighbor_mask_) + level - 1) *
-                      upper_neighbor_size_;
+    uint32_t chunk_idx = (meta->bits.index) >> upper_neighbor_mask_bits_;
+    uint32_t offset =
+        (((meta->bits.index) & upper_neighbor_mask_) + level - 1) *
+        upper_neighbor_size_;
     sync_chunks(SparseChunkBroker::CHUNK_TYPE_UPPER_NEIGHBOR, chunk_idx,
                 &upper_neighbor_chunks_);
     ailego_assert_abort(chunk_idx < upper_neighbor_chunks_.size(),
@@ -392,9 +393,9 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     ailego_assert_with(chunk_index < (1U << (28 - upper_neighbor_mask_bits_)),
                        "invalid chunk index");
     UpperNeighborIndexMeta meta;
-    meta.level = level;
-    meta.index = (chunk_index << upper_neighbor_mask_bits_) |
-                 (chunk_offset / upper_neighbor_size_);
+    meta.bits.level = level;
+    meta.bits.index = (chunk_index << upper_neighbor_mask_bits_) |
+                      (chunk_offset / upper_neighbor_size_);
     chunk_offset += upper_neighbor_size_ * level;
     if (ailego_unlikely(!upper_neighbor_index_->insert(id, meta.data))) {
       LOG_ERROR("HashMap insert value failed");

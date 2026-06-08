@@ -65,13 +65,6 @@ class VamanaDistCalculator {
     dim_ = dim;
   }
 
-  inline void update_distance(
-      const IndexMetric::MatrixDistance &distance,
-      const IndexMetric::MatrixBatchDistance &batch_distance) {
-    distance_ = distance;
-    batch_distance_ = batch_distance;
-  }
-
   inline void reset_query(const void *query) {
     error_ = false;
     query_ = query;
@@ -134,22 +127,6 @@ class VamanaDistCalculator {
     dist_t score = 0;
     batch_distance_(&feat, query_, 1, dim_, &score);
     return score;
-  }
-
-  // Batch distance computation between a base vector and multiple target
-  // vectors. Does NOT use query_ and does NOT increment compare_cnt. Used for
-  // inter-candidate distance computation in robust_prune.
-  //
-  // Uses the single distance function (distance_) in a loop rather than
-  // batch_distance_, because batch_distance_ (turbo AVX512-VNNI) expects
-  // the second argument to be a preprocessed uint8 query (+128 shift),
-  // while base_vec here is a raw int8 stored vector. The single distance
-  // function (AVX2 sign/abs trick) correctly handles two raw int8 inputs.
-  inline void batch_dist_pair(const void *base_vec, const void **vecs,
-                              uint32_t count, float *dists) {
-    for (uint32_t i = 0; i < count; ++i) {
-      distance_(base_vec, vecs[i], dim_, &dists[i]);
-    }
   }
 
   dist_t operator()(const void *vec) {

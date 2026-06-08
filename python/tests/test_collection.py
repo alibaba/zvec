@@ -976,18 +976,6 @@ class TestCollectionQuery:
         result = collection_with_multiple_docs.query(filter="id in (1)", topk=100)
         assert len(result) == 1
 
-    def test_collection_query_with_vector_and_id(
-        self, collection_with_single_doc: Collection, single_doc: Doc
-    ):
-        with pytest.raises(ValueError):
-            collection_with_single_doc.query(
-                Query(
-                    field_name="dense",
-                    id=single_doc.id,
-                    vector=single_doc.vector("dense"),
-                )
-            )
-
     def test_collection_query_with_filter_not_in(
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
@@ -1012,30 +1000,6 @@ class TestCollectionQuery:
             Query(field_name="dense", id=multiple_docs[0].id)
         )
         assert len(result) == 10
-
-    def test_collection_query_multi_vector_with_same_field(
-        self, collection_with_multiple_docs: Collection, multiple_docs
-    ):
-        # Multi-vector query on same field without reranker should raise ValueError
-        with pytest.raises(ValueError, match="Reranker is required"):
-            collection_with_multiple_docs.query(
-                [
-                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
-                    Query(field_name="dense", vector=multiple_docs[1].vector("dense")),
-                ]
-            )
-
-        # Same field name with reranker should also raise ValueError
-        reranker = RrfReRanker(topn=10, rank_constant=60)
-        with pytest.raises(ValueError, match="appears more than once"):
-            collection_with_multiple_docs.query(
-                [
-                    Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
-                    Query(field_name="dense", vector=multiple_docs[1].vector("dense")),
-                ],
-                topk=10,
-                reranker=reranker,
-            )
 
     def test_collection_query_by_dense_vector(
         self, collection_with_multiple_docs: Collection, multiple_docs
@@ -1087,7 +1051,7 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with RRF reranker on multiple dense vectors."""
-        reranker = RrfReRanker(topn=10, rank_constant=60)
+        reranker = RrfReRanker(rank_constant=60)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
@@ -1106,7 +1070,7 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with RRF reranker on multiple sparse vectors."""
-        reranker = RrfReRanker(topn=10, rank_constant=60)
+        reranker = RrfReRanker(rank_constant=60)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
@@ -1125,7 +1089,7 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with RRF reranker combining dense + sparse."""
-        reranker = RrfReRanker(topn=10, rank_constant=60)
+        reranker = RrfReRanker(rank_constant=60)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
@@ -1141,9 +1105,7 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with Weighted reranker on multiple dense vectors."""
-        metrics = {"dense": MetricType.IP, "dense2": MetricType.IP}
-        weights = {"dense": 0.6, "dense2": 0.4}
-        reranker = WeightedReRanker(topn=10, metrics=metrics, weights=weights)
+        reranker = WeightedReRanker(weights=[0.6, 0.4])
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
@@ -1159,9 +1121,7 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with Weighted reranker on multiple sparse vectors."""
-        metrics = {"sparse": MetricType.IP, "sparse2": MetricType.IP}
-        weights = {"sparse": 0.6, "sparse2": 0.4}
-        reranker = WeightedReRanker(topn=10, metrics=metrics, weights=weights)
+        reranker = WeightedReRanker(weights=[0.6, 0.4])
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
@@ -1180,9 +1140,7 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with Weighted reranker combining dense + sparse."""
-        metrics = {"dense": MetricType.IP, "sparse": MetricType.IP}
-        weights = {"dense": 0.7, "sparse": 0.3}
-        reranker = WeightedReRanker(topn=10, metrics=metrics, weights=weights)
+        reranker = WeightedReRanker(weights=[0.7, 0.3])
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
@@ -1203,7 +1161,7 @@ class TestCollectionQuery:
         def my_rerank_callback(query_results, topn):
             callback_invoked.append(True)
             all_docs = []
-            for docs in query_results.values():
+            for docs in query_results:
                 all_docs.extend(docs)
             seen = set()
             unique_docs = []
@@ -1214,7 +1172,7 @@ class TestCollectionQuery:
             unique_docs.sort(key=lambda d: d.score(), reverse=True)
             return unique_docs[:topn]
 
-        reranker = CallbackReRanker(callback=my_rerank_callback, topn=10)
+        reranker = CallbackReRanker(callback=my_rerank_callback)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
@@ -1234,7 +1192,7 @@ class TestCollectionQuery:
 
         def my_rerank_callback(query_results, topn):
             all_docs = []
-            for docs in query_results.values():
+            for docs in query_results:
                 all_docs.extend(docs)
             seen = set()
             unique_docs = []
@@ -1245,7 +1203,7 @@ class TestCollectionQuery:
             unique_docs.sort(key=lambda d: d.score(), reverse=True)
             return unique_docs[:topn]
 
-        reranker = CallbackReRanker(callback=my_rerank_callback, topn=5)
+        reranker = CallbackReRanker(callback=my_rerank_callback)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),

@@ -39,6 +39,7 @@ class MMapFileReadStorage : public IndexStorage {
         : data_ptr_(reinterpret_cast<uint8_t *>(file_ptr->region()) + offset +
                     segment.data_offset()),
           data_size_(segment.data_size()),
+          data_offset_(offset + segment.data_offset()),
           padding_size_(segment.padding_size()),
           region_size_(segment.data_size() + segment.padding_size()),
           data_crc_(segment.data_crc()),
@@ -64,6 +65,11 @@ class MMapFileReadStorage : public IndexStorage {
 
     size_t capacity(void) const override {
       return region_size_;
+    }
+
+    //! Retrieve offset of data
+    size_t data_offset(void) const override {
+      return data_offset_;
     }
 
     //! Fetch data from segment (with own buffer)
@@ -135,6 +141,7 @@ class MMapFileReadStorage : public IndexStorage {
    private:
     const uint8_t *data_ptr_{nullptr};
     size_t data_size_{0u};
+    size_t data_offset_{0};
     size_t padding_size_{0u};
     size_t region_size_{0u};
     uint32_t data_crc_{0u};

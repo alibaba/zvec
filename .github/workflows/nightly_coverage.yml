@@ -93,7 +93,7 @@ jobs:
         shell: bash
 
       - name: Upload Coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: ./proxima-zvec-filtered.lcov.info,./coverage.xml
           flags: python,cpp,nightly

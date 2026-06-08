@@ -52,8 +52,8 @@ TEST(KmeansCluster, General) {
   ASSERT_TRUE(!!cluster);
 
   zvec::ailego::Params params;
-  params.set("proxima.general.cluster.count", 1);
-  params.set("proxima.kmeans.cluster.count", 56);
+  params.set("zvec.general.cluster.count", 1);
+  params.set("zvec.kmeans.cluster.count", 56);
 
   ASSERT_EQ(0, cluster->init(index_meta, params));
   ASSERT_EQ(0, cluster->mount(features));

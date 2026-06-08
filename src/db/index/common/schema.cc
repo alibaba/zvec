@@ -54,8 +54,8 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 };
 
 std::unordered_set<IndexType> support_dense_vector_index = {
-    IndexType::FLAT, IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::IVF,
-    IndexType::VAMANA};
+    IndexType::FLAT, IndexType::HNSW,    IndexType::HNSW_RABITQ,
+    IndexType::IVF,  IndexType::DISKANN, IndexType::VAMANA};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
@@ -164,9 +164,11 @@ Status FieldSchema::validate() const {
               "RabitQ requires AVX2/AVX512F to be supported");
         }
 
-        if (kRabitqCompiledAvx512 && !flags.AVX512F) {
-          return Status::NotSupported(
-              "RabitQ compiled with AVX512F while runtime does not support");
+        if constexpr (kRabitqCompiledAvx512) {
+          if (!flags.AVX512F) {
+            return Status::NotSupported(
+                "RabitQ compiled with AVX512F while runtime does not support");
+          }
         }
       }
 

@@ -1,6 +1,34 @@
 {
     global:
-        PyInit_*;  # export only python related functions
+        # Python module entry point(s).
+        PyInit_*;
+
+        # Expose the full zvec C++ namespace so the DiskAnn runtime plugin
+        # (libzvec_diskann_plugin.so), which is dlopen()ed with
+        # RTLD_NOW | RTLD_GLOBAL after the interpreter has loaded _zvec.so,
+        # can resolve its undefined references against this module. Without
+        # this, the plugin fails to load with errors like
+        #   undefined symbol: _ZN4zvec6ailego6Logger10LEVEL_INFOE
+        # because the default version script hides every internal symbol.
+        extern "C++" {
+            "zvec::*";
+            zvec::*;
+            # Also export the compiler-generated helper symbols that live
+            # alongside symbols in the zvec namespace (guard variables for
+            # static locals, vtables, typeinfo, VTT, construction vtables,
+            # thunks). Without these, the DiskAnn plugin and _zvec.so each
+            # get their own copy of e.g. the guard for Factory<T>::Instance's
+            # static local, which causes the factory constructor to run
+            # twice - wiping out registrations done during _zvec.so load.
+            "guard variable for zvec::*";
+            "vtable for zvec::*";
+            "VTT for zvec::*";
+            "typeinfo for zvec::*";
+            "typeinfo name for zvec::*";
+            "construction vtable for zvec::*";
+            "non-virtual thunk to zvec::*";
+            "virtual thunk to zvec::*";
+        };
     local:
         *;
 };

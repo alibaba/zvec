@@ -97,10 +97,10 @@ class SparseChunkBroker {
 
   struct HnswSparseChunkMeta {
     HnswSparseChunkMeta(void) {
-      memset(this, 0, sizeof(HnswSparseChunkMeta));
+      memset(static_cast<void *>(this), 0, sizeof(HnswSparseChunkMeta));
     }
     void clear() {
-      memset(this, 0, sizeof(HnswSparseChunkMeta));
+      memset(static_cast<void *>(this), 0, sizeof(HnswSparseChunkMeta));
     }
 
     uint64_t chunk_cnts[CHUNK_TYPE_MAX];

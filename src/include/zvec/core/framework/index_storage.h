@@ -17,6 +17,7 @@
 #include <cstring>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
+#include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_module.h>
 
@@ -285,6 +286,11 @@ class IndexStorage : public IndexModule {
     //! Retrieve size of data
     virtual size_t data_size(void) const = 0;
 
+    //! Retrieve offset of data
+    virtual size_t data_offset(void) const {
+      return 0;
+    }
+
     //! Retrieve crc of data
     virtual uint32_t data_crc(void) const = 0;
 
@@ -378,6 +384,15 @@ class IndexStorage : public IndexModule {
   //! Retrieve the memory block type of this storage
   virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
     return MemoryBlock::MBT_MMAP;
+  }
+
+  //! Retrieve file ptr if has
+  virtual std::shared_ptr<ailego::File> file(void) const {
+    return nullptr;
+  }
+
+  virtual std::string file_path(void) const {
+    return "";
   }
 };
 

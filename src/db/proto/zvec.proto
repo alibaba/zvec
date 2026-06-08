@@ -58,8 +58,10 @@ enum IndexType {
   IT_FLAT = 3;
   // Proxima HNSW RABITQ Index
   IT_HNSW_RABITQ = 4;
-  // Proxima Vamana (DiskANN) Index
+  // Proxima Vamana Index
   IT_VAMANA = 5;
+  // Proxima DiskAnn Index
+  IT_DISKANN = 6;
   // Invert Index
   IT_INVERT = 10;
   // Full-Text Search Index
@@ -120,6 +122,13 @@ message IVFIndexParams {
   bool use_soar = 4;
 }
 
+message DiskAnnIndexParams {
+  BaseIndexParams base = 1;
+  int32 max_degree = 2;
+  int32 list_size = 3;
+  int32 pq_chunk_num = 4;
+}
+
 message VamanaIndexParams {
   BaseIndexParams base = 1;
   int32 max_degree = 2;
@@ -148,6 +157,7 @@ message IndexParams {
     HnswRabitqIndexParams hnsw_rabitq = 5;
     VamanaIndexParams vamana = 6;
     FtsIndexParams fts = 7;
+    DiskAnnIndexParams diskann = 8;
   };
 };
 

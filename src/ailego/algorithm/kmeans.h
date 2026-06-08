@@ -93,6 +93,7 @@ class Kmc2CentroidsGenerator {
     auto *centroids = owner->mutable_centroids();
 
     std::mt19937 mt((std::random_device())());
+
     std::uniform_real_distribution<float> dist(0.0, 1.0);
 
     ContainerType benches(cache.dimension());
