@@ -119,6 +119,20 @@ class HnswContext : public IndexContext {
     return *entity_;
   }
 
+  //! Bind an external vector source to this context. It is stored so that it
+  //! can be re-applied after the entity is re-cloned inside update_context,
+  //! and immediately forwarded to the current entity clone.
+  inline void set_vector_source(const HnswVectorSource *src) {
+    vector_source_ = src;
+    if (entity_) {
+      entity_->set_vector_source(src);
+    }
+  }
+
+  inline const HnswVectorSource *vector_source() const {
+    return vector_source_;
+  }
+
   inline void resize_results(size_t size) {
     if (group_by_search()) {
       group_results_.resize(size);
@@ -497,6 +511,7 @@ class HnswContext : public IndexContext {
   HnswEntity::Pointer entity_;
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
+  const HnswVectorSource *vector_source_{nullptr};
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};

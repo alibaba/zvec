@@ -38,6 +38,8 @@ std::string HNSWIndex::storage_mode() const {
       return "buffer_pool";
     case core::HnswStorageMode::kContiguous:
       return "contiguous";
+    case core::HnswStorageMode::kExternal:
+      return "external";
   }
   return "";
 }

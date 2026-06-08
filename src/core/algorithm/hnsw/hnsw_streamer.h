@@ -114,6 +114,25 @@ class HnswStreamer : public IndexStreamer {
     return entity_->get_vector(id, block);
   }
 
+  //! Add a vector while binding an external vector source for this call.
+  //! Only meaningful when the streamer is configured with
+  //! PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR. The source must stay valid for
+  //! the entire duration of the call.
+  int add_with_source(uint64_t pkey, const void *query,
+                      const IndexQueryMeta &qmeta, Context::Pointer &context,
+                      const HnswVectorSource &src);
+
+  //! Add a vector with explicit id while binding an external vector source.
+  int add_with_id_and_source(uint32_t id, const void *query,
+                             const IndexQueryMeta &qmeta,
+                             Context::Pointer &context,
+                             const HnswVectorSource &src);
+
+  //! Similarity search while binding an external vector source for this call.
+  int search_with_source(const void *query, const IndexQueryMeta &qmeta,
+                         uint32_t count, Context::Pointer &context,
+                         const HnswVectorSource &src) const;
+
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;
 
@@ -232,6 +251,7 @@ class HnswStreamer : public IndexStreamer {
   bool force_padding_topk_enabled_{false};
   bool use_id_map_{true};
   bool use_contiguous_memory_{false};
+  bool use_external_vector_{false};
 
   //! avoid add vector while dumping index
   ailego::SharedMutex shared_mutex_{};

@@ -346,6 +346,60 @@ struct HnswNeighborMeta {
   uint64_t level : 16;
 };
 
+//! External vector source. The caller derives from this class and owns a
+//! single contiguous block of vector memory, laid out by HNSW internal
+//! node_id (i.e. vector of node_id resides at base + node_id * stride).
+//! HNSW only reads vectors through this interface; it never copies or writes
+//! the vector data. Used by HnswExternalStreamerEntity so that the index
+//! stores only the graph structure (key + neighbors) and reads vectors from
+//! the externally-provided memory.
+//!
+//! Caller usage pattern:
+//! 1. Enable external-vector mode at streamer init by setting param
+//!    "proxima.hnsw.streamer.use_external_vector" = true.
+//! 2. Implement a vector source whose addressing matches HNSW node_id, e.g.:
+//!
+//!      class MyVecStore : public HnswVectorSource {
+//!       public:
+//!        const void *get_vector(node_id_t id) const override {
+//!          return base_ + static_cast<size_t>(id) * stride_;
+//!        }
+//!        const char *base_;  // contiguous buffer owned by the caller
+//!        size_t stride_;     // bytes per vector (== dim * element_size)
+//!      };
+//!
+//! 3. Write: place the vector for `node_id` into the caller buffer first,
+//!    then call HnswStreamer::add_with_id_and_source(id, vec, meta, ctx, store)
+//!    (or add_with_source for auto-assigned ids). The graph construction reads
+//!    already-inserted nodes' vectors through `store`; the new node's own
+//!    vector is taken from the `vec` query argument.
+//! 4. Search: HnswStreamer::search_with_source(query, meta, count, ctx, store).
+//! 5. After re-opening the index (vectors are NOT persisted), reconstruct the
+//!    vector source and pass it again on every add/search call.
+//!
+//! Lifetime: the vector source object and its memory must outlive the
+//! add/search call that uses it. Under concurrent search, each call binds its
+//! own source (the binding is per-context, applied before the algorithm runs).
+class HnswVectorSource {
+ public:
+  virtual ~HnswVectorSource() = default;
+
+  //! Return the read-only start address of the vector for node_id; an
+  //! invalid id must return nullptr.
+  //! Contract: the returned pointer must stay valid for the entire duration
+  //! of the add/search call that uses it.
+  virtual const void *get_vector(node_id_t id) const = 0;
+
+  //! Optional batch hook; defaults to calling get_vector one by one. The
+  //! caller may override it to do prefetching / contiguous optimization.
+  virtual void get_vectors(const node_id_t *ids, uint32_t count,
+                           const void **out) const {
+    for (uint32_t i = 0; i < count; ++i) {
+      out[i] = get_vector(ids[i]);
+    }
+  }
+};
+
 class HnswEntity {
  public:
   //! Constructor
@@ -611,6 +665,11 @@ class HnswEntity {
     header_.hnsw.entry_point = ep;
     header_.hnsw.max_level = level;
   }
+
+  //! Bind an external vector source to this entity. The default
+  //! implementation is a no-op; only entities that read vectors from an
+  //! external source (e.g. HnswExternalStreamerEntity) override it.
+  virtual void set_vector_source(const HnswVectorSource * /*src*/) {}
 
   virtual int load(const IndexStorage::Pointer & /*container*/,
                    bool /*check_crc*/) {
