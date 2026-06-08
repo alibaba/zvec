@@ -36,6 +36,7 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
   auto *vc = target_.get_vector_clause();
   auto *fc = target_.get_fts_clause();
   auto &field_name = target_.field_name_;
+  auto &query_params = target_.query_params_;
   // A "scalar-only filter" query has no vector payload — either the clause
   // is not a VectorClause (e.g., FtsClause) or its fields are all empty.
   bool no_vector_payload = (vc == nullptr) || (vc->query_vector_.empty() &&
@@ -69,6 +70,14 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
           field_name, "] has index type ",
           IndexTypeCodeBook::AsString(schema->index_type()));
     }
+    if (query_params && query_params->type() != schema->index_type()) {
+      return Status::InvalidArgument(
+          "Invalid query: query params type does not match the index type of "
+          "FTS field[",
+          field_name, "], expected ",
+          IndexTypeCodeBook::AsString(schema->index_type()), " but got ",
+          IndexTypeCodeBook::AsString(query_params->type()));
+    }
     return Status::OK();
   }
 
@@ -81,7 +90,6 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
   auto &query_vector = vc->query_vector_;
   auto &query_sparse_indices = vc->sparse_indices_;
   auto &query_sparse_values = vc->sparse_values_;
-  auto &query_params = target_.query_params_;
 
   // Vector query
   if (schema->is_dense_vector()) {
