@@ -443,8 +443,7 @@ class IVFIndexParam(VectorIndexParam):
         metric_type (MetricType): Distance metric used for similarity computation.
             Default is ``MetricType.IP`` (inner product).
         n_list (int): Number of clusters (inverted lists) to partition the dataset into.
-            If set to 0, the system will auto-select a reasonable value based on data size.
-            Default is 0 (auto).
+            Default is 10.
         n_iters (int): Number of iterations for k-means clustering during index training.
             Higher values yield more stable centroids. Default is 10.
         use_soar (bool): Whether to enable SOAR (Scalable Optimized Adaptive Routing)
@@ -469,7 +468,7 @@ class IVFIndexParam(VectorIndexParam):
     def __init__(
         self,
         metric_type: _zvec.typing.MetricType = ...,
-        n_list: typing.SupportsInt = 0,
+        n_list: typing.SupportsInt = 10,
         n_iters: typing.SupportsInt = 10,
         use_soar: bool = False,
         quantize_type: _zvec.typing.QuantizeType = ...,
@@ -479,8 +478,8 @@ class IVFIndexParam(VectorIndexParam):
 
         Args:
             metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
-            n_list (int, optional): Number of inverted lists (clusters). Set to 0 for auto.
-                Defaults to 0.
+            n_list (int, optional): Number of inverted lists (clusters).
+                Defaults to 10.
             n_iters (int, optional): Number of k-means iterations during training.
                 Defaults to 10.
             use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
@@ -504,7 +503,7 @@ class IVFIndexParam(VectorIndexParam):
     @property
     def n_list(self) -> int:
         """
-        int: Number of inverted lists (0 = auto).
+        int: Number of inverted lists.
         """
 
     @property
