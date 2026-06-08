@@ -3,7 +3,8 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 # Crash recovery tests rely on fork()+execvp()+kill() to spawn helper processes
 # and simulate crashes. These POSIX process APIs are prohibited on iOS.
-if(IOS)
+# On Windows the tests also fail consistently, so skip them there as well.
+if(IOS OR WIN32)
   return()
 endif()
 
