@@ -72,6 +72,7 @@ jobs:
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_TOOLS=OFF \
             -DENABLE_WERROR=ON \
+            -DUSE_OSS_MIRROR=ON \
             -DCMAKE_INSTALL_PREFIX="./install" \
             -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc" \
             -DIOS=ON \

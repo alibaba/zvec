@@ -122,6 +122,7 @@ jobs:
             -DENABLE_NATIVE=OFF \
             -DAUTO_DETECT_ARCH=OFF \
             -DENABLE_WERROR=ON \
+            -DUSE_OSS_MIRROR=ON \
             -DCMAKE_INSTALL_PREFIX="$BUILD_DIR/install" \
             -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
