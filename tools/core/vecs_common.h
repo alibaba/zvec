@@ -42,7 +42,13 @@ struct VecsHeader {
   uint64_t partition_size;    // size for partition
   uint64_t taglist_offset;    // offset for taglist
   uint64_t taglist_size;      // size for taglist
-  uint8_t meta_buf[0];
+
+  uint8_t *meta_buf() {
+    return reinterpret_cast<uint8_t *>(this + 1);
+  }
+  const uint8_t *meta_buf() const {
+    return reinterpret_cast<const uint8_t *>(this + 1);
+  }
 };
 #pragma pack()
 

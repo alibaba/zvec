@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <shared_mutex>
 #include <string>
 #include <variant>
@@ -196,6 +195,13 @@ class CollectionImpl : public Collection {
       const std::vector<Segment::Ptr> &segments, const std::string &column);
 
   std::vector<SegmentTask::Ptr> build_drop_scalar_index_task(
+      const std::vector<Segment::Ptr> &segments, const std::string &column);
+
+  std::vector<SegmentTask::Ptr> build_create_fts_index_task(
+      const std::vector<Segment::Ptr> &segments, const std::string &column,
+      const IndexParams::Ptr &index_params);
+
+  std::vector<SegmentTask::Ptr> build_drop_fts_index_task(
       const std::vector<Segment::Ptr> &segments, const std::string &column);
 
   Status execute_tasks(std::vector<SegmentTask::Ptr> &tasks) const;
@@ -471,6 +477,18 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
     return Status::OK();
   }
 
+  // Reject creating a non-vector index when the column already has a different
+  // non-vector index type (e.g. adding FTS when INVERT exists, or vice versa).
+  if (!field->is_vector_field() && field->index_params() != nullptr &&
+      field->index_params()->type() != index_params->type()) {
+    return Status::NotSupported(
+        "CreateIndex: column[", column_name, "] already has index type [",
+        IndexTypeCodeBook::AsString(field->index_params()->type()),
+        "], cannot create index type [",
+        IndexTypeCodeBook::AsString(index_params->type()),
+        "] on the same column");
+  }
+
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
@@ -533,6 +551,9 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   } else if (index_params->type() == IndexType::INVERT) {
     tasks = build_create_scalar_index_task(persist_segments, column_name,
                                            index_params, options.concurrency_);
+  } else if (index_params->type() == IndexType::FTS) {
+    tasks = build_create_fts_index_task(persist_segments, column_name,
+                                        index_params);
   } else {
     return Status::NotSupported(
         "CreateIndex: index type [",
@@ -570,6 +591,10 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
       auto create_index_task = std::get<CreateScalarIndexTask>(task_info);
       s = new_version.update_persisted_segment_meta(
           create_index_task.output_segment_meta_);
+    } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
+      auto fts_task = std::get<CreateFtsIndexTask>(task_info);
+      s = new_version.update_persisted_segment_meta(
+          fts_task.output_segment_meta_);
     }
     CHECK_RETURN_STATUS(s);
   }
@@ -597,6 +622,11 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
       s = create_index_task.input_segment_->reload_scalar_index(
           *new_schema, create_index_task.output_segment_meta_,
           create_index_task.output_scalar_indexer_);
+    } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
+      auto fts_task = std::get<CreateFtsIndexTask>(task_info);
+      s = fts_task.input_segment_->reload_fts_index(
+          *new_schema, fts_task.output_segment_meta_,
+          fts_task.output_fts_indexer_);
     }
     CHECK_RETURN_STATUS(s);
   }
@@ -626,6 +656,27 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_create_scalar_index_task(
   for (auto &segment : segments) {
     tasks.push_back(SegmentTask::CreateCreateScalarIndexTask(
         CreateScalarIndexTask{segment, {column}, index_params, concurrency}));
+  }
+  return tasks;
+}
+
+std::vector<SegmentTask::Ptr> CollectionImpl::build_create_fts_index_task(
+    const std::vector<Segment::Ptr> &segments, const std::string &column,
+    const IndexParams::Ptr &index_params) {
+  std::vector<SegmentTask::Ptr> tasks;
+  for (auto &segment : segments) {
+    tasks.push_back(SegmentTask::CreateCreateFtsIndexTask(
+        CreateFtsIndexTask{segment, column, index_params}));
+  }
+  return tasks;
+}
+
+std::vector<SegmentTask::Ptr> CollectionImpl::build_drop_fts_index_task(
+    const std::vector<Segment::Ptr> &segments, const std::string &column) {
+  std::vector<SegmentTask::Ptr> tasks;
+  for (auto &segment : segments) {
+    tasks.push_back(
+        SegmentTask::CreateDropFtsIndexTask(DropFtsIndexTask{segment, column}));
   }
   return tasks;
 }
@@ -723,6 +774,8 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
     tasks = build_drop_vector_index_task(persist_segments, column_name);
   } else if (field->index_params()->type() == IndexType::INVERT) {
     tasks = build_drop_scalar_index_task(persist_segments, column_name);
+  } else if (field->index_params()->type() == IndexType::FTS) {
+    tasks = build_drop_fts_index_task(persist_segments, column_name);
   } else {
     return Status::NotSupported(
         "DropIndex: index type [",
@@ -760,6 +813,10 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
       auto drop_index_task = std::get<DropScalarIndexTask>(task_info);
       s = new_version.update_persisted_segment_meta(
           drop_index_task.output_segment_meta_);
+    } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
+      auto fts_task = std::get<DropFtsIndexTask>(task_info);
+      s = new_version.update_persisted_segment_meta(
+          fts_task.output_segment_meta_);
     }
     CHECK_RETURN_STATUS(s);
   }
@@ -785,6 +842,11 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
       s = drop_index_task.input_segment_->reload_scalar_index(
           *new_schema, drop_index_task.output_segment_meta_,
           drop_index_task.output_scalar_indexer_);
+    } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
+      auto fts_task = std::get<DropFtsIndexTask>(task_info);
+      s = fts_task.input_segment_->reload_fts_index(
+          *new_schema, fts_task.output_segment_meta_,
+          fts_task.output_fts_indexer_);
     }
     CHECK_RETURN_STATUS(s);
   }
@@ -1643,28 +1705,16 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
     return DocPtrList();
   }
 
-  struct PendingQuery {
-    std::string field_name;
-    SearchQuery query;
-  };
-
   // Convert each SubQuery to a SearchQuery and validate.
-  std::set<std::string> seen_fields;
-  std::vector<PendingQuery> pending_queries;
-  pending_queries.reserve(query.queries.size());
+  std::vector<SearchQuery> search_queries;
+  std::vector<std::string> field_names;
+  search_queries.reserve(query.queries.size());
+  field_names.reserve(query.queries.size());
 
   for (const auto &sub : query.queries) {
     const auto &target = sub.target_;
-    auto [_, inserted] = seen_fields.insert(target.field_name_);
-    if (!inserted) {
-      return tl::make_unexpected(Status::InvalidArgument(
-          "Duplicate field name in multi-vector query: ", target.field_name_));
-    }
-    auto *field_schema = schema_->get_vector_field(target.field_name_);
-    if (!field_schema) {
-      return tl::make_unexpected(Status::InvalidArgument(
-          "Vector field not found: ", target.field_name_));
-    }
+
+    auto *field_schema = schema_->get_field(target.field_name_);
 
     SearchQuery sq;
     sq.target_ = target;
@@ -1676,43 +1726,44 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
 
     auto s = sq.validate_and_sanitize(field_schema);
     CHECK_RETURN_STATUS_EXPECTED(s);
-    pending_queries.push_back({target.field_name_, std::move(sq)});
+    field_names.push_back(target.field_name_);
+    search_queries.push_back(std::move(sq));
   }
 
-  std::map<std::string, DocPtrList> query_results;
-
-  auto execute_query = [&](PendingQuery &pending) -> Result<DocPtrList> {
+  // Execute sub-queries.
+  auto execute_query = [&](SearchQuery &sq) -> Result<DocPtrList> {
     auto engine = sqlengine::SQLEngine::create(std::make_shared<Profiler>());
-    return engine->execute(schema_, std::move(pending.query), segments);
+    return engine->execute(schema_, std::move(sq), segments);
   };
 
-  std::vector<Result<DocPtrList>> results(pending_queries.size());
+  std::vector<Result<DocPtrList>> results(search_queries.size());
 
   // Single-segment queries have no segment-level fanout; multi-segment queries
   // already use the query pool per sub-query.
   if (segments.size() == 1) {
     auto group = GlobalResource::Instance().query_thread_pool()->make_group();
-    for (size_t i = 0; i < pending_queries.size(); ++i) {
+    for (size_t i = 0; i < search_queries.size(); ++i) {
       group->execute(
-          [&, i]() { results[i] = execute_query(pending_queries[i]); });
+          [&, i]() { results[i] = execute_query(search_queries[i]); });
     }
     group->wait_finish();
   } else {
-    for (size_t i = 0; i < pending_queries.size(); ++i) {
-      results[i] = execute_query(pending_queries[i]);
+    for (size_t i = 0; i < search_queries.size(); ++i) {
+      results[i] = execute_query(search_queries[i]);
     }
   }
 
-  for (size_t i = 0; i < pending_queries.size(); ++i) {
-    if (!results[i]) {
-      return tl::make_unexpected(results[i].error());
+  // Collect results and rerank.
+  std::vector<DocPtrList> query_results;
+  query_results.reserve(results.size());
+  for (auto &result : results) {
+    if (!result) {
+      return tl::make_unexpected(result.error());
     }
-    query_results[pending_queries[i].field_name] =
-        std::move(results[i].value());
+    query_results.push_back(std::move(result.value()));
   }
 
-  // Merge and rerank results
-  query.reranker->bind_schema(schema_);
+  query.reranker->bind_schema(schema_, field_names);
   return query.reranker->rerank(query_results, query.topk);
 }
 

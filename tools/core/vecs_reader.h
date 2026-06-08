@@ -65,14 +65,14 @@ class VecsReader {
     num_vecs_ = header->num_vecs;
 
     // deserialize
-    bool bret = index_meta_.deserialize(&header->meta_buf, header->meta_size);
+    bool bret = index_meta_.deserialize(header->meta_buf(), header->meta_size);
     if (!bret) {
       std::cerr << "deserialize index meta error." << std::endl;
       return false;
     }
 
     const char *data_base_ptr =
-        reinterpret_cast<const char *>(header + 1) + header->meta_size;
+        reinterpret_cast<const char *>(header->meta_buf()) + header->meta_size;
 
     vector_base_ = reinterpret_cast<const char *>(data_base_ptr);
     key_base_ = reinterpret_cast<const uint64_t *>(
@@ -250,17 +250,17 @@ class SparseVecsReader {
     num_vecs_ = header->num_vecs;
 
     // deserialize
-    bool bret = index_meta_.deserialize(&header->meta_buf, header->meta_size);
+    bool bret = index_meta_.deserialize(header->meta_buf(), header->meta_size);
     if (!bret) {
       std::cerr << "deserialize index meta error." << std::endl;
       return false;
     }
 
     const char *data_base_ptr =
-        reinterpret_cast<const char *>(header + 1) + header->meta_size;
+        reinterpret_cast<const char *>(header->meta_buf()) + header->meta_size;
 
     key_base_ = reinterpret_cast<const uint64_t *>(
-        reinterpret_cast<const char *>(header + 1) + header->meta_size);
+        reinterpret_cast<const char *>(header->meta_buf()) + header->meta_size);
     sparse_base_meta_ = reinterpret_cast<const char *>(key_base_ + num_vecs_);
     sparse_base_data_ = reinterpret_cast<const char *>(
         sparse_base_meta_ + num_vecs_ * sizeof(uint64_t));

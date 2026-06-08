@@ -116,6 +116,17 @@ else()
 endif()
 message(STATUS "RABITQ_ARCH_FLAG: ${RABITQ_ARCH_FLAG}")
 
+# DiskAnn support (Linux x86_64 only, requires libaio)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386" AND NOT ANDROID AND NOT IOS)
+  set(DISKANN_SUPPORTED ON)
+  add_definitions(-DDISKANN_SUPPORTED=1)
+else()
+  set(DISKANN_SUPPORTED OFF)
+  add_definitions(-DDISKANN_SUPPORTED=0)
+  message(STATUS "DiskAnn support disabled - only supported on Linux x86_64")
+endif()
+message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
+
 option(USE_OSS_MIRROR "Use OSS mirror for faster third-party downloads" OFF)
 if(DEFINED ENV{USE_OSS_MIRROR} AND NOT "$ENV{USE_OSS_MIRROR}" STREQUAL "")
   set(USE_OSS_MIRROR "$ENV{USE_OSS_MIRROR}" CACHE BOOL "Use OSS mirror for faster third-party downloads" FORCE)
@@ -155,6 +166,17 @@ if(BUILD_PYTHON_BINDINGS)
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
 
+    # DiskAnn ships as a runtime-loaded shared module
+    # (libzvec_diskann_plugin.so) that is brought online implicitly the
+    # first time a DiskAnn index is created — users never call any load
+    # function. The Python extension resolves the module next to _zvec.so
+    # (see the $ORIGIN rpath in src/binding/python/CMakeLists.txt); the
+    # module must therefore be installed alongside _zvec.so in the wheel.
+    # The target exists only on platforms where DiskAnn is buildable
+    # (currently Linux x86_64 with libaio).
+    if(TARGET core_knn_diskann)
+        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+    endif()
     # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
     # out of the box. python/zvec/__init__.py resolves this directory via
     # importlib.resources and registers it with set_default_jieba_dict_dir().

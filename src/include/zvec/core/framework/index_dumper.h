@@ -51,6 +51,11 @@ class IndexDumper : public IndexModule {
 
   //! Retrieve magic number of index
   virtual uint32_t magic(void) const = 0;
+
+  //! Retrieve size
+  virtual size_t size(void) const {
+    return 0;
+  }
 };
 
 /*! Index Segment Dumper

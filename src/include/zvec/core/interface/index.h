@@ -338,5 +338,36 @@ class HNSWRabitqIndex : public Index {
   HNSWRabitqIndexParam param_{};
 };
 
+class DiskAnnIndex : public Index {
+ public:
+  DiskAnnIndex() = default;
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+
+  int Add(const VectorData &vector, uint32_t doc_id) override;
+
+  int Train() override;
+
+  int Open(const std::string &file_path,
+           StorageOptions storage_options) override;
+
+  int _dense_fetch(const uint32_t doc_id,
+                   VectorDataBuffer *vector_data_buffer) override;
+  int Merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter, const MergeOptions &options) override;
+  int GenerateHolder();
+
+ private:
+  DiskAnnIndexParam param_{};
+  std::mutex mutex_{};
+  std::vector<std::pair<uint64_t, std::string>> doc_cache_;
+  core::IndexHolder::Pointer holder_{};
+  std::string file_path_;
+};
 
 }  // namespace zvec::core_interface

@@ -15,10 +15,9 @@ from __future__ import annotations
 
 from unittest.mock import patch, MagicMock
 import pytest
-import math
 import os
 
-from zvec import Doc, MetricType
+from zvec import Doc
 from zvec.extension.multi_vector_reranker import (
     CallbackReRanker,
     RrfReRanker,
@@ -38,37 +37,27 @@ RUN_INTEGRATION_TESTS = os.environ.get("ZVEC_RUN_INTEGRATION_TESTS", "0") == "1"
 # ----------------------------
 class TestRrfReRanker:
     def test_init(self):
-        reranker = RrfReRanker(topn=5, rerank_field="content", rank_constant=100)
-        assert reranker.topn == 5
-        assert reranker.rerank_field == "content"
+        reranker = RrfReRanker(rank_constant=100)
         assert reranker.rank_constant == 100
 
-    def test_rrf_score(self):
-        reranker = RrfReRanker(rank_constant=60)
-        # 根据公式 1.0 / (k + rank + 1)，其中k=60
-        assert reranker._rrf_score(0) == 1.0 / (60 + 0 + 1)
-        assert reranker._rrf_score(1) == 1.0 / (60 + 1 + 1)
-        assert reranker._rrf_score(10) == 1.0 / (60 + 10 + 1)
-
-    def test_rerank(self):
-        reranker = RrfReRanker(topn=3)
+    def test_rerank_delegates_to_cpp(self):
+        """RrfReRanker.rerank() delegates to C++ (raises TypeError with Python Docs)."""
+        reranker = RrfReRanker()
 
         doc1 = Doc(id="1", score=0.8)
         doc2 = Doc(id="2", score=0.7)
         doc3 = Doc(id="3", score=0.9)
         doc4 = Doc(id="4", score=0.6)
 
-        query_results = {"vector1": [doc1, doc2, doc3], "vector2": [doc3, doc1, doc4]}
+        query_results = [[doc1, doc2, doc3], [doc3, doc1, doc4]]
 
-        results = reranker.rerank(query_results)
+        with pytest.raises((TypeError, RuntimeError)):
+            reranker.rerank(query_results, topn=3)
 
-        assert len(results) <= reranker.topn
-
-        for doc in results:
-            assert hasattr(doc, "score")
-
-        scores = [doc.score for doc in results]
-        assert scores == sorted(scores, reverse=True)
+    def test_get_object_returns_cpp_reranker(self):
+        """_get_object() returns a valid C++ reranker instance."""
+        reranker = RrfReRanker()
+        assert reranker._get_object() is not None
 
 
 # ----------------------------
@@ -76,64 +65,30 @@ class TestRrfReRanker:
 # ----------------------------
 class TestWeightedReRanker:
     def test_init(self):
-        metrics = {"vector1": MetricType.L2, "vector2": MetricType.COSINE}
-        weights = {"vector1": 0.7, "vector2": 0.3}
+        weights = [0.7, 0.3]
         reranker = WeightedReRanker(
-            topn=5,
-            rerank_field="content",
-            metrics=metrics,
             weights=weights,
         )
-        assert reranker.topn == 5
-        assert reranker.rerank_field == "content"
-        assert reranker.metrics == metrics
-        assert reranker.weights == weights
+        assert list(reranker.weights) == weights
 
-    def test_normalize_score(self):
-        reranker = WeightedReRanker()
-
-        score = reranker._normalize_score(1.0, MetricType.L2)
-        expected = 1.0 - 2 * math.atan(1.0) / math.pi
-        assert score == expected
-
-        score = reranker._normalize_score(1.0, MetricType.IP)
-        expected = 0.5 + math.atan(1.0) / math.pi
-        assert score == expected
-
-        score = reranker._normalize_score(1.0, MetricType.COSINE)
-        expected = 1.0 - 1.0 / 2.0
-        assert score == expected
-
-        with pytest.raises(ValueError, match="Unsupported metric type"):
-            reranker._normalize_score(1.0, "unsupported_metric")
-
-    def test_rerank(self):
-        metrics = {"vector1": MetricType.L2, "vector2": MetricType.L2}
-        weights = {"vector1": 0.7, "vector2": 0.3}
-        reranker = WeightedReRanker(topn=3, weights=weights, metrics=metrics)
+    def test_rerank_delegates_to_cpp(self):
+        """WeightedReRanker.rerank() delegates to C++ (raises TypeError with Python Docs)."""
+        weights = [0.7, 0.3]
+        reranker = WeightedReRanker(weights=weights)
 
         doc1 = Doc(id="1", score=0.8)
         doc2 = Doc(id="2", score=0.7)
         doc3 = Doc(id="3", score=0.9)
 
-        query_results = {"vector1": [doc1, doc2], "vector2": [doc2, doc3]}
+        query_results = [[doc1, doc2], [doc2, doc3]]
 
-        results = reranker.rerank(query_results)
+        with pytest.raises((TypeError, RuntimeError)):
+            reranker.rerank(query_results, topn=3)
 
-        assert len(results) <= reranker.topn
-
-        for doc in results:
-            assert hasattr(doc, "score")
-
-    def test_rerank_missing_metric_raises(self):
-        metrics = {"vector1": MetricType.L2}
-        reranker = WeightedReRanker(topn=3, metrics=metrics)
-
-        doc1 = Doc(id="1", score=0.8)
-        query_results = {"vector1": [doc1], "vector2": [doc1]}
-
-        with pytest.raises(ValueError, match="no metric type specified"):
-            reranker.rerank(query_results)
+    def test_get_object_returns_cpp_reranker(self):
+        """_get_object() returns a valid C++ reranker instance."""
+        reranker = WeightedReRanker(weights=[0.5, 0.5])
+        assert reranker._get_object() is not None
 
 
 # ----------------------------
@@ -144,27 +99,27 @@ class TestCallbackReRanker:
         def my_callback(query_results, topn):
             return []
 
-        reranker = CallbackReRanker(callback=my_callback, topn=5)
-        assert reranker.topn == 5
+        reranker = CallbackReRanker(callback=my_callback)
+        assert reranker._get_object() is not None
 
     def test_rerank(self):
         def my_callback(query_results, topn):
             all_docs = []
-            for docs in query_results.values():
+            for docs in query_results:
                 all_docs.extend(docs)
             all_docs.sort(key=lambda d: d.score, reverse=True)
             return all_docs[:topn]
 
-        reranker = CallbackReRanker(callback=my_callback, topn=3)
+        reranker = CallbackReRanker(callback=my_callback)
 
         doc1 = Doc(id="1", score=0.8)
         doc2 = Doc(id="2", score=0.9)
         doc3 = Doc(id="3", score=0.7)
         doc4 = Doc(id="4", score=0.6)
 
-        query_results = {"vector1": [doc1, doc2], "vector2": [doc3, doc4]}
+        query_results = [[doc1, doc2], [doc3, doc4]]
 
-        results = reranker.rerank(query_results)
+        results = reranker.rerank(query_results, topn=3)
 
         assert len(results) == 3
         scores = [doc.score for doc in results]
@@ -177,8 +132,8 @@ class TestCallbackReRanker:
             received_topn.append(topn)
             return []
 
-        reranker = CallbackReRanker(callback=my_callback, topn=7)
-        reranker.rerank({"v1": [Doc(id="1", score=0.5)]})
+        reranker = CallbackReRanker(callback=my_callback)
+        reranker.rerank([[Doc(id="1", score=0.5)]], topn=7)
 
         assert received_topn == [7]
 
@@ -237,12 +192,6 @@ class TestQwenReRanker:
         )
         assert reranker.query == "test query"
 
-    def test_topn_property(self):
-        reranker = QwenReRanker(
-            query="test", topn=5, api_key="test_key", rerank_field="content"
-        )
-        assert reranker.topn == 5
-
     def test_rerank_field_property(self):
         reranker = QwenReRanker(query="test", api_key="test_key", rerank_field="title")
         assert reranker.rerank_field == "title"
@@ -251,7 +200,7 @@ class TestQwenReRanker:
         reranker = QwenReRanker(
             query="test", api_key="test_key", rerank_field="content"
         )
-        results = reranker.rerank({})
+        results = reranker.rerank([], topn=10)
         assert results == []
 
     def test_rerank_no_valid_documents(self):
@@ -259,22 +208,22 @@ class TestQwenReRanker:
             query="test", api_key="test_key", rerank_field="content"
         )
         # Document without the rerank_field
-        query_results = {"vector1": [Doc(id="1")]}
+        query_results = [[Doc(id="1")]]
         with pytest.raises(ValueError, match="No documents to rerank"):
-            reranker.rerank(query_results)
+            reranker.rerank(query_results, topn=10)
 
     def test_rerank_skip_empty_content(self):
         reranker = QwenReRanker(
             query="test", api_key="test_key", rerank_field="content"
         )
-        query_results = {
-            "vector1": [
+        query_results = [
+            [
                 Doc(id="1", fields={"content": ""}),
                 Doc(id="2", fields={"content": "   "}),
             ]
-        }
+        ]
         with pytest.raises(ValueError, match="No documents to rerank"):
-            reranker.rerank(query_results)
+            reranker.rerank(query_results, topn=10)
 
     @patch("zvec.extension.qwen_function.require_module")
     def test_rerank_success(self, mock_require_module):
@@ -294,17 +243,17 @@ class TestQwenReRanker:
         mock_dashscope.TextReRank.call.return_value = mock_response
 
         reranker = QwenReRanker(
-            query="test query", topn=2, api_key="test_key", rerank_field="content"
+            query="test query", api_key="test_key", rerank_field="content"
         )
 
-        query_results = {
-            "vector1": [
+        query_results = [
+            [
                 Doc(id="1", fields={"content": "Document 1"}),
                 Doc(id="2", fields={"content": "Document 2"}),
             ]
-        }
+        ]
 
-        results = reranker.rerank(query_results)
+        results = reranker.rerank(query_results, topn=2)
 
         assert len(results) == 2
         assert results[0].id == "1"
@@ -338,14 +287,14 @@ class TestQwenReRanker:
         mock_dashscope.TextReRank.call.return_value = mock_response
 
         reranker = QwenReRanker(
-            query="test", topn=5, api_key="test_key", rerank_field="content"
+            query="test", api_key="test_key", rerank_field="content"
         )
 
         # Same document in multiple vector results
         doc1 = Doc(id="1", fields={"content": "Document 1"})
-        query_results = {"vector1": [doc1], "vector2": [doc1]}
+        query_results = [[doc1], [doc1]]
 
-        results = reranker.rerank(query_results)
+        results = reranker.rerank(query_results, topn=5)
 
         # Should only call API with document once
         call_args = mock_dashscope.TextReRank.call.call_args
@@ -368,10 +317,10 @@ class TestQwenReRanker:
             query="test", api_key="test_key", rerank_field="content"
         )
 
-        query_results = {"vector1": [Doc(id="1", fields={"content": "Document 1"})]}
+        query_results = [[Doc(id="1", fields={"content": "Document 1"})]]
 
         with pytest.raises(ValueError, match="DashScope API error"):
-            reranker.rerank(query_results)
+            reranker.rerank(query_results, topn=10)
 
     @patch("zvec.extension.qwen_function.require_module")
     def test_rerank_runtime_error(self, mock_require_module):
@@ -384,10 +333,10 @@ class TestQwenReRanker:
             query="test", api_key="test_key", rerank_field="content"
         )
 
-        query_results = {"vector1": [Doc(id="1", fields={"content": "Document 1"})]}
+        query_results = [[Doc(id="1", fields={"content": "Document 1"})]]
 
         with pytest.raises(RuntimeError, match="Failed to call DashScope API"):
-            reranker.rerank(query_results)
+            reranker.rerank(query_results, topn=10)
 
     @pytest.mark.skipif(
         not RUN_INTEGRATION_TESTS,
@@ -403,14 +352,13 @@ class TestQwenReRanker:
         # Create reranker with real API
         reranker = QwenReRanker(
             query="What is machine learning?",
-            topn=3,
             rerank_field="content",
             model="gte-rerank-v2",
         )
 
         # Prepare test documents
-        query_results = {
-            "vector1": [
+        query_results = [
+            [
                 Doc(
                     id="1",
                     score=0.8,
@@ -433,7 +381,7 @@ class TestQwenReRanker:
                     },
                 ),
             ],
-            "vector2": [
+            [
                 Doc(
                     id="4",
                     score=0.6,
@@ -449,10 +397,10 @@ class TestQwenReRanker:
                     },
                 ),
             ],
-        }
+        ]
 
         # Call real API
-        results = reranker.rerank(query_results)
+        results = reranker.rerank(query_results, topn=3)
 
         # Verify results
         assert len(results) <= 3, "Should return at most topn documents"
@@ -523,13 +471,11 @@ class TestDefaultLocalReRanker:
 
         reranker = DefaultLocalReRanker(
             query="test query",
-            topn=5,
             rerank_field="content",
             model_name="cross-encoder/ms-marco-MiniLM-L6-v2",
         )
 
         assert reranker.query == "test query"
-        assert reranker.topn == 5
         assert reranker.rerank_field == "content"
         assert reranker.model_name == "cross-encoder/ms-marco-MiniLM-L6-v2"
         assert reranker.model_source == "huggingface"
@@ -551,7 +497,6 @@ class TestDefaultLocalReRanker:
 
         reranker = DefaultLocalReRanker(
             query="custom query",
-            topn=10,
             rerank_field="title",
             model_name="cross-encoder/ms-marco-MiniLM-L12-v2",
             model_source="modelscope",
@@ -560,7 +505,6 @@ class TestDefaultLocalReRanker:
         )
 
         assert reranker.query == "custom query"
-        assert reranker.topn == 10
         assert reranker.rerank_field == "title"
         assert reranker.model_name == "cross-encoder/ms-marco-MiniLM-L12-v2"
         assert reranker.model_source == "modelscope"
@@ -592,23 +536,6 @@ class TestDefaultLocalReRanker:
         ):
             reranker = DefaultLocalReRanker(query="test query", rerank_field="content")
             assert reranker.query == "test query"
-
-    def test_topn_property(self):
-        """Test topn property."""
-        mock_model = MagicMock()
-        mock_model.predict = MagicMock()
-
-        mock_st = MagicMock()
-        mock_st.CrossEncoder.return_value = mock_model
-
-        with patch(
-            "zvec.extension.sentence_transformer_rerank_function.require_module",
-            return_value=mock_st,
-        ):
-            reranker = DefaultLocalReRanker(
-                query="test", topn=15, rerank_field="content"
-            )
-            assert reranker.topn == 15
 
     def test_rerank_field_property(self):
         """Test rerank_field property."""
@@ -655,7 +582,7 @@ class TestDefaultLocalReRanker:
             return_value=mock_st,
         ):
             reranker = DefaultLocalReRanker(query="test", rerank_field="content")
-            results = reranker.rerank({})
+            results = reranker.rerank([], topn=10)
             assert results == []
 
     def test_rerank_no_valid_documents(self):
@@ -673,9 +600,9 @@ class TestDefaultLocalReRanker:
             reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
             # Document without the rerank_field
-            query_results = {"vector1": [Doc(id="1")]}
+            query_results = [[Doc(id="1")]]
             with pytest.raises(ValueError, match="No documents to rerank"):
-                reranker.rerank(query_results)
+                reranker.rerank(query_results, topn=10)
 
     def test_rerank_skip_empty_content(self):
         """Test rerank skips documents with empty content."""
@@ -691,14 +618,14 @@ class TestDefaultLocalReRanker:
         ):
             reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
-            query_results = {
-                "vector1": [
+            query_results = [
+                [
                     Doc(id="1", fields={"content": ""}),
                     Doc(id="2", fields={"content": "   "}),
                 ]
-            }
+            ]
             with pytest.raises(ValueError, match="No documents to rerank"):
-                reranker.rerank(query_results)
+                reranker.rerank(query_results, topn=10)
 
     def test_rerank_success(self):
         """Test successful rerank with mocked model."""
@@ -720,19 +647,17 @@ class TestDefaultLocalReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = DefaultLocalReRanker(
-                query="test query", topn=3, rerank_field="content"
-            )
+            reranker = DefaultLocalReRanker(query="test query", rerank_field="content")
 
-            query_results = {
-                "vector1": [
+            query_results = [
+                [
                     Doc(id="1", score=0.8, fields={"content": "Document 1"}),
                     Doc(id="2", score=0.7, fields={"content": "Document 2"}),
                     Doc(id="3", score=0.6, fields={"content": "Document 3"}),
                 ]
-            }
+            ]
 
-            results = reranker.rerank(query_results)
+            results = reranker.rerank(query_results, topn=3)
 
             # Verify results
             assert len(results) == 3
@@ -771,21 +696,19 @@ class TestDefaultLocalReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = DefaultLocalReRanker(
-                query="test", topn=2, rerank_field="content"
-            )
+            reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
-            query_results = {
-                "vector1": [
+            query_results = [
+                [
                     Doc(id="1", fields={"content": "Doc 1"}),
                     Doc(id="2", fields={"content": "Doc 2"}),
                     Doc(id="3", fields={"content": "Doc 3"}),
                     Doc(id="4", fields={"content": "Doc 4"}),
                     Doc(id="5", fields={"content": "Doc 5"}),
                 ]
-            }
+            ]
 
-            results = reranker.rerank(query_results)
+            results = reranker.rerank(query_results, topn=2)
 
             # Should only return top 2
             assert len(results) == 2
@@ -811,20 +734,18 @@ class TestDefaultLocalReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = DefaultLocalReRanker(
-                query="test", topn=5, rerank_field="content"
-            )
+            reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
             # Same document in multiple vector results
             doc1 = Doc(id="1", fields={"content": "Document 1"})
             doc2 = Doc(id="2", fields={"content": "Document 2"})
 
-            query_results = {
-                "vector1": [doc1, doc2],
-                "vector2": [doc1],  # doc1 appears in both
-            }
+            query_results = [
+                [doc1, doc2],
+                [doc1],  # doc1 appears in both
+            ]
 
-            results = reranker.rerank(query_results)
+            results = reranker.rerank(query_results, topn=5)
 
             # Should only process each document once
             assert len(results) == 2
@@ -852,19 +773,17 @@ class TestDefaultLocalReRanker:
             "zvec.extension.sentence_transformer_rerank_function.require_module",
             return_value=mock_st,
         ):
-            reranker = DefaultLocalReRanker(
-                query="test", topn=3, rerank_field="content"
-            )
+            reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
-            query_results = {
-                "vector1": [
+            query_results = [
+                [
                     Doc(id="1", fields={"content": "Doc 1"}),
                     Doc(id="2", fields={"content": "Doc 2"}),
                     Doc(id="3", fields={"content": "Doc 3"}),
                 ]
-            }
+            ]
 
-            results = reranker.rerank(query_results)
+            results = reranker.rerank(query_results, topn=3)
 
             # Should be sorted by score (descending)
             assert len(results) == 3
@@ -892,10 +811,10 @@ class TestDefaultLocalReRanker:
         ):
             reranker = DefaultLocalReRanker(query="test", rerank_field="content")
 
-            query_results = {"vector1": [Doc(id="1", fields={"content": "Document 1"})]}
+            query_results = [[Doc(id="1", fields={"content": "Document 1"})]]
 
             with pytest.raises(RuntimeError, match="Failed to compute rerank scores"):
-                reranker.rerank(query_results)
+                reranker.rerank(query_results, topn=10)
 
     def test_rerank_with_custom_batch_size(self):
         """Test rerank uses custom batch_size."""
@@ -918,14 +837,14 @@ class TestDefaultLocalReRanker:
                 query="test", rerank_field="content", batch_size=64
             )
 
-            query_results = {
-                "vector1": [
+            query_results = [
+                [
                     Doc(id="1", fields={"content": "Doc 1"}),
                     Doc(id="2", fields={"content": "Doc 2"}),
                 ]
-            }
+            ]
 
-            reranker.rerank(query_results)
+            reranker.rerank(query_results, topn=10)
 
             # Verify batch_size is passed to predict
             call_args = mock_model.predict.call_args
@@ -947,13 +866,12 @@ class TestDefaultLocalReRanker:
         # Create reranker with real model (using default lightweight model)
         reranker = DefaultLocalReRanker(
             query="What is machine learning?",
-            topn=3,
             rerank_field="content",
         )
 
         # Prepare test documents
-        query_results = {
-            "vector1": [
+        query_results = [
+            [
                 Doc(
                     id="1",
                     score=0.8,
@@ -976,7 +894,7 @@ class TestDefaultLocalReRanker:
                     },
                 ),
             ],
-            "vector2": [
+            [
                 Doc(
                     id="4",
                     score=0.6,
@@ -992,10 +910,10 @@ class TestDefaultLocalReRanker:
                     },
                 ),
             ],
-        }
+        ]
 
         # Call real model
-        results = reranker.rerank(query_results)
+        results = reranker.rerank(query_results, topn=3)
 
         # Verify results
         assert len(results) <= 3, "Should return at most topn documents"
@@ -1030,3 +948,49 @@ class TestDefaultLocalReRanker:
                 content = doc.field("content")
                 if content:
                     print(f"   Content: {content[:80]}...")
+
+
+# ----------------------------
+# DocList Type and Delegation Tests
+# ----------------------------
+class TestDocList:
+    def test_type_alias(self):
+        """DocList is list[Doc]."""
+        from zvec.model.doc import DocList
+        from zvec import Doc, DocList as QR
+
+        assert DocList == list[Doc]
+        assert QR == list[Doc]
+
+    def test_rrf_reranker_delegates_to_cpp(self):
+        """RrfReRanker.rerank() delegates to C++ (raises TypeError with Python Docs)."""
+        reranker = RrfReRanker()
+        with pytest.raises(TypeError):
+            reranker.rerank([[Doc(id="1", score=0.5)]], topn=5)
+
+    def test_weighted_reranker_delegates_to_cpp(self):
+        """WeightedReRanker.rerank() delegates to C++ (raises TypeError with Python Docs)."""
+        reranker = WeightedReRanker(weights=[0.7, 0.3])
+        with pytest.raises(TypeError):
+            reranker.rerank(
+                [[Doc(id="1", score=0.5)], [Doc(id="2", score=0.3)]], topn=5
+            )
+
+    def test_single_route_query_results(self):
+        """CallbackReRanker works with single-route (one element list)."""
+
+        def cb(query_results, topn):
+            return query_results[0][:topn]
+
+        reranker = CallbackReRanker(callback=cb)
+        results = reranker.rerank(
+            [
+                [
+                    Doc(id="1", score=0.9),
+                    Doc(id="2", score=0.8),
+                    Doc(id="3", score=0.7),
+                ]
+            ],
+            topn=2,
+        )
+        assert len(results) == 2

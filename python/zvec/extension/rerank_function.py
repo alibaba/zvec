@@ -14,9 +14,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
-from ..model.doc import Doc
+from ..model.doc import DocList
 
 
 class RerankFunction(ABC):
@@ -26,44 +25,22 @@ class RerankFunction(ABC):
     a secondary scoring strategy. They are used in the ``query()`` method of
     ``Collection`` via the ``reranker`` parameter.
 
-    Args:
-        topn (int, optional): Number of top documents to return after re-ranking.
-            Defaults to 10.
-        rerank_field (Optional[str], optional): Field name used as input for
-            re-ranking (e.g., document title or body). Defaults to None.
-
     Note:
         Subclasses must implement the ``rerank()`` method.
     """
 
-    def __init__(
-        self,
-        topn: int = 10,
-        rerank_field: Optional[str] = None,
-    ):
-        self._topn = topn
-        self._rerank_field = rerank_field
-
-    @property
-    def topn(self) -> int:
-        """int: Number of top documents to return after re-ranking."""
-        return self._topn
-
-    @property
-    def rerank_field(self) -> Optional[str]:
-        """Optional[str]: Field name used as re-ranking input."""
-        return self._rerank_field
-
     @abstractmethod
-    def rerank(self, query_results: dict[str, list[Doc]]) -> list[Doc]:
-        """Re-rank documents from one or more vector queries.
+    def rerank(self, query_results: list[DocList], topn: int) -> DocList:
+        """Re-rank documents from multi-route recall results.
 
         Args:
-            query_results (dict[str, list[Doc]]): Mapping from vector field name
-                to list of retrieved documents (sorted by relevance).
+            query_results (list[DocList]): List of query results from
+                multi-route recall. Each element corresponds to a Query in the
+                collection.query(queries=List[Query]) call, aligned by position.
+            topn (int): Number of top documents to return after re-ranking.
 
         Returns:
-            list[Doc]: Re-ranked list of documents (length ≤ ``topn``),
+            DocList: Re-ranked list of documents (length ≤ ``topn``),
                 with updated ``score`` fields.
         """
         ...

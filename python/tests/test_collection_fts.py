@@ -172,7 +172,7 @@ class TestFtsOnlyCollectionLifecycle:
 class TestFtsOnlyCollectionQueryValidation:
     def test_vector_query_rejected(self, fts_collection: Collection):
         """Vector query on a no-vector collection must raise."""
-        with pytest.raises(ValueError, match="vector or id"):
+        with pytest.raises(ValueError, match="No vector field found"):
             fts_collection.query(
                 queries=Query(field_name="content", vector=[0.1, 0.2, 0.3]),
                 topk=5,
@@ -181,7 +181,7 @@ class TestFtsOnlyCollectionQueryValidation:
     def test_id_query_rejected(self, fts_collection: Collection):
         """ID-based query on a no-vector collection must raise."""
         fts_collection.insert(_make_docs()[:1])
-        with pytest.raises(ValueError, match="vector or id"):
+        with pytest.raises(ValueError, match="No vector field found"):
             fts_collection.query(
                 queries=Query(field_name="content", id="pk_0"),
                 topk=5,

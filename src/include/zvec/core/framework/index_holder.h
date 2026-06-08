@@ -99,13 +99,13 @@ struct IndexHybridHolder : public IndexHolder {
     ~Iterator(void) override {}
 
     //! Retrieve pointer of data
-    virtual const void *data(void) const = 0;
+    const void *data(void) const override = 0;
 
     //! Test if the iterator is valid
-    virtual bool is_valid(void) const = 0;
+    bool is_valid(void) const override = 0;
 
     //! Retrieve primary key
-    virtual uint64_t key(void) const = 0;
+    uint64_t key(void) const override = 0;
 
     //! Retrieve sparse count
     virtual uint32_t sparse_count() const = 0;
@@ -117,7 +117,7 @@ struct IndexHybridHolder : public IndexHolder {
     virtual const void *sparse_data() const = 0;
 
     //! Next iterator
-    virtual void next(void) = 0;
+    void next(void) override = 0;
   };
 
   //! Destructor

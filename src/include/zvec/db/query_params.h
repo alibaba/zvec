@@ -173,6 +173,28 @@ class FlatQueryParams : public QueryParams {
   float scale_factor_{10};
 };
 
+class DiskAnnQueryParams : public QueryParams {
+ public:
+  DiskAnnQueryParams(int list_size = 300) : QueryParams(IndexType::DISKANN) {
+    set_list_size(list_size);
+  }
+
+  virtual ~DiskAnnQueryParams() = default;
+
+  int list_size() const {
+    return list_size_;
+  }
+
+  void set_list_size(int list_size) {
+    list_size_ = list_size;
+  }
+
+ private:
+  // list size: controls the size of the search frontier during graph traversal
+  // — larger values trade query latency for recall
+  int list_size_;
+};
+
 class VamanaQueryParams : public QueryParams {
  public:
   VamanaQueryParams(int ef_search = core_interface::kDefaultVamanaEfSearch,

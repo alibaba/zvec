@@ -55,11 +55,11 @@ struct VamanaHeader {
   }
 
   VamanaHeader(const VamanaHeader &header) {
-    memcpy(this, &header, sizeof(header));
+    memcpy(static_cast<void *>(this), &header, sizeof(header));
   }
 
   VamanaHeader &operator=(const VamanaHeader &header) {
-    memcpy(this, &header, sizeof(header));
+    memcpy(static_cast<void *>(this), &header, sizeof(header));
     return *this;
   }
 
@@ -69,7 +69,7 @@ struct VamanaHeader {
   }
 
   void inline clear() {
-    memset(this, 0, sizeof(VamanaHeader));
+    memset(static_cast<void *>(this), 0, sizeof(VamanaHeader));
     graph.entry_point = kInvalidNodeId;
     graph.size = sizeof(VamanaGraphHeader);
     graph.alpha = 1.2f;
@@ -204,7 +204,8 @@ class VamanaEntity {
   //   data_type: IndexMeta::DataType value (e.g. DT_FP32=2, DT_INT8=4,
   //   DT_FP16=1)
   // Returns the medoid node ID, or kInvalidNodeId if no valid data.
-  virtual node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type) {
+  virtual node_id_t calculate_medoid(uint32_t /*dimension*/,
+                                     uint32_t /*data_type*/) {
     return kInvalidNodeId;
   }
 

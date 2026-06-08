@@ -28,16 +28,22 @@ namespace zvec {
 // ==================== ScoreBasedReranker ====================
 
 Result<DocPtrList> ScoreBasedReranker::rerank(
-    const std::map<std::string, DocPtrList> &query_results, int topn) const {
+    const std::vector<DocPtrList> &query_results, int topn) const {
+  if (topn <= 0) {
+    return DocPtrList();
+  }
+
   std::unordered_map<std::string, double> scores;
   std::unordered_map<std::string, Doc::Ptr> id_to_doc;
 
-  for (const auto &[field_name, docs] : query_results) {
+  for (size_t query_index = 0; query_index < query_results.size();
+       ++query_index) {
+    const auto &docs = query_results[query_index];
     for (size_t rank = 0; rank < docs.size(); ++rank) {
       const auto &doc = docs[rank];
       const std::string &doc_id = doc->pk();
       auto rs = rescore(static_cast<double>(doc->score()),
-                        static_cast<int>(rank), field_name);
+                        static_cast<int>(rank), static_cast<int>(query_index));
       if (!rs.has_value()) {
         return tl::make_unexpected(rs.error());
       }
@@ -79,22 +85,29 @@ Result<DocPtrList> ScoreBasedReranker::rerank(
 // ==================== RrfReranker ====================
 
 Result<double> RrfReranker::rescore(double /*score*/, int rank,
-                                    const std::string & /*field_name*/) const {
+                                    int /*query_index*/) const {
   return 1.0 / (static_cast<double>(rank_constant_) +
                 static_cast<double>(rank) + 1.0);
 }
 
 // ==================== WeightedReranker ====================
 
-WeightedReranker::WeightedReranker(const std::map<std::string, double> &weights)
+WeightedReranker::WeightedReranker(const std::vector<double> &weights)
     : weights_(weights) {}
 
-void WeightedReranker::bind_schema(CollectionSchema::Ptr schema) {
+void WeightedReranker::bind_schema(
+    CollectionSchema::Ptr schema, const std::vector<std::string> &field_names) {
   schema_ = std::move(schema);
+  field_names_ = field_names;
 }
 
 Result<double> WeightedReranker::normalize_score(double score,
                                                  const FieldSchema &field) {
+  // FTS field: BM25 scores are non-negative; normalize via arctan to [0, 1).
+  if (field.index_type() == IndexType::FTS) {
+    return 2.0 * std::atan(score) / M_PI;
+  }
+
   auto *vip =
       dynamic_cast<const VectorIndexParams *>(field.index_params().get());
   if (!vip) {
@@ -117,20 +130,30 @@ Result<double> WeightedReranker::normalize_score(double score,
 }
 
 Result<double> WeightedReranker::rescore(double score, int /*rank*/,
-                                         const std::string &field_name) const {
-  const auto *field = schema_->get_vector_field(field_name);
+                                         int query_index) const {
+  if (!schema_) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("WeightedReranker: schema is null"));
+  }
+  if (query_index < 0 ||
+      static_cast<size_t>(query_index) >= field_names_.size()) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("WeightedReranker: query_index out of range: ",
+                                std::to_string(query_index)));
+  }
+  const auto &field_name = field_names_[query_index];
+  const auto *field = schema_->get_field(field_name);
   if (!field) {
     return tl::make_unexpected(Status::InvalidArgument(
-        "WeightedReranker: vector field not found: '", field_name + "'"));
+        "WeightedReranker: field not found: '", field_name + "'"));
   }
   auto normalized = normalize_score(score, *field);
   if (!normalized.has_value()) {
     return tl::make_unexpected(normalized.error());
   }
   double weight = 1.0;
-  auto weight_it = weights_.find(field_name);
-  if (weight_it != weights_.end()) {
-    weight = weight_it->second;
+  if (static_cast<size_t>(query_index) < weights_.size()) {
+    weight = weights_[query_index];
   }
   return normalized.value() * weight;
 }

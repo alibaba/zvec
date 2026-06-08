@@ -1140,8 +1140,8 @@ typedef struct zvec_doc_t zvec_doc_t;
 /**
  * @brief Reranker structure (opaque pointer)
  * Aligned with zvec::Reranker
- * Use zvec_reranker_create_rrf() or zvec_reranker_create_weighted() to create
- * and zvec_reranker_destroy() to destroy
+ * Use zvec_create_rrf_reranker() or zvec_create_weighted_reranker() to create
+ * and zvec_destroy_reranker() to destroy
  */
 typedef struct zvec_reranker_t zvec_reranker_t;
 typedef struct zvec_collection_schema_t zvec_collection_schema_t;
@@ -1961,23 +1961,22 @@ zvec_group_by_vector_query_set_flat_params(
  * @return zvec_reranker_t* Pointer to the newly created reranker
  */
 ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
-zvec_reranker_create_rrf(int rank_constant);
+zvec_create_rrf_reranker(int rank_constant);
 
 /**
  * @brief Create a Weighted reranker
- * @param fields Array of field names
- * @param weights Array of weights corresponding to fields
- * @param field_count Number of field/weight entries
+ * @param weights Array of weights for each query
+ * @param weight_count Number of weight entries
  * @return zvec_reranker_t* Pointer to the newly created reranker
  */
-ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL zvec_reranker_create_weighted(
-    const char **fields, const double *weights, size_t field_count);
+ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
+zvec_create_weighted_reranker(const double *weights, size_t weight_count);
 
 /**
  * @brief Destroy reranker
  * @param reranker Reranker pointer
  */
-ZVEC_EXPORT void ZVEC_CALL zvec_reranker_destroy(zvec_reranker_t *reranker);
+ZVEC_EXPORT void ZVEC_CALL zvec_destroy_reranker(zvec_reranker_t *reranker);
 
 /**
  * @brief Get RRF rank constant (only valid for RRF reranker)
@@ -1985,7 +1984,7 @@ ZVEC_EXPORT void ZVEC_CALL zvec_reranker_destroy(zvec_reranker_t *reranker);
  * @return int Rank constant, or -1 if not an RRF reranker
  */
 ZVEC_EXPORT int ZVEC_CALL
-zvec_reranker_get_rank_constant(const zvec_reranker_t *reranker);
+zvec_get_reranker_rank_constant(const zvec_reranker_t *reranker);
 
 // -----------------------------------------------------------------------------
 // zvec_multi_query_t (Multi Query)
@@ -2100,7 +2099,7 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_get_output_fields(
  * reranker)
  * @param query Multi-vector query pointer
  * @param reranker Reranker pointer (remains valid, caller must call
- *        zvec_reranker_destroy after use)
+ *        zvec_destroy_reranker after use)
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_reranker(

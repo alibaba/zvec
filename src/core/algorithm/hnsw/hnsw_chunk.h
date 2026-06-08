@@ -108,10 +108,10 @@ class ChunkBroker {
 
   struct HnswChunkMeta {
     HnswChunkMeta(void) {
-      memset(this, 0, sizeof(HnswChunkMeta));
+      memset(static_cast<void *>(this), 0, sizeof(HnswChunkMeta));
     }
     void clear() {
-      memset(this, 0, sizeof(HnswChunkMeta));
+      memset(static_cast<void *>(this), 0, sizeof(HnswChunkMeta));
     }
 
     uint64_t chunk_cnts[CHUNK_TYPE_MAX];

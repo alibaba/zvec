@@ -166,7 +166,7 @@ jobs:
         shell: bash
 
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           key: linux-riscv64-${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
@@ -221,6 +221,7 @@ jobs:
           $PYTHON -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS="ON"' \
+            --config-settings='cmake.define.ENABLE_WERROR=ON' \
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
         shell: bash

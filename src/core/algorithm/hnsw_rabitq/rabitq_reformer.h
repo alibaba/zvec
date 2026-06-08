@@ -23,7 +23,7 @@
 namespace zvec {
 namespace core {
 
-class HnswRabitqQueryEntity;
+struct HnswRabitqQueryEntity;
 
 /*! RaBitQ Reformer
  * Loads centroids and performs query transformation and vector quantization.

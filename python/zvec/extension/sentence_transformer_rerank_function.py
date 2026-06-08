@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from ..model.doc import Doc
+from ..model.doc import Doc, DocList
 from ..tool import require_module
 from .rerank_function import RerankFunction
 from .sentence_transformer_function import SentenceTransformerFunctionBase
@@ -33,8 +33,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
 
     Args:
         query (str): Query text for semantic re-ranking. **Required**.
-        topn (int, optional): Maximum number of documents to return after re-ranking.
-            Defaults to 10.
         rerank_field (Optional[str], optional): Document field name to use as
             re-ranking input text. **Required** (e.g., "content", "title", "body").
         model_name (str, optional): Cross-encoder model identifier or local path.
@@ -56,7 +54,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
 
     Attributes:
         query (str): The query text used for re-ranking.
-        topn (int): Maximum number of documents to return.
         rerank_field (Optional[str]): Field name used for re-ranking input.
         model_name (str): The cross-encoder model being used.
         model_source (str): The model source ("huggingface" or "modelscope").
@@ -113,7 +110,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         >>>
         >>> reranker = SentenceTransformerReRanker(
         ...     query="machine learning algorithms",
-        ...     topn=5,
         ...     rerank_field="content"
         ... )
         >>>
@@ -127,7 +123,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         >>> # Using ModelScope for users in China
         >>> reranker = SentenceTransformerReRanker(
         ...     query="深度学习",
-        ...     topn=10,
         ...     rerank_field="content",
         ...     model_source="modelscope"
         ... )
@@ -135,7 +130,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         >>> # Using larger model for better quality
         >>> reranker = SentenceTransformerReRanker(
         ...     query="neural networks",
-        ...     topn=5,
         ...     rerank_field="content",
         ...     model_name="BAAI/bge-reranker-large",
         ...     device="cuda",
@@ -143,13 +137,13 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         ... )
 
         >>> # Direct rerank call (for testing)
-        >>> query_results = {
-        ...     "vector1": [
+        >>> query_results = [
+        ...     [
         ...         Doc(id="1", score=0.9, fields={"content": "Machine learning is..."}),
         ...         Doc(id="2", score=0.8, fields={"content": "Deep learning is..."}),
         ...     ]
-        ... }
-        >>> reranked = reranker.rerank(query_results)
+        ... ]
+        >>> reranked = reranker.rerank(query_results, topn=5)
         >>> for doc in reranked:
         ...     print(f"ID: {doc.id}, Score: {doc.score:.4f}")
         ID: 2, Score: 0.9234
@@ -170,7 +164,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
     def __init__(
         self,
         query: Optional[str] = None,
-        topn: int = 10,
         rerank_field: Optional[str] = None,
         model_name: str = "cross-encoder/ms-marco-MiniLM-L6-v2",
         model_source: Literal["huggingface", "modelscope"] = "huggingface",
@@ -181,7 +174,6 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
 
         Args:
             query (Optional[str]): Query text for semantic matching. Required.
-            topn (int): Number of top results to return.
             rerank_field (Optional[str]): Document field for re-ranking input.
             model_name (str): Cross-encoder model identifier.
             model_source (Literal["huggingface", "modelscope"]): Model source.
@@ -197,12 +189,13 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         )
 
         # Initialize rerank function
-        RerankFunction.__init__(self, topn=topn, rerank_field=rerank_field)
+        RerankFunction.__init__(self)
 
         # Validate query
         if not query:
             raise ValueError("Query is required for DefaultLocalReRanker")
         self._query = query
+        self._rerank_field = rerank_field
         self._batch_size = batch_size
 
         # Load and validate cross-encoder model
@@ -274,11 +267,16 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         return self._query
 
     @property
+    def rerank_field(self) -> Optional[str]:
+        """Optional[str]: Field name used as re-ranking input."""
+        return self._rerank_field
+
+    @property
     def batch_size(self) -> int:
         """int: Batch size for processing query-document pairs."""
         return self._batch_size
 
-    def rerank(self, query_results: dict[str, list[Doc]]) -> list[Doc]:
+    def rerank(self, query_results: list[DocList], topn: int) -> DocList:
         """Re-rank documents using Sentence Transformer cross-encoder model.
 
         Evaluates each query-document pair using the cross-encoder model to compute
@@ -286,19 +284,22 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         results are returned.
 
         Args:
-            query_results (dict[str, list[Doc]]): Mapping from vector field names
-                to lists of retrieved documents. Documents from all fields are
+            query_results (list[DocList]): Multi-route recall results,
+                positionally aligned with the queries supplied to
+                ``collection.query()``. Documents from all routes are
                 deduplicated and re-ranked together.
+            topn (int): Maximum number of documents to return after re-ranking.
 
         Returns:
-            list[Doc]: Re-ranked documents (up to ``topn``) with updated ``score``
-                fields containing relevance scores from the cross-encoder model.
+            DocList: Re-ranked documents (up to ``topn``) with updated
+                ``score`` fields containing relevance scores from the
+                cross-encoder model.
 
         Raises:
             ValueError: If no valid documents are found or model inference fails.
 
         Note:
-            - Duplicate documents (same ID) across fields are processed once
+            - Duplicate documents (same ID) across routes are processed once
             - Documents with empty/missing ``rerank_field`` content are skipped
             - Returned scores are logits from the cross-encoder model
             - Higher scores indicate higher relevance
@@ -310,13 +311,13 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
             ...     topn=3,
             ...     rerank_field="content"
             ... )
-            >>> query_results = {
-            ...     "vector1": [
+            >>> query_results = [
+            ...     [
             ...         Doc(id="1", score=0.9, fields={"content": "ML basics"}),
             ...         Doc(id="2", score=0.8, fields={"content": "DL tutorial"}),
             ...     ]
-            ... }
-            >>> reranked = reranker.rerank(query_results)
+            ... ]
+            >>> reranked = reranker.rerank(query_results, topn=3)
             >>> len(reranked) <= 3
             True
         """
@@ -328,7 +329,7 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
         doc_ids: list[str] = []
         contents: list[str] = []
 
-        for _, query_result in query_results.items():
+        for query_result in query_results:
             for doc in query_result:
                 doc_id = doc.id
                 if doc_id in id_to_doc:
@@ -373,10 +374,10 @@ class DefaultLocalReRanker(SentenceTransformerFunctionBase, RerankFunction):
 
         # Sort by score (descending) and take top-k
         scored_docs.sort(key=lambda x: x[2], reverse=True)
-        top_scored_docs = scored_docs[: self.topn]
+        top_scored_docs = scored_docs[:topn]
 
         # Build result list with updated scores
-        results: list[Doc] = []
+        results: DocList = []
         for _, doc, score in top_scored_docs:
             new_doc = doc._replace(score=score)
             results.append(new_doc)

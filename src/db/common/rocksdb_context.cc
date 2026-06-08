@@ -489,7 +489,7 @@ Status RocksdbContext::reset_cf(const std::string &cf_name) {
   }
 
   rocksdb::ColumnFamilyHandle *cf_handle{nullptr};
-  size_t index;
+  size_t index = 0;
   for (size_t i = 0; i < cf_handles_.size(); ++i) {
     if (cf_handles_[i]->GetName() == cf_name) {
       cf_handle = cf_handles_[i];

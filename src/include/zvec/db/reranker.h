@@ -14,9 +14,9 @@
 #pragma once
 
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
+#include <vector>
 #include <zvec/db/doc.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/type.h>
@@ -32,16 +32,16 @@ class Reranker {
   Reranker() = default;
   virtual ~Reranker() = default;
 
-  virtual void bind_schema(CollectionSchema::Ptr) {}
+  virtual void bind_schema(CollectionSchema::Ptr /*schema*/,
+                           const std::vector<std::string> & /*field_names*/) {}
 
   //! Re-rank documents from one or more vector queries.
-  //! \param query_results Mapping from vector field name to list of retrieved
-  //!   documents (sorted by relevance).
+  //! \param query_results Per-query lists of retrieved documents (sorted by
+  //!   relevance), in the same order as the sub-queries supplied by the caller.
   //! \param topn Maximum number of documents to return.
   //! \return Re-ranked list of documents (length <= topn), with updated scores.
   virtual Result<DocPtrList> rerank(
-      const std::map<std::string, DocPtrList> &query_results,
-      int topn = 10) const = 0;
+      const std::vector<DocPtrList> &query_results, int topn = 10) const = 0;
 };
 
 //! Intermediate base for rerankers that compute per-document scores.
@@ -51,17 +51,18 @@ class Reranker {
 //! Subclasses only need to implement rescore().
 class ScoreBasedReranker : public Reranker {
  public:
-  //! Compute the contribution score for a single document.
-  //! \param score The document's raw relevance score from the vector field.
-  //! \param rank The document's position (0-based) in the per-field result
-  //! list. \param field_name The name of the vector field this result came
-  //! from. \return The score contribution to be accumulated for this document.
-  virtual Result<double> rescore(double score, int rank,
-                                 const std::string &field_name) const = 0;
+  Result<DocPtrList> rerank(const std::vector<DocPtrList> &query_results,
+                            int topn = 10) const override;
 
-  Result<DocPtrList> rerank(
-      const std::map<std::string, DocPtrList> &query_results,
-      int topn = 10) const override;
+ private:
+  //! Compute the contribution score for a single document.
+  //! \param score The document's raw relevance score from the vector query.
+  //! \param rank The document's position (0-based) in the per-query result
+  //! list. \param query_index The index (0-based) of the sub-query this result
+  //! came from. \return The score contribution to be accumulated for this
+  //! document.
+  virtual Result<double> rescore(double score, int rank,
+                                 int query_index) const = 0;
 };
 
 //! Re-ranker using Reciprocal Rank Fusion (RRF) for multi-vector search.
@@ -79,10 +80,10 @@ class RrfReranker : public ScoreBasedReranker {
     return rank_constant_;
   }
 
-  Result<double> rescore(double score, int rank,
-                         const std::string &field_name) const override;
-
  private:
+  Result<double> rescore(double score, int rank,
+                         int query_index) const override;
+
   int rank_constant_;
 };
 
@@ -91,24 +92,30 @@ class RrfReranker : public ScoreBasedReranker {
 //! Each vector field's relevance score is normalized based on its own metric
 //! type, then scaled by a user-provided weight. Final scores are summed across
 //! fields. Supported metrics: L2, IP, COSINE.
+//!
+//! @note NOT thread-safe. The bind_schema() and rerank() calls share mutable
+//! state. Each concurrent query must use its own WeightedReranker instance or
+//! serialize access externally.
 class WeightedReranker : public ScoreBasedReranker {
  public:
-  explicit WeightedReranker(const std::map<std::string, double> &weights = {});
+  explicit WeightedReranker(const std::vector<double> &weights = {});
 
-  void bind_schema(CollectionSchema::Ptr schema) override;
+  void bind_schema(CollectionSchema::Ptr schema,
+                   const std::vector<std::string> &field_names) override;
 
-  const std::map<std::string, double> &weights() const {
+  const std::vector<double> &weights() const {
     return weights_;
   }
 
-  Result<double> rescore(double score, int rank,
-                         const std::string &field_name) const override;
-
  private:
+  Result<double> rescore(double score, int rank,
+                         int query_index) const override;
+
   static Result<double> normalize_score(double score, const FieldSchema &field);
 
   CollectionSchema::Ptr schema_;
-  std::map<std::string, double> weights_;
+  std::vector<std::string> field_names_;
+  std::vector<double> weights_;
 };
 
 //! Callback-based re-ranker for cross-language bridging.
@@ -118,13 +125,16 @@ class WeightedReranker : public ScoreBasedReranker {
 class CallbackReranker : public Reranker {
  public:
   using Callback =
-      std::function<DocPtrList(const std::map<std::string, DocPtrList> &, int)>;
+      std::function<DocPtrList(const std::vector<DocPtrList> &, int)>;
 
   explicit CallbackReranker(Callback fn) : callback_(std::move(fn)) {}
 
-  Result<DocPtrList> rerank(
-      const std::map<std::string, DocPtrList> &query_results,
-      int topn = 10) const override {
+  Result<DocPtrList> rerank(const std::vector<DocPtrList> &query_results,
+                            int topn = 10) const override {
+    if (!callback_) {
+      return tl::make_unexpected(
+          Status::InvalidArgument("CallbackReranker: callback is empty"));
+    }
     return callback_(query_results, topn);
   }
 

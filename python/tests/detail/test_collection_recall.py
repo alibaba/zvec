@@ -22,8 +22,10 @@ from zvec.model.param import (
     HnswIndexParam,
     FlatIndexParam,
     IVFIndexParam,
+    DiskAnnIndexParam,
     HnswQueryParam,
     IVFQueryParam,
+    DiskAnnQueryParam,
 )
 
 from zvec.model.schema import FieldSchema, VectorSchema
@@ -179,10 +181,24 @@ def get_ground_truth_map(collection, test_docs, query_vectors_map, metric_type, 
     for field_name, query_vectors in query_vectors_map.items():
         ground_truth_map[field_name] = {}
 
+        # Support per-field metric type: metric_type can be a dict mapping
+        # field_name -> MetricType, or a single MetricType applied to all fields.
+        if isinstance(metric_type, dict):
+            field_metric = metric_type.get(field_name, MetricType.IP)
+        else:
+            field_metric = metric_type
+
         for i, query_vector in enumerate(query_vectors):
             # Get the ground truth for this query
             relevant_doc_ids_scores = get_ground_truth_for_vector_query(
-                collection, query_vector, field_name, test_docs, i, metric_type, k, True
+                collection,
+                query_vector,
+                field_name,
+                test_docs,
+                i,
+                field_metric,
+                k,
+                True,
             )
             ground_truth_map[field_name][i] = relevant_doc_ids_scores
 
@@ -292,6 +308,7 @@ class TestRecall:
         [
             (True, True, HnswIndexParam()),
             (False, True, IVFIndexParam()),
+            (False, True, DiskAnnIndexParam()),
             (False, True, FlatIndexParam()),  # ——ok
             (
                 True,
@@ -371,6 +388,19 @@ class TestRecall:
                     use_soar=False,
                 ),
             ),
+            (
+                True,
+                True,
+                DiskAnnIndexParam(
+                    metric_type=MetricType.IP,
+                    max_degree=32,
+                ),
+            ),
+            (
+                True,
+                True,
+                DiskAnnIndexParam(metric_type=MetricType.L2, max_degree=32),
+            ),
         ],
         indirect=True,
     )
@@ -388,10 +418,16 @@ class TestRecall:
     ):
         full_schema_params = request.getfixturevalue("full_schema_new")
 
+        # Build per-field metric type map so ground truth uses each field's
+        # actual index metric (fields may fall back to HnswIndexParam/IP).
+        field_metric_map = {}
         for vector_para in full_schema_params.vectors:
-            if vector_para.name == "vector_fp32_field":
-                metric_type = vector_para.index_param.metric_type
-                break
+            if vector_para.index_param is not None:
+                field_metric_map[vector_para.name] = vector_para.index_param.metric_type
+            else:
+                field_metric_map[vector_para.name] = MetricType.IP
+
+        metric_type = field_metric_map.get("vector_fp32_field", MetricType.IP)
 
         multiple_docs = [
             generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
@@ -438,9 +474,13 @@ class TestRecall:
                 multiple_docs[i].vectors[field_name] for i in range(query_num)
             ]
 
-        # Get ground truth mapping
+        # Get ground truth mapping (pass per-field metric map)
         ground_truth_map = get_ground_truth_map(
-            full_collection_new, multiple_docs, query_vectors_map, metric_type, top_k
+            full_collection_new,
+            multiple_docs,
+            query_vectors_map,
+            field_metric_map,
+            top_k,
         )
 
         # Validate ground truth mapping structure
@@ -479,8 +519,8 @@ class TestRecall:
 
         print("(recall_at_k_stats:\n")
         print(recall_at_k_stats)
-        print("metric_type:")
-        print(metric_type)
+        print("field_metric_map:")
+        print(field_metric_map)
         # Print Recall@K statistics
         print(f"Recall@{top_k} using Ground Truth:")
         for field_name, stats in recall_at_k_stats.items():
@@ -552,7 +592,21 @@ class TestRecall:
                     use_soar=True,
                 ),
             ),
-            # (True, True, IVFIndexParam(metric_type=MetricType.COSINE, n_list=150, n_iters=15, use_soar=False, )),
+            (
+                True,
+                True,
+                DiskAnnIndexParam(metric_type=MetricType.IP, max_degree=32),
+            ),
+            (
+                True,
+                True,
+                DiskAnnIndexParam(metric_type=MetricType.L2, max_degree=32),
+            ),
+            (
+                True,
+                True,
+                DiskAnnIndexParam(metric_type=MetricType.COSINE, max_degree=32),
+            ),
         ],
         indirect=True,
     )
@@ -571,10 +625,16 @@ class TestRecall:
     ):
         full_schema_params = request.getfixturevalue("full_schema_new")
 
+        # Build per-field metric type map so ground truth uses each field's
+        # actual index metric (fields may fall back to HnswIndexParam/IP).
+        field_metric_map = {}
         for vector_para in full_schema_params.vectors:
-            if vector_para.name == "vector_fp32_field":
-                metric_type = vector_para.index_param.metric_type
-                break
+            if vector_para.index_param is not None:
+                field_metric_map[vector_para.name] = vector_para.index_param.metric_type
+            else:
+                field_metric_map[vector_para.name] = MetricType.IP
+
+        metric_type = field_metric_map.get("vector_fp32_field", MetricType.IP)
 
         multiple_docs = [
             generate_doc_recall(i, full_collection_new.schema) for i in range(doc_num)
@@ -621,9 +681,13 @@ class TestRecall:
                 multiple_docs[i].vectors[field_name] for i in range(query_num)
             ]
 
-        # Get ground truth mapping
+        # Get ground truth mapping (pass per-field metric map)
         ground_truth_map = get_ground_truth_map(
-            full_collection_new, multiple_docs, query_vectors_map, metric_type, top_k
+            full_collection_new,
+            multiple_docs,
+            query_vectors_map,
+            field_metric_map,
+            top_k,
         )
 
         # Validate ground truth mapping structure
@@ -662,8 +726,8 @@ class TestRecall:
 
         print("(recall_at_k_stats:\n")
         print(recall_at_k_stats)
-        print("metric_type:")
-        print(metric_type)
+        print("field_metric_map:")
+        print(field_metric_map)
         # Print Recall@K statistics
         print(f"Recall@{top_k} using Ground Truth:")
         for field_name, stats in recall_at_k_stats.items():

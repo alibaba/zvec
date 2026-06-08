@@ -124,9 +124,12 @@ namespace {
 template <typename T>
 T byte_swap(T value) {
   if constexpr (std::is_same_v<T, float16_t>) {
-    uint16_t val = *reinterpret_cast<uint16_t *>(&value);
+    uint16_t val;
+    std::memcpy(&val, static_cast<const void *>(&value), sizeof(val));
     val = ailego_bswap16(val);
-    return *reinterpret_cast<float16_t *>(&val);
+    float16_t result;
+    std::memcpy(static_cast<void *>(&result), &val, sizeof(result));
+    return result;
   } else if constexpr (sizeof(T) == 1) {
     return value;
   } else if constexpr (sizeof(T) == 2) {
