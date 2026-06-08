@@ -36,7 +36,6 @@
 // CMakeLists.txt).
 
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
-
 #include "zvec/ailego/internal/platform.h"
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
@@ -147,9 +146,9 @@ void uniform_squared_euclidean_int8_distance(const void *a, const void *b,
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs + d + 192))));
 
     acc0 = _mm512_dpbusd_epi32(acc0, diff0, diff0);
-          acc1 = _mm512_dpbusd_epi32(acc1, diff1, diff1);
-          acc2 = _mm512_dpbusd_epi32(acc2, diff2, diff2);
-          acc3 = _mm512_dpbusd_epi32(acc3, diff3, diff3);
+    acc1 = _mm512_dpbusd_epi32(acc1, diff1, diff1);
+    acc2 = _mm512_dpbusd_epi32(acc2, diff2, diff2);
+    acc3 = _mm512_dpbusd_epi32(acc3, diff3, diff3);
   }
 
   // Bridge loop: 64-byte chunks for the remaining (dim % 256) bytes.
