@@ -84,7 +84,15 @@ elseif(IOS)
     "CFLAGS=${_lz4_cflags}"
   )
 else()
-  list(APPEND _lz4_env "CFLAGS=-fPIC")
+  list(APPEND _lz4_env
+    "CC=${CMAKE_C_COMPILER}"
+    "AR=${CMAKE_AR}"
+    "RANLIB=${CMAKE_RANLIB}"
+    "CFLAGS=-fPIC"
+  )
+  if(APPLE AND CMAKE_OSX_SYSROOT)
+    list(APPEND _lz4_env "SDKROOT=${CMAKE_OSX_SYSROOT}")
+  endif()
 endif()
 
 if(MSVC)
