@@ -37,29 +37,14 @@
 
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
 
+#include "zvec/ailego/internal/platform.h"
+
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
 #include <array>
 #include <cstdint>
 
-#ifdef _MSC_VER
-#define TURBO_ALWAYS_INLINE __forceinline
-#else
-#define TURBO_ALWAYS_INLINE __attribute__((always_inline))
-#endif
-
 namespace zvec::turbo::avx512_vnni {
-
-// ---------------------------------------------------------------------------
-// Inline asm wrapper for vpdpbusd (workaround GCC bug #94663).
-// acc += sum_4(uint8(a[j]) * int8(b[j]))  for each 32-bit lane.
-// ---------------------------------------------------------------------------
-static inline __attribute__((always_inline)) __m512i dpbusd_epi32(__m512i acc,
-                                                                  __m512i a,
-                                                                  __m512i b) {
-  asm("vpdpbusd %1, %2, %0" : "+x"(acc) : "mx"(a), "x"(b));
-  return acc;
-}
 
 // ---------------------------------------------------------------------------
 // Batch kernel template: compute squared L2 for `batch_size` database vectors
@@ -70,7 +55,7 @@ static inline __attribute__((always_inline)) __m512i dpbusd_epi32(__m512i acc,
 // (allows CPU to issue multiple loads in parallel, hiding memory latency).
 // ---------------------------------------------------------------------------
 template <size_t batch_size>
-static TURBO_ALWAYS_INLINE void uniform_sq_l2_int8_batch_impl(
+static ailego_force_inline void uniform_sq_l2_int8_batch_impl(
     const void *query, const void *const *vectors,
     const std::array<const void *, batch_size> &prefetch_ptrs, size_t dim,
     float *distances) {
@@ -105,7 +90,7 @@ static TURBO_ALWAYS_INLINE void uniform_sq_l2_int8_batch_impl(
       }
       __m512i diff = _mm512_sub_epi8(data_regs[i], q_zmm);
       diff = _mm512_abs_epi8(diff);
-      accs[i] = dpbusd_epi32(accs[i], diff, diff);
+      accs[i] = _mm512_dpbusd_epi32(accs[i], diff, diff);
     }
   }
 
@@ -161,10 +146,10 @@ void uniform_squared_euclidean_int8_distance(const void *a, const void *b,
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(lhs + d + 192)),
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs + d + 192))));
 
-    acc0 = dpbusd_epi32(acc0, diff0, diff0);
-    acc1 = dpbusd_epi32(acc1, diff1, diff1);
-    acc2 = dpbusd_epi32(acc2, diff2, diff2);
-    acc3 = dpbusd_epi32(acc3, diff3, diff3);
+    acc0 = _mm512_dpbusd_epi32(acc0, diff0, diff0);
+          acc1 = _mm512_dpbusd_epi32(acc1, diff1, diff1);
+          acc2 = _mm512_dpbusd_epi32(acc2, diff2, diff2);
+          acc3 = _mm512_dpbusd_epi32(acc3, diff3, diff3);
   }
 
   // Bridge loop: 64-byte chunks for the remaining (dim % 256) bytes.
@@ -172,7 +157,7 @@ void uniform_squared_euclidean_int8_distance(const void *a, const void *b,
     __m512i diff = _mm512_abs_epi8(_mm512_sub_epi8(
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(lhs + d)),
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs + d))));
-    acc0 = dpbusd_epi32(acc0, diff, diff);
+    acc0 = _mm512_dpbusd_epi32(acc0, diff, diff);
   }
 
   // Reduce four accumulators -> one, then horizontally to a scalar.
