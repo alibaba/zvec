@@ -301,15 +301,17 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  // If reformer was not created during Init() (converters like UniformInt8
-  // whose reformer params are only available after train()), create it now
-  // from the persisted meta that the streamer has loaded.
-  if (reformer_ == nullptr) {
+  // If a converter exists but reformer was not created during Init()
+  // (converters like UniformInt8 whose reformer params are only available
+  // after train()), create it now from the persisted meta that the streamer
+  // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
+  // is nullptr by design — skip this block entirely.
+  if (converter_ != nullptr && reformer_ == nullptr) {
     const auto &meta = streamer_->meta();
     if (meta.reformer_name().empty()) {
       LOG_ERROR(
-          "Index::Open: reformer not initialized and no reformer in "
-          "persisted meta");
+          "Index::Open: converter exists but reformer not initialized and "
+          "no reformer in persisted meta");
       return core::IndexError_Runtime;
     }
     reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
