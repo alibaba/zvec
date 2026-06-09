@@ -3747,7 +3747,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
   {
     MultiQuery mvq;
     mvq.topk = 10;
-    mvq.reranker = std::make_shared<RrfReranker>(60);
+    mvq.rerank = reranker::RrfParams{60};
     auto result = collection->Query(mvq);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
@@ -3788,7 +3788,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
   {
     MultiQuery mvq;
     mvq.topk = 10;
-    mvq.reranker = std::make_shared<RrfReranker>(60);
+    mvq.rerank = reranker::RrfParams{60};
 
     SubQuery vq1;
     vq1.num_candidates_ = 10;
@@ -3809,6 +3809,30 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
     EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
   }
 
+  // Test 4: Duplicate field names should succeed (same field, different
+  // vectors)
+  {
+    MultiQuery mvq;
+    mvq.topk = 10;
+    mvq.rerank = reranker::RrfParams{60};
+
+    SubQuery vq1;
+    vq1.num_candidates_ = 10;
+    vq1.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq1.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq1);
+
+    SubQuery vq2;
+    vq2.num_candidates_ = 10;
+    vq2.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq2.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq2);
+
+    auto result = collection->Query(mvq);
+    ASSERT_TRUE(result.has_value());
+  }
 }
 
 TEST_F(CollectionTest, Feature_MultiQuery_SingleFieldWithReranker) {
@@ -3826,7 +3850,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_SingleFieldWithReranker) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq;
   vq.num_candidates_ = 10;
@@ -3857,7 +3881,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldRRF) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   // Query dense_fp32 and dense_fp16 fields with different vectors
   auto vector1 = query_doc.get<std::vector<float>>("dense_fp32");
@@ -3917,8 +3941,9 @@ TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldWeighted) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker =
-      std::make_shared<WeightedReranker>(std::vector<double>{0.7, 0.3});
+  // Weights are positional, parallel to the sub-query order below
+  // (dense_fp32 first, sparse_fp32 second).
+  mvq.rerank = reranker::WeightedParams{{0.7, 0.3}};
 
   // Query dense_fp32 field
   {
@@ -3972,7 +3997,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_WithFilter) {
   MultiQuery mvq;
   mvq.topk = 10;
   mvq.filter = "int32 > 50";
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq1;
   vq1.num_candidates_ = 10;
@@ -4022,7 +4047,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_WithOutputFields) {
   mvq.include_vector = false;
   mvq.output_fields = std::make_optional<std::vector<std::string>>(
       std::vector<std::string>{"int32", "string"});
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq1;
   vq1.num_candidates_ = 10;
@@ -4067,10 +4092,12 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 
   auto query_doc = TestHelper::CreateDoc(1, *schema);
 
-  // Use CallbackReranker with a lambda that merges and sorts by score
+  // Use a callback rerank strategy with a lambda that merges and sorts by
+  // score.
   bool callback_invoked = false;
   auto callback_fn = [&callback_invoked](
                          const std::vector<DocPtrList> &query_results,
+                         const std::vector<FieldSchema::Ptr> & /*fields*/,
                          int topn) -> DocPtrList {
     callback_invoked = true;
     DocPtrList all_docs;
@@ -4091,7 +4118,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<CallbackReranker>(callback_fn);
+  mvq.rerank = reranker::CallbackParams{callback_fn};
 
   // Query dense_fp32 field
   {

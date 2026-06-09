@@ -827,6 +827,7 @@ class TestCollectionQuery:
         rrf_reranker = RrfReRanker()
         multi_query_result = full_collection.query(
             multi_query_vectors,
+            topk=3,
             reranker=rrf_reranker,
         )
         assert len(multi_query_result) > 0, (
@@ -876,8 +877,11 @@ class TestCollectionQuery:
         batchdoc_and_check(full_collection, multiple_docs, doc_num, operator="insert")
         doc_fields, doc_vectors = generate_vectordict_random(full_collection.schema)
 
-        weight_list = [weights[v] for v in DEFAULT_VECTOR_FIELD_NAME.values()]
-        weighted_reranker = WeightedReRanker(weights=weight_list)
+        # Weights are positional, aligned with the multi_query_vectors order
+        # (DEFAULT_VECTOR_FIELD_NAME insertion order). Metric normalization is
+        # automatic from each field's schema.
+        weights_list = [weights[v] for v in DEFAULT_VECTOR_FIELD_NAME.values()]
+        weighted_reranker = WeightedReRanker(weights_list)
 
         single_query_results = {}
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
@@ -894,6 +898,7 @@ class TestCollectionQuery:
 
         multi_query_result = full_collection.query(
             multi_query_vectors,
+            topk=3,
             reranker=weighted_reranker,
         )
         assert len(multi_query_result) > 0, (

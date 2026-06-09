@@ -1137,13 +1137,6 @@ typedef struct zvec_fts_t zvec_fts_t;
  */
 typedef struct zvec_doc_t zvec_doc_t;
 
-/**
- * @brief Reranker structure (opaque pointer)
- * Aligned with zvec::Reranker
- * Use zvec_create_rrf_reranker() or zvec_create_weighted_reranker() to create
- * and zvec_destroy_reranker() to destroy
- */
-typedef struct zvec_reranker_t zvec_reranker_t;
 typedef struct zvec_collection_schema_t zvec_collection_schema_t;
 
 /**
@@ -1952,39 +1945,27 @@ zvec_group_by_vector_query_set_flat_params(
     zvec_group_by_vector_query_t *query, zvec_flat_query_params_t *flat_params);
 
 // -----------------------------------------------------------------------------
-// zvec_reranker_t (Reranker)
+// Rerank Strategy (set on MultiQuery)
 // -----------------------------------------------------------------------------
 
 /**
- * @brief Create an RRF (Reciprocal Rank Fusion) reranker
+ * @brief Set RRF rerank strategy on a multi-query.
+ * @param query Multi-query pointer
  * @param rank_constant RRF rank constant (default: 60)
- * @return zvec_reranker_t* Pointer to the newly created reranker
+ * @return Error code
  */
-ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
-zvec_create_rrf_reranker(int rank_constant);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_rerank_rrf(zvec_multi_query_t *query, int rank_constant);
 
 /**
- * @brief Create a Weighted reranker
- * @param weights Array of weights for each query
- * @param weight_count Number of weight entries
- * @return zvec_reranker_t* Pointer to the newly created reranker
+ * @brief Set Weighted rerank strategy on a multi-query.
+ * @param query Multi-query pointer
+ * @param weights Array of per-sub-query weights
+ * @param weight_count Number of weights
+ * @return Error code
  */
-ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
-zvec_create_weighted_reranker(const double *weights, size_t weight_count);
-
-/**
- * @brief Destroy reranker
- * @param reranker Reranker pointer
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_destroy_reranker(zvec_reranker_t *reranker);
-
-/**
- * @brief Get RRF rank constant (only valid for RRF reranker)
- * @param reranker Reranker pointer
- * @return int Rank constant, or -1 if not an RRF reranker
- */
-ZVEC_EXPORT int ZVEC_CALL
-zvec_get_reranker_rank_constant(const zvec_reranker_t *reranker);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_rerank_weighted(
+    zvec_multi_query_t *query, const double *weights, size_t weight_count);
 
 // -----------------------------------------------------------------------------
 // zvec_multi_query_t (Multi Query)
@@ -2093,17 +2074,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_output_fields(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_get_output_fields(
     zvec_multi_query_t *query, const char ***fields, size_t *count);
-
-/**
- * @brief Set reranker (copies shared pointer, caller must still destroy
- * reranker)
- * @param query Multi-vector query pointer
- * @param reranker Reranker pointer (remains valid, caller must call
- *        zvec_destroy_reranker after use)
- * @return zvec_error_code_t Error code
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_reranker(
-    zvec_multi_query_t *query, zvec_reranker_t *reranker);
 
 // -----------------------------------------------------------------------------
 // zvec_sub_query_t (Sub-Query for Multi Query)

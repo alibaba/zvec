@@ -19,7 +19,7 @@ import numpy as np
 from _zvec import _Collection, _MultiQuery
 from _zvec.param import _Fts, _SearchQuery, _SubQuery
 
-from ..extension import ReRanker
+from ..extension import CallbackReRanker, ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
 from ..model.doc import DocList
 from ..model.param.query import Query
@@ -143,12 +143,18 @@ class QueryExecutor:
     ) -> DocList:
         """Multiple queries: send a ``_MultiQuery`` to C++.
 
-        A Python-only reranker (``_get_object()`` returns None) cannot run
-        inside the C++ MultiQuery, so each route is executed individually and
-        merged by the reranker in Python.
+        A Python-only reranker (e.g. a model/API-based one) cannot run inside
+        the C++ MultiQuery, so each route is executed individually and merged by
+        the reranker in Python. The built-in RRF/Weighted/Callback rerankers use
+        the C++ variant-based fast path.
         """
         reranker = ctx.reranker
-        if reranker is not None and reranker._get_object() is None:
+        if reranker is None:
+            raise ValueError(
+                "A reranker is required to merge results from multiple queries; "
+                "specify the 'reranker' argument."
+            )
+        if not isinstance(reranker, (RrfReRanker, WeightedReRanker, CallbackReRanker)):
             docs_list = self._execute_python_pipeline(queries, collection)
             return self._merge_and_rerank(ctx, docs_list)
 
@@ -162,14 +168,26 @@ class QueryExecutor:
         """Assemble a C++ ``_MultiQuery`` from per-route ``_SearchQuery`` objects."""
         multi_query = _MultiQuery()
         multi_query.queries = [_SubQuery.from_search_query(query) for query in queries]
+        # num_candidates controls per-sub-query candidate count for reranking pool.
+        # It must NOT be limited to the final output topk; use at least the C++
+        # SubQuery default of 10 to ensure sufficient candidates for reranking.
+        _DEFAULT_NUM_CANDIDATES = 10
+        for sub in multi_query.queries:
+            sub.num_candidates = max(ctx.topk, _DEFAULT_NUM_CANDIDATES)
         multi_query.topk = ctx.topk
         if ctx.filter:
             multi_query.filter = ctx.filter
         multi_query.include_vector = ctx.include_vector
         if ctx.output_fields is not None:
             multi_query.output_fields = ctx.output_fields
-        if ctx.reranker is not None:
-            multi_query.reranker = ctx.reranker._get_object()
+        # Set rerank strategy via the C++ variant-based API.
+        reranker = ctx.reranker
+        if isinstance(reranker, RrfReRanker):
+            multi_query.set_rerank_rrf(reranker.rank_constant)
+        elif isinstance(reranker, WeightedReRanker):
+            multi_query.set_rerank_weighted(reranker.weights)
+        elif isinstance(reranker, CallbackReRanker):
+            multi_query.set_rerank_callback(reranker._callback)
         return multi_query
 
     def _execute_python_pipeline(

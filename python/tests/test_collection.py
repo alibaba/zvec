@@ -27,7 +27,6 @@ from zvec import (
     InvertIndexParam,
     LogLevel,
     LogType,
-    MetricType,
     OptimizeOption,
     StatusCode,
     Query,
@@ -1105,7 +1104,8 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with Weighted reranker on multiple dense vectors."""
-        reranker = WeightedReRanker(weights=[0.6, 0.4])
+        weights = [0.6, 0.4]
+        reranker = WeightedReRanker(weights=weights)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
@@ -1121,7 +1121,8 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with Weighted reranker on multiple sparse vectors."""
-        reranker = WeightedReRanker(weights=[0.6, 0.4])
+        weights = [0.6, 0.4]
+        reranker = WeightedReRanker(weights=weights)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="sparse", vector=multiple_docs[0].vector("sparse")),
@@ -1140,7 +1141,8 @@ class TestCollectionQuery:
         self, collection_with_multiple_docs: Collection, multiple_docs
     ):
         """Test multi-vector query with Weighted reranker combining dense + sparse."""
-        reranker = WeightedReRanker(weights=[0.7, 0.3])
+        weights = [0.7, 0.3]
+        reranker = WeightedReRanker(weights=weights)
         result = collection_with_multiple_docs.query(
             [
                 Query(field_name="dense", vector=multiple_docs[0].vector("dense")),
@@ -1158,7 +1160,7 @@ class TestCollectionQuery:
         """Test multi-vector query with CallbackReRanker (Python callback via C++)."""
         callback_invoked = []
 
-        def my_rerank_callback(query_results, topn):
+        def my_rerank_callback(query_results, fields, topn):
             callback_invoked.append(True)
             all_docs = []
             for docs in query_results:
@@ -1190,7 +1192,7 @@ class TestCollectionQuery:
     ):
         """Test multi-vector query with CallbackReRanker combining dense + sparse."""
 
-        def my_rerank_callback(query_results, topn):
+        def my_rerank_callback(query_results, fields, topn):
             all_docs = []
             for docs in query_results:
                 all_docs.extend(docs)

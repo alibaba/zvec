@@ -341,6 +341,11 @@ class CollectionSchema {
 
   const FieldSchema *get_field(const std::string &column) const;
   FieldSchema *get_field(const std::string &column);
+
+  FieldSchema::Ptr get_field_ptr(const std::string &column) const {
+    auto it = fields_map_.find(column);
+    return it != fields_map_.end() ? it->second : nullptr;
+  }
   const FieldSchema *get_forward_field(const std::string &column) const;
   FieldSchema *get_forward_field(const std::string &column);
   const FieldSchema *get_vector_field(const std::string &column) const;

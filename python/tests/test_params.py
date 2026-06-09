@@ -152,7 +152,7 @@ class TestIVFIndexParam:
     def test_default(self):
         param = IVFIndexParam()
         assert param.metric_type == MetricType.IP
-        assert param.n_list == 0
+        assert param.n_list == 10
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.type == IndexType.IVF
 
