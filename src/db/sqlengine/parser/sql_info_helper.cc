@@ -26,17 +26,16 @@ namespace zvec::sqlengine {
 
 using namespace zvec;
 
-Node::Ptr handle_vector(SearchQuery *request) {
-  auto *vc = request->target_.get_vector_clause();
-  if (vc == nullptr) {
+Node::Ptr handle_vector(const SearchQuery &request) {
+  auto opt_view = request.target_.get_vector_view();
+  if (!opt_view) {
     return nullptr;
   }
   Node::Ptr rel_exp = std::make_shared<Node>(NodeOp::T_EQ);
-  rel_exp->set_left(std::make_shared<IDNode>(request->target_.field_name_));
+  rel_exp->set_left(std::make_shared<IDNode>(request.target_.field_name_));
   rel_exp->set_right(std::make_shared<VectorMatrixNode>(
-      std::move(vc->query_vector_), std::move(vc->sparse_indices_),
-      std::move(vc->sparse_values_),
-      std::move(request->target_.query_params_)));
+      opt_view->query_vector_, opt_view->sparse_indices_,
+      opt_view->sparse_values_, request.target_.query_params_));
   return rel_exp;
 }
 
@@ -67,13 +66,13 @@ void handle_query_field(const SearchQuery *query, SelectInfo *selected_info) {
 }
 
 Result<sqlengine::SQLInfo::Ptr> SQLInfoHelper::BuildSQLInfoFromSearchQuery(
-    SearchQuery query, Node::Ptr filter_node,
+    const SearchQuery &query, Node::Ptr filter_node,
     std::shared_ptr<GroupBy> group_by) {
   Node::Ptr index_params_node_ptr = nullptr;
-  if (const auto *vc = query.target_.get_vector_clause();
-      vc != nullptr &&
+  if (auto vc = query.target_.get_vector_view();
+      vc.has_value() &&
       (!vc->query_vector_.empty() || !vc->sparse_indices_.empty())) {
-    index_params_node_ptr = handle_vector(&query);
+    index_params_node_ptr = handle_vector(query);
     if (index_params_node_ptr == nullptr) {
       return tl::make_unexpected(Status::InvalidArgument(
           "Failed to build vector condition for field: ",

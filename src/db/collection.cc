@@ -1667,14 +1667,14 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
-  SearchQuery sanitized = query;
   // When field_name_ is set, use get_field to retrieve the schema uniformly.
-  // validate_and_sanitize checks that the field type matches the query type
+  // validate checks that the field type matches the query type
   // (FTS query requires an FTS field, vector query requires a vector field).
-  const auto &field_name = sanitized.target_.field_name_;
+  const auto &field_name = query.target_.field_name_;
   const FieldSchema *field_schema =
       field_name.empty() ? nullptr : schema_->get_field(field_name);
-  auto s = sanitized.validate_and_sanitize(field_schema);
+  bool need_sanitize = false;
+  auto s = query.validate(field_schema, &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();
@@ -1682,7 +1682,15 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
     return DocPtrList();
   }
 
-  return sql_engine_->execute(schema_, std::move(sanitized), segments);
+  if (!need_sanitize) {
+    return sql_engine_->execute(schema_, query, segments);
+  }
+
+  // Sparse needs sanitization: make a mutable copy and sort indices in place.
+  SearchQuery sanitized_query = query;
+  auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
+  CHECK_RETURN_STATUS_EXPECTED(ss);
+  return sql_engine_->execute(schema_, std::move(sanitized_query), segments);
 }
 
 Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
@@ -1716,6 +1724,10 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
     }
     auto *field_schema = field_ptr.get();
 
+    bool need_sanitize = false;
+    auto s = target.validate(field_schema, &need_sanitize);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+
     SearchQuery sq;
     sq.target_ = target;
     sq.topk_ = sub.num_candidates_;
@@ -1724,8 +1736,10 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
     sq.include_doc_id_ = query.include_doc_id_;
     sq.output_fields_ = query.output_fields;
 
-    auto s = sq.validate_and_sanitize(field_schema);
-    CHECK_RETURN_STATUS_EXPECTED(s);
+    if (need_sanitize) {
+      auto ss = sanitize_sparse_vector(sq.target_, field_schema);
+      CHECK_RETURN_STATUS_EXPECTED(ss);
+    }
     pending_queries.push_back(std::move(sq));
     field_schemas.push_back(std::move(field_ptr));
   }
@@ -1777,7 +1791,22 @@ Result<GroupResults> CollectionImpl::GroupByQuery(
     return GroupResults();
   }
 
-  return sql_engine_->execute_group_by(schema_, query, segments);
+  // Determine vector data source (zero-copy for dense, copy+sort for sparse)
+  const FieldSchema *field_schema =
+      schema_->get_field(query.target_.field_name_);
+  bool need_sanitize = false;
+  auto s = query.target_.validate(field_schema, &need_sanitize);
+  CHECK_RETURN_STATUS_EXPECTED(s);
+
+  if (!need_sanitize) {
+    return sql_engine_->execute_group_by(schema_, query, segments);
+  }
+
+  // Sparse needs sanitization: make a mutable copy and sort indices in place.
+  GroupByVectorQuery sanitized_query = query;
+  auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
+  CHECK_RETURN_STATUS_EXPECTED(ss);
+  return sql_engine_->execute_group_by(schema_, sanitized_query, segments);
 }
 
 Result<DocPtrMap> CollectionImpl::Fetch(

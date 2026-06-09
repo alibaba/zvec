@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <zvec/db/query.h>
 #include <zvec/db/schema.h>
 #include "db/common/constants.h"
@@ -20,27 +22,16 @@
 
 namespace zvec {
 
-Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
-  if ((uint32_t)topk_ > kMaxQueryTopk) {
-    return Status::InvalidArgument("Invalid query: topk[", topk_,
-                                   "] exceeds the maximum allowed value of ",
-                                   kMaxQueryTopk);
-  }
-  if (output_fields_.has_value() &&
-      output_fields_->size() > kMaxOutputFieldSize) {
-    return Status::InvalidArgument(
-        "Invalid query: too many output fields, the maximum allowed is ",
-        kMaxOutputFieldSize);
-  }
-
-  auto *vc = target_.get_vector_clause();
-  auto *fc = target_.get_fts_clause();
-  auto &field_name = target_.field_name_;
-  auto &query_params = target_.query_params_;
+Status QueryTarget::validate(const FieldSchema *schema,
+                             bool *need_sanitize) const {
+  auto opt_view = get_vector_view();
+  auto *fc = get_fts_clause();
+  auto &field_name = field_name_;
+  auto &query_params = query_params_;
   // A "scalar-only filter" query has no vector payload — either the clause
   // is not a VectorClause (e.g., FtsClause) or its fields are all empty.
-  bool no_vector_payload = (vc == nullptr) || (vc->query_vector_.empty() &&
-                                               vc->sparse_indices_.empty());
+  bool no_vector_payload = !opt_view || (opt_view->query_vector_.empty() &&
+                                         opt_view->sparse_indices_.empty());
 
   if (schema == nullptr) {
     if (fc != nullptr) {
@@ -87,9 +78,9 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
         "Invalid query: missing query clause for field[", field_name, "]");
   }
 
-  auto &query_vector = vc->query_vector_;
-  auto &query_sparse_indices = vc->sparse_indices_;
-  auto &query_sparse_values = vc->sparse_values_;
+  auto &query_vector = opt_view->query_vector_;
+  auto &query_sparse_indices = opt_view->sparse_indices_;
+  auto &query_sparse_values = opt_view->sparse_values_;
 
   // Vector query
   if (schema->is_dense_vector()) {
@@ -163,12 +154,15 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
           "Invalid query: too many sparse indices, the maximum allowed is ",
           kSparseMaxDimSize);
     }
-    if (sort_and_find_duplicates(
-            reinterpret_cast<uint32_t *>(query_sparse_indices.data()),
-            query_sparse_values.data(), n_indices, value_byte_size)) {
-      return Status::InvalidArgument(
-          "Invalid query: sparse vector query for field[", field_name,
-          "] contains duplicate indices");
+    if (n_indices > 1 && need_sanitize) {
+      const auto *idx =
+          reinterpret_cast<const uint32_t *>(query_sparse_indices.data());
+      // Detect any non-strictly-increasing pair (unsorted or duplicate).
+      if (std::adjacent_find(idx, idx + n_indices,
+                             std::greater_equal<uint32_t>()) !=
+          idx + n_indices) {
+        *need_sanitize = true;
+      }
     }
   } else {
     return Status::InvalidArgument("Invalid query: field[", field_name,
@@ -184,6 +178,63 @@ Status SearchQuery::validate_and_sanitize(const FieldSchema *schema) {
         IndexTypeCodeBook::AsString(query_params->type()));
   }
   return Status::OK();
+}
+
+Status SearchQuery::validate(const FieldSchema *schema,
+                             bool *need_sanitize) const {
+  if (need_sanitize) {
+    *need_sanitize = false;
+  }
+  if ((uint32_t)topk_ > kMaxQueryTopk) {
+    return Status::InvalidArgument("Invalid query: topk[", topk_,
+                                   "] exceeds the maximum allowed value of ",
+                                   kMaxQueryTopk);
+  }
+  if (output_fields_.has_value() &&
+      output_fields_->size() > kMaxOutputFieldSize) {
+    return Status::InvalidArgument(
+        "Invalid query: too many output fields, the maximum allowed is ",
+        kMaxOutputFieldSize);
+  }
+  return target_.validate(schema, need_sanitize);
+}
+
+Status sanitize_sparse_vector(VectorClause &vc, const FieldSchema *schema) {
+  if (!schema || !schema->is_sparse_vector()) {
+    return Status::OK();
+  }
+  size_t value_byte_size = 0;
+  switch (schema->data_type()) {
+    case DataType::SPARSE_VECTOR_FP32:
+      value_byte_size = sizeof(float);
+      break;
+    case DataType::SPARSE_VECTOR_FP16:
+      value_byte_size = sizeof(float16_t);
+      break;
+    default:
+      return Status::OK();
+  }
+  size_t n_indices = vc.sparse_indices_.size() / sizeof(uint32_t);
+  if (n_indices <= 1) {
+    return Status::OK();
+  }
+  if (sort_and_find_duplicates(
+          reinterpret_cast<uint32_t *>(vc.sparse_indices_.data()),
+          vc.sparse_values_.data(), n_indices, value_byte_size)) {
+    return Status::InvalidArgument(
+        "Invalid query: sparse vector query for field[", schema->name(),
+        "] contains duplicate indices");
+  }
+  return Status::OK();
+}
+
+Status sanitize_sparse_vector(QueryTarget &target, const FieldSchema *schema) {
+  if (auto *vvc = target.get_vector_view_clause()) {
+    target.clause_ = VectorClause{std::string(vvc->query_vector_),
+                                  std::string(vvc->sparse_indices_),
+                                  std::string(vvc->sparse_values_)};
+  }
+  return sanitize_sparse_vector(*target.get_vector_clause(), schema);
 }
 
 }  // namespace zvec

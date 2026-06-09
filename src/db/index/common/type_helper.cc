@@ -26,19 +26,6 @@ bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,
   if (n <= 1) {
     return false;
   }
-  bool already_sorted = true;
-  for (size_t i = 1; i < n; ++i) {
-    if (indices[i] == indices[i - 1]) {
-      return true;
-    }
-    if (indices[i] < indices[i - 1]) {
-      already_sorted = false;
-      break;
-    }
-  }
-  if (already_sorted) {
-    return false;
-  }
   std::vector<size_t> perm(n);
   std::iota(perm.begin(), perm.end(), size_t{0});
   std::sort(perm.begin(), perm.end(),
