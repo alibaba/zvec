@@ -18,6 +18,7 @@ from typing import Optional
 from _zvec import Initialize, _Collection
 
 from .model import Collection
+from .model._diskann_support import ensure_diskann_supported
 from .model.param import CollectionOption
 from .model.schema import CollectionSchema
 
@@ -219,6 +220,11 @@ def create_and_open(
     option = option or CollectionOption()
     if not isinstance(option, CollectionOption):
         raise TypeError("option must be a CollectionOption")
+
+    # Reject DiskAnn indexes on unsupported platforms (e.g. ARM) at creation
+    # time rather than failing later during optimize().
+    for _vector in schema.vectors:
+        ensure_diskann_supported(_vector.index_param)
 
     _collection = _Collection.CreateAndOpen(path, schema._get_object(), option)
     return Collection._from_core(_collection)
