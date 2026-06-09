@@ -86,6 +86,7 @@ enum class QuantizerType {
   kInt8,
   kInt4,
   kRabitq,
+  kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
 };
 
 struct SerializableBase {

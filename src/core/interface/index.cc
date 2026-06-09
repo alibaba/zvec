@@ -171,6 +171,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kRabitq:
           // no converter here
           return 0;
+        case QuantizerType::kUniformInt8:
+          converter_name = "UniformInt8StreamingConverter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;
@@ -187,13 +190,17 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
   }
 
   proxima_index_meta_ = converter_->meta();
-  reformer_ =
-      core::IndexFactory::CreateReformer(proxima_index_meta_.reformer_name());
-  if (reformer_ == nullptr ||
-      reformer_->init(proxima_index_meta_.reformer_params()) != 0) {
-    LOG_ERROR("Failed to create and init reformer");
-    return core::IndexError_Runtime;
+
+  if (!proxima_index_meta_.reformer_name().empty()) {
+    reformer_ =
+        core::IndexFactory::CreateReformer(proxima_index_meta_.reformer_name());
+    if (reformer_ == nullptr ||
+        reformer_->init(proxima_index_meta_.reformer_params()) != 0) {
+      LOG_ERROR("Failed to create and init reformer");
+      return core::IndexError_Runtime;
+    }
   }
+
   streamer_vector_meta_.set_meta(proxima_index_meta_.data_type(),
                                  proxima_index_meta_.dimension());
   streamer_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
@@ -292,6 +299,27 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
+  }
+
+  // If a converter exists but reformer was not created during Init()
+  // (converters like UniformInt8 whose reformer params are only available
+  // after train()), create it now from the persisted meta that the streamer
+  // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
+  // is nullptr by design — skip this block entirely.
+  if (converter_ != nullptr && reformer_ == nullptr) {
+    const auto &meta = streamer_->meta();
+    if (meta.reformer_name().empty()) {
+      LOG_ERROR(
+          "Index::Open: converter exists but reformer not initialized and "
+          "no reformer in persisted meta");
+      return core::IndexError_Runtime;
+    }
+    reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
+    if (!reformer_ || reformer_->init(meta.reformer_params()) != 0) {
+      LOG_ERROR("Failed to create reformer '%s' from persisted meta",
+                meta.reformer_name().c_str());
+      return core::IndexError_Runtime;
+    }
   }
 
   // converter/reformer/metric are created in IndexFactory::CreateIndex

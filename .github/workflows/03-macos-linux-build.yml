@@ -107,6 +107,27 @@ jobs:
             setuptools_scm
         shell: bash       
 
+      - name: Check CMake subproject integration
+        if: matrix.platform == 'linux-x64'
+        run: |
+          SMOKE_SOURCE="$RUNNER_TEMP/zvec-subproject-smoke"
+          SMOKE_BUILD="$RUNNER_TEMP/zvec-subproject-build"
+
+          mkdir -p "$SMOKE_SOURCE" "$SMOKE_BUILD"
+          cp "$GITHUB_WORKSPACE/.github/cmake/subproject-integration/CMakeLists.txt" \
+            "$SMOKE_SOURCE/CMakeLists.txt"
+
+          cmake -S "$SMOKE_SOURCE" -B "$SMOKE_BUILD" -G Ninja \
+            -DZVEC_SOURCE_DIR="$GITHUB_WORKSPACE" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_C_BINDINGS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DENABLE_WERROR=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        shell: bash
+
       - name: Build from source
         run: |
           cd "$GITHUB_WORKSPACE"
