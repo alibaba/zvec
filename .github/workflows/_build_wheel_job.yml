@@ -41,10 +41,16 @@ jobs:
           pip install --upgrade pip
           pip install cibuildwheel==3.4.0
 
+      - name: Install AIO 
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libaio-dev
+        shell: bash
+
       - name: Build wheels using cibuildwheel
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libaio-dev
           python -m cibuildwheel --output-dir wheelhouse
           # Save list of built wheels for publishing
           ls wheelhouse/*.whl | tee $GITHUB_STEP_SUMMARY
