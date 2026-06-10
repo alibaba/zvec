@@ -897,57 +897,13 @@ static std::vector<std::string> collect_doc_pks(const zvec_doc_t **docs,
  * @brief Convert C index params to C++ shared_ptr
  * @param params C index params handle
  * @return Shared pointer to C++ IndexParams, or nullptr on failure
- * @note Uses switch-based type checking and copy constructor to create 
- *       a deep copy of the underlying C++ IndexParams object
  */
 static std::shared_ptr<zvec::IndexParams> convert_c_index_params_to_cpp(
     const zvec_index_params_t *params) {
   if (!params) {
     return nullptr;
   }
-
-  // Get the underlying IndexParams and create a shared_ptr from it
-  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-
-  // Clone the params based on type
-  switch (cpp_params->type()) {
-    case zvec::IndexType::FLAT: {
-      auto *flat_params =
-          dynamic_cast<const zvec::FlatIndexParams *>(cpp_params);
-      return flat_params ? std::make_shared<zvec::FlatIndexParams>(*flat_params)
-                         : nullptr;
-    }
-    case zvec::IndexType::HNSW: {
-      auto *hnsw_params =
-          dynamic_cast<const zvec::HnswIndexParams *>(cpp_params);
-      return hnsw_params ? std::make_shared<zvec::HnswIndexParams>(*hnsw_params)
-                         : nullptr;
-    }
-    case zvec::IndexType::IVF: {
-      auto *ivf_params = dynamic_cast<const zvec::IVFIndexParams *>(cpp_params);
-      return ivf_params ? std::make_shared<zvec::IVFIndexParams>(*ivf_params)
-                        : nullptr;
-    }
-    case zvec::IndexType::INVERT: {
-      auto *invert_params =
-          dynamic_cast<const zvec::InvertIndexParams *>(cpp_params);
-      return invert_params
-                 ? std::make_shared<zvec::InvertIndexParams>(*invert_params)
-                 : nullptr;
-    }
-    case zvec::IndexType::FTS: {
-      auto *fts_params =
-          dynamic_cast<const zvec::FtsIndexParams *>(cpp_params);
-      // FtsIndexParams is not copy-constructible; rebuild from accessors.
-      return fts_params ? std::make_shared<zvec::FtsIndexParams>(
-                              fts_params->tokenizer_name(),
-                              fts_params->filters(),
-                              fts_params->extra_params())
-                        : nullptr;
-    }
-    default:
-      return nullptr;
-  }
+  return reinterpret_cast<const zvec::IndexParams *>(params)->clone();
 }
 
 // =============================================================================
