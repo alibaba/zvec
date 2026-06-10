@@ -181,6 +181,20 @@ class IndexMapping {
     return huge_page_;
   }
 
+  //! Test if any data needs to be flushed to disk
+  bool is_dirty() const {
+    if (header_dirty_) {
+      return true;
+    }
+    for (auto iter = segments_.begin(); iter != segments_.end(); ++iter) {
+      const Segment &seg = iter->second.segment;
+      if (seg.data() && seg.dirty()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
  protected:
   //! Initialize index file mapping
   int init_index_mapping(size_t len);
