@@ -212,7 +212,15 @@ class ProximaEngineHelper {
               "failed to build query param: " +
               diskann_query_param_result.error().message()));
         }
-        return std::move(diskann_query_param_result.value());
+        auto &diskann_query_param = diskann_query_param_result.value();
+        if (query_params.query_params) {
+          auto db_diskann_query_params =
+              dynamic_cast<const DiskAnnQueryParams *>(
+                  query_params.query_params.get());
+          diskann_query_param->list_size =
+              static_cast<uint32_t>(db_diskann_query_params->list_size());
+        }
+        return std::move(diskann_query_param);
       }
 
       case IndexType::VAMANA: {

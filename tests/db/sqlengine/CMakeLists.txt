@@ -25,7 +25,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     LIBS zvec_common
     zvec_proto
     zvec_sqlengine
-    zvec_db
+    zvec
     zvec_ailego
     core_metric
     core_utility

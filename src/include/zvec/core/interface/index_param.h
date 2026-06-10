@@ -86,6 +86,7 @@ enum class QuantizerType {
   kInt8,
   kInt4,
   kRabitq,
+  kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
 };
 
 struct SerializableBase {
@@ -217,6 +218,10 @@ struct IVFQueryParam : public BaseIndexQueryParam {
 
 struct DiskAnnQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<DiskAnnQueryParam>;
+
+  // Beam-search candidate list size used at query time. Larger values improve
+  // recall at the cost of latency.
+  uint32_t list_size = kDefaultDiskAnnListSize;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<DiskAnnQueryParam>(*this);

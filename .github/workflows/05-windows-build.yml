@@ -143,6 +143,27 @@ jobs:
             }
           }
 
+          # core-example links libzvec_core directly, so copy zvec_core.dll too.
+          $found = $false
+          foreach ($sub in @("$buildDir\bin", "$buildDir\bin\Release", "$buildDir\lib", "$buildDir\lib\Release")) {
+            if (Test-Path "$sub\zvec_core.dll") {
+              Copy-Item "$sub\zvec_core.dll" -Destination . -Force
+              Write-Host "Copied zvec_core.dll from $sub"
+              $found = $true
+              break
+            }
+          }
+          if (-not $found) {
+            Write-Host "WARNING: zvec_core.dll not found, searching recursively..."
+            $dll = Get-ChildItem -Path $buildDir -Filter "zvec_core.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($dll) {
+              Copy-Item $dll.FullName -Destination . -Force
+              Write-Host "Copied zvec_core.dll from $($dll.DirectoryName)"
+            } else {
+              Write-Error "zvec_core.dll not found anywhere under $buildDir"
+            }
+          }
+
           .\db-example.exe
           .\core-example.exe
           .\ailego-example.exe
