@@ -1862,15 +1862,27 @@ TEST(IndexInterface, IsDirty) {
 
   auto test = [&](const BaseIndexParam::Pointer &param) {
     zvec::test_util::RemoveTestFiles(index_name);
+
+    // Before open: not dirty (no storage)
+    {
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, index);
+      ASSERT_FALSE(index->IsDirty());
+    }
+
+    // Create the index file: dirty from initial metadata writes
+    {
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+      ASSERT_TRUE(index->IsDirty());
+      ASSERT_EQ(0, index->Flush());
+      ASSERT_FALSE(index->IsDirty());
+      index->Close();
+    }
+
+    // Reopen existing file: should be clean
     auto index = IndexFactory::CreateAndInitIndex(*param);
-    ASSERT_NE(nullptr, index);
-
-    // Before open: not dirty
-    ASSERT_FALSE(index->IsDirty());
-
-    index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
-
-    // Freshly opened: not dirty
+    index->Open(index_name, {StorageOptions::StorageType::kMMAP, false});
     ASSERT_FALSE(index->IsDirty());
 
     // Add a vector: should become dirty
