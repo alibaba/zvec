@@ -172,6 +172,13 @@ Status FieldSchema::validate() const {
         }
       }
 
+      if (index_params_->type() == IndexType::DISKANN) {
+#if !DISKANN_SUPPORTED
+        return Status::NotSupported(
+            "DiskAnn is not supported on this platform (Linux x86_64 only)");
+#endif
+      }
+
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         auto iter = quantize_type_map.find(data_type_);

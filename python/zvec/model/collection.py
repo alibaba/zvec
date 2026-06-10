@@ -21,7 +21,6 @@ from _zvec import _Collection
 from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
 from ..typing import Status
-from ._diskann_support import ensure_diskann_supported
 from .convert import convert_to_cpp_doc, convert_to_py_doc
 from .doc import Doc, DocList
 from .param import (
@@ -129,9 +128,6 @@ class Collection:
                 Defaults to ``IndexOption()``.
 
         """
-        # Reject DiskAnn indexes on unsupported platforms (e.g. ARM) at
-        # creation time rather than failing later during optimize().
-        ensure_diskann_supported(index_param)
         self._obj.CreateIndex(field_name, index_param, option)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
         self._querier._schema = self._schema
