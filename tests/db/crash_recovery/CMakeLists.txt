@@ -26,7 +26,7 @@ endif()
 
 # Common libraries
 set(CRASH_RECOVERY_COMMON_LIBS
-    zvec_db
+    zvec
     zvec_proto
     core_knn_flat
     core_knn_flat_sparse

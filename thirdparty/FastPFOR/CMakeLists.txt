@@ -1,4 +1,4 @@
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
 # On non-x86 platforms, FastPFOR uses SIMDe to emulate SSE intrinsics.
 # Detection covers native ARM/RISC-V builds AND cross-compilation (e.g. iOS/Android).
