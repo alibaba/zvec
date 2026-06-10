@@ -62,19 +62,19 @@ static inline float SquaredNormRVV(const float *src, size_t size) {
 
 }  // namespace
 
-float MipsEucldeanDistanceSphericalInjectionRVV(const float *lhs,
-                                                const float *rhs, size_t size,
-                                                float e2) {
+float MipsEuclideanDistanceSphericalInjectionRVV(const float *lhs,
+                                                 const float *rhs, size_t size,
+                                                 float e2) {
   float sum = InnerProductRVV(lhs, rhs, size);
   float u2 = SquaredNormRVV(lhs, size);
   float v2 = SquaredNormRVV(rhs, size);
   return ComputeSphericalInjection(sum, u2, v2, e2);
 }
 
-float MipsEucldeanDistanceRepeatedQuadraticInjectionRVV(const float *lhs,
-                                                        const float *rhs,
-                                                        size_t size, size_t m,
-                                                        float e2) {
+float MipsEuclideanDistanceRepeatedQuadraticInjectionRVV(const float *lhs,
+                                                         const float *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2) {
   float sum = InnerProductRVV(lhs, rhs, size);
   float u2 = SquaredNormRVV(lhs, size);
   float v2 = SquaredNormRVV(rhs, size);

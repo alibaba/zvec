@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <cmath>
 #include <zvec/ailego/internal/platform.h>
 #include "euclidean_distance_matrix.h"
 
@@ -49,10 +48,6 @@ static inline float SquaredEuclideanDistanceRVVImpl(const int8_t *lhs,
 float SquaredEuclideanDistanceRVV(const int8_t *lhs, const int8_t *rhs,
                                   size_t size) {
   return SquaredEuclideanDistanceRVVImpl(lhs, rhs, size);
-}
-
-float EuclideanDistanceRVV(const int8_t *lhs, const int8_t *rhs, size_t size) {
-  return std::sqrt(SquaredEuclideanDistanceRVVImpl(lhs, rhs, size));
 }
 
 #endif  // __riscv_vector

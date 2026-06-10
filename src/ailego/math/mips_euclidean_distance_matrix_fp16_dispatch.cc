@@ -18,22 +18,22 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__riscv_zvfh)
-float MipsEucldeanDistanceRepeatedQuadraticInjectionRVV(const Float16 *lhs,
-                                                        const Float16 *rhs,
-                                                        size_t size, size_t m,
-                                                        float e2);
-float MipsEucldeanDistanceSphericalInjectionRVV(const Float16 *lhs,
-                                                const Float16 *rhs, size_t size,
-                                                float e2);
-#endif
-
 #if defined(__ARM_NEON)
 float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEON(
     const Float16 *lhs, const Float16 *rhs, size_t size, size_t m, float e2);
 float MipsEuclideanDistanceSphericalInjectionFp16NEON(const Float16 *lhs,
                                                       const Float16 *rhs,
                                                       size_t size, float e2);
+#endif
+
+#if defined(__riscv_zvfh)
+float MipsEuclideanDistanceRepeatedQuadraticInjectionRVV(const Float16 *lhs,
+                                                         const Float16 *rhs,
+                                                         size_t size, size_t m,
+                                                         float e2);
+float MipsEuclideanDistanceSphericalInjectionRVV(const Float16 *lhs,
+                                                 const Float16 *rhs,
+                                                 size_t size, float e2);
 #endif
 
 #if defined(__AVX512F__)
@@ -57,51 +57,41 @@ float MipsEuclideanDistanceRepeatedQuadraticInjectionFp16Scalar(
 float MipsEuclideanDistanceSphericalInjectionFp16Scalar(
     const ailego::Float16 *p, const ailego::Float16 *q, size_t dim, float e2);
 
+
 //! Compute the distance between matrix and query by SphericalInjection
 void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, float e2, float *out) {
-#if defined(__riscv_zvfh)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
-    *out = MipsEucldeanDistanceSphericalInjectionRVV(p, q, dim, e2);
-    return;
-  }
-#endif  // __riscv_zvfh
-
 #if defined(__ARM_NEON)
   *out = MipsEuclideanDistanceSphericalInjectionFp16NEON(p, q, dim, e2);
+#elif defined(__riscv_zvfh)
+  *out = MipsEuclideanDistanceSphericalInjectionRVV(p, q, dim, e2);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = MipsEuclideanDistanceSphericalInjectionFp16AVX512(p, q, dim, e2);
     return;
   }
-#endif  // __AVX512F__
-
+#endif
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     *out = MipsEuclideanDistanceSphericalInjectionFp16AVX(p, q, dim, e2);
     return;
   }
-#endif  // __AVX__
-
+#endif  //__AVX__
   *out = MipsEuclideanDistanceSphericalInjectionFp16Scalar(p, q, dim, e2);
-#endif  // __ARM_NEON
+  return;
+#endif  //__ARM_NEON
 }
 
 //! Compute the distance between matrix and query by RepeatedQuadraticInjection
 void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
     const ValueType *p, const ValueType *q, size_t dim, size_t m, float e2,
     float *out) {
-#if defined(__riscv_zvfh)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
-    *out = MipsEucldeanDistanceRepeatedQuadraticInjectionRVV(p, q, dim, m, e2);
-    return;
-  }
-#endif  // __riscv_zvfh
-
 #if defined(__ARM_NEON)
   *out =
       MipsEuclideanDistanceRepeatedQuadraticInjectionFp16NEON(p, q, dim, m, e2);
+#elif defined(__riscv_zvfh)
+  *out = MipsEuclideanDistanceRepeatedQuadraticInjectionRVV(p, q, dim, m, e2);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -109,19 +99,18 @@ void MipsSquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
                                                                      m, e2);
     return;
   }
-#endif  // __AVX512F__
-
+#endif
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     *out = MipsEuclideanDistanceRepeatedQuadraticInjectionFp16AVX(p, q, dim, m,
                                                                   e2);
     return;
   }
-#endif  // __AVX__
-
+#endif  //__AVX__
   *out = MipsEuclideanDistanceRepeatedQuadraticInjectionFp16Scalar(p, q, dim, m,
                                                                    e2);
-#endif  // __ARM_NEON
+  return;
+#endif  //__ARM_NEON
 }
 
 }  // namespace ailego

@@ -45,12 +45,8 @@ float MinusInnerProductInt8Scalar(const int8_t *m, const int8_t *q, size_t dim);
 void InnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m, const int8_t *q,
                                                size_t dim, float *out) {
 #if defined(__riscv_vector)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
-    *out = InnerProductRVV(m, q, dim);
-    return;
-  }
-#endif  // __riscv_vector
-
+  *out = InnerProductRVV(m, q, dim);
+#else
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
     *out = InnerProductInt8AVX2(m, q, dim);
@@ -63,9 +59,11 @@ void InnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m, const int8_t *q,
     *out = InnerProductInt8SSE(m, q, dim);
     return;
   }
-#endif  // __SSE4_1__
+
+#endif  //__SSE4_1__
 
   *out = InnerProductInt8Scalar(m, q, dim);
+#endif  // __riscv_vector
 }
 
 //! Compute the distance between matrix and query (INT8, M=1, N=1)
@@ -73,12 +71,8 @@ void MinusInnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m,
                                                     const int8_t *q, size_t dim,
                                                     float *out) {
 #if defined(__riscv_vector)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
-    *out = MinusInnerProductRVV(m, q, dim);
-    return;
-  }
-#endif  // __riscv_vector
-
+  *out = MinusInnerProductRVV(m, q, dim);
+#else
 #if defined(__AVX2__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
     *out = MinusInnerProductInt8AVX2(m, q, dim);
@@ -91,9 +85,10 @@ void MinusInnerProductMatrix<int8_t, 1, 1>::Compute(const int8_t *m,
     *out = MinusInnerProductInt8SSE(m, q, dim);
     return;
   }
-#endif  // __SSE4_1__
+#endif  //__SSE4_1__
 
   *out = MinusInnerProductInt8Scalar(m, q, dim);
+#endif  // __riscv_vector
 }
 
 }  // namespace ailego

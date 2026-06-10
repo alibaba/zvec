@@ -18,15 +18,14 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__riscv_vector)
-float SquaredEuclideanDistanceRVV(const float *lhs, const float *rhs,
-                                  size_t size);
-float EuclideanDistanceRVV(const float *lhs, const float *rhs, size_t size);
-#endif
-
 #if defined(__ARM_NEON)
 void SquaredEuclideanDistanceFp32NEON(const float *lhs, const float *rhs,
                                       size_t size, float *out);
+#endif
+
+#if defined(__riscv_vector)
+float SquaredEuclideanDistanceRVV(const float *lhs, const float *rhs,
+                                  size_t size);
 #endif
 
 #if defined(__AVX512F__)
@@ -50,31 +49,22 @@ float SquaredEuclideanDistanceFp32Scalar(const float *lhs, const float *rhs,
 //-----------------------------------------------------------
 //  SquaredEuclideanDistance
 //-----------------------------------------------------------
-#if defined(__SSE__) || defined(__ARM_NEON) || defined(__riscv_vector)
 //! Compute the distance between matrix and query (FP32, M=1, N=1)
 void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
                                                           const ValueType *q,
                                                           size_t dim,
                                                           float *out) {
-#if defined(__riscv_vector)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
-    *out = SquaredEuclideanDistanceRVV(m, q, dim);
-    return;
-  }
-#endif  // __riscv_vector
-
 #if defined(__ARM_NEON)
   SquaredEuclideanDistanceFp32NEON(m, q, dim, out);
-  return;
-#endif  // __ARM_NEON
-
+#elif defined(__riscv_vector)
+  *out = SquaredEuclideanDistanceRVV(m, q, dim);
+#else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = SquaredEuclideanDistanceFp32AVX512(m, q, dim);
     return;
   }
 #endif  // __AVX512F__
-
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     *out = SquaredEuclideanDistanceFp32AVX(m, q, dim);
@@ -88,10 +78,9 @@ void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
     return;
   }
 #endif  // __SSE__
-
   *out = SquaredEuclideanDistanceFp32Scalar(m, q, dim);
+#endif  // __ARM_NEON
 }
-#endif  // __SSE__ || __ARM_NEON || __riscv_vector
 
 //-----------------------------------------------------------
 //  EuclideanDistance
@@ -100,13 +89,6 @@ void SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
 void EuclideanDistanceMatrix<float, 1, 1>::Compute(const ValueType *m,
                                                    const ValueType *q,
                                                    size_t dim, float *out) {
-#if defined(__riscv_vector)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
-    *out = EuclideanDistanceRVV(m, q, dim);
-    return;
-  }
-#endif  // __riscv_vector
-
   SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(m, q, dim, out);
   *out = std::sqrt(*out);
 }

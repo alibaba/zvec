@@ -480,6 +480,8 @@ struct EuclideanDistanceMatrix<float, 1, 1> {
   static void Compute(const ValueType *m, const ValueType *q, size_t dim,
                       float *out);
 };
+
+
 //--------------------------------------------------
 // Sparse
 //--------------------------------------------------

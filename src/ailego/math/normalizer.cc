@@ -13,8 +13,6 @@
 // limitations under the License.
 
 #include "normalizer.h"
-#include <zvec/ailego/internal/platform.h>
-#include "ailego/internal/cpu_features.h"
 
 namespace zvec {
 namespace ailego {
@@ -426,14 +424,10 @@ static inline void NormalizeSSE(float *arr, size_t dim, float norm) {
     defined(__riscv_vector)
 //! Compute the norm of vector
 void Normalizer<float>::Compute(ValueType *arr, size_t dim, float norm) {
-#if defined(__riscv_vector)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_VECTOR) {
-    NormalizeRVV(arr, dim, norm);
-    return;
-  }
-#endif
 #if defined(__ARM_NEON)
   NormalizeNEON(arr, dim, norm);
+#elif defined(__riscv_vector)
+  NormalizeRVV(arr, dim, norm);
 #else
 #if defined(__AVX512F__)
   if (dim > 15) {
@@ -447,14 +441,7 @@ void Normalizer<float>::Compute(ValueType *arr, size_t dim, float norm) {
     return;
   }
 #endif  // __AVX__
-#if !defined(__SSE__)
-  ailego_assert(arr && dim && norm);
-  for (size_t i = 0; i < dim; ++i) {
-    arr[i] /= norm;
-  }
-#else
   NormalizeSSE(arr, dim, norm);
-#endif
 #endif  // __ARM_NEON
 }
 #endif  // __SSE__ || (__ARM_NEON && __aarch64__) || __riscv_vector
@@ -463,14 +450,10 @@ void Normalizer<float>::Compute(ValueType *arr, size_t dim, float norm) {
     (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
 //! Compute the norm of vector
 void Normalizer<Float16>::Compute(ValueType *arr, size_t dim, float norm) {
-#if defined(__riscv_zvfh)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
-    NormalizeRVV(arr, dim, norm);
-    return;
-  }
-#endif
 #if defined(__ARM_NEON)
   NormalizeNEON(reinterpret_cast<float16_t *>(arr), dim, norm);
+#elif defined(__riscv_zvfh)
+  NormalizeRVV(arr, dim, norm);
 #else
 #if defined(__AVX512F__)
   if (dim > 31) {
@@ -478,14 +461,7 @@ void Normalizer<Float16>::Compute(ValueType *arr, size_t dim, float norm) {
     return;
   }
 #endif  // __AVX512F__
-#if defined(__AVX__)
   NormalizeAVX(reinterpret_cast<uint16_t *>(arr), dim, norm);
-#else
-  ailego_assert(arr && dim && norm);
-  for (size_t i = 0; i < dim; ++i) {
-    arr[i] /= norm;
-  }
-#endif
 #endif  // __ARM_NEON
 }
 #endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__) || __riscv_zvfh

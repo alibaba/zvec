@@ -20,10 +20,6 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__riscv_zvfh)
-float Norm1RVV(const Float16 *m, size_t dim);
-#endif
-
 #define NORM_FP32_STEP_GENERAL SA_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SA_FP32_SSE
 #define NORM_FP32_STEP_AVX SA_FP32_AVX
@@ -71,19 +67,38 @@ static const __m512 ABS_MASK_FP32_AVX512 =
 //! Calculate sum of absolute (NEON)
 #define SA_FP16_NEON(v_m, v_sum) v_sum = vaddq_f16(vabsq_f16(v_m), v_sum);
 
+#if defined(__riscv_zvfh)
+//! Compute the L1-norm of vector (RVV)
+static inline float Norm1RVV(const Float16 *m, size_t dim) {
+  const _Float16 *m_fp16 = reinterpret_cast<const _Float16 *>(m);
+  const size_t vlmax = __riscv_vsetvlmax_e16m4();
+  vfloat32m8_t v_sum = __riscv_vfmv_v_f_f32m8(0.0f, vlmax);
+
+  while (dim != 0) {
+    const size_t vl = __riscv_vsetvl_e16m4(dim);
+    vfloat16m4_t v_m = __riscv_vle16_v_f16m4(m_fp16, vl);
+    vfloat16m4_t v_abs = __riscv_vfabs_v_f16m4(v_m, vl);
+    v_sum = __riscv_vfwadd_wv_f32m8_tu(v_sum, v_sum, v_abs, vl);
+    m_fp16 += vl;
+    dim -= vl;
+  }
+
+  vfloat32m1_t v_zero = __riscv_vfmv_v_f_f32m1(0.0f, 1);
+  vfloat32m1_t v_reduce =
+      __riscv_vfredusum_vs_f32m8_f32m1(v_sum, v_zero, vlmax);
+  return __riscv_vfmv_f_s_f32m1_f32(v_reduce);
+}
+#endif  // __riscv_zvfh
+
 #if (defined(__F16C__) && defined(__AVX__)) || \
     (defined(__ARM_NEON) && defined(__aarch64__)) || defined(__riscv_zvfh)
 //! Compute the L1-norm of vectors (FP16, M=1)
 void Norm1Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
                                       float *out) {
-#if defined(__riscv_zvfh)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.RISCV_ZVFH) {
-    *out = Norm1RVV(m, dim);
-    return;
-  }
-#endif
 #if defined(__ARM_NEON)
   NORM_FP16_1_NEON(m, dim, out, )
+#elif defined(__riscv_zvfh)
+  *out = Norm1RVV(m, dim);
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
@@ -91,16 +106,7 @@ void Norm1Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
     return;
   }
 #endif
-#if defined(__AVX__)
   NORM_FP16_1_AVX(m, dim, out, )
-#else
-  float sum = 0.0f;
-  const ValueType *m_end = m + dim;
-  while (m != m_end) {
-    sum += Float16::Absolute(*m++);
-  }
-  *out = sum;
-#endif
 #endif
 }
 #endif  // (__F16C__ && __AVX__) || (__ARM_NEON && __aarch64__) || __riscv_zvfh
