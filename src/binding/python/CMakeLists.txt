@@ -63,7 +63,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             $<TARGET_FILE:core_quantizer_static>
             $<TARGET_FILE:core_plugin>
             -Wl,--no-whole-archive
-            zvec_db
+            zvec
             ${CMAKE_DL_LIBS}
     )
     target_link_options(_zvec PRIVATE
@@ -99,7 +99,7 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_utility_static>
             -Wl,-force_load,$<TARGET_FILE:core_quantizer_static>
             -Wl,-force_load,$<TARGET_FILE:core_plugin>
-            zvec_db
+            zvec
     )
     target_link_libraries(_zvec PRIVATE
             -Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports.mac
@@ -121,7 +121,7 @@ elseif (MSVC)
     )
     target_link_libraries(_zvec PRIVATE
             ${_zvec_whole_archive_libs}
-            zvec_db
+            zvec
     )
     foreach(_lib ${_zvec_whole_archive_libs})
         target_link_options(_zvec PRIVATE

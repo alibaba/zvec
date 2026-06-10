@@ -9,8 +9,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   cc_gtest(
     NAME ${CC_TARGET} STRICT
     LIBS zvec_ailego core_framework core_utility
-    Arrow::arrow_depends
-    Arrow::parquet_static
     SRCS ${CC_SRCS}
     INCS . ${PROJECT_ROOT_DIR}/src/core/
   )

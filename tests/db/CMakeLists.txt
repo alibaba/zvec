@@ -26,7 +26,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
   cc_gmock(
     NAME ${CC_TARGET} STRICT
-    LIBS zvec_db
+    LIBS zvec
     zvec_proto
     core_knn_flat
     core_knn_flat_sparse
@@ -45,5 +45,5 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     INCS . .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
   )
-  cc_test_suite(zvec_db ${CC_TARGET})
+  cc_test_suite(zvec ${CC_TARGET})
 endforeach()
