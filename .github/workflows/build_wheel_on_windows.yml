@@ -86,7 +86,7 @@ jobs:
           python-version: '3.11'
 
       - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
 

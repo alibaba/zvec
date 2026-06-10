@@ -447,6 +447,12 @@ class IndexRunner : public IndexModule {
     return nullptr;
   }
 
+  //! Get vector by key
+  virtual int get_vector(uint64_t /*key*/, Context::Pointer & /*context*/,
+                         std::string & /*vector*/) const {
+    return IndexError_NotImplemented;
+  }
+
   virtual int get_vector_by_id(const uint32_t /*id*/,
                                IndexStorage::MemoryBlock & /*block*/) const {
     return IndexError_NotImplemented;

@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <atomic>
+#include <cinttypes>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -522,8 +523,8 @@ class BufferStorage : public IndexStorage {
       return ret;
     }
     LOG_INFO(
-        "BufferStorage opened: file=%s, writable=%d, max_segment_size=%lu, "
-        "segment_count=%zu",
+        "BufferStorage opened: file=%s, writable=%d, max_segment_size=%" PRIu64
+        ", segment_count=%zu",
         file_name_.c_str(), static_cast<int>(create_if_missing),
         max_segment_size_, segments_.size());
     return 0;
@@ -682,11 +683,10 @@ class BufferStorage : public IndexStorage {
       if (footer_offset < current_header_start_offset_ ||
           footer_offset + sizeof(IndexFormat::MetaFooter) >
               buffer_pool_->file_size()) {
-        LOG_ERROR(
-            "ParseToMapping: invalid footer_offset=%lu (header=%lu, "
-            "file_size=%lu), file[%s]",
-            footer_offset, current_header_start_offset_,
-            buffer_pool_->file_size(), file_name_.c_str());
+        LOG_ERROR("ParseToMapping: invalid footer_offset=%" PRIu64
+                  " (header=%" PRIu64 ", file_size=%zu), file[%s]",
+                  footer_offset, current_header_start_offset_,
+                  buffer_pool_->file_size(), file_name_.c_str());
         return IndexError_InvalidValue;
       }
       ret = ParseFooter(footer_offset);
@@ -728,11 +728,10 @@ class BufferStorage : public IndexStorage {
       if (next_off <= current_header_start_offset_ ||
           next_off + sizeof(IndexFormat::MetaHeader) >
               buffer_pool_->file_size()) {
-        LOG_ERROR(
-            "ParseToMapping: invalid next_meta_header_offset=%lu "
-            "(current=%lu, file_size=%lu), file[%s]",
-            next_off, current_header_start_offset_, buffer_pool_->file_size(),
-            file_name_.c_str());
+        LOG_ERROR("ParseToMapping: invalid next_meta_header_offset=%" PRIu64
+                  " (current=%" PRIu64 ", file_size=%zu), file[%s]",
+                  next_off, current_header_start_offset_,
+                  buffer_pool_->file_size(), file_name_.c_str());
         return IndexError_InvalidValue;
       }
       // Bound chain count: 1024 chains @ default 1MB segment_meta_capacity

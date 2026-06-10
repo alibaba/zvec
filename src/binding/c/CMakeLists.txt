@@ -83,6 +83,11 @@ set_target_properties(zvec_c_api PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON
 )
 
+# On Windows, define ZVEC_BUILD_SHARED so that c_api.h uses __declspec(dllexport)
+if(MSVC OR WIN32)
+    target_compile_definitions(zvec_c_api PRIVATE ZVEC_BUILD_SHARED)
+endif()
+
 find_package(Threads REQUIRED)
 
 # Static linking of C++ standard library is handled in platform-specific sections
@@ -107,7 +112,7 @@ endif()
 # Users only need to link libzvec_c_api.so without installing any dependencies
 if(MSVC)
     target_link_options(zvec_c_api PRIVATE
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_db>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
@@ -115,7 +120,7 @@ if(MSVC)
 
     target_link_libraries(zvec_c_api
         PRIVATE
-            zvec_db
+            zvec
             zvec_core
             zvec_ailego
             zvec_turbo
@@ -124,7 +129,7 @@ if(MSVC)
     )
 elseif(APPLE)
     target_link_options(zvec_c_api PRIVATE
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_db>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
@@ -133,7 +138,7 @@ elseif(APPLE)
     # Link the libraries themselves (without force_load flags)
     target_link_libraries(zvec_c_api
         PRIVATE
-            zvec_db
+            zvec
             zvec_core
             zvec_ailego
             zvec_turbo
@@ -150,7 +155,7 @@ else()
         PRIVATE
             # Force load all zvec internal libraries (extract all objects)
             ${ZVEC_WHOLE_ARCHIVE_PREFIX}
-                zvec_db
+                zvec
                 zvec_core
                 zvec_ailego
                 zvec_turbo  # Required by zvec_core (metric module)

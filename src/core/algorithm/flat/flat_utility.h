@@ -105,7 +105,7 @@ static inline void Transpose(size_t align_size, const void *src, size_t m,
 template <size_t K>
 void TransposeQueries(const void *query, const IndexQueryMeta &qmeta,
                       size_t query_count, std::string *out) {
-  if (K <= 1) {
+  if constexpr (K <= 1) {
     ailego_assert(query_count == 1);
     (void)query_count;
     out->append(reinterpret_cast<const char *>(query) + out->size(),

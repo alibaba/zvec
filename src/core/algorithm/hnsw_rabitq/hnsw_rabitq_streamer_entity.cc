@@ -81,8 +81,8 @@ int HnswRabitqStreamerEntity::cleanup() {
 int HnswRabitqStreamerEntity::update_neighbors(
     level_t level, node_id_t id,
     const std::vector<std::pair<node_id_t, ResultRecord>> &neighbors) {
-  char buffer[neighbor_size_];
-  NeighborsHeader *hd = reinterpret_cast<NeighborsHeader *>(buffer);
+  std::vector<char> buffer(neighbor_size_);
+  NeighborsHeader *hd = reinterpret_cast<NeighborsHeader *>(buffer.data());
   hd->neighbor_cnt = neighbors.size();
   size_t i = 0;
   for (; i < neighbors.size(); ++i) {
@@ -434,7 +434,7 @@ int HnswRabitqStreamerEntity::dump(const IndexDumper::Pointer &dumper) {
       return 0U;
     };
     auto meta = reinterpret_cast<const UpperNeighborIndexMeta *>(&it->second);
-    return meta->level;
+    return meta->bits.level;
   };
   auto ret = dump_segments(dumper, keys.data(), get_level);
   if (ailego_unlikely(ret < 0)) {

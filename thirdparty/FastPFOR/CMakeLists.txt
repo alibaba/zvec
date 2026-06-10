@@ -1,17 +1,25 @@
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
-# On ARM platforms, FastPFOR uses SIMDe to emulate SSE intrinsics.
-# Detection covers native ARM builds AND cross-compilation (e.g. iOS/Android).
-set(_FASTPFOR_IS_ARM FALSE)
+# On non-x86 platforms, FastPFOR uses SIMDe to emulate SSE intrinsics.
+# Detection covers native ARM/RISC-V builds AND cross-compilation (e.g. iOS/Android).
+set(_FASTPFOR_NEEDS_SIMDE FALSE)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64|ARM64|arm64")
-    set(_FASTPFOR_IS_ARM TRUE)
+    set(_FASTPFOR_NEEDS_SIMDE TRUE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64|riscv32")
+    set(_FASTPFOR_NEEDS_SIMDE TRUE)
 elseif(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
-    set(_FASTPFOR_IS_ARM TRUE)
+    set(_FASTPFOR_NEEDS_SIMDE TRUE)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(_FASTPFOR_IS_ARM TRUE)
+    set(_FASTPFOR_NEEDS_SIMDE TRUE)
 endif()
 
-if(_FASTPFOR_IS_ARM)
+# RISC-V: patch FastPFOR common.h to include SIMDe header for __riscv
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64|riscv32")
+    set(FASTPFOR_RISCV_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/fastpfor.riscv.patch)
+    apply_patch_once("fastpfor_riscv_fix" "${CMAKE_CURRENT_SOURCE_DIR}/FastPFOR-0.4.0" "${FASTPFOR_RISCV_PATCH}")
+endif()
+
+if(_FASTPFOR_NEEDS_SIMDE)
     include(FetchContent)
     FetchContent_Declare(
         simde

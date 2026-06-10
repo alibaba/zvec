@@ -16,11 +16,9 @@ from __future__ import annotations
 from .query_executor import (
     QueryContext,
     QueryExecutor,
-    QueryExecutorFactory,
 )
 
 __all__ = [
     "QueryContext",
     "QueryExecutor",
-    "QueryExecutorFactory",
 ]

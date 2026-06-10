@@ -40,6 +40,9 @@
 [submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
 	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
 	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git
+[submodule "thirdparty/aio/libaio-0.3"]
+	path = thirdparty/aio/libaio-0.3
+	url = https://github.com/yugabyte/libaio.git
 [submodule "thirdparty/cppjieba/cppjieba-5.6.7"]
 	path = thirdparty/cppjieba/cppjieba-5.6.7
 	url = https://github.com/yanyiwu/cppjieba.git

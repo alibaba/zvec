@@ -54,8 +54,8 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 };
 
 std::unordered_set<IndexType> support_dense_vector_index = {
-    IndexType::FLAT, IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::IVF,
-    IndexType::VAMANA};
+    IndexType::FLAT, IndexType::HNSW,    IndexType::HNSW_RABITQ,
+    IndexType::IVF,  IndexType::DISKANN, IndexType::VAMANA};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
@@ -164,9 +164,11 @@ Status FieldSchema::validate() const {
               "RabitQ requires AVX2/AVX512F to be supported");
         }
 
-        if (kRabitqCompiledAvx512 && !flags.AVX512F) {
-          return Status::NotSupported(
-              "RabitQ compiled with AVX512F while runtime does not support");
+        if constexpr (kRabitqCompiledAvx512) {
+          if (!flags.AVX512F) {
+            return Status::NotSupported(
+                "RabitQ compiled with AVX512F while runtime does not support");
+          }
         }
       }
 
@@ -220,12 +222,16 @@ Status FieldSchema::validate() const {
     if (index_params_) {
       if (index_params_->is_vector_index_type()) {
         return Status::InvalidArgument(
-            "schema validate failed: scalar_field's index_params only support "
-            "INVERT "
-            "index, "
-            "but field[",
-            name_, "]'s index_type is ",
+            "schema validate failed: scalar field[", name_,
+            "] does not support vector index params, but got index_type ",
             IndexTypeCodeBook::AsString(index_params_->type()));
+      }
+      if (index_params_->type() == IndexType::FTS &&
+          data_type_ != DataType::STRING) {
+        return Status::InvalidArgument(
+            "schema validate failed: FTS index only supports STRING data type, "
+            "but field[",
+            name_, "]'s data_type is ", DataTypeCodeBook::AsString(data_type_));
       }
     }
   }

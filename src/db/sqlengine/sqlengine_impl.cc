@@ -62,18 +62,33 @@ Result<DocPtrList> SQLEngineImpl::execute(
     return DocPtrList{};
   }
 
-  auto query_info = build_query_info(collection, std::move(query), nullptr);
-  if (!query_info) {
-    return tl::make_unexpected(query_info.error());
+  // Check filter satisfiability once before the loop (result depends only on
+  // the query, not on segment data).
+  auto first_query_info = build_query_info(collection, query, nullptr);
+  if (!first_query_info) {
+    return tl::make_unexpected(first_query_info.error());
   }
-  if (query_info.value()->is_filter_unsatisfiable()) {
+  if (first_query_info.value()->is_filter_unsatisfiable()) {
     LOG_WARN("filter is unsatisfiable: %s",
-             query_info.value()->to_string().c_str());
+             first_query_info.value()->to_string().c_str());
     return {};
   }
-  const auto &select_item_meta_ptrs =
-      query_info.value()->select_item_schema_ptrs();
-  std::vector<QueryInfo::Ptr> query_infos(segments.size(), query_info.value());
+  // Capture output field schema before query_infos are moved into the planner.
+  auto select_item_meta_ptrs =
+      first_query_info.value()->select_item_schema_ptrs();
+
+  // Build a separate QueryInfo per segment so the optimizer can mutate each
+  // independently.  Reuse first_query_info for segment 0.
+  std::vector<QueryInfo::Ptr> query_infos;
+  query_infos.reserve(segments.size());
+  query_infos.emplace_back(std::move(first_query_info.value()));
+  for (size_t i = 1; i < segments.size(); ++i) {
+    auto query_info = build_query_info(collection, query, nullptr);
+    if (!query_info) {
+      return tl::make_unexpected(query_info.error());
+    }
+    query_infos.emplace_back(std::move(query_info.value()));
+  }
   auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
     return tl::make_unexpected(Status::InternalError(
@@ -100,26 +115,48 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
   }
 
   SearchQuery query = from_group_by(group_by_query);
-  auto query_info = build_query_info(
+
+  // Check filter satisfiability once before the loop (result depends only on
+  // the query, not on segment data).
+  auto first_query_info = build_query_info(
       collection, query,
       std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
                                 group_by_query.group_topk_,
                                 group_by_query.group_count_));
-  if (!query_info) {
-    return tl::make_unexpected(query_info.error());
+  if (!first_query_info) {
+    return tl::make_unexpected(first_query_info.error());
   }
-  if (query_info.value()->is_filter_unsatisfiable()) {
+  if (first_query_info.value()->is_filter_unsatisfiable()) {
     LOG_WARN("filter is unsatisfiable: %s",
-             query_info.value()->to_string().c_str());
+             first_query_info.value()->to_string().c_str());
     return {};
   }
-  std::vector<QueryInfo::Ptr> query_infos(segments.size(), query_info.value());
+
+  // Keep a copy, the planner will move elements out of query_infos.
+  QueryInfo::Ptr group_by_query_info = first_query_info.value();
+
+  // Build a separate QueryInfo per segment so the optimizer can mutate each
+  // independently.  Reuse first_query_info for segment 0.
+  std::vector<QueryInfo::Ptr> query_infos;
+  query_infos.reserve(segments.size());
+  query_infos.emplace_back(std::move(first_query_info.value()));
+  for (size_t i = 1; i < segments.size(); ++i) {
+    auto query_info = build_query_info(
+        collection, query,
+        std::make_shared<GroupBy>(group_by_query.group_by_field_name_,
+                                  group_by_query.group_topk_,
+                                  group_by_query.group_count_));
+    if (!query_info) {
+      return tl::make_unexpected(query_info.error());
+    }
+    query_infos.emplace_back(std::move(query_info.value()));
+  }
   auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
     return tl::make_unexpected(Status::InternalError(
         "Execute plan failed (group_by): ", reader.error().c_str()));
   }
-  return fill_group_by_result(*query_info.value(), reader.value().get());
+  return fill_group_by_result(*group_by_query_info, reader.value().get());
 }
 
 Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(

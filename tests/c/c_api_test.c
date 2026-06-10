@@ -4366,49 +4366,6 @@ void test_fts_end_to_end(void) {
   TEST_END();
 }
 
-void test_reranker_functions(void) {
-  TEST_START();
-
-  // Test 1: Create RRF reranker
-  zvec_reranker_t *rrf = zvec_reranker_create_rrf(60);
-  TEST_ASSERT(rrf != NULL);
-  if (rrf) {
-    TEST_ASSERT(zvec_reranker_get_rank_constant(rrf) == 60);
-    zvec_reranker_destroy(rrf);
-  }
-
-  // Test 2: Create RRF reranker with different rank constant
-  zvec_reranker_t *rrf2 = zvec_reranker_create_rrf(100);
-  TEST_ASSERT(rrf2 != NULL);
-  if (rrf2) {
-    TEST_ASSERT(zvec_reranker_get_rank_constant(rrf2) == 100);
-    zvec_reranker_destroy(rrf2);
-  }
-
-  // Test 3: Create Weighted reranker
-  const char *fields[] = {"embedding1", "embedding2"};
-  double weights[] = {0.7, 0.3};
-  zvec_reranker_t *weighted = zvec_reranker_create_weighted(fields, weights, 2);
-  TEST_ASSERT(weighted != NULL);
-  if (weighted) {
-    TEST_ASSERT(zvec_reranker_get_rank_constant(weighted) == -1);
-    zvec_reranker_destroy(weighted);
-  }
-
-  // Test 4: Create Weighted reranker with no fields
-  zvec_reranker_t *weighted2 = zvec_reranker_create_weighted(NULL, NULL, 0);
-  TEST_ASSERT(weighted2 != NULL);
-  if (weighted2) {
-    zvec_reranker_destroy(weighted2);
-  }
-
-  // Test 5: NULL reranker operations
-  TEST_ASSERT(zvec_reranker_get_rank_constant(NULL) == -1);
-  zvec_reranker_destroy(NULL);  // Should not crash
-
-  TEST_END();
-}
-
 // ==================== Multi-query reranker test helpers ====================
 
 typedef struct {
@@ -4481,9 +4438,14 @@ static void teardown_multi_query_fixture(multi_query_fixture_t *f) {
   cleanup_temp_directory(f->temp_dir);
 }
 
-static int execute_multi_query_with_reranker(const multi_query_fixture_t *f,
-                                             zvec_reranker_t *reranker,
-                                             int topk, int num_candidates) {
+typedef enum {
+  MQ_RERANK_RRF,
+  MQ_RERANK_WEIGHTED,
+} mq_rerank_kind_t;
+
+static int execute_multi_query_with_rerank(
+    const multi_query_fixture_t *f, mq_rerank_kind_t kind, int rank_constant,
+    const double *weights, size_t weight_count, int topk, int num_candidates) {
   zvec_multi_query_t *mvq = zvec_multi_query_create();
   if (!mvq) return -1;
   zvec_multi_query_set_topk(mvq, topk);
@@ -4501,7 +4463,11 @@ static int execute_multi_query_with_reranker(const multi_query_fixture_t *f,
   zvec_sub_query_set_num_candidates(vq2, num_candidates);
   zvec_multi_query_add_sub_query(mvq, vq2);
 
-  zvec_multi_query_set_reranker(mvq, reranker);
+  if (kind == MQ_RERANK_WEIGHTED) {
+    zvec_multi_query_set_rerank_weighted(mvq, weights, weight_count);
+  } else {
+    zvec_multi_query_set_rerank_rrf(mvq, rank_constant);
+  }
 
   zvec_doc_t **results = NULL;
   size_t result_count = 0;
@@ -4528,14 +4494,10 @@ void test_multi_vector_query_with_rrf_reranker(void) {
   multi_query_fixture_t f;
   TEST_ASSERT(setup_multi_query_fixture(&f, "zvec_test_mq_rrf", "mq_rrf"));
 
-  zvec_reranker_t *rrf = zvec_reranker_create_rrf(60);
-  TEST_ASSERT(rrf != NULL);
-
-  int count = execute_multi_query_with_reranker(&f, rrf, 3, 3);
+  int count =
+      execute_multi_query_with_rerank(&f, MQ_RERANK_RRF, 60, NULL, 0, 3, 3);
   TEST_ASSERT(count > 0);
   TEST_ASSERT(count <= 3);
-
-  zvec_reranker_destroy(rrf);
 
   // MultiQuery property setters/getters
   zvec_multi_query_t *mvq2 = zvec_multi_query_create();
@@ -4589,16 +4551,13 @@ void test_multi_vector_query_with_weighted_reranker(void) {
   TEST_ASSERT(
       setup_multi_query_fixture(&f, "zvec_test_mq_weighted", "mq_weighted"));
 
-  const char *fields[] = {"embedding1", "embedding2"};
   double weights[] = {0.7, 0.3};
-  zvec_reranker_t *weighted = zvec_reranker_create_weighted(fields, weights, 2);
-  TEST_ASSERT(weighted != NULL);
 
-  int count = execute_multi_query_with_reranker(&f, weighted, 3, 3);
+  int count = execute_multi_query_with_rerank(&f, MQ_RERANK_WEIGHTED, 0,
+                                              weights, 2, 3, 3);
   TEST_ASSERT(count > 0);
   TEST_ASSERT(count <= 3);
 
-  zvec_reranker_destroy(weighted);
   teardown_multi_query_fixture(&f);
 
   TEST_END();
@@ -5932,7 +5891,6 @@ int main(void) {
   test_fts_wiring_on_vector_query();
   test_fts_end_to_end();
 
-  test_reranker_functions();
   test_multi_vector_query_with_rrf_reranker();
   test_multi_vector_query_with_weighted_reranker();
   // Performance tests

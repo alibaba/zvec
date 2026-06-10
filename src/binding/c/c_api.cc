@@ -5622,53 +5622,31 @@ zvec_error_code_t zvec_group_by_vector_query_set_flat_params(
 // Reranker Implementation
 // =============================================================================
 
-zvec_reranker_t *zvec_reranker_create_rrf(int rank_constant) {
-  ZVEC_TRY_RETURN_NULL("Failed to create RRF Reranker",
-                       auto *reranker =
-                           new zvec::Reranker::Ptr(
-                               std::make_shared<zvec::RrfReranker>(
-                                   rank_constant));
-                       return reinterpret_cast<zvec_reranker_t *>(reranker);)
-  return nullptr;
-}
-
-zvec_reranker_t *zvec_reranker_create_weighted(const char **fields,
-                                               const double *weights,
-                                               size_t field_count) {
-  if ((!fields || !weights) && field_count > 0) {
-    set_last_error(
-        "Fields and weights pointers cannot be null when field_count > 0");
-    return nullptr;
+zvec_error_code_t zvec_multi_query_set_rerank_rrf(
+    zvec_multi_query_t *query, int rank_constant) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-
-  ZVEC_TRY_RETURN_NULL(
-      "Failed to create Weighted Reranker",
-      std::map<std::string, double> weight_map;
-      for (size_t i = 0; i < field_count; ++i) {
-        if (!fields[i]) {
-          set_last_error("Null field name at index " + std::to_string(i));
-          return nullptr;
-        }
-        weight_map[fields[i]] = weights[i];
-      }
-
-      auto *reranker = new zvec::Reranker::Ptr(
-          std::make_shared<zvec::WeightedReranker>(weight_map));
-      return reinterpret_cast<zvec_reranker_t *>(reranker);)
-  return nullptr;
+  auto *mq = reinterpret_cast<zvec::MultiQuery *>(query);
+  mq->rerank = zvec::reranker::RrfParams{rank_constant};
+  return ZVEC_OK;
 }
 
-void zvec_reranker_destroy(zvec_reranker_t *reranker) {
-  if (reranker) {
-    delete reinterpret_cast<zvec::Reranker::Ptr *>(reranker);
+zvec_error_code_t zvec_multi_query_set_rerank_weighted(
+    zvec_multi_query_t *query, const double *weights, size_t weight_count) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-}
-
-int zvec_reranker_get_rank_constant(const zvec_reranker_t *reranker) {
-  if (!reranker) return -1;
-  auto *ptr = reinterpret_cast<const zvec::Reranker::Ptr *>(reranker);
-  auto *rrf = dynamic_cast<const zvec::RrfReranker *>(ptr->get());
-  return rrf ? rrf->rank_constant() : -1;
+  if (!weights && weight_count > 0) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Weights pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *mq = reinterpret_cast<zvec::MultiQuery *>(query);
+  mq->rerank = zvec::reranker::WeightedParams{
+      std::vector<double>(weights, weights + weight_count)};
+  return ZVEC_OK;
 }
 
 // =============================================================================
@@ -5818,22 +5796,6 @@ zvec_error_code_t zvec_multi_query_get_output_fields(
   for (size_t i = 0; i < *count; ++i) {
     (*fields)[i] = field_vec[i].c_str();
   }
-
-  return ZVEC_OK;
-}
-
-zvec_error_code_t zvec_multi_query_set_reranker(
-    zvec_multi_query_t *query, zvec_reranker_t *reranker) {
-  if (!query || !reranker) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Query or reranker pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-
-  auto *mvq = reinterpret_cast<zvec::MultiQuery *>(query);
-  auto *reranker_ptr =
-      reinterpret_cast<zvec::Reranker::Ptr *>(reranker);
-  mvq->reranker = *reranker_ptr;
 
   return ZVEC_OK;
 }

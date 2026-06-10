@@ -33,5 +33,8 @@ constexpr static bool kDefaultVamanaSaturateGraph = false;
 constexpr const uint32_t kDefaultRabitqTotalBits = 7;
 constexpr const uint32_t kDefaultRabitqNumClusters = 16;
 
+constexpr const uint32_t kDefaultDiskAnnMaxDegree = 100;
+constexpr const uint32_t kDefaultDiskAnnListSize = 200;
+constexpr const uint32_t kDefaultDiskAnnPqChunkNum = 16;
 
 }  // namespace zvec::core_interface

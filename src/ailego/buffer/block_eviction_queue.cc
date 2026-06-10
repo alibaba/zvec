@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <zvec/ailego/buffer/parquet_hash_table.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_logger.h>
+
+#ifndef ZVEC_CORE_ONLY
+#include <zvec/ailego/buffer/parquet_hash_table.h>
+#endif
 
 namespace zvec {
 namespace ailego {
@@ -57,11 +60,15 @@ bool BlockEvictionQueue::evict_block(BlockType &item) {
       return false;
     }
     if (item.page_table == nullptr) {
+#ifndef ZVEC_CORE_ONLY
       if (!ParquetBufferPool::get_instance().is_dead_node(item)) {
         break;
       } else {
         continue;
       }
+#else
+      continue;
+#endif
     }
   } while (!is_valid_and_alive(item));
   return ok;
@@ -76,8 +83,10 @@ void BlockEvictionQueue::recycle() {
           valid_page_tables_.end()) {
         item.page_table->evict_block(item.vector_block.first);
       }
+#ifndef ZVEC_CORE_ONLY
     } else {
       ParquetBufferPool::get_instance().evict(item.parquet_buffer_block.first);
+#endif
     }
   }
 }

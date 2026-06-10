@@ -14,6 +14,8 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
+#include "utility/block_heap.h"
+#include "utility/linear_pool.h"
 #include "utility/visit_filter.h"
 #include "vamana_dist_calculator.h"
 #include "vamana_entity.h"
@@ -119,6 +121,14 @@ class VamanaContext : public IndexContext {
   inline TopkHeap &update_heap() {
     return update_heap_;
   }
+  inline LinearPool<dist_t> &pool() {
+    return pool_;
+  }
+  // Block-insert pool used by the AVX2-gated greedy_search fast path.
+  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
+  inline BlockHeap &block_pool() {
+    return block_pool_;
+  }
   inline VisitFilter &visit_filter() {
     return visit_filter_;
   }
@@ -147,6 +157,14 @@ class VamanaContext : public IndexContext {
   }
   inline std::vector<uint32_t> &batch_indices_buf() {
     return batch_indices_buf_;
+  }
+
+  //! Build-time distance offset cached from the metric. Used by RobustPrune
+  //! to shift the internal distance to a non-negative range before computing
+  //! the ratio-based occlude_factor. Zero for metrics whose internal distance
+  //! is already non-negative (e.g. SquaredEuclidean).
+  inline float build_distance_offset() const {
+    return build_distance_offset_;
   }
 
   inline void set_max_scan_num(uint32_t max_scan_num) {
@@ -248,12 +266,6 @@ class VamanaContext : public IndexContext {
     return topk_;
   }
 
-  inline void update_dist_caculator_distance(
-      const IndexMetric::MatrixDistance &distance,
-      const IndexMetric::MatrixBatchDistance &batch_distance) {
-    dc_.update_distance(distance, batch_distance);
-  }
-
  private:
   void fill_random_to_topk_full(void);
 
@@ -307,8 +319,14 @@ class VamanaContext : public IndexContext {
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
 
+  //! Cached build-time distance offset (see build_distance_offset()).
+  float build_distance_offset_{0.0f};
+
   VisitFilter::Mode filter_mode_{VisitFilter::ByteMap};
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
+
+  LinearPool<dist_t> pool_;
+  BlockHeap block_pool_;
 };
 
 }  // namespace core

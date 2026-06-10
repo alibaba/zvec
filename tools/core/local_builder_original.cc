@@ -123,7 +123,7 @@ int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
   RabitqConverter rabitq_converter;
   ailego::Params rabitq_converter_params;
   if (config_root["RabitqConverterParams"] &&
-      !prepare_params(std::move(config_root["RabitqConverterParams"]),
+      !prepare_params(config_root["RabitqConverterParams"],
                       rabitq_converter_params)) {
     cerr << "Failed to prepare rabitq converter params" << endl;
     return -1;
