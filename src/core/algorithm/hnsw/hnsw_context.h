@@ -124,14 +124,14 @@ class HnswContext : public IndexContext {
   //! Bind an external vector source to this context. It is stored so that it
   //! can be re-applied after the entity is re-cloned inside update_context,
   //! and immediately forwarded to the current entity clone.
-  inline void set_vector_source(const HnswVectorSource *src) {
+  inline void set_vector_source(const VectorSource *src) {
     vector_source_ = src;
     if (entity_) {
       entity_->set_vector_source(src);
     }
   }
 
-  inline const HnswVectorSource *vector_source() const {
+  inline const VectorSource *vector_source() const {
     return vector_source_;
   }
 
@@ -372,6 +372,7 @@ class HnswContext : public IndexContext {
     set_fetch_vector(false);
     set_group_params(0, 0);
     reset_group_by();
+    set_vector_source(nullptr);
   }
 
   inline std::map<std::string, TopkHeap> &group_topk_heaps() {
@@ -526,7 +527,7 @@ class HnswContext : public IndexContext {
   HnswEntity::Pointer entity_;
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
-  const HnswVectorSource *vector_source_{nullptr};
+  const VectorSource *vector_source_{nullptr};
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};

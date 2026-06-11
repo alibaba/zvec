@@ -120,18 +120,18 @@ class HnswStreamer : public IndexStreamer {
   //! the entire duration of the call.
   int add_with_source(uint64_t pkey, const void *query,
                       const IndexQueryMeta &qmeta, Context::Pointer &context,
-                      const HnswVectorSource &src);
+                      const VectorSource &src);
 
   //! Add a vector with explicit id while binding an external vector source.
   int add_with_id_and_source(uint32_t id, const void *query,
                              const IndexQueryMeta &qmeta,
                              Context::Pointer &context,
-                             const HnswVectorSource &src);
+                             const VectorSource &src);
 
   //! Similarity search while binding an external vector source for this call.
   int search_with_source(const void *query, const IndexQueryMeta &qmeta,
                          uint32_t count, Context::Pointer &context,
-                         const HnswVectorSource &src) const;
+                         const VectorSource &src) const;
 
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;

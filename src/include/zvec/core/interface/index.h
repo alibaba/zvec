@@ -30,8 +30,8 @@
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
-#include <zvec/core/interface/hnsw_vector_source.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/vector_source.h>
 #include "zvec/core/framework/index_provider.h"
 
 namespace zvec::core_interface {
@@ -127,11 +127,18 @@ class Index {
   // TODO: static reduce
 
   virtual int Add(const VectorData &vector, uint32_t doc_id);
+
   virtual int Fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
   virtual int Search(const VectorData &query,
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
+
+  virtual int Add(const VectorData &vector, uint32_t doc_id,
+                  const core::VectorSource *src);
+  virtual int Search(const VectorData &query,
+                     const BaseIndexQueryParam::Pointer &search_param,
+                     SearchResult *result, const core::VectorSource *src);
 
   virtual BaseIndexParam::Pointer GetParam() const {
     return std::make_shared<BaseIndexParam>(param_);
@@ -292,17 +299,11 @@ class HNSWIndex : public Index {
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
 
-  //! Bind an external vector source used by the "external" storage mode.
-  //! The caller implements core::HnswVectorSource (declared in the shared
-  //! header <zvec/core/interface/hnsw_vector_source.h>) to map a node_id to the
-  //! vector address it owns; the data is provided by the caller instead of
-  //! being stored inside the index. The source must stay valid for the whole
-  //! lifetime of any add/search call that uses it. Passing nullptr disables
-  //! injection. Expected to be configured once after Open() and before
-  //! concurrent add/search operations.
-  void SetVectorSource(const core::HnswVectorSource *src);
-
-  int Add(const VectorData &vector, uint32_t doc_id) override;
+  int Add(const VectorData &vector, uint32_t doc_id,
+          const core::VectorSource *src) override;
+  int Search(const VectorData &query,
+             const BaseIndexQueryParam::Pointer &search_param,
+             SearchResult *result, const core::VectorSource *src) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
@@ -315,10 +316,6 @@ class HNSWIndex : public Index {
 
  private:
   HNSWIndexParam param_{};
-  // Caller-provided external vector source, injected into the HnswContext
-  // before each add/search call (search injects in _prepare_for_search and
-  // consumes it later in _dense_search). The caller owns its lifetime.
-  const core::HnswVectorSource *vector_source_{nullptr};
 };
 
 class VamanaIndex : public Index {

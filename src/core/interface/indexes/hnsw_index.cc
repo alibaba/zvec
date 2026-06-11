@@ -23,10 +23,6 @@
 
 namespace zvec::core_interface {
 
-void HNSWIndex::SetVectorSource(const core::HnswVectorSource *src) {
-  vector_source_ = src;
-}
-
 std::string HNSWIndex::storage_mode() const {
   if (!streamer_) {
     return "";
@@ -49,21 +45,31 @@ std::string HNSWIndex::storage_mode() const {
   return "";
 }
 
-int HNSWIndex::Add(const VectorData &vector_data, const uint32_t doc_id) {
-  // For the "external" storage mode the vector data is owned by the caller and
-  // exposed through a HnswVectorSource. Inject it into the context before the
-  // base class delegates to the streamer's add path, so the external entity can
-  // resolve neighbor vectors during graph construction. acquire_context() is
-  // idempotent and returns the same context the base Add() will reuse.
-  if (vector_source_) {
+int HNSWIndex::Add(const VectorData &vector_data, const uint32_t doc_id,
+                   const core::VectorSource *src) {
+  if (src) {
     auto &context = acquire_context();
     if (context) {
       if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
-        ctx->set_vector_source(vector_source_);
+        ctx->set_vector_source(src);
       }
     }
   }
   return Index::Add(vector_data, doc_id);
+}
+
+int HNSWIndex::Search(const VectorData &query,
+                      const BaseIndexQueryParam::Pointer &search_param,
+                      SearchResult *result, const core::VectorSource *src) {
+  if (src) {
+    auto &context = acquire_context();
+    if (context) {
+      if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+        ctx->set_vector_source(src);
+      }
+    }
+  }
+  return Index::Search(query, search_param, result);
 }
 
 int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
@@ -153,14 +159,6 @@ int HNSWIndex::_prepare_for_search(
       std::max(1u, std::min(2048u, hnsw_search_param->ef_search));
   params.set(core::PARAM_HNSW_STREAMER_EF, real_search_ef);
   context->update(params);
-
-  // Inject the external vector source (if any) so the "external" storage mode
-  // can resolve vectors during search. Harmless no-op for other modes.
-  if (vector_source_) {
-    if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
-      ctx->set_vector_source(vector_source_);
-    }
-  }
   return 0;
 }
 

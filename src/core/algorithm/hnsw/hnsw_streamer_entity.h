@@ -1111,7 +1111,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
 //! after the key, node_size == AlignSize(sizeof(key) + neighbor_size)) become
 //! automatically correct, and base add_vector writes a zero-byte vector (i.e.
 //! it skips vector storage). Vectors are instead read through the bound
-//! HnswVectorSource, which is supplied per add/search call.
+//! VectorSource, which is supplied per add/search call.
 class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
  public:
   using MemoryBlock = MmapMemoryBlock;
@@ -1130,7 +1130,7 @@ class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
   const HnswEntity::Pointer clone() const override;
 
   //! Bind the external vector source for the current add/search call.
-  void set_vector_source(const HnswVectorSource *src) override {
+  void set_vector_source(const VectorSource *src) override {
     vec_src_ = src;
   }
 
@@ -1186,7 +1186,7 @@ class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
  private:
   //! Transient, per-call vector source. Never shared across clones; bound by
   //! HnswContext::set_vector_source before each add/search.
-  const HnswVectorSource *vec_src_{nullptr};
+  const VectorSource *vec_src_{nullptr};
 };
 
 }  // namespace core

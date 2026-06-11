@@ -419,6 +419,16 @@ int Index::Add(const VectorData &vector_data, const uint32_t doc_id) {
   return ret;
 }
 
+int Index::Add(const VectorData &vector, uint32_t doc_id,
+               const core::VectorSource * /*src*/) {
+  return Add(vector, doc_id);
+}
+
+int Index::Search(const VectorData &query,
+                  const BaseIndexQueryParam::Pointer &search_param,
+                  SearchResult *result, const core::VectorSource * /*src*/) {
+  return Search(query, search_param, result);
+}
 
 int Index::Search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,

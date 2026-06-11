@@ -699,7 +699,7 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int HnswStreamer::add_with_source(uint64_t pkey, const void *query,
                                  const IndexQueryMeta &qmeta,
                                  Context::Pointer &context,
-                                 const HnswVectorSource &src) {
+                                 const VectorSource &src) {
   HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
   ailego_do_if_false(ctx) {
     LOG_ERROR("Cast context to HnswContext failed");
@@ -714,7 +714,7 @@ int HnswStreamer::add_with_source(uint64_t pkey, const void *query,
 int HnswStreamer::add_with_id_and_source(uint32_t id, const void *query,
                                          const IndexQueryMeta &qmeta,
                                          Context::Pointer &context,
-                                         const HnswVectorSource &src) {
+                                         const VectorSource &src) {
   HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
   ailego_do_if_false(ctx) {
     LOG_ERROR("Cast context to HnswContext failed");
@@ -727,7 +727,7 @@ int HnswStreamer::add_with_id_and_source(uint32_t id, const void *query,
 int HnswStreamer::search_with_source(const void *query,
                                      const IndexQueryMeta &qmeta,
                                      uint32_t count, Context::Pointer &context,
-                                     const HnswVectorSource &src) const {
+                                     const VectorSource &src) const {
   HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
   ailego_do_if_false(ctx) {
     LOG_ERROR("Cast context to HnswContext failed");
