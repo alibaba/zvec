@@ -87,6 +87,10 @@ ailego::JsonObject HNSWIndexParam::SerializeToJsonObject(
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
   }
+  if (!omit_empty_value || use_external_vector) {
+    json_obj.set("use_external_vector",
+                 ailego::JsonValue(use_external_vector));
+  }
   return json_obj;
 }
 
@@ -142,6 +146,7 @@ bool HNSWIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, m);
   DESERIALIZE_VALUE_FIELD(json_obj, ef_construction);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_external_vector);
 
   return true;
 }

@@ -319,6 +319,7 @@ struct HNSWIndexParam : public BaseIndexParam {
   int m = kDefaultHnswNeighborCnt;
   int ef_construction = kDefaultHnswEfConstruction;
   bool use_contiguous_memory = false;
+  bool use_external_vector = false;
 
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}

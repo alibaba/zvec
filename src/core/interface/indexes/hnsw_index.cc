@@ -111,6 +111,8 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                               param_.use_id_map);
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
                               param_.use_contiguous_memory);
+    proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
+                              param_.use_external_vector);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
   }
 
