@@ -271,6 +271,14 @@ int DiskAnnIndex::_prepare_for_search(
 
   context->set_topk(diskann_search_param->topk);
 
+  // Propagate the query-time beam-search list size into the context. Must be
+  // at least topk to keep enough candidates for a correct result.
+  ailego::Params params;
+  params.set(
+      core::PARAM_DISKANN_SEARCHER_LIST_SIZE,
+      std::max(diskann_search_param->topk, diskann_search_param->list_size));
+  context->update(params);
+
   return 0;
 }
 
