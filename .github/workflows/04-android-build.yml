@@ -89,6 +89,9 @@ jobs:
             export CCACHE_NOHASHDIR=1
             export CCACHE_SLOPPINESS=clang_index_store,file_stat_matches,include_file_mtime,locale,time_macros
 
+            # Build protoc for host architecture (needed for Android cross-compilation)
+            # Android cross-compilation requires a native protoc binary to generate
+            # .pb.cc/.pb.h files from .proto files during the build process
             cmake -S . -B build_host \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_TOOLCHAIN_FILE="" \

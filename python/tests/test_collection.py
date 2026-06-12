@@ -50,12 +50,18 @@ OMEGA_ENABLED = os.environ.get("ZVEC_ENABLE_OMEGA", "1").lower() not in {
     "no",
 }
 OMEGA_AVAILABLE = OMEGA_ENABLED and not IS_ANDROID
-OMEGA_ANDROID_SKIP = pytest.mark.skipif(
+# Decorator to skip tests when OMEGA is not available (disabled or on Android)
+OMEGA_TEST_SKIP = pytest.mark.skipif(
     not OMEGA_AVAILABLE, reason="OMEGA is disabled on this build/platform"
 )
 
 
 def _require_omega() -> None:
+    """Runtime check to skip test if OMEGA is not available.
+
+    Use OMEGA_TEST_SKIP decorator for declarative skipping, or call this
+    function for runtime conditional skipping within a test.
+    """
     if not OMEGA_AVAILABLE:
         pytest.skip("OMEGA is disabled on this build/platform")
 
@@ -1125,7 +1131,7 @@ class TestCollectionQuery:
         )
         assert len(result) == 10
 
-    @OMEGA_ANDROID_SKIP
+    @OMEGA_TEST_SKIP
     def test_omega_collection_schema_uses_omega_index(
         self, omega_test_collection: Collection
     ):
@@ -1133,7 +1139,7 @@ class TestCollectionQuery:
         assert vector_schema is not None
         assert vector_schema.index_param.type == IndexType.OMEGA
 
-    @OMEGA_ANDROID_SKIP
+    @OMEGA_TEST_SKIP
     def test_omega_collection_query_by_id_with_omega_param(
         self, omega_test_collection: Collection, omega_multiple_docs
     ):
@@ -1153,7 +1159,7 @@ class TestCollectionQuery:
         assert len(query_result) > 0
         assert query_result[0].id == omega_multiple_docs[0].id
 
-    @OMEGA_ANDROID_SKIP
+    @OMEGA_TEST_SKIP
     def test_omega_workflow_optimize_trains_model_and_query_runs(
         self, tmp_path_factory, collection_option, omega_workflow_docs
     ):
@@ -1201,7 +1207,7 @@ class TestCollectionQuery:
         finally:
             omega_collection.destroy()
 
-    @OMEGA_ANDROID_SKIP
+    @OMEGA_TEST_SKIP
     def test_omega_query_falls_back_to_hnsw_when_model_not_trained(
         self, tmp_path_factory, collection_option, omega_workflow_docs
     ):
