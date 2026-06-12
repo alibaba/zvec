@@ -53,7 +53,6 @@ cc_library(
     NAME zvec_core STATIC STRICT PACKED
     SRCS ${ALL_CORE_SRCS}
     LIBS ${CORE_LIBS}
-    LIBS ${CORE_LIBS}
     INCS . ${PROJECT_ROOT_DIR}/src/core
     VERSION "${GIT_SRCS_VER}"
 )

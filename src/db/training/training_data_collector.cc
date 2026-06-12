@@ -870,6 +870,10 @@ TrainingDataCollector::CollectTrainingDataWithGtCmps(
     ScopedTimer timer("Step1: GenerateHeldOutQueries");
     auto sampled = TrainingQueryGenerator::GenerateHeldOutQueries(
         segment, field_name, options.num_training_queries, options.seed);
+    if (sampled.vectors.empty()) {
+      return tl::unexpected(Status::InternalError(
+          "Failed to generate held-out queries for training"));
+    }
     training_queries = std::move(sampled.vectors);
     query_doc_ids = std::move(sampled.doc_ids);
   }

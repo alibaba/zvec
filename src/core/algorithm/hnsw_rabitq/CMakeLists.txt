@@ -11,6 +11,8 @@ if(AUTO_DETECT_ARCH)
   endforeach()
 endif()
 
+# Exclude Arrow/Parquet static library symbols from exported symbols on Linux
+# to avoid potential symbol conflicts when multiple libraries link against Arrow
 if(NOT APPLE)
   set(CORE_KNN_HNSW_RABITQ_LDFLAGS
       "-Wl,--exclude-libs,libparquet.a:libarrow.a:libarrow_bundled_dependencies.a")
@@ -20,6 +22,8 @@ cc_library(
     NAME core_knn_hnsw_rabitq
     STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
+    # core_utility: provides ScopedTimer and other utilities
+    # core_knn_cluster: provides k-means clustering for RaBitQ quantization
     LIBS core_framework core_utility core_knn_cluster rabitqlib sparsehash
     INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
     LDFLAGS "${CORE_KNN_HNSW_RABITQ_LDFLAGS}"

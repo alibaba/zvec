@@ -4072,28 +4072,23 @@ Status SegmentImpl::load_scalar_index_blocks(bool create) {
 }
 
 Status SegmentImpl::load_vector_index_blocks() {
-  int block_index = 0;
   for (const auto &block : segment_meta_->persisted_blocks()) {
     if (block.type() == BlockType::VECTOR_INDEX ||
         block.type() == BlockType::VECTOR_INDEX_QUANTIZE) {
       // vector block only contained 1 column
       auto column = block.columns()[0];
 
-
       FieldSchema new_field_params =
           *collection_schema_->get_vector_field(column);
 
-
       auto vector_index_params = std::dynamic_pointer_cast<VectorIndexParams>(
           new_field_params.index_params());
-
 
       if (block.type_ == BlockType::VECTOR_INDEX) {
         if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED ||
             !segment_meta_->vector_indexed(column)) {
           new_field_params.set_index_params(
               MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
-        } else {
         }
       } else {
         if (!segment_meta_->vector_indexed(column)) {
