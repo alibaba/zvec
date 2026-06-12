@@ -94,11 +94,11 @@ struct HNSWSparseHeader {
   }
 
   HNSWSparseHeader(const HNSWSparseHeader &header) {
-    memcpy(this, &header, sizeof(header));
+    memcpy(static_cast<void *>(this), &header, sizeof(header));
   }
 
   HNSWSparseHeader &operator=(const HNSWSparseHeader &header) {
-    memcpy(this, &header, sizeof(header));
+    memcpy(static_cast<void *>(this), &header, sizeof(header));
     return *this;
   }
 
@@ -112,7 +112,7 @@ struct HNSWSparseHeader {
 
   //! Clear all fields to init value
   void inline clear() {
-    memset(this, 0, sizeof(HNSWSparseHeader));
+    memset(static_cast<void *>(this), 0, sizeof(HNSWSparseHeader));
     hnsw.entry_point = kInvalidNodeId;
     graph.size = sizeof(SparseGraphHeader);
     hnsw.size = sizeof(HnswSparseHeader);

@@ -101,6 +101,9 @@ if(MSVC)
             -DBUILD_STATIC_LIBS=ON
             -DLZ4_BUILD_CLI=OFF
             -DLZ4_BUILD_LEGACY_LZ4C=OFF
+            -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
             BUILD_COMMAND "${CMAKE_COMMAND}" --build . --config $<CONFIG> -j
             INSTALL_COMMAND "${CMAKE_COMMAND}" --install . --config $<CONFIG>
             BUILD_IN_SOURCE OFF

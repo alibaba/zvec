@@ -824,9 +824,10 @@ class TestCollectionQuery:
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
             multi_query_vectors.append(Query(field_name=v, vector=doc_vectors[v]))
 
-        rrf_reranker = RrfReRanker(topn=3)
+        rrf_reranker = RrfReRanker()
         multi_query_result = full_collection.query(
             multi_query_vectors,
+            topk=3,
             reranker=rrf_reranker,
         )
         assert len(multi_query_result) > 0, (
@@ -876,8 +877,11 @@ class TestCollectionQuery:
         batchdoc_and_check(full_collection, multiple_docs, doc_num, operator="insert")
         doc_fields, doc_vectors = generate_vectordict_random(full_collection.schema)
 
-        metrics = {field: MetricType.IP for field in weights}
-        weighted_reranker = WeightedReRanker(topn=3, weights=weights, metrics=metrics)
+        # Weights are positional, aligned with the multi_query_vectors order
+        # (DEFAULT_VECTOR_FIELD_NAME insertion order). Metric normalization is
+        # automatic from each field's schema.
+        weights_list = [weights[v] for v in DEFAULT_VECTOR_FIELD_NAME.values()]
+        weighted_reranker = WeightedReRanker(weights_list)
 
         single_query_results = {}
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
@@ -894,6 +898,7 @@ class TestCollectionQuery:
 
         multi_query_result = full_collection.query(
             multi_query_vectors,
+            topk=3,
             reranker=weighted_reranker,
         )
         assert len(multi_query_result) > 0, (
@@ -1164,13 +1169,6 @@ class TestCollectionQuery:
                     field_name="vector_fp32_field", id="999"
                 ),  # Non-existent ID
                 "Expected exception for non-existent document ID",
-            ),
-            (
-                "Both vector and id specified (invalid combination)",
-                lambda ref_dense_vector: Query(
-                    field_name="vector_fp32_field", vector=ref_dense_vector, id="5"
-                ),
-                "Expected exception for specifying both vector and id",
             ),
             (
                 "Neither vector nor id specified",

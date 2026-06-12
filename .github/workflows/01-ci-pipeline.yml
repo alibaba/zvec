@@ -53,6 +53,7 @@ jobs:
 
   # Main build and test matrix
   build-and-test-macos-arm64:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (macos-arm64)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/03-macos-linux-build.yml
@@ -61,6 +62,7 @@ jobs:
       os: macos-15
 
   build-and-test-macos-26-arm64:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (macos-26-arm64)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/03-macos-linux-build.yml
@@ -69,6 +71,7 @@ jobs:
       os: macos-26
 
   build-and-test-linux-arm64:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (linux-arm64)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/03-macos-linux-build.yml
@@ -85,6 +88,7 @@ jobs:
       os: ubuntu-24.04
 
   build-and-test-linux-x64-clang:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (linux-x64-clang)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/03-macos-linux-build.yml
@@ -94,16 +98,19 @@ jobs:
       compiler: clang
 
   build-android:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (android)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/04-android-build.yml
 
   build-and-test-on-windows:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (Windows)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/05-windows-build.yml
 
   build-ios:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     name: Build & Test (iOS)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/06-ios-build.yml

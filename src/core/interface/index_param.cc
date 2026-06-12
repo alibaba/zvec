@@ -199,6 +199,26 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
+bool DiskAnnIndexParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kDiskAnn) {
+    LOG_ERROR("index_type is not DiskAnn");
+    return false;
+  }
+
+  return true;
+}
+
+ailego::JsonObject DiskAnnIndexParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  return json_obj;
+}
+
 bool VamanaIndexParam::DeserializeFromJsonObject(
     const ailego::JsonObject &json_obj) {
   if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {

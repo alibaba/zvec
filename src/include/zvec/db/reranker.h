@@ -14,122 +14,62 @@
 #pragma once
 
 #include <functional>
-#include <map>
-#include <memory>
-#include <string>
+#include <variant>
+#include <vector>
 #include <zvec/db/doc.h>
 #include <zvec/db/schema.h>
-#include <zvec/db/type.h>
-#include "zvec/db/status.h"
+#include <zvec/db/status.h>
 
 namespace zvec {
+namespace reranker {
 
-//! Reranker abstract base class for re-ranking search results
-class Reranker {
- public:
-  using Ptr = std::shared_ptr<Reranker>;
+// ===========================================================================
+// Rerank parameter types (stateless, value semantics)
+// ===========================================================================
 
-  Reranker() = default;
-  virtual ~Reranker() = default;
-
-  virtual void bind_schema(CollectionSchema::Ptr) {}
-
-  //! Re-rank documents from one or more vector queries.
-  //! \param query_results Mapping from vector field name to list of retrieved
-  //!   documents (sorted by relevance).
-  //! \param topn Maximum number of documents to return.
-  //! \return Re-ranked list of documents (length <= topn), with updated scores.
-  virtual Result<DocPtrList> rerank(
-      const std::map<std::string, DocPtrList> &query_results,
-      int topn = 10) const = 0;
+/// RRF (Reciprocal Rank Fusion) parameters.
+/// Score formula: 1 / (rank_constant + rank + 1)
+struct RrfParams {
+  int rank_constant = 60;
 };
 
-//! Intermediate base for rerankers that compute per-document scores.
-//!
-//! Implements the common rerank() logic: iterate docs, call rescore() for each,
-//! accumulate scores by doc_id, and return topn results in descending order.
-//! Subclasses only need to implement rescore().
-class ScoreBasedReranker : public Reranker {
- public:
-  //! Compute the contribution score for a single document.
-  //! \param score The document's raw relevance score from the vector field.
-  //! \param rank The document's position (0-based) in the per-field result
-  //! list. \param field_name The name of the vector field this result came
-  //! from. \return The score contribution to be accumulated for this document.
-  virtual Result<double> rescore(double score, int rank,
-                                 const std::string &field_name) const = 0;
-
-  Result<DocPtrList> rerank(
-      const std::map<std::string, DocPtrList> &query_results,
-      int topn = 10) const override;
+/// Weighted score fusion parameters.
+/// Each sub-query's score is normalized by metric_type (handled internally),
+/// then multiplied by the corresponding weight.
+struct WeightedParams {
+  std::vector<double> weights;
 };
 
-//! Re-ranker using Reciprocal Rank Fusion (RRF) for multi-vector search.
-//!
-//! RRF combines results from multiple vector queries without requiring
-//! relevance scores. The RRF score for a document at rank r is:
-//!   score = 1 / (k + r + 1)
-//! where k is the rank constant.
-class RrfReranker : public ScoreBasedReranker {
- public:
-  explicit RrfReranker(int rank_constant = 60)
-      : rank_constant_(rank_constant) {}
-
-  int rank_constant() const {
-    return rank_constant_;
-  }
-
-  Result<double> rescore(double score, int rank,
-                         const std::string &field_name) const override;
-
- private:
-  int rank_constant_;
-};
-
-//! Re-ranker that combines scores from multiple vector fields using weights.
-//!
-//! Each vector field's relevance score is normalized based on its own metric
-//! type, then scaled by a user-provided weight. Final scores are summed across
-//! fields. Supported metrics: L2, IP, COSINE.
-class WeightedReranker : public ScoreBasedReranker {
- public:
-  explicit WeightedReranker(const std::map<std::string, double> &weights = {});
-
-  void bind_schema(CollectionSchema::Ptr schema) override;
-
-  const std::map<std::string, double> &weights() const {
-    return weights_;
-  }
-
-  Result<double> rescore(double score, int rank,
-                         const std::string &field_name) const override;
-
- private:
-  static Result<double> normalize_score(double score, const FieldSchema &field);
-
-  CollectionSchema::Ptr schema_;
-  std::map<std::string, double> weights_;
-};
-
-//! Callback-based re-ranker for cross-language bridging.
-//!
-//! Wraps a user-provided callback (e.g., a Python callable) as a Reranker.
-//! When the callback is a Python function, GIL must be managed by the caller.
-class CallbackReranker : public Reranker {
- public:
+/// Custom callback reranker parameters.
+/// The callback receives all sub-query results, field schemas, and topn.
+struct CallbackParams {
   using Callback =
-      std::function<DocPtrList(const std::map<std::string, DocPtrList> &, int)>;
-
-  explicit CallbackReranker(Callback fn) : callback_(std::move(fn)) {}
-
-  Result<DocPtrList> rerank(
-      const std::map<std::string, DocPtrList> &query_results,
-      int topn = 10) const override {
-    return callback_(query_results, topn);
-  }
-
- private:
-  Callback callback_;
+      std::function<DocPtrList(const std::vector<DocPtrList> &,
+                               const std::vector<FieldSchema::Ptr> &, int)>;
+  Callback callback;
 };
 
+/// Type-safe rerank strategy — a tagged union of parameter types.
+/// Defaults to RrfParams (first variant type) — works out of the box.
+using RerankParams = std::variant<RrfParams, WeightedParams, CallbackParams>;
+
+// ===========================================================================
+// Public: Rerank execution API (stateless free function)
+// ===========================================================================
+
+/// Unified rerank entry point.
+/// Dispatches to the appropriate algorithm based on the variant type.
+///
+/// @param params   User-specified rerank params (variant value)
+/// @param results  Per-sub-query document lists (parallel to fields)
+/// @param fields   Per-sub-query FieldSchema::Ptr (for metric_type
+/// normalization)
+/// @param topn     Maximum number of results to return
+/// @return         Re-ranked document list (length <= topn)
+Result<DocPtrList> rerank(const RerankParams &params,
+                          const std::vector<DocPtrList> &results,
+                          const std::vector<FieldSchema::Ptr> &fields,
+                          int topn);
+
+}  // namespace reranker
 }  // namespace zvec

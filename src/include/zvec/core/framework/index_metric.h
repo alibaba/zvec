@@ -137,6 +137,19 @@ struct IndexMetric : public IndexModule {
   virtual DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const {
     return nullptr;
   }
+
+  //! Distance offset applied during graph build to make the internal distance
+  //! non-negative for ratio-based pruning (e.g. Vamana RobustPrune's
+  //! occlude_factor = d(q,c) / d(p,c)). Metrics whose internal distance is a
+  //! well-defined non-negative value (SquaredEuclidean, 1-cos, etc.) should
+  //! leave the default 0. Metrics that internally store a signed quantity
+  //! (e.g. -cos for Cosine / NormalizedCosine on the quantized int8 path)
+  //! should override this to return a constant C such that (internal_dist + C)
+  //! is always non-negative and preserves the ordering of the original
+  //! distance.
+  virtual float build_distance_offset(void) const {
+    return 0.0f;
+  }
 };
 
 }  // namespace core

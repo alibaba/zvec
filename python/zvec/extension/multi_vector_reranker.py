@@ -13,224 +13,179 @@
 # limitations under the License.
 from __future__ import annotations
 
-import heapq
-import math
-from collections import defaultdict
 from collections.abc import Callable
-from typing import Optional
+from typing import TYPE_CHECKING
 
-from _zvec import _CallbackReranker, _RrfReranker, _WeightedReranker
+from _zvec import _CallbackParams, _Doc, _reranker_rerank, _RrfParams, _WeightedParams
 
-from ..model.doc import Doc
-from ..typing import MetricType
+from ..model.doc import Doc, DocList
 from .rerank_function import RerankFunction
+
+if TYPE_CHECKING:
+    from ..model.schema import FieldSchema, VectorSchema
+
+
+def _to_cpp_doc_lists(
+    query_results: list[list[Doc]],
+) -> tuple[list[list], dict[str, Doc]]:
+    """Convert Python Doc lists to C++ _Doc lists for reranker input."""
+    id_to_doc: dict[str, Doc] = {}
+    cpp_results: list[list] = []
+    for query_result in query_results:
+        cpp_list: list = []
+        for doc in query_result:
+            _doc = _Doc()
+            _doc.set_pk(doc.id)
+            _doc.set_score(doc.score if doc.score is not None else 0.0)
+            cpp_list.append(_doc)
+            if doc.id not in id_to_doc:
+                id_to_doc[doc.id] = doc
+        cpp_results.append(cpp_list)
+    return cpp_results, id_to_doc
+
+
+def _from_cpp_docs(cpp_docs: list, id_to_doc: dict[str, Doc]) -> DocList:
+    """Convert C++ rerank result _Doc list back to Python DocList."""
+    results: DocList = []
+    for _doc in cpp_docs:
+        doc_id = _doc.pk()
+        new_score = _doc.score()
+        original = id_to_doc.get(doc_id)
+        if original is not None:
+            results.append(original._replace(score=new_score))
+        else:
+            results.append(Doc(id=doc_id, score=new_score))
+    return results
 
 
 class RrfReRanker(RerankFunction):
     """Re-ranker using Reciprocal Rank Fusion (RRF) for multi-vector search.
 
-    RRF combines results from multiple vector queries without requiring relevance scores.
-    It assigns higher weight to documents that appear early in multiple result lists.
-
-    The RRF score for a document at rank ``r`` is: ``1 / (k + r + 1)``,
-    where ``k`` is the rank constant.
-
-    Note:
-        This re-ranker is specifically designed for multi-vector scenarios where
-        query results from multiple vector fields need to be combined.
+    RRF combines results from multiple vector queries without requiring
+    relevance scores. The RRF score for a document at rank r is:
+        score = 1 / (k + r + 1)
+    where k is the rank constant.
 
     Args:
-        topn (int, optional): Number of top documents to return. Defaults to 10.
-        rerank_field (Optional[str], optional): Ignored by RRF. Defaults to None.
-        rank_constant (int, optional): Smoothing constant ``k`` in RRF formula.
-            Larger values reduce the impact of early ranks. Defaults to 60.
+        rank_constant: RRF smoothing constant (default: 60).
+            Higher values reduce the influence of rank position.
+
+    Example:
+        >>> reranker = RrfReRanker(rank_constant=60)
+        >>> merged = reranker.rerank([results_a, results_b], topn=10)
     """
 
-    def __init__(
-        self,
-        topn: int = 10,
-        rerank_field: Optional[str] = None,
-        rank_constant: int = 60,
-    ):
-        super().__init__(topn=topn, rerank_field=rerank_field)
+    def __init__(self, rank_constant: int = 60):
         self._rank_constant = rank_constant
-        # Use C++ implementation for performance
-        self._cpp_reranker = _RrfReranker(rank_constant)
 
     @property
     def rank_constant(self) -> int:
+        """int: RRF rank constant."""
         return self._rank_constant
 
-    def _get_object(self):
-        """Return the underlying C++ RrfReranker instance."""
-        return self._cpp_reranker
+    def _to_cpp_params(self):
+        return _RrfParams(self._rank_constant)
 
-    def _rrf_score(self, rank: int) -> float:
-        return 1.0 / (self._rank_constant + rank + 1)
-
-    def rerank(self, query_results: dict[str, list[Doc]]) -> list[Doc]:
-        """Apply Reciprocal Rank Fusion to combine multiple query results.
-
-        Args:
-            query_results (dict[str, list[Doc]]): Results from one or more vector queries.
-
-        Returns:
-            list[Doc]: Re-ranked documents with RRF scores in the ``score`` field.
-        """
-        rrf_scores: dict[str, float] = defaultdict(float)
-        id_to_doc: dict[str, Doc] = {}
-
-        for _, query_result in query_results.items():
-            for rank, doc in enumerate(query_result):
-                doc_id = doc.id
-                rrf_score = self._rrf_score(rank)
-                rrf_scores[doc_id] += rrf_score
-                if doc_id not in id_to_doc:
-                    id_to_doc[doc_id] = doc
-
-        top_docs = heapq.nlargest(self.topn, rrf_scores.items(), key=lambda x: x[1])
-        results: list[Doc] = []
-        for doc_id, rrf_score in top_docs:
-            doc = id_to_doc[doc_id]
-            new_doc = doc._replace(score=rrf_score)
-            results.append(new_doc)
-        return results
+    def rerank(
+        self,
+        query_results: list[list[Doc]],
+        topn: int = 10,
+        *,
+        fields: list[FieldSchema | VectorSchema] | None = None,  # noqa: ARG002
+    ) -> DocList:
+        """Apply RRF to combine multiple query results via C++ reranker."""
+        cpp_results, id_to_doc = _to_cpp_doc_lists(query_results)
+        cpp_docs = _reranker_rerank(self._to_cpp_params(), cpp_results, [], topn)
+        return _from_cpp_docs(cpp_docs, id_to_doc)
 
 
 class WeightedReRanker(RerankFunction):
-    """Re-ranker that combines scores from multiple vector fields using weights.
+    """Re-ranker that combines scores using per-sub-query weights.
 
-    Each vector field's relevance score is normalized based on its own metric
-    type, then scaled by a user-provided weight. Final scores are summed across
-    fields.
-
-    Note:
-        This re-ranker is specifically designed for multi-vector scenarios where
-        query results from multiple vector fields need to be combined with
-        configurable weights.
+    Each sub-query's score is normalized by metric type (automatic when used
+    via collection.multi_query), then multiplied by the corresponding weight.
 
     Args:
-        topn (int, optional): Number of top documents to return. Defaults to 10.
-        rerank_field (Optional[str], optional): Ignored. Defaults to None.
-        metrics (Optional[dict[str, MetricType]], optional): Per-field distance
-            metric used for score normalization. Every queried field must have
-            a metric specified; missing fields will raise an error at rerank time.
-            Defaults to None.
-        weights (Optional[dict[str, float]], optional): Weight per vector field.
-            Fields not listed use weight 1.0. Defaults to None.
+        weights: Per-sub-query weights. Length must match the number of
+            sub-queries.
 
-    Note:
-        Supported metrics: L2, IP, COSINE. Scores are normalized to [0, 1].
+    Example:
+        >>> reranker = WeightedReRanker([0.7, 0.3])
+        >>> merged = reranker.rerank([results_a, results_b], topn=10,
+        ...                          fields=field_schemas)
     """
 
-    def __init__(
-        self,
-        topn: int = 10,
-        rerank_field: Optional[str] = None,
-        metrics: Optional[dict[str, MetricType]] = None,
-        weights: Optional[dict[str, float]] = None,
-    ):
-        super().__init__(topn=topn, rerank_field=rerank_field)
-        self._weights = weights or {}
-        self._metrics = metrics or {}
+    def __init__(self, weights: list[float]):
+        self._weights = list(weights)
 
     @property
-    def weights(self) -> dict[str, float]:
-        """dict[str, float]: Weight mapping for vector fields."""
+    def weights(self) -> list[float]:
+        """list[float]: Per-sub-query weights."""
         return self._weights
 
-    @property
-    def metrics(self) -> dict[str, MetricType]:
-        """dict[str, MetricType]: Per-field metric type mapping."""
-        return self._metrics
+    def _to_cpp_params(self):
+        return _WeightedParams(self._weights)
 
-    def _get_object(self):
-        """Return a C++ WeightedReranker instance."""
-        return _WeightedReranker(self._weights)
-
-    def rerank(self, query_results: dict[str, list[Doc]]) -> list[Doc]:
-        """Combine scores from multiple vector fields using weighted sum.
+    def rerank(
+        self,
+        query_results: list[list[Doc]],
+        topn: int = 10,
+        *,
+        fields: list[FieldSchema | VectorSchema] | None = None,
+    ) -> DocList:
+        """Combine scores from multiple sub-queries using weighted sum via C++ reranker.
 
         Args:
-            query_results (dict[str, list[Doc]]): Results per vector field.
+            query_results: Per-sub-query document lists.
+            topn: Maximum results to return.
+            fields: Per-sub-query Python FieldSchema/VectorSchema objects
+                (required for score normalization by metric type).
 
-        Returns:
-            list[Doc]: Re-ranked documents with combined scores in ``score`` field.
+        Raises:
+            ValueError: If fields is None (required for normalization).
         """
-        weighted_scores: dict[str, float] = defaultdict(float)
-        id_to_doc: dict[str, Doc] = {}
-
-        for vector_name, query_result in query_results.items():
-            if vector_name not in self._metrics:
-                raise ValueError(
-                    f"WeightedReRanker: no metric type specified for field "
-                    f"'{vector_name}'"
-                )
-            metric = self._metrics[vector_name]
-            for _, doc in enumerate(query_result):
-                doc_id = doc.id
-                weighted_score = self._normalize_score(
-                    doc.score, metric
-                ) * self.weights.get(vector_name, 1.0)
-                weighted_scores[doc_id] += weighted_score
-                if doc_id not in id_to_doc:
-                    id_to_doc[doc_id] = doc
-
-        top_docs = heapq.nlargest(
-            self.topn, weighted_scores.items(), key=lambda x: x[1]
+        if not fields:
+            raise ValueError(
+                "WeightedReRanker.rerank() requires 'fields' for score normalization. "
+                "Pass field schemas via fields= parameter."
+            )
+        cpp_fields = [f._get_object() for f in fields]
+        cpp_results, id_to_doc = _to_cpp_doc_lists(query_results)
+        cpp_docs = _reranker_rerank(
+            self._to_cpp_params(), cpp_results, cpp_fields, topn
         )
-        results: list[Doc] = []
-        for doc_id, weighted_score in top_docs:
-            doc = id_to_doc[doc_id]
-            new_doc = doc._replace(score=weighted_score)
-            results.append(new_doc)
-        return results
-
-    def _normalize_score(self, score: float, metric: MetricType) -> float:
-        if metric == MetricType.L2:
-            return 1.0 - 2 * math.atan(score) / math.pi
-        if metric == MetricType.IP:
-            return 0.5 + math.atan(score) / math.pi
-        if metric == MetricType.COSINE:
-            return 1.0 - score / 2.0
-        raise ValueError("Unsupported metric type")
+        return _from_cpp_docs(cpp_docs, id_to_doc)
 
 
 class CallbackReRanker(RerankFunction):
-    """Re-ranker that delegates to a user-provided Python callback.
+    """Re-ranker that delegates to a user-provided callback.
 
-    This bridges a Python callable into the C++ reranker interface, enabling
-    custom re-ranking logic to be executed within the C++ MultiQuery path.
-
-    The callback receives the raw C++ Doc objects (as ``_Doc`` instances) grouped
-    by vector field name, and must return a list of ``_Doc`` instances.
+    The callback receives sub-query results, field schemas, and topn.
 
     Args:
         callback: A callable with signature
-            ``(query_results: dict[str, list[_Doc]], topn: int) -> list[_Doc]``.
-        topn (int, optional): Number of top documents to return. Defaults to 10.
+            (results: list[list[Doc]], fields: list, topn: int) -> list[Doc]
+
+    Example:
+        >>> def my_rerank(results, fields, topn):
+        ...     # custom logic
+        ...     return merged[:topn]
+        >>> reranker = CallbackReRanker(my_rerank)
+        >>> merged = reranker.rerank([results_a, results_b], topn=10)
     """
 
-    def __init__(
-        self,
-        callback: Callable,
-        topn: int = 10,
-    ):
-        super().__init__(topn=topn)
+    def __init__(self, callback: Callable):
         self._callback = callback
-        self._cpp_reranker = _CallbackReranker(callback)
 
-    def _get_object(self):
-        """Return the underlying C++ CallbackReranker instance."""
-        return self._cpp_reranker
+    def _to_cpp_params(self):
+        return _CallbackParams(self._callback)
 
-    def rerank(self, query_results: dict[str, list[Doc]]) -> list[Doc]:
-        """Invoke the callback to re-rank documents.
-
-        Args:
-            query_results (dict[str, list[Doc]]): Results per vector field.
-
-        Returns:
-            list[Doc]: Re-ranked documents.
-        """
-        return self._callback(query_results, self.topn)
+    def rerank(
+        self,
+        query_results: list[list[Doc]],
+        topn: int = 10,
+        *,
+        fields: list[FieldSchema | VectorSchema] | None = None,
+    ) -> DocList:
+        """Invoke the callback to re-rank documents."""
+        return self._callback(query_results, fields, topn)

@@ -36,7 +36,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
   cc_gmock(
     NAME ${CC_TARGET} STRICT
-    LIBS zvec_db
+    LIBS zvec
     zvec_ailego
     zvec_proto
     core_metric_static

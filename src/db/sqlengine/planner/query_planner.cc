@@ -356,8 +356,10 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
   LOG_DEBUG("Making plan for collection[%s] query_info[%s]", table_name.c_str(),
             query_info->to_string().c_str());
   int topn = query_info->query_topn();
-  auto vector_cond = query_info->vector_cond_info();
-  auto fts_cond = query_info->fts_cond_info();
+  bool has_vector = query_info->vector_cond_info() != nullptr;
+  bool has_fts = query_info->fts_cond_info() != nullptr;
+  bool vector_is_reverse =
+      has_vector && query_info->vector_cond_info()->is_reverse_sort();
   bool has_group_by = query_info->group_by() != nullptr;
 
   // optimize plan by instrument query info condition, eg adjust invert cond
@@ -394,8 +396,8 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
     // with filter
     bool single_stage_search = only_invert_before_opt && only_forward_after_opt;
     std::unique_ptr<arrow::compute::Expression> forward_filter;
-    if (query_info->filter_cond()) {
-      auto filter = parse_filter(query_info->filter_cond().get());
+    if (segment_query_info->filter_cond()) {
+      auto filter = parse_filter(segment_query_info->filter_cond().get());
       if (!filter) {
         LOG_ERROR("Parse filter failed: %s", filter.error().c_str());
         return tl::make_unexpected(filter.error());
@@ -405,13 +407,13 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
     }
 
     Result<PlanInfo::Ptr> seg_plan;
-    if (query_info->vector_cond_info()) {
+    if (segment_query_info->vector_cond_info()) {
       seg_plan = vector_scan(segment, std::move(segment_query_info),
                              std::move(forward_filter), single_stage_search);
-    } else if (query_info->fts_cond_info()) {
+    } else if (segment_query_info->fts_cond_info()) {
       seg_plan = fts_scan(segment, std::move(segment_query_info),
                           std::move(forward_filter), single_stage_search);
-    } else if (query_info->invert_cond()) {
+    } else if (segment_query_info->invert_cond()) {
       seg_plan = invert_scan(segment, std::move(segment_query_info),
                              std::move(forward_filter));
     } else {
@@ -437,14 +439,14 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
                                       arrow::compute::Ordering::Implicit()};
   ac::Declaration node{"source", source_node_options};
 
-  if (vector_cond) {
-    node = ac::Declaration{"order_by",
-                           {std::move(node)},
-                           ac::OrderByNodeOptions{cp::Ordering{{cp::SortKey{
-                               kFieldScore, vector_cond->is_reverse_sort()
-                                                ? cp::SortOrder::Descending
-                                                : cp::SortOrder::Ascending}}}}};
-  } else if (fts_cond) {
+  if (has_vector) {
+    node = ac::Declaration{
+        "order_by",
+        {std::move(node)},
+        ac::OrderByNodeOptions{cp::Ordering{{cp::SortKey{
+            kFieldScore, vector_is_reverse ? cp::SortOrder::Descending
+                                           : cp::SortOrder::Ascending}}}}};
+  } else if (has_fts) {
     // FTS uses BM25 where higher score = more relevant. Per-segment results
     // are already in descending score order; merging multiple segments
     // requires a global re-sort to keep the contract.

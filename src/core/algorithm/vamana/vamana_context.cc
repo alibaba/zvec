@@ -24,14 +24,22 @@ VamanaContext::VamanaContext(size_t dimension,
     : IndexContext(metric),
       entity_(entity),
       dc_(entity.get(), metric, dimension),
-      metric_(metric) {}
+      metric_(metric) {
+  if (metric) {
+    build_distance_offset_ = metric->build_distance_offset();
+  }
+}
 
 VamanaContext::VamanaContext(const IndexMetric::Pointer &metric,
                              const VamanaEntity::Pointer &entity)
     : IndexContext(metric),
       entity_(entity),
       dc_(entity.get(), metric),
-      metric_(metric) {}
+      metric_(metric) {
+  if (metric) {
+    build_distance_offset_ = metric->build_distance_offset();
+  }
+}
 
 VamanaContext::~VamanaContext() {
   visit_filter_.destroy();
@@ -99,6 +107,9 @@ int VamanaContext::update_context(ContextType type, const IndexMeta &meta,
   entity_ = entity;
   metric_ = metric;
   magic_ = magic_num;
+  if (metric) {
+    build_distance_offset_ = metric->build_distance_offset();
+  }
   dc_.update(entity.get(), metric, meta.dimension());
   return 0;
 }
@@ -108,6 +119,12 @@ int VamanaContext::update(const ailego::Params &params) {
   params.get(PARAM_VAMANA_STREAMER_EF, &ef);
   ef_ = ef;
   topk_heap_.limit(std::max(topk_, ef_));
+  uint32_t po = po_;
+  params.get(PARAM_VAMANA_STREAMER_PO, &po);
+  po_ = po;
+  uint32_t pl = pl_;
+  params.get(PARAM_VAMANA_STREAMER_PL, &pl);
+  pl_ = pl;
   return 0;
 }
 

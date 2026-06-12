@@ -17,7 +17,6 @@
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
-#include <arrow/compute/ordering.h>
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #include "zvec/ailego/container/params.h"
 #include "zvec/ailego/logger/logger.h"

@@ -206,7 +206,7 @@ int HnswRabitqContext::update_context(ContextType type, const IndexMeta &meta,
                                       uint32_t magic_num) {
   uint32_t doc_cnt;
 
-  if (ailego_unlikely(type != type_)) {
+  if (ailego_unlikely(static_cast<uint32_t>(type) != type_)) {
     LOG_ERROR(
         "HnswRabitqContext doesn't support shared by different type, "
         "src=%u dst=%u",

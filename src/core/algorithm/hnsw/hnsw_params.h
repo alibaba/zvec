@@ -38,6 +38,8 @@ static const std::string PARAM_HNSW_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
     "proxima.hnsw.builder.l0_max_neighbor_count_multiplier");
 
 static const std::string PARAM_HNSW_SEARCHER_EF("proxima.hnsw.searcher.ef");
+static const std::string PARAM_HNSW_SEARCHER_PO("proxima.hnsw.searcher.po");
+static const std::string PARAM_HNSW_SEARCHER_PL("proxima.hnsw.searcher.pl");
 static const std::string PARAM_HNSW_SEARCHER_BRUTE_FORCE_THRESHOLD(
     "proxima.hnsw.searcher.brute_force_threshold");
 static const std::string PARAM_HNSW_SEARCHER_NEIGHBORS_IN_MEMORY_ENABLE(
@@ -60,6 +62,8 @@ static const std::string PARAM_HNSW_STREAMER_MIN_SCAN_LIMIT(
 static const std::string PARAM_HNSW_STREAMER_MAX_SCAN_LIMIT(
     "proxima.hnsw.streamer.max_scan_limit");
 static const std::string PARAM_HNSW_STREAMER_EF("proxima.hnsw.streamer.ef");
+static const std::string PARAM_HNSW_STREAMER_PO("proxima.hnsw.streamer.po");
+static const std::string PARAM_HNSW_STREAMER_PL("proxima.hnsw.streamer.pl");
 static const std::string PARAM_HNSW_STREAMER_EFCONSTRUCTION(
     "proxima.hnsw.streamer.efconstruction");
 static const std::string PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT(
