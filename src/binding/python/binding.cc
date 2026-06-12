@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <pybind11/stl.h>
 #include "python_collection.h"
 #include "python_config.h"
 #include "python_doc.h"
