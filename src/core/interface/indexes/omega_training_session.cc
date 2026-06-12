@@ -26,15 +26,15 @@ zvec::Status OmegaTrainingSession::Start(const TrainingSessionConfig &config) {
   ResetArtifactsLocked();
   topk_ = config.topk;
   num_queries_ = config.ground_truth.size();
-  streamer_->SetTrainingGroundTruth(config.ground_truth, config.k_train);
-  streamer_->EnableTrainingMode(true);
+  streamer_->set_training_ground_truth(config.ground_truth, config.k_train);
+  streamer_->enable_training_mode(true);
   active_ = true;
   return zvec::Status::OK();
 }
 
 void OmegaTrainingSession::BeginQuery(int query_id) {
   if (streamer_ != nullptr) {
-    streamer_->SetCurrentQueryId(query_id);
+    streamer_->set_current_query_id(query_id);
   }
 }
 
@@ -101,7 +101,7 @@ TrainingArtifacts OmegaTrainingSession::ConsumeArtifacts() {
 void OmegaTrainingSession::Finish() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (active_ && streamer_ != nullptr) {
-    streamer_->EnableTrainingMode(false);
+    streamer_->enable_training_mode(false);
   }
   active_ = false;
 }

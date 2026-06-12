@@ -132,7 +132,7 @@ void CollectOmegaTrainingOutputs(OmegaSearchHandle omega_search,
 
 }  // namespace
 
-bool OmegaStreamer::LoadModel(const std::string &model_dir) {
+bool OmegaStreamer::load_model(const std::string &model_dir) {
   std::lock_guard<std::mutex> lock(model_mutex_);
 
   if (omega_model_ != nullptr) {
@@ -157,7 +157,7 @@ bool OmegaStreamer::LoadModel(const std::string &model_dir) {
   return true;
 }
 
-bool OmegaStreamer::IsModelLoaded() const {
+bool OmegaStreamer::is_model_loaded() const {
   std::lock_guard<std::mutex> lock(model_mutex_);
   return omega_model_ != nullptr && omega_model_is_loaded(omega_model_);
 }
@@ -201,7 +201,7 @@ int OmegaStreamer::open(IndexStorage::Pointer stg) {
     return 0;
   }
 
-  if (!LoadModel(model_dir)) {
+  if (!load_model(model_dir)) {
     LOG_WARN(
         "OmegaStreamer open: failed to load OMEGA model from %s, using HNSW "
         "fallback",
@@ -221,7 +221,7 @@ int OmegaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                Context::Pointer &context) const {
   // Determine mode: training (no early stopping) vs inference (with early
   // stopping)
-  bool enable_early_stopping = !training_mode_enabled_ && IsModelLoaded() &&
+  bool enable_early_stopping = !training_mode_enabled_ && is_model_loaded() &&
                                !DisableOmegaModelPrediction();
 
   if (training_mode_enabled_) {

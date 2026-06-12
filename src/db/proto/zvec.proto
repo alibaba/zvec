@@ -60,10 +60,10 @@ enum IndexType {
   IT_HNSW_RABITQ = 4;
   // Proxima Vamana (DiskANN) Index
   IT_VAMANA = 5;
+  // OMEGA Index (HNSW with learned early stopping)
+  IT_OMEGA = 6;
   // Invert Index
   IT_INVERT = 10;
-  // OMEGA Index (HNSW with learned early stopping)
-  IT_OMEGA = 11;
 };
 
 enum QuantizeType {
@@ -152,9 +152,9 @@ message IndexParams {
     HnswIndexParams hnsw = 2;
     FlatIndexParams flat = 3;
     IVFIndexParams ivf = 4;
-    OmegaIndexParams omega = 5;
     HnswRabitqIndexParams hnsw_rabitq = 6;
-    VamanaIndexParams vamana = 7;
+    OmegaIndexParams omega = 7;
+    VamanaIndexParams vamana = 8;
   };
 };
 

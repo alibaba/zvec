@@ -369,8 +369,8 @@ std::vector<std::vector<uint64_t>> ComputeGroundTruthByHnsw(
     return {};
   }
 
-  omega_streamer->EnableTrainingMode(true);
-  AILEGO_DEFER([&]() { omega_streamer->EnableTrainingMode(false); });
+  omega_streamer->enable_training_mode(true);
+  AILEGO_DEFER([&]() { omega_streamer->enable_training_mode(false); });
 
   const bool held_out_mode =
       !query_doc_ids.empty() && query_doc_ids.size() == queries.size();
@@ -658,6 +658,23 @@ bool TrainModel(const OmegaTrainingArtifacts &artifacts,
 // specific runtime behavior to OmegaStreamer. It is responsible
 // for creating the correct streamer and injecting OMEGA query params into the
 // search context. It does not own the adaptive-search algorithm itself.
+int OmegaIndex::Open(const std::string &file_path,
+                     StorageOptions storage_options) {
+  int ret = Index::Open(file_path, storage_options);
+  if (ret != 0) {
+    return ret;
+  }
+
+  // If the OmegaStreamer loaded the model successfully during open,
+  // mark the index as trained so Search() won't attempt to re-train.
+  auto *omega_streamer = dynamic_cast<core::OmegaStreamer *>(streamer_.get());
+  if (omega_streamer != nullptr && omega_streamer->is_model_loaded()) {
+    is_trained_ = true;
+  }
+
+  return 0;
+}
+
 int OmegaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const OmegaIndexParam &>(param);
 
@@ -791,7 +808,7 @@ int OmegaIndex::Train() {
 
   auto *omega_streamer = dynamic_cast<core::OmegaStreamer *>(streamer_.get());
   if (omega_streamer == nullptr ||
-      !omega_streamer->ReloadModel(model_output_dir)) {
+      !omega_streamer->reload_model(model_output_dir)) {
     LOG_ERROR("Failed to reload trained OMEGA model from %s",
               model_output_dir.c_str());
     return core::IndexError_Runtime;

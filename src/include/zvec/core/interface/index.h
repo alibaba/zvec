@@ -386,6 +386,8 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
     return this;
   }
 
+  int Open(const std::string &file_path,
+           StorageOptions storage_options) override;
   int Train() override;
   ITrainingSession::Pointer CreateTrainingSession() override;
   BaseIndexParam::Pointer GetParam() const override {

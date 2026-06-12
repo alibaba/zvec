@@ -48,20 +48,20 @@ class OmegaStreamer : public HnswStreamer {
   OmegaStreamer &operator=(const OmegaStreamer &streamer) = delete;
 
   // Training-mode configuration forwarded into per-search contexts.
-  void EnableTrainingMode(bool enable) {
+  void enable_training_mode(bool enable) {
     training_mode_enabled_ = enable;
   }
-  void SetCurrentQueryId(int query_id) {
+  void set_current_query_id(int query_id) {
     current_query_id_ = query_id;
   }
-  void SetTrainingGroundTruth(
+  void set_training_ground_truth(
       const std::vector<std::vector<uint64_t>> &ground_truth, int k_train = 1) {
     training_ground_truth_ = ground_truth;
     training_k_train_ = k_train;
   }
 
-  bool ReloadModel(const std::string &model_dir) {
-    return LoadModel(model_dir);
+  bool reload_model(const std::string &model_dir) {
+    return load_model(model_dir);
   }
 
  protected:
@@ -95,9 +95,12 @@ class OmegaStreamer : public HnswStreamer {
 
  private:
   // Search-mode configuration shared across searches for this streamer.
-  bool LoadModel(const std::string &model_dir);
-  bool IsModelLoaded() const;
+  bool load_model(const std::string &model_dir);
 
+ public:
+  bool is_model_loaded() const;
+
+ private:
   // Perform OMEGA adaptive search (shared between training and inference mode)
   int omega_search_impl(const void *query, const IndexQueryMeta &qmeta,
                         uint32_t count, Context::Pointer &context,
