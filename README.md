@@ -48,8 +48,8 @@
 
 - **Blazing Fast**: Searches billions of vectors in milliseconds.
 - **Simple, Just Works**: [Install](#-installation) and start searching in seconds. Pure local, no servers, no config, no fuss.
-- **Index-Rich**: Choose from a rich set of indexes — HNSW, IVF, Flat, and on-disk DiskANN — for dense and sparse embeddings and multi-vector queries in a single call, scaling from in-memory to on-disk workloads.
-- **Full-Text Search (FTS)**: Native full-text search — query string fields with natural-language or structured expressions, no external search engine required.
+- **Dense + Sparse Vectors**: Work with both dense and sparse embeddings, with native support for multi-vector queries in a single call — plus an index-rich engine with many [vector index types](https://zvec.org/en/docs/db/concepts/vector-index/) to choose from, scaling from in-memory to on-disk workloads.
+- **Full-Text Search (FTS)**: Native keyword-based full-text search — query string fields with natural-language or structured expressions.
 - **Hybrid Search**: Fuse vector similarity, full-text search, and structured filters in a single query for precise results.
 - **Durable Storage**: Write-ahead logging (WAL) guarantees persistence — data is never lost, even on process crash or power failure.
 - **Concurrent Access**: Multiple processes can read the same collection simultaneously; writes are single-process exclusive.
@@ -57,34 +57,21 @@
 
 ## 📦 Installation
 
-### [Python](https://pypi.org/project/zvec/)
+Zvec offers official SDKs across multiple languages:
 
-**Requirements**: Python 3.10 - 3.14
+- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires Python 3.10–3.14)
+- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
+- **[Go SDK](https://github.com/zvec-ai/zvec-go)**: Idiomatic Go bindings for building high-performance services.
+- **[Rust SDK](https://github.com/zvec-ai/zvec-rust)**: Safe, zero-cost Rust bindings.
+- **[Dart/Flutter SDK](https://github.com/zvec-ai/zvec-dart)**: FFI bindings for Flutter apps, supporting Android and iOS.
 
-```bash
-pip install zvec
-```
-
-### [Node.js](https://www.npmjs.com/package/@zvec/zvec)
-
-```bash
-npm install @zvec/zvec
-```
+Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
 ### ✅ Supported Platforms
 
 - Linux (x86_64, ARM64)
 - macOS (ARM64)
 - Windows (x86_64)
-
-### 🧩 Official SDKs & Tools
-
-Beyond Python and Node.js, Zvec offers official SDKs across more languages, plus a visual management tool:
-
-- **[Go SDK](https://github.com/zvec-ai/zvec-go)**: Idiomatic Go bindings for building high-performance services.
-- **[Rust SDK](https://github.com/zvec-ai/zvec-rust)**: Safe, zero-cost Rust bindings.
-- **[Dart/Flutter SDK](https://github.com/zvec-ai/zvec-dart)**: FFI bindings for Flutter apps, supporting Android and iOS.
-- **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**: A visual tool for browsing data and debugging queries — no code required.
 
 ### 🛠️ Building from Source
 

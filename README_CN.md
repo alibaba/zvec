@@ -48,8 +48,8 @@
 
 - **极致性能**：毫秒级响应，轻松检索数十亿级向量。
 - **开箱即用**：[安装](#-安装)后即刻开始搜索，纯本地运行，无需服务器、无需配置、零门槛。
-- **丰富的索引类型**：提供 HNSW、IVF、Flat 与磁盘索引 DiskANN 等丰富索引，支持稠密与稀疏向量以及单次调用的多向量联合查询，覆盖从纯内存到磁盘级的不同场景。
-- **全文检索（FTS）**：原生全文检索——使用自然语言或结构化表达式检索字符串字段，无需外接搜索引擎。
+- **稠密 + 稀疏向量**：同时支持稠密向量与稀疏向量，并原生支持单次调用的多向量查询；索引丰富，提供多种[向量索引类型](https://zvec.org/zh/docs/db/concepts/vector-index/#向量索引类型)可供选择，覆盖从纯内存到磁盘级的不同场景。
+- **全文检索（FTS）**：原生的基于关键词的全文检索——使用自然语言或结构化表达式检索字符串字段。
 - **混合检索**：在单次查询中融合向量语义、全文检索与标量过滤，获得精确结果。
 - **持久化存储**：WAL 预写日志保障数据持久性 — 即使进程崩溃或意外断电，数据也不会丢失。
 - **并发访问**：支持多进程同时读取同一个 Collection；写入为单进程独占模式。
@@ -57,34 +57,21 @@
 
 ## 📦 安装
 
-### [Python](https://pypi.org/project/zvec/)
+Zvec 提供多语言官方 SDK：
 
-**环境要求**：Python 3.10 - 3.14
+- **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 Python 3.10–3.14）
+- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
+- **[Go SDK](https://github.com/zvec-ai/zvec-go)**：符合 Go 习惯的绑定，适合构建高性能服务。
+- **[Rust SDK](https://github.com/zvec-ai/zvec-rust)**：安全、零开销的 Rust 绑定。
+- **[Dart/Flutter SDK](https://github.com/zvec-ai/zvec-dart)**：面向 Flutter 应用的 FFI 绑定，支持 Android 与 iOS。
 
-```bash
-pip install zvec
-```
-
-### [Node.js](https://www.npmjs.com/package/@zvec/zvec)
-
-```bash
-npm install @zvec/zvec
-```
+想要图形界面？试试 **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**，零代码浏览数据与调试查询。
 
 ### ✅ 支持的平台
 
 - Linux (x86_64, ARM64)
 - macOS (ARM64)
 - Windows (x86_64)
-
-### 🧩 官方 SDK 与工具
-
-除 Python 和 Node.js 外，Zvec 还提供多语言官方 SDK，以及一款可视化管理工具：
-
-- **[Go SDK](https://github.com/zvec-ai/zvec-go)**：符合 Go 习惯的绑定，适合构建高性能服务。
-- **[Rust SDK](https://github.com/zvec-ai/zvec-rust)**：安全、零开销的 Rust 绑定。
-- **[Dart/Flutter SDK](https://github.com/zvec-ai/zvec-dart)**：面向 Flutter 应用的 FFI 绑定，支持 Android 与 iOS。
-- **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**：可视化工具，零代码浏览数据与调试查询。
 
 ### 🛠️ 源码构建
 
