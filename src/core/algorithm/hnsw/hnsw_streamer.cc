@@ -52,6 +52,8 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
 
   params.get(PARAM_HNSW_STREAMER_DOCS_HARD_LIMIT, &docs_hard_limit_);
   params.get(PARAM_HNSW_STREAMER_EF, &ef_);
+  params.get(PARAM_HNSW_STREAMER_PO, &po_);
+  params.get(PARAM_HNSW_STREAMER_PL, &pl_);
   params.get(PARAM_HNSW_STREAMER_EFCONSTRUCTION, &ef_construction_);
   params.get(PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_ENABLE, &bf_enabled_);
   params.get(PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_NEGATIVE_PROB,
@@ -417,6 +419,8 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context(void) const {
     return Context::Pointer();
   }
   ctx->set_ef(ef_);
+  ctx->set_po(po_);
+  ctx->set_pl(pl_);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
   ctx->set_max_scan_ratio(max_scan_ratio_);

@@ -325,13 +325,26 @@ class TestHnswQueryParam:
         assert param.is_using_refiner == False
         assert param.radius == 0
         assert param.is_linear == False
+        assert param.prefetch_offset == 8
+        assert param.prefetch_lines == 0
 
     def test_custom(self):
-        param = HnswQueryParam(ef=10, is_using_refiner=True, radius=30, is_linear=True)
+        param = HnswQueryParam(
+            ef=10,
+            is_using_refiner=True,
+            radius=30,
+            is_linear=True,
+            extra_params={
+                "prefetch_offset": 16,
+                "prefetch_lines": 4,
+            },
+        )
         assert param.ef == 10
         assert param.is_using_refiner == True
         assert param.radius == 30
         assert param.is_linear == True
+        assert param.prefetch_offset == 16
+        assert param.prefetch_lines == 4
 
     def test_readonly_attributes(self):
         param = HnswQueryParam()

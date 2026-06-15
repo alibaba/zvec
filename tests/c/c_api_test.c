@@ -3695,16 +3695,46 @@ void test_query_params_functions(void) {
   is_using_refiner = zvec_query_params_flat_get_is_using_refiner(flat_params);
   TEST_ASSERT(is_using_refiner == true);
 
+  // Test Vamana query parameters
+  zvec_vamana_query_params_t *vamana_params =
+      zvec_query_params_vamana_create(256, 0.3f, false, true);
+  TEST_ASSERT(vamana_params != NULL);
+
+  TEST_ASSERT(zvec_query_params_vamana_get_ef_search(vamana_params) == 256);
+  TEST_ASSERT(zvec_query_params_vamana_get_radius(vamana_params) == 0.3f);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_linear(vamana_params) == false);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
+              true);
+
+  // Vamana set/get all parameters
+  err = zvec_query_params_vamana_set_ef_search(vamana_params, 512);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_ef_search(vamana_params) == 512);
+
+  err = zvec_query_params_vamana_set_radius(vamana_params, 0.5f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_radius(vamana_params) == 0.5f);
+
+  err = zvec_query_params_vamana_set_is_linear(vamana_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_linear(vamana_params) == true);
+
+  err = zvec_query_params_vamana_set_is_using_refiner(vamana_params, false);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
+              false);
+
   // Test destruction of valid parameters
   zvec_query_params_hnsw_destroy(hnsw_params);
   zvec_query_params_ivf_destroy(ivf_params);
   zvec_query_params_flat_destroy(flat_params);
-
+  zvec_query_params_vamana_destroy(vamana_params);
 
   // Test boundary cases - null pointer handling
   zvec_query_params_hnsw_destroy(NULL);
   zvec_query_params_ivf_destroy(NULL);
   zvec_query_params_flat_destroy(NULL);
+  zvec_query_params_vamana_destroy(NULL);
 
   // Test null pointer handling for setters
   err = zvec_query_params_hnsw_set_radius(NULL, 0.5f);
@@ -3712,6 +3742,8 @@ void test_query_params_functions(void) {
   err = zvec_query_params_ivf_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_flat_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_vamana_set_ef_search(NULL, 100);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
   // Test default values for getters with NULL
@@ -3724,6 +3756,10 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_hnsw_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_vamana_get_ef_search(NULL) == 200);
+  TEST_ASSERT(zvec_query_params_vamana_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(NULL) == false);
 
   TEST_END();
 }
@@ -4972,11 +5008,50 @@ void test_index_params_creation_functions(void) {
   TEST_ASSERT(enable_range_opt == true);
   TEST_ASSERT(enable_wildcard == false);
 
+  // Test Vamana parameters using new API
+  zvec_index_params_t *vamana_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_VAMANA);
+  TEST_ASSERT(vamana_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(vamana_params) ==
+              ZVEC_INDEX_TYPE_VAMANA);
+  TEST_ASSERT(zvec_index_params_get_metric_type(vamana_params) ==
+              ZVEC_METRIC_TYPE_L2);
+
+  int max_degree, search_list_size;
+  float alpha;
+  bool saturate_graph, use_contiguous_memory;
+  zvec_error_code_t verr;
+
+  // Set and get Vamana params
+  verr = zvec_index_params_set_vamana_params(vamana_params, 128, 200, 1.5f,
+                                             true, true);
+  TEST_ASSERT(verr == ZVEC_OK);
+  verr = zvec_index_params_get_vamana_params(
+      vamana_params, &max_degree, &search_list_size, &alpha, &saturate_graph,
+      &use_contiguous_memory);
+  TEST_ASSERT(verr == ZVEC_OK);
+  TEST_ASSERT(max_degree == 128);
+  TEST_ASSERT(search_list_size == 200);
+  TEST_ASSERT(alpha == 1.5f);
+  TEST_ASSERT(saturate_graph == true);
+  TEST_ASSERT(use_contiguous_memory == true);
+
+  // Set metric and quantize type
+  zvec_index_params_set_metric_type(vamana_params, ZVEC_METRIC_TYPE_COSINE);
+  TEST_ASSERT(zvec_index_params_get_metric_type(vamana_params) ==
+              ZVEC_METRIC_TYPE_COSINE);
+
+  // Test type mismatch: set_vamana_params on non-Vamana params should fail
+  verr = zvec_index_params_set_vamana_params(hnsw_params, 64, 100, 1.2f, false,
+                                             false);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(ivf_params);
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(invert_params);
+  zvec_index_params_destroy(vamana_params);
 
   TEST_END();
 }

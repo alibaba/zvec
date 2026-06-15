@@ -314,6 +314,22 @@ class HnswContext : public IndexContext {
     return ef_;
   }
 
+  inline void set_po(uint32_t v) {
+    po_ = v;
+  }
+
+  inline uint32_t po(void) const {
+    return po_;
+  }
+
+  inline void set_pl(uint32_t v) {
+    pl_ = v;
+  }
+
+  inline uint32_t pl(void) const {
+    return pl_;
+  }
+
   inline void set_filter_mode(uint32_t v) {
     filter_mode_ = v;
   }
@@ -524,6 +540,8 @@ class HnswContext : public IndexContext {
   uint32_t filter_mode_{VisitFilter::ByteMap};
   float negative_probability_{HnswEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswEntity::kDefaultEf};
+  uint32_t po_{8};
+  uint32_t pl_{0};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
   uint32_t magic_{0U};
   std::vector<IndexDocumentList> results_{};

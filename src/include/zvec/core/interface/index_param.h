@@ -185,6 +185,8 @@ struct HNSWQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<HNSWQueryParam>;
 
   uint32_t ef_search = kDefaultHnswEfSearch;
+  uint32_t prefetch_offset = kDefaultPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultPrefetchLines;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<HNSWQueryParam>(*this);
@@ -377,6 +379,8 @@ struct VamanaQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<VamanaQueryParam>;
 
   uint32_t ef_search = kDefaultVamanaEfSearch;
+  uint32_t prefetch_offset = kDefaultPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultPrefetchLines;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<VamanaQueryParam>(*this);

@@ -267,6 +267,12 @@ class HnswQueryParam(QueryParam):
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
         is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+        prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
+            HNSW fast path. ``0`` disables prefetching. Default is ``8``.
+            Values are clamped to ``256``.
+        prefetch_lines (int, optional): Number of 64B cache lines to prefetch
+            per neighbour vector (PL). ``0`` (default) uses the auto-derived
+            value ``ceil(vector_size/64)``. Values are clamped to ``256``.
 
     Examples:
         >>> params = HnswQueryParam(ef=300)
@@ -282,6 +288,7 @@ class HnswQueryParam(QueryParam):
         radius: typing.SupportsFloat = 0.0,
         is_linear: bool = False,
         is_using_refiner: bool = False,
+        extra_params: dict[str, int] = ...,
     ) -> None:
         """
         Constructs an HnswQueryParam instance.
@@ -292,6 +299,11 @@ class HnswQueryParam(QueryParam):
             radius (float, optional): Search radius for range queries. Default is 0.0.
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+            extra_params (dict, optional): Additional search parameters. Supported keys:
+                - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+                  ``0`` disables prefetching. Default is ``8``.
+                - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
+                  per neighbour vector (PL). ``0`` (default) means auto-derive from vector size.
         """
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -299,6 +311,18 @@ class HnswQueryParam(QueryParam):
     def ef(self) -> int:
         """
         int: Size of the dynamic candidate list during HNSW search.
+        """
+
+    @property
+    def prefetch_offset(self) -> int:
+        """
+        int: Graph prefetch offset used by the HNSW fast path.
+        """
+
+    @property
+    def prefetch_lines(self) -> int:
+        """
+        int: Override of prefetch cache lines per vector (0=auto).
         """
 
 class HnswRabitqIndexParam(VectorIndexParam):
@@ -548,6 +572,110 @@ class IVFQueryParam(QueryParam):
         """
         int: Number of inverted lists to search during IVF query.
         """
+
+class VamanaIndexParam(VectorIndexParam):
+    """
+    Parameters for configuring a Vamana (DiskANN) index.
+
+    Attributes:
+        metric_type (MetricType): Distance metric. Default is ``MetricType.IP``.
+        max_degree (int): Maximum out-degree (R) of every node. Default is 64.
+        search_list_size (int): Candidate list size during construction. Default is 100.
+        alpha (float): RobustPrune alpha factor. Default is 1.2.
+        saturate_graph (bool): Force every node to reach max_degree. Default is False.
+        use_contiguous_memory (bool): Allocate contiguous memory arena. Default is False.
+        use_id_map (bool): Reserved flag for id remapping. Default is False.
+        quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
+
+    Examples:
+        >>> params = VamanaIndexParam(metric_type=MetricType.COSINE, max_degree=64)
+    """
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: _zvec.typing.MetricType = ...,
+        max_degree: typing.SupportsInt = 64,
+        search_list_size: typing.SupportsInt = 100,
+        alpha: typing.SupportsFloat = 1.2,
+        saturate_graph: bool = False,
+        use_contiguous_memory: bool = False,
+        use_id_map: bool = False,
+        quantize_type: _zvec.typing.QuantizeType = ...,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict: ...
+    @property
+    def max_degree(self) -> int:
+        """int: Maximum out-degree (R) of every node in the Vamana graph."""
+    @property
+    def search_list_size(self) -> int:
+        """int: Candidate list size during Vamana graph construction."""
+    @property
+    def alpha(self) -> float:
+        """float: Vamana RobustPrune alpha factor."""
+    @property
+    def saturate_graph(self) -> bool:
+        """bool: Whether to saturate every node to max_degree neighbors."""
+    @property
+    def use_contiguous_memory(self) -> bool:
+        """bool: Whether to allocate a single contiguous memory arena."""
+    @property
+    def use_id_map(self) -> bool:
+        """bool: Reserved flag for engine-level id remapping."""
+
+class VamanaQueryParam(QueryParam):
+    """
+    Query parameters for the Vamana (DiskANN) index.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.VAMANA``.
+        ef_search (int): Size of the dynamic candidate list during search. Default is 200.
+        radius (float): Search radius for range queries. Default is 0.0.
+        is_linear (bool): Force linear search. Default is False.
+        is_using_refiner (bool): Whether to use refiner. Default is False.
+        prefetch_offset (int): Graph prefetch offset (PO). Default is 8.
+        prefetch_lines (int): Cache lines to prefetch per vector (PL). Default is 0 (auto).
+
+    Examples:
+        >>> params = VamanaQueryParam(ef_search=200)
+        >>> print(params.ef_search)
+        200
+    """
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        ef_search: typing.SupportsInt = 200,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+        extra_params: dict[str, int] = ...,
+    ) -> None:
+        """
+        Constructs a VamanaQueryParam instance.
+
+        Args:
+            ef_search (int, optional): Search-time candidate list size. Defaults to 200.
+            radius (float, optional): Search radius for range queries. Default is 0.0.
+            is_linear (bool, optional): Force linear search. Default is False.
+            is_using_refiner (bool, optional): Whether to use refiner. Default is False.
+            extra_params (dict, optional): Additional search parameters. Supported keys:
+                - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+                  ``0`` disables prefetching. Default is ``8``.
+                - ``prefetch_lines`` (int): Cache lines to prefetch per vector (PL).
+                  ``0`` (default) means auto-derive from vector size.
+        """
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def ef_search(self) -> int:
+        """int: Size of the dynamic candidate list during Vamana search."""
+    @property
+    def prefetch_offset(self) -> int:
+        """int: Graph prefetch offset used by the Vamana fast path."""
+    @property
+    def prefetch_lines(self) -> int:
+        """int: Override of prefetch cache lines per vector (0=auto)."""
 
 class IndexOption:
     """

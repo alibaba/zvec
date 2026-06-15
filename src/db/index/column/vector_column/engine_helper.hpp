@@ -162,6 +162,10 @@ class ProximaEngineHelper {
           auto db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
               query_params.query_params.get());
           hnsw_query_param->ef_search = db_hnsw_query_params->ef();
+          hnsw_query_param->prefetch_offset =
+              db_hnsw_query_params->prefetch_offset();
+          hnsw_query_param->prefetch_lines =
+              db_hnsw_query_params->prefetch_lines();
         }
         return std::move(hnsw_query_param);
       }
@@ -238,6 +242,10 @@ class ProximaEngineHelper {
               query_params.query_params.get());
           vamana_query_param->ef_search =
               static_cast<uint32_t>(db_vamana_query_params->ef_search());
+          vamana_query_param->prefetch_offset =
+              db_vamana_query_params->prefetch_offset();
+          vamana_query_param->prefetch_lines =
+              db_vamana_query_params->prefetch_lines();
         }
         return std::move(vamana_query_param);
       }
