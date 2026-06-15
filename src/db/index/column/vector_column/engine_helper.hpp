@@ -161,6 +161,11 @@ class ProximaEngineHelper {
         if (query_params.query_params) {
           auto db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
               query_params.query_params.get());
+          if (!db_hnsw_query_params) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "HNSW query expects HnswQueryParam, got incompatible query "
+                "param type"));
+          }
           hnsw_query_param->ef_search = db_hnsw_query_params->ef();
           hnsw_query_param->prefetch_offset =
               db_hnsw_query_params->prefetch_offset();
@@ -184,6 +189,11 @@ class ProximaEngineHelper {
           auto db_hnsw_rabitq_query_params =
               dynamic_cast<const HnswRabitqQueryParams *>(
                   query_params.query_params.get());
+          if (!db_hnsw_rabitq_query_params) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "HNSW_RABITQ query expects HnswRabitqQueryParam, got "
+                "incompatible query param type"));
+          }
           hnsw_query_param->ef_search = db_hnsw_rabitq_query_params->ef();
         }
         return std::move(hnsw_query_param);
@@ -202,6 +212,11 @@ class ProximaEngineHelper {
         if (query_params.query_params) {
           auto db_ivf_query_params = dynamic_cast<const IVFQueryParams *>(
               query_params.query_params.get());
+          if (!db_ivf_query_params) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "IVF query expects IVFQueryParam, got incompatible query "
+                "param type"));
+          }
           ivf_query_param->nprobe = db_ivf_query_params->nprobe();
         }
         return std::move(ivf_query_param);
@@ -221,6 +236,11 @@ class ProximaEngineHelper {
           auto db_diskann_query_params =
               dynamic_cast<const DiskAnnQueryParams *>(
                   query_params.query_params.get());
+          if (!db_diskann_query_params) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "DiskANN query expects DiskAnnQueryParam, got incompatible "
+                "query param type"));
+          }
           diskann_query_param->list_size =
               static_cast<uint32_t>(db_diskann_query_params->list_size());
         }
@@ -240,6 +260,11 @@ class ProximaEngineHelper {
         if (query_params.query_params) {
           auto db_vamana_query_params = dynamic_cast<const VamanaQueryParams *>(
               query_params.query_params.get());
+          if (!db_vamana_query_params) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "Vamana query expects VamanaQueryParam, got incompatible "
+                "query param type"));
+          }
           vamana_query_param->ef_search =
               static_cast<uint32_t>(db_vamana_query_params->ef_search());
           vamana_query_param->prefetch_offset =
