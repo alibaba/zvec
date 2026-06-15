@@ -48,10 +48,9 @@
 
 - **Blazing Fast**: Searches billions of vectors in milliseconds.
 - **Simple, Just Works**: [Install](#-installation) and start searching in seconds. Pure local, no servers, no config, no fuss.
-- **Dense + Sparse Vectors**: Work with both dense and sparse embeddings, with native support for multi-vector queries in a single call.
-- **Hybrid Search**: Combine semantic similarity with structured filters for precise results.
+- **Index-Rich**: Choose from a rich set of indexes — HNSW, IVF, Flat, and on-disk DiskANN — for dense and sparse embeddings and multi-vector queries in a single call, scaling from in-memory to on-disk workloads.
 - **Full-Text Search (FTS)**: Native full-text search — query string fields with natural-language or structured expressions, no external search engine required.
-- **Index-Rich**: Choose from HNSW, IVF, Flat, and on-disk DiskANN to fit your data scale and performance needs, from pure in-memory to on-disk workloads.
+- **Hybrid Search**: Fuse vector similarity, full-text search, and structured filters in a single query for precise results.
 - **Durable Storage**: Write-ahead logging (WAL) guarantees persistence — data is never lost, even on process crash or power failure.
 - **Concurrent Access**: Multiple processes can read the same collection simultaneously; writes are single-process exclusive.
 - **Runs Anywhere**: As an in-process library, Zvec runs wherever your code runs — notebooks, servers, CLI tools, or even edge devices.
@@ -77,6 +76,15 @@ npm install @zvec/zvec
 - Linux (x86_64, ARM64)
 - macOS (ARM64)
 - Windows (x86_64)
+
+### 🧩 Official SDKs & Tools
+
+Beyond Python and Node.js, Zvec offers official SDKs across more languages, plus a visual management tool:
+
+- **[Go SDK](https://github.com/zvec-ai/zvec-go)**: Idiomatic Go bindings for building high-performance services.
+- **[Rust SDK](https://github.com/zvec-ai/zvec-rust)**: Safe, zero-cost Rust bindings.
+- **[Dart/Flutter SDK](https://github.com/zvec-ai/zvec-dart)**: FFI bindings for Flutter apps, supporting Android and iOS.
+- **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**: A visual tool for browsing data and debugging queries — no code required.
 
 ### 🛠️ Building from Source
 
