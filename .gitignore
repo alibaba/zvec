@@ -56,4 +56,5 @@ allure-*
 doc/
 config/
 examples/python/
+examples/c_api/
 logs/

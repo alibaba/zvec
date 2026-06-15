@@ -3491,6 +3491,61 @@ void test_index_params_functions(void) {
   TEST_END();
 }
 
+void test_quantizer_enable_rotate(void) {
+  TEST_START();
+
+  // Test 1: set enable_rotate=true on HNSW params and verify
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  TEST_ASSERT(hnsw_params != NULL);
+
+  // Default should be false
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(hnsw_params) ==
+              false);
+
+  // Set to true and verify
+  zvec_error_code_t err =
+      zvec_index_params_set_quantizer_enable_rotate(hnsw_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(hnsw_params) ==
+              true);
+
+  // Set back to false and verify
+  err = zvec_index_params_set_quantizer_enable_rotate(hnsw_params, false);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(hnsw_params) ==
+              false);
+
+  zvec_index_params_destroy(hnsw_params);
+
+  // Test 2: set enable_rotate on FLAT index params (also a vector index)
+  zvec_index_params_t *flat_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
+  TEST_ASSERT(flat_params != NULL);
+  err = zvec_index_params_set_quantizer_enable_rotate(flat_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(flat_params) ==
+              true);
+  zvec_index_params_destroy(flat_params);
+
+  // Test 3: set enable_rotate on non-vector index (INVERT) should fail
+  zvec_index_params_t *invert_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+  TEST_ASSERT(invert_params != NULL);
+  err = zvec_index_params_set_quantizer_enable_rotate(invert_params, true);
+  TEST_ASSERT(err != ZVEC_OK);
+  zvec_index_params_destroy(invert_params);
+
+  // Test 4: NULL params should return false for getter
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(NULL) == false);
+
+  // Test 5: NULL params should return error for setter
+  err = zvec_index_params_set_quantizer_enable_rotate(NULL, true);
+  TEST_ASSERT(err != ZVEC_OK);
+
+  TEST_END();
+}
+
 void test_index_params_api_functions(void) {
   TEST_START();
 
@@ -5878,6 +5933,7 @@ int main(void) {
   // Index tests
   test_index_params();
   test_index_params_functions();
+  test_quantizer_enable_rotate();
   test_index_params_api_functions();
   test_index_creation_and_management();
 

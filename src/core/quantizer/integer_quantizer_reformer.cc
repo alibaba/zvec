@@ -349,7 +349,7 @@ class IntegerStreamingReformer : public IndexReformer {
     const float *vec = reinterpret_cast<const float *>(query);
     std::unique_ptr<float[]> rotate_buffer;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[qmeta.dimension()]);
+      rotate_buffer.reset(new float[rotator_->padded_dim()]);
       rotator_->rotate(vec, rotate_buffer.get());
       vec = rotate_buffer.get();
     }
@@ -381,7 +381,7 @@ class IntegerStreamingReformer : public IndexReformer {
     std::unique_ptr<float[]> rotate_buffer;
     std::unique_ptr<float[]> normalized;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[qmeta.dimension()]);
+      rotate_buffer.reset(new float[rotator_->padded_dim()]);
     }
     if (enable_normalize_) {
       normalized.reset(new float[qmeta.dimension()]);
@@ -422,7 +422,7 @@ class IntegerStreamingReformer : public IndexReformer {
     const float *vec = reinterpret_cast<const float *>(record);
     std::unique_ptr<float[]> rotate_buffer;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[rmeta.dimension()]);
+      rotate_buffer.reset(new float[rotator_->padded_dim()]);
       rotator_->rotate(vec, rotate_buffer.get());
       vec = rotate_buffer.get();
     }
@@ -455,7 +455,7 @@ class IntegerStreamingReformer : public IndexReformer {
     std::unique_ptr<float[]> rotate_buffer;
     std::unique_ptr<float[]> normalized;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[rmeta.dimension()]);
+      rotate_buffer.reset(new float[rotator_->padded_dim()]);
     }
     if (enable_normalize_) {
       normalized.reset(new float[rmeta.dimension()]);

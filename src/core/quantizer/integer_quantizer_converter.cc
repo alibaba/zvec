@@ -502,7 +502,7 @@ class IntegerStreamingConverter : public IndexConverter {
                IndexHolder::Iterator::Pointer &&iter)
           : owner_(owner),
             buffer_(owner->element_size(), 0),
-            normalize_buffer_(owner->front_->element_size(), 0),
+            normalize_buffer_(owner->padded_dim() * sizeof(float), 0),
             rotate_buffer_(owner->padded_dim() * sizeof(float), 0),
             front_iter_(std::move(iter)) {
         this->encode_record();
