@@ -112,12 +112,12 @@ CollectionSchema::Ptr TestHelper::CreateNormalSchema(
       "dense_int8", DataType::VECTOR_INT8, 128, false,
       std::make_shared<FlatIndexParams>(MetricType::IP)));
 
-  // IVF, HNSW_RABITQ and DISKANN do not support sparse vectors, always use
-  // Flat for sparse fields in those cases.
+  // IVF, HNSW_RABITQ, DISKANN and VAMANA do not support sparse vectors,
+  // always use Flat for sparse fields in those cases.
   auto supports_sparse = [](const IndexParams::Ptr &params) {
     auto type = params->type();
     return type != IndexType::IVF && type != IndexType::HNSW_RABITQ &&
-           type != IndexType::DISKANN;
+           type != IndexType::DISKANN && type != IndexType::VAMANA;
   };
 
   IndexParams::Ptr sparse_index_params;
@@ -126,6 +126,13 @@ CollectionSchema::Ptr TestHelper::CreateNormalSchema(
     auto v = std::dynamic_pointer_cast<VectorIndexParams>(sparse_index_params);
     // sparse always use IP
     v->set_metric_type(MetricType::IP);
+    // Sparse vectors only support FP16 quantization; if the dense vector uses
+    // an unsupported quantize type (e.g. INT8), fall back to no quantization
+    // for the sparse field so schema validation passes.
+    if (v->quantize_type() != QuantizeType::UNDEFINED &&
+        v->quantize_type() != QuantizeType::FP16) {
+      v->set_quantize_type(QuantizeType::UNDEFINED);
+    }
   }
   schema->add_field(std::make_shared<FieldSchema>(
       "sparse_fp32", DataType::SPARSE_VECTOR_FP32, 128, false,

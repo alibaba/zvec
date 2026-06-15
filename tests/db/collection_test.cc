@@ -2787,6 +2787,14 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     run_repeated_optimize_test(
         enable_mmap, std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200,
                                                        QuantizeType::FP16));
+    // Regression: UniformInt8 quantizer. Its reformer params (scale/bias) are
+    // computed at build time and persisted on disk; the search-time meta does
+    // not carry them. Reopening (Phase 7) must restore reformer/converter from
+    // the persisted meta in HnswStreamer::open, otherwise Index::Open fails
+    // with "converter exists but reformer not initialized".
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<HnswIndexParams>(MetricType::L2, 16, 200,
+                                                       QuantizeType::INT8));
     run_repeated_optimize_test(enable_mmap, std::make_shared<IVFIndexParams>(
                                                 MetricType::IP, 10, 4, false,
                                                 QuantizeType::UNDEFINED));
@@ -2803,6 +2811,12 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
         enable_mmap, std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7,
                                                              256, 16, 200, 0));
 #endif
+    // Vamana + UniformInt8: VamanaStreamer::open already restores reformer
+    // from the persisted meta; keep this case to guard against regressions.
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<VamanaIndexParams>(
+                         MetricType::L2, 64, 200, 1.2f, false, false, false,
+                         QuantizeType::INT8));
   }
 }
 
