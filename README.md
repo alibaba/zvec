@@ -61,9 +61,9 @@ Zvec offers official SDKs across multiple languages:
 
 - **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires Python 3.10–3.14)
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
-- **[Go SDK](https://github.com/zvec-ai/zvec-go)**: Idiomatic Go bindings for building high-performance services.
-- **[Rust SDK](https://github.com/zvec-ai/zvec-rust)**: Safe, zero-cost Rust bindings.
-- **[Dart/Flutter SDK](https://github.com/zvec-ai/zvec-dart)**: FFI bindings for Flutter apps, supporting Android and iOS.
+- **[Go](https://github.com/zvec-ai/zvec-go)**: Idiomatic Go bindings for building high-performance services.
+- **[Rust](https://github.com/zvec-ai/zvec-rust)**: Safe, zero-cost Rust bindings.
+- **[Dart/Flutter](https://github.com/zvec-ai/zvec-dart)**: FFI bindings for Flutter apps, supporting Android and iOS.
 
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 

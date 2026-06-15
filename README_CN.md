@@ -61,9 +61,9 @@ Zvec 提供多语言官方 SDK：
 
 - **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 Python 3.10–3.14）
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
-- **[Go SDK](https://github.com/zvec-ai/zvec-go)**：符合 Go 习惯的绑定，适合构建高性能服务。
-- **[Rust SDK](https://github.com/zvec-ai/zvec-rust)**：安全、零开销的 Rust 绑定。
-- **[Dart/Flutter SDK](https://github.com/zvec-ai/zvec-dart)**：面向 Flutter 应用的 FFI 绑定，支持 Android 与 iOS。
+- **[Go](https://github.com/zvec-ai/zvec-go)**：符合 Go 习惯的绑定，适合构建高性能服务。
+- **[Rust](https://github.com/zvec-ai/zvec-rust)**：安全、零开销的 Rust 绑定。
+- **[Dart/Flutter](https://github.com/zvec-ai/zvec-dart)**：面向 Flutter 应用的 FFI 绑定，支持 Android 与 iOS。
 
 想要图形界面？试试 **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**，零代码浏览数据与调试查询。
 
