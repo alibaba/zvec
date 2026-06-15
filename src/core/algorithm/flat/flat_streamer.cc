@@ -181,7 +181,7 @@ int FlatStreamer<BATCH_SIZE>::flush(uint64_t checkpoint) {
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::dump(const IndexDumper::Pointer &dumper) {
   std::string searcher_name = "FlatSearcher";
-  if (BATCH_SIZE == 16) {
+  if constexpr (BATCH_SIZE == 16) {
     searcher_name = "FlatSearcher16";
   }
   meta_.set_searcher(searcher_name, 0U, ailego::Params());

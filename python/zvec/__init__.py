@@ -43,6 +43,21 @@ except Exception:
 # Public API — grouped by category
 # ==============================
 
+# —— DiskAnn runtime plugin ——
+# Re-export the plugin management entry points defined by the C++ extension.
+# DiskAnn normally auto-loads on first use; these APIs let tests and
+# diagnostic tools preload the plugin and get a clear error if libaio is
+# missing or the plugin shared object cannot be located.
+from _zvec import (
+    DISKANN_PLUGIN_DLOPEN_FAILED,
+    DISKANN_PLUGIN_LIBAIO_MISSING,
+    DISKANN_PLUGIN_OK,
+    DISKANN_PLUGIN_UNSUPPORTED_PLATFORM,
+    is_diskann_plugin_loaded,
+    is_libaio_available,
+    load_diskann_plugin,
+)
+
 from . import model as model
 
 # —— Extensions ——
@@ -71,7 +86,7 @@ from .model import schema as schema
 
 # —— Core data structures ——
 from .model.collection import Collection
-from .model.doc import Doc
+from .model.doc import Doc, DocList
 
 # —— Query & index parameters ——
 # —— FTS params (C++ binding) ——
@@ -79,6 +94,8 @@ from .model.param import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
+    DiskAnnIndexParam,
+    DiskAnnQueryParam,
     FlatIndexParam,
     FtsIndexParam,
     FtsQueryParam,
@@ -127,6 +144,7 @@ __all__ = [
     # Core classes
     "Collection",
     "Doc",
+    "DocList",
     # Schema
     "CollectionSchema",
     "FieldSchema",
@@ -143,6 +161,8 @@ __all__ = [
     "HnswRabitqIndexParam",
     "FlatIndexParam",
     "IVFIndexParam",
+    "DiskAnnIndexParam",
+    "DiskAnnQueryParam",
     "CollectionOption",
     "IndexOption",
     "OptimizeOption",
@@ -181,6 +201,14 @@ __all__ = [
     "StatusCode",
     # Tools
     "require_module",
+    # DiskAnn plugin
+    "load_diskann_plugin",
+    "is_diskann_plugin_loaded",
+    "is_libaio_available",
+    "DISKANN_PLUGIN_OK",
+    "DISKANN_PLUGIN_UNSUPPORTED_PLATFORM",
+    "DISKANN_PLUGIN_LIBAIO_MISSING",
+    "DISKANN_PLUGIN_DLOPEN_FAILED",
 ]
 
 # ==============================

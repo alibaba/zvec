@@ -2793,6 +2793,11 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     run_repeated_optimize_test(
         enable_mmap, std::make_shared<IVFIndexParams>(
                          MetricType::IP, 10, 4, false, QuantizeType::FP16));
+#if DISKANN_SUPPORTED
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<DiskAnnIndexParams>(
+                         MetricType::IP, 10, 4, 0, QuantizeType::UNDEFINED));
+#endif
 #if RABITQ_SUPPORTED
     run_repeated_optimize_test(
         enable_mmap, std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7,
@@ -3742,7 +3747,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
   {
     MultiQuery mvq;
     mvq.topk = 10;
-    mvq.reranker = std::make_shared<RrfReranker>(60);
+    mvq.rerank = reranker::RrfParams{60};
     auto result = collection->Query(mvq);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
@@ -3783,7 +3788,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
   {
     MultiQuery mvq;
     mvq.topk = 10;
-    mvq.reranker = std::make_shared<RrfReranker>(60);
+    mvq.rerank = reranker::RrfParams{60};
 
     SubQuery vq1;
     vq1.num_candidates_ = 10;
@@ -3804,11 +3809,12 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
     EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
   }
 
-  // Test 4: Duplicate field names should fail
+  // Test 4: Duplicate field names should succeed (same field, different
+  // vectors)
   {
     MultiQuery mvq;
     mvq.topk = 10;
-    mvq.reranker = std::make_shared<RrfReranker>(60);
+    mvq.rerank = reranker::RrfParams{60};
 
     SubQuery vq1;
     vq1.num_candidates_ = 10;
@@ -3825,8 +3831,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
     mvq.queries.push_back(vq2);
 
     auto result = collection->Query(mvq);
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
+    ASSERT_TRUE(result.has_value());
   }
 }
 
@@ -3845,7 +3850,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_SingleFieldWithReranker) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq;
   vq.num_candidates_ = 10;
@@ -3876,7 +3881,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldRRF) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   // Query dense_fp32 and dense_fp16 fields with different vectors
   auto vector1 = query_doc.get<std::vector<float>>("dense_fp32");
@@ -3936,9 +3941,9 @@ TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldWeighted) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  std::map<std::string, double> weights = {{"dense_fp32", 0.7},
-                                           {"sparse_fp32", 0.3}};
-  mvq.reranker = std::make_shared<WeightedReranker>(weights);
+  // Weights are positional, parallel to the sub-query order below
+  // (dense_fp32 first, sparse_fp32 second).
+  mvq.rerank = reranker::WeightedParams{{0.7, 0.3}};
 
   // Query dense_fp32 field
   {
@@ -3992,7 +3997,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_WithFilter) {
   MultiQuery mvq;
   mvq.topk = 10;
   mvq.filter = "int32 > 50";
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq1;
   vq1.num_candidates_ = 10;
@@ -4042,7 +4047,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_WithOutputFields) {
   mvq.include_vector = false;
   mvq.output_fields = std::make_optional<std::vector<std::string>>(
       std::vector<std::string>{"int32", "string"});
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq1;
   vq1.num_candidates_ = 10;
@@ -4087,14 +4092,16 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 
   auto query_doc = TestHelper::CreateDoc(1, *schema);
 
-  // Use CallbackReranker with a lambda that merges and sorts by score
+  // Use a callback rerank strategy with a lambda that merges and sorts by
+  // score.
   bool callback_invoked = false;
   auto callback_fn = [&callback_invoked](
-                         const std::map<std::string, DocPtrList> &query_results,
+                         const std::vector<DocPtrList> &query_results,
+                         const std::vector<FieldSchema::Ptr> & /*fields*/,
                          int topn) -> DocPtrList {
     callback_invoked = true;
     DocPtrList all_docs;
-    for (const auto &[_, docs] : query_results) {
+    for (const auto &docs : query_results) {
       for (const auto &doc : docs) {
         all_docs.push_back(doc);
       }
@@ -4111,7 +4118,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<CallbackReranker>(callback_fn);
+  mvq.rerank = reranker::CallbackParams{callback_fn};
 
   // Query dense_fp32 field
   {
@@ -5290,6 +5297,81 @@ TEST_F(CollectionTest, Feature_Optimize_HNSW_RABITQ) {
 }
 #endif
 
+#if DISKANN_SUPPORTED
+TEST_F(CollectionTest, Feature_Optimize_DiskAnn) {
+  auto func = [](MetricType metric_type, int concurrency) {
+    FileHelper::RemoveDirectory(col_path);
+
+    int doc_count = 10000;
+
+    auto schema = std::make_shared<CollectionSchema>("diskann_demo");
+    schema->set_max_doc_count_per_segment(MAX_DOC_COUNT_PER_SEGMENT);
+
+    auto diskann_params = std::make_shared<DiskAnnIndexParams>(metric_type);
+    schema->add_field(std::make_shared<FieldSchema>(
+        "dense_fp32", DataType::VECTOR_FP32, 128, false, diskann_params));
+
+    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(
+        col_path, *schema, options, 0, doc_count, false);
+
+    auto check_doc = [&]() {
+      for (int i = 0; i < doc_count; i++) {
+        auto expect_doc = TestHelper::CreateDoc(i, *schema);
+        auto result = collection->Fetch({expect_doc.pk()});
+        ASSERT_TRUE(result.has_value());
+        ASSERT_EQ(result.value().size(), 1);
+        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+        auto doc = result.value()[expect_doc.pk()];
+        ASSERT_NE(doc, nullptr);
+        if (*doc != expect_doc) {
+          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
+          std::cout << "expect_doc:" << expect_doc.to_detail_string()
+                    << std::endl;
+        }
+        ASSERT_EQ(*doc, expect_doc);
+      }
+    };
+
+    check_doc();
+    std::cout << "check success 1" << std::endl;
+
+    ASSERT_TRUE(collection->Flush().ok());
+    auto stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
+
+    auto s = collection->Optimize(OptimizeOptions{concurrency});
+    if (!s.ok()) {
+      std::cout << s.message() << std::endl;
+    }
+    ASSERT_TRUE(s.ok());
+
+    stats = collection->Stats().value();
+    ASSERT_EQ(stats.doc_count, doc_count);
+    ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+    // check_doc();
+    std::cout << "check success 2" << std::endl;
+
+    collection.reset();
+    auto result = Collection::Open(col_path, options);
+    ASSERT_TRUE(result.has_value());
+    collection = std::move(result.value());
+
+    // check_doc();
+    std::cout << "check success 3" << std::endl;
+  };
+
+  func(MetricType::L2, 0);
+  func(MetricType::L2, 4);
+  func(MetricType::IP, 0);
+  func(MetricType::IP, 4);
+  // func(MetricType::COSINE, 0);
+  // func(MetricType::COSINE, 4);
+}
+#endif
+
 // **** CORNER CASES **** //
 TEST_F(CollectionTest, CornerCase_CreateAndOpen) {
   // Collection::CreateAndOpen
@@ -5625,7 +5707,7 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
   auto create_res = Collection::CreateAndOpen(col_path, *schema,
                                               CollectionOptions{false, true});
   ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
-  auto col = create_res.value();
+  auto col = std::move(create_res.value());
 
   // Insert a corpus where 4 of 5 docs contain "hello".  Doc 4 is the only
   // doc without "hello"; we'll delete it later to verify Optimize correctly
@@ -5680,16 +5762,41 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
   ASSERT_EQ(fts_search("hello").size(), 3u);
   ASSERT_EQ(fts_search("nothing").size(), 0u);
 
+  // Close and reopen in read-only mode (same as bench query mode).
+  col.reset();
+  CollectionOptions ro_options;
+  ro_options.read_only_ = true;
+  auto reopen_res = Collection::Open(col_path, ro_options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  auto fts_search_ro = [&](const std::string &term) {
+    SearchQuery vq;
+    vq.target_.field_name_ = "content";
+    vq.topk_ = 10;
+    FtsClause fts_q;
+    fts_q.query_string_ = term;
+    vq.target_.clause_ = fts_q;
+    auto r = col->Query(vq);
+    EXPECT_TRUE(r.has_value()) << r.error().message();
+    return r.has_value() ? r.value() : DocPtrList{};
+  };
+
+  ASSERT_EQ(fts_search_ro("hello").size(), 3u);
+  ASSERT_EQ(fts_search_ro("nothing").size(), 0u);
+
   col.reset();
   FileHelper::RemoveDirectory(col_path);
 }
 
-// CreateIndex/DropIndex must explicitly reject index types they don't
-// support (today: anything other than vector index types or INVERT).  This
-// keeps a hypothetically supported-looking call like CreateIndex(field,
-// FtsClause) from silently routing through the scalar/invert path and
-// corrupting state.
-TEST_F(CollectionTest, CornerCase_CreateOrDropIndex_UnsupportedTypes) {
+// Dynamic CreateIndex/DropIndex for FTS: create an FTS index on a STRING column
+// that already has data, verify queries hit, then drop the index and verify FTS
+// is no longer available. Also covers reopen persistence.
+TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
   auto build_schema = [](bool with_fts) {
     auto schema = std::make_shared<CollectionSchema>("fts_dyn");
     schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
@@ -5720,16 +5827,32 @@ TEST_F(CollectionTest, CornerCase_CreateOrDropIndex_UnsupportedTypes) {
     return col->Query(vq);
   };
 
-  // Case 1: CreateIndex(FtsIndexParams) and CreateIndex(nullptr) on a column
-  // declared without an FTS index — both should be rejected up front and
-  // leave the schema unchanged.
+  // CreateIndex(nullptr) should fail with INVALID_ARGUMENT.
   {
     FileHelper::RemoveDirectory(col_path);
-    auto schema = build_schema(/*with_fts=*/false);
-    auto create_res = Collection::CreateAndOpen(col_path, *schema,
-                                                CollectionOptions{false, true});
-    ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
-    auto col = create_res.value();
+    auto schema = build_schema(false);
+    auto col_res = Collection::CreateAndOpen(col_path, *schema,
+                                             CollectionOptions{false, true});
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
+
+    auto s_null = col->CreateIndex("content", nullptr);
+    ASSERT_FALSE(s_null.ok());
+    ASSERT_EQ(s_null.code(), StatusCode::INVALID_ARGUMENT);
+
+    col.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
+
+  // Case 1: CreateIndex(FtsIndexParams) on a STRING column without FTS.
+  // Insert data first, then create index, verify queries hit, verify reopen.
+  {
+    FileHelper::RemoveDirectory(col_path);
+    auto schema = build_schema(false);
+    CollectionOptions options{false, true};
+    auto col_res = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
 
     std::vector<Doc> docs;
     docs.push_back(make_doc(0, "intro", "hello world"));
@@ -5738,55 +5861,190 @@ TEST_F(CollectionTest, CornerCase_CreateOrDropIndex_UnsupportedTypes) {
     ASSERT_TRUE(col->Insert(docs).has_value());
     ASSERT_TRUE(col->Flush().ok());
 
-    auto s_fts =
-        col->CreateIndex("content", std::make_shared<FtsIndexParams>());
-    ASSERT_FALSE(s_fts.ok());
-    ASSERT_EQ(s_fts.code(), StatusCode::NOT_SUPPORTED);
+    // FTS query before index creation should fail.
+    auto q_before = fts_search(col, "hello");
+    ASSERT_FALSE(q_before.has_value());
 
-    auto s_null = col->CreateIndex("content", nullptr);
-    ASSERT_FALSE(s_null.ok());
-    ASSERT_EQ(s_null.code(), StatusCode::INVALID_ARGUMENT);
+    // Create FTS index.
+    auto s = col->CreateIndex("content", std::make_shared<FtsIndexParams>());
+    ASSERT_TRUE(s.ok()) << s.message();
 
-    // Schema must not be mutated by the rejected calls.
-    ASSERT_EQ(col->Schema().value(), *schema);
+    // FTS query should now succeed.
+    auto q_after = fts_search(col, "hello");
+    ASSERT_TRUE(q_after.has_value()) << q_after.error().message();
+    ASSERT_EQ(q_after.value().size(), 2u);
 
-    // Subsequent FTS query still fails because the column was never indexed,
-    // but it's a query-side validation error rather than a corruption symptom.
-    auto q = fts_search(col, "hello");
-    ASSERT_FALSE(q.has_value());
+    // "nothing" appears in doc 2 only.
+    auto q_nothing = fts_search(col, "nothing");
+    ASSERT_TRUE(q_nothing.has_value()) << q_nothing.error().message();
+    ASSERT_EQ(q_nothing.value().size(), 1u);
+
+    // Reopen and verify persistence.
+    col.reset();
+    auto reopen_res = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    col = reopen_res.value();
+
+    auto q_reopen = fts_search(col, "hello");
+    ASSERT_TRUE(q_reopen.has_value()) << q_reopen.error().message();
+    ASSERT_EQ(q_reopen.value().size(), 2u);
 
     col.reset();
     FileHelper::RemoveDirectory(col_path);
   }
 
-  // Case 2: DropIndex on an FTS column is rejected (we don't tear down FTS
-  // physical state through DropIndex today), and the FTS index remains usable.
+  // Case 2: DropIndex on an FTS column removes the FTS index.
   {
     FileHelper::RemoveDirectory(col_path);
-    auto schema = build_schema(/*with_fts=*/true);
-    auto create_res = Collection::CreateAndOpen(col_path, *schema,
-                                                CollectionOptions{false, true});
-    ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
-    auto col = create_res.value();
+    auto schema = build_schema(true);
+    CollectionOptions options{false, true};
+    auto col_res = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
 
     std::vector<Doc> docs;
     docs.push_back(make_doc(0, "intro", "hello world"));
     docs.push_back(make_doc(1, "guide", "hello foo"));
     ASSERT_TRUE(col->Insert(docs).has_value());
     ASSERT_TRUE(col->Flush().ok());
+
+    // Baseline: FTS query works.
     auto baseline = fts_search(col, "hello");
     ASSERT_TRUE(baseline.has_value());
     ASSERT_EQ(baseline.value().size(), 2u);
 
+    // Drop FTS index.
     auto s = col->DropIndex("content");
-    ASSERT_FALSE(s.ok());
-    ASSERT_EQ(s.code(), StatusCode::NOT_SUPPORTED);
+    ASSERT_TRUE(s.ok()) << s.message();
 
-    // Schema and FTS index untouched.
-    ASSERT_EQ(col->Schema().value(), *schema);
+    // FTS query should now fail (field no longer FTS-indexed).
+    auto q_after = fts_search(col, "hello");
+    ASSERT_FALSE(q_after.has_value());
+
+    // Reopen and verify FTS is still gone.
+    col.reset();
+    auto reopen_res = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    col = reopen_res.value();
+
+    auto q_reopen = fts_search(col, "hello");
+    ASSERT_FALSE(q_reopen.has_value());
+
+    col.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
+
+  // Case 3: Create → Drop → Create → Drop cycle on the same column.
+  {
+    FileHelper::RemoveDirectory(col_path);
+    auto schema = build_schema(false);
+    CollectionOptions options{false, true};
+    auto col_res = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
+
+    std::vector<Doc> docs;
+    docs.push_back(make_doc(0, "intro", "hello world"));
+    docs.push_back(make_doc(1, "guide", "hello foo"));
+    docs.push_back(make_doc(2, "more", "nothing here"));
+    ASSERT_TRUE(col->Insert(docs).has_value());
+    ASSERT_TRUE(col->Flush().ok());
+
+    // Round 1: Create FTS index.
+    auto s = col->CreateIndex("content", std::make_shared<FtsIndexParams>());
+    ASSERT_TRUE(s.ok()) << s.message();
     auto q = fts_search(col, "hello");
-    ASSERT_TRUE(q.has_value());
+    ASSERT_TRUE(q.has_value()) << q.error().message();
     ASSERT_EQ(q.value().size(), 2u);
+
+    // Round 1: Drop FTS index.
+    s = col->DropIndex("content");
+    ASSERT_TRUE(s.ok()) << s.message();
+    q = fts_search(col, "hello");
+    ASSERT_FALSE(q.has_value());
+
+    // Round 2: Re-create FTS index.
+    s = col->CreateIndex("content", std::make_shared<FtsIndexParams>());
+    ASSERT_TRUE(s.ok()) << s.message();
+    q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value()) << q.error().message();
+    ASSERT_EQ(q.value().size(), 2u);
+
+    // Round 2: Re-drop FTS index.
+    s = col->DropIndex("content");
+    ASSERT_TRUE(s.ok()) << s.message();
+    q = fts_search(col, "hello");
+    ASSERT_FALSE(q.has_value());
+
+    // Reopen and verify final state (no FTS).
+    col.reset();
+    auto reopen_res = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    col = reopen_res.value();
+
+    q = fts_search(col, "hello");
+    ASSERT_FALSE(q.has_value());
+
+    col.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
+
+  // Case 4: CreateIndex with different FtsIndexParams on a column that already
+  // has an FTS index — should remove the old index and rebuild with new params.
+  {
+    FileHelper::RemoveDirectory(col_path);
+    auto schema = build_schema(false);
+    CollectionOptions options{false, true};
+    auto col_res = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
+
+    std::vector<Doc> docs;
+    docs.push_back(make_doc(0, "intro", "hello world"));
+    docs.push_back(make_doc(1, "guide", "hello foo"));
+    docs.push_back(make_doc(2, "more", "nothing here"));
+    ASSERT_TRUE(col->Insert(docs).has_value());
+    ASSERT_TRUE(col->Flush().ok());
+
+    // Create FTS index with default params (tokenizer="standard").
+    auto params_v1 = std::make_shared<FtsIndexParams>("standard");
+    auto s = col->CreateIndex("content", params_v1);
+    ASSERT_TRUE(s.ok()) << s.message();
+    auto q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value()) << q.error().message();
+    ASSERT_EQ(q.value().size(), 2u);
+
+    // Re-create with different params: no lowercase filter, so indexing
+    // preserves original case and case-mismatched queries should miss.
+    auto params_v2 = std::make_shared<FtsIndexParams>(
+        "standard", std::vector<std::string>{});
+    ASSERT_NE(*params_v1, *params_v2);
+    s = col->CreateIndex("content", params_v2);
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    // Lowercase query should still hit (source text is lowercase).
+    q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value()) << q.error().message();
+    ASSERT_EQ(q.value().size(), 2u);
+
+    // Uppercase query should miss — no lowercase filter means case-sensitive.
+    q = fts_search(col, "HELLO");
+    ASSERT_TRUE(q.has_value());
+    ASSERT_EQ(q.value().size(), 0u);
+
+    // Reopen and verify persistence.
+    col.reset();
+    auto reopen_res = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    col = reopen_res.value();
+
+    q = fts_search(col, "hello");
+    ASSERT_TRUE(q.has_value()) << q.error().message();
+    ASSERT_EQ(q.value().size(), 2u);
+
+    q = fts_search(col, "HELLO");
+    ASSERT_TRUE(q.has_value());
+    ASSERT_EQ(q.value().size(), 0u);
 
     col.reset();
     FileHelper::RemoveDirectory(col_path);

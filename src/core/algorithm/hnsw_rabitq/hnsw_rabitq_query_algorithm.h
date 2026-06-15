@@ -23,7 +23,7 @@
 namespace zvec {
 namespace core {
 
-class HnswRabitqQueryEntity;
+struct HnswRabitqQueryEntity;
 
 //! hnsw graph algorithm implement
 class HnswRabitqQueryAlgorithm {

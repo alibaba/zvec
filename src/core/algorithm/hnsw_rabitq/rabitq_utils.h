@@ -34,7 +34,7 @@ struct RabitqConverterHeader {
   uint32_t reserve[3];
 
   RabitqConverterHeader() {
-    memset(this, 0, sizeof(RabitqConverterHeader));
+    memset(static_cast<void *>(this), 0, sizeof(RabitqConverterHeader));
   }
 };
 static_assert(sizeof(RabitqConverterHeader) % 32 == 0,

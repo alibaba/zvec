@@ -40,7 +40,7 @@ from zvec import (
     VectorSchema,
 )
 
-from _zvec.param import _VectorQuery
+from _zvec.param import _SearchQuery
 
 # ----------------------------
 # Invert Index Param Test Case
@@ -152,7 +152,7 @@ class TestIVFIndexParam:
     def test_default(self):
         param = IVFIndexParam()
         assert param.metric_type == MetricType.IP
-        assert param.n_list == 0
+        assert param.n_list == 10
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.type == IndexType.IVF
 
@@ -325,13 +325,26 @@ class TestHnswQueryParam:
         assert param.is_using_refiner == False
         assert param.radius == 0
         assert param.is_linear == False
+        assert param.prefetch_offset == 8
+        assert param.prefetch_lines == 0
 
     def test_custom(self):
-        param = HnswQueryParam(ef=10, is_using_refiner=True, radius=30, is_linear=True)
+        param = HnswQueryParam(
+            ef=10,
+            is_using_refiner=True,
+            radius=30,
+            is_linear=True,
+            extra_params={
+                "prefetch_offset": 16,
+                "prefetch_lines": 4,
+            },
+        )
         assert param.ef == 10
         assert param.is_using_refiner == True
         assert param.radius == 30
         assert param.is_linear == True
+        assert param.prefetch_offset == 16
+        assert param.prefetch_lines == 4
 
     def test_readonly_attributes(self):
         param = HnswQueryParam()

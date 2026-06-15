@@ -34,6 +34,8 @@ static std::string index_type_to_string(const IndexType type) {
       return "HNSW";
     case IndexType::HNSW_RABITQ:
       return "HNSW_RABITQ";
+    case IndexType::DISKANN:
+      return "DISKANN";
     case IndexType::VAMANA:
       return "VAMANA";
     case IndexType::FTS:
@@ -792,8 +794,7 @@ Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
     n_list (int): Number of clusters (inverted lists) to partition the dataset into.
-        If set to 0, the system will auto-select a reasonable value based on data size.
-        Default is 0 (auto).
+        Default is 10.
     n_iters (int): Number of iterations for k-means clustering during index training.
         Higher values yield more stable centroids. Default is 10.
     use_soar (bool): Whether to enable SOAR (Scalable Optimized Adaptive Routing)
@@ -815,7 +816,7 @@ Examples:
 )pbdoc");
   ivf_params
       .def(py::init<MetricType, int, int, bool, QuantizeType>(),
-           py::arg("metric_type") = MetricType::IP, py::arg("n_list") = 0,
+           py::arg("metric_type") = MetricType::IP, py::arg("n_list") = 10,
            py::arg("n_iters") = 10, py::arg("use_soar") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            R"pbdoc(
@@ -823,8 +824,8 @@ Constructs an IVFIndexParam instance.
 
 Args:
     metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
-    n_list (int, optional): Number of inverted lists (clusters). Set to 0 for auto.
-        Defaults to 0.
+    n_list (int, optional): Number of inverted lists (clusters).
+        Defaults to 10.
     n_iters (int, optional): Number of k-means iterations during training.
         Defaults to 10.
     use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
@@ -832,7 +833,7 @@ Args:
         Defaults to QuantizeType.UNDEFINED.
 )pbdoc")
       .def_property_readonly("n_list", &IVFIndexParams::n_list,
-                             "int: Number of inverted lists (0 = auto).")
+                             "int: Number of inverted lists.")
       .def_property_readonly(
           "n_iters", &IVFIndexParams::n_iters,
           "int: Number of k-means iterations during training.")
@@ -875,6 +876,112 @@ Args:
             return std::make_shared<IVFIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<bool>(), t[4].cast<QuantizeType>());
+          }));
+
+  // DiskAnnIndexParams
+  py::class_<DiskAnnIndexParams, VectorIndexParams,
+             std::shared_ptr<DiskAnnIndexParams>>
+      diskann_params(m, "DiskAnnIndexParam", R"pbdoc(
+Parameters for configuring an DiskAnn index.
+
+DiskAnn stores compressed vector in memory and high-definition vector on disk. At query time,
+only compressed vector will be loaded into memory. By this way, search memory at runtime is diminished. 
+
+Attributes:
+    metric_type (MetricType): Distance metric used for similarity computation.
+        Default is ``MetricType.IP`` (inner product).
+    max_degree (int): Maximum out-degree of each node in the Vamana graph.
+        Larger values improve recall at the cost of build time and index size.
+        Clamped to the range [1, 100]. Default is 100.
+    list_size (int): Candidate list size used during graph construction.
+        Larger values improve graph quality and recall at the cost of build time.
+        Clamped to the range [10, 100]. Default is 50.
+    pq_chunk_num (int): Number of PQ chunks used for product-quantizing the
+        in-memory compressed vectors. ``0`` means auto-pick based on dimension.
+        Clamped to the range [1, 1024]. Default is 0.
+    quantize_type (QuantizeType): Optional quantization type for vector
+        compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``.
+
+Examples:
+    >>> from zvec.typing import MetricType, QuantizeType
+    >>> params = DiskAnnIndexParam(
+    ...     metric_type=MetricType.COSINE,
+    ...     max_degree=100,
+    ...     list_size=50,
+    ...     pq_chunk_num=8,
+    ...     quantize_type=QuantizeType.FP16
+    ... )
+    >>> print(params.max_degree)
+    100
+)pbdoc");
+  diskann_params
+      .def(py::init<MetricType, int, int, int, QuantizeType>(),
+           py::arg("metric_type") = MetricType::IP, py::arg("max_degree") = 100,
+           py::arg("list_size") = 50, py::arg("pq_chunk_num") = 0,
+           py::arg("quantize_type") = QuantizeType::UNDEFINED,
+           R"pbdoc(
+Constructs an DiskAnnIndexParams instance.
+
+Args:
+    metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
+    max_degree (int, optional): Maximum out-degree of each node in the Vamana
+        graph. Clamped to [1, 100]. Defaults to 100.
+    list_size (int, optional): Candidate list size used during graph
+        construction. Clamped to [10, 100]. Defaults to 50.
+    pq_chunk_num (int, optional): Number of PQ chunks for product
+        quantization. ``0`` means auto-pick based on dimension.
+        Clamped to [1, 1024]. Defaults to 0.
+    quantize_type (QuantizeType, optional): Vector quantization type.
+        Defaults to QuantizeType.UNDEFINED.
+)pbdoc")
+      .def_property_readonly("max_degree", &DiskAnnIndexParams::max_degree,
+                             "int: max node degree.")
+      .def_property_readonly("list_size", &DiskAnnIndexParams::list_size,
+                             "int: list size of graph construction")
+      .def_property_readonly(
+          "pq_chunk_num",
+          [](const DiskAnnIndexParams &self) -> int {
+            return self.pq_chunk_num();
+          },
+          "int: chunk num of production quantization.")
+      .def(
+          "to_dict",
+          [](const DiskAnnIndexParams &self) -> py::dict {
+            py::dict dict;
+            dict["type"] = index_type_to_string(self.type());
+            dict["metric_type"] = metric_type_to_string(self.metric_type());
+            dict["max_degree"] = self.max_degree();
+            dict["list_size"] = self.list_size();
+            dict["pq_chunk_num"] = self.pq_chunk_num();
+            dict["quantize_type"] =
+                quantize_type_to_string(self.quantize_type());
+            return dict;
+          },
+          "Convert to dictionary with all fields")
+      .def(
+          "__repr__",
+          [](const DiskAnnIndexParams &self) {
+            return "{"
+                   "\"metric_type\":" +
+                   metric_type_to_string(self.metric_type()) +
+                   ", \"max_degree\":" + std::to_string(self.max_degree()) +
+                   ", \"list_size\":" + std::to_string(self.list_size()) +
+                   ", \"pq_chunk_num\":" + std::to_string(self.pq_chunk_num()) +
+                   ", \"quantize_type\":" +
+                   quantize_type_to_string(self.quantize_type()) + "}";
+          })
+      .def(py::pickle(
+          [](const DiskAnnIndexParams &self) {
+            return py::make_tuple(self.metric_type(), self.max_degree(),
+                                  self.list_size(), self.pq_chunk_num(),
+                                  self.quantize_type());
+          },
+          [](py::tuple t) {
+            if (t.size() != 5)
+              throw std::runtime_error("Invalid state for DiskAnnIndexParams");
+            return std::make_shared<DiskAnnIndexParams>(
+                t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<int>(), t[4].cast<QuantizeType>());
           }));
 }
 
@@ -950,10 +1057,24 @@ Examples:
     {"type":"HNSW", "ef":300}
 )pbdoc");
   hnsw_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init([](int ef, float radius, bool is_linear,
+                       bool is_using_refiner, py::dict extra_params) {
+             auto obj = std::make_shared<HnswQueryParams>(ef, radius, is_linear,
+                                                          is_using_refiner);
+             if (extra_params.contains("prefetch_offset")) {
+               obj->set_prefetch_offset(
+                   extra_params["prefetch_offset"].cast<uint32_t>());
+             }
+             if (extra_params.contains("prefetch_lines")) {
+               obj->set_prefetch_lines(
+                   extra_params["prefetch_lines"].cast<uint32_t>());
+             }
+             return obj;
+           }),
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
+           py::arg("extra_params") = py::dict(),
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
@@ -963,10 +1084,29 @@ Args:
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    extra_params (dict, optional): Additional search parameters. Supported keys:
+        - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+          ``0`` disables prefetching. Default is ``8``.
+          Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
+          per neighbour vector (PL). ``0`` (default) uses the auto-derived
+          value ``ceil(vector_size/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef", [](const HnswQueryParams &self) -> int { return self.ef(); },
           "int: Size of the dynamic candidate list during HNSW search.")
+      .def_property_readonly(
+          "prefetch_offset",
+          [](const HnswQueryParams &self) -> uint32_t {
+            return self.prefetch_offset();
+          },
+          "int: Graph prefetch offset used by the HNSW fast path.")
+      .def_property_readonly(
+          "prefetch_lines",
+          [](const HnswQueryParams &self) -> uint32_t {
+            return self.prefetch_lines();
+          },
+          "int: Override of prefetch cache lines per vector (0=auto).")
       .def("__repr__",
            [](const HnswQueryParams &self) -> std::string {
              return "{"
@@ -976,20 +1116,32 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"prefetch_offset\":" +
+                    std::to_string(self.prefetch_offset()) +
+                    ", \"prefetch_lines\":" +
+                    std::to_string(self.prefetch_lines()) + "}";
            })
       .def(py::pickle(
           [](const HnswQueryParams &self) {
             return py::make_tuple(self.ef(), self.radius(), self.is_linear(),
-                                  self.is_using_refiner());
+                                  self.is_using_refiner(),
+                                  self.prefetch_offset(),
+                                  self.prefetch_lines());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for HnswQueryParams");
             auto obj = std::make_shared<HnswQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() >= 5) {
+              obj->set_prefetch_offset(t[4].cast<uint32_t>());
+            }
+            if (t.size() >= 6) {
+              obj->set_prefetch_lines(t[5].cast<uint32_t>());
+            }
             return obj;
           }));
 
@@ -1118,6 +1270,54 @@ Args:
             return obj;
           }));
 
+  // binding diskann query params
+  py::class_<DiskAnnQueryParams, QueryParams,
+             std::shared_ptr<DiskAnnQueryParams>>
+      diskann_params(m, "DiskAnnQueryParam", R"pbdoc(
+Query parameters for DiskAnn index.
+
+Attributes:
+    type (IndexType): Always ``IndexType.DISKANN``.
+    list_size (int): Beam-search candidate list size used at query time.
+        Higher values improve recall but increase latency. Default is 10.
+
+Examples:
+    >>> params = DiskAnnQueryParam(list_size=20)
+    >>> print(params.list_size)
+    20
+)pbdoc");
+  diskann_params
+      .def(py::init<int>(), py::arg("list_size") = 300, R"pbdoc(
+Constructs an DiskAnnQueryParams instance.
+
+Args:
+    list_size (int, optional): Beam-search candidate list size during
+        graph search. Higher values improve recall at the cost of latency.
+        Defaults to 300.
+)pbdoc")
+      .def_property_readonly(
+          "list_size",
+          [](const DiskAnnQueryParams &self) -> int {
+            return self.list_size();
+          },
+          "int: Beam-search candidate list size during DiskAnn query.")
+      .def("__repr__",
+           [](const DiskAnnQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":" +
+                    index_type_to_string(self.type()) +
+                    ", \"list_size\":" + std::to_string(self.list_size()) + "}";
+           })
+      .def(py::pickle(
+          [](const DiskAnnQueryParams &self) {
+            return py::make_tuple(self.list_size());
+          },
+          [](py::tuple t) {
+            if (t.size() != 1)
+              throw std::runtime_error("Invalid state for DiskAnnQueryParams");
+            return std::make_shared<DiskAnnQueryParams>(t[0].cast<int>());
+          }));
+
   // binding vamana query params
   py::class_<VamanaQueryParams, QueryParams, std::shared_ptr<VamanaQueryParams>>
       vamana_query_params(m, "VamanaQueryParam", R"pbdoc(
@@ -1143,10 +1343,24 @@ Examples:
     200
 )pbdoc");
   vamana_query_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init([](int ef_search, float radius, bool is_linear,
+                       bool is_using_refiner, py::dict extra_params) {
+             auto obj = std::make_shared<VamanaQueryParams>(
+                 ef_search, radius, is_linear, is_using_refiner);
+             if (extra_params.contains("prefetch_offset")) {
+               obj->set_prefetch_offset(
+                   extra_params["prefetch_offset"].cast<uint32_t>());
+             }
+             if (extra_params.contains("prefetch_lines")) {
+               obj->set_prefetch_lines(
+                   extra_params["prefetch_lines"].cast<uint32_t>());
+             }
+             return obj;
+           }),
            py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
+           py::arg("extra_params") = py::dict(),
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1157,11 +1371,30 @@ Args:
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    extra_params (dict, optional): Additional search parameters. Supported keys:
+        - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+          ``0`` disables prefetching. Default is ``8``.
+          Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
+          per neighbour vector (PL). ``0`` (default) uses the auto-derived
+          value ``ceil(dim/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef_search",
           [](const VamanaQueryParams &self) -> int { return self.ef_search(); },
           "int: Size of the dynamic candidate list during Vamana search.")
+      .def_property_readonly(
+          "prefetch_offset",
+          [](const VamanaQueryParams &self) -> uint32_t {
+            return self.prefetch_offset();
+          },
+          "int: Graph prefetch offset used by the Vamana fast path.")
+      .def_property_readonly(
+          "prefetch_lines",
+          [](const VamanaQueryParams &self) -> uint32_t {
+            return self.prefetch_lines();
+          },
+          "int: Override of prefetch cache lines per vector (0=auto).")
       .def("__repr__",
            [](const VamanaQueryParams &self) -> std::string {
              return "{"
@@ -1171,20 +1404,32 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"prefetch_offset\":" +
+                    std::to_string(self.prefetch_offset()) +
+                    ", \"prefetch_lines\":" +
+                    std::to_string(self.prefetch_lines()) + "}";
            })
       .def(py::pickle(
           [](const VamanaQueryParams &self) {
             return py::make_tuple(self.ef_search(), self.radius(),
-                                  self.is_linear(), self.is_using_refiner());
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.prefetch_offset(),
+                                  self.prefetch_lines());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for VamanaQueryParams");
             auto obj = std::make_shared<VamanaQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() >= 5) {
+              obj->set_prefetch_offset(t[4].cast<uint32_t>());
+            }
+            if (t.size() >= 6) {
+              obj->set_prefetch_lines(t[5].cast<uint32_t>());
+            }
             return obj;
           }));
 
@@ -1538,19 +1783,19 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
       .def(py::init<>())
       .def_readwrite("num_candidates", &SubQuery::num_candidates_)
       .def_static(
-          "from_vector_query",
+          "from_search_query",
           [](const SearchQuery &sq) {
             SubQuery sub;
             sub.num_candidates_ = sq.topk_;
             sub.target_ = sq.target_;
             return sub;
           },
-          py::arg("vector_query"),
+          py::arg("search_query"),
           "Create a SubQuery from a single-target search query.");
 
-  // _VectorQuery is the historical Python class name; it now wraps the
+  // _SearchQuery is the Python class name; it wraps the
   // single-target SearchQuery so external Python code keeps working unchanged.
-  py::class_<SearchQuery>(m, "_VectorQuery")
+  py::class_<SearchQuery>(m, "_SearchQuery")
       .def(py::init<>())
       // properties
       .def_readwrite("topk", &SearchQuery::topk_)
@@ -1805,7 +2050,7 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
           },
           [](py::tuple t) {
             if (t.size() != 10)
-              throw std::runtime_error("Invalid pickle data for _VectorQuery");
+              throw std::runtime_error("Invalid pickle data for _SearchQuery");
 
             SearchQuery obj{};
             obj.topk_ = t[0].cast<int>();

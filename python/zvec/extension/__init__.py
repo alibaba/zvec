@@ -24,6 +24,7 @@ from .openai_function import OpenAIFunctionBase
 from .qwen_embedding_function import QwenDenseEmbedding, QwenSparseEmbedding
 from .qwen_function import QwenFunctionBase
 from .qwen_rerank_function import QwenReRanker
+from .rerank_function import RerankFunction
 from .rerank_function import RerankFunction as ReRanker
 from .sentence_transformer_embedding_function import (
     DefaultLocalDenseEmbedding,
@@ -49,6 +50,7 @@ __all__ = [
     "QwenReRanker",
     "QwenSparseEmbedding",
     "ReRanker",
+    "RerankFunction",
     "RrfReRanker",
     "SentenceTransformerFunctionBase",
     "SparseEmbeddingFunction",

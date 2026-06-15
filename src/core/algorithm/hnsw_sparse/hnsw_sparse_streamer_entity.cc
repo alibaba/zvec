@@ -538,7 +538,7 @@ int HnswSparseStreamerEntity::dump(const IndexDumper::Pointer &dumper) {
       return 0U;
     };
     auto meta = reinterpret_cast<const UpperNeighborIndexMeta *>(&it->second);
-    return meta->level;
+    return meta->bits.level;
   };
   auto ret = dump_segments(dumper, keys.data(), get_level);
   if (ailego_unlikely(ret < 0)) {

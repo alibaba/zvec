@@ -22,6 +22,8 @@ constexpr static uint32_t kDefaultHnswEfConstruction = 500;
 constexpr static uint32_t kDefaultHnswNeighborCnt = 50;
 
 constexpr static uint32_t kDefaultHnswEfSearch = 300;
+constexpr static uint32_t kDefaultPrefetchOffset = 8;
+constexpr static uint32_t kDefaultPrefetchLines = 0;
 
 constexpr static uint32_t kDefaultVamanaMaxDegree = 64;
 constexpr static uint32_t kDefaultVamanaSearchListSize = 100;
@@ -33,5 +35,8 @@ constexpr static bool kDefaultVamanaSaturateGraph = false;
 constexpr const uint32_t kDefaultRabitqTotalBits = 7;
 constexpr const uint32_t kDefaultRabitqNumClusters = 16;
 
+constexpr const uint32_t kDefaultDiskAnnMaxDegree = 100;
+constexpr const uint32_t kDefaultDiskAnnListSize = 200;
+constexpr const uint32_t kDefaultDiskAnnPqChunkNum = 16;
 
 }  // namespace zvec::core_interface

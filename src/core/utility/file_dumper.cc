@@ -99,6 +99,11 @@ struct FileDumper : public IndexDumper {
     return packer_.magic();
   }
 
+  //! Retrieve size of index
+  size_t size(void) const override {
+    return file_.size();
+  }
+
  protected:
   //! Close index file
   bool close_index(void) {

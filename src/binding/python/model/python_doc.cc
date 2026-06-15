@@ -285,7 +285,7 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
               d[py::int_(indices[i])] =
                   py::float_(static_cast<float>(values[i]));
             }
-            return std::move(d);
+            return d;
           }
           case DataType::SPARSE_VECTOR_FP32: {
             auto vector =
@@ -297,7 +297,7 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
             for (size_t i = 0; i < indices.size(); ++i) {
               d[py::int_(indices[i])] = py::float_(values[i]);
             }
-            return std::move(d);
+            return d;
           }
           default:
             throw py::type_error("Unsupported type for field: " + field);
@@ -414,7 +414,7 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
                     d[py::int_(indices[i])] =
                         py::float_(static_cast<float>(values[i]));
                   }
-                  return std::move(d);
+                  return d;
                 }
                 case DataType::SPARSE_VECTOR_FP32: {
                   auto vector = self.get<
@@ -426,7 +426,7 @@ void ZVecPyDoc::bind_doc(py::module_ &m) {
                   for (size_t i = 0; i < indices.size(); ++i) {
                     d[py::int_(indices[i])] = py::float_(values[i]);
                   }
-                  return std::move(d);
+                  return d;
                 }
                 default:
                   throw py::type_error("Unsupported type for field: " + vec);

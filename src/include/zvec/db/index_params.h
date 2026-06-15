@@ -54,7 +54,7 @@ class IndexParams {
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
            type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
-           type_ == IndexType::VAMANA;
+           type_ == IndexType::DISKANN || type_ == IndexType::VAMANA;
   }
 
   IndexType type() const {
@@ -454,6 +454,78 @@ class IVFIndexParams : public VectorIndexParams {
   bool use_soar_;
 };
 
+class DiskAnnIndexParams : public VectorIndexParams {
+ public:
+  DiskAnnIndexParams(MetricType metric_type, int max_degree = 100,
+                     int list_size = 50, int pq_chunk_num = 0,
+                     QuantizeType quantize_type = QuantizeType::UNDEFINED)
+      : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type),
+        max_degree_{max_degree},
+        list_size_{list_size},
+        pq_chunk_num_{pq_chunk_num} {}
+
+  using OPtr = std::shared_ptr<DiskAnnIndexParams>;
+
+ public:
+  Ptr clone() const override {
+    return std::make_shared<DiskAnnIndexParams>(
+        metric_type_, max_degree_, list_size_, pq_chunk_num_, quantize_type_);
+  }
+
+  std::string to_string() const override {
+    auto base_str = vector_index_params_to_string("DiskAnnIndexParams",
+                                                  metric_type_, quantize_type_);
+    std::ostringstream oss;
+    oss << base_str << ",max_degree:" << max_degree_
+        << ",list_size:" << list_size_ << ", pq_chunk_num:" << pq_chunk_num_
+        << "}";
+    return oss.str();
+  }
+
+  int max_degree() const {
+    return max_degree_;
+  }
+
+  void set_max_degree(int max_degree) {
+    max_degree_ = max_degree;
+  }
+
+  int list_size() const {
+    return list_size_;
+  }
+
+  void set_list_size(int list_size) {
+    list_size_ = list_size;
+  }
+
+  int pq_chunk_num() const {
+    return pq_chunk_num_;
+  }
+
+  void set_pq_chunk_num(int pq_chunk_num) {
+    pq_chunk_num_ = pq_chunk_num;
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    return type() == other.type() &&
+           metric_type() ==
+               static_cast<const DiskAnnIndexParams &>(other).metric_type() &&
+           max_degree_ ==
+               static_cast<const DiskAnnIndexParams &>(other).max_degree_ &&
+           list_size_ ==
+               static_cast<const DiskAnnIndexParams &>(other).list_size_ &&
+           pq_chunk_num_ ==
+               static_cast<const DiskAnnIndexParams &>(other).pq_chunk_num_ &&
+           quantize_type() ==
+               static_cast<const DiskAnnIndexParams &>(other).quantize_type();
+  }
+
+ private:
+  int max_degree_;
+  int list_size_;
+  int pq_chunk_num_;
+};
+
 /*
  * Vector: Vamana index params
  */
@@ -514,6 +586,7 @@ class VamanaIndexParams : public VectorIndexParams {
   int max_degree() const {
     return max_degree_;
   }
+
   void set_max_degree(int max_degree) {
     max_degree_ = max_degree;
   }

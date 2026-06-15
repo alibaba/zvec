@@ -20,6 +20,7 @@ from ..common import VectorType
 
 __all__ = [
     "Doc",
+    "DocList",
 ]
 
 
@@ -171,3 +172,7 @@ class Doc:
         else:
             obj.vectors = {}
         return obj
+
+
+#: Type alias for query results: a list of documents returned by a single query route.
+DocList = list[Doc]

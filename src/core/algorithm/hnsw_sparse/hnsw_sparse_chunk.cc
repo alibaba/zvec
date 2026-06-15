@@ -71,7 +71,7 @@ int SparseChunkBroker::load_storage(size_t chunk_size) {
               chunk_meta_segment_->data_size());
     return IndexError_InvalidFormat;
   }
-  std::memcpy(&chunk_meta_, data_block.data(), size);
+  std::memcpy(static_cast<void *>(&chunk_meta_), data_block.data(), size);
   if (chunk_meta_.chunk_size != chunk_size) {
     LOG_ERROR(
         "Params hnsw chunk size=%zu mismatch from previous %zu "

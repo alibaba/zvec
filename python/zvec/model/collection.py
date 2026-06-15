@@ -18,11 +18,11 @@ from typing import Optional, Union, overload
 
 from _zvec import _Collection
 
-from ..executor import QueryContext, QueryExecutorFactory
+from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
 from ..typing import Status
 from .convert import convert_to_cpp_doc, convert_to_py_doc
-from .doc import Doc
+from .doc import Doc, DocList
 from .param import (
     AddColumnOption,
     AlterColumnOption,
@@ -63,7 +63,7 @@ class Collection:
         inst._obj = core_collection
         schema = CollectionSchema._from_core(core_collection.Schema())
         inst._schema = schema
-        inst._querier = QueryExecutorFactory.create(schema)
+        inst._querier = QueryExecutor(schema)
         return inst
 
     @property
@@ -381,7 +381,7 @@ class Collection:
         include_vector: bool = False,
         output_fields: Optional[list[str]] = None,
         reranker: Optional[ReRanker] = None,
-    ) -> list[Doc]:
+    ) -> DocList:
         """Perform vector similarity search with optional filtering and re-ranking.
 
         At least one `Query` must be provided via `queries`.
@@ -403,7 +403,7 @@ class Collection:
                 Defaults to None.
 
         Returns:
-            list[Doc]: Top-k matching documents, sorted by relevance score.
+            DocList: Top-k matching documents, sorted by relevance score.
 
         Examples:
             >>> from zvec import Query

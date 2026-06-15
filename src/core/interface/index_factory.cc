@@ -47,6 +47,10 @@ Index::Pointer IndexFactory::CreateAndInitIndex(const BaseIndexParam &param) {
     ptr = std::make_shared<IVFIndex>();
   } else if (param.index_type == IndexType::kHNSWRabitq) {
     ptr = std::make_shared<HNSWRabitqIndex>();
+#if DISKANN_SUPPORTED
+  } else if (param.index_type == IndexType::kDiskAnn) {
+    ptr = std::make_shared<DiskAnnIndex>();
+#endif
   } else if (param.index_type == IndexType::kVamana) {
     ptr = std::make_shared<VamanaIndex>();
   } else {
@@ -162,6 +166,12 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     if (!omit_empty_value || param.ef_search != 0) {
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
     }
+    if (!omit_empty_value || param.prefetch_offset != 0) {
+      json_obj.set("prefetch_offset", ailego::JsonValue(param.prefetch_offset));
+    }
+    if (!omit_empty_value || param.prefetch_lines != 0) {
+      json_obj.set("prefetch_lines", ailego::JsonValue(param.prefetch_lines));
+    }
     index_type = IndexType::kHNSW;
   } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
     if (!omit_empty_value || param.nprobe != 0) {
@@ -180,6 +190,12 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
   } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
     if (!omit_empty_value || param.ef_search != 0) {
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
+    }
+    if (!omit_empty_value || param.prefetch_offset != 0) {
+      json_obj.set("prefetch_offset", ailego::JsonValue(param.prefetch_offset));
+    }
+    if (!omit_empty_value || param.prefetch_lines != 0) {
+      json_obj.set("prefetch_lines", ailego::JsonValue(param.prefetch_lines));
     }
     index_type = IndexType::kVamana;
   }
@@ -264,6 +280,16 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize ef_search");
         return nullptr;
       }
+      if (!extract_value_from_json(json_obj, "prefetch_offset",
+                                   param->prefetch_offset, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_offset");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "prefetch_lines",
+                                   param->prefetch_lines, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_lines");
+        return nullptr;
+      }
       return param;
     } else if (index_type == IndexType::kIVF) {
       auto param = std::make_shared<IVFQueryParam>();
@@ -297,6 +323,16 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize ef_search");
         return nullptr;
       }
+      if (!extract_value_from_json(json_obj, "prefetch_offset",
+                                   param->prefetch_offset, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_offset");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "prefetch_lines",
+                                   param->prefetch_lines, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_lines");
+        return nullptr;
+      }
       return param;
     } else {
       LOG_ERROR("Unsupported index type: %s",
@@ -315,6 +351,16 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize ef_search");
         return nullptr;
       }
+      if (!extract_value_from_json(json_obj, "prefetch_offset",
+                                   param->prefetch_offset, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_offset");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "prefetch_lines",
+                                   param->prefetch_lines, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_lines");
+        return nullptr;
+      }
     } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
       if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
                                    tmp_json_value)) {
@@ -331,6 +377,16 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize ef_search");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "prefetch_offset",
+                                   param->prefetch_offset, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_offset");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "prefetch_lines",
+                                   param->prefetch_lines, tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize prefetch_lines");
         return nullptr;
       }
     } else {

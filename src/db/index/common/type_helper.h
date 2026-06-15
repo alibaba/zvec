@@ -44,6 +44,8 @@ struct IndexTypeCodeBook {
         return IndexType::VAMANA;
       case proto::IT_INVERT:
         return IndexType::INVERT;
+      case proto::IT_DISKANN:
+        return IndexType::DISKANN;
       case proto::IT_FTS:
         return IndexType::FTS;
       default:
@@ -67,6 +69,8 @@ struct IndexTypeCodeBook {
         return proto::IT_VAMANA;
       case IndexType::INVERT:
         return proto::IT_INVERT;
+      case IndexType::DISKANN:
+        return proto::IT_DISKANN;
       case IndexType::FTS:
         return proto::IT_FTS;
       default:
@@ -86,6 +90,8 @@ struct IndexTypeCodeBook {
         return "FLAT";
       case IndexType::IVF:
         return "IVF";
+      case IndexType::DISKANN:
+        return "DISKANN";
       case IndexType::VAMANA:
         return "VAMANA";
       case IndexType::INVERT:
@@ -503,6 +509,9 @@ struct BlockTypeCodeBook {
       case proto::BlockType::BT_VECTOR_INDEX_QUANTIZE:
         block_types = BlockType::VECTOR_INDEX_QUANTIZE;
         break;
+      case proto::BlockType::BT_FTS_INDEX:
+        block_types = BlockType::FTS_INDEX;
+        break;
       default:
         break;
     }
@@ -524,6 +533,9 @@ struct BlockTypeCodeBook {
       case BlockType::VECTOR_INDEX_QUANTIZE:
         block_types = proto::BlockType::BT_VECTOR_INDEX_QUANTIZE;
         break;
+      case BlockType::FTS_INDEX:
+        block_types = proto::BlockType::BT_FTS_INDEX;
+        break;
       default:
         break;
     }
@@ -541,6 +553,8 @@ struct BlockTypeCodeBook {
         return "VECTOR_INDEX";
       case BlockType::VECTOR_INDEX_QUANTIZE:
         return "VECTOR_INDEX_QUANTIZE";
+      case BlockType::FTS_INDEX:
+        return "FTS_INDEX";
       default:
         return "UNDEFINED";
     }
