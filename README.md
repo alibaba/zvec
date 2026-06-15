@@ -35,14 +35,14 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.4.0 (May 9, 2026)**
+> 🚀 **v0.5.0 (June 12, 2026)**
 >
-> - **Dart/Flutter SDK**: Published the official [zvec](https://github.com/zvec-ai/zvec-dart) Flutter package with FFI bindings. Supports Android (arm64-v8a) and iOS (arm64) — no manual native compilation required.
-> - **iOS Build Support**: Added support for building on iOS platforms, expanding cross-platform coverage.
-> - **Enlarged topK Limit**: Relaxed the upper bound on topK to support larger-scale recall scenarios.
-> - **Bug Fixes**: SQ8 quantizer recall drop; Windows path handling; sparse vector index ordering.
+> - **Full-Text Search (FTS)**: Native full-text search — attach an FTS index to any string field and query it with natural-language or structured expressions, no external search engine required.
+> - **Hybrid Retrieval**: Combine full-text and vector search in a single `MultiQuery` across dense vectors, sparse vectors, scalar filters, and text.
+> - **DiskANN Index**: New on-disk index that keeps the bulk of the index on disk, drastically cutting memory usage for large-scale datasets.
+> - **Ecosystem & Platforms**: New official [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDKs, the [Zvec Studio](https://github.com/zvec-ai/zvec-studio) visual tool, and RISC-V support.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.4.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.5.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 
@@ -50,6 +50,8 @@
 - **Simple, Just Works**: [Install](#-installation) and start searching in seconds. Pure local, no servers, no config, no fuss.
 - **Dense + Sparse Vectors**: Work with both dense and sparse embeddings, with native support for multi-vector queries in a single call.
 - **Hybrid Search**: Combine semantic similarity with structured filters for precise results.
+- **Full-Text Search (FTS)**: Native full-text search — query string fields with natural-language or structured expressions, no external search engine required.
+- **Index-Rich**: Choose from HNSW, IVF, Flat, and on-disk DiskANN to fit your data scale and performance needs, from pure in-memory to on-disk workloads.
 - **Durable Storage**: Write-ahead logging (WAL) guarantees persistence — data is never lost, even on process crash or power failure.
 - **Concurrent Access**: Multiple processes can read the same collection simultaneously; writes are single-process exclusive.
 - **Runs Anywhere**: As an in-process library, Zvec runs wherever your code runs — notebooks, servers, CLI tools, or even edge devices.
