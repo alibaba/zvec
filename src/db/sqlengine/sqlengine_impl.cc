@@ -171,6 +171,11 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
   }
 
   auto *fts_query_param = dynamic_cast<FtsQueryParams *>(query_params.get());
+  if (query_params && !fts_query_param) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "FTS query only accepts FtsQueryParam, got incompatible query param "
+        "type"));
+  }
 
   // Determine default operator once, shared by both query_string and
   // match_string paths. Accept "and"/"or" case-insensitively, empty means OR;

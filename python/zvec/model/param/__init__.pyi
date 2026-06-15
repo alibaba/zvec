@@ -14,6 +14,8 @@ __all__: list[str] = [
     "AlterColumnOption",
     "CollectionOption",
     "FlatIndexParam",
+    "FtsIndexParam",
+    "FtsQueryParam",
     "HnswIndexParam",
     "HnswQueryParam",
     "HnswRabitqIndexParam",
@@ -676,6 +678,107 @@ class VamanaQueryParam(QueryParam):
     @property
     def prefetch_lines(self) -> int:
         """int: Override of prefetch cache lines per vector (0=auto)."""
+
+class FtsIndexParam(IndexParam):
+    """
+
+    Parameters for configuring a full-text search (FTS) index.
+
+    Controls the tokenizer pipeline used during indexing and querying.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.FTS``.
+        tokenizer_name (str): Name of the tokenizer (e.g., "standard", "jieba").
+            Default is "standard".
+        filters (list[str]): List of token filter names applied after tokenization.
+            Default is ["lowercase"].
+        extra_params (str): Additional parameters passed to the tokenizer.
+            Default is "".
+
+    Examples:
+        >>> params = FtsIndexParam(tokenizer_name="jieba", filters=["lowercase"])
+        >>> print(params.tokenizer_name)
+        jieba
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        tokenizer_name: str = "standard",
+        filters: list[str] = ...,
+        extra_params: str = "",
+    ) -> None:
+        """
+        Constructs an FtsIndexParam instance.
+
+        Args:
+            tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
+            filters (list[str], optional): Token filter names. Defaults to ["lowercase"].
+            extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def tokenizer_name(self) -> str:
+        """
+        str: Name of the tokenizer.
+        """
+
+    @property
+    def filters(self) -> list[str]:
+        """
+        list[str]: Token filter names.
+        """
+
+    @property
+    def extra_params(self) -> str:
+        """
+        str: Additional tokenizer parameters.
+        """
+
+class FtsQueryParam(QueryParam):
+    """
+
+    Query parameters for full-text search (FTS) index.
+
+    Controls the default boolean operator used to combine adjacent bare terms
+    in a query string.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.FTS``.
+        default_operator (str): Default boolean operator for adjacent bare terms.
+            Supported values (case-insensitive): "OR" (default), "AND".
+
+    Examples:
+        >>> params = FtsQueryParam(default_operator="AND")
+        >>> print(params.default_operator)
+        AND
+    """
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        default_operator: str = "",
+    ) -> None:
+        """
+        Constructs an FtsQueryParam instance.
+
+        Args:
+            default_operator (str, optional): Default boolean operator for adjacent
+                bare terms. Supported: "OR", "AND". Defaults to "" (uses engine default).
+        """
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def default_operator(self) -> str:
+        """
+        str: Default boolean operator for bare terms.
+        """
 
 class IndexOption:
     """
