@@ -35,36 +35,6 @@ if(WIN32)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-if(ZVEC_ENABLE_OMEGA)
-    # OMEGA support is compiled into libzvec.so; no extra libraries needed
-    # at link time for the examples.  We only verify the host build produced
-    # the OMEGA static libs so we know the feature was actually compiled in.
-    set(_zvec_omega_search_paths
-        ${ZVEC_DEPENDENCY_LIB_DIR}
-        ${ZVEC_DEPENDENCY_LIB_DIR}/Debug
-        ${ZVEC_DEPENDENCY_LIB_DIR}/Release
-        ${ZVEC_DEPENDENCY_LIB_DIR}/RelWithDebInfo
-        ${ZVEC_DEPENDENCY_LIB_DIR}/MinSizeRel
-    )
-    find_library(ZVEC_OMEGA_LIB
-        NAMES omega
-        PATHS ${_zvec_omega_search_paths}
-        NO_DEFAULT_PATH
-    )
-    find_library(ZVEC_LIGHTGBM_LIB
-        NAMES lib_lightgbm _lightgbm
-        PATHS ${_zvec_omega_search_paths}
-        NO_DEFAULT_PATH
-    )
-    if(NOT ZVEC_OMEGA_LIB OR NOT ZVEC_LIGHTGBM_LIB)
-        message(WARNING
-            "ZVEC_ENABLE_OMEGA=ON but could not locate OMEGA host libraries under "
-            "${ZVEC_DEPENDENCY_LIB_DIR}. "
-            "omega-example will still link against libzvec (which should bundle OMEGA)."
-        )
-    endif()
-endif()
-
 # --- Dependency groups ---
 find_package(Threads REQUIRED)
 find_package(OpenMP QUIET)
