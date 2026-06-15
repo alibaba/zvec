@@ -32,13 +32,13 @@ enum class RecordRotatorType : uint8_t {
   Matrix = 1,  //!< O(d^2) explicit random matrix rotation
 };
 
-/*! RecordRotator wraps rabitqlib::Rotator for per-vector rotation.
+/*! RecordRotator provides per-vector rotation without external dependencies.
  *
- * All rabitqlib types are hidden behind a pimpl to avoid leaking
- * rabitqlib headers to consumers of this class.
+ * All rotation algorithms are implemented inline (FHT-based Kac walk and
+ * explicit random matrix), so no rabitqlib headers are required.
  *
  * Provides O(d log d) fast rotation (FHT-based Kac random rotation),
- * as well as serialization (save/load) of the rotation matrix.
+ * as well as serialization (save/load) of the rotation parameters.
  * Used by IntegerStreamingConverter/Reformer when enable_rotate is true.
  */
 class RecordRotator {
@@ -93,7 +93,7 @@ class RecordRotator {
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
 
   //! Dump the rotator to an IndexDumper as a named segment.
-  //! Format: [Header: type(1B)|origin_dim(4B)|padded_dim(4B)] [rabitqlib blob]
+  //! Format: [Header: type(1B)|origin_dim(4B)|padded_dim(4B)] [rotation blob]
   //! Appends padding for 32-byte alignment.
   int dump(const IndexDumper::Pointer &dumper,
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;

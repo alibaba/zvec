@@ -13,11 +13,6 @@ if(RABITQ_SUPPORTED AND AUTO_DETECT_ARCH)
   set(HNSW_RABITQ_FILES_FULL ${HNSW_RABITQ_FILES})
   list(TRANSFORM HNSW_RABITQ_FILES_FULL PREPEND "algorithm/hnsw_rabitq/")
 
-  # record_rotator.cc includes rabitqlib's rotator.hpp which uses AVX2
-  # intrinsics in flip_sign() and kacs_walk(), so it also needs the
-  # RABITQ_ARCH_FLAG at compile time.
-  list(APPEND HNSW_RABITQ_FILES_FULL "quantizer/record_rotator.cc")
-
   foreach(FILE ${HNSW_RABITQ_FILES_FULL})
       set_source_files_properties(
           ${FILE}
@@ -43,6 +38,26 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
           utility/block_heap.cc
           PROPERTIES
           COMPILE_FLAGS "${_BLOCK_HEAP_MARCH_AVX2}"
+      )
+    endif()
+  endif()
+endif()
+
+# quantizer/record_rotator.cc uses FFHT AVX inline assembly guarded by
+# __AVX2__/__AVX512F__. zvec_core glob-collects this source, so per-file
+# AVX2 flags must be set here as well (in addition to the core_quantizer
+# target in quantizer/CMakeLists.txt). Without this the zvec_core copy
+# would compile without AVX2 and the fast path would never be emitted.
+if(NOT ANDROID AND AUTO_DETECT_ARCH)
+  if(HOST_ARCH MATCHES "^(x86|x64)$")
+    setup_compiler_march_for_x86(
+        _ROTATOR_MARCH_SSE _ROTATOR_MARCH_AVX2
+        _ROTATOR_MARCH_AVX512 _ROTATOR_MARCH_AVX512FP16)
+    if(_ROTATOR_MARCH_AVX2)
+      set_source_files_properties(
+          quantizer/record_rotator.cc
+          PROPERTIES
+          COMPILE_FLAGS "${_ROTATOR_MARCH_AVX2}"
       )
     endif()
   endif()
