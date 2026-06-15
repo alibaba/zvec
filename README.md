@@ -35,40 +35,37 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.4.0 (May 9, 2026)**
+> 🚀 **v0.5.0 (June 12, 2026)**
 >
-> - **Dart/Flutter SDK**: Published the official [zvec](https://github.com/zvec-ai/zvec-dart) Flutter package with FFI bindings. Supports Android (arm64-v8a) and iOS (arm64) — no manual native compilation required.
-> - **iOS Build Support**: Added support for building on iOS platforms, expanding cross-platform coverage.
-> - **Enlarged topK Limit**: Relaxed the upper bound on topK to support larger-scale recall scenarios.
-> - **Bug Fixes**: SQ8 quantizer recall drop; Windows path handling; sparse vector index ordering.
+> - **Full-Text Search (FTS)**: Native full-text search — attach an FTS index to any string field and query it with natural-language or structured expressions, no external search engine required.
+> - **Hybrid Retrieval**: Combine full-text and vector search in a single `MultiQuery` across dense vectors, sparse vectors, scalar filters, and text.
+> - **DiskANN Index**: New on-disk index that keeps the bulk of the index on disk, drastically cutting memory usage for large-scale datasets.
+> - **Ecosystem & Platforms**: New official [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDKs, the [Zvec Studio](https://github.com/zvec-ai/zvec-studio) visual tool, and RISC-V support.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.4.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.5.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 
 - **Blazing Fast**: Searches billions of vectors in milliseconds.
 - **Simple, Just Works**: [Install](#-installation) and start searching in seconds. Pure local, no servers, no config, no fuss.
-- **Dense + Sparse Vectors**: Work with both dense and sparse embeddings, with native support for multi-vector queries in a single call.
-- **Hybrid Search**: Combine semantic similarity with structured filters for precise results.
+- **Dense + Sparse Vectors**: Support dense and sparse embeddings, multi-vector queries, and a rich selection of [vector index types](https://zvec.org/en/docs/db/concepts/vector-index/#vector-index-types) that scale from memory to disk.
+- **Full-Text Search (FTS)**: Native keyword-based full-text search — query string fields with natural-language or structured expressions.
+- **Hybrid Search**: Fuse vector similarity, full-text search, and structured filters in a single query for precise results.
 - **Durable Storage**: Write-ahead logging (WAL) guarantees persistence — data is never lost, even on process crash or power failure.
 - **Concurrent Access**: Multiple processes can read the same collection simultaneously; writes are single-process exclusive.
 - **Runs Anywhere**: As an in-process library, Zvec runs wherever your code runs — notebooks, servers, CLI tools, or even edge devices.
 
 ## 📦 Installation
 
-### [Python](https://pypi.org/project/zvec/)
+Zvec offers official SDKs across multiple languages:
 
-**Requirements**: Python 3.10 - 3.14
+- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires Python 3.10–3.14)
+- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
+- **[Go](https://github.com/zvec-ai/zvec-go)**: High-performance Go bindings.
+- **[Rust](https://github.com/zvec-ai/zvec-rust)**: High-performance Rust bindings.
+- **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec`
 
-```bash
-pip install zvec
-```
-
-### [Node.js](https://www.npmjs.com/package/@zvec/zvec)
-
-```bash
-npm install @zvec/zvec
-```
+Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
 ### ✅ Supported Platforms
 
