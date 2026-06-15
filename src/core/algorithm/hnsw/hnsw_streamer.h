@@ -215,6 +215,8 @@ class HnswStreamer : public IndexStreamer {
   uint32_t upper_max_neighbor_cnt_{HnswEntity::kDefaultUpperMaxNeighborCnt};
   uint32_t l0_max_neighbor_cnt_{HnswEntity::kDefaultL0MaxNeighborCnt};
   uint32_t ef_{HnswEntity::kDefaultEf};
+  uint32_t po_{8};
+  uint32_t pl_{0};
   uint32_t ef_construction_{HnswEntity::kDefaultEfConstruction};
   uint32_t scaling_factor_{HnswEntity::kDefaultScalingFactor};
   size_t bruteforce_threshold_{HnswEntity::kDefaultBruteForceThreshold};
