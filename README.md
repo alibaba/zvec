@@ -48,7 +48,7 @@
 
 - **Blazing Fast**: Searches billions of vectors in milliseconds.
 - **Simple, Just Works**: [Install](#-installation) and start searching in seconds. Pure local, no servers, no config, no fuss.
-- **Dense + Sparse Vectors**: Work with dense and sparse embeddings and multi-vector queries, backed by an index-rich set of [vector index types](https://zvec.org/en/docs/db/concepts/vector-index/#vector-index-types) scaling from in-memory to on-disk.
+- **Dense + Sparse Vectors**: Support dense and sparse embeddings, multi-vector queries, and a rich selection of [vector index types](https://zvec.org/en/docs/db/concepts/vector-index/#vector-index-types) that scale from memory to disk.
 - **Full-Text Search (FTS)**: Native keyword-based full-text search — query string fields with natural-language or structured expressions.
 - **Hybrid Search**: Fuse vector similarity, full-text search, and structured filters in a single query for precise results.
 - **Durable Storage**: Write-ahead logging (WAL) guarantees persistence — data is never lost, even on process crash or power failure.
