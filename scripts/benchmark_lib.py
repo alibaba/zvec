@@ -769,7 +769,9 @@ def build_index(
             "optimize_duration": round(optimize_duration, 4)
             if optimize_duration is not None
             else None,
-            "load_duration": round(load_duration, 4) if load_duration is not None else None,
+            "load_duration": round(load_duration, 4)
+            if load_duration is not None
+            else None,
         },
         omega_collection,
     )
