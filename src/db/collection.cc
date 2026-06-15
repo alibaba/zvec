@@ -946,8 +946,8 @@ Status CollectionImpl::RetrainOmega(const RetrainOmegaOptions &options) {
   // Verify collection has at least one OMEGA index
   bool has_omega = false;
   for (const auto &field : schema_->vector_fields()) {
-    if (auto omega_params =
-            std::dynamic_pointer_cast<OmegaIndexParams>(field->index_params())) {
+    if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(
+            field->index_params())) {
       has_omega = true;
       break;
     }
