@@ -27,7 +27,7 @@ cc_library(
         STATIC SHARED STRICT ALWAYS_LINK
         SRCS *.cc
         LIBS zvec_ailego core_framework
-        LIBS zvec_ailego zvec_turbo core_framework
+        LIBS zvec_ailego zvec_turbo core_framework rabitqlib
         INCS . ${PROJECT_ROOT_DIR}/src/core
         LDFLAGS "${CORE_QUANTIZER_LDFLAGS}"
         VERSION "${PROXIMA_ZVEC_VERSION}"

@@ -26,7 +26,7 @@
 // FFHT (Fastest Fast Hadamard Transform) — hand-tuned AVX inline assembly
 // from https://github.com/FALCONN-LIB/FFHT, originally bundled in rabitqlib.
 // Provides fht_float(buf, log_n) with per-size helper_float_N specialisations.
-#include "utility/fht_avx.hpp"
+#include "rabitqlib/utils/fht_avx.hpp"
 #elif defined(__SSE2__)
 #include <emmintrin.h>
 #endif
@@ -140,7 +140,6 @@ void flip_sign(const uint8_t *flip, float *data, size_t dim) {
 #elif defined(__SSE2__)
   // 128-bit SSE2: process 4 floats per iteration.
   // Load 2 bytes (16 bits) to safely handle cross-byte boundaries.
-  const __m128i sign_bit = _mm_set1_epi32(static_cast<int>(0x80000000u));
   for (size_t i = 0; i < dim; i += 4) {
     uint16_t bits16;
     std::memcpy(&bits16, &flip[i / 8], sizeof(bits16));
@@ -150,7 +149,7 @@ void flip_sign(const uint8_t *flip, float *data, size_t dim) {
     uint32_t b2 = (bits16 >> 2) & 1u;
     uint32_t b3 = (bits16 >> 3) & 1u;
     __m128i bit_mask = _mm_set_epi32(b3, b2, b1, b0);
-    __m128i sign_mask = _mm_mullo_epi32(bit_mask, sign_bit);
+    __m128i sign_mask = _mm_slli_epi32(bit_mask, 31);
     __m128 v = _mm_loadu_ps(&data[i]);
     v = _mm_xor_ps(v, _mm_castsi128_ps(sign_mask));
     _mm_storeu_ps(&data[i], v);
@@ -252,30 +251,6 @@ struct FhtKacRotatorImpl {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> dist(0, 255);
     for (auto &b : flip) b = static_cast<uint8_t>(dist(gen));
-
-    // Log SIMD path for debugging
-    const char *simd =
-#if defined(__AVX512F__) && defined(__AVX512DQ__)
-        "AVX512F+DQ"
-#elif defined(__AVX2__)
-        "AVX2"
-#elif defined(__ARM_NEON) && defined(__aarch64__)
-        "ARM-NEON"
-#elif defined(__SSE2__)
-        "SSE2"
-#else
-        "Scalar"
-#endif
-        ;
-    const char *fht =
-#if defined(__AVX2__) || defined(__AVX512F__)
-        "FFHT-AVX"
-#else
-        "Generic"
-#endif
-        ;
-    LOG_WARN("RecordRotator[FhtKac] SIMD=%s, FHT=%s, padded_dim=%zu",
-             simd, fht, padded_dim);
   }
 
   void rotate(const float *in, float *out, size_t dim,
@@ -357,7 +332,6 @@ struct MatrixRotatorImpl {
   std::vector<float> matrix;  // dim x padded_dim, row-major
 
   void init(size_t dim, size_t padded_dim) {
-    LOG_WARN("RecordRotator[Matrix] dim=%zu, padded_dim=%zu", dim, padded_dim);
     std::random_device rd;
     std::mt19937 gen(rd());
     std::normal_distribution<float> normal(0.0f, 1.0f);
@@ -776,32 +750,6 @@ int RecordRotator::open(IndexStorage::Pointer storage,
       "RecordRotator::open done: seg=%s, dim=%zu, padded_dim=%zu, "
       "data_size=%zu",
       seg_id.c_str(), impl_->dimension, impl_->padded_dim, data_size);
-
-  // Log SIMD path (same format as init, for open/load path)
-  const char *simd =
-#if defined(__AVX512F__) && defined(__AVX512DQ__)
-      "AVX512F+DQ"
-#elif defined(__AVX2__)
-      "AVX2"
-#elif defined(__ARM_NEON) && defined(__aarch64__)
-      "ARM-NEON"
-#elif defined(__SSE2__)
-      "SSE2"
-#else
-      "Scalar"
-#endif
-      ;
-  const char *fht =
-#if defined(__AVX2__) || defined(__AVX512F__)
-      "FFHT-AVX"
-#else
-      "Generic"
-#endif
-      ;
-  const char *type_name = (impl_->type == RecordRotatorType::FhtKac)
-                              ? "FhtKac" : "Matrix";
-  LOG_WARN("RecordRotator::open [%s] SIMD=%s, FHT=%s, dim=%zu, padded_dim=%zu",
-           type_name, simd, fht, impl_->dimension, impl_->padded_dim);
 
   // Build inverse rotation data for unrotate support
   build_inverse();
