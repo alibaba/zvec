@@ -141,17 +141,18 @@ ParquetBufferContextHandle ParquetBufferPool::acquire_buffer(
       return ParquetBufferContextHandle();
     }
     std::unique_lock<std::shared_mutex> lock(table_mutex_);
-    if (table_.find(buffer_id) != table_.end()) {
-      arrow = set_block_acquired(buffer_id);
+    auto [iter, inserted] = table_.try_emplace(buffer_id);
+    ParquetBufferContext &context = iter->second;
+    if (!inserted) {
+      arrow = set_block_acquired(context);
       return ParquetBufferContextHandle(buffer_id, arrow);
     }
-    if (acquire(buffer_id, table_[buffer_id]).ok()) {
-      MemoryLimitPool::get_instance().acquire_parquet(table_[buffer_id].size);
-      arrow = set_block_acquired(buffer_id);
+    if (acquire(buffer_id, context).ok()) {
+      MemoryLimitPool::get_instance().acquire_parquet(context.size);
+      arrow = set_block_acquired(context);
       return ParquetBufferContextHandle(buffer_id, arrow);
     } else {
-      // Drop the empty entry inserted by operator[] on the failed load path.
-      table_.erase(buffer_id);
+      table_.erase(iter);
       LOG_ERROR("Failed to acquire parquet buffer: %s",
                 buffer_id.to_string().c_str());
       return ParquetBufferContextHandle();
@@ -160,28 +161,14 @@ ParquetBufferContextHandle ParquetBufferPool::acquire_buffer(
 }
 
 std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::set_block_acquired(
-    ParquetBufferID buffer_id) {
-  ParquetBufferContext &context = table_[buffer_id];
-  while (true) {
-    int current_count = context.ref_count.load(std::memory_order_relaxed);
-    if (current_count >= 0) {
-      if (context.ref_count.compare_exchange_weak(
-              current_count, current_count + 1, std::memory_order_acq_rel,
-              std::memory_order_acquire)) {
-        if (current_count == 0) {
-          context.load_count.fetch_add(1, std::memory_order_relaxed);
-        }
-        return context.arrow;
-      }
-    } else {
-      if (context.ref_count.compare_exchange_weak(current_count, 1,
-                                                  std::memory_order_acq_rel,
-                                                  std::memory_order_acquire)) {
-        context.load_count.fetch_add(1, std::memory_order_relaxed);
-        return context.arrow;
-      }
-    }
+    ParquetBufferContext &context) {
+  int current_count = context.ref_count.load(std::memory_order_relaxed);
+  if (current_count <= 0) {
+    context.load_count.fetch_add(1, std::memory_order_relaxed);
+    current_count = 0;
   }
+  context.ref_count.store(current_count + 1, std::memory_order_release);
+  return context.arrow;
 }
 
 std::shared_ptr<arrow::ChunkedArray> ParquetBufferPool::acquire(

@@ -105,6 +105,8 @@ class ParquetBufferContextHandle {
 };
 
 class ParquetBufferPool {
+  friend class ParquetBufferContextHandle;
+
  public:
   typedef std::shared_ptr<ParquetBufferPool> Pointer;
 
@@ -123,20 +125,7 @@ class ParquetBufferPool {
   using Table = std::unordered_map<ParquetBufferID, ParquetBufferContext,
                                    IDHash, IDEqual>;
 
-  arrow::Status acquire(ParquetBufferID buffer_id,
-                        ParquetBufferContext &context);
-
   ParquetBufferContextHandle acquire_buffer(ParquetBufferID buffer_id);
-
-  std::shared_ptr<arrow::ChunkedArray> set_block_acquired(
-      ParquetBufferID buffer_id);
-
-  std::shared_ptr<arrow::ChunkedArray> acquire(ParquetBufferID buffer_id);
-
-  std::shared_ptr<arrow::ChunkedArray> acquire_locked(
-      ParquetBufferID buffer_id);
-
-  void release(ParquetBufferID buffer_id);
 
   void evict(ParquetBufferID buffer_id);
 
@@ -154,6 +143,19 @@ class ParquetBufferPool {
 
  private:
   ParquetBufferPool() = default;
+
+  std::shared_ptr<arrow::ChunkedArray> acquire_locked(
+      ParquetBufferID buffer_id);
+
+  void release(ParquetBufferID buffer_id);
+
+  arrow::Status acquire(ParquetBufferID buffer_id,
+                        ParquetBufferContext &context);
+
+  std::shared_ptr<arrow::ChunkedArray> acquire(ParquetBufferID buffer_id);
+
+  std::shared_ptr<arrow::ChunkedArray> set_block_acquired(
+      ParquetBufferContext &context);
 
  private:
   Table table_;
