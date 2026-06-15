@@ -1856,6 +1856,88 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
                         .build());
 }
 
+TEST(IndexInterface, QuantizerParamEnableRotateSerialization) {
+  constexpr uint32_t kDimension = 64;
+
+  // Test 1: HNSW with enable_rotate=true via builder
+  {
+    auto param = HNSWIndexParamBuilder()
+                     .WithMetricType(MetricType::kCosine)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(kDimension)
+                     .WithIsSparse(false)
+                     .WithEFConstruction(100)
+                     .WithEnableRotate(true)
+                     .Build();
+    ASSERT_NE(nullptr, param.get());
+    EXPECT_TRUE(param->quantizer_param.enable_rotate);
+
+    // Serialize to JSON and verify enable_rotate is present
+    std::string json = param->SerializeToJson();
+    EXPECT_TRUE(json.find("\"enable_rotate\":true") != std::string::npos)
+        << "JSON: " << json;
+
+    // Deserialize and verify
+    auto restored = IndexFactory::DeserializeIndexParamFromJson(json);
+    ASSERT_NE(nullptr, restored.get());
+
+    auto *restored_hnsw = dynamic_cast<const HNSWIndexParam *>(restored.get());
+    ASSERT_NE(nullptr, restored_hnsw);
+    EXPECT_TRUE(restored_hnsw->quantizer_param.enable_rotate);
+
+    // Roundtrip consistency
+    EXPECT_EQ(restored->SerializeToJson(), param->SerializeToJson());
+  }
+
+  // Test 2: Flat with enable_rotate=true via WithQuantizerParam
+  {
+    QuantizerParam qp(QuantizerType::kNone, 8, 8, true);
+    EXPECT_TRUE(qp.enable_rotate);
+
+    auto param = FlatIndexParamBuilder()
+                     .WithMetricType(MetricType::kCosine)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(kDimension)
+                     .WithIsSparse(false)
+                     .WithQuantizerParam(qp)
+                     .Build();
+    ASSERT_NE(nullptr, param.get());
+    EXPECT_TRUE(param->quantizer_param.enable_rotate);
+
+    std::string json = param->SerializeToJson();
+    EXPECT_TRUE(json.find("\"enable_rotate\":true") != std::string::npos);
+
+    auto restored = IndexFactory::DeserializeIndexParamFromJson(json);
+    ASSERT_NE(nullptr, restored.get());
+
+    auto *restored_flat = dynamic_cast<const FlatIndexParam *>(restored.get());
+    ASSERT_NE(nullptr, restored_flat);
+    EXPECT_TRUE(restored_flat->quantizer_param.enable_rotate);
+  }
+
+  // Test 3: enable_rotate=false should be omitted when omit_empty_value=true
+  {
+    auto param = HNSWIndexParamBuilder()
+                     .WithMetricType(MetricType::kInnerProduct)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(kDimension)
+                     .WithIsSparse(false)
+                     .WithEFConstruction(100)
+                     .WithEnableRotate(false)
+                     .Build();
+
+    std::string json_omit = param->SerializeToJson(true);
+    // enable_rotate=false should be omitted
+    EXPECT_TRUE(json_omit.find("enable_rotate") == std::string::npos)
+        << "Omitted JSON: " << json_omit;
+
+    // But present in full serialization
+    std::string json_full = param->SerializeToJson(false);
+    EXPECT_TRUE(json_full.find("enable_rotate") != std::string::npos)
+        << "Full JSON: " << json_full;
+  }
+}
+
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif
