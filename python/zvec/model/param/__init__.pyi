@@ -855,11 +855,9 @@ class OptimizeOption:
         concurrency (int): Number of threads to use during optimization.
             If 0, the system will choose an optimal value automatically.
             Default is 0.
-        retrain_only (bool): Reuse existing indexes and only retrain OMEGA
-            models. Default is False.
 
     Examples:
-        >>> opt = OptimizeOption(concurrency=2, retrain_only=True)
+        >>> opt = OptimizeOption(concurrency=2)
         >>> print(opt.concurrency)
         2
     """
@@ -868,7 +866,6 @@ class OptimizeOption:
     def __init__(
         self,
         concurrency: typing.SupportsInt = 0,
-        retrain_only: bool = False,
     ) -> None:
         """
         Constructs an OptimizeOption instance.
@@ -876,8 +873,6 @@ class OptimizeOption:
         Args:
             concurrency (int, optional): Number of concurrent threads.
                 0 means auto-detect. Defaults to 0.
-            retrain_only (bool, optional): Reuse existing indexes and only
-                retrain OMEGA models. Defaults to False.
         """
 
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -886,10 +881,45 @@ class OptimizeOption:
         """
         int: Number of threads used for optimization (0 = auto).
         """
-    @property
-    def retrain_only(self) -> bool:
+
+class RetrainOmegaOption:
+    """
+
+    Options for retraining OMEGA models on existing indexes.
+
+    This operation retrains the OMEGA early-stopping models without modifying
+    the underlying HNSW graph structure. It is only valid for collections with
+    OMEGA indexes.
+
+    Attributes:
+        concurrency (int): Number of threads to use during retraining.
+            If 0, the system will choose an optimal value automatically.
+            Default is 0.
+
+    Examples:
+        >>> opt = RetrainOmegaOption(concurrency=2)
+        >>> print(opt.concurrency)
+        2
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        concurrency: typing.SupportsInt = 0,
+    ) -> None:
         """
-        bool: Whether to reuse existing indexes and only retrain OMEGA.
+        Constructs a RetrainOmegaOption instance.
+
+        Args:
+            concurrency (int, optional): Number of concurrent threads.
+                0 means auto-detect. Defaults to 0.
+        """
+
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def concurrency(self) -> int:
+        """
+        int: Number of threads used for retraining (0 = auto).
         """
 
 class QueryParam:

@@ -65,6 +65,12 @@ DATASET_SPECS: dict[str, dict[str, Any]] = {
         "metric_type": "COSINE",
         "train_files": [f"shuffle_train-{idx:02d}-of-10.parquet" for idx in range(10)],
     },
+    "test_small": {
+        "dataset_dirname": "test_small",
+        "dimension": 128,
+        "metric_type": "COSINE",
+        "train_files": ["train.parquet"],
+    },
 }
 
 DATASET_DOWNLOAD_BASE_URLS = {
@@ -695,14 +701,17 @@ def build_index(
     specific_args: dict[str, Any],
     retrain_only: bool,
     dry_run: bool,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], Any]:
     if dry_run:
         emit(f"[Dry-run] Build {index_kind} at {index_path}")
-        return {
-            "insert_duration": None,
-            "optimize_duration": None,
-            "load_duration": None,
-        }
+        return (
+            {
+                "insert_duration": None,
+                "optimize_duration": None,
+                "load_duration": None,
+            },
+            None,
+        )
 
     module = _initialized_zvec()
 
@@ -730,11 +739,21 @@ def build_index(
         )
 
     optimize_start = time.perf_counter()
-    collection.optimize(option=module.OptimizeOption(retrain_only=retrain_only))
+    if retrain_only:
+        collection.RetrainOmega(option=module.RetrainOmegaOption())
+    else:
+        collection.Optimize(option=module.OptimizeOption())
     optimize_duration = time.perf_counter() - optimize_start
     with contextlib.suppress(Exception):
         collection.flush()
-    del collection
+
+    # For OMEGA indexes, keep collection open to work around reopening bug
+    # For other indexes, close as before
+    if index_kind == "OMEGA":
+        omega_collection = collection
+    else:
+        del collection
+        omega_collection = None
 
     load_duration = None
     if insert_duration is not None:
@@ -742,15 +761,18 @@ def build_index(
     elif optimize_duration is not None:
         load_duration = optimize_duration
 
-    return {
-        "insert_duration": round(insert_duration, 4)
-        if insert_duration is not None
-        else None,
-        "optimize_duration": round(optimize_duration, 4)
-        if optimize_duration is not None
-        else None,
-        "load_duration": round(load_duration, 4) if load_duration is not None else None,
-    }
+    return (
+        {
+            "insert_duration": round(insert_duration, 4)
+            if insert_duration is not None
+            else None,
+            "optimize_duration": round(optimize_duration, 4)
+            if optimize_duration is not None
+            else None,
+            "load_duration": round(load_duration, 4) if load_duration is not None else None,
+        },
+        omega_collection,
+    )
 
 
 def _insert_training_data(
@@ -785,6 +807,7 @@ def compute_recall_with_zvec(
     common_args: dict[str, Any],
     target_recall: float | None,
     dry_run: bool,
+    collection: Any = None,
 ) -> float | None:
     if dry_run:
         return None
@@ -800,8 +823,16 @@ def compute_recall_with_zvec(
         for row in gt_frame.iter_rows(named=True)
     }
 
-    option = module.CollectionOption(read_only=True, enable_mmap=True)
-    collection = module.open(str(index_path), option)
+    # Use pre-opened collection if provided (workaround for OMEGA reopening bug)
+    # Otherwise open the collection normally
+    if collection is None:
+        option = module.CollectionOption(
+            read_only=(index_kind != "OMEGA"), enable_mmap=True
+        )
+        collection = module.open(str(index_path), option)
+        should_close = True
+    else:
+        should_close = False
     use_refiner = bool(common_args.get("is_using_refiner", False))
     if index_kind == "OMEGA":
         query_param = module.OmegaQueryParam(
@@ -834,7 +865,8 @@ def compute_recall_with_zvec(
         recall_sum += len(set(pred) & set(gt)) / float(topk)
         query_count += 1
 
-    del collection
+    if should_close:
+        del collection
     if query_count == 0:
         return None
     return recall_sum / query_count

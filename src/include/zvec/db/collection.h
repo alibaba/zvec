@@ -72,7 +72,10 @@ class Collection {
   virtual Status DropIndex(const std::string &column_name) = 0;
 
   virtual Status Optimize(const OptimizeOptions &options = OptimizeOptions{
-                              0, false}) = 0;
+                              0}) = 0;
+
+  virtual Status RetrainOmega(const RetrainOmegaOptions &options =
+                                  RetrainOmegaOptions{0}) = 0;
 
   virtual Status AddColumn(const FieldSchema::Ptr &column_schema,
                            const std::string &expression,

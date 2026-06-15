@@ -96,6 +96,8 @@ class CollectionImpl : public Collection {
 
   Status Optimize(const OptimizeOptions &options) override;
 
+  Status RetrainOmega(const RetrainOmegaOptions &options) override;
+
   Status AddColumn(const FieldSchema::Ptr &column_schema,
                    const std::string &expression,
                    const AddColumnOptions &options) override;
@@ -827,17 +829,6 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     return Status::OK();
   }
 
-  if (options.retrain_only_) {
-    LOG_WARN(
-        "Optimize running in OMEGA retrain-only mode on %zu persisted segments",
-        persist_segments.size());
-    for (auto &segment : persist_segments) {
-      auto s = segment->retrain_omega_model();
-      CHECK_RETURN_STATUS(s);
-    }
-    return Status::OK();
-  }
-
   // Build optimize tasks once so compacted segments are merged directly from
   // their current per-segment sources. Pre-building filtered vector indexes for
   // every persisted segment would shift source row ids before compaction and
@@ -941,6 +932,50 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
         CHECK_RETURN_STATUS(s);
       }
     }
+  }
+
+  return Status::OK();
+}
+
+Status CollectionImpl::RetrainOmega(const RetrainOmegaOptions &options) {
+  CHECK_COLLECTION_READONLY_RETURN_STATUS;
+
+  std::lock_guard lock(schema_handle_mtx_);
+  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+
+  // Verify collection has at least one OMEGA index
+  bool has_omega = false;
+  for (const auto &field : schema_->vector_fields()) {
+    if (auto omega_params =
+            std::dynamic_pointer_cast<OmegaIndexParams>(field->index_params())) {
+      has_omega = true;
+      break;
+    }
+  }
+
+  if (!has_omega) {
+    return Status::InvalidArgument(
+        "RetrainOmega requires at least one OMEGA index. "
+        "This collection has no OMEGA indexes.");
+  }
+
+  std::vector<Segment::Ptr> persist_segments;
+  {
+    std::lock_guard write_lock(write_mtx_);
+    persist_segments = get_all_persist_segments();
+  }
+
+  if (persist_segments.empty()) {
+    LOG_INFO("No persisted segments to retrain OMEGA models");
+    return Status::OK();
+  }
+
+  LOG_WARN("Retraining OMEGA models on %zu persisted segments",
+           persist_segments.size());
+
+  for (auto &segment : persist_segments) {
+    auto s = segment->retrain_omega_model();
+    CHECK_RETURN_STATUS(s);
   }
 
   return Status::OK();
