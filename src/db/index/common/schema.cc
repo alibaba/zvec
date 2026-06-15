@@ -173,7 +173,8 @@ Status FieldSchema::validate() const {
 #if !ZVEC_ENABLE_OMEGA
       if (index_params_->type() == IndexType::OMEGA) {
         return Status::NotSupported(
-            "OMEGA index is not available in this build (ZVEC_ENABLE_OMEGA=OFF)");
+            "OMEGA index is not available in this build "
+            "(ZVEC_ENABLE_OMEGA=OFF)");
       }
 #endif
 
