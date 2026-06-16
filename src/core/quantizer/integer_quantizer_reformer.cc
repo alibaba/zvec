@@ -317,9 +317,8 @@ class IntegerStreamingReformer : public IndexReformer {
         rotator_.reset();
       } else {
         enable_rotate_ = true;
-        LOG_DEBUG(
-            "IntegerStreamingReformer: rotator auto-loaded, dim=%zu",
-            rotator_->dimension());
+        LOG_DEBUG("IntegerStreamingReformer: rotator auto-loaded, dim=%zu",
+                  rotator_->dimension());
       }
     }
     return 0;

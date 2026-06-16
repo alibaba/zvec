@@ -22,10 +22,10 @@
 
 // Eigen headers from rabitqlib — used by MatrixRotator for numerically stable
 // HouseholderQR orthogonalisation and vectorised matrix multiplication.
-#include "rabitqlib/defines.hpp"
-#include "rabitqlib/utils/space.hpp"
 #include <rabitqlib/third/Eigen/Dense>
 #include <rabitqlib/third/Eigen/QR>
+#include "rabitqlib/defines.hpp"
+#include "rabitqlib/utils/space.hpp"
 
 #if defined(__AVX2__) || defined(__AVX512F__)
 #include <immintrin.h>
@@ -206,7 +206,8 @@ void kacs_walk(float *data, size_t len) {
 }
 
 //! Inverse Kac walk: undo butterfly add/sub with 0.5 factor.
-//! If forward maps (x,y) -> (x+y, x-y), inverse maps (a,b) -> ((a+b)/2, (a-b)/2).
+//! If forward maps (x,y) -> (x+y, x-y), inverse maps (a,b) -> ((a+b)/2,
+//! (a-b)/2).
 void inv_kacs_walk(float *data, size_t len) {
   size_t half = len / 2;
 #if defined(__AVX512F__)
@@ -287,8 +288,8 @@ void write_u32_le(char *p, uint32_t v) {
 // FhtKacRotatorImpl - O(d log d) FHT-based Kac random rotation
 //
 // Requires dimension % 64 == 0 for SIMD flip-sign correctness.
-// When dimension is also a power of 2, uses 4 rounds of (flip -> FHT -> rescale).
-// When dimension is 64-aligned but NOT a power of 2 (e.g. 192, 320),
+// When dimension is also a power of 2, uses 4 rounds of (flip -> FHT ->
+// rescale). When dimension is 64-aligned but NOT a power of 2 (e.g. 192, 320),
 // uses kacs_walk reduction to handle the non-power-of-2 case.
 // ============================================================================
 
@@ -481,7 +482,9 @@ struct MatrixRotatorImpl {
     // M^T (dim x dim) * in (dim x 1) -> out (dim x 1)
     rabitqlib::ConstRowMajorMatrixMap<float> v(in, dim, 1);
     rabitqlib::RowMajorMatrixMap<float> rv(out, dim, 1);
-    rv = rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim).transpose() * v;
+    rv = rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim)
+             .transpose() *
+         v;
   }
 };
 
@@ -494,7 +497,8 @@ struct MatrixRotatorImpl {
 struct RecordRotator::Impl {
   //! Header layout (12 bytes, backward-compatible with older serialised data):
   //!   type(1B) + padding(3B) + origin_dim(4B) + reserved(4B) = 12B
-  //! The reserved field previously stored padded_dim; it now mirrors origin_dim.
+  //! The reserved field previously stored padded_dim; it now mirrors
+  //! origin_dim.
   static constexpr size_t kHeaderSize = 12;
 
   struct Header {
@@ -578,8 +582,8 @@ void RecordRotator::init(size_t dimension, RecordRotatorType rotator_type) {
   // is requested.  FhtKac requires the dimension to be a multiple of 64
   // for SIMD flip-sign and FHT correctness.  When the dimension is not
   // 64-aligned we transparently fall back to the O(d^2) Matrix rotator.
-  bool use_fht = (rotator_type == RecordRotatorType::FhtKac) &&
-                 (dimension % 64 == 0);
+  bool use_fht =
+      (rotator_type == RecordRotatorType::FhtKac) && (dimension % 64 == 0);
 
   if (use_fht) {
     impl_->type = RecordRotatorType::FhtKac;
@@ -800,9 +804,8 @@ int RecordRotator::open(IndexStorage::Pointer storage,
     impl_->mat_impl->load(raw + Impl::kHeaderSize);
   }
 
-  LOG_DEBUG(
-      "RecordRotator::open done: seg=%s, dim=%zu, data_size=%zu",
-      seg_id.c_str(), impl_->dimension, data_size);
+  LOG_DEBUG("RecordRotator::open done: seg=%s, dim=%zu, data_size=%zu",
+            seg_id.c_str(), impl_->dimension, data_size);
 
   return 0;
 }

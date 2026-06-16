@@ -69,9 +69,8 @@ class CosineReformer : public IndexReformer {
         rotator_.reset();
       } else {
         enable_rotate_ = true;
-        LOG_DEBUG(
-            "CosineReformer: rotator auto-loaded, dim=%zu",
-            rotator_->dimension());
+        LOG_DEBUG("CosineReformer: rotator auto-loaded, dim=%zu",
+                  rotator_->dimension());
       }
     }
     return 0;

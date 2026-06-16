@@ -396,9 +396,8 @@ class IntegerStreamingConverter : public IndexConverter {
     if (enable_rotate_) {
       rotator_ = std::make_shared<RecordRotator>();
       rotator_->init(index_meta.dimension());
-      LOG_DEBUG(
-          "IntegerStreamingConverter: rotation enabled, dim=%zu",
-          static_cast<size_t>(index_meta.dimension()));
+      LOG_DEBUG("IntegerStreamingConverter: rotation enabled, dim=%zu",
+                static_cast<size_t>(index_meta.dimension()));
     }
 
     if (data_type_ == IndexMeta::DataType::DT_INT8) {

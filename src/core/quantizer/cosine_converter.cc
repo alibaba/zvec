@@ -132,8 +132,7 @@ class CosineConverterHolder : public IndexHolder {
 
         float norm = 0.0f;
         ailego::Normalizer<float>::L2(const_cast<float *>(vec),
-                                      original_dimension_,
-                                      &norm);
+                                      original_dimension_, &norm);
 
         if (type_ == IndexMeta::DataType::DT_FP32) {
           ::memcpy(reinterpret_cast<float *>(&normalize_buffer_[0]), vec,
