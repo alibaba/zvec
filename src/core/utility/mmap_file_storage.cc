@@ -109,8 +109,8 @@ class MMapFileStorage : public IndexStorage {
       if (data_tail > meta->data_size) {
         meta->data_size = data_tail;
         meta->padding_size = capacity_ - data_tail;
-        owner_->set_as_dirty();
       }
+      owner_->set_as_dirty();
       memmove((uint8_t *)segment_->data() + offset, data, len);
       segment_->set_dirty();
       return len;
