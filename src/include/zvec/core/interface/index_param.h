@@ -246,6 +246,7 @@ class BaseIndexParam : public SerializableBase {
   bool is_huge_page = false;
   DataType data_type = DataType::DT_UNDEFINED;
   bool use_id_map = true;
+  bool use_external_vector = false;
 
   // IndexMeta meta;
   ailego::Params params;
@@ -320,7 +321,6 @@ struct HNSWIndexParam : public BaseIndexParam {
   int m = kDefaultHnswNeighborCnt;
   int ef_construction = kDefaultHnswEfConstruction;
   bool use_contiguous_memory = false;
-  bool use_external_vector = false;
 
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}

@@ -45,28 +45,26 @@ std::string HNSWIndex::storage_mode() const {
   return "";
 }
 
-int HNSWIndex::Add(const VectorData &vector_data, const uint32_t doc_id,
-                   const core::VectorSource *src) {
-  if (src) {
-    auto &context = acquire_context();
-    if (context) {
-      if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
-        ctx->set_vector_source(src);
-      }
+int HNSWIndex::AddWithSource(const VectorData &vector_data,
+                            const uint32_t doc_id,
+                            const core::VectorSource &src) {
+  auto &context = acquire_context();
+  if (context) {
+    if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+      ctx->set_vector_source(&src);
     }
   }
   return Index::Add(vector_data, doc_id);
 }
 
-int HNSWIndex::Search(const VectorData &query,
-                      const BaseIndexQueryParam::Pointer &search_param,
-                      SearchResult *result, const core::VectorSource *src) {
-  if (src) {
-    auto &context = acquire_context();
-    if (context) {
-      if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
-        ctx->set_vector_source(src);
-      }
+int HNSWIndex::SearchWithSource(const VectorData &query,
+                                const BaseIndexQueryParam::Pointer &search_param,
+                                const core::VectorSource &src,
+                                SearchResult *result) {
+  auto &context = acquire_context();
+  if (context) {
+    if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+      ctx->set_vector_source(&src);
     }
   }
   return Index::Search(query, search_param, result);

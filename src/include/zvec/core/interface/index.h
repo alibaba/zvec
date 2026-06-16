@@ -134,11 +134,12 @@ class Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
-  virtual int Add(const VectorData &vector, uint32_t doc_id,
-                  const core::VectorSource *src);
-  virtual int Search(const VectorData &query,
-                     const BaseIndexQueryParam::Pointer &search_param,
-                     SearchResult *result, const core::VectorSource *src);
+  virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                             const core::VectorSource &src);
+  virtual int SearchWithSource(const VectorData &query,
+                               const BaseIndexQueryParam::Pointer &search_param,
+                               const core::VectorSource &src,
+                               SearchResult *result);
 
   virtual BaseIndexParam::Pointer GetParam() const {
     return std::make_shared<BaseIndexParam>(param_);
@@ -299,11 +300,12 @@ class HNSWIndex : public Index {
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
 
-  int Add(const VectorData &vector, uint32_t doc_id,
-          const core::VectorSource *src) override;
-  int Search(const VectorData &query,
-             const BaseIndexQueryParam::Pointer &search_param,
-             SearchResult *result, const core::VectorSource *src) override;
+  int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                    const core::VectorSource &src) override;
+  int SearchWithSource(const VectorData &query,
+                       const BaseIndexQueryParam::Pointer &search_param,
+                       const core::VectorSource &src,
+                       SearchResult *result) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;
