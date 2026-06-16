@@ -913,9 +913,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
 
   IndexConverter::Pointer build_converter;
-  IndexHolder::Pointer cv_build_holder =
-      convert_holder(converter_name, converter_params, build_holder, meta,
-                     &build_converter);
+  IndexHolder::Pointer cv_build_holder = convert_holder(
+      converter_name, converter_params, build_holder, meta, &build_converter);
   if (!cv_build_holder) {
     LOG_ERROR("Convert holder failed.");
     return -1;
@@ -1006,9 +1005,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
       // support fp16 convert
 
-      IndexHolder::Pointer cv_train_holder =
-          convert_holder(converter_name, converter_params, train_holder, meta,
-                         nullptr);
+      IndexHolder::Pointer cv_train_holder = convert_holder(
+          converter_name, converter_params, train_holder, meta, nullptr);
       if (!cv_train_holder) {
         LOG_ERROR("Convert train holder failed.");
         return -1;
@@ -1064,9 +1062,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     if (!metric_name.empty()) {
       train_holder->set_metric(metric_name, metric_params);
     }
-    IndexHolder::Pointer cv_train_holder =
-        convert_holder(converter_name, converter_params, train_holder, meta,
-                       nullptr);
+    IndexHolder::Pointer cv_train_holder = convert_holder(
+        converter_name, converter_params, train_holder, meta, nullptr);
     if (!cv_train_holder) {
       LOG_ERROR("Convert train holder failed.");
       return -1;

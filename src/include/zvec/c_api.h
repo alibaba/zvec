@@ -982,8 +982,7 @@ zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
  * @param params Index parameters (must not be NULL)
  * @return true if rotation is enabled, false otherwise (default)
  */
-ZVEC_EXPORT bool ZVEC_CALL
-zvec_index_params_get_quantizer_enable_rotate(
+ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
     const zvec_index_params_t *params);
 
 /**

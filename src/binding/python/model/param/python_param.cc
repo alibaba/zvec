@@ -356,8 +356,7 @@ Examples:
     >>> print(qp.enable_rotate)
     True
 )pbdoc");
-  quantizer_param
-      .def(py::init<bool>(), py::arg("enable_rotate") = false)
+  quantizer_param.def(py::init<bool>(), py::arg("enable_rotate") = false)
       .def_property_readonly(
           "enable_rotate",
           [](const QuantizerParam &self) -> bool {
@@ -524,30 +523,28 @@ Examples:
                 quantize_type_to_string(self.quantize_type());
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             py::dict qp_dict;
-            qp_dict["enable_rotate"] =
-                self.quantizer_param().enable_rotate();
+            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def("__repr__",
-           [](const HnswIndexParams &self) -> std::string {
-             return "{"
-                    "\"metric_type\":" +
-                    metric_type_to_string(self.metric_type()) +
-                    ", \"m\":" + std::to_string(self.m()) +
-                    ", \"ef_construction\":" +
-                    std::to_string(self.ef_construction()) +
-                    ", \"quantize_type\":" +
-                    quantize_type_to_string(self.quantize_type()) +
-                    ", \"use_contiguous_memory\":" +
-                    (self.use_contiguous_memory() ? "true" : "false") +
-                    ", \"quantizer_param\":{" +
-                    "\"enable_rotate\":" +
-                    (self.quantizer_param().enable_rotate() ? "true"
-                                                            : "false") +
-                    "}}";
-           })
+      .def(
+          "__repr__",
+          [](const HnswIndexParams &self) -> std::string {
+            return "{"
+                   "\"metric_type\":" +
+                   metric_type_to_string(self.metric_type()) +
+                   ", \"m\":" + std::to_string(self.m()) +
+                   ", \"ef_construction\":" +
+                   std::to_string(self.ef_construction()) +
+                   ", \"quantize_type\":" +
+                   quantize_type_to_string(self.quantize_type()) +
+                   ", \"use_contiguous_memory\":" +
+                   (self.use_contiguous_memory() ? "true" : "false") +
+                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
+                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
+                   "}}";
+          })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.m(),
@@ -561,8 +558,7 @@ Examples:
             QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<QuantizeType>(), t[4].cast<bool>(),
-                qp);
+                t[3].cast<QuantizeType>(), t[4].cast<bool>(), qp);
           }));
 
   // binding hnsw rabitq index params
@@ -768,46 +764,43 @@ Examples:
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
-            qp_dict["enable_rotate"] =
-                self.quantizer_param().enable_rotate();
+            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def("__repr__",
-           [](const VamanaIndexParams &self) -> std::string {
-             return "{"
-                    "\"type\":\"" +
-                    index_type_to_string(self.type()) +
-                    "\", \"metric_type\":\"" +
-                    metric_type_to_string(self.metric_type()) +
-                    "\", \"max_degree\":" + std::to_string(self.max_degree()) +
-                    ", \"search_list_size\":" +
-                    std::to_string(self.search_list_size()) +
-                    ", \"alpha\":" + std::to_string(self.alpha()) +
-                    ", \"saturate_graph\":" +
-                    std::string(self.saturate_graph() ? "true" : "false") +
-                    ", \"use_contiguous_memory\":" +
-                    std::string(self.use_contiguous_memory() ? "true"
-                                                             : "false") +
-                    ", \"use_id_map\":" +
-                    std::string(self.use_id_map() ? "true" : "false") +
-                    ", \"quantize_type\":\"" +
-                    quantize_type_to_string(self.quantize_type()) +
-                    "\", \"quantizer_param\":{" +
-                    "\"enable_rotate\":" +
-                    (self.quantizer_param().enable_rotate() ? "true"
+      .def(
+          "__repr__",
+          [](const VamanaIndexParams &self) -> std::string {
+            return "{"
+                   "\"type\":\"" +
+                   index_type_to_string(self.type()) +
+                   "\", \"metric_type\":\"" +
+                   metric_type_to_string(self.metric_type()) +
+                   "\", \"max_degree\":" + std::to_string(self.max_degree()) +
+                   ", \"search_list_size\":" +
+                   std::to_string(self.search_list_size()) +
+                   ", \"alpha\":" + std::to_string(self.alpha()) +
+                   ", \"saturate_graph\":" +
+                   std::string(self.saturate_graph() ? "true" : "false") +
+                   ", \"use_contiguous_memory\":" +
+                   std::string(self.use_contiguous_memory() ? "true"
                                                             : "false") +
-                    "}}";
-           })
+                   ", \"use_id_map\":" +
+                   std::string(self.use_id_map() ? "true" : "false") +
+                   ", \"quantize_type\":\"" +
+                   quantize_type_to_string(self.quantize_type()) +
+                   "\", \"quantizer_param\":{" + "\"enable_rotate\":" +
+                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
+                   "}}";
+          })
       .def(py::pickle(
           [](const VamanaIndexParams &self) {
-            return py::make_tuple(self.metric_type(), self.max_degree(),
-                                  self.search_list_size(), self.alpha(),
-                                  self.saturate_graph(),
-                                  self.use_contiguous_memory(),
-                                  self.use_id_map(), self.quantize_type(),
-                                  self.quantizer_param().enable_rotate());
+            return py::make_tuple(
+                self.metric_type(), self.max_degree(), self.search_list_size(),
+                self.alpha(), self.saturate_graph(),
+                self.use_contiguous_memory(), self.use_id_map(),
+                self.quantize_type(), self.quantizer_param().enable_rotate());
           },
           [](py::tuple t) {
             if (t.size() != 8 && t.size() != 9)
@@ -816,8 +809,7 @@ Examples:
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
-                t[6].cast<bool>(), t[7].cast<QuantizeType>(),
-                qp);
+                t[6].cast<bool>(), t[7].cast<QuantizeType>(), qp);
           }));
 
   // FlatIndexParams
@@ -873,25 +865,23 @@ Args:
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
-            qp_dict["enable_rotate"] =
-                self.quantizer_param().enable_rotate();
+            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def("__repr__",
-           [](const FlatIndexParams &self) -> std::string {
-             return "{"
-                    "\"metric_type\":" +
-                    metric_type_to_string(self.metric_type()) +
-                    ", \"quantize_type\":" +
-                    quantize_type_to_string(self.quantize_type()) +
-                    ", \"quantizer_param\":{" +
-                    "\"enable_rotate\":" +
-                    (self.quantizer_param().enable_rotate() ? "true"
-                                                            : "false") +
-                    "}}";
-           })
+      .def(
+          "__repr__",
+          [](const FlatIndexParams &self) -> std::string {
+            return "{"
+                   "\"metric_type\":" +
+                   metric_type_to_string(self.metric_type()) +
+                   ", \"quantize_type\":" +
+                   quantize_type_to_string(self.quantize_type()) +
+                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
+                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
+                   "}}";
+          })
       .def(py::pickle(
           [](const FlatIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.quantize_type(),
@@ -901,9 +891,8 @@ Args:
             if (t.size() != 2 && t.size() != 3)
               throw std::runtime_error("Invalid state for FlatIndexParams");
             QuantizerParam qp(t.size() >= 3 ? t[2].cast<bool>() : false);
-            return std::make_shared<FlatIndexParams>(t[0].cast<MetricType>(),
-                                                     t[1].cast<QuantizeType>(),
-                                                     qp);
+            return std::make_shared<FlatIndexParams>(
+                t[0].cast<MetricType>(), t[1].cast<QuantizeType>(), qp);
           }));
 
   // IVFIndexParams
@@ -985,28 +974,26 @@ Args:
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
-            qp_dict["enable_rotate"] =
-                self.quantizer_param().enable_rotate();
+            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def("__repr__",
-           [](const IVFIndexParams &self) {
-             return "{"
-                    "\"metric_type\":" +
-                    metric_type_to_string(self.metric_type()) +
-                    ", \"n_list\":" + std::to_string(self.n_list()) +
-                    ", \"n_iters\":" + std::to_string(self.n_iters()) +
-                    ", \"use_soar\":" + std::to_string(self.use_soar()) +
-                    ", \"quantize_type\":" +
-                    quantize_type_to_string(self.quantize_type()) +
-                    ", \"quantizer_param\":{" +
-                    "\"enable_rotate\":" +
-                    (self.quantizer_param().enable_rotate() ? "true"
-                                                            : "false") +
-                    "}}";
-           })
+      .def(
+          "__repr__",
+          [](const IVFIndexParams &self) {
+            return "{"
+                   "\"metric_type\":" +
+                   metric_type_to_string(self.metric_type()) +
+                   ", \"n_list\":" + std::to_string(self.n_list()) +
+                   ", \"n_iters\":" + std::to_string(self.n_iters()) +
+                   ", \"use_soar\":" + std::to_string(self.use_soar()) +
+                   ", \"quantize_type\":" +
+                   quantize_type_to_string(self.quantize_type()) +
+                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
+                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
+                   "}}";
+          })
       .def(py::pickle(
           [](const IVFIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.n_list(),
@@ -1020,8 +1007,7 @@ Args:
             QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<IVFIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<bool>(), t[4].cast<QuantizeType>(),
-                qp);
+                t[3].cast<bool>(), t[4].cast<QuantizeType>(), qp);
           }));
 
   // DiskAnnIndexParams
@@ -1111,8 +1097,7 @@ Args:
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
-            qp_dict["enable_rotate"] =
-                self.quantizer_param().enable_rotate();
+            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
@@ -1128,10 +1113,8 @@ Args:
                    ", \"pq_chunk_num\":" + std::to_string(self.pq_chunk_num()) +
                    ", \"quantize_type\":" +
                    quantize_type_to_string(self.quantize_type()) +
-                   ", \"quantizer_param\":{" +
-                   "\"enable_rotate\":" +
-                   (self.quantizer_param().enable_rotate() ? "true"
-                                                           : "false") +
+                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
+                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
                    "}}";
           })
       .def(py::pickle(
@@ -1147,8 +1130,7 @@ Args:
             QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<DiskAnnIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<int>(), t[4].cast<QuantizeType>(),
-                qp);
+                t[3].cast<int>(), t[4].cast<QuantizeType>(), qp);
           }));
 }
 

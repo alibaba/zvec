@@ -126,8 +126,7 @@ class InvertIndexParams : public IndexParams {
 class QuantizerParam {
  public:
   QuantizerParam() = default;
-  explicit QuantizerParam(bool enable_rotate)
-      : enable_rotate_(enable_rotate) {}
+  explicit QuantizerParam(bool enable_rotate) : enable_rotate_(enable_rotate) {}
 
   bool enable_rotate() const {
     return enable_rotate_;
@@ -214,8 +213,7 @@ class HnswIndexParams : public VectorIndexParams {
       MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      bool use_contiguous_memory = false,
-      QuantizerParam quantizer_param = {})
+      bool use_contiguous_memory = false, QuantizerParam quantizer_param = {})
       : VectorIndexParams(IndexType::HNSW, metric_type, quantize_type,
                           quantizer_param),
         m_(m),
@@ -226,10 +224,9 @@ class HnswIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<HnswIndexParams>(metric_type_, m_, ef_construction_,
-                                             quantize_type_,
-                                             use_contiguous_memory_,
-                                             quantizer_param_);
+    return std::make_shared<HnswIndexParams>(
+        metric_type_, m_, ef_construction_, quantize_type_,
+        use_contiguous_memory_, quantizer_param_);
   }
 
   std::string to_string() const override {
@@ -238,8 +235,7 @@ class HnswIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
         << ",use_contiguous_memory:"
-        << (use_contiguous_memory_ ? "true" : "false")
-        << ",enable_rotate:"
+        << (use_contiguous_memory_ ? "true" : "false") << ",enable_rotate:"
         << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
@@ -255,8 +251,8 @@ class HnswIndexParams : public VectorIndexParams {
                static_cast<const HnswIndexParams &>(other).quantize_type() &&
            use_contiguous_memory_ == static_cast<const HnswIndexParams &>(other)
                                          .use_contiguous_memory_ &&
-           quantizer_param_ == static_cast<const HnswIndexParams &>(other)
-                                   .quantizer_param_;
+           quantizer_param_ ==
+               static_cast<const HnswIndexParams &>(other).quantizer_param_;
   }
 
   void set_m(int m) {
@@ -421,8 +417,7 @@ class FlatIndexParams : public VectorIndexParams {
     auto base_str = vector_index_params_to_string("FlatIndexParams",
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
-    oss << base_str
-        << ",enable_rotate:"
+    oss << base_str << ",enable_rotate:"
         << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
