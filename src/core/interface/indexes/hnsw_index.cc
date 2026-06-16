@@ -49,10 +49,12 @@ int HNSWIndex::AddWithSource(const VectorData &vector_data,
                              const uint32_t doc_id,
                              const core::VectorSource &src) {
   auto &context = acquire_context();
-  if (context) {
-    if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
-      ctx->set_vector_source(&src);
-    }
+  if (!context) {
+    LOG_ERROR("Failed to acquire context for AddWithSource");
+    return core::IndexError_Runtime;
+  }
+  if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+    ctx->set_vector_source(&src);
   }
   return Index::Add(vector_data, doc_id);
 }
@@ -61,10 +63,12 @@ int HNSWIndex::SearchWithSource(
     const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
     const core::VectorSource &src, SearchResult *result) {
   auto &context = acquire_context();
-  if (context) {
-    if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
-      ctx->set_vector_source(&src);
-    }
+  if (!context) {
+    LOG_ERROR("Failed to acquire context for SearchWithSource");
+    return core::IndexError_Runtime;
+  }
+  if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+    ctx->set_vector_source(&src);
   }
   return Index::Search(query, search_param, result);
 }
