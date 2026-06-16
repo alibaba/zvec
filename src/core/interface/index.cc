@@ -262,9 +262,6 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
         LOG_ERROR("Failed to create MMapFileStorage");
         return core::IndexError_Runtime;
       }
-      if (storage_options.copy_on_write) {
-        storage_params.set("proxima.mmap_file.storage.copy_on_write", true);
-      }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
         LOG_ERROR("Failed to init MMapFileStorage, path: %s, err: %s",

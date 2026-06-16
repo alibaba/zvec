@@ -700,47 +700,6 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return 0;
 }
 
-int HnswStreamer::add_with_source(uint64_t pkey, const void *query,
-                                  const IndexQueryMeta &qmeta,
-                                  Context::Pointer &context,
-                                  const VectorSource &src) {
-  HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
-  ailego_do_if_false(ctx) {
-    LOG_ERROR("Cast context to HnswContext failed");
-    return IndexError_Cast;
-  }
-  // Store + bind the vector source on the context. update_context (triggered
-  // on magic mismatch inside add_impl) will re-apply it after re-cloning.
-  ctx->set_vector_source(&src);
-  return add_impl(pkey, query, qmeta, context);
-}
-
-int HnswStreamer::add_with_id_and_source(uint32_t id, const void *query,
-                                         const IndexQueryMeta &qmeta,
-                                         Context::Pointer &context,
-                                         const VectorSource &src) {
-  HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
-  ailego_do_if_false(ctx) {
-    LOG_ERROR("Cast context to HnswContext failed");
-    return IndexError_Cast;
-  }
-  ctx->set_vector_source(&src);
-  return add_with_id_impl(id, query, qmeta, context);
-}
-
-int HnswStreamer::search_with_source(const void *query,
-                                     const IndexQueryMeta &qmeta,
-                                     uint32_t count, Context::Pointer &context,
-                                     const VectorSource &src) const {
-  HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
-  ailego_do_if_false(ctx) {
-    LOG_ERROR("Cast context to HnswContext failed");
-    return IndexError_Cast;
-  }
-  ctx->set_vector_source(&src);
-  return search_impl(query, qmeta, count, context);
-}
-
 void HnswStreamer::print_debug_info() {
   for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
     if (entity_->get_key(id) == kInvalidKey) {

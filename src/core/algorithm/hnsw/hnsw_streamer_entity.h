@@ -1139,10 +1139,12 @@ class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
   //! template algorithm via static_cast).
   inline int get_vector_typed(const node_id_t *ids, uint32_t count,
                               std::vector<MmapMemoryBlock> &vec_blocks) const {
+    if (ailego_unlikely(vec_src_ == nullptr)) {
+      return IndexError_Runtime;
+    }
     vec_blocks.resize(count);
     for (auto i = 0U; i < count; ++i) {
-      vec_blocks[i].reset(const_cast<void *>(
-          vec_src_ ? vec_src_->get_vector(ids[i]) : nullptr));
+      vec_blocks[i].reset(const_cast<void *>(vec_src_->get_vector(ids[i])));
     }
     return 0;
   }

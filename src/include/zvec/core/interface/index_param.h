@@ -41,7 +41,6 @@ struct StorageOptions {
   StorageType type = StorageType::kNone;
   bool create_new = false;
   bool read_only = false;
-  bool copy_on_write = false;
 };
 
 struct MergeOptions {
