@@ -106,25 +106,21 @@ class CosineReformer : public IndexReformer {
 
       size_t origin_dimension = qmeta.dimension();
       const float *vec = reinterpret_cast<const float *>(query);
-
-      // Apply rotation if enabled
-      std::unique_ptr<float[]> rotate_buffer;
-      if (enable_rotate_ && rotator_) {
-        rotate_buffer.reset(new float[rotator_->dimension()]);
-        rotator_->rotate(vec, rotate_buffer.get());
-        vec = rotate_buffer.get();
-        // rotation preserves dimension: origin_dimension stays qmeta.dimension()
-      }
-
-      // Normalize (L2)
       float norm = 0.0f;
+
+      // Fast path: no rotation — matches main branch behavior exactly
       std::string normalized_buffer(reinterpret_cast<const char *>(query),
                                     qmeta.element_size());
       float *buf = reinterpret_cast<float *>(&normalized_buffer[0]);
+
       if (enable_rotate_ && rotator_) {
-        // Already rotated, normalize the rotated vector
-        ailego::Normalizer<float>::L2(const_cast<float *>(vec),
-                                      origin_dimension, &norm);
+        // Rotate then normalize the rotated vector
+        std::vector<float> rotate_buffer(rotator_->dimension());
+        rotator_->rotate(vec, rotate_buffer.data());
+        std::memcpy(buf, rotate_buffer.data(),
+                    origin_dimension * sizeof(float));
+        ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
+        vec = buf;
       } else {
         ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
         vec = buf;
