@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <zvec/db/query.h>
 #include <zvec/db/schema.h>
 #include "db/common/constants.h"
@@ -157,10 +155,13 @@ Status QueryTarget::validate(const FieldSchema *schema,
     if (n_indices > 1 && need_sanitize) {
       const auto *idx =
           reinterpret_cast<const uint32_t *>(query_sparse_indices.data());
-      // Detect any non-strictly-increasing pair (unsorted or duplicate).
-      if (std::adjacent_find(idx, idx + n_indices,
-                             std::greater_equal<uint32_t>()) !=
-          idx + n_indices) {
+      auto status = need_sanitize_sparse(idx, n_indices);
+      if (status == SparseIndicesStatus::kHasDuplicate) {
+        return Status::InvalidArgument(
+            "Invalid query: sparse vector query for field[", field_name,
+            "] contains duplicate indices");
+      }
+      if (status == SparseIndicesStatus::kNeedSort) {
         *need_sanitize = true;
       }
     }
@@ -180,21 +181,30 @@ Status QueryTarget::validate(const FieldSchema *schema,
   return Status::OK();
 }
 
+Status validate_topk_and_output_fields(
+    int topk, const std::optional<std::vector<std::string>> &output_fields) {
+  if ((uint32_t)topk > kMaxQueryTopk) {
+    return Status::InvalidArgument("Invalid query: topk[", topk,
+                                   "] exceeds the maximum allowed value of ",
+                                   kMaxQueryTopk);
+  }
+  if (output_fields.has_value() &&
+      output_fields->size() > kMaxOutputFieldSize) {
+    return Status::InvalidArgument(
+        "Invalid query: too many output fields, the maximum allowed is ",
+        kMaxOutputFieldSize);
+  }
+  return Status::OK();
+}
+
 Status SearchQuery::validate(const FieldSchema *schema,
                              bool *need_sanitize) const {
   if (need_sanitize) {
     *need_sanitize = false;
   }
-  if ((uint32_t)topk_ > kMaxQueryTopk) {
-    return Status::InvalidArgument("Invalid query: topk[", topk_,
-                                   "] exceeds the maximum allowed value of ",
-                                   kMaxQueryTopk);
-  }
-  if (output_fields_.has_value() &&
-      output_fields_->size() > kMaxOutputFieldSize) {
-    return Status::InvalidArgument(
-        "Invalid query: too many output fields, the maximum allowed is ",
-        kMaxOutputFieldSize);
+  auto s = validate_topk_and_output_fields(topk_, output_fields_);
+  if (!s.ok()) {
+    return s;
   }
   return target_.validate(schema, need_sanitize);
 }

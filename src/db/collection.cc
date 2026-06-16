@@ -1704,6 +1704,11 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
         query.queries.size()));
   }
 
+  if (auto s = validate_topk_and_output_fields(query.topk, query.output_fields);
+      !s.ok()) {
+    return tl::make_unexpected(s);
+  }
+
   auto segments = get_all_segments();
   if (segments.empty()) {
     return DocPtrList();

@@ -148,6 +148,10 @@ struct SearchQuery {
   Status validate(const FieldSchema *schema, bool *need_sanitize) const;
 };
 
+// Validate topk and output_fields bounds.
+Status validate_topk_and_output_fields(
+    int topk, const std::optional<std::vector<std::string>> &output_fields);
+
 // Sort sparse indices in-place and check for duplicates.
 // Returns error if duplicates are found after sorting.
 Status sanitize_sparse_vector(VectorClause &vc, const FieldSchema *schema);
