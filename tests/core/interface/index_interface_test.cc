@@ -1856,6 +1856,155 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
                         .build());
 }
 
+class TestVectorSource : public zvec::core::VectorSource {
+ public:
+  TestVectorSource(const float *base, uint32_t dim)
+      : base_(base), dim_(dim) {}
+
+  const void *get_vector(uint32_t node_id) const override {
+    return base_ + static_cast<size_t>(node_id) * dim_;
+  }
+
+ private:
+  const float *base_;
+  uint32_t dim_;
+};
+
+TEST(IndexInterface, ExternalVectorEndToEnd) {
+  constexpr uint32_t kDimension = 64;
+  constexpr uint32_t kNumVectors = 100;
+  const std::string index_name{"test_external.index"};
+
+  std::vector<float> all_vectors(kDimension * kNumVectors);
+  for (uint32_t i = 0; i < kNumVectors; ++i) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      all_vectors[i * kDimension + d] =
+          static_cast<float>(i * kDimension + d) * 0.01f;
+    }
+  }
+
+  TestVectorSource source(all_vectors.data(), kDimension);
+
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto param = HNSWIndexParamBuilder()
+                   .WithMetricType(MetricType::kL2sq)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .WithEFConstruction(100)
+                   .WithUseExternalVector(true)
+                   .Build();
+
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+
+  index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+
+  for (uint32_t i = 0; i < kNumVectors; ++i) {
+    VectorData vector_data;
+    vector_data.vector =
+        DenseVector{all_vectors.data() + i * kDimension};
+    int ret = index->AddWithSource(vector_data, i, source);
+    ASSERT_EQ(0, ret) << "AddWithSource failed for doc_id=" << i;
+  }
+
+  auto query_param = HNSWQueryParamBuilder()
+                         .with_topk(5)
+                         .with_fetch_vector(false)
+                         .with_ef_search(50)
+                         .build();
+
+  VectorData query;
+  query.vector = DenseVector{all_vectors.data()};
+  SearchResult result;
+  int ret = index->SearchWithSource(query, query_param, source, &result);
+  ASSERT_EQ(0, ret);
+  ASSERT_GE(result.doc_list_.size(), 1u);
+  ASSERT_EQ(0u, result.doc_list_[0].key());
+  ASSERT_FLOAT_EQ(0.0f, result.doc_list_[0].score());
+
+  VectorData query2;
+  query2.vector = DenseVector{all_vectors.data() + 50 * kDimension};
+  SearchResult result2;
+  ret = index->SearchWithSource(query2, query_param, source, &result2);
+  ASSERT_EQ(0, ret);
+  ASSERT_GE(result2.doc_list_.size(), 1u);
+  ASSERT_EQ(50u, result2.doc_list_[0].key());
+  ASSERT_FLOAT_EQ(0.0f, result2.doc_list_[0].score());
+
+  index->Close();
+
+  auto index2 = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index2);
+  index2->Open(index_name, {StorageOptions::StorageType::kMMAP, false});
+
+  SearchResult result3;
+  ret = index2->SearchWithSource(query, query_param, source, &result3);
+  ASSERT_EQ(0, ret);
+  ASSERT_GE(result3.doc_list_.size(), 1u);
+  ASSERT_EQ(0u, result3.doc_list_[0].key());
+  ASSERT_FLOAT_EQ(0.0f, result3.doc_list_[0].score());
+
+  index2->Close();
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+}
+
+TEST(IndexInterface, ExternalVectorInnerProduct) {
+  constexpr uint32_t kDimension = 16;
+  constexpr uint32_t kNumVectors = 10;
+  const std::string index_name{"test_external_ip.index"};
+
+  std::vector<float> all_vectors(kDimension * kNumVectors, 0.0f);
+  for (uint32_t i = 0; i < kNumVectors; ++i) {
+    all_vectors[i * kDimension + i % kDimension] = static_cast<float>(i + 1);
+  }
+
+  TestVectorSource source(all_vectors.data(), kDimension);
+
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto param = HNSWIndexParamBuilder()
+                   .WithMetricType(MetricType::kInnerProduct)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .WithEFConstruction(100)
+                   .WithUseExternalVector(true)
+                   .Build();
+
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+
+  for (uint32_t i = 0; i < kNumVectors; ++i) {
+    VectorData vector_data;
+    vector_data.vector =
+        DenseVector{all_vectors.data() + i * kDimension};
+    ASSERT_EQ(0, index->AddWithSource(vector_data, i, source));
+  }
+
+  std::vector<float> query_vec(kDimension, 0.0f);
+  query_vec[0] = 1.0f;
+  VectorData query;
+  query.vector = DenseVector{query_vec.data()};
+
+  auto query_param = HNSWQueryParamBuilder()
+                         .with_topk(1)
+                         .with_fetch_vector(false)
+                         .with_ef_search(50)
+                         .build();
+
+  SearchResult result;
+  ASSERT_EQ(0, index->SearchWithSource(query, query_param, source, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  ASSERT_EQ(0u, result.doc_list_[0].key());
+  ASSERT_FLOAT_EQ(1.0f, result.doc_list_[0].score());
+
+  index->Close();
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+}
+
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif
