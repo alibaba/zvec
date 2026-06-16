@@ -50,8 +50,7 @@ ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
     json_obj.set("is_huge_page", ailego::JsonValue(is_huge_page));
   }
   if (!omit_empty_value || use_external_vector) {
-    json_obj.set("use_external_vector",
-                 ailego::JsonValue(use_external_vector));
+    json_obj.set("use_external_vector", ailego::JsonValue(use_external_vector));
   }
 
   // if (preprocess_param) {

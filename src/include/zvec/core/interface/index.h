@@ -135,7 +135,7 @@ class Index {
                      SearchResult *result);
 
   virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
-                             const core::VectorSource &src);
+                            const core::VectorSource &src);
   virtual int SearchWithSource(const VectorData &query,
                                const BaseIndexQueryParam::Pointer &search_param,
                                const core::VectorSource &src,

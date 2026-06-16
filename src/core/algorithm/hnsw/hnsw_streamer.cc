@@ -701,9 +701,9 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 }
 
 int HnswStreamer::add_with_source(uint64_t pkey, const void *query,
-                                 const IndexQueryMeta &qmeta,
-                                 Context::Pointer &context,
-                                 const VectorSource &src) {
+                                  const IndexQueryMeta &qmeta,
+                                  Context::Pointer &context,
+                                  const VectorSource &src) {
   HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
   ailego_do_if_false(ctx) {
     LOG_ERROR("Cast context to HnswContext failed");

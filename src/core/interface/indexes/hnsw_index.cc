@@ -46,8 +46,8 @@ std::string HNSWIndex::storage_mode() const {
 }
 
 int HNSWIndex::AddWithSource(const VectorData &vector_data,
-                            const uint32_t doc_id,
-                            const core::VectorSource &src) {
+                             const uint32_t doc_id,
+                             const core::VectorSource &src) {
   auto &context = acquire_context();
   if (context) {
     if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
@@ -57,10 +57,9 @@ int HNSWIndex::AddWithSource(const VectorData &vector_data,
   return Index::Add(vector_data, doc_id);
 }
 
-int HNSWIndex::SearchWithSource(const VectorData &query,
-                                const BaseIndexQueryParam::Pointer &search_param,
-                                const core::VectorSource &src,
-                                SearchResult *result) {
+int HNSWIndex::SearchWithSource(
+    const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+    const core::VectorSource &src, SearchResult *result) {
   auto &context = acquire_context();
   if (context) {
     if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {

@@ -423,7 +423,7 @@ int Index::Add(const VectorData &vector_data, const uint32_t doc_id) {
 }
 
 int Index::AddWithSource(const VectorData &vector, uint32_t doc_id,
-                        const core::VectorSource & /*src*/) {
+                         const core::VectorSource & /*src*/) {
   return Add(vector, doc_id);
 }
 
