@@ -28,7 +28,6 @@
 #include <iostream>
 #include <numeric>
 #include <vector>
-
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param.h>
@@ -73,8 +72,7 @@ static std::vector<float> generate_random_vectors(uint32_t count,
 // Helper: brute-force kNN (L2) for recall verification
 // ---------------------------------------------------------------------------
 static std::vector<uint32_t> brute_force_knn(const float *base, uint32_t n,
-                                             uint32_t dim,
-                                             const float *query,
+                                             uint32_t dim, const float *query,
                                              uint32_t topk) {
   std::vector<std::pair<float, uint32_t>> dists(n);
   for (uint32_t i = 0; i < n; ++i) {
@@ -134,7 +132,8 @@ int main() {
   // ------ Step 3: Add vectors using AddWithSource
   for (uint32_t i = 0; i < kDocCount; ++i) {
     VectorData vd;
-    vd.vector = DenseVector{vectors.data() + static_cast<size_t>(i) * kDimension};
+    vd.vector =
+        DenseVector{vectors.data() + static_cast<size_t>(i) * kDimension};
     ret = index->AddWithSource(vd, i, source);
     if (ret != 0) {
       std::cerr << "Failed to add doc " << i << std::endl;
@@ -160,8 +159,8 @@ int main() {
     return 1;
   }
 
-  std::cout << "[OK] Search returned " << result.doc_list_.size()
-            << " results." << std::endl;
+  std::cout << "[OK] Search returned " << result.doc_list_.size() << " results."
+            << std::endl;
 
   // The closest vector to vectors[0] should be itself (doc_id=0)
   if (!result.doc_list_.empty() && result.doc_list_[0].key() == 0) {
@@ -170,8 +169,8 @@ int main() {
   }
 
   // ------ Step 5: Verify recall against brute-force
-  auto gt = brute_force_knn(vectors.data(), kDocCount, kDimension, query_vec,
-                            kTopK);
+  auto gt =
+      brute_force_knn(vectors.data(), kDocCount, kDimension, query_vec, kTopK);
   uint32_t hits = 0;
   for (const auto &doc : result.doc_list_) {
     if (std::find(gt.begin(), gt.end(), static_cast<uint32_t>(doc.key())) !=
@@ -194,8 +193,8 @@ int main() {
     return 1;
   }
 
-  ret = index->Open(
-      index_path, StorageOptions{StorageOptions::StorageType::kMMAP, false});
+  ret = index->Open(index_path,
+                    StorageOptions{StorageOptions::StorageType::kMMAP, false});
   if (ret != 0) {
     std::cerr << "Failed to reopen index." << std::endl;
     return 1;

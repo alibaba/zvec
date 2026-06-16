@@ -1141,8 +1141,8 @@ class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
                               std::vector<MmapMemoryBlock> &vec_blocks) const {
     vec_blocks.resize(count);
     for (auto i = 0U; i < count; ++i) {
-      vec_blocks[i].reset(
-          const_cast<void *>(vec_src_ ? vec_src_->get_vector(ids[i]) : nullptr));
+      vec_blocks[i].reset(const_cast<void *>(
+          vec_src_ ? vec_src_->get_vector(ids[i]) : nullptr));
     }
     return 0;
   }
