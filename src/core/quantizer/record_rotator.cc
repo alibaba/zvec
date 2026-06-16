@@ -54,22 +54,15 @@ namespace {
 // Scalar / SIMD helper functions for rotation
 // ============================================================================
 
-//! Compute floor(log2(n)) for power-of-2 n.
-inline int ilog2(size_t n) {
-  int r = 0;
-  while (n > 1) {
-    n >>= 1;
-    ++r;
-  }
-  return r;
-}
-
 //! In-place Fast Hadamard Transform on a power-of-2 length array.
 //! Uses FFHT hand-tuned AVX assembly when available; generic scalar loop
 //! otherwise (ARM NEON / SSE2 / pure scalar).
 void fht_inplace(float *data, size_t n) {
 #if defined(__AVX2__) || defined(__AVX512F__)
-  fht_float(data, ilog2(n));
+  // Compute floor(log2(n)) for power-of-2 n.
+  int log_n = 0;
+  for (size_t v = n; v > 1; v >>= 1) ++log_n;
+  fht_float(data, log_n);
 #else
   for (size_t len = 1; len < n; len <<= 1) {
     for (size_t i = 0; i < n; i += len << 1) {
