@@ -20,6 +20,13 @@
 #include <random>
 #include <vector>
 
+// Eigen headers from rabitqlib — used by MatrixRotator for numerically stable
+// HouseholderQR orthogonalisation and vectorised matrix multiplication.
+#include "rabitqlib/defines.hpp"
+#include "rabitqlib/utils/space.hpp"
+#include <rabitqlib/third/Eigen/Dense>
+#include <rabitqlib/third/Eigen/QR>
+
 #if defined(__AVX2__) || defined(__AVX512F__)
 #include <immintrin.h>
 // FFHT (Fastest Fast Hadamard Transform) — hand-tuned AVX inline assembly
@@ -205,6 +212,54 @@ void kacs_walk(float *data, size_t len) {
 #endif
 }
 
+//! Inverse Kac walk: undo butterfly add/sub with 0.5 factor.
+//! If forward maps (x,y) -> (x+y, x-y), inverse maps (a,b) -> ((a+b)/2, (a-b)/2).
+void inv_kacs_walk(float *data, size_t len) {
+  size_t half = len / 2;
+#if defined(__AVX512F__)
+  const __m512 half_fac = _mm512_set1_ps(0.5f);
+  for (size_t i = 0; i < half; i += 16) {
+    __m512 a = _mm512_loadu_ps(&data[i]);
+    __m512 b = _mm512_loadu_ps(&data[i + half]);
+    _mm512_storeu_ps(&data[i], _mm512_mul_ps(_mm512_add_ps(a, b), half_fac));
+    _mm512_storeu_ps(&data[i + half],
+                     _mm512_mul_ps(_mm512_sub_ps(a, b), half_fac));
+  }
+#elif defined(__AVX2__)
+  const __m256 half_fac = _mm256_set1_ps(0.5f);
+  for (size_t i = 0; i < half; i += 8) {
+    __m256 a = _mm256_loadu_ps(&data[i]);
+    __m256 b = _mm256_loadu_ps(&data[i + half]);
+    _mm256_storeu_ps(&data[i], _mm256_mul_ps(_mm256_add_ps(a, b), half_fac));
+    _mm256_storeu_ps(&data[i + half],
+                     _mm256_mul_ps(_mm256_sub_ps(a, b), half_fac));
+  }
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+  const float32x4_t half_fac = vdupq_n_f32(0.5f);
+  for (size_t i = 0; i < half; i += 4) {
+    float32x4_t a = vld1q_f32(&data[i]);
+    float32x4_t b = vld1q_f32(&data[i + half]);
+    vst1q_f32(&data[i], vmulq_f32(vaddq_f32(a, b), half_fac));
+    vst1q_f32(&data[i + half], vmulq_f32(vsubq_f32(a, b), half_fac));
+  }
+#elif defined(__SSE2__)
+  const __m128 half_fac = _mm_set1_ps(0.5f);
+  for (size_t i = 0; i < half; i += 4) {
+    __m128 a = _mm_loadu_ps(&data[i]);
+    __m128 b = _mm_loadu_ps(&data[i + half]);
+    _mm_storeu_ps(&data[i], _mm_mul_ps(_mm_add_ps(a, b), half_fac));
+    _mm_storeu_ps(&data[i + half], _mm_mul_ps(_mm_sub_ps(a, b), half_fac));
+  }
+#else
+  for (size_t i = 0; i < half; ++i) {
+    float a = data[i];
+    float b = data[i + half];
+    data[i] = (a + b) * 0.5f;
+    data[i + half] = (a - b) * 0.5f;
+  }
+#endif
+}
+
 //! Scale each element by a constant factor.
 void vec_rescale(float *data, size_t n, float factor) {
   for (size_t i = 0; i < n; ++i) {
@@ -237,6 +292,11 @@ void write_u32_le(char *p, uint32_t v) {
 
 // ============================================================================
 // FhtKacRotatorImpl - O(d log d) FHT-based Kac random rotation
+//
+// Requires dimension % 64 == 0 for SIMD flip-sign correctness.
+// When dimension is also a power of 2, uses 4 rounds of (flip -> FHT -> rescale).
+// When dimension is 64-aligned but NOT a power of 2 (e.g. 192, 320),
+// uses kacs_walk reduction to handle the non-power-of-2 case.
 // ============================================================================
 
 struct FhtKacRotatorImpl {
@@ -246,72 +306,69 @@ struct FhtKacRotatorImpl {
 
   static constexpr size_t kByteLen = 8;
 
-  void init(size_t /*dim*/, size_t padded_dim) {
-    flip.resize(4 * padded_dim / kByteLen);
+  void init(size_t dim) {
+    flip.resize(4 * dim / kByteLen);
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> dist(0, 255);
     for (auto &b : flip) b = static_cast<uint8_t>(dist(gen));
   }
 
-  void rotate(const float *in, float *out, size_t dim,
-              size_t padded_dim) const {
+  void rotate(const float *in, float *out, size_t dim) const {
     std::memcpy(out, in, sizeof(float) * dim);
-    std::fill(out + dim, out + padded_dim, 0.0f);
 
-    if (trunc_dim == padded_dim) {
+    if (trunc_dim == dim) {
       // Exact power-of-2: 4 rounds of (flip -> FHT -> rescale)
-      flip_sign(flip.data(), out, padded_dim);
+      flip_sign(flip.data(), out, dim);
       fht_inplace(out, trunc_dim);
       vec_rescale(out, trunc_dim, fac);
 
-      flip_sign(flip.data() + padded_dim / kByteLen, out, padded_dim);
+      flip_sign(flip.data() + dim / kByteLen, out, dim);
       fht_inplace(out, trunc_dim);
       vec_rescale(out, trunc_dim, fac);
 
-      flip_sign(flip.data() + 2 * padded_dim / kByteLen, out, padded_dim);
+      flip_sign(flip.data() + 2 * dim / kByteLen, out, dim);
       fht_inplace(out, trunc_dim);
       vec_rescale(out, trunc_dim, fac);
 
-      flip_sign(flip.data() + 3 * padded_dim / kByteLen, out, padded_dim);
+      flip_sign(flip.data() + 3 * dim / kByteLen, out, dim);
       fht_inplace(out, trunc_dim);
       vec_rescale(out, trunc_dim, fac);
 
       return;
     }
 
-    // Non-power-of-2: 4 rounds with kacs_walk reduction.
-    // FHT always operates on trunc_dim (largest power-of-2 <= dim),
-    // matching the original rabitqlib behavior.
-    size_t start = padded_dim - trunc_dim;
+    // Non-power-of-2 (64-aligned, e.g. 192, 320): 4 rounds with kacs_walk
+    // reduction.  FHT always operates on trunc_dim (largest power-of-2 <= dim).
+    size_t start = dim - trunc_dim;
     float *trunc_ptr = out + start;
 
     // Round 1: FHT on [0, trunc_dim)
-    flip_sign(flip.data(), out, padded_dim);
+    flip_sign(flip.data(), out, dim);
     fht_inplace(out, trunc_dim);
     vec_rescale(out, trunc_dim, fac);
-    kacs_walk(out, padded_dim);
+    kacs_walk(out, dim);
 
     // Round 2: FHT on [start, start + trunc_dim)
-    flip_sign(flip.data() + padded_dim / kByteLen, out, padded_dim);
+    flip_sign(flip.data() + dim / kByteLen, out, dim);
     fht_inplace(trunc_ptr, trunc_dim);
     vec_rescale(trunc_ptr, trunc_dim, fac);
-    kacs_walk(out, padded_dim);
+    kacs_walk(out, dim);
 
     // Round 3: FHT on [0, trunc_dim)
-    flip_sign(flip.data() + 2 * padded_dim / kByteLen, out, padded_dim);
+    flip_sign(flip.data() + 2 * dim / kByteLen, out, dim);
     fht_inplace(out, trunc_dim);
     vec_rescale(out, trunc_dim, fac);
-    kacs_walk(out, padded_dim);
+    kacs_walk(out, dim);
 
     // Round 4: FHT on [start, start + trunc_dim)
-    flip_sign(flip.data() + 3 * padded_dim / kByteLen, out, padded_dim);
+    flip_sign(flip.data() + 3 * dim / kByteLen, out, dim);
     fht_inplace(trunc_ptr, trunc_dim);
     vec_rescale(trunc_ptr, trunc_dim, fac);
-    kacs_walk(out, padded_dim);
+    kacs_walk(out, dim);
 
     // Final rescale: combine the 4 kacs_walk reductions
-    vec_rescale(out, padded_dim, 0.25f);
+    vec_rescale(out, dim, 0.25f);
   }
 
   void save(char *data) const {
@@ -325,71 +382,93 @@ struct FhtKacRotatorImpl {
   size_t dump_bytes() const {
     return flip.size();
   }
+
+  void unrotate(const float *in, float *out, size_t dim) const {
+    // Copy input into working buffer
+    std::vector<float> data(in, in + dim);
+
+    if (trunc_dim == dim) {
+      // Exact power-of-2: reverse 4 rounds in reverse order.
+      // Forward per round: flip -> fht -> rescale(fac)
+      // Reverse per round: rescale(1/fac) -> inv_fht -> flip
+      // Combined: fht + rescale(1/sqrt(trunc_dim)) + flip
+      const float inv_fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
+      for (int round = 3; round >= 0; --round) {
+        fht_inplace(data.data(), trunc_dim);
+        vec_rescale(data.data(), trunc_dim, inv_fac);
+        flip_sign(flip.data() + round * dim / kByteLen, data.data(), dim);
+      }
+      std::memcpy(out, data.data(), dim * sizeof(float));
+      return;
+    }
+
+    // Non-power-of-2: undo final rescale(0.25) first
+    vec_rescale(data.data(), dim, 4.0f);
+
+    // Reverse 4 rounds in reverse order.
+    // Forward round: flip -> fht -> rescale(fac) -> kacs_walk
+    // Reverse: inv_kacs_walk -> rescale(1/fac) -> inv_fht -> flip
+    // Combined inv_fht: fht + rescale(1/sqrt(trunc_dim))
+    const float inv_fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
+    size_t start = dim - trunc_dim;
+    float *trunc_ptr = data.data() + start;
+
+    // Undo Round 4 (FHT on [start, start+trunc_dim))
+    inv_kacs_walk(data.data(), dim);
+    fht_inplace(trunc_ptr, trunc_dim);
+    vec_rescale(trunc_ptr, trunc_dim, inv_fac);
+    flip_sign(flip.data() + 3 * dim / kByteLen, data.data(), dim);
+
+    // Undo Round 3 (FHT on [0, trunc_dim))
+    inv_kacs_walk(data.data(), dim);
+    fht_inplace(data.data(), trunc_dim);
+    vec_rescale(data.data(), trunc_dim, inv_fac);
+    flip_sign(flip.data() + 2 * dim / kByteLen, data.data(), dim);
+
+    // Undo Round 2 (FHT on [start, start+trunc_dim))
+    inv_kacs_walk(data.data(), dim);
+    fht_inplace(trunc_ptr, trunc_dim);
+    vec_rescale(trunc_ptr, trunc_dim, inv_fac);
+    flip_sign(flip.data() + dim / kByteLen, data.data(), dim);
+
+    // Undo Round 1 (FHT on [0, trunc_dim))
+    inv_kacs_walk(data.data(), dim);
+    fht_inplace(data.data(), trunc_dim);
+    vec_rescale(data.data(), trunc_dim, inv_fac);
+    flip_sign(flip.data(), data.data(), dim);
+
+    std::memcpy(out, data.data(), dim * sizeof(float));
+  }
 };
 
 // ============================================================================
 // MatrixRotatorImpl - O(d^2) random orthogonal matrix rotation
+//
+// No alignment requirement on dimension.  Uses a dim x dim square orthogonal
+// matrix generated via Householder QR on a random Gaussian matrix.
 // ============================================================================
 
 struct MatrixRotatorImpl {
-  std::vector<float> matrix;  // dim x padded_dim, row-major
+  std::vector<float> matrix;  // dim x dim, row-major
 
-  void init(size_t dim, size_t padded_dim) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::normal_distribution<float> normal(0.0f, 1.0f);
+  void init(size_t dim) {
+    // Generate dim x dim random Gaussian matrix
+    rabitqlib::RowMajorMatrix<float> rand_mat =
+        rabitqlib::random_gaussian_matrix<float>(dim, dim);
 
-    // Generate padded_dim random Gaussian vectors of length padded_dim
-    std::vector<float> q(padded_dim * padded_dim);
-    for (auto &v : q) v = normal(gen);
+    // Householder QR: numerically stable orthogonalisation
+    Eigen::HouseholderQR<rabitqlib::RowMajorMatrix<float>> qr(rand_mat);
+    rabitqlib::RowMajorMatrix<float> q_inv = qr.householderQ().transpose();
 
-    // Modified Gram-Schmidt orthogonalization
-    for (size_t i = 0; i < padded_dim; ++i) {
-      float *qi = &q[i * padded_dim];
-
-      // Subtract projections onto all previous basis vectors
-      for (size_t j = 0; j < i; ++j) {
-        const float *qj = &q[j * padded_dim];
-        float dot = 0.0f;
-        for (size_t k = 0; k < padded_dim; ++k) dot += qi[k] * qj[k];
-        for (size_t k = 0; k < padded_dim; ++k) qi[k] -= dot * qj[k];
-      }
-
-      // Normalize
-      float norm = 0.0f;
-      for (size_t k = 0; k < padded_dim; ++k) norm += qi[k] * qi[k];
-      norm = std::sqrt(norm);
-
-      if (norm < 1e-10f) {
-        // Degenerate vector: re-randomize and re-orthogonalize
-        for (size_t k = 0; k < padded_dim; ++k) qi[k] = normal(gen);
-        for (size_t j = 0; j < i; ++j) {
-          const float *qj = &q[j * padded_dim];
-          float dot = 0.0f;
-          for (size_t k = 0; k < padded_dim; ++k) dot += qi[k] * qj[k];
-          for (size_t k = 0; k < padded_dim; ++k) qi[k] -= dot * qj[k];
-        }
-        norm = 0.0f;
-        for (size_t k = 0; k < padded_dim; ++k) norm += qi[k] * qi[k];
-        norm = std::sqrt(norm);
-      }
-      for (size_t k = 0; k < padded_dim; ++k) qi[k] /= norm;
-    }
-
-    // Keep only the first dim rows (the rest are zero-padded in input)
-    matrix.resize(dim * padded_dim);
-    std::memcpy(matrix.data(), q.data(), dim * padded_dim * sizeof(float));
+    matrix.resize(dim * dim);
+    std::memcpy(matrix.data(), &q_inv(0, 0), sizeof(float) * dim * dim);
   }
 
-  void rotate(const float *in, float *out, size_t dim,
-              size_t padded_dim) const {
-    for (size_t i = 0; i < padded_dim; ++i) {
-      float sum = 0.0f;
-      for (size_t j = 0; j < dim; ++j) {
-        sum += matrix[j * padded_dim + i] * in[j];
-      }
-      out[i] = sum;
-    }
+  void rotate(const float *in, float *out, size_t dim) const {
+    // v (1 x dim) * M (dim x dim) -> rv (1 x dim)
+    rabitqlib::ConstRowMajorMatrixMap<float> v(in, 1, dim);
+    rabitqlib::RowMajorMatrixMap<float> rv(out, 1, dim);
+    rv = v * rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim);
   }
 
   void save(char *data) const {
@@ -403,6 +482,14 @@ struct MatrixRotatorImpl {
   size_t dump_bytes() const {
     return matrix.size() * sizeof(float);
   }
+
+  //! Inverse rotate using M^T (transpose of the dim x dim orthogonal matrix).
+  void unrotate(const float *in, float *out, size_t dim) const {
+    // M^T (dim x dim) * in (dim x 1) -> out (dim x 1)
+    rabitqlib::ConstRowMajorMatrixMap<float> v(in, dim, 1);
+    rabitqlib::RowMajorMatrixMap<float> rv(out, dim, 1);
+    rv = rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim).transpose() * v;
+  }
 };
 
 }  // anonymous namespace
@@ -412,45 +499,49 @@ struct MatrixRotatorImpl {
 // ============================================================================
 
 struct RecordRotator::Impl {
-  //! Header layout must match the original struct on x86_64:
-  //!   type(1B) + padding(3B) + origin_dim(4B) + padded_dim(4B) = 12B
-  //! This preserves backward compatibility with existing serialized data.
+  //! Header layout (12 bytes, backward-compatible with older serialised data):
+  //!   type(1B) + padding(3B) + origin_dim(4B) + reserved(4B) = 12B
+  //! The reserved field previously stored padded_dim; it now mirrors origin_dim.
   static constexpr size_t kHeaderSize = 12;
 
   struct Header {
     uint8_t type;
     uint32_t origin_dim;
-    uint32_t padded_dim;
+    uint32_t reserved;  // backward-compat placeholder (was padded_dim)
 
     void write_to(char *buf) const {
       std::memset(buf, 0, kHeaderSize);  // zero-fill padding
       buf[0] = static_cast<char>(type);
       write_u32_le(buf + 4, origin_dim);
-      write_u32_le(buf + 8, padded_dim);
+      write_u32_le(buf + 8, reserved);
     }
 
     void read_from(const char *buf) {
       type = static_cast<uint8_t>(buf[0]);
       origin_dim = read_u32_le(buf + 4);
-      padded_dim = read_u32_le(buf + 8);
+      // reserved (buf+8) is intentionally ignored for forward compatibility
     }
   };
 
   size_t dimension{0};
-  size_t padded_dim{0};
   RecordRotatorType type{RecordRotatorType::FhtKac};
 
   std::unique_ptr<FhtKacRotatorImpl> fht_impl;
   std::unique_ptr<MatrixRotatorImpl> mat_impl;
 
-  //! Inverse rotation matrix, column-major: padded_dim columns x dimension rows
-  std::vector<float> inv_matrix;
-
   void do_rotate(const float *in, float *out) const {
     if (fht_impl) {
-      fht_impl->rotate(in, out, dimension, padded_dim);
+      fht_impl->rotate(in, out, dimension);
     } else {
-      mat_impl->rotate(in, out, dimension, padded_dim);
+      mat_impl->rotate(in, out, dimension);
+    }
+  }
+
+  void do_unrotate(const float *in, float *out) const {
+    if (fht_impl) {
+      fht_impl->unrotate(in, out, dimension);
+    } else {
+      mat_impl->unrotate(in, out, dimension);
     }
   }
 
@@ -487,25 +578,34 @@ RecordRotator::~RecordRotator() = default;
 RecordRotator::RecordRotator(RecordRotator &&) noexcept = default;
 RecordRotator &RecordRotator::operator=(RecordRotator &&) noexcept = default;
 
-void RecordRotator::init(size_t dimension, size_t padded_dim,
-                         RecordRotatorType rotator_type) {
+void RecordRotator::init(size_t dimension, RecordRotatorType rotator_type) {
   impl_->dimension = dimension;
-  impl_->padded_dim = padded_dim;
-  impl_->type = rotator_type;
 
-  if (rotator_type == RecordRotatorType::FhtKac) {
+  // Auto-select implementation based on dimension alignment when FhtKac
+  // is requested.  FhtKac requires the dimension to be a multiple of 64
+  // for SIMD flip-sign and FHT correctness.  When the dimension is not
+  // 64-aligned we transparently fall back to the O(d^2) Matrix rotator.
+  bool use_fht = (rotator_type == RecordRotatorType::FhtKac) &&
+                 (dimension % 64 == 0);
+
+  if (use_fht) {
+    impl_->type = RecordRotatorType::FhtKac;
     impl_->fht_impl = std::make_unique<FhtKacRotatorImpl>();
     impl_->fht_impl->trunc_dim = floor_pow2(dimension);
     impl_->fht_impl->fac =
         1.0f / std::sqrt(static_cast<float>(impl_->fht_impl->trunc_dim));
-    impl_->fht_impl->init(dimension, padded_dim);
+    impl_->fht_impl->init(dimension);
   } else {
+    if (rotator_type == RecordRotatorType::FhtKac) {
+      LOG_DEBUG(
+          "RecordRotator::init: dimension %zu is not 64-aligned, "
+          "falling back from FhtKac to Matrix rotator",
+          dimension);
+    }
+    impl_->type = RecordRotatorType::Matrix;
     impl_->mat_impl = std::make_unique<MatrixRotatorImpl>();
-    impl_->mat_impl->init(dimension, padded_dim);
+    impl_->mat_impl->init(dimension);
   }
-
-  // Build inverse rotation data for unrotate support
-  build_inverse();
 }
 
 void RecordRotator::rotate(const float *in, float *out) const {
@@ -513,61 +613,17 @@ void RecordRotator::rotate(const float *in, float *out) const {
 }
 
 std::vector<float> RecordRotator::rotate(const float *in) const {
-  std::vector<float> out(impl_->padded_dim);
+  std::vector<float> out(impl_->dimension);
   impl_->do_rotate(in, out.data());
   return out;
 }
 
-void RecordRotator::build_inverse() {
-  if (!impl_->fht_impl && !impl_->mat_impl) {
-    LOG_ERROR("RecordRotator::build_inverse: rotator not initialized");
-    return;
-  }
-
-  const size_t dim = impl_->dimension;
-  const size_t pdim = impl_->padded_dim;
-
-  // Allocate column-major storage: padded_dim columns, each dim floats
-  impl_->inv_matrix.resize(pdim * dim, 0.0f);
-
-  // Compute rotation matrix by rotating each standard basis vector e_i.
-  // R * e_i = i-th column of R, stored as inv_matrix[i * dim + j].
-  std::vector<float> basis(dim, 0.0f);
-  std::vector<float> rotated(pdim, 0.0f);
-
-  for (size_t i = 0; i < pdim; ++i) {
-    std::fill(basis.begin(), basis.end(), 0.0f);
-    if (i < dim) {
-      basis[i] = 1.0f;
-    }
-    impl_->do_rotate(basis.data(), rotated.data());
-    for (size_t j = 0; j < dim; ++j) {
-      impl_->inv_matrix[i * dim + j] = rotated[j];
-    }
-  }
-
-  LOG_DEBUG("RecordRotator::build_inverse done: dim=%zu, padded_dim=%zu", dim,
-            pdim);
-}
-
 void RecordRotator::unrotate(const float *in, float *out) const {
-  if (impl_->inv_matrix.empty()) {
-    LOG_ERROR("RecordRotator::unrotate: build_inverse() not called");
+  if (!impl_->fht_impl && !impl_->mat_impl) {
+    LOG_ERROR("RecordRotator::unrotate: rotator not initialized");
     return;
   }
-
-  const size_t dim = impl_->dimension;
-
-  // Compute x = R^T * y, where y is the dim-dimensional input.
-  // x[j] = sum_{i=0}^{dim-1} inv_matrix[i * dim + j] * in[i]
-  std::vector<float> tmp(dim, 0.0f);
-  for (size_t i = 0; i < dim; ++i) {
-    const float yi = in[i];
-    for (size_t j = 0; j < dim; ++j) {
-      tmp[j] += impl_->inv_matrix[i * dim + j] * yi;
-    }
-  }
-  std::memcpy(out, tmp.data(), dim * sizeof(float));
+  impl_->do_unrotate(in, out);
 }
 
 std::vector<float> RecordRotator::unrotate(const float *in) const {
@@ -595,7 +651,7 @@ int RecordRotator::dump(const IndexStorage::Pointer &storage,
     return (size + 0x1F) & (~0x1F);
   };
 
-  // Serialize: [Header: type|origin_dim|padded_dim] [rotation blob]
+  // Serialize: [Header: type|origin_dim|reserved] [rotation blob]
   const size_t blob_size = impl_->blob_bytes();
   const size_t data_size = Impl::kHeaderSize + blob_size;
   const size_t total_size = align_size(data_size);
@@ -604,7 +660,7 @@ int RecordRotator::dump(const IndexStorage::Pointer &storage,
   Impl::Header header;
   header.type = static_cast<uint8_t>(impl_->type);
   header.origin_dim = static_cast<uint32_t>(impl_->dimension);
-  header.padded_dim = static_cast<uint32_t>(impl_->padded_dim);
+  header.reserved = static_cast<uint32_t>(impl_->dimension);  // backward compat
   header.write_to(buffer.data());
   impl_->save_blob(buffer.data() + Impl::kHeaderSize);
 
@@ -651,7 +707,7 @@ int RecordRotator::dump(const IndexDumper::Pointer &dumper,
     return IndexError_NoReady;
   }
 
-  // Serialize: [Header: type|origin_dim|padded_dim] [rotation blob]
+  // Serialize: [Header: type|origin_dim|reserved] [rotation blob]
   const size_t blob_size = impl_->blob_bytes();
   const size_t data_size = Impl::kHeaderSize + blob_size;
   const size_t total_size = (data_size + 0x1F) & (~0x1F);
@@ -660,7 +716,7 @@ int RecordRotator::dump(const IndexDumper::Pointer &dumper,
   Impl::Header header;
   header.type = static_cast<uint8_t>(impl_->type);
   header.origin_dim = static_cast<uint32_t>(impl_->dimension);
-  header.padded_dim = static_cast<uint32_t>(impl_->padded_dim);
+  header.reserved = static_cast<uint32_t>(impl_->dimension);  // backward compat
   header.write_to(buffer.data());
   impl_->save_blob(buffer.data() + Impl::kHeaderSize);
 
@@ -728,19 +784,18 @@ int RecordRotator::open(IndexStorage::Pointer storage,
     }
   }
 
-  // Parse self-describing header
+  // Parse self-describing header (reserved field is ignored)
   const char *raw = reinterpret_cast<const char *>(block.data());
   Impl::Header header;
   header.read_from(raw);
 
   impl_->type = static_cast<RecordRotatorType>(header.type);
   impl_->dimension = static_cast<size_t>(header.origin_dim);
-  impl_->padded_dim = static_cast<size_t>(header.padded_dim);
 
   // Reconstruct the rotator from header info and load blob
   if (impl_->type == RecordRotatorType::FhtKac) {
     impl_->fht_impl = std::make_unique<FhtKacRotatorImpl>();
-    impl_->fht_impl->flip.resize(4 * impl_->padded_dim /
+    impl_->fht_impl->flip.resize(4 * impl_->dimension /
                                  FhtKacRotatorImpl::kByteLen);
     impl_->fht_impl->trunc_dim = floor_pow2(impl_->dimension);
     impl_->fht_impl->fac =
@@ -748,55 +803,40 @@ int RecordRotator::open(IndexStorage::Pointer storage,
     impl_->fht_impl->load(raw + Impl::kHeaderSize);
   } else {
     impl_->mat_impl = std::make_unique<MatrixRotatorImpl>();
-    impl_->mat_impl->matrix.resize(impl_->dimension * impl_->padded_dim);
+    impl_->mat_impl->matrix.resize(impl_->dimension * impl_->dimension);
     impl_->mat_impl->load(raw + Impl::kHeaderSize);
   }
 
   LOG_DEBUG(
-      "RecordRotator::open done: seg=%s, dim=%zu, padded_dim=%zu, "
-      "data_size=%zu",
-      seg_id.c_str(), impl_->dimension, impl_->padded_dim, data_size);
-
-  // Build inverse rotation data for unrotate support
-  build_inverse();
+      "RecordRotator::open done: seg=%s, dim=%zu, data_size=%zu",
+      seg_id.c_str(), impl_->dimension, data_size);
 
   return 0;
 }
 
-int RecordRotator::load(const float *matrix, size_t dimension,
-                        size_t padded_dim) {
+int RecordRotator::load(const float *matrix, size_t dimension) {
   if (!matrix) {
     LOG_ERROR("RecordRotator::load: null matrix");
     return IndexError_InvalidArgument;
   }
-  if (dimension == 0 || padded_dim == 0) {
-    LOG_ERROR("RecordRotator::load: invalid dims %zu x %zu", dimension,
-              padded_dim);
+  if (dimension == 0) {
+    LOG_ERROR("RecordRotator::load: invalid dim %zu", dimension);
     return IndexError_InvalidArgument;
   }
 
   impl_->dimension = dimension;
-  impl_->padded_dim = padded_dim;
   impl_->type = RecordRotatorType::Matrix;
   impl_->mat_impl = std::make_unique<MatrixRotatorImpl>();
-  impl_->mat_impl->matrix.resize(dimension * padded_dim);
+  impl_->mat_impl->matrix.resize(dimension * dimension);
   impl_->mat_impl->load(reinterpret_cast<const char *>(matrix));
 
-  LOG_DEBUG("RecordRotator::load done: dim=%zu, padded_dim=%zu", dimension,
-            padded_dim);
-
-  // Build inverse rotation data for unrotate support
-  build_inverse();
+  LOG_DEBUG("RecordRotator::load done: dim=%zu", dimension);
 
   return 0;
 }
 
 size_t RecordRotator::dimension() const {
   return impl_->dimension;
-}
-
-size_t RecordRotator::padded_dim() const {
-  return impl_->padded_dim;
 }
 
 RecordRotatorType RecordRotator::rotator_type() const {

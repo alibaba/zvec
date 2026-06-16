@@ -37,9 +37,14 @@ enum class RecordRotatorType : uint8_t {
  * All rotation algorithms are implemented inline (FHT-based Kac walk and
  * explicit random matrix), so no rabitqlib headers are required.
  *
- * Provides O(d log d) fast rotation (FHT-based Kac random rotation),
- * as well as serialization (save/load) of the rotation parameters.
- * Used by IntegerStreamingConverter/Reformer when enable_rotate is true.
+ * Auto-selects the rotation algorithm based on dimension alignment:
+ *  - dimension % 64 == 0 -> FhtKac  (O(d log d), requires 64-alignment)
+ *  - otherwise           -> Matrix  (O(d^2), no alignment requirement)
+ *
+ * Rotation preserves dimension: output size == input size (no padding).
+ *
+ * Used by IntegerStreamingConverter/Reformer and CosineConverter/Reformer
+ * when enable_rotate is true.
  */
 class RecordRotator {
  public:
@@ -52,38 +57,35 @@ class RecordRotator {
   RecordRotator(const RecordRotator &) = delete;
   RecordRotator &operator=(const RecordRotator &) = delete;
 
-  //! Initialize the rotator
-  //! @param dimension     original vector dimension
-  //! @param padded_dim    padded dimension (rounded up for SIMD alignment)
-  //! @param rotator_type  rotation algorithm (default: FhtKac)
-  void init(size_t dimension, size_t padded_dim,
+  //! Initialize the rotator.
+  //! Auto-selects FhtKac when dimension is 64-aligned, else falls back to
+  //! Matrix.  The @p rotator_type parameter can force Matrix explicitly.
+  //! @param dimension     vector dimension (input and output size)
+  //! @param rotator_type  rotation algorithm (default: FhtKac, auto-degrades
+  //!                      to Matrix when dimension is not 64-aligned)
+  void init(size_t dimension,
             RecordRotatorType rotator_type = RecordRotatorType::FhtKac);
 
   //! Rotate a single vector
   //! @param in   input vector of size >= dimension
-  //! @param out  output buffer of size >= padded_dim
+  //! @param out  output buffer of size >= dimension
   void rotate(const float *in, float *out) const;
 
   //! Rotate a single vector into a managed buffer
   //! @param in  input vector of size >= dimension
-  //! @return    vector<float> of size padded_dim containing rotated result
+  //! @return    vector<float> of size dimension containing rotated result
   std::vector<float> rotate(const float *in) const;
 
   //! Inverse-rotate a single vector (from rotated space back to original)
-  //! @param in   input vector of size >= dimension (rotated, truncated)
+  //! @param in   input vector of size >= dimension (rotated vector)
   //! @param out  output buffer of size >= dimension (original space)
   void unrotate(const float *in, float *out) const;
 
   //! Inverse-rotate a single vector into a managed buffer
-  //! @param in  input vector of size >= dimension (rotated, truncated)
+  //! @param in  input vector of size >= dimension (rotated vector)
   //! @return    vector<float> of size dimension containing inverse-rotated
   //! result
   std::vector<float> unrotate(const float *in) const;
-
-  //! Prepare internal data structures for inverse rotation.
-  //! Computes the rotation matrix by rotating basis vectors.
-  //! Must be called after init() or open() before using unrotate().
-  void build_inverse();
 
   //! Return the serialized size of the rotator in bytes (header + blob)
   size_t dump_bytes() const;
@@ -94,29 +96,25 @@ class RecordRotator {
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
 
   //! Dump the rotator to an IndexDumper as a named segment.
-  //! Format: [Header: type(1B)|origin_dim(4B)|padded_dim(4B)] [rotation blob]
+  //! Format: [Header: type(1B)|origin_dim(4B)|reserved(4B)] [rotation blob]
   //! Appends padding for 32-byte alignment.
   int dump(const IndexDumper::Pointer &dumper,
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
 
   //! Open the rotator from an IndexStorage segment (self-describing, no init
-  //! needed). Parses header to get type/dimension/padded_dim, then reconstructs
-  //! the rotator.
+  //! needed). Parses header to get type/dimension, then reconstructs the
+  //! rotator.
   int open(IndexStorage::Pointer storage,
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID);
 
   //! Load a user-specified rotation matrix.
   //! Always uses MatrixRotator internally.
-  //! @param matrix       row-major matrix of shape dimension x padded_dim
-  //! @param dimension    original vector dimension
-  //! @param padded_dim   padded dimension (must be multiple of 64)
-  int load(const float *matrix, size_t dimension, size_t padded_dim);
+  //! @param matrix       row-major square matrix of shape dimension x dimension
+  //! @param dimension    vector dimension
+  int load(const float *matrix, size_t dimension);
 
-  //! Return the original dimension
+  //! Return the vector dimension
   size_t dimension() const;
-
-  //! Return the padded dimension
-  size_t padded_dim() const;
 
   //! Return the rotator type
   RecordRotatorType rotator_type() const;

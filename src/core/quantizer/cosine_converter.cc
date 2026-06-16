@@ -58,7 +58,7 @@ class CosineConverterHolder : public IndexHolder {
 
         // Allocate rotate buffer if owner has a rotator
         if (owner_->rotator_) {
-          rotate_buffer_.resize(owner_->rotator_->padded_dim());
+          rotate_buffer_.resize(owner_->rotator_->dimension());
         }
       }
 
@@ -132,9 +132,7 @@ class CosineConverterHolder : public IndexHolder {
 
         float norm = 0.0f;
         ailego::Normalizer<float>::L2(const_cast<float *>(vec),
-                                      owner_->rotator_
-                                          ? owner_->rotator_->padded_dim()
-                                          : original_dimension_,
+                                      original_dimension_,
                                       &norm);
 
         if (type_ == IndexMeta::DataType::DT_FP32) {
@@ -294,14 +292,12 @@ class CosineConverter : public IndexConverter {
       reformer_params.set(COSINE_REFORMER_ENABLE_ROTATE, true);
     }
 
-    // Compute padded dimension and create rotator if rotation is enabled
+    // Create rotator if rotation is enabled
     if (enable_rotate_) {
       size_t dim = index_meta.dimension();
-      size_t padded_dim = ((dim + 63) / 64) * 64;
       rotator_ = std::make_shared<RecordRotator>();
-      rotator_->init(dim, padded_dim);
-      LOG_DEBUG("CosineConverter: rotation enabled, dim=%zu, padded_dim=%zu",
-                dim, padded_dim);
+      rotator_->init(dim);
+      LOG_DEBUG("CosineConverter: rotation enabled, dim=%zu", dim);
     }
 
     if (dst_type_ == IndexMeta::DataType::DT_INT8) {

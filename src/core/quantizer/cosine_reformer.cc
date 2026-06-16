@@ -71,9 +71,8 @@ class CosineReformer : public IndexReformer {
       } else {
         enable_rotate_ = true;
         LOG_DEBUG(
-            "CosineReformer: rotator auto-loaded, origin_dim=%zu, "
-            "padded_dim=%zu",
-            rotator_->dimension(), rotator_->padded_dim());
+            "CosineReformer: rotator auto-loaded, dim=%zu",
+            rotator_->dimension());
       }
     }
     return 0;
@@ -111,10 +110,10 @@ class CosineReformer : public IndexReformer {
       // Apply rotation if enabled
       std::unique_ptr<float[]> rotate_buffer;
       if (enable_rotate_ && rotator_) {
-        rotate_buffer.reset(new float[rotator_->padded_dim()]);
+        rotate_buffer.reset(new float[rotator_->dimension()]);
         rotator_->rotate(vec, rotate_buffer.get());
         vec = rotate_buffer.get();
-        origin_dimension = rotator_->padded_dim();
+        // rotation preserves dimension: origin_dimension stays qmeta.dimension()
       }
 
       // Normalize (L2)

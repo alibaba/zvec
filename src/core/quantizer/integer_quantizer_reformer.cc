@@ -319,9 +319,8 @@ class IntegerStreamingReformer : public IndexReformer {
       } else {
         enable_rotate_ = true;
         LOG_DEBUG(
-            "IntegerStreamingReformer: rotator auto-loaded, origin_dim=%zu, "
-            "padded_dim=%zu",
-            rotator_->dimension(), rotator_->padded_dim());
+            "IntegerStreamingReformer: rotator auto-loaded, dim=%zu",
+            rotator_->dimension());
       }
     }
     return 0;
@@ -349,7 +348,7 @@ class IntegerStreamingReformer : public IndexReformer {
     const float *vec = reinterpret_cast<const float *>(query);
     std::unique_ptr<float[]> rotate_buffer;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[rotator_->padded_dim()]);
+      rotate_buffer.reset(new float[rotator_->dimension()]);
       rotator_->rotate(vec, rotate_buffer.get());
       vec = rotate_buffer.get();
     }
@@ -381,7 +380,7 @@ class IntegerStreamingReformer : public IndexReformer {
     std::unique_ptr<float[]> rotate_buffer;
     std::unique_ptr<float[]> normalized;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[rotator_->padded_dim()]);
+      rotate_buffer.reset(new float[rotator_->dimension()]);
     }
     if (enable_normalize_) {
       normalized.reset(new float[qmeta.dimension()]);
@@ -422,7 +421,7 @@ class IntegerStreamingReformer : public IndexReformer {
     const float *vec = reinterpret_cast<const float *>(record);
     std::unique_ptr<float[]> rotate_buffer;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[rotator_->padded_dim()]);
+      rotate_buffer.reset(new float[rotator_->dimension()]);
       rotator_->rotate(vec, rotate_buffer.get());
       vec = rotate_buffer.get();
     }
@@ -455,7 +454,7 @@ class IntegerStreamingReformer : public IndexReformer {
     std::unique_ptr<float[]> rotate_buffer;
     std::unique_ptr<float[]> normalized;
     if (enable_rotate_ && rotator_) {
-      rotate_buffer.reset(new float[rotator_->padded_dim()]);
+      rotate_buffer.reset(new float[rotator_->dimension()]);
     }
     if (enable_normalize_) {
       normalized.reset(new float[rmeta.dimension()]);
@@ -506,18 +505,23 @@ class IntegerStreamingReformer : public IndexReformer {
       return IndexError_Unsupported;
     }
 
-    const size_t origin_dim = qmeta.dimension() - extra_dimension_;
-    out->resize(origin_dim * sizeof(float));
-    float *out_buf = reinterpret_cast<float *>(out->data());
+    const size_t stored_dim = qmeta.dimension() - extra_dimension_;
 
     if (enable_rotate_ && rotator_) {
-      // First unquantize into a temporary buffer, then inverse rotate
-      std::vector<float> unq_buf(origin_dim);
-      RecordQuantizer::unquantize_record(in, origin_dim, data_type_,
+      // Unquantize to stored_dim floats, then inverse rotate to dim floats
+      const size_t dim = rotator_->dimension();
+      out->resize(dim * sizeof(float));
+      float *out_buf = reinterpret_cast<float *>(out->data());
+
+      std::vector<float> unq_buf(stored_dim);
+      RecordQuantizer::unquantize_record(in, stored_dim, data_type_,
                                          unq_buf.data());
       rotator_->unrotate(unq_buf.data(), out_buf);
     } else {
-      RecordQuantizer::unquantize_record(in, origin_dim, data_type_, out_buf);
+      // No rotation: stored dim == original dim
+      out->resize(stored_dim * sizeof(float));
+      float *out_buf = reinterpret_cast<float *>(out->data());
+      RecordQuantizer::unquantize_record(in, stored_dim, data_type_, out_buf);
     }
 
     return 0;
