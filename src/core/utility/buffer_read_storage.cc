@@ -67,7 +67,8 @@ class BufferReadStorage : public IndexStorage {
 
     //! Constructor (clone)
     Segment(const Segment &rhs)
-        : data_offset_(rhs.data_offset_),
+        : std::enable_shared_from_this<Segment>(),
+          data_offset_(rhs.data_offset_),
           data_size_(rhs.data_size_),
           padding_size_(rhs.padding_size_),
           region_size_(rhs.region_size_),
