@@ -481,6 +481,7 @@ class BufferStorage : public IndexStorage {
     if (val != 0) {
       segment_meta_capacity_ = val;
     }
+    params.get(BUFFER_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_);
     return 0;
   }
 
@@ -509,7 +510,8 @@ class BufferStorage : public IndexStorage {
     // Open in writable mode when the caller expects to modify the index
     // (create_if_missing=true implies write intent, same as MMapFileStorage).
     buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
-        path, /*writable=*/create_if_missing);
+        path, /*writable=*/create_if_missing,
+        /*enable_direct_io=*/enable_direct_io_);
     buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
         buffer_pool_->get_handle());
     int ret = ParseToMapping();
@@ -1524,6 +1526,10 @@ class BufferStorage : public IndexStorage {
   // Capacity (in bytes) of the segment metadata section written by
   // init_index().
   uint32_t segment_meta_capacity_{4096u};
+
+  // When true, the page-data fd is opened with O_DIRECT (metadata fd stays
+  // buffered).  Defaults to false: identical behaviour to the legacy path.
+  bool enable_direct_io_{false};
 
   // Per-header-chain file offsets used by flush_index() and append_segment().
   struct MetaChain {

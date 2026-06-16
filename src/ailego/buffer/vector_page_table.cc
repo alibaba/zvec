@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -272,27 +273,71 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
   }
 }
 
-VecBufferPool::VecBufferPool(const std::string &filename, bool writable) {
+VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
+                            bool enable_direct_io) {
   file_name_ = filename;
   writable_ = writable;
 #if defined(_MSC_VER)
   int flags = writable_ ? (O_RDWR | _O_BINARY) : (O_RDONLY | _O_BINARY);
   fd_ = _open(filename.c_str(), flags, 0644);
+  meta_fd_ = _open(filename.c_str(), flags, 0644);
+  (void)enable_direct_io;  // O_DIRECT not supported on this path
 #else
-  int flags = writable_ ? O_RDWR : O_RDONLY;
-  fd_ = ::open(filename.c_str(), flags, 0644);
+  int base_flags = writable_ ? O_RDWR : O_RDONLY;
+  // Metadata channel: always buffered IO. Serves the unaligned
+  // header/footer/segment_meta reads & writes and benefits from page cache.
+  meta_fd_ = ::open(filename.c_str(), base_flags, 0644);
+  // Page-data channel: optionally O_DIRECT; fall back to buffered open when
+  // the filesystem (tmpfs/overlayfs/...) rejects O_DIRECT.
+  int data_flags = base_flags;
+#ifdef O_DIRECT
+  if (enable_direct_io) {
+    data_flags |= O_DIRECT;
+  }
 #endif
-  if (fd_ < 0) {
+  fd_ = ::open(filename.c_str(), data_flags, 0644);
+#ifdef O_DIRECT
+  if (fd_ < 0 && (data_flags & O_DIRECT)) {
+    LOG_WARN(
+        "VecBufferPool: open with O_DIRECT failed for file[%s] (errno=%d), "
+        "falling back to buffered IO",
+        filename.c_str(), errno);
+    fd_ = ::open(filename.c_str(), base_flags, 0644);
+    direct_io_enabled_ = false;
+  } else {
+    direct_io_enabled_ = (data_flags & O_DIRECT) != 0;
+  }
+#else
+  (void)enable_direct_io;
+#endif
+#endif
+  if (fd_ < 0 || meta_fd_ < 0) {
+    if (fd_ >= 0) {
+#if defined(_MSC_VER)
+      _close(fd_);
+#else
+      ::close(fd_);
+#endif
+    }
+    if (meta_fd_ >= 0) {
+#if defined(_MSC_VER)
+      _close(meta_fd_);
+#else
+      ::close(meta_fd_);
+#endif
+    }
     throw std::runtime_error("Failed to open file: " + filename);
   }
 #if defined(_MSC_VER)
   struct _stat64 st;
   if (_fstat64(fd_, &st) < 0) {
     _close(fd_);
+    _close(meta_fd_);
 #else
   struct stat st;
   if (fstat(fd_, &st) < 0) {
     ::close(fd_);
+    ::close(meta_fd_);
 #endif
     throw std::runtime_error("Failed to stat file: " + filename);
   }
@@ -375,16 +420,24 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
   }
 
   size_t page_offset = page_id * kVectorPageSize;
-  size_t expected_bytes = std::min(kVectorPageSize, file_size_ - page_offset);
-  if (expected_bytes < kVectorPageSize) {
-    std::memset(buffer + expected_bytes, 0, kVectorPageSize - expected_bytes);
+  // O_DIRECT requires the IO length to be a multiple of the device block
+  // size. The backing file size is always page-aligned (IndexMapping +
+  // append_segment guarantee this), so reading a full page never reads past
+  // EOF; the tail padding is the file's own zero region. In direct mode we
+  // MUST read the whole page; the buffered path keeps the legacy short-read
+  // + zero-pad behaviour.
+  size_t read_len = direct_io_enabled_
+                        ? kVectorPageSize
+                        : std::min(kVectorPageSize, file_size_ - page_offset);
+  if (read_len < kVectorPageSize) {
+    std::memset(buffer + read_len, 0, kVectorPageSize - read_len);
   }
-  ssize_t read_bytes = zvec_pread(fd_, buffer, expected_bytes, page_offset);
-  if (read_bytes != static_cast<ssize_t>(expected_bytes)) {
+  ssize_t read_bytes = zvec_pread(fd_, buffer, read_len, page_offset);
+  if (read_bytes != static_cast<ssize_t>(read_len)) {
     LOG_ERROR(
         "Buffer pool failed to read file at offset: file[%s], page_id[%zu], "
         "offset[%zu], expected[%zu], got[%zd]",
-        file_name_.c_str(), page_id, page_offset, expected_bytes, read_bytes);
+        file_name_.c_str(), page_id, page_offset, read_len, read_bytes);
     MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     return nullptr;
   }
@@ -392,7 +445,7 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
 }
 
 int VecBufferPool::get_meta(size_t offset, size_t length, char *buffer) {
-  ssize_t read_bytes = zvec_pread(fd_, buffer, length, offset);
+  ssize_t read_bytes = zvec_pread(meta_fd_, buffer, length, offset);
   if (read_bytes != static_cast<ssize_t>(length)) {
     LOG_ERROR(
         "Buffer pool failed to read file at offset: file[%s], offset[%zu], "
@@ -446,7 +499,7 @@ int VecBufferPool::write_meta(size_t offset, size_t length,
               file_name_.c_str());
     return -1;
   }
-  ssize_t w = zvec_pwrite(fd_, buffer, length, offset);
+  ssize_t w = zvec_pwrite(meta_fd_, buffer, length, offset);
   if (w != static_cast<ssize_t>(length)) {
     LOG_ERROR(
         "Buffer pool failed to write meta: file[%s], offset[%zu], "
@@ -495,6 +548,10 @@ bool VecBufferPool::extend_file(size_t new_size) {
   if (new_size <= file_size_) {
     return true;
   }
+  // The backing file must stay page-aligned so that O_DIRECT full-page reads
+  // never read past EOF. All current callers pass page-aligned targets.
+  assert(new_size % kVectorPageSize == 0 &&
+         "extend_file target must be page-aligned for O_DIRECT correctness");
   // Pre-validate against the page table's static capacity BEFORE mutating
   // any on-disk state.  Otherwise a successful ftruncate followed by a
   // failed page_table_.extend() would leave the file size and the page

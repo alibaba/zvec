@@ -201,7 +201,8 @@ class VecBufferPool {
 
   static constexpr size_t kMutexBucketCount = 64UL * 1024UL;
 
-  VecBufferPool(const std::string &filename, bool writable = false);
+  VecBufferPool(const std::string &filename, bool writable = false,
+                bool enable_direct_io = false);
   ~VecBufferPool() {
     // Flush any remaining dirty blocks before tearing down memory/fd so that
     // writes are not silently lost. Safe to call even in read-only mode.
@@ -212,8 +213,10 @@ class VecBufferPool {
     }
 #if defined(_MSC_VER)
     _close(fd_);
+    _close(meta_fd_);
 #else
     close(fd_);
+    close(meta_fd_);
 #endif
   }
 
@@ -253,10 +256,12 @@ class VecBufferPool {
   }
 
  private:
-  int fd_;
+  int fd_;            // page-data channel: may carry O_DIRECT
+  int meta_fd_;       // metadata channel: always buffered IO
   size_t file_size_;
   std::string file_name_;
   bool writable_{false};
+  bool direct_io_enabled_{false};  // whether O_DIRECT actually took effect
 
  public:
   VectorPageTable page_table_;
