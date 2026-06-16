@@ -294,7 +294,7 @@ class HNSWIndex : public Index {
   HNSWIndex() = default;
 
   //! Retrieve the storage mode of the underlying HNSW streamer entity.
-  //! Returns a string among {"mmap", "buffer_pool", "contiguous"}.
+  //! Returns a string among {"mmap", "buffer_pool", "contiguous", "external"}.
   //! Intended for introspection and debug/testing usage. Returns empty
   //! string when the streamer has not been initialized or is of an
   //! unexpected type (e.g. the sparse branch).
