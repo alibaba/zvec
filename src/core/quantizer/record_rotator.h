@@ -76,7 +76,8 @@ class RecordRotator {
 
   //! Inverse-rotate a single vector into a managed buffer
   //! @param in  input vector of size >= dimension (rotated, truncated)
-  //! @return    vector<float> of size dimension containing inverse-rotated result
+  //! @return    vector<float> of size dimension containing inverse-rotated
+  //! result
   std::vector<float> unrotate(const float *in) const;
 
   //! Prepare internal data structures for inverse rotation.
@@ -98,8 +99,9 @@ class RecordRotator {
   int dump(const IndexDumper::Pointer &dumper,
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
 
-  //! Open the rotator from an IndexStorage segment (self-describing, no init needed).
-  //! Parses header to get type/dimension/padded_dim, then reconstructs the rotator.
+  //! Open the rotator from an IndexStorage segment (self-describing, no init
+  //! needed). Parses header to get type/dimension/padded_dim, then reconstructs
+  //! the rotator.
   int open(IndexStorage::Pointer storage,
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID);
 

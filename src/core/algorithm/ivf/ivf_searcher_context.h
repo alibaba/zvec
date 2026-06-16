@@ -77,8 +77,8 @@ class IVFSearcherContext : public IndexSearcher::Context {
       topk_val = std::max(topk_val, static_cast<size_t>(1));
       max_scan_count_ = static_cast<uint32_t>(entity_->vector_count());
     } else {
-      topk_val = std::max(
-          static_cast<uint32_t>(std::round(nlist * scan_ratio_)), 1u);
+      topk_val =
+          std::max(static_cast<uint32_t>(std::round(nlist * scan_ratio_)), 1u);
       max_scan_count_ = static_cast<uint32_t>(
           std::ceil(entity_->vector_count() * scan_ratio_));
     }

@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <vector>
 #include <ailego/algorithm/integer_quantizer.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
-#include <vector>
 #include "record_quantizer.h"
 #include "record_rotator.h"
 
@@ -301,16 +301,16 @@ class IntegerStreamingReformer : public IndexReformer {
   //! Auto-detects rotation by checking for rotator segment in storage.
   //! No need for enable_rotate in search config.
   int load(IndexStorage::Pointer storage) override {
-    // If config explicitly enables rotate but rotator not yet loaded, try storage
-    // If config doesn't enable rotate, still try storage (auto-detect)
+    // If config explicitly enables rotate but rotator not yet loaded, try
+    // storage If config doesn't enable rotate, still try storage (auto-detect)
     if (enable_rotate_ || storage->get(RECORD_ROTATOR_SEG_ID)) {
       rotator_ = std::make_shared<RecordRotator>();
       int ret = rotator_->open(storage);
       if (ret != 0) {
         if (enable_rotate_) {
           // Config said enable_rotate but storage has no rotator — error
-          LOG_ERROR(
-              "IntegerStreamingReformer: load rotator failed, ret=%d", ret);
+          LOG_ERROR("IntegerStreamingReformer: load rotator failed, ret=%d",
+                    ret);
           rotator_.reset();
           return ret;
         }

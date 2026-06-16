@@ -402,9 +402,10 @@ class IntegerStreamingConverter : public IndexConverter {
       padded_dim = ((dim + 63) / 64) * 64;
       rotator_ = std::make_shared<RecordRotator>();
       rotator_->init(dim, padded_dim);
-      LOG_DEBUG("IntegerStreamingConverter: rotation enabled, dim=%zu, "
-                "padded_dim=%zu",
-                dim, padded_dim);
+      LOG_DEBUG(
+          "IntegerStreamingConverter: rotation enabled, dim=%zu, "
+          "padded_dim=%zu",
+          dim, padded_dim);
     }
 
     if (data_type_ == IndexMeta::DataType::DT_INT8) {
@@ -547,16 +548,15 @@ class IntegerStreamingConverter : public IndexConverter {
           }
           if (owner_->enable_normalize_) {
             float norm = 0.0;
-            memcpy((void *)normalize_buffer_.data(), vec,
-                   pdim * sizeof(float));
+            memcpy((void *)normalize_buffer_.data(), vec, pdim * sizeof(float));
             ailego::Normalizer<float>::L2((float *)normalize_buffer_.data(),
                                           pdim, &norm);
             vec = (float *)normalize_buffer_.data();
           }
 
-          RecordQuantizer::quantize_record(
-              vec, pdim, owner_->data_type(),
-              owner_->is_euclidean_, buffer_.data());
+          RecordQuantizer::quantize_record(vec, pdim, owner_->data_type(),
+                                           owner_->is_euclidean_,
+                                           buffer_.data());
         }
       }
 

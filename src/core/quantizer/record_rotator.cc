@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "record_rotator.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -51,7 +50,10 @@ namespace {
 //! Compute floor(log2(n)) for power-of-2 n.
 inline int ilog2(size_t n) {
   int r = 0;
-  while (n > 1) { n >>= 1; ++r; }
+  while (n > 1) {
+    n >>= 1;
+    ++r;
+  }
   return r;
 }
 
@@ -133,8 +135,7 @@ void flip_sign(const uint8_t *flip, float *data, size_t dim) {
     uint32x4_t bit_mask = {b0, b1, b2, b3};
     uint32x4_t sign_mask = vmulq_u32(bit_mask, sign_bit);
     float32x4_t v = vld1q_f32(&data[i]);
-    v = vreinterpretq_f32_u32(
-        veorq_u32(vreinterpretq_u32_f32(v), sign_mask));
+    v = vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(v), sign_mask));
     vst1q_f32(&data[i], v);
   }
 #elif defined(__SSE2__)
@@ -321,7 +322,9 @@ struct FhtKacRotatorImpl {
     std::memcpy(flip.data(), data, flip.size());
   }
 
-  size_t dump_bytes() const { return flip.size(); }
+  size_t dump_bytes() const {
+    return flip.size();
+  }
 };
 
 // ============================================================================
@@ -397,7 +400,9 @@ struct MatrixRotatorImpl {
     std::memcpy(matrix.data(), data, matrix.size() * sizeof(float));
   }
 
-  size_t dump_bytes() const { return matrix.size() * sizeof(float); }
+  size_t dump_bytes() const {
+    return matrix.size() * sizeof(float);
+  }
 };
 
 }  // anonymous namespace
@@ -606,8 +611,9 @@ int RecordRotator::dump(const IndexStorage::Pointer &storage,
   // Append segment to storage
   int ret = storage->append(seg_id, total_size);
   if (ret != 0) {
-    LOG_ERROR("RecordRotator::dump(storage): append segment '%s' failed, ret=%d",
-              seg_id.c_str(), ret);
+    LOG_ERROR(
+        "RecordRotator::dump(storage): append segment '%s' failed, ret=%d",
+        seg_id.c_str(), ret);
     return ret;
   }
 
@@ -785,11 +791,17 @@ int RecordRotator::load(const float *matrix, size_t dimension,
   return 0;
 }
 
-size_t RecordRotator::dimension() const { return impl_->dimension; }
+size_t RecordRotator::dimension() const {
+  return impl_->dimension;
+}
 
-size_t RecordRotator::padded_dim() const { return impl_->padded_dim; }
+size_t RecordRotator::padded_dim() const {
+  return impl_->padded_dim;
+}
 
-RecordRotatorType RecordRotator::rotator_type() const { return impl_->type; }
+RecordRotatorType RecordRotator::rotator_type() const {
+  return impl_->type;
+}
 
 bool RecordRotator::initialized() const {
   return impl_->fht_impl != nullptr || impl_->mat_impl != nullptr;

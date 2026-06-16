@@ -187,8 +187,7 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
       if (index_param.metric_type == MetricType::kCosine) {
         converter_params.set("cosine.converter.enable_rotate", true);
       } else {
-        converter_params.set("integer_streaming.converter.enable_rotate",
-                             true);
+        converter_params.set("integer_streaming.converter.enable_rotate", true);
       }
     } else {
       LOG_WARN(
@@ -341,7 +340,8 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   // converter/reformer/metric are created in IndexFactory::CreateIndex
   // TODO: init
 
-  // Load reformer data from storage (e.g., rotation matrix for IntegerStreaming)
+  // Load reformer data from storage (e.g., rotation matrix for
+  // IntegerStreaming)
   if (reformer_ != nullptr) {
     // When building a new index, dump converter state (e.g., rotator) to
     // storage so the reformer can load it.  This is needed for

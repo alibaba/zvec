@@ -131,15 +131,15 @@ class CosineConverterHolder : public IndexHolder {
         }
 
         float norm = 0.0f;
-        ailego::Normalizer<float>::L2(
-            const_cast<float *>(vec),
-            owner_->rotator_ ? owner_->rotator_->padded_dim()
-                             : original_dimension_,
-            &norm);
+        ailego::Normalizer<float>::L2(const_cast<float *>(vec),
+                                      owner_->rotator_
+                                          ? owner_->rotator_->padded_dim()
+                                          : original_dimension_,
+                                      &norm);
 
         if (type_ == IndexMeta::DataType::DT_FP32) {
-          ::memcpy(reinterpret_cast<float *>(&normalize_buffer_[0]),
-                   vec, original_dimension_ * sizeof(float));
+          ::memcpy(reinterpret_cast<float *>(&normalize_buffer_[0]), vec,
+                   original_dimension_ * sizeof(float));
           ::memcpy(reinterpret_cast<float *>(&normalize_buffer_[0]) +
                        original_dimension_,
                    &norm, NORM_SIZE);
@@ -153,8 +153,8 @@ class CosineConverterHolder : public IndexHolder {
               &norm, NORM_SIZE);
         } else if (type_ == IndexMeta::DataType::DT_INT4 ||
                    type_ == IndexMeta::DataType::DT_INT8) {
-          RecordQuantizer::quantize_record(
-              vec, original_dimension_, type_, false, &buffer_[0]);
+          RecordQuantizer::quantize_record(vec, original_dimension_, type_,
+                                           false, &buffer_[0]);
 
           ::memcpy(reinterpret_cast<uint8_t *>(&buffer_[0]) + element_size -
                        NORM_SIZE,

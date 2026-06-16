@@ -23,8 +23,7 @@ HnswIndexParams::OPtr ProtoConverter::FromPb(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()), params_pb.m(),
       params_pb.ef_construction(),
       QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
-      params_pb.use_contiguous_memory(),
-      QuantizerParam(enable_rotate));
+      params_pb.use_contiguous_memory(), QuantizerParam(enable_rotate));
 
   return params;
 }

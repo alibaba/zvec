@@ -124,8 +124,8 @@ class CosineReformer : public IndexReformer {
       float *buf = reinterpret_cast<float *>(&normalized_buffer[0]);
       if (enable_rotate_ && rotator_) {
         // Already rotated, normalize the rotated vector
-        ailego::Normalizer<float>::L2(const_cast<float *>(vec), origin_dimension,
-                                      &norm);
+        ailego::Normalizer<float>::L2(const_cast<float *>(vec),
+                                      origin_dimension, &norm);
       } else {
         ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
         vec = buf;
@@ -140,8 +140,8 @@ class CosineReformer : public IndexReformer {
                  ometa->element_size() - NORM_SIZE);
       } else if (dst_type_ == IndexMeta::DataType::DT_FP16) {
         RecordQuantizer::quantize_record(const_cast<float *>(vec),
-                                         qmeta.dimension(), dst_type_,
-                                         false, &(*out)[0]);
+                                         qmeta.dimension(), dst_type_, false,
+                                         &(*out)[0]);
       } else if (dst_type_ == IndexMeta::DataType::DT_INT4 ||
                  dst_type_ == IndexMeta::DataType::DT_INT8) {
         RecordQuantizer::quantize_record(vec, qmeta.dimension(), dst_type_,
