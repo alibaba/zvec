@@ -106,8 +106,6 @@ static const std::string COSINE_CONVERTER_ENABLE_ROTATE =
 //! CosineReformer
 static const std::string COSINE_REFORMER_FORCED_HALF_FLOAT =
     "cosine.reformer.forced_half_float";
-static const std::string COSINE_REFORMER_ENABLE_ROTATE =
-    "cosine.reformer.enable_rotate";
 
 //! IntegerStreamingConverter
 static const std::string INTEGER_STREAMING_CONVERTER_ENABLE_NORMALIZE =
@@ -120,8 +118,6 @@ static const std::string INTEGER_STREAMING_REFORMER_ENABLE_NORMALIZE =
     "integer_streaming.reformer.enable_normalize";
 static const std::string INTEGER_STREAMING_REFORMER_IS_EUCLIDEAN =
     "integer_streaming.reformer.is_euclidean";
-static const std::string INTEGER_STREAMING_REFORMER_ENABLE_ROTATE =
-    "integer_streaming.reformer.enable_rotate";
 
 //! UniformInt8StreamingConverter / Reformer
 static const std::string UNIFORM_INT8_REFORMER_SCALE =

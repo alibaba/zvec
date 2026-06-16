@@ -288,9 +288,6 @@ class CosineConverter : public IndexConverter {
     params.get(COSINE_CONVERTER_ENABLE_ROTATE, &enable_rotate_);
 
     ailego::Params reformer_params;
-    if (enable_rotate_) {
-      reformer_params.set(COSINE_REFORMER_ENABLE_ROTATE, true);
-    }
 
     // Create rotator if rotation is enabled
     if (enable_rotate_) {

@@ -288,7 +288,6 @@ class IntegerStreamingReformer : public IndexReformer {
   int init(const ailego::Params &params) override {
     params.get(INTEGER_STREAMING_REFORMER_ENABLE_NORMALIZE, &enable_normalize_);
     params.get(INTEGER_STREAMING_REFORMER_IS_EUCLIDEAN, &is_euclidean_);
-    params.get(INTEGER_STREAMING_REFORMER_ENABLE_ROTATE, &enable_rotate_);
     return 0;
   }
 

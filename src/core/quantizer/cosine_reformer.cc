@@ -45,8 +45,7 @@ class CosineReformer : public IndexReformer {
         dst_type_(IndexMeta::DataType::DT_UNDEFINED) {}
 
   //! Initialize Reformer
-  int init(const ailego::Params &params) override {
-    params.get(COSINE_REFORMER_ENABLE_ROTATE, &enable_rotate_);
+  int init(const ailego::Params & /*params*/) override {
     return 0;
   }
 

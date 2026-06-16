@@ -24,7 +24,7 @@ namespace zvec {
 namespace core {
 
 //! Segment ID used when dumping/loading the rotator data
-inline const std::string RECORD_ROTATOR_SEG_ID{"integer_streaming.rotator"};
+inline const std::string RECORD_ROTATOR_SEG_ID{"enable_rotate"};
 
 //! Rotator type exposed without rabitqlib dependency
 enum class RecordRotatorType : uint8_t {

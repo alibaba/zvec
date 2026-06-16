@@ -384,9 +384,6 @@ class IntegerStreamingConverter : public IndexConverter {
     if (enable_normalize_) {
       reformer_params.set(INTEGER_STREAMING_REFORMER_ENABLE_NORMALIZE, true);
     }
-    if (enable_rotate_) {
-      reformer_params.set(INTEGER_STREAMING_REFORMER_ENABLE_ROTATE, true);
-    }
 
     is_euclidean_ = index_meta.metric_name() == "MipsSquaredEuclidean" ||
                     index_meta.metric_name() == "SquaredEuclidean" ||
