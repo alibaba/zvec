@@ -505,21 +505,17 @@ class IntegerStreamingReformer : public IndexReformer {
 
     const size_t stored_dim = qmeta.dimension() - extra_dimension_;
 
-    if (enable_rotate_ && rotator_) {
-      // Unquantize to stored_dim floats, then inverse rotate to dim floats
-      const size_t dim = rotator_->dimension();
-      out->resize(dim * sizeof(float));
-      float *out_buf = reinterpret_cast<float *>(out->data());
+    // Step 1: Unquantize into out buffer (stored_dim floats)
+    out->resize(stored_dim * sizeof(float));
+    float *out_buf = reinterpret_cast<float *>(out->data());
+    RecordQuantizer::unquantize_record(in, stored_dim, data_type_, out_buf);
 
-      std::vector<float> unq_buf(stored_dim);
-      RecordQuantizer::unquantize_record(in, stored_dim, data_type_,
-                                         unq_buf.data());
-      rotator_->unrotate(unq_buf.data(), out_buf);
-    } else {
-      // No rotation: stored dim == original dim
-      out->resize(stored_dim * sizeof(float));
-      float *out_buf = reinterpret_cast<float *>(out->data());
-      RecordQuantizer::unquantize_record(in, stored_dim, data_type_, out_buf);
+    // Step 2: Inverse rotate in-place if rotation was applied
+    if (enable_rotate_ && rotator_) {
+      std::vector<float> tmp(rotator_->dimension());
+      rotator_->unrotate(out_buf, tmp.data());
+      out->assign(reinterpret_cast<const char *>(tmp.data()),
+                  tmp.size() * sizeof(float));
     }
 
     return 0;

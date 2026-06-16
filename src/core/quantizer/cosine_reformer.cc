@@ -219,10 +219,10 @@ class CosineReformer : public IndexReformer {
                  NORM_SIZE,
              NORM_SIZE);
 
-    // For FP32 input type, rotation may have been applied during transform.
-    // For FP16 input type, rotation was NOT applied — skip inverse rotation.
+    // Rotation was applied in transform() for all FP32-origin paths (FP32,
+    // INT8, INT4 stored types). FP16 input path never rotates.
     const bool need_inv_rotate =
-        (type == IndexMeta::DataType::DT_FP32 && enable_rotate_ && rotator_);
+        (type != IndexMeta::DataType::DT_FP16 && enable_rotate_ && rotator_);
 
     if (type == IndexMeta::DataType::DT_FP32) {
       if (dst_type_ != IndexMeta::DataType::DT_FP32) {

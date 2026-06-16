@@ -479,12 +479,11 @@ struct MatrixRotatorImpl {
 
   //! Inverse rotate using M^T (transpose of the dim x dim orthogonal matrix).
   void unrotate(const float *in, float *out, size_t dim) const {
-    // M^T (dim x dim) * in (dim x 1) -> out (dim x 1)
-    rabitqlib::ConstRowMajorMatrixMap<float> v(in, dim, 1);
-    rabitqlib::RowMajorMatrixMap<float> rv(out, dim, 1);
-    rv = rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim)
-             .transpose() *
-         v;
+    // in (1 x dim) * M^T (dim x dim) -> out (1 x dim)
+    rabitqlib::ConstRowMajorMatrixMap<float> v(in, 1, dim);
+    rabitqlib::RowMajorMatrixMap<float> rv(out, 1, dim);
+    rv = v * rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim)
+                 .transpose();
   }
 };
 

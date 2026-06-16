@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <iostream>
 #include <random>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include "quantizer/record_rotator.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_holder.h"
 
@@ -820,4 +823,56 @@ TEST(IntegerReformer, Int4InitConverterWithTrainedParams) {
     EXPECT_EQ(holder->dimension() / 4, qmeta.dimension());
     EXPECT_EQ(buffer, buffer2);
   }
+}
+
+// Test FhtKac rotator (dim=64, 64-aligned)
+TEST(RecordRotatorTest, RotateUnrotateFhtKac) {
+  const size_t dim = 64;
+  RecordRotator rotator;
+  rotator.init(dim);
+  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator.rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator.unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=64) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test Matrix rotator (dim=16, not 64-aligned, auto-fallback)
+TEST(RecordRotatorTest, RotateUnrotateMatrix) {
+  const size_t dim = 16;
+  RecordRotator rotator;
+  rotator.init(dim);
+  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::Matrix);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator.rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator.unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "Matrix (dim=16) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
 }
