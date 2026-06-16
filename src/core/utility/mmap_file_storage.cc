@@ -287,7 +287,7 @@ class MMapFileStorage : public IndexStorage {
   }
 
   bool is_dirty(void) const override {
-    return index_dirty_ || mapping_.is_dirty();
+    return index_dirty_ || mapping_.is_header_dirty();
   }
 
   //! Set the index file as dirty

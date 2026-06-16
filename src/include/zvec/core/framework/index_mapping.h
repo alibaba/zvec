@@ -182,17 +182,8 @@ class IndexMapping {
   }
 
   //! Test if any data needs to be flushed to disk
-  bool is_dirty() const {
-    if (header_dirty_) {
-      return true;
-    }
-    for (auto iter = segments_.begin(); iter != segments_.end(); ++iter) {
-      const Segment &seg = iter->second.segment;
-      if (seg.data() && seg.dirty()) {
-        return true;
-      }
-    }
-    return false;
+  bool is_header_dirty() const {
+    return header_dirty_;
   }
 
  protected:
