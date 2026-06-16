@@ -191,7 +191,8 @@ template <typename EntityType, typename HeapType>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
                            VisitFilter &visit, HnswDistCalculator &dc,
                            uint32_t topk, uint32_t ef, node_id_t entry_point,
-                           dist_t entry_dist, uint32_t prefetch_lines) {
+                           dist_t entry_dist, uint32_t prefetch_lines,
+                           uint32_t prefetch_offset) {
   const uint32_t max_deg = entity.max_degree(0);  // level 0 only
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
@@ -199,8 +200,6 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
 
   visit.set_visited(entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);
-
-  static constexpr uint32_t GRAPH_PO = 8;
 
   uint32_t buf_capacity = max_deg;
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -221,7 +220,7 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
     }
 
     const uint32_t po =
-        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+        std::min(static_cast<uint32_t>(neighbors.size()), prefetch_offset);
     uint32_t unvisited_count = 0;
     uint32_t i = 0;
 
@@ -270,8 +269,9 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
                                 node_id_t *entry_point, dist_t *dist,
                                 TopkHeap &topk, HnswContext *ctx,
                                 HnswDistCalculator &dc, FilterFn &&filter) {
-  static constexpr uint32_t BATCH_SIZE = 12;
-  static constexpr uint32_t PREFETCH_STEP = 2;
+  const uint32_t prefetch_offset = ctx->po();
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
 
   uint32_t buf_capacity = entity.max_degree(level);
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -342,8 +342,12 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
     }
 
     // do prefetch
-    for (uint32_t i = 0; i < std::min(BATCH_SIZE * PREFETCH_STEP, size); ++i) {
-      ailego_prefetch(neighbor_vec_blocks[i].data());
+    for (uint32_t i = 0; i < std::min(prefetch_offset, size); ++i) {
+      const char *base =
+          static_cast<const char *>(neighbor_vec_blocks[i].data());
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        ailego_prefetch(base + cl * 64);
+      }
     }
 
     for (uint32_t i = 0; i < size; ++i) {
@@ -388,8 +392,6 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
-  const uint32_t prefetch_lines = (entity.vector_size() + 63) / 64;
-
   if (!use_pool || ctx->filter().is_valid() || level != 0) {
     // Dual-heap path: add_node, filtered search, or upper-level scan.
     auto run_with_filter = [&](auto &&filter) {
@@ -410,6 +412,9 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   } else {
     // Pool-based path for level-0 unfiltered search.
     if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+      const uint32_t prefetch_lines =
+          ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+
       // Fast path: direct pointer access via get_vector_ptr.
       // BlockHeap (AVX2) or LinearPool (scalar) for top-k tracking.
       const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
@@ -422,12 +427,12 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
       if (avx2_ok) {
         auto &bpool = ctx->block_pool();
         fast_search_neighbors(entity, bpool, visit, dc, topk_v, ef_v,
-                              *entry_point, *dist, prefetch_lines);
+                              *entry_point, *dist, prefetch_lines, ctx->po());
         copy_pool_to_topk(bpool, topk);
       } else {
         auto &lpool = ctx->pool();
         fast_search_neighbors(entity, lpool, visit, dc, topk_v, ef_v,
-                              *entry_point, *dist, prefetch_lines);
+                              *entry_point, *dist, prefetch_lines, ctx->po());
         copy_pool_to_topk(lpool, topk);
       }
     } else {

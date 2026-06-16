@@ -176,6 +176,11 @@ test-command = "cd {project} && pytest python/tests -v --tb=short"
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
+# libaio is required by the C++ backend; install it inside the manylinux
+# container (manylinux_2_28 is AlmaLinux 8 based, so use dnf/libaio-devel).
+# libaio-devel lives in BaseOS; disable EPEL so a flaky EPEL mirror cannot
+# break metadata refresh.
+before-all = "dnf install -y --disablerepo=epel libaio-devel"
 archs = ["auto"]
 environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16" }
 manylinux-x86_64-image = "manylinux_2_28"

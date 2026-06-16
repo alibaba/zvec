@@ -18,7 +18,7 @@
 #include <thread>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
-#include <zvec/core/framework/index_logger.h>
+#include <zvec/ailego/logger/logger.h>
 
 #if defined(_MSC_VER)
 #ifndef NOMINMAX
@@ -167,9 +167,9 @@ void VectorPageTable::release_block(block_id_t block_id) {
                                                  std::memory_order_acq_rel,
                                                  std::memory_order_relaxed)) {
       BlockEvictionQueue::BlockType block;
-      block.page_table = this;
-      block.vector_block.first = block_id;
-      block.vector_block.second = 0;
+      block.owner = this;
+      block.owner_key = block_id;
+      block.version = 0;
       BlockEvictionQueue::get_instance().add_single_block(block, 0);
     }
   }

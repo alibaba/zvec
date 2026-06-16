@@ -12,40 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #pragma once
 
 #include <sys/stat.h>
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <mutex>
-#include <shared_mutex>
+#include <string>
 #include <vector>
-#include <arrow/api.h>
-#include <zvec/ailego/io/file.h>
-#include <zvec/ailego/pattern/singleton.h>
-#include "block_eviction_queue.h"
+#include <zvec/ailego/buffer/external_cache.h>
 
 namespace arrow {
-class ChunkedArray;
-class Array;
-class DataType;
-class Scalar;
-template <typename T>
-class Result;
-class Status;
 class Buffer;
+class ChunkedArray;
 }  // namespace arrow
 
 namespace zvec {
-namespace ailego {
 
-class BlockEvictionQueue;
+struct ParquetBufferID {
+  std::string filename;
+  int column{0};
+  int row_group{0};
+  uint64_t file_id{0};
+  long mtime{0};
 
-struct IDHash {
+  ParquetBufferID() = default;
+  ParquetBufferID(const std::string &filename, int column, int row_group);
+
+  const std::string to_string() const;
+};
+
+struct ParquetBufferIDHash {
   size_t operator()(const ParquetBufferID &buffer_id) const {
     size_t hash = std::hash<int>{}(1);
     hash = hash ^ (std::hash<uint64_t>{}(buffer_id.file_id));
@@ -55,7 +52,7 @@ struct IDHash {
   }
 };
 
-struct IDEqual {
+struct ParquetBufferIDEqual {
   bool operator()(const ParquetBufferID &a, const ParquetBufferID &b) const {
     if (a.filename != b.filename) {
       return false;
@@ -70,28 +67,39 @@ struct IDEqual {
   }
 };
 
-struct ParquetBufferContext {
-  // A shared pointer to the buffers allocated for arrow parquet data
+namespace detail {
+
+struct ParquetBufferPayload {
   std::shared_ptr<arrow::ChunkedArray> arrow{nullptr};
-
-  // Guard original arrow buffers to prevent premature deletion
   std::vector<std::shared_ptr<arrow::Buffer>> arrow_refs{};
-
-  size_t size;
-  alignas(64) std::atomic<int> ref_count{std::numeric_limits<int>::min()};
-  alignas(64) std::atomic<version_t> load_count{0};
 };
+
+class ParquetBufferLoader {
+ public:
+  using Value = std::shared_ptr<arrow::ChunkedArray>;
+
+  bool load(const ParquetBufferID &buffer_id, ParquetBufferPayload &payload,
+            size_t &size);
+
+  Value value(const ParquetBufferPayload &payload) const {
+    return payload.arrow;
+  }
+
+  void clear(ParquetBufferPayload &payload) const;
+};
+
+}  // namespace detail
 
 class ParquetBufferContextHandle {
  public:
-  ParquetBufferContextHandle() {}
-  ParquetBufferContextHandle(ParquetBufferID &buffer_id,
+  ParquetBufferContextHandle() = default;
+  ParquetBufferContextHandle(const ParquetBufferID &buffer_id,
                              std::shared_ptr<arrow::ChunkedArray> arrow)
-      : buffer_id_(buffer_id), arrow_(arrow) {}
-  ParquetBufferContextHandle(const ParquetBufferContextHandle &handle_);
-  ParquetBufferContextHandle(ParquetBufferContextHandle &&handle_)
-      : buffer_id_(std::move(handle_.buffer_id_)),
-        arrow_(std::move(handle_.arrow_)) {}
+      : buffer_id_(buffer_id), arrow_(std::move(arrow)) {}
+  ParquetBufferContextHandle(const ParquetBufferContextHandle &handle);
+  ParquetBufferContextHandle(ParquetBufferContextHandle &&handle)
+      : buffer_id_(std::move(handle.buffer_id_)),
+        arrow_(std::move(handle.arrow_)) {}
 
   ~ParquetBufferContextHandle();
 
@@ -108,39 +116,7 @@ class ParquetBufferPool {
  public:
   typedef std::shared_ptr<ParquetBufferPool> Pointer;
 
-  struct ArrowBufferDeleter {
-    explicit ArrowBufferDeleter(ParquetBufferPool *c, ParquetBufferID i)
-        : pool(c), id(i) {}
-    ParquetBufferPool *pool;
-    ParquetBufferID id;
-    // Only reduces the reference count but does not actually release the
-    // buffer, since the buffer memory is managed by the ParquetBufferPool.
-    void operator()(arrow::Buffer *) {
-      return;
-    }
-  };
-
-  using Table = std::unordered_map<ParquetBufferID, ParquetBufferContext,
-                                   IDHash, IDEqual>;
-
-  arrow::Status acquire(ParquetBufferID buffer_id,
-                        ParquetBufferContext &context);
-
   ParquetBufferContextHandle acquire_buffer(ParquetBufferID buffer_id);
-
-  std::shared_ptr<arrow::ChunkedArray> set_block_acquired(
-      ParquetBufferID buffer_id);
-
-  std::shared_ptr<arrow::ChunkedArray> acquire(ParquetBufferID buffer_id);
-
-  std::shared_ptr<arrow::ChunkedArray> acquire_locked(
-      ParquetBufferID buffer_id);
-
-  void release(ParquetBufferID buffer_id);
-
-  void evict(ParquetBufferID buffer_id);
-
-  bool is_dead_node(BlockEvictionQueue::BlockType &block);
 
   static ParquetBufferPool &get_instance() {
     static ParquetBufferPool instance;
@@ -153,12 +129,21 @@ class ParquetBufferPool {
   ParquetBufferPool &operator=(ParquetBufferPool &&) = delete;
 
  private:
+  friend class ParquetBufferContextHandle;
+
+  using Cache =
+      ailego::ExternalCache<ParquetBufferID, detail::ParquetBufferPayload,
+                            detail::ParquetBufferLoader, ParquetBufferIDHash,
+                            ParquetBufferIDEqual>;
+
   ParquetBufferPool() = default;
 
+  std::shared_ptr<arrow::ChunkedArray> retain(ParquetBufferID buffer_id);
+
+  void release(ParquetBufferID buffer_id);
+
  private:
-  Table table_;
-  std::shared_mutex table_mutex_;
+  Cache cache_;
 };
 
-}  // namespace ailego
 }  // namespace zvec

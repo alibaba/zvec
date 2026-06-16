@@ -151,6 +151,14 @@ int HnswContext::update(const ailego::Params &params) {
         topk_heap_.limit(std::max(topk_, ef_));
       }
 
+      if (params.has(PARAM_HNSW_SEARCHER_PO)) {
+        params.get(PARAM_HNSW_SEARCHER_PO, &po_);
+      }
+
+      if (params.has(PARAM_HNSW_SEARCHER_PL)) {
+        params.get(PARAM_HNSW_SEARCHER_PL, &pl_);
+      }
+
       if (params.has(PARAM_HNSW_SEARCHER_MAX_SCAN_RATIO)) {
         params.get(PARAM_HNSW_SEARCHER_MAX_SCAN_RATIO, &max_scan_ratio_);
         max_scan_num_ =
@@ -171,6 +179,8 @@ int HnswContext::update(const ailego::Params &params) {
         topk_heap_.limit(std::max(topk_, ef_));
       }
       params.get(PARAM_HNSW_STREAMER_EF, &ef_);
+      params.get(PARAM_HNSW_STREAMER_PO, &po_);
+      params.get(PARAM_HNSW_STREAMER_PL, &pl_);
       params.get(PARAM_HNSW_STREAMER_MAX_SCAN_RATIO, &max_scan_ratio_);
       params.get(PARAM_HNSW_STREAMER_MAX_SCAN_LIMIT, &max_scan_limit_);
       params.get(PARAM_HNSW_STREAMER_MIN_SCAN_LIMIT, &min_scan_limit_);

@@ -177,6 +177,21 @@ class VamanaContext : public IndexContext {
   inline uint32_t ef() const {
     return ef_;
   }
+  inline void set_po(uint32_t v) {
+    po_ = v;
+  }
+
+  inline uint32_t po() const {
+    return po_;
+  }
+
+  inline void set_pl(uint32_t v) {
+    pl_ = v;
+  }
+
+  inline uint32_t pl() const {
+    return pl_;
+  }
   inline void set_max_scan_ratio(float v) {
     max_scan_ratio_ = v;
   }
@@ -296,6 +311,8 @@ class VamanaContext : public IndexContext {
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
   uint32_t ef_{VamanaEntity::kDefaultEf};
+  uint32_t po_{8};
+  uint32_t pl_{0};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};

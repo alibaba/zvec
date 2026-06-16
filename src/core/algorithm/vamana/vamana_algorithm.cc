@@ -126,7 +126,7 @@ template <typename EntityType, typename HeapType>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VisitFilter &visit, VamanaDistCalculator &dc,
                         uint32_t topk, uint32_t ef, node_id_t entry_point,
-                        uint32_t prefetch_lines) {
+                        uint32_t prefetch_lines, uint32_t prefetch_offset) {
   const uint32_t max_deg = entity.max_degree();
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
@@ -135,8 +135,6 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
   dist_t ep_dist = dc.batch_dist(entry_point);
   visit.set_visited(entry_point);
   pool.push_block(&ep_dist, &entry_point, 1);
-
-  static constexpr uint32_t GRAPH_PO = 8;
 
   uint32_t buf_capacity = max_deg;
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -157,7 +155,7 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
     }
 
     const uint32_t po =
-        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+        std::min(static_cast<uint32_t>(neighbors.size()), prefetch_offset);
     uint32_t unvisited_count = 0;
     uint32_t i = 0;
 
@@ -200,8 +198,9 @@ template <typename EntityType, typename MemBlockType, typename FilterFn>
 void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
                              VamanaDistCalculator &dc, node_id_t entry_point,
                              FilterFn &&filter) {
-  static constexpr uint32_t PREFETCH_BATCH = 2;
-  static constexpr uint32_t PREFETCH_STEP = 2;
+  const uint32_t prefetch_offset = ctx->po();
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
 
   uint32_t buf_capacity = entity.max_degree();
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -273,9 +272,12 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
                                       neighbor_vec_blocks);
     if (ailego_unlikely(ret != 0)) break;
 
-    for (uint32_t i = 0;
-         i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
-      ailego_prefetch(neighbor_vec_blocks[i].data());
+    for (uint32_t i = 0; i < std::min(prefetch_offset, unvisited_count); ++i) {
+      const char *base =
+          static_cast<const char *>(neighbor_vec_blocks[i].data());
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        ailego_prefetch(base + cl * 64);
+      }
     }
 
     // Batch distance computation (reuse pre-allocated buffers).
@@ -316,17 +318,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
-  // Number of cache lines per vector (e.g. 2 for dim=128).
-  // Used by both the fallback candidates/filter path and the fast helpers.
-  uint32_t prefetch_lines = (dc.dimension() + 63) / 64;
-  if constexpr (std::is_same_v<EntityType, VamanaContiguousStreamerEntity>) {
-    // Contiguous flat array stride is already 64B-aligned.  Use it so that
-    // prefetch does not overshoot into the next vector.
-    size_t stride = entity.vector_stride();
-    if (stride > 0) {
-      prefetch_lines = static_cast<uint32_t>(stride / 64);
-    }
-  }
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
 
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.
@@ -362,12 +355,12 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       if (avx2_ok) {
         auto &bpool = ctx->block_pool();
         fast_greedy_search(entity, bpool, visit, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines);
+                           prefetch_lines, ctx->po());
         copy_pool_to_topk(bpool, topk_heap);
       } else {
         auto &lpool = ctx->pool();
         fast_greedy_search(entity, lpool, visit, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines);
+                           prefetch_lines, ctx->po());
         copy_pool_to_topk(lpool, topk_heap);
       }
     } else {

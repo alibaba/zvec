@@ -274,16 +274,27 @@ class TestVamanaQueryParamSurface:
         assert q.radius == pytest.approx(0.0)
         assert q.is_linear is False
         assert q.is_using_refiner is False
+        assert q.prefetch_offset == 8
+        assert q.prefetch_lines == 0
 
     def test_custom_construction(self):
         q = VamanaQueryParam(
-            ef_search=300, radius=0.5, is_linear=True, is_using_refiner=True
+            ef_search=300,
+            radius=0.5,
+            is_linear=True,
+            is_using_refiner=True,
+            extra_params={
+                "prefetch_offset": 8,
+                "prefetch_lines": 2,
+            },
         )
         assert q.type == IndexType.VAMANA
         assert q.ef_search == 300
         assert q.radius == pytest.approx(0.5)
         assert q.is_linear is True
         assert q.is_using_refiner is True
+        assert q.prefetch_offset == 8
+        assert q.prefetch_lines == 2
 
     def test_repr_contains_key_fields(self):
         text = repr(VamanaQueryParam(ef_search=128, radius=0.25))
@@ -302,7 +313,14 @@ class TestVamanaQueryParamSurface:
 
     def test_pickle_roundtrip(self):
         original = VamanaQueryParam(
-            ef_search=256, radius=0.3, is_linear=False, is_using_refiner=True
+            ef_search=256,
+            radius=0.3,
+            is_linear=False,
+            is_using_refiner=True,
+            extra_params={
+                "prefetch_offset": 4,
+                "prefetch_lines": 3,
+            },
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -310,6 +328,8 @@ class TestVamanaQueryParamSurface:
         assert restored.radius == pytest.approx(0.3)
         assert restored.is_linear is False
         assert restored.is_using_refiner is True
+        assert restored.prefetch_offset == 4
+        assert restored.prefetch_lines == 3
 
 
 class TestVamanaPublicNamespace:
