@@ -339,7 +339,7 @@ class VamanaContext : public IndexContext {
   //! Cached build-time distance offset (see build_distance_offset()).
   float build_distance_offset_{0.0f};
 
-  VisitFilter::Mode filter_mode_{VisitFilter::ByteMap};
+  VisitFilter::Mode filter_mode_{VisitFilter::BitMap};
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
 
   LinearPool<dist_t> pool_;

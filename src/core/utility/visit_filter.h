@@ -358,6 +358,13 @@ class VisitByteMap {
 // visit list will be called with high frequency,
 // so using switch instead of std::function or virtual class
 // funtion point, lambda, virtual class all cannot be inlined
+class VisitFilter;
+
+// Dispatch once at the call site; `fn` must provide
+//   template <typename VisitImpl> void operator()(VisitImpl::Context*) const
+template <typename Fn>
+void dispatch_visit_filter(const VisitFilter &visit_filter, Fn &&fn);
+
 class VisitFilter {
  public:
   enum Mode {
@@ -415,14 +422,39 @@ class VisitFilter {
     return mode_;
   }
 
-
  private:
+  template <typename Fn>
+  friend void dispatch_visit_filter(const VisitFilter &visit_filter, Fn &&fn);
+
   VisitFilter(const VisitFilter &) = delete;
   VisitFilter &operator=(const VisitFilter &) = delete;
 
   int mode_{0U};  // custom data for each method
   void *ctx_{nullptr};
 };
+
+template <typename Fn>
+void dispatch_visit_filter(const VisitFilter &visit_filter, Fn &&fn) {
+  if (visit_filter.ctx_ == nullptr) {
+    return;
+  }
+  switch (visit_filter.mode_) {
+    case VisitBloomFilter::mode:
+      std::forward<Fn>(fn).template operator()<VisitBloomFilter>(
+          static_cast<VisitBloomFilter::Context *>(visit_filter.ctx_));
+      break;
+    case VisitBitMap::mode:
+      std::forward<Fn>(fn).template operator()<VisitBitMap>(
+          static_cast<VisitBitMap::Context *>(visit_filter.ctx_));
+      break;
+    case VisitByteMap::mode:
+      std::forward<Fn>(fn).template operator()<VisitByteMap>(
+          static_cast<VisitByteMap::Context *>(visit_filter.ctx_));
+      break;
+    default:
+      break;
+  }
+}
 
 }  // namespace core
 }  // namespace zvec

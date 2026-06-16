@@ -537,7 +537,7 @@ class HnswContext : public IndexContext {
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
   uint32_t group_topk_{0};
-  uint32_t filter_mode_{VisitFilter::ByteMap};
+  uint32_t filter_mode_{VisitFilter::BitMap};
   float negative_probability_{HnswEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswEntity::kDefaultEf};
   uint32_t po_{8};
