@@ -293,6 +293,18 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     auto metric_params = index_meta.metric_params();
     metric_params.merge(meta_.metric_params());
     meta_.set_metric(index_meta.metric_name(), 0, metric_params);
+
+    // Restore converter/reformer from the persisted meta
+    if (!index_meta.reformer_name().empty()) {
+      meta_.set_reformer(index_meta.reformer_name(),
+                         index_meta.reformer_revision(),
+                         index_meta.reformer_params());
+    }
+    if (!index_meta.converter_name().empty()) {
+      meta_.set_converter(index_meta.converter_name(),
+                          index_meta.converter_revision(),
+                          index_meta.converter_params());
+    }
   }
 
   metric_ = IndexFactory::CreateMetric(meta_.metric_name());

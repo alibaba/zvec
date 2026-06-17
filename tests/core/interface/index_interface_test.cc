@@ -1856,6 +1856,124 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
                         .build());
 }
 
+TEST(IndexInterface, IsDirty) {
+  constexpr uint32_t kDimension = 16;
+  const std::string index_name{"test_is_dirty.index"};
+
+  auto test = [&](const BaseIndexParam::Pointer &param) {
+    zvec::test_util::RemoveTestFiles(index_name);
+
+    // Before open: not dirty (no storage)
+    {
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, index);
+      ASSERT_FALSE(index->IsDirty());
+    }
+
+    // Create the index file: dirty from initial metadata writes
+    {
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+      ASSERT_TRUE(index->IsDirty());
+      ASSERT_EQ(0, index->Flush());
+      ASSERT_FALSE(index->IsDirty());
+      index->Close();
+    }
+
+    // Reopen existing file: should be clean
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    index->Open(index_name, {StorageOptions::StorageType::kMMAP, false});
+    ASSERT_FALSE(index->IsDirty());
+
+    // Add a vector: should become dirty
+    std::vector<float> vec(kDimension, 1.0f);
+    VectorData vd;
+    vd.vector = DenseVector{vec.data()};
+    ASSERT_EQ(0, index->Add(vd, 1));
+    ASSERT_TRUE(index->IsDirty());
+
+    // Flush: should become clean
+    ASSERT_EQ(0, index->Flush());
+    ASSERT_FALSE(index->IsDirty());
+
+    // Add another vector: dirty again
+    ASSERT_EQ(0, index->Add(vd, 2));
+    ASSERT_TRUE(index->IsDirty());
+
+    // Close flushes implicitly, verify no crash
+    index->Close();
+    zvec::test_util::RemoveTestFiles(index_name);
+  };
+
+  test(FlatIndexParamBuilder()
+           .WithMetricType(MetricType::kInnerProduct)
+           .WithDataType(DataType::DT_FP32)
+           .WithDimension(kDimension)
+           .WithIsSparse(false)
+           .Build());
+
+  test(HNSWIndexParamBuilder()
+           .WithMetricType(MetricType::kInnerProduct)
+           .WithDataType(DataType::DT_FP32)
+           .WithDimension(kDimension)
+           .WithIsSparse(false)
+           .WithEFConstruction(100)
+           .Build());
+}
+
+TEST(IndexInterface, IsDirtyBufferPool) {
+  constexpr uint32_t kDimension = 16;
+  const std::string index_name{"test_is_dirty_bp.index"};
+
+  zvec::test_util::RemoveTestFiles(index_name);
+
+  // First create and populate the index with MMAP storage
+  {
+    auto param = FlatIndexParamBuilder()
+                     .WithMetricType(MetricType::kInnerProduct)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(kDimension)
+                     .WithIsSparse(false)
+                     .Build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    index->Open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    std::vector<float> vec(kDimension, 1.0f);
+    VectorData vd;
+    vd.vector = DenseVector{vec.data()};
+    ASSERT_EQ(0, index->Add(vd, 1));
+    index->Close();
+  }
+
+  // Reopen with BufferPool storage in writable mode
+  {
+    auto param = FlatIndexParamBuilder()
+                     .WithMetricType(MetricType::kInnerProduct)
+                     .WithDataType(DataType::DT_FP32)
+                     .WithDimension(kDimension)
+                     .WithIsSparse(false)
+                     .Build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    index->Open(index_name, {StorageOptions::StorageType::kBufferPool, true});
+
+    ASSERT_FALSE(index->IsDirty());
+
+    std::vector<float> vec(kDimension, 2.0f);
+    VectorData vd;
+    vd.vector = DenseVector{vec.data()};
+    ASSERT_EQ(0, index->Add(vd, 2));
+    ASSERT_TRUE(index->IsDirty());
+
+    ASSERT_EQ(0, index->Flush());
+    ASSERT_FALSE(index->IsDirty());
+
+    index->Close();
+  }
+
+  zvec::test_util::RemoveTestFiles(index_name);
+}
+
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif

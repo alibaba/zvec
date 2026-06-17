@@ -381,6 +381,13 @@ int Index::Flush() {
   return 0;
 }
 
+bool Index::IsDirty() const {
+  if (!storage_) {
+    return false;
+  }
+  return storage_->is_dirty();
+}
+
 int Index::Fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
