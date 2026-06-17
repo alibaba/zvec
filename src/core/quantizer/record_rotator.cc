@@ -32,7 +32,11 @@
 // FFHT (Fastest Fast Hadamard Transform) — hand-tuned AVX inline assembly
 // from https://github.com/FALCONN-LIB/FFHT, originally bundled in rabitqlib.
 // Provides fht_float(buf, log_n) with per-size helper_float_N specialisations.
+// NOTE: fht_avx.hpp uses GCC/Clang __asm__ volatile syntax; MSVC is
+// unsupported and falls back to the scalar FHT implementation in fht_inplace().
+#if defined(__GNUC__)
 #include "rabitqlib/utils/fht_avx.hpp"
+#endif
 #elif defined(__SSE2__)
 #include <emmintrin.h>
 #endif
@@ -84,7 +88,7 @@ RowMajorMatrix<T> random_gaussian_matrix(size_t rows, size_t cols) {
 //! Uses FFHT hand-tuned AVX assembly when available; generic scalar loop
 //! otherwise (ARM NEON / SSE2 / pure scalar).
 void fht_inplace(float *data, size_t n) {
-#if defined(__AVX2__) || defined(__AVX512F__)
+#if (defined(__AVX2__) || defined(__AVX512F__)) && defined(__GNUC__)
   // Compute floor(log2(n)) for power-of-2 n.
   int log_n = 0;
   for (size_t v = n; v > 1; v >>= 1) ++log_n;
