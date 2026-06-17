@@ -325,10 +325,6 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
       continue;
     }
 
-    if constexpr (std::is_same_v<MemBlockType, BufferPoolMemoryBlock>) {
-      entity.prefetch_vectors(neighbor_ids.data(), size);
-    }
-
     neighbor_vec_blocks.clear();
     int ret =
         entity.get_vector_typed(neighbor_ids.data(), size, neighbor_vec_blocks);

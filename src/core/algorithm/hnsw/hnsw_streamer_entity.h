@@ -988,25 +988,6 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     pinned_pages_.release_all();
   }
 
-  void prefetch_vectors(const node_id_t *ids, uint32_t count) const {
-    if (count == 0) return;
-    ailego::VecBufferPool *pool = vec_buffer_pool();
-    if (!pool) return;
-    std::vector<ailego::block_id_t> page_ids;
-    page_ids.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) {
-      auto loc = get_vector_chunk_loc(ids[i]);
-      size_t abs_off =
-          node_chunks_[loc.first]->abs_data_offset() + loc.second;
-      size_t pg = abs_off / ailego::kVectorPageSize;
-      page_ids.push_back(static_cast<ailego::block_id_t>(pg));
-    }
-    std::sort(page_ids.begin(), page_ids.end());
-    page_ids.erase(std::unique(page_ids.begin(), page_ids.end()),
-                   page_ids.end());
-    pool->batch_prefetch(page_ids.data(), page_ids.size());
-  }
-
  private:
   struct PinnedPageSet {
     static constexpr size_t kCapacity = 128;
