@@ -449,6 +449,12 @@ class BufferStorage : public IndexStorage {
       return shared_from_this();
     }
 
+    size_t abs_data_offset(void) const override {
+      return segment_info_->segment_header_start_offset +
+             segment_info_->segment_header->content_offset +
+             segment_info_->segment.meta()->data_index;
+    }
+
    protected:
     friend BufferStorage;
     // Pointer into BufferStorage::segments_ (unordered_map mapped value).
@@ -482,6 +488,7 @@ class BufferStorage : public IndexStorage {
       segment_meta_capacity_ = val;
     }
     params.get(BUFFER_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_);
+    enable_direct_io_ = true;
     return 0;
   }
 
@@ -804,6 +811,10 @@ class BufferStorage : public IndexStorage {
       return 0u;
     }
     return chain_headers_.front()->magic;
+  }
+
+  ailego::VecBufferPool *vec_buffer_pool(void) const override {
+    return buffer_pool_.get();
   }
 
  protected:

@@ -332,6 +332,10 @@ class IndexStorage : public IndexModule {
     virtual const uint8_t *base_data(void) const {
       return nullptr;
     }
+
+    virtual size_t abs_data_offset(void) const {
+      return 0;
+    }
   };
 
   //! Destructor
@@ -393,6 +397,10 @@ class IndexStorage : public IndexModule {
 
   virtual std::string file_path(void) const {
     return "";
+  }
+
+  virtual ailego::VecBufferPool *vec_buffer_pool(void) const {
+    return nullptr;
   }
 };
 

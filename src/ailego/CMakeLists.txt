@@ -17,6 +17,10 @@ set(EXTRA_DEFS)
 
 if(UNIX AND NOT APPLE)
     list(APPEND EXTRA_LIBS ${LIB_RT})
+    find_library(LIB_AIO NAMES aio)
+    if(LIB_AIO)
+        list(APPEND EXTRA_LIBS ${LIB_AIO})
+    endif()
 endif()
 
 if(BUILD_ZVEC_CORE_ONLY)
@@ -134,3 +138,8 @@ cc_library(
     DEFS    ${EXTRA_DEFS}
     VERSION "${GIT_SRCS_VER}"
 )
+
+if(LIB_AIO)
+    target_compile_definitions(zvec_ailego PUBLIC ZVEC_HAS_LIBAIO)
+    message(STATUS "Found libaio: ${LIB_AIO} (HNSW async prefetch enabled)")
+endif()

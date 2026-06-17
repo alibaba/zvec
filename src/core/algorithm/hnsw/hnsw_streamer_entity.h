@@ -14,7 +14,11 @@
 
 #pragma once
 
+#include <algorithm>
+#include <atomic>
 #include <iostream>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -859,13 +863,20 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     return *reinterpret_cast<const key_t *>(base + offset);
   }
 
-  //! Direct vector pointer access (no MemoryBlock wrapper).
-  //! For use in the merged search loop to avoid intermediate allocations.
   ailego_force_inline const void *get_vector_ptr(node_id_t id) const {
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset = (id & node_index_mask_) * node_size();
     return get_node_chunk_base(chunk_idx) + offset;
   }
+
+  ailego_force_inline int resolve_vectors(const node_id_t *ids, uint32_t count,
+                                          const void **out) const {
+    for (uint32_t i = 0; i < count; ++i)
+      out[i] = get_vector_ptr(ids[i]);
+    return 0;
+  }
+
+  ailego_force_inline void release_vectors() const {}
 
  protected:
   //! Get cached base address for a node chunk, syncing if needed
@@ -912,7 +923,6 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   mutable std::vector<const char *> upper_neighbor_chunk_bases_{};
 };
 
-//! Typed entity subclass for buffer pool mode.
 class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
  public:
   using MemoryBlock = BufferPoolMemoryBlock;
@@ -923,6 +933,8 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   HnswStorageMode storage_mode() const override {
     return HnswStorageMode::kBufferPool;
   }
+
+  const HnswEntity::Pointer clone() const override;
 
   inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
     return HnswStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(level,
@@ -939,6 +951,139 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   inline key_t get_key_typed(node_id_t id) const {
     return HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(id);
   }
+
+  int resolve_vectors(const node_id_t *ids, uint32_t count,
+                      const void **out) const {
+    ensure_pinned_pages();
+    if (ailego_unlikely(!pinned_pages_.bound())) return -1;
+    const size_t vec_sz = vector_size();
+    const size_t pg_sz = ailego::kVectorPageSize;
+    cross_page_used_ = 0;
+    if (cross_page_arena_.size() < count * vec_sz)
+      cross_page_arena_.resize(count * vec_sz);
+    for (uint32_t i = 0; i < count; ++i) {
+      const size_t abs_off = get_vector_abs_offset(ids[i]);
+      const auto page_id = static_cast<ailego::block_id_t>(abs_off / pg_sz);
+      const size_t intra = abs_off % pg_sz;
+      if (ailego_likely(intra + vec_sz <= pg_sz)) {
+        char *page = pinned_pages_.get_page(page_id);
+        if (ailego_unlikely(!page)) return -1;
+        out[i] = page + intra;
+      } else {
+        const size_t part1 = pg_sz - intra;
+        char *p1 = pinned_pages_.get_page(page_id);
+        char *p2 = pinned_pages_.get_page(page_id + 1);
+        if (ailego_unlikely(!p1 || !p2)) return -1;
+        char *scratch = cross_page_arena_.data() + cross_page_used_ * vec_sz;
+        ++cross_page_used_;
+        std::memcpy(scratch, p1 + intra, part1);
+        std::memcpy(scratch + part1, p2, vec_sz - part1);
+        out[i] = scratch;
+      }
+    }
+    return 0;
+  }
+
+  void release_vectors() const {
+    pinned_pages_.release_all();
+  }
+
+  void prefetch_vectors(const node_id_t *ids, uint32_t count) const {
+    if (count == 0) return;
+    ailego::VecBufferPool *pool = vec_buffer_pool();
+    if (!pool) return;
+    std::vector<ailego::block_id_t> page_ids;
+    page_ids.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      auto loc = get_vector_chunk_loc(ids[i]);
+      size_t abs_off =
+          node_chunks_[loc.first]->abs_data_offset() + loc.second;
+      size_t pg = abs_off / ailego::kVectorPageSize;
+      page_ids.push_back(static_cast<ailego::block_id_t>(pg));
+    }
+    std::sort(page_ids.begin(), page_ids.end());
+    page_ids.erase(std::unique(page_ids.begin(), page_ids.end()),
+                   page_ids.end());
+    pool->batch_prefetch(page_ids.data(), page_ids.size());
+  }
+
+ private:
+  struct PinnedPageSet {
+    static constexpr size_t kCapacity = 128;
+    static constexpr size_t kMask = kCapacity - 1;
+    static constexpr ailego::block_id_t kEmpty =
+        std::numeric_limits<ailego::block_id_t>::max();
+
+    PinnedPageSet() { reset_table(); }
+    ~PinnedPageSet() { release_all(); }
+    PinnedPageSet(const PinnedPageSet &) = delete;
+    PinnedPageSet &operator=(const PinnedPageSet &) = delete;
+
+    void bind(ailego::VecBufferPool *pool) { pool_ = pool; }
+    bool bound() const { return pool_ != nullptr; }
+
+    char *get_page(ailego::block_id_t page_id) {
+      size_t slot = static_cast<size_t>(page_id) & kMask;
+      for (;;) {
+        if (ids_[slot] == page_id) return bufs_[slot];
+        if (ids_[slot] == kEmpty) {
+          char *buf = pool_->acquire_buffer(page_id, 50);
+          if (ailego_unlikely(!buf)) return nullptr;
+          ids_[slot] = page_id;
+          bufs_[slot] = buf;
+          ++count_;
+          return buf;
+        }
+        slot = (slot + 1) & kMask;
+      }
+    }
+
+    void release_all() {
+      if (!pool_) return;
+      for (size_t i = 0; i < kCapacity; ++i) {
+        if (ids_[i] != kEmpty) {
+          pool_->page_table_.release_block(ids_[i]);
+          ids_[i] = kEmpty;
+          bufs_[i] = nullptr;
+        }
+      }
+      count_ = 0;
+    }
+
+   private:
+    void reset_table() {
+      std::fill_n(ids_, kCapacity, kEmpty);
+      std::fill_n(bufs_, kCapacity, nullptr);
+      count_ = 0;
+    }
+    ailego::VecBufferPool *pool_{nullptr};
+    ailego::block_id_t ids_[kCapacity];
+    char *bufs_[kCapacity];
+    size_t count_{0};
+  };
+
+  ailego::VecBufferPool *vec_buffer_pool() const {
+    if (broker_ && broker_->storage()) {
+      return broker_->storage()->vec_buffer_pool();
+    }
+    return nullptr;
+  }
+
+  size_t get_vector_abs_offset(node_id_t id) const {
+    auto loc = get_vector_chunk_loc(id);
+    return node_chunks_[loc.first]->abs_data_offset() + loc.second;
+  }
+
+  void ensure_pinned_pages() const {
+    if (!pinned_pages_.bound()) {
+      auto *pool = vec_buffer_pool();
+      if (pool) pinned_pages_.bind(pool);
+    }
+  }
+
+  mutable PinnedPageSet pinned_pages_;
+  mutable std::vector<char> cross_page_arena_;
+  mutable uint32_t cross_page_used_{0};
 };
 
 //! Typed entity subclass for contiguous memory mode.
@@ -1048,17 +1193,23 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
     return HnswMmapStreamerEntity::get_key_typed(id);
   }
 
-  //! Direct vector pointer from flat vector array (stride = vector_size).
-  //! For use in the merged search loop to avoid intermediate allocations.
   ailego_force_inline const void *get_vector_ptr(node_id_t id) const {
     if (ailego_likely(vector_base_ != nullptr)) {
       return vector_base_ + static_cast<size_t>(id) * vector_size();
     }
-    // Fallback to mmap chunk-based access
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset = (id & node_index_mask_) * node_size();
     return get_node_chunk_base(chunk_idx) + offset;
   }
+
+  ailego_force_inline int resolve_vectors(const node_id_t *ids, uint32_t count,
+                                          const void **out) const {
+    for (uint32_t i = 0; i < count; ++i)
+      out[i] = get_vector_ptr(ids[i]);
+    return 0;
+  }
+
+  ailego_force_inline void release_vectors() const {}
 
  protected:
   //! Custom deleter for contiguous memory (munmap / _aligned_free / free)

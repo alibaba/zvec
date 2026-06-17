@@ -255,6 +255,10 @@ class VecBufferPool {
     return file_size_;
   }
 
+  void batch_prefetch(const block_id_t *page_ids, size_t count);
+
+  int fd() const { return fd_; }
+
  private:
   int fd_;            // page-data channel: may carry O_DIRECT
   int meta_fd_;       // metadata channel: always buffered IO
@@ -296,6 +300,10 @@ class VecBufferPoolHandle {
   void release_one(block_id_t block_id);
 
   void acquire_one(block_id_t block_id);
+
+  void batch_prefetch(const block_id_t *page_ids, size_t count) {
+    pool_.batch_prefetch(page_ids, count);
+  }
 
  private:
   VecBufferPool &pool_;
