@@ -72,6 +72,7 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_HNSW_STREAMER_USE_ID_MAP, &use_id_map_);
   params.get(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
              &use_contiguous_memory_);
+  params.get(PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR, &use_external_vector_);
 
   params.get(PARAM_HNSW_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit_);
   if (docs_soft_limit_ > 0 && docs_soft_limit_ > docs_hard_limit_) {
@@ -224,7 +225,11 @@ int HnswStreamer::setup_entity() {
   entity_->set_l0_neighbor_cnt(l0_max_neighbor_cnt_);
   entity_->set_scaling_factor(scaling_factor_);
   entity_->set_prune_cnt(prune_cnt_);
-  entity_->set_vector_size(meta_.element_size());
+  // For external-vector entities the per-node vector prefix is removed; set
+  // vector_size to 0 so all inherited offset computations (key / neighbors /
+  // node_size) are correct and add_vector writes no vector bytes. The distance
+  // dimension is taken from meta.dimension(), not from vector_size().
+  entity_->set_vector_size(use_external_vector_ ? 0 : meta_.element_size());
   entity_->set_chunk_size(chunk_size_);
   entity_->set_filter_same_key(filter_same_key_);
   entity_->set_get_vector(get_vector_enabled_);
@@ -252,7 +257,9 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
       break;
     }
     default: {
-      if (use_contiguous_memory_) {
+      if (use_external_vector_) {
+        entity_ = std::make_unique<HnswExternalStreamerEntity>(stats_);
+      } else if (use_contiguous_memory_) {
         entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
       } else {
         entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);
@@ -359,6 +366,11 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
           new HnswAlgorithm<HnswContiguousStreamerEntity>(contiguous_entity));
       break;
     }
+    case HnswStorageMode::kExternal:
+      alg_ = HnswAlgorithmBase::UPointer(
+          new HnswAlgorithm<HnswExternalStreamerEntity>(
+              static_cast<HnswExternalStreamerEntity &>(*entity_)));
+      break;
     default:
       alg_ =
           HnswAlgorithmBase::UPointer(new HnswAlgorithm<HnswMmapStreamerEntity>(

@@ -31,6 +31,7 @@
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/vector_source.h>
 #include "zvec/core/framework/index_provider.h"
 
 namespace zvec::core_interface {
@@ -126,11 +127,19 @@ class Index {
   // TODO: static reduce
 
   virtual int Add(const VectorData &vector, uint32_t doc_id);
+
   virtual int Fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
   virtual int Search(const VectorData &query,
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
+
+  virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                            const core::VectorSource &src);
+  virtual int SearchWithSource(const VectorData &query,
+                               const BaseIndexQueryParam::Pointer &search_param,
+                               const core::VectorSource &src,
+                               SearchResult *result);
 
   virtual BaseIndexParam::Pointer GetParam() const {
     return std::make_shared<BaseIndexParam>(param_);
@@ -287,11 +296,18 @@ class HNSWIndex : public Index {
   HNSWIndex() = default;
 
   //! Retrieve the storage mode of the underlying HNSW streamer entity.
-  //! Returns a string among {"mmap", "buffer_pool", "contiguous"}.
+  //! Returns a string among {"mmap", "buffer_pool", "contiguous", "external"}.
   //! Intended for introspection and debug/testing usage. Returns empty
   //! string when the streamer has not been initialized or is of an
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
+
+  int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                    const core::VectorSource &src) override;
+  int SearchWithSource(const VectorData &query,
+                       const BaseIndexQueryParam::Pointer &search_param,
+                       const core::VectorSource &src,
+                       SearchResult *result) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;

@@ -108,6 +108,10 @@ add_executable(core-example core/main.cc)
 target_link_libraries(core-example PRIVATE zvec-core-lib)
 list(APPEND ZVEC_EXAMPLE_TARGETS core-example)
 
+add_executable(external-vector-example core/external_vector_example.cc)
+target_link_libraries(external-vector-example PRIVATE zvec-core-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS external-vector-example)
+
 # Strip symbols to reduce executable size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
     foreach(ZVEC_EXAMPLE_TARGET ${ZVEC_EXAMPLE_TARGETS})

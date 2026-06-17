@@ -49,6 +49,9 @@ ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
   if (!omit_empty_value || is_huge_page) {
     json_obj.set("is_huge_page", ailego::JsonValue(is_huge_page));
   }
+  if (!omit_empty_value || use_external_vector) {
+    json_obj.set("use_external_vector", ailego::JsonValue(use_external_vector));
+  }
 
   // if (preprocess_param) {
   //   json.set("preprocess_param", preprocess_param->SerializeToJson());
@@ -101,6 +104,7 @@ bool BaseIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, is_sparse);
   DESERIALIZE_VALUE_FIELD(json_obj, use_id_map);
   DESERIALIZE_VALUE_FIELD(json_obj, is_huge_page);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_external_vector);
 
   ailego::JsonValue tmp_json_value;
   if (json_obj.has("quantizer_param")) {

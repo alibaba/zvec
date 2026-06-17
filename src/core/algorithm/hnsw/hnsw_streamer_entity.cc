@@ -856,6 +856,41 @@ const HnswEntity::Pointer HnswContiguousStreamerEntity::clone() const {
   return HnswEntity::Pointer(entity);
 }
 
+const HnswEntity::Pointer HnswExternalStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> node_chunks;
+  node_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0UL; i < node_chunks_.size(); ++i) {
+    node_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!node_chunks[i])) {
+      LOG_ERROR("HnswExternalStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  std::vector<Chunk::Pointer> upper_neighbor_chunks;
+  upper_neighbor_chunks.reserve(upper_neighbor_chunks_.size());
+  for (size_t i = 0UL; i < upper_neighbor_chunks_.size(); ++i) {
+    upper_neighbor_chunks.emplace_back(upper_neighbor_chunks_[i]->clone());
+    if (ailego_unlikely(!upper_neighbor_chunks[i])) {
+      LOG_ERROR("HnswExternalStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  // Note: vec_src_ is intentionally NOT shared with the clone; it stays null
+  // and is re-bound per add/search call via HnswContext::set_vector_source.
+  auto *entity = new (std::nothrow) HnswExternalStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
+      upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
+      keys_map_, use_key_info_map_, std::move(node_chunks),
+      std::move(upper_neighbor_chunks), broker_, nullptr, nullptr);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("HnswExternalStreamerEntity new failed");
+  }
+  return HnswEntity::Pointer(entity);
+}
+
 // ============================================================================
 // HnswContiguousStreamerEntity implementation
 // ============================================================================
