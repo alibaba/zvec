@@ -140,6 +140,8 @@ class Index {
     return is_trained_;
   }
 
+  bool IsDirty() const;
+
   uint32_t GetDocCount() const {
     if (streamer_ == nullptr) {
       return -1;
