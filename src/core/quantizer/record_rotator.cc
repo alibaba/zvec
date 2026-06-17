@@ -20,12 +20,12 @@
 #include <random>
 #include <vector>
 
-// Eigen headers from rabitqlib — used by MatrixRotator for numerically stable
-// HouseholderQR orthogonalisation and vectorised matrix multiplication.
+// Eigen headers (bundled in rabitqlib/third) — used by MatrixRotator for
+// numerically stable HouseholderQR orthogonalisation and matrix multiplication.
+// We intentionally avoid rabitqlib/defines.hpp and rabitqlib/utils/space.hpp
+// to prevent x86 intrinsics leakage on ARM64/AArch64 platforms.
 #include <rabitqlib/third/Eigen/Dense>
 #include <rabitqlib/third/Eigen/QR>
-#include "rabitqlib/defines.hpp"
-#include "rabitqlib/utils/space.hpp"
 
 #if defined(__AVX2__) || defined(__AVX512F__)
 #include <immintrin.h>
@@ -49,6 +49,32 @@ namespace zvec {
 namespace core {
 
 namespace {
+
+template <typename T>
+using RowMajorMatrix =
+    Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+
+template <typename T>
+using RowMajorMatrixMap = Eigen::Map<RowMajorMatrix<T>>;
+
+template <typename T>
+using ConstRowMajorMatrixMap = Eigen::Map<const RowMajorMatrix<T>>;
+
+template <typename T>
+RowMajorMatrix<T> random_gaussian_matrix(size_t rows, size_t cols) {
+  RowMajorMatrix<T> rand(rows, cols);
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  std::normal_distribution<T> dist(0, 1);
+
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      rand(i, j) = dist(gen);
+    }
+  }
+
+  return rand;
+}
 
 // ============================================================================
 // Scalar / SIMD helper functions for rotation
@@ -447,12 +473,11 @@ struct MatrixRotatorImpl {
 
   void init(size_t dim) {
     // Generate dim x dim random Gaussian matrix
-    rabitqlib::RowMajorMatrix<float> rand_mat =
-        rabitqlib::random_gaussian_matrix<float>(dim, dim);
+    RowMajorMatrix<float> rand_mat = random_gaussian_matrix<float>(dim, dim);
 
     // Householder QR: numerically stable orthogonalisation
-    Eigen::HouseholderQR<rabitqlib::RowMajorMatrix<float>> qr(rand_mat);
-    rabitqlib::RowMajorMatrix<float> q_inv = qr.householderQ().transpose();
+    Eigen::HouseholderQR<RowMajorMatrix<float>> qr(rand_mat);
+    RowMajorMatrix<float> q_inv = qr.householderQ().transpose();
 
     matrix.resize(dim * dim);
     std::memcpy(matrix.data(), &q_inv(0, 0), sizeof(float) * dim * dim);
@@ -460,9 +485,9 @@ struct MatrixRotatorImpl {
 
   void rotate(const float *in, float *out, size_t dim) const {
     // v (1 x dim) * M (dim x dim) -> rv (1 x dim)
-    rabitqlib::ConstRowMajorMatrixMap<float> v(in, 1, dim);
-    rabitqlib::RowMajorMatrixMap<float> rv(out, 1, dim);
-    rv = v * rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim);
+    ConstRowMajorMatrixMap<float> v(in, 1, dim);
+    RowMajorMatrixMap<float> rv(out, 1, dim);
+    rv = v * ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim);
   }
 
   void save(char *data) const {
@@ -480,10 +505,9 @@ struct MatrixRotatorImpl {
   //! Inverse rotate using M^T (transpose of the dim x dim orthogonal matrix).
   void unrotate(const float *in, float *out, size_t dim) const {
     // in (1 x dim) * M^T (dim x dim) -> out (1 x dim)
-    rabitqlib::ConstRowMajorMatrixMap<float> v(in, 1, dim);
-    rabitqlib::RowMajorMatrixMap<float> rv(out, 1, dim);
-    rv = v * rabitqlib::ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim)
-                 .transpose();
+    ConstRowMajorMatrixMap<float> v(in, 1, dim);
+    RowMajorMatrixMap<float> rv(out, 1, dim);
+    rv = v * ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim).transpose();
   }
 };
 
@@ -506,8 +530,10 @@ struct RecordRotator::Impl {
     uint32_t reserved;  // backward-compat placeholder (was padded_dim)
 
     void write_to(char *buf) const {
-      std::memset(buf, 0, kHeaderSize);  // zero-fill padding
+      // Write fields individually (avoids GCC -Warray-bounds false positive
+      // on memset when inlined through vector<char>::data() at -O3).
       buf[0] = static_cast<char>(type);
+      buf[1] = buf[2] = buf[3] = 0;  // padding
       write_u32_le(buf + 4, origin_dim);
       write_u32_le(buf + 8, reserved);
     }
