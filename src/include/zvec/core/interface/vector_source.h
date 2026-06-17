@@ -11,23 +11,27 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "db/common/global_resource.h"
-#include <mutex>
-#include <zvec/ailego/buffer/block_eviction_queue.h>
-#include <zvec/db/config.h>
+
+#pragma once
+
+#include <cstdint>
 
 namespace zvec {
+namespace core {
 
-void GlobalResource::initialize() {
-  static std::once_flag flag;
-  std::call_once(flag, [this]() mutable {
-    this->query_thread_pool_.reset(
-        new ailego::ThreadPool(GlobalConfig::Instance().query_thread_count()));
-    this->optimize_thread_pool_.reset(new ailego::ThreadPool(
-        GlobalConfig::Instance().optimize_thread_count()));
-    zvec::ailego::MemoryLimitPool::get_instance().init(
-        GlobalConfig::Instance().memory_limit_bytes());
-  });
-}
+class VectorSource {
+ public:
+  virtual ~VectorSource() = default;
 
+  virtual const void *get_vector(uint32_t node_id) const = 0;
+
+  virtual void get_vectors(const uint32_t *ids, uint32_t count,
+                           const void **out) const {
+    for (uint32_t i = 0; i < count; ++i) {
+      out[i] = get_vector(ids[i]);
+    }
+  }
+};
+
+}  // namespace core
 }  // namespace zvec

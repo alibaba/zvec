@@ -17,6 +17,7 @@
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
+#include "utility/utility_params.h"
 
 namespace zvec::core_interface {
 
@@ -255,6 +256,16 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
   // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
   // 1024);
+
+  storage_params.set(core::MMAPFILE_STORAGE_COPY_ON_WRITE,
+                     storage_options.copy_on_write);
+  // force_flush must be enabled with copy_on_write so that
+  // IndexMapping::flush() actually persists data written via file_.write() to
+  // disk; without it, data would be lost. See IndexMapping::flush() in
+  // index_mapping.cc.
+  storage_params.set(core::MMAPFILE_STORAGE_FORCE_FLUSH,
+                     storage_options.copy_on_write);
+
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
       storage_ = core::IndexFactory::CreateStorage("MMapFileStorage");
@@ -381,6 +392,13 @@ int Index::Flush() {
   return 0;
 }
 
+bool Index::IsDirty() const {
+  if (!storage_) {
+    return false;
+  }
+  return storage_->is_dirty();
+}
+
 int Index::Fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
@@ -419,6 +437,19 @@ int Index::Add(const VectorData &vector_data, const uint32_t doc_id) {
   return ret;
 }
 
+int Index::AddWithSource(const VectorData & /*vector*/, uint32_t /*doc_id*/,
+                         const core::VectorSource & /*src*/) {
+  LOG_ERROR("AddWithSource is not supported by this index type");
+  return core::IndexError_Unsupported;
+}
+
+int Index::SearchWithSource(
+    const VectorData & /*query*/,
+    const BaseIndexQueryParam::Pointer & /*search_param*/,
+    const core::VectorSource & /*src*/, SearchResult * /*result*/) {
+  LOG_ERROR("SearchWithSource is not supported by this index type");
+  return core::IndexError_Unsupported;
+}
 
 int Index::Search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,

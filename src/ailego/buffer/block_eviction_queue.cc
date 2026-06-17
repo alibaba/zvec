@@ -12,12 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <zvec/ailego/buffer/vector_page_table.h>
-#include <zvec/core/framework/index_logger.h>
-
-#ifndef ZVEC_CORE_ONLY
-#include <zvec/ailego/buffer/parquet_hash_table.h>
-#endif
+#include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
 namespace ailego {
@@ -42,14 +38,12 @@ bool BlockEvictionQueue::evict_single_block(BlockType &item) {
 }
 
 bool BlockEvictionQueue::is_valid_and_alive(const BlockType &item) {
-  std::shared_lock<std::shared_mutex> lock(valid_page_tables_mutex_);
-  if (valid_page_tables_.find(item.page_table) == valid_page_tables_.end()) {
+  std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
+  if (item.owner == nullptr ||
+      valid_owners_.find(item.owner) == valid_owners_.end()) {
     return false;
   }
-  // is_dead_block accesses entries_ under the same shared lock, so the
-  // VectorPageTable destructor (which holds the unique lock via set_invalid)
-  // cannot free entries_ while this check is in progress.
-  return !item.page_table->is_dead_block(item);
+  return !item.owner->is_dead_block(item.owner_key, item.version);
 }
 
 bool BlockEvictionQueue::evict_block(BlockType &item) {
@@ -59,17 +53,6 @@ bool BlockEvictionQueue::evict_block(BlockType &item) {
     if (!ok) {
       return false;
     }
-    if (item.page_table == nullptr) {
-#ifndef ZVEC_CORE_ONLY
-      if (!ParquetBufferPool::get_instance().is_dead_node(item)) {
-        break;
-      } else {
-        continue;
-      }
-#else
-      continue;
-#endif
-    }
   } while (!is_valid_and_alive(item));
   return ok;
 }
@@ -77,16 +60,10 @@ bool BlockEvictionQueue::evict_block(BlockType &item) {
 void BlockEvictionQueue::recycle() {
   BlockType item;
   while (MemoryLimitPool::get_instance().is_full() && evict_block(item)) {
-    if (item.page_table) {
-      std::shared_lock<std::shared_mutex> lock(valid_page_tables_mutex_);
-      if (valid_page_tables_.find(item.page_table) !=
-          valid_page_tables_.end()) {
-        item.page_table->evict_block(item.vector_block.first);
-      }
-#ifndef ZVEC_CORE_ONLY
-    } else {
-      ParquetBufferPool::get_instance().evict(item.parquet_buffer_block.first);
-#endif
+    std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
+    if (item.owner != nullptr &&
+        valid_owners_.find(item.owner) != valid_owners_.end()) {
+      item.owner->evict_block(item.owner_key);
     }
   }
 }
@@ -127,7 +104,7 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
   return true;
 }
 
-void MemoryLimitPool::acquire_parquet(const size_t buffer_size) {
+void MemoryLimitPool::charge_external(const size_t buffer_size) {
   size_t expected, desired;
   do {
     expected = used_size_.load();
@@ -145,7 +122,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
   ailego_free(buffer);
 }
 
-void MemoryLimitPool::release_parquet(const size_t buffer_size) {
+void MemoryLimitPool::release_external(const size_t buffer_size) {
   size_t expected, desired;
   do {
     expected = used_size_.load();
