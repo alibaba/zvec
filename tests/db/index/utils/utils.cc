@@ -126,13 +126,6 @@ CollectionSchema::Ptr TestHelper::CreateNormalSchema(
     auto v = std::dynamic_pointer_cast<VectorIndexParams>(sparse_index_params);
     // sparse always use IP
     v->set_metric_type(MetricType::IP);
-    // Sparse vectors only support FP16 quantization; if the dense vector uses
-    // an unsupported quantize type (e.g. INT8), fall back to no quantization
-    // for the sparse field so schema validation passes.
-    if (v->quantize_type() != QuantizeType::UNDEFINED &&
-        v->quantize_type() != QuantizeType::FP16) {
-      v->set_quantize_type(QuantizeType::UNDEFINED);
-    }
   }
   schema->add_field(std::make_shared<FieldSchema>(
       "sparse_fp32", DataType::SPARSE_VECTOR_FP32, 128, false,
