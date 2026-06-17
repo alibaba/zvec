@@ -8,11 +8,8 @@ git_version(ZVEC_VERSION ${CMAKE_CURRENT_SOURCE_DIR})
 cc_directory(ailego)
 cc_directory(turbo)
 cc_directory(core)
-
-if(NOT BUILD_ZVEC_CORE_ONLY)
-    cc_directory(db)
-    cc_directory(binding)
-endif()
+cc_directory(db)
+cc_directory(binding)
 
 # =============================================================================
 # Build ALL-IN-ONE C++ Shared Libraries
@@ -147,15 +144,20 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     )
 endfunction()
 
-if(BUILD_ZVEC_CORE_SHARED AND NOT IOS)
+if(BUILD_ZVEC_AILEGO_SHARED)
+    zvec_add_all_in_one_shared(zvec_ailego_shared zvec_ailego
+        LIBS
+            zvec_ailego
+    )
+endif()
+
+if(BUILD_ZVEC_CORE_SHARED)
     zvec_add_all_in_one_shared(zvec_core_shared zvec_core
         LIBS
             zvec_core
             zvec_ailego
             zvec_turbo
     )
-elseif(BUILD_ZVEC_CORE_SHARED AND IOS)
-    message(STATUS "Skipping zvec_core_shared on iOS")
 endif()
 
 if(BUILD_ZVEC_SHARED)

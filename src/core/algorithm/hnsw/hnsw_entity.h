@@ -20,6 +20,7 @@
 #include <zvec/core/framework/index_dumper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
+#include <zvec/core/interface/vector_source.h>
 
 namespace zvec {
 namespace core {
@@ -611,6 +612,11 @@ class HnswEntity {
     header_.hnsw.entry_point = ep;
     header_.hnsw.max_level = level;
   }
+
+  //! Bind an external vector source to this entity. The default
+  //! implementation is a no-op; only entities that read vectors from an
+  //! external source (e.g. HnswExternalStreamerEntity) override it.
+  virtual void set_vector_source(const VectorSource * /*src*/) {}
 
   virtual int load(const IndexStorage::Pointer & /*container*/,
                    bool /*check_crc*/) {

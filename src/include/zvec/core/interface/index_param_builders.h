@@ -88,6 +88,11 @@ class BaseIndexParamBuilder {  //  : public
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
+  ActualIndexParamBuilderType &WithUseExternalVector(bool use_external_vector) {
+    param->use_external_vector = use_external_vector;
+    return static_cast<ActualIndexParamBuilderType &>(*this);
+  }
+
   virtual std::shared_ptr<ActualIndexParamType> Build() = 0;
 
  protected:

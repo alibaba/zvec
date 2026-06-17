@@ -11,19 +11,9 @@ permissions:
 
 jobs:
   subproject-integration:
-    name: Subproject Build & Example (${{ matrix.mode }})
+    name: Subproject Build & Example
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - mode: linux-x64
-            cache_key: full
-            enable_zvec_core: false
-          - mode: linux-x64-enable-zvec-core
-            cache_key: core-only
-            enable_zvec_core: true
 
     steps:
       - name: Checkout code
@@ -34,7 +24,7 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: cmake-subproject-linux-x64-${{ matrix.cache_key }}
+          key: cmake-subproject-linux-x64
           max-size: 150M
 
       - name: Set up Python
@@ -68,8 +58,8 @@ jobs:
 
       - name: Configure subproject integration
         run: |
-          SMOKE_SOURCE="$RUNNER_TEMP/zvec-subproject-nightly-${{ matrix.cache_key }}"
-          SMOKE_BUILD="$RUNNER_TEMP/zvec-subproject-nightly-build-${{ matrix.cache_key }}"
+          SMOKE_SOURCE="$RUNNER_TEMP/zvec-subproject-nightly"
+          SMOKE_BUILD="$RUNNER_TEMP/zvec-subproject-nightly-build"
 
           mkdir -p "$SMOKE_SOURCE" "$SMOKE_BUILD"
           cp "$GITHUB_WORKSPACE/.github/cmake/subproject-integration/CMakeLists.txt" \
@@ -79,19 +69,13 @@ jobs:
             -DZVEC_SOURCE_DIR="$GITHUB_WORKSPACE"
             -DCMAKE_BUILD_TYPE=Release
             -DENABLE_WERROR=ON
+            -DUSE_OSS_MIRROR=ON
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DBUILD_TOOLS=OFF
+            -DBUILD_C_BINDINGS=OFF
+            -DBUILD_PYTHON_BINDINGS=OFF
           )
-
-          if [[ "${{ matrix.enable_zvec_core }}" == "true" ]]; then
-            CMAKE_ARGS+=(-DENABLE_ZVEC_CORE=ON)
-          else
-            CMAKE_ARGS+=(
-              -DBUILD_TOOLS=OFF
-              -DBUILD_C_BINDINGS=OFF
-              -DBUILD_PYTHON_BINDINGS=OFF
-            )
-          fi
 
           cmake -S "$SMOKE_SOURCE" -B "$SMOKE_BUILD" -G Ninja \
             "${CMAKE_ARGS[@]}"
@@ -100,7 +84,6 @@ jobs:
         shell: bash
 
       - name: Build subproject targets
-        if: ${{ ! matrix.enable_zvec_core }}
         run: |
           cmake --build "$SMOKE_BUILD" --target \
             core_knn_diskann \
@@ -111,32 +94,9 @@ jobs:
         shell: bash
 
       - name: Run subproject examples
-        if: ${{ ! matrix.enable_zvec_core }}
         run: |
           cd "$SMOKE_BUILD"
           ./bin/zvec_embed_db_example
           ./bin/zvec_embed_core_example
           ./bin/zvec_embed_ailego_example
-        shell: bash
-
-      - name: Build enable_zvec_core targets
-        if: ${{ matrix.enable_zvec_core }}
-        run: |
-          cmake --build "$SMOKE_BUILD" --target \
-            zvec_core_shared \
-            zvec_embed_core_only_example \
-            --parallel "$NPROC"
-        shell: bash
-
-      - name: Run enable_zvec_core example
-        if: ${{ matrix.enable_zvec_core }}
-        run: |
-          cd "$SMOKE_BUILD"
-          ./bin/zvec_embed_core_only_example
-          ldd ./bin/zvec_embed_core_only_example | tee zvec-core-only-ldd.txt
-          grep -q 'libzvec_core\.so' zvec-core-only-ldd.txt
-          if grep -q 'libzvec\.so' zvec-core-only-ldd.txt; then
-            echo "core-only example unexpectedly depends on libzvec.so"
-            exit 1
-          fi
         shell: bash

@@ -36,7 +36,12 @@ namespace core {
 
 
 //! Storage mode for HnswStreamerEntity
-enum class HnswStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
+enum class HnswStorageMode {
+  kMmap = 0,
+  kBufferPool = 1,
+  kContiguous = 2,
+  kExternal = 3
+};
 
 //! HnswStreamerEntity manage vector data, pkey, and node's neighbors
 class HnswStreamerEntity : public HnswEntity {
@@ -1096,6 +1101,94 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
  private:
   //! Allocate contiguous memory with hugepage/THP support
   static char *allocate_contiguous(size_t size);
+};
+
+//! Typed entity subclass that reads vectors from an external vector source.
+//! The graph structure (key + neighbors) is stored in chunks just like
+//! HnswMmapStreamerEntity, but the per-node vector prefix is removed by
+//! setting vector_size() to 0 (see HnswStreamer setup). With vector_size()==0
+//! all inherited offset computations (key at node start, L0 neighbors right
+//! after the key, node_size == AlignSize(sizeof(key) + neighbor_size)) become
+//! automatically correct, and base add_vector writes a zero-byte vector (i.e.
+//! it skips vector storage). Vectors are instead read through the bound
+//! VectorSource, which is supplied per add/search call.
+class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
+ public:
+  using MemoryBlock = MmapMemoryBlock;
+  using TypedNeighbors = NeighborsT<MmapMemoryBlock>;
+
+  using HnswMmapStreamerEntity::HnswMmapStreamerEntity;
+
+  HnswStorageMode storage_mode() const override {
+    return HnswStorageMode::kExternal;
+  }
+
+  //! Override clone to return the correct subclass type, so that
+  //! static_cast<const HnswExternalStreamerEntity&> in the algorithm is safe.
+  //! The external vector source is NOT shared with the clone; it is re-applied
+  //! per add/search call (via HnswContext::set_vector_source).
+  const HnswEntity::Pointer clone() const override;
+
+  //! Bind the external vector source for the current add/search call.
+  void set_vector_source(const VectorSource *src) override {
+    vec_src_ = src;
+  }
+
+  //! Typed batch get_vector: zero-copy view into the external vector source.
+  //! Hides HnswMmapStreamerEntity::get_vector_typed (non-virtual, used by the
+  //! template algorithm via static_cast).
+  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
+                              std::vector<MmapMemoryBlock> &vec_blocks) const {
+    if (ailego_unlikely(vec_src_ == nullptr)) {
+      return IndexError_Runtime;
+    }
+    vec_blocks.resize(count);
+    for (auto i = 0U; i < count; ++i) {
+      vec_blocks[i].reset(const_cast<void *>(vec_src_->get_vector(ids[i])));
+    }
+    return 0;
+  }
+
+  //! Virtual get_vector overrides (distance-calculator / provider paths).
+  const void *get_vector(node_id_t id) const override {
+    return vec_src_ ? vec_src_->get_vector(id) : nullptr;
+  }
+
+  int get_vector(const node_id_t *ids, uint32_t count,
+                 const void **vecs) const override {
+    if (ailego_unlikely(vec_src_ == nullptr)) {
+      return IndexError_Runtime;
+    }
+    vec_src_->get_vectors(ids, count, vecs);
+    return 0;
+  }
+
+  int get_vector(const node_id_t id,
+                 IndexStorage::MemoryBlock &block) const override {
+    if (ailego_unlikely(vec_src_ == nullptr)) {
+      return IndexError_Runtime;
+    }
+    block.reset(const_cast<void *>(vec_src_->get_vector(id)));
+    return 0;
+  }
+
+  int get_vector(
+      const node_id_t *ids, uint32_t count,
+      std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override {
+    if (ailego_unlikely(vec_src_ == nullptr)) {
+      return IndexError_Runtime;
+    }
+    vec_blocks.resize(count);
+    for (auto i = 0U; i < count; ++i) {
+      vec_blocks[i].reset(const_cast<void *>(vec_src_->get_vector(ids[i])));
+    }
+    return 0;
+  }
+
+ private:
+  //! Transient, per-call vector source. Never shared across clones; bound by
+  //! HnswContext::set_vector_source before each add/search.
+  const VectorSource *vec_src_{nullptr};
 };
 
 }  // namespace core

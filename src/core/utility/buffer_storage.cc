@@ -823,6 +823,7 @@ class BufferStorage : public IndexStorage {
     size_t capacity = static_cast<size_t>(meta->padding_size + meta->data_size);
     memcpy(segment->data(), IndexVersion::Details(), data_size);
     segment->set_dirty();
+    set_as_dirty();
     meta->data_crc = ailego::Crc32c::Hash(segment->data(), data_size, 0);
     meta->data_size = data_size;
     meta->padding_size = capacity - data_size;
@@ -858,6 +859,10 @@ class BufferStorage : public IndexStorage {
           path.c_str(), ret);
     }
     return ret;
+  }
+
+  bool is_dirty(void) const override {
+    return index_dirty_.load(std::memory_order_relaxed);
   }
 
   //! Mark the index as dirty.  HOT PATH: store(true) unconditionally --
