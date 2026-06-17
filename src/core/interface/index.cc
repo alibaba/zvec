@@ -425,10 +425,10 @@ int Index::AddWithSource(const VectorData & /*vector*/, uint32_t /*doc_id*/,
   return core::IndexError_Unsupported;
 }
 
-int Index::SearchWithSource(const VectorData & /*query*/,
-                            const BaseIndexQueryParam::Pointer & /*search_param*/,
-                            const core::VectorSource & /*src*/,
-                            SearchResult * /*result*/) {
+int Index::SearchWithSource(
+    const VectorData & /*query*/,
+    const BaseIndexQueryParam::Pointer & /*search_param*/,
+    const core::VectorSource & /*src*/, SearchResult * /*result*/) {
   LOG_ERROR("SearchWithSource is not supported by this index type");
   return core::IndexError_Unsupported;
 }
