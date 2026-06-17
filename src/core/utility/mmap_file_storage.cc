@@ -109,8 +109,8 @@ class MMapFileStorage : public IndexStorage {
       if (data_tail > meta->data_size) {
         meta->data_size = data_tail;
         meta->padding_size = capacity_ - data_tail;
-        owner_->set_as_dirty();
       }
+      owner_->set_as_dirty();
       memmove((uint8_t *)segment_->data() + offset, data, len);
       segment_->set_dirty();
       return len;
@@ -254,6 +254,7 @@ class MMapFileStorage : public IndexStorage {
     size_t capacity = static_cast<size_t>(meta->padding_size + meta->data_size);
     memcpy(segment->data(), IndexVersion::Details(), data_size);
     segment->set_dirty();
+    set_as_dirty();
     meta->data_crc = ailego::Crc32c::Hash(segment->data(), data_size, 0);
     meta->data_size = data_size;
     meta->padding_size = capacity - data_size;
@@ -283,6 +284,10 @@ class MMapFileStorage : public IndexStorage {
 
   bool isHugePage(void) const override {
     return mapping_.huge_page();
+  }
+
+  bool is_dirty(void) const override {
+    return index_dirty_ || mapping_.is_header_dirty();
   }
 
   //! Set the index file as dirty

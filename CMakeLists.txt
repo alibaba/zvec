@@ -74,25 +74,16 @@ endif()
 include_directories(${PROJECT_ROOT_DIR}/src/include)
 include_directories(${PROJECT_ROOT_DIR}/src)
 
-option(BUILD_ZVEC_CORE_ONLY "Build only zvec-core and its all-in-one shared library" OFF)
-message(STATUS "BUILD_ZVEC_CORE_ONLY:${BUILD_ZVEC_CORE_ONLY}")
-
 option(BUILD_ZVEC_SHARED "Build all-in-one C++ shared library libzvec" ON)
+option(BUILD_ZVEC_AILEGO_SHARED "Build all-in-one zvec-ailego shared library libzvec_ailego" ON)
 option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec_core" ON)
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 option(BUILD_C_BINDINGS "Build C bindings" ON)
 option(BUILD_TOOLS "Build tools" ON)
 
-if(BUILD_ZVEC_CORE_ONLY)
-    set(BUILD_ZVEC_SHARED OFF CACHE BOOL "Build all-in-one C++ shared library libzvec" FORCE)
-    set(BUILD_ZVEC_CORE_SHARED ON CACHE BOOL "Build all-in-one zvec-core shared library libzvec_core" FORCE)
-    set(BUILD_PYTHON_BINDINGS OFF CACHE BOOL "Build Python bindings using pybind11" FORCE)
-    set(BUILD_C_BINDINGS OFF CACHE BOOL "Build C bindings" FORCE)
-    set(BUILD_TOOLS OFF CACHE BOOL "Build tools" FORCE)
-endif()
-
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
+message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
 message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
@@ -151,17 +142,9 @@ message(STATUS "USE_OSS_MIRROR:${USE_OSS_MIRROR}")
 cc_directory(thirdparty)
 cc_directories(src)
 
-if(BUILD_ZVEC_CORE_ONLY)
-    # Keep the include context from tests/CMakeLists.txt for core tests that include tests/test_util.h.
-    include_directories(${PROJECT_ROOT_DIR})
-    cc_directory(tests/core)
-else()
-    cc_directories(tests)
-endif()
+cc_directories(tests)
 
-if(NOT BUILD_ZVEC_CORE_ONLY)
-    add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
-endif()
+add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
 
 if(BUILD_TOOLS)
     cc_directories(tools)

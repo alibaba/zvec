@@ -9,8 +9,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   cc_gtest(
     NAME ${CC_TARGET} STRICT
     LIBS zvec_ailego
-    Arrow::arrow_depends
-    Arrow::parquet_static
     SRCS ${CC_SRCS}
   )
   cc_test_suite(zvec_ailego ${CC_TARGET})

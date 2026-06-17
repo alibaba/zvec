@@ -45,7 +45,7 @@ namespace ailego {
 
 extern const size_t kVectorPageSize;
 
-class VectorPageTable {
+class VectorPageTable : public EvictableBlockOwner {
   struct Entry {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
@@ -94,7 +94,7 @@ class VectorPageTable {
 
   void release_block(block_id_t block_id);
 
-  void evict_block(block_id_t block_id);
+  void evict_block(block_id_t block_id) override;
 
   char *set_block_acquired(block_id_t block_id, char *buffer,
                            size_t file_offset);
@@ -145,8 +145,9 @@ class VectorPageTable {
     return entry_at(block_id).ref_count.load(std::memory_order_relaxed) <= 0;
   }
 
-  inline bool is_dead_block(BlockEvictionQueue::BlockType block) const {
-    const Entry &e = entry_at(block.vector_block.first);
+  inline bool is_dead_block(block_id_t block_id,
+                            version_t /*version*/) override {
+    const Entry &e = entry_at(block_id);
     return !e.in_evict_queue.load(std::memory_order_relaxed);
   }
 

@@ -16,8 +16,8 @@
 
 #include <arrow/ipc/reader.h>
 #include <parquet/arrow/reader.h>
-#include <zvec/ailego/buffer/parquet_hash_table.h>
 #include "db/common/constants.h"
+#include "parquet_buffer_pool.h"
 
 
 namespace zvec {
@@ -128,9 +128,9 @@ class ParquetRecordBatchReader : public arrow::RecordBatchReader {
     if (with_cache_) {
       for (size_t col_idx = 0; col_idx < col_indices_.size(); ++col_idx) {
         auto buffer_id =
-            ailego::ParquetBufferID(file_path_, col_indices_[col_idx], rg_id);
+            ParquetBufferID(file_path_, col_indices_[col_idx], rg_id);
         auto buffer_handle =
-            ailego::ParquetBufferPool::get_instance().acquire_buffer(buffer_id);
+            ParquetBufferPool::get_instance().acquire_buffer(buffer_id);
         std::shared_ptr<arrow::ChunkedArray> col_chunked_array =
             buffer_handle.data();
         if (col_chunked_array) {

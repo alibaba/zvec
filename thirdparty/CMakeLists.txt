@@ -18,10 +18,6 @@ add_subdirectory(magic_enum magic_enum EXCLUDE_FROM_ALL)
 add_subdirectory(RaBitQ-Library RaBitQ-Library EXCLUDE_FROM_ALL)
 add_subdirectory(googletest googletest EXCLUDE_FROM_ALL)
 
-if(BUILD_ZVEC_CORE_ONLY)
-    return()
-endif()
-
 add_subdirectory(arrow arrow EXCLUDE_FROM_ALL)
 add_subdirectory(gflags gflags EXCLUDE_FROM_ALL)
 add_subdirectory(glog glog EXCLUDE_FROM_ALL)
