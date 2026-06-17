@@ -35,7 +35,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     core_knn_hnsw_sparse
     core_knn_ivf
     core_knn_diskann
-    core_knn_vamana
     core_mix_reducer
     core_metric
     core_utility

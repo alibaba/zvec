@@ -2811,12 +2811,6 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
         enable_mmap, std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7,
                                                              256, 16, 200, 0));
 #endif
-    // Vamana + UniformInt8: VamanaStreamer::open already restores reformer
-    // from the persisted meta; keep this case to guard against regressions.
-    run_repeated_optimize_test(
-        enable_mmap, std::make_shared<VamanaIndexParams>(
-                         MetricType::L2, 64, 200, 1.2f, false, false, false,
-                         QuantizeType::INT8));
   }
 }
 
