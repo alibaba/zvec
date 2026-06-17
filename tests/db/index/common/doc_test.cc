@@ -1348,8 +1348,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
                 (std::vector<float>{0.4f, 0.2f, 0.1f, 0.5f, 0.3f}));
     }
 
-    // duplicates (sorted): validate detects as unsorted (equal == not strictly
-    // less), sanitize sorts and reports duplicates
+    // duplicates (sorted): validate detects duplicates directly
     {
       SearchQuery query;
       query.target_.field_name_ = "field_name";
@@ -1358,13 +1357,9 @@ TEST(SearchQuery, ValidateAndSanitize) {
                                       pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
       bool need_sanitize = false;
       auto s = query.validate(&schema, &need_sanitize);
-      EXPECT_TRUE(s.ok());
-      EXPECT_TRUE(need_sanitize);
-
-      VectorClause vc = *query.target_.get_vector_clause();
-      s = sanitize_sparse_vector(vc, &schema);
       EXPECT_FALSE(s.ok());
       EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+      EXPECT_FALSE(need_sanitize);
     }
 
     // duplicates (unsorted): sanitize sorts then reports duplicates
