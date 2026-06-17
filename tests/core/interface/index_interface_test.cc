@@ -1858,8 +1858,7 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
 
 class TestVectorSource : public zvec::core::VectorSource {
  public:
-  TestVectorSource(const float *base, uint32_t dim)
-      : base_(base), dim_(dim) {}
+  TestVectorSource(const float *base, uint32_t dim) : base_(base), dim_(dim) {}
 
   const void *get_vector(uint32_t node_id) const override {
     return base_ + static_cast<size_t>(node_id) * dim_;
@@ -1903,8 +1902,7 @@ TEST(IndexInterface, ExternalVectorEndToEnd) {
 
   for (uint32_t i = 0; i < kNumVectors; ++i) {
     VectorData vector_data;
-    vector_data.vector =
-        DenseVector{all_vectors.data() + i * kDimension};
+    vector_data.vector = DenseVector{all_vectors.data() + i * kDimension};
     int ret = index->AddWithSource(vector_data, i, source);
     ASSERT_EQ(0, ret) << "AddWithSource failed for doc_id=" << i;
   }
@@ -1979,8 +1977,7 @@ TEST(IndexInterface, ExternalVectorInnerProduct) {
 
   for (uint32_t i = 0; i < kNumVectors; ++i) {
     VectorData vector_data;
-    vector_data.vector =
-        DenseVector{all_vectors.data() + i * kDimension};
+    vector_data.vector = DenseVector{all_vectors.data() + i * kDimension};
     ASSERT_EQ(0, index->AddWithSource(vector_data, i, source));
   }
 
