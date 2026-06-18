@@ -19,12 +19,7 @@
 #include <functional>
 #include <random>
 #include <vector>
-
-// Eigen headers (bundled in rabitqlib/third) — used by MatrixRotator for
-// numerically stable HouseholderQR orthogonalisation and matrix multiplication.
-// We intentionally avoid rabitqlib/defines.hpp and rabitqlib/utils/space.hpp
-// to prevent x86 intrinsics leakage on ARM64/AArch64 platforms.
-#include <rabitqlib/third/Eigen/Dense>
+#include <rabitqlib/third/Eigen/Core>
 #include <rabitqlib/third/Eigen/QR>
 
 #if defined(__AVX2__) || defined(__AVX512F__)
@@ -32,8 +27,6 @@
 // FFHT (Fastest Fast Hadamard Transform) — hand-tuned AVX inline assembly
 // from https://github.com/FALCONN-LIB/FFHT, originally bundled in rabitqlib.
 // Provides fht_float(buf, log_n) with per-size helper_float_N specialisations.
-// NOTE: fht_avx.hpp uses GCC/Clang __asm__ volatile syntax; MSVC is
-// unsupported and falls back to the scalar FHT implementation in fht_inplace().
 #if defined(__GNUC__)
 #include "rabitqlib/utils/fht_avx.hpp"
 #endif
