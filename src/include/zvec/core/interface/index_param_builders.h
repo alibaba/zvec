@@ -37,7 +37,7 @@ class BaseIndexParamBuilder {  //  : public
   virtual ~BaseIndexParamBuilder() = default;
 
   ActualIndexParamBuilderType &WithVersion(int version) {
-    param.version = version;
+    param->version = version;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   ActualIndexParamBuilderType &WithIndexType(IndexType index_type) {
@@ -54,8 +54,7 @@ class BaseIndexParamBuilder {  //  : public
   }
   ActualIndexParamBuilderType &WithPreprocessParam(
       const PreprocessorParam &preprocess_param) {
-    param->preprocess_param =
-        std::make_shared<PreprocessorParam>(preprocess_param);
+    param->preprocess_param = preprocess_param;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   ActualIndexParamBuilderType &WithQuantizerParam(
