@@ -38,8 +38,8 @@ enum class RecordRotatorType : uint8_t {
  * explicit random matrix), so no rabitqlib headers are required.
  *
  * Auto-selects the rotation algorithm based on dimension alignment:
- *  - dimension % 64 == 0 -> FhtKac  (O(d log d), requires 64-alignment)
- *  - otherwise           -> Matrix  (O(d^2), no alignment requirement)
+ *  - dimension % 4 == 0  -> FhtKac  (O(d log d), with scalar tails)
+ *  - otherwise            -> Matrix  (O(d^2), no alignment requirement)
  *
  * Rotation preserves dimension: output size == input size (no padding).
  *
@@ -58,11 +58,11 @@ class RecordRotator {
   RecordRotator &operator=(const RecordRotator &) = delete;
 
   //! Initialize the rotator.
-  //! Auto-selects FhtKac when dimension is 64-aligned, else falls back to
+  //! Auto-selects FhtKac when dimension is 4-aligned, else falls back to
   //! Matrix.  The @p rotator_type parameter can force Matrix explicitly.
   //! @param dimension     vector dimension (input and output size)
   //! @param rotator_type  rotation algorithm (default: FhtKac, auto-degrades
-  //!                      to Matrix when dimension is not 64-aligned)
+  //!                      to Matrix when dimension is not 4-aligned)
   void init(size_t dimension,
             RecordRotatorType rotator_type = RecordRotatorType::FhtKac);
 

@@ -103,9 +103,17 @@ void fht_inplace(float *data, size_t n) {
 //! Flip the sign of elements based on a packed bit-array.
 void flip_sign(const uint8_t *flip, float *data, size_t dim) {
 #if defined(__AVX512F__) && defined(__AVX512DQ__)
+  size_t simd_end = dim & ~63u;
+#elif defined(__AVX2__)
+  size_t simd_end = dim & ~31u;
+#else
+  size_t simd_end = dim;  // SSE2/NEON/scalar: chunk divides 4, no tail
+#endif
+
+#if defined(__AVX512F__) && defined(__AVX512DQ__)
   constexpr size_t kChunk = 64;
   const __m512 sign_flip = _mm512_castsi512_ps(_mm512_set1_epi32(0x80000000));
-  for (size_t i = 0; i < dim; i += kChunk) {
+  for (size_t i = 0; i < simd_end; i += kChunk) {
     uint64_t mask_bits;
     std::memcpy(&mask_bits, &flip[i / 8], sizeof(mask_bits));
     const __mmask16 m0 = _cvtu32_mask16(mask_bits & 0xFFFF);
@@ -130,7 +138,7 @@ void flip_sign(const uint8_t *flip, float *data, size_t dim) {
   const __m256i bit_select =
       _mm256_setr_epi32(0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80);
   const __m256 sign_flip = _mm256_castsi256_ps(_mm256_set1_epi32(0x80000000));
-  for (size_t i = 0; i < dim; i += kChunk) {
+  for (size_t i = 0; i < simd_end; i += kChunk) {
     uint32_t mask_bits;
     std::memcpy(&mask_bits, &flip[i / 8], sizeof(mask_bits));
     for (int b = 0; b < 4; ++b) {
@@ -185,34 +193,50 @@ void flip_sign(const uint8_t *flip, float *data, size_t dim) {
     }
   }
 #endif
+  // Scalar tail: handle remaining elements when dim is not SIMD-aligned.
+  for (size_t i = simd_end; i < dim; ++i) {
+    if (flip[i / 8] & (1u << (i % 8))) {
+      data[i] = -data[i];
+    }
+  }
 }
 
 //! Kac random walk: butterfly add/sub between first and second halves.
 void kacs_walk(float *data, size_t len) {
   size_t half = len / 2;
 #if defined(__AVX512F__)
-  for (size_t i = 0; i < half; i += 16) {
+  size_t half_end = half & ~15u;
+#elif defined(__AVX2__)
+  size_t half_end = half & ~7u;
+#elif defined(__SSE2__) || (defined(__ARM_NEON) && defined(__aarch64__))
+  size_t half_end = half & ~3u;
+#else
+  size_t half_end = half;
+#endif
+
+#if defined(__AVX512F__)
+  for (size_t i = 0; i < half_end; i += 16) {
     __m512 x = _mm512_loadu_ps(&data[i]);
     __m512 y = _mm512_loadu_ps(&data[i + half]);
     _mm512_storeu_ps(&data[i], _mm512_add_ps(x, y));
     _mm512_storeu_ps(&data[i + half], _mm512_sub_ps(x, y));
   }
 #elif defined(__AVX2__)
-  for (size_t i = 0; i < half; i += 8) {
+  for (size_t i = 0; i < half_end; i += 8) {
     __m256 x = _mm256_loadu_ps(&data[i]);
     __m256 y = _mm256_loadu_ps(&data[i + half]);
     _mm256_storeu_ps(&data[i], _mm256_add_ps(x, y));
     _mm256_storeu_ps(&data[i + half], _mm256_sub_ps(x, y));
   }
 #elif defined(__ARM_NEON) && defined(__aarch64__)
-  for (size_t i = 0; i < half; i += 4) {
+  for (size_t i = 0; i < half_end; i += 4) {
     float32x4_t x = vld1q_f32(&data[i]);
     float32x4_t y = vld1q_f32(&data[i + half]);
     vst1q_f32(&data[i], vaddq_f32(x, y));
     vst1q_f32(&data[i + half], vsubq_f32(x, y));
   }
 #elif defined(__SSE2__)
-  for (size_t i = 0; i < half; i += 4) {
+  for (size_t i = 0; i < half_end; i += 4) {
     __m128 x = _mm_loadu_ps(&data[i]);
     __m128 y = _mm_loadu_ps(&data[i + half]);
     _mm_storeu_ps(&data[i], _mm_add_ps(x, y));
@@ -226,6 +250,13 @@ void kacs_walk(float *data, size_t len) {
     data[i + half] = x - y;
   }
 #endif
+  // Scalar tail: handle remaining pairs when half is not SIMD-aligned.
+  for (size_t i = half_end; i < half; ++i) {
+    float x = data[i];
+    float y = data[i + half];
+    data[i] = x + y;
+    data[i + half] = x - y;
+  }
 }
 
 //! Inverse Kac walk: undo butterfly add/sub with 0.5 factor.
@@ -234,8 +265,18 @@ void kacs_walk(float *data, size_t len) {
 void inv_kacs_walk(float *data, size_t len) {
   size_t half = len / 2;
 #if defined(__AVX512F__)
+  size_t half_end = half & ~15u;
+#elif defined(__AVX2__)
+  size_t half_end = half & ~7u;
+#elif defined(__SSE2__) || (defined(__ARM_NEON) && defined(__aarch64__))
+  size_t half_end = half & ~3u;
+#else
+  size_t half_end = half;
+#endif
+
+#if defined(__AVX512F__)
   const __m512 half_fac = _mm512_set1_ps(0.5f);
-  for (size_t i = 0; i < half; i += 16) {
+  for (size_t i = 0; i < half_end; i += 16) {
     __m512 a = _mm512_loadu_ps(&data[i]);
     __m512 b = _mm512_loadu_ps(&data[i + half]);
     _mm512_storeu_ps(&data[i], _mm512_mul_ps(_mm512_add_ps(a, b), half_fac));
@@ -244,7 +285,7 @@ void inv_kacs_walk(float *data, size_t len) {
   }
 #elif defined(__AVX2__)
   const __m256 half_fac = _mm256_set1_ps(0.5f);
-  for (size_t i = 0; i < half; i += 8) {
+  for (size_t i = 0; i < half_end; i += 8) {
     __m256 a = _mm256_loadu_ps(&data[i]);
     __m256 b = _mm256_loadu_ps(&data[i + half]);
     _mm256_storeu_ps(&data[i], _mm256_mul_ps(_mm256_add_ps(a, b), half_fac));
@@ -253,7 +294,7 @@ void inv_kacs_walk(float *data, size_t len) {
   }
 #elif defined(__ARM_NEON) && defined(__aarch64__)
   const float32x4_t half_fac = vdupq_n_f32(0.5f);
-  for (size_t i = 0; i < half; i += 4) {
+  for (size_t i = 0; i < half_end; i += 4) {
     float32x4_t a = vld1q_f32(&data[i]);
     float32x4_t b = vld1q_f32(&data[i + half]);
     vst1q_f32(&data[i], vmulq_f32(vaddq_f32(a, b), half_fac));
@@ -261,7 +302,7 @@ void inv_kacs_walk(float *data, size_t len) {
   }
 #elif defined(__SSE2__)
   const __m128 half_fac = _mm_set1_ps(0.5f);
-  for (size_t i = 0; i < half; i += 4) {
+  for (size_t i = 0; i < half_end; i += 4) {
     __m128 a = _mm_loadu_ps(&data[i]);
     __m128 b = _mm_loadu_ps(&data[i + half]);
     _mm_storeu_ps(&data[i], _mm_mul_ps(_mm_add_ps(a, b), half_fac));
@@ -275,6 +316,13 @@ void inv_kacs_walk(float *data, size_t len) {
     data[i + half] = (a - b) * 0.5f;
   }
 #endif
+  // Scalar tail: handle remaining pairs when half is not SIMD-aligned.
+  for (size_t i = half_end; i < half; ++i) {
+    float a = data[i];
+    float b = data[i + half];
+    data[i] = (a + b) * 0.5f;
+    data[i + half] = (a - b) * 0.5f;
+  }
 }
 
 //! Scale each element by a constant factor.
@@ -310,9 +358,9 @@ void write_u32_le(char *p, uint32_t v) {
 // ============================================================================
 // FhtKacRotatorImpl - O(d log d) FHT-based Kac random rotation
 //
-// Requires dimension % 64 == 0 for SIMD flip-sign correctness.
-// When dimension is also a power of 2, uses 4 rounds of (flip -> FHT ->
-// rescale). When dimension is 64-aligned but NOT a power of 2 (e.g. 192, 320),
+// Requires dimension % 4 == 0 (scalar tails handle SIMD remainder).
+// When dimension is a power of 2, uses 4 rounds of (flip -> FHT ->
+// rescale). When dimension is NOT a power of 2 (e.g. 96, 100, 192),
 // uses kacs_walk reduction to handle the non-power-of-2 case.
 // ============================================================================
 
@@ -601,11 +649,11 @@ void RecordRotator::init(size_t dimension, RecordRotatorType rotator_type) {
   impl_->dimension = dimension;
 
   // Auto-select implementation based on dimension alignment when FhtKac
-  // is requested.  FhtKac requires the dimension to be a multiple of 64
-  // for SIMD flip-sign and FHT correctness.  When the dimension is not
-  // 64-aligned we transparently fall back to the O(d^2) Matrix rotator.
+  // is requested.  FhtKac requires the dimension to be a multiple of 4;
+  // scalar tails handle the SIMD remainder.  When the dimension is not
+  // 4-aligned we transparently fall back to the O(d^2) Matrix rotator.
   bool use_fht =
-      (rotator_type == RecordRotatorType::FhtKac) && (dimension % 64 == 0);
+      (rotator_type == RecordRotatorType::FhtKac) && (dimension % 4 == 0);
 
   if (use_fht) {
     impl_->type = RecordRotatorType::FhtKac;
@@ -617,7 +665,7 @@ void RecordRotator::init(size_t dimension, RecordRotatorType rotator_type) {
   } else {
     if (rotator_type == RecordRotatorType::FhtKac) {
       LOG_DEBUG(
-          "RecordRotator::init: dimension %zu is not 64-aligned, "
+          "RecordRotator::init: dimension %zu is not 4-aligned, "
           "falling back from FhtKac to Matrix rotator",
           dimension);
     }

@@ -825,7 +825,7 @@ TEST(IntegerReformer, Int4InitConverterWithTrainedParams) {
   }
 }
 
-// Test FhtKac rotator (dim=64, 64-aligned)
+// Test FhtKac rotator (dim=64, power of 2, hot path)
 TEST(RecordRotatorTest, RotateUnrotateFhtKac) {
   const size_t dim = 64;
   RecordRotator rotator;
@@ -851,9 +851,9 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac) {
   EXPECT_LT(max_err, 1e-3f);
 }
 
-// Test Matrix rotator (dim=16, not 64-aligned, auto-fallback)
+// Test Matrix rotator (dim=15, odd, not 4-aligned, auto-fallback)
 TEST(RecordRotatorTest, RotateUnrotateMatrix) {
-  const size_t dim = 16;
+  const size_t dim = 15;
   RecordRotator rotator;
   rotator.init(dim);
   EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::Matrix);
@@ -873,6 +873,84 @@ TEST(RecordRotatorTest, RotateUnrotateMatrix) {
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)
     max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
-  std::cout << "Matrix (dim=16) max error: " << max_err << std::endl;
+  std::cout << "Matrix (dim=15) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=100, 4-aligned but not 16/32/64-aligned)
+TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim100) {
+  const size_t dim = 100;
+  RecordRotator rotator;
+  rotator.init(dim);
+  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator.rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator.unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=100) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=200, 4-aligned, non-power-of-2 kacs_walk path)
+TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim200) {
+  const size_t dim = 200;
+  RecordRotator rotator;
+  rotator.init(dim);
+  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator.rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator.unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=200) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=96, 32-aligned but not 64-aligned, kacs_walk path)
+TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim96) {
+  const size_t dim = 96;
+  RecordRotator rotator;
+  rotator.init(dim);
+  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator.rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator.unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=96) max error: " << max_err << std::endl;
   EXPECT_LT(max_err, 1e-3f);
 }
