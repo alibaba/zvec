@@ -64,7 +64,6 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
                 ${ZVEC_ALLIN_LIBS}
                 Threads::Threads
         )
-        target_link_options(${TARGET_NAME} PRIVATE /OPT:REF /OPT:ICF)
     elseif(APPLE)
         foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
             list(APPEND ZVEC_ALLIN_WA_OPTIONS

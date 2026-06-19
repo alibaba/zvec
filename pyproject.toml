@@ -125,6 +125,14 @@ sdist.include = [
 [tool.scikit-build.cmake.define]
 BUILD_TOOLS = "OFF"
 BUILD_PYTHON_BINDINGS = "ON"
+# The all-in-one shared libraries (zvec.dll / libzvec.so) are NOT consumed by
+# the Python binding (_zvec.pyd), which links to static libraries directly.
+# Disabling them avoids the Windows PE/COFF 65535-section hard limit (LNK1189)
+# caused by WINDOWS_EXPORT_ALL_SYMBOLS exporting every COMDAT from the massive
+# C++ template codebase, and also speeds up Linux/macOS builds.
+BUILD_ZVEC_SHARED = "OFF"
+BUILD_ZVEC_AILEGO_SHARED = "OFF"
+BUILD_ZVEC_CORE_SHARED = "OFF"
 #CMAKE_VERBOSE_MAKEFILE = "ON"
 
 # Setuptools config for test pypi
