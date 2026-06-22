@@ -2380,6 +2380,51 @@ TEST(IndexInterface, IsDirtyBufferPool) {
   zvec::test_util::RemoveTestFiles(index_name);
 }
 
+TEST(IndexInterface, BuilderSetsAllBaseFields) {
+  auto param =
+      FlatIndexParamBuilder()
+          .WithVersion(42)
+          .WithIndexType(IndexType::kFlat)
+          .WithMetricType(MetricType::kInnerProduct)
+          .WithDimension(128)
+          .WithDataType(DataType::DT_FP32)
+          .WithIsSparse(true)
+          .WithUseIDMap(false)
+          .WithUseExternalVector(true)
+          .WithPreprocessParam(PreprocessorParam(PreprocessorType::kPCA))
+          .WithQuantizerParam(QuantizerParam(QuantizerType::kFP16))
+          .Build();
+
+  ASSERT_NE(nullptr, param);
+  EXPECT_EQ(42, param->version);
+  EXPECT_EQ(IndexType::kFlat, param->index_type);
+  EXPECT_EQ(MetricType::kInnerProduct, param->metric_type);
+  EXPECT_EQ(128, param->dimension);
+  EXPECT_EQ(DataType::DT_FP32, param->data_type);
+  EXPECT_TRUE(param->is_sparse);
+  EXPECT_FALSE(param->use_id_map);
+  EXPECT_TRUE(param->use_external_vector);
+  EXPECT_EQ(PreprocessorType::kPCA, param->preprocess_param.type);
+  EXPECT_EQ(QuantizerType::kFP16, param->quantizer_param.type);
+}
+
+TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
+  HNSWIndexParamBuilder builder;
+  auto &ref = builder.WithVersion(1)
+                  .WithMetricType(MetricType::kL2sq)
+                  .WithDimension(64)
+                  .WithM(16)
+                  .WithEFConstruction(200);
+  auto param = ref.Build();
+
+  ASSERT_NE(nullptr, param);
+  EXPECT_EQ(1, param->version);
+  EXPECT_EQ(MetricType::kL2sq, param->metric_type);
+  EXPECT_EQ(64, param->dimension);
+  EXPECT_EQ(16, param->m);
+  EXPECT_EQ(200, param->ef_construction);
+}
+
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif
