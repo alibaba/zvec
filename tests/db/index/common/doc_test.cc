@@ -1225,7 +1225,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
     SearchQuery query;
     query.topk_ = 10;
     query.target_.field_name_ = "field_name";
-    auto s = query.validate_and_sanitize(nullptr);
+    auto s = query.validate(nullptr, nullptr);
     EXPECT_TRUE(s.ok());
   }
 
@@ -1239,7 +1239,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
         std::string(reinterpret_cast<char *>(query_vector.data()),
                     query_vector.size() * sizeof(float));
     query.target_.set_vector(query_vector_str);
-    auto s = query.validate_and_sanitize(nullptr);
+    auto s = query.validate(nullptr, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1251,7 +1251,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
     query.topk_ = 10;
     query.output_fields_ = std::vector<std::string>(1025);
     FieldSchema schema = FieldSchema("field_name", DataType::INT32);
-    auto s = query.validate_and_sanitize(&schema);
+    auto s = query.validate(&schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1268,11 +1268,11 @@ TEST(SearchQuery, ValidateAndSanitize) {
     query.target_.set_vector(query_vector_str);
     FieldSchema schema =
         FieldSchema("field_name", DataType::VECTOR_FP32, 4, true);
-    auto s = query.validate_and_sanitize(&schema);
+    auto s = query.validate(&schema, nullptr);
     EXPECT_TRUE(s.ok());
 
     query.target_.set_vector(query_vector_str.substr(0, 3));
-    s = query.validate_and_sanitize(&schema);
+    s = query.validate(&schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1291,7 +1291,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
                     query_values.size() * sizeof(float)));
     FieldSchema schema =
         FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
-    auto s = query.validate_and_sanitize(&schema);
+    auto s = query.validate(&schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
@@ -1301,12 +1301,12 @@ TEST(SearchQuery, ValidateAndSanitize) {
     query.target_.set_sparse_vector(
         std::string(reinterpret_cast<char *>(&one_index), sizeof(uint32_t)),
         std::string(reinterpret_cast<char *>(&one_value), sizeof(float)));
-    s = query.validate_and_sanitize(&schema);
+    s = query.validate(&schema, nullptr);
     EXPECT_TRUE(s.ok());
   }
 
-  // sparse query must have matching counts, and indices must be strictly
-  // ascending and unique
+  // sparse: validate sets need_sanitize for unsorted, sanitize sorts and
+  // detects duplicates
   {
     auto pack_idx = [](const std::vector<uint32_t> &v) {
       return std::string(reinterpret_cast<const char *>(v.data()),
@@ -1327,61 +1327,80 @@ TEST(SearchQuery, ValidateAndSanitize) {
     FieldSchema schema =
         FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
 
-    // unsorted indices are sorted in place
+    // unsorted indices: validate sets need_sanitize, sanitize sorts in place
     {
       SearchQuery query;
       query.target_.field_name_ = "field_name";
       query.topk_ = 100;
       query.target_.set_sparse_vector(pack_idx({42u, 7u, 128u, 3u, 99u}),
                                       pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
-      auto s = query.validate_and_sanitize(&schema);
+      bool need_sanitize = false;
+      auto s = query.validate(&schema, &need_sanitize);
       EXPECT_TRUE(s.ok()) << s.message();
-      EXPECT_EQ(
-          decode_idx(
-              std::get<VectorClause>(query.target_.clause_).sparse_indices_),
-          (std::vector<uint32_t>{3u, 7u, 42u, 99u, 128u}));
-      EXPECT_EQ(
-          decode_val(
-              std::get<VectorClause>(query.target_.clause_).sparse_values_),
-          (std::vector<float>{0.4f, 0.2f, 0.1f, 0.5f, 0.3f}));
+      EXPECT_TRUE(need_sanitize);
+
+      VectorClause vc = *query.target_.get_vector_clause();
+      s = sanitize_sparse_vector(vc, &schema);
+      EXPECT_TRUE(s.ok()) << s.message();
+      EXPECT_EQ(decode_idx(vc.sparse_indices_),
+                (std::vector<uint32_t>{3u, 7u, 42u, 99u, 128u}));
+      EXPECT_EQ(decode_val(vc.sparse_values_),
+                (std::vector<float>{0.4f, 0.2f, 0.1f, 0.5f, 0.3f}));
     }
 
-    // duplicates are rejected
+    // duplicates (sorted): validate detects duplicates directly
     {
       SearchQuery query;
       query.target_.field_name_ = "field_name";
       query.topk_ = 100;
       query.target_.set_sparse_vector(pack_idx({3u, 7u, 42u, 42u, 99u}),
                                       pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
-      auto s = query.validate_and_sanitize(&schema);
+      bool need_sanitize = false;
+      auto s = query.validate(&schema, &need_sanitize);
       EXPECT_FALSE(s.ok());
       EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
-
-      query.target_.set_sparse_vector(pack_idx({42u, 3u, 7u, 42u, 99u}),
-                                      pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
-      s = query.validate_and_sanitize(&schema);
-      EXPECT_FALSE(s.ok());
-      EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+      EXPECT_FALSE(need_sanitize);
     }
 
-    // mismatched counts are rejected
+    // duplicates (unsorted): sanitize sorts then reports duplicates
     {
       SearchQuery query;
       query.target_.field_name_ = "field_name";
       query.topk_ = 100;
-      const auto idx_before = pack_idx({3u, 2u, 1u, 4u});
-      const auto val_before = pack_val({0.1f, 0.2f, 0.3f, 0.4f});
-      query.target_.set_sparse_vector(idx_before, val_before);
-      auto s = query.validate_and_sanitize(&schema);
-      EXPECT_TRUE(s.ok()) << s.message();
-      EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_indices_,
-                pack_idx({1u, 2u, 3u, 4u}));
-      EXPECT_EQ(std::get<VectorClause>(query.target_.clause_).sparse_values_,
-                pack_val({0.3f, 0.2f, 0.1f, 0.4f}));
+      query.target_.set_sparse_vector(pack_idx({42u, 3u, 7u, 42u, 99u}),
+                                      pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
+      bool need_sanitize = false;
+      auto s = query.validate(&schema, &need_sanitize);
+      EXPECT_TRUE(s.ok());
+      EXPECT_TRUE(need_sanitize);
 
-      std::get<VectorClause>(query.target_.clause_).sparse_values_ =
-          pack_val({0.1f, 0.2f, 0.3f});
-      s = query.validate_and_sanitize(&schema);
+      VectorClause vc = *query.target_.get_vector_clause();
+      s = sanitize_sparse_vector(vc, &schema);
+      EXPECT_FALSE(s.ok());
+      EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+    }
+
+    // sorted without duplicates: need_sanitize is false
+    {
+      SearchQuery query;
+      query.target_.field_name_ = "field_name";
+      query.topk_ = 100;
+      query.target_.set_sparse_vector(pack_idx({1u, 2u, 3u, 4u}),
+                                      pack_val({0.1f, 0.2f, 0.3f, 0.4f}));
+      bool need_sanitize = false;
+      auto s = query.validate(&schema, &need_sanitize);
+      EXPECT_TRUE(s.ok()) << s.message();
+      EXPECT_FALSE(need_sanitize);
+    }
+
+    // mismatched counts are rejected by validate
+    {
+      SearchQuery query;
+      query.target_.field_name_ = "field_name";
+      query.topk_ = 100;
+      query.target_.set_sparse_vector(pack_idx({1u, 2u, 3u, 4u}),
+                                      pack_val({0.1f, 0.2f, 0.3f}));
+      auto s = query.validate(&schema, nullptr);
       EXPECT_FALSE(s.ok());
       EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
     }
@@ -1401,21 +1420,20 @@ TEST(SearchQuery, ValidateAndSanitize) {
                     std::make_shared<HnswIndexParams>(MetricType::L2));
 
     query.target_.query_params_ = std::make_shared<HnswQueryParams>(150);
-    auto s = query.validate_and_sanitize(&schema);
+    auto s = query.validate(&schema, nullptr);
     EXPECT_TRUE(s.ok());
 
     query.target_.query_params_ = std::make_shared<IVFQueryParams>(50);
-    s = query.validate_and_sanitize(&schema);
+    s = query.validate(&schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     query.target_.query_params_ = nullptr;
-    s = query.validate_and_sanitize(&schema);
+    s = query.validate(&schema, nullptr);
     EXPECT_TRUE(s.ok());
   }
 
-  // A vector clause and an FTS clause are mutually exclusive by construction:
-  // target_.clause_ is a variant that holds exactly one of them.
+  // FTS clause validation
   {
     auto fts_params = std::make_shared<FtsIndexParams>();
     FieldSchema fts_schema("content", DataType::STRING, false, fts_params);
@@ -1427,20 +1445,76 @@ TEST(SearchQuery, ValidateAndSanitize) {
     FtsClause fts_test;
     fts_test.query_string_ = "test";
     fts_only.target_.clause_ = fts_test;
-    auto s = fts_only.validate_and_sanitize(&fts_schema);
+    auto s = fts_only.validate(&fts_schema, nullptr);
     EXPECT_TRUE(s.ok());
 
     // FTS query with nullptr schema -> fail (field not found)
-    s = fts_only.validate_and_sanitize(nullptr);
+    s = fts_only.validate(nullptr, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     // FTS query with vector field schema -> fail (type mismatch)
     FieldSchema vec_schema("embedding", DataType::VECTOR_FP32, 128, false,
                            std::make_shared<HnswIndexParams>(MetricType::L2));
-    s = fts_only.validate_and_sanitize(&vec_schema);
+    s = fts_only.validate(&vec_schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+  }
+
+  // VectorViewClause: validate handles VectorViewClause the same as
+  // VectorClause
+  {
+    FieldSchema schema =
+        FieldSchema("field_name", DataType::VECTOR_FP32, 4, true);
+    std::vector<float> query_vector = {1.0f, 2.0f, 3.0f, 4.0f};
+    std::string vec_data(reinterpret_cast<char *>(query_vector.data()),
+                         query_vector.size() * sizeof(float));
+
+    // Dense VectorViewClause: valid dimension
+    {
+      SearchQuery query;
+      query.target_.field_name_ = "field_name";
+      query.topk_ = 10;
+      query.target_.clause_ =
+          VectorViewClause{vec_data, std::string_view{}, std::string_view{}};
+      auto s = query.validate(&schema, nullptr);
+      EXPECT_TRUE(s.ok()) << s.message();
+    }
+
+    // Dense VectorViewClause: wrong dimension
+    {
+      SearchQuery query;
+      query.target_.field_name_ = "field_name";
+      query.topk_ = 10;
+      std::string short_vec = vec_data.substr(0, sizeof(float) * 2);
+      query.target_.clause_ =
+          VectorViewClause{short_vec, std::string_view{}, std::string_view{}};
+      auto s = query.validate(&schema, nullptr);
+      EXPECT_FALSE(s.ok());
+      EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
+    }
+
+    // Sparse VectorViewClause: unsorted triggers need_sanitize
+    {
+      FieldSchema sparse_schema(
+          "field_name", DataType::SPARSE_VECTOR_FP32, false,
+          std::make_shared<HnswIndexParams>(MetricType::IP));
+      std::vector<uint32_t> idx_vec = {3u, 1u, 2u};
+      std::vector<float> val_vec = {0.3f, 0.1f, 0.2f};
+      std::string idx_data(reinterpret_cast<const char *>(idx_vec.data()),
+                           idx_vec.size() * sizeof(uint32_t));
+      std::string val_data(reinterpret_cast<const char *>(val_vec.data()),
+                           val_vec.size() * sizeof(float));
+      SearchQuery query;
+      query.target_.field_name_ = "field_name";
+      query.topk_ = 10;
+      query.target_.clause_ =
+          VectorViewClause{std::string_view{}, idx_data, val_data};
+      bool need_sanitize = false;
+      auto s = query.validate(&sparse_schema, &need_sanitize);
+      EXPECT_TRUE(s.ok()) << s.message();
+      EXPECT_TRUE(need_sanitize);
+    }
   }
 }
 

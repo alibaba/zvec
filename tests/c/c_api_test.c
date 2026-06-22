@@ -3695,16 +3695,46 @@ void test_query_params_functions(void) {
   is_using_refiner = zvec_query_params_flat_get_is_using_refiner(flat_params);
   TEST_ASSERT(is_using_refiner == true);
 
+  // Test Vamana query parameters
+  zvec_vamana_query_params_t *vamana_params =
+      zvec_query_params_vamana_create(256, 0.3f, false, true);
+  TEST_ASSERT(vamana_params != NULL);
+
+  TEST_ASSERT(zvec_query_params_vamana_get_ef_search(vamana_params) == 256);
+  TEST_ASSERT(zvec_query_params_vamana_get_radius(vamana_params) == 0.3f);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_linear(vamana_params) == false);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
+              true);
+
+  // Vamana set/get all parameters
+  err = zvec_query_params_vamana_set_ef_search(vamana_params, 512);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_ef_search(vamana_params) == 512);
+
+  err = zvec_query_params_vamana_set_radius(vamana_params, 0.5f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_radius(vamana_params) == 0.5f);
+
+  err = zvec_query_params_vamana_set_is_linear(vamana_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_linear(vamana_params) == true);
+
+  err = zvec_query_params_vamana_set_is_using_refiner(vamana_params, false);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
+              false);
+
   // Test destruction of valid parameters
   zvec_query_params_hnsw_destroy(hnsw_params);
   zvec_query_params_ivf_destroy(ivf_params);
   zvec_query_params_flat_destroy(flat_params);
-
+  zvec_query_params_vamana_destroy(vamana_params);
 
   // Test boundary cases - null pointer handling
   zvec_query_params_hnsw_destroy(NULL);
   zvec_query_params_ivf_destroy(NULL);
   zvec_query_params_flat_destroy(NULL);
+  zvec_query_params_vamana_destroy(NULL);
 
   // Test null pointer handling for setters
   err = zvec_query_params_hnsw_set_radius(NULL, 0.5f);
@@ -3712,6 +3742,8 @@ void test_query_params_functions(void) {
   err = zvec_query_params_ivf_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_flat_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_vamana_set_ef_search(NULL, 100);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
   // Test default values for getters with NULL
@@ -3724,6 +3756,10 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_hnsw_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_vamana_get_ef_search(NULL) == 200);
+  TEST_ASSERT(zvec_query_params_vamana_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(NULL) == false);
 
   TEST_END();
 }
@@ -4366,48 +4402,6 @@ void test_fts_end_to_end(void) {
   TEST_END();
 }
 
-void test_reranker_functions(void) {
-  TEST_START();
-
-  // Test 1: Create RRF reranker
-  zvec_reranker_t *rrf = zvec_create_rrf_reranker(60);
-  TEST_ASSERT(rrf != NULL);
-  if (rrf) {
-    TEST_ASSERT(zvec_get_reranker_rank_constant(rrf) == 60);
-    zvec_destroy_reranker(rrf);
-  }
-
-  // Test 2: Create RRF reranker with different rank constant
-  zvec_reranker_t *rrf2 = zvec_create_rrf_reranker(100);
-  TEST_ASSERT(rrf2 != NULL);
-  if (rrf2) {
-    TEST_ASSERT(zvec_get_reranker_rank_constant(rrf2) == 100);
-    zvec_destroy_reranker(rrf2);
-  }
-
-  // Test 3: Create Weighted reranker
-  double weights[] = {0.7, 0.3};
-  zvec_reranker_t *weighted = zvec_create_weighted_reranker(weights, 2);
-  TEST_ASSERT(weighted != NULL);
-  if (weighted) {
-    TEST_ASSERT(zvec_get_reranker_rank_constant(weighted) == -1);
-    zvec_destroy_reranker(weighted);
-  }
-
-  // Test 4: Create Weighted reranker with no weights
-  zvec_reranker_t *weighted2 = zvec_create_weighted_reranker(NULL, 0);
-  TEST_ASSERT(weighted2 != NULL);
-  if (weighted2) {
-    zvec_destroy_reranker(weighted2);
-  }
-
-  // Test 5: NULL reranker operations
-  TEST_ASSERT(zvec_get_reranker_rank_constant(NULL) == -1);
-  zvec_destroy_reranker(NULL);  // Should not crash
-
-  TEST_END();
-}
-
 // ==================== Multi-query reranker test helpers ====================
 
 typedef struct {
@@ -4480,9 +4474,14 @@ static void teardown_multi_query_fixture(multi_query_fixture_t *f) {
   cleanup_temp_directory(f->temp_dir);
 }
 
-static int execute_multi_query_with_reranker(const multi_query_fixture_t *f,
-                                             zvec_reranker_t *reranker,
-                                             int topk, int num_candidates) {
+typedef enum {
+  MQ_RERANK_RRF,
+  MQ_RERANK_WEIGHTED,
+} mq_rerank_kind_t;
+
+static int execute_multi_query_with_rerank(
+    const multi_query_fixture_t *f, mq_rerank_kind_t kind, int rank_constant,
+    const double *weights, size_t weight_count, int topk, int num_candidates) {
   zvec_multi_query_t *mvq = zvec_multi_query_create();
   if (!mvq) return -1;
   zvec_multi_query_set_topk(mvq, topk);
@@ -4500,7 +4499,11 @@ static int execute_multi_query_with_reranker(const multi_query_fixture_t *f,
   zvec_sub_query_set_num_candidates(vq2, num_candidates);
   zvec_multi_query_add_sub_query(mvq, vq2);
 
-  zvec_multi_query_set_reranker(mvq, reranker);
+  if (kind == MQ_RERANK_WEIGHTED) {
+    zvec_multi_query_set_rerank_weighted(mvq, weights, weight_count);
+  } else {
+    zvec_multi_query_set_rerank_rrf(mvq, rank_constant);
+  }
 
   zvec_doc_t **results = NULL;
   size_t result_count = 0;
@@ -4527,14 +4530,10 @@ void test_multi_vector_query_with_rrf_reranker(void) {
   multi_query_fixture_t f;
   TEST_ASSERT(setup_multi_query_fixture(&f, "zvec_test_mq_rrf", "mq_rrf"));
 
-  zvec_reranker_t *rrf = zvec_create_rrf_reranker(60);
-  TEST_ASSERT(rrf != NULL);
-
-  int count = execute_multi_query_with_reranker(&f, rrf, 3, 3);
+  int count =
+      execute_multi_query_with_rerank(&f, MQ_RERANK_RRF, 60, NULL, 0, 3, 3);
   TEST_ASSERT(count > 0);
   TEST_ASSERT(count <= 3);
-
-  zvec_destroy_reranker(rrf);
 
   // MultiQuery property setters/getters
   zvec_multi_query_t *mvq2 = zvec_multi_query_create();
@@ -4589,14 +4588,12 @@ void test_multi_vector_query_with_weighted_reranker(void) {
       setup_multi_query_fixture(&f, "zvec_test_mq_weighted", "mq_weighted"));
 
   double weights[] = {0.7, 0.3};
-  zvec_reranker_t *weighted = zvec_create_weighted_reranker(weights, 2);
-  TEST_ASSERT(weighted != NULL);
 
-  int count = execute_multi_query_with_reranker(&f, weighted, 3, 3);
+  int count = execute_multi_query_with_rerank(&f, MQ_RERANK_WEIGHTED, 0,
+                                              weights, 2, 3, 3);
   TEST_ASSERT(count > 0);
   TEST_ASSERT(count <= 3);
 
-  zvec_destroy_reranker(weighted);
   teardown_multi_query_fixture(&f);
 
   TEST_END();
@@ -5011,11 +5008,50 @@ void test_index_params_creation_functions(void) {
   TEST_ASSERT(enable_range_opt == true);
   TEST_ASSERT(enable_wildcard == false);
 
+  // Test Vamana parameters using new API
+  zvec_index_params_t *vamana_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_VAMANA);
+  TEST_ASSERT(vamana_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(vamana_params) ==
+              ZVEC_INDEX_TYPE_VAMANA);
+  TEST_ASSERT(zvec_index_params_get_metric_type(vamana_params) ==
+              ZVEC_METRIC_TYPE_L2);
+
+  int max_degree, search_list_size;
+  float alpha;
+  bool saturate_graph, use_contiguous_memory;
+  zvec_error_code_t verr;
+
+  // Set and get Vamana params
+  verr = zvec_index_params_set_vamana_params(vamana_params, 128, 200, 1.5f,
+                                             true, true);
+  TEST_ASSERT(verr == ZVEC_OK);
+  verr = zvec_index_params_get_vamana_params(
+      vamana_params, &max_degree, &search_list_size, &alpha, &saturate_graph,
+      &use_contiguous_memory);
+  TEST_ASSERT(verr == ZVEC_OK);
+  TEST_ASSERT(max_degree == 128);
+  TEST_ASSERT(search_list_size == 200);
+  TEST_ASSERT(alpha == 1.5f);
+  TEST_ASSERT(saturate_graph == true);
+  TEST_ASSERT(use_contiguous_memory == true);
+
+  // Set metric and quantize type
+  zvec_index_params_set_metric_type(vamana_params, ZVEC_METRIC_TYPE_COSINE);
+  TEST_ASSERT(zvec_index_params_get_metric_type(vamana_params) ==
+              ZVEC_METRIC_TYPE_COSINE);
+
+  // Test type mismatch: set_vamana_params on non-Vamana params should fail
+  verr = zvec_index_params_set_vamana_params(hnsw_params, 64, 100, 1.2f, false,
+                                             false);
+  TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(ivf_params);
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(invert_params);
+  zvec_index_params_destroy(vamana_params);
 
   TEST_END();
 }
@@ -5930,7 +5966,6 @@ int main(void) {
   test_fts_wiring_on_vector_query();
   test_fts_end_to_end();
 
-  test_reranker_functions();
   test_multi_vector_query_with_rrf_reranker();
   test_multi_vector_query_with_weighted_reranker();
   // Performance tests

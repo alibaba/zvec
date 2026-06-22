@@ -48,6 +48,8 @@ static const std::string PARAM_VAMANA_STREAMER_ALPHA(
 static const std::string PARAM_VAMANA_STREAMER_MAX_OCCLUSION_SIZE(
     "proxima.vamana.streamer.max_occlusion_size");
 static const std::string PARAM_VAMANA_STREAMER_EF("proxima.vamana.streamer.ef");
+static const std::string PARAM_VAMANA_STREAMER_PO("proxima.vamana.streamer.po");
+static const std::string PARAM_VAMANA_STREAMER_PL("proxima.vamana.streamer.pl");
 static const std::string PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD(
     "proxima.vamana.streamer.brute_force_threshold");
 static const std::string PARAM_VAMANA_STREAMER_MAX_SCAN_RATIO(

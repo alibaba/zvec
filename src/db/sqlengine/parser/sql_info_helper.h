@@ -24,10 +24,8 @@ namespace zvec::sqlengine {
 
 class SQLInfoHelper {
  public:
-  //! Build SQLInfo from SearchQuery. Takes query by value so callers may copy
-  //! or move it; vector payloads can be moved while building SQLInfo.
   static Result<sqlengine::SQLInfo::Ptr> BuildSQLInfoFromSearchQuery(
-      SearchQuery query, Node::Ptr filter_node,
+      const SearchQuery &query, Node::Ptr filter_node,
       std::shared_ptr<GroupBy> group_by);
 };
 

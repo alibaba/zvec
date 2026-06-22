@@ -102,6 +102,11 @@ cmake.version = ">=3.26,<4.0"
 ninja.version = ">=1.11"
 cmake.build-type = "Release"
 install.strip = true  # Strip symbols in release builds to reduce wheel size
+# Only pull the runtime artifacts tagged COMPONENT "python" into the wheel.
+# This excludes the C++ SDK install rules (static/shared libs under lib/ and
+# public headers under include/) that cc_library(PACKED) registers for a
+# standalone `make install`, which would otherwise bloat the wheel.
+install.components = ["python"]
 
 # Build directory
 build-dir = "build"
@@ -176,6 +181,11 @@ test-command = "cd {project} && pytest python/tests -v --tb=short"
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
+# libaio is required by the C++ backend; install it inside the manylinux
+# container (manylinux_2_28 is AlmaLinux 8 based, so use dnf/libaio-devel).
+# libaio-devel lives in BaseOS; disable EPEL so a flaky EPEL mirror cannot
+# break metadata refresh.
+before-all = "dnf install -y --disablerepo=epel libaio-devel"
 archs = ["auto"]
 environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16" }
 manylinux-x86_64-image = "manylinux_2_28"

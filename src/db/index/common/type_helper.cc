@@ -15,28 +15,34 @@
 #include "type_helper.h"
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <numeric>
 #include <vector>
 #include <zvec/core/framework/index_meta.h>
 
 namespace zvec {
 
+SparseIndicesStatus need_sanitize_sparse(const uint32_t *indices, size_t n) {
+  if (n <= 1) {
+    return SparseIndicesStatus::kOk;
+  }
+  auto it =
+      std::adjacent_find(indices, indices + n, std::greater_equal<uint32_t>());
+  if (it == indices + n) {
+    return SparseIndicesStatus::kOk;
+  }
+  if (*it == *(it + 1)) {
+    return SparseIndicesStatus::kHasDuplicate;
+  }
+  // First non-strictly-increasing pair is a > b (not equal), so unsorted.
+  // But there may still be duplicates elsewhere — we only know sorting is
+  // needed; duplicates will be detected after sort_and_find_duplicates.
+  return SparseIndicesStatus::kNeedSort;
+}
+
 bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,
                               size_t value_byte_size) {
   if (n <= 1) {
-    return false;
-  }
-  bool already_sorted = true;
-  for (size_t i = 1; i < n; ++i) {
-    if (indices[i] == indices[i - 1]) {
-      return true;
-    }
-    if (indices[i] < indices[i - 1]) {
-      already_sorted = false;
-      break;
-    }
-  }
-  if (already_sorted) {
     return false;
   }
   std::vector<size_t> perm(n);

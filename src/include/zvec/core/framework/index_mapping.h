@@ -181,6 +181,11 @@ class IndexMapping {
     return huge_page_;
   }
 
+  //! Test if any data needs to be flushed to disk
+  bool is_header_dirty() const {
+    return header_dirty_;
+  }
+
  protected:
   //! Initialize index file mapping
   int init_index_mapping(size_t len);

@@ -533,8 +533,8 @@ Status QueryAnalyzer::check_and_convert_vector(
     }
 
     *vector_cond = std::make_shared<QueryInfo::QueryVectorCondInfo>(
-        vector_meta, vector_data->take_matrix(), core_data_type, dimension,
-        vector_data->take_sparse_indices(), vector_data->take_sparse_values(),
+        vector_meta, vector_data->matrix(), core_data_type, dimension,
+        vector_data->sparse_indices(), vector_data->sparse_values(),
         vector_data->take_query_params());
     return Status::OK();
   } else {

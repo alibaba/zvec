@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #define _USE_MATH_DEFINES
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <set>
@@ -35,222 +36,245 @@ Doc::Ptr MakeDoc(const std::string &id, float score) {
   return doc;
 }
 
-CollectionSchema::Ptr MakeSchema(
-    const std::vector<std::pair<std::string, MetricType>> &fields) {
-  auto schema = std::make_shared<CollectionSchema>("test");
-  for (const auto &[name, metric] : fields) {
-    auto field = std::make_shared<FieldSchema>(
-        name, DataType::VECTOR_FP16, /*dimension=*/4, /*nullable=*/false,
-        std::make_shared<HnswIndexParams>(metric));
-    schema->add_field(field);
-  }
-  return schema;
+FieldSchema::Ptr MakeField(const std::string &name, MetricType metric) {
+  return std::make_shared<FieldSchema>(
+      name, DataType::VECTOR_FP16, /*dimension=*/4, /*nullable=*/false,
+      std::make_shared<HnswIndexParams>(metric));
 }
 
 }  // namespace
 
-// ==================== RrfReranker Tests ====================
+// ==================== RRF Tests ====================
 
-TEST(RrfRerankerTest, BasicRRF) {
-  RrfReranker reranker(/*rank_constant=*/60);
-
-  // Two vector fields, each returning 3 documents with some overlap
-  std::vector<DocPtrList> query_results;
-  query_results.push_back(
+TEST(RerankRrfTest, BasicRRF) {
+  // Two sub-queries, each returning 3 documents with some overlap.
+  std::vector<DocPtrList> results;
+  results.push_back(
       {MakeDoc("a", 0.9f), MakeDoc("b", 0.8f), MakeDoc("c", 0.7f)});
-  query_results.push_back(
+  results.push_back(
       {MakeDoc("b", 0.95f), MakeDoc("a", 0.85f), MakeDoc("d", 0.75f)});
 
-  auto result = reranker.rerank(query_results, /*topn=*/10);
+  auto result =
+      reranker::rerank(reranker::RrfParams{/*rank_constant=*/60}, results,
+                       /*fields=*/{}, /*topn=*/10);
   ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
+  auto &out = result.value();
 
-  // "a" appears at rank 0 in vec1 and rank 1 in vec2:
+  // "a" appears at rank 0 in sub-query 0 and rank 1 in sub-query 1:
   //   rrf_score = 1/(60+0+1) + 1/(60+1+1) = 1/61 + 1/62
-  // "b" appears at rank 1 in vec1 and rank 0 in vec2:
+  // "b" appears at rank 1 in sub-query 0 and rank 0 in sub-query 1:
   //   rrf_score = 1/(60+1+1) + 1/(60+0+1) = 1/62 + 1/61
-  // So a and b should have equal scores and be at the top
-  ASSERT_GE(results.size(), 3u);
-
-  // "a" and "b" should have the highest RRF scores (equal, order unspecified)
-  std::set<std::string> top2{results[0]->pk(), results[1]->pk()};
+  // So a and b should have equal scores and occupy the top two slots.
+  ASSERT_GE(out.size(), 3u);
+  std::set<std::string> top2 = {out[0]->pk(), out[1]->pk()};
   EXPECT_EQ(top2, (std::set<std::string>{"a", "b"}));
-  // Verify scores are close (a and b have same RRF score)
-  EXPECT_NEAR(results[0]->score(), results[1]->score(), 1e-10);
+  EXPECT_NEAR(out[0]->score(), out[1]->score(), 1e-10);
 }
 
-TEST(RrfRerankerTest, Topn) {
-  RrfReranker reranker(/*rank_constant=*/60);
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back(
+TEST(RerankRrfTest, Topn) {
+  std::vector<DocPtrList> results;
+  results.push_back(
       {MakeDoc("a", 0.9f), MakeDoc("b", 0.8f), MakeDoc("c", 0.7f)});
 
-  auto result = reranker.rerank(query_results, /*topn=*/2);
+  auto result =
+      reranker::rerank(reranker::RrfParams{/*rank_constant=*/60}, results,
+                       /*fields=*/{}, /*topn=*/2);
   ASSERT_TRUE(result.has_value());
   ASSERT_EQ(result.value().size(), 2u);
 }
 
-TEST(RrfRerankerTest, SingleField) {
-  RrfReranker reranker(/*rank_constant=*/60);
+TEST(RerankRrfTest, SingleField) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.9f), MakeDoc("b", 0.8f)});
 
-  std::vector<DocPtrList> query_results;
-  query_results.push_back({MakeDoc("a", 0.9f), MakeDoc("b", 0.8f)});
-
-  auto result = reranker.rerank(query_results);
+  auto result =
+      reranker::rerank(reranker::RrfParams{/*rank_constant=*/60}, results,
+                       /*fields=*/{}, /*topn=*/10);
   ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
-  ASSERT_EQ(results.size(), 2u);
-  // With single field, RRF score for rank 0 > rank 1
-  EXPECT_GT(results[0]->score(), results[1]->score());
+  auto &out = result.value();
+  ASSERT_EQ(out.size(), 2u);
+  // With single sub-query, RRF score for rank 0 > rank 1.
+  EXPECT_GT(out[0]->score(), out[1]->score());
 }
 
-TEST(RrfRerankerTest, EmptyResults) {
-  RrfReranker reranker(/*rank_constant=*/60);
-
-  std::vector<DocPtrList> query_results;
-  auto result = reranker.rerank(query_results);
+TEST(RerankRrfTest, EmptyResults) {
+  std::vector<DocPtrList> results;
+  auto result =
+      reranker::rerank(reranker::RrfParams{/*rank_constant=*/60}, results,
+                       /*fields=*/{}, /*topn=*/10);
   ASSERT_TRUE(result.has_value());
   EXPECT_TRUE(result.value().empty());
 }
 
-// ==================== WeightedReranker Tests ====================
+TEST(RerankRrfTest, DefaultParams) {
+  // RrfParams (and therefore RerankParams) defaults to rank_constant = 60.
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.9f), MakeDoc("b", 0.8f)});
 
-TEST(WeightedRerankerTest, BasicWeighted) {
-  auto schema =
-      MakeSchema({{"vec1", MetricType::L2}, {"vec2", MetricType::L2}});
-  WeightedReranker reranker({0.7, 0.3});
-  reranker.bind_schema(schema, {"vec1", "vec2"});
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back({MakeDoc("a", 0.5f), MakeDoc("b", 0.3f)});
-  query_results.push_back({MakeDoc("a", 0.8f), MakeDoc("c", 0.6f)});
-
-  auto result = reranker.rerank(query_results);
-  ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
-  ASSERT_GE(results.size(), 2u);
-  // "a" appears in both fields, should have highest combined score
-  EXPECT_EQ(results[0]->pk(), "a");
-}
-
-TEST(WeightedRerankerTest, MixedMetrics) {
-  auto schema =
-      MakeSchema({{"vec1", MetricType::L2}, {"vec2", MetricType::COSINE}});
-  WeightedReranker reranker({0.5, 0.5});
-  reranker.bind_schema(schema, {"vec1", "vec2"});
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back({MakeDoc("a", 0.5f)});
-  query_results.push_back({MakeDoc("a", 0.4f)});
-
-  auto result = reranker.rerank(query_results);
-  ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
-  ASSERT_EQ(results.size(), 1u);
-  EXPECT_EQ(results[0]->pk(), "a");
-  // L2 normalize(0.5) = 1 - 2*atan(0.5)/pi ≈ 0.7048
-  // COSINE normalize(0.4) = 1 - 0.4/2 = 0.8
-  // weighted = 0.7048 * 0.5 + 0.8 * 0.5 ≈ 0.7524
-  double l2_norm = 1.0 - 2.0 * std::atan(0.5) / M_PI;
-  double cos_norm = 1.0 - 0.4 / 2.0;
-  double expected = l2_norm * 0.5 + cos_norm * 0.5;
-  EXPECT_NEAR(results[0]->score(), expected, 1e-5);
-}
-
-TEST(WeightedRerankerTest, MissingMetricError) {
-  auto schema = MakeSchema({{"vec1", MetricType::L2}});
-  WeightedReranker reranker;
-  // Binding a field that is absent from the schema should fail at rerank time.
-  reranker.bind_schema(schema, {"vec1", "vec2"});
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back({MakeDoc("a", 0.5f)});
-  query_results.push_back({MakeDoc("b", 0.3f)});
-  auto result = reranker.rerank(query_results);
-  ASSERT_FALSE(result.has_value());
-}
-
-TEST(WeightedRerankerTest, NormalizeL2) {
-  auto schema = MakeSchema({{"vec1", MetricType::L2}});
-  WeightedReranker reranker;
-  reranker.bind_schema(schema, {"vec1"});
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back({MakeDoc("a", 0.0f), MakeDoc("b", 1.0f)});
-
-  auto result = reranker.rerank(query_results);
-  ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
-  ASSERT_EQ(results.size(), 2u);
-  // L2 normalize(0.0) = 1.0, normalize(1.0) ∈ (0, 1)
-  EXPECT_NEAR(results[0]->score(), 1.0, 1e-10);
-  EXPECT_EQ(results[0]->pk(), "a");
-  EXPECT_GT(results[1]->score(), 0.0);
-  EXPECT_LT(results[1]->score(), 1.0);
-}
-
-TEST(WeightedRerankerTest, NormalizeIP) {
-  auto schema = MakeSchema({{"vec1", MetricType::IP}});
-  WeightedReranker reranker;
-  reranker.bind_schema(schema, {"vec1"});
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back({MakeDoc("a", 0.0f), MakeDoc("b", 1.0f)});
-
-  auto result = reranker.rerank(query_results);
-  ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
-  ASSERT_EQ(results.size(), 2u);
-  // IP normalize(1.0) > 0.5 > normalize(0.0) = 0.5... but b scores higher
-  EXPECT_EQ(results[0]->pk(), "b");
-  EXPECT_GT(results[0]->score(), 0.5);
-  EXPECT_NEAR(results[1]->score(), 0.5, 1e-10);
-}
-
-TEST(WeightedRerankerTest, NormalizeCosine) {
-  auto schema = MakeSchema({{"vec1", MetricType::COSINE}});
-  WeightedReranker reranker;
-  reranker.bind_schema(schema, {"vec1"});
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back(
-      {MakeDoc("a", 0.0f), MakeDoc("b", 1.0f), MakeDoc("c", 2.0f)});
-
-  auto result = reranker.rerank(query_results);
-  ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
-  ASSERT_EQ(results.size(), 3u);
-  // COSINE normalize(0.0) = 1.0, normalize(1.0) = 0.5, normalize(2.0) = 0.0
-  EXPECT_NEAR(results[0]->score(), 1.0, 1e-10);
-  EXPECT_NEAR(results[1]->score(), 0.5, 1e-10);
-  EXPECT_NEAR(results[2]->score(), 0.0, 1e-10);
-}
-
-TEST(WeightedRerankerTest, Topn) {
-  auto schema = MakeSchema({{"vec1", MetricType::L2}});
-  WeightedReranker reranker;
-  reranker.bind_schema(schema, {"vec1"});
-
-  std::vector<DocPtrList> query_results;
-  query_results.push_back(
-      {MakeDoc("a", 0.1f), MakeDoc("b", 0.2f), MakeDoc("c", 0.3f)});
-
-  auto result = reranker.rerank(query_results, /*topn=*/2);
+  auto result =
+      reranker::rerank(reranker::RerankParams{}, results, /*fields=*/{},
+                       /*topn=*/10);
   ASSERT_TRUE(result.has_value());
   ASSERT_EQ(result.value().size(), 2u);
 }
 
+// ==================== Weighted Tests ====================
 
-// ==================== CallbackReranker Tests ====================
+TEST(RerankWeightedTest, BasicWeighted) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.5f), MakeDoc("b", 0.3f)});
+  results.push_back({MakeDoc("a", 0.8f), MakeDoc("c", 0.6f)});
+  std::vector<FieldSchema::Ptr> fields = {MakeField("vec1", MetricType::L2),
+                                          MakeField("vec2", MetricType::L2)};
 
-TEST(CallbackRerankerTest, BasicCallback) {
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{0.7, 0.3}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_TRUE(result.has_value());
+  auto &out = result.value();
+  ASSERT_GE(out.size(), 2u);
+  // "a" appears in both sub-queries, should have highest combined score.
+  EXPECT_EQ(out[0]->pk(), "a");
+}
+
+TEST(RerankWeightedTest, MixedMetrics) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.5f)});
+  results.push_back({MakeDoc("a", 0.4f)});
+  std::vector<FieldSchema::Ptr> fields = {
+      MakeField("vec1", MetricType::L2), MakeField("vec2", MetricType::COSINE)};
+
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{0.5, 0.5}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_TRUE(result.has_value());
+  auto &out = result.value();
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0]->pk(), "a");
+  // L2 normalize(0.5) = 1 - 2*atan(0.5)/pi
+  // COSINE normalize(0.4) = 1 - 0.4/2 = 0.8
+  // weighted = l2_norm * 0.5 + cos_norm * 0.5
+  double l2_norm = 1.0 - 2.0 * std::atan(0.5) / M_PI;
+  double cos_norm = 1.0 - 0.4 / 2.0;
+  double expected = l2_norm * 0.5 + cos_norm * 0.5;
+  EXPECT_NEAR(out[0]->score(), expected, 1e-5);
+}
+
+TEST(RerankWeightedTest, WeightsCountMismatch) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.5f)});
+  results.push_back({MakeDoc("b", 0.3f)});
+  std::vector<FieldSchema::Ptr> fields = {MakeField("vec1", MetricType::L2),
+                                          MakeField("vec2", MetricType::L2)};
+
+  // Only one weight provided for two sub-queries.
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{1.0}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_FALSE(result.has_value());
+}
+
+TEST(RerankWeightedTest, FieldsCountMismatch) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.5f)});
+  results.push_back({MakeDoc("b", 0.3f)});
+  std::vector<FieldSchema::Ptr> fields = {MakeField("vec1", MetricType::L2)};
+
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{0.5, 0.5}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_FALSE(result.has_value());
+}
+
+TEST(RerankWeightedTest, NullFieldError) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.5f)});
+  std::vector<FieldSchema::Ptr> fields = {nullptr};
+
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{1.0}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_FALSE(result.has_value());
+}
+
+TEST(RerankWeightedTest, NormalizeL2) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.0f), MakeDoc("b", 1.0f)});
+  std::vector<FieldSchema::Ptr> fields = {MakeField("vec1", MetricType::L2)};
+
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{1.0}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_TRUE(result.has_value());
+  auto &out = result.value();
+  ASSERT_EQ(out.size(), 2u);
+  // L2 normalize(0.0) = 1.0, normalize(1.0) in (0, 1)
+  EXPECT_NEAR(out[0]->score(), 1.0, 1e-10);
+  EXPECT_EQ(out[0]->pk(), "a");
+  EXPECT_GT(out[1]->score(), 0.0);
+  EXPECT_LT(out[1]->score(), 1.0);
+}
+
+TEST(RerankWeightedTest, NormalizeIP) {
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.0f), MakeDoc("b", 1.0f)});
+  std::vector<FieldSchema::Ptr> fields = {MakeField("vec1", MetricType::IP)};
+
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{1.0}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_TRUE(result.has_value());
+  auto &out = result.value();
+  ASSERT_EQ(out.size(), 2u);
+  // IP normalize(1.0) > 0.5 > normalize(0.0) = 0.5
+  EXPECT_EQ(out[0]->pk(), "b");
+  EXPECT_GT(out[0]->score(), 0.5);
+  EXPECT_NEAR(out[1]->score(), 0.5, 1e-10);
+}
+
+TEST(RerankWeightedTest, NormalizeCosine) {
+  std::vector<DocPtrList> results;
+  results.push_back(
+      {MakeDoc("a", 0.0f), MakeDoc("b", 1.0f), MakeDoc("c", 2.0f)});
+  std::vector<FieldSchema::Ptr> fields = {
+      MakeField("vec1", MetricType::COSINE)};
+
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{1.0}}, results, fields,
+                       /*topn=*/10);
+  ASSERT_TRUE(result.has_value());
+  auto &out = result.value();
+  ASSERT_EQ(out.size(), 3u);
+  // COSINE normalize(0.0) = 1.0, normalize(1.0) = 0.5, normalize(2.0) = 0.0
+  EXPECT_NEAR(out[0]->score(), 1.0, 1e-10);
+  EXPECT_NEAR(out[1]->score(), 0.5, 1e-10);
+  EXPECT_NEAR(out[2]->score(), 0.0, 1e-10);
+}
+
+TEST(RerankWeightedTest, Topn) {
+  std::vector<DocPtrList> results;
+  results.push_back(
+      {MakeDoc("a", 0.1f), MakeDoc("b", 0.2f), MakeDoc("c", 0.3f)});
+  std::vector<FieldSchema::Ptr> fields = {MakeField("vec1", MetricType::L2)};
+
+  auto result =
+      reranker::rerank(reranker::WeightedParams{{1.0}}, results, fields,
+                       /*topn=*/2);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result.value().size(), 2u);
+}
+
+// ==================== Callback Tests ====================
+
+TEST(RerankCallbackTest, BasicCallback) {
   // Simple callback that returns docs sorted by score descending, limited to
-  // topn
-  CallbackReranker::Callback cb =
-      [](const std::vector<DocPtrList> &query_results, int topn) -> DocPtrList {
+  // topn.
+  reranker::CallbackParams::Callback cb =
+      [](const std::vector<DocPtrList> &results,
+         const std::vector<FieldSchema::Ptr> & /*fields*/,
+         int topn) -> DocPtrList {
     DocPtrList all_docs;
-    for (const auto &docs : query_results) {
+    for (const auto &docs : results) {
       for (const auto &doc : docs) {
         all_docs.push_back(doc);
       }
@@ -265,18 +289,27 @@ TEST(CallbackRerankerTest, BasicCallback) {
     return all_docs;
   };
 
-  CallbackReranker reranker(cb);
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.5f), MakeDoc("b", 0.9f)});
+  results.push_back({MakeDoc("c", 0.7f)});
 
-  std::vector<DocPtrList> query_results;
-  query_results.push_back({MakeDoc("a", 0.5f), MakeDoc("b", 0.9f)});
-  query_results.push_back({MakeDoc("c", 0.7f)});
-
-  auto result = reranker.rerank(query_results, /*topn=*/10);
+  auto result =
+      reranker::rerank(reranker::CallbackParams{cb}, results, /*fields=*/{},
+                       /*topn=*/10);
   ASSERT_TRUE(result.has_value());
-  auto &results = result.value();
-  ASSERT_EQ(results.size(), 3u);
-  // Should be sorted by score descending
-  EXPECT_EQ(results[0]->pk(), "b");
-  EXPECT_EQ(results[1]->pk(), "c");
-  EXPECT_EQ(results[2]->pk(), "a");
+  auto &out = result.value();
+  ASSERT_EQ(out.size(), 3u);
+  // Should be sorted by score descending.
+  EXPECT_EQ(out[0]->pk(), "b");
+  EXPECT_EQ(out[1]->pk(), "c");
+  EXPECT_EQ(out[2]->pk(), "a");
+}
+
+TEST(RerankCallbackTest, EmptyCallbackError) {
+  reranker::CallbackParams params;  // callback is empty
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.5f)});
+
+  auto result = reranker::rerank(params, results, /*fields=*/{}, /*topn=*/10);
+  ASSERT_FALSE(result.has_value());
 }

@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "vamana_streamer_entity.h"
-#if defined(__linux__) || defined(__APPLE__)
-#include <sys/mman.h>
-#endif
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/core/framework/index_stats.h>
@@ -540,8 +537,12 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   }
 
   // Share contiguous memory with the clone (zero-copy)
-  entity->node_memory_ = node_memory_;
-  entity->node_base_ = node_base_;
+  entity->vector_memory_ = vector_memory_;
+  entity->vector_base_ = vector_base_;
+  entity->vector_stride_ = vector_stride_;
+  entity->graph_memory_ = graph_memory_;
+  entity->graph_base_ = graph_base_;
+  entity->graph_stride_ = graph_stride_;
 
   return VamanaEntity::Pointer(entity);
 }
@@ -552,56 +553,60 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
 
 char *VamanaContiguousStreamerEntity::allocate_contiguous(size_t size) {
   if (size == 0) return nullptr;
-#if defined(__linux__)
-  void *ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (ptr == MAP_FAILED) {
-    LOG_ERROR("mmap failed for contiguous memory, size=%zu", size);
-    return nullptr;
-  }
-  ::madvise(ptr, size, MADV_HUGEPAGE);
-  return static_cast<char *>(ptr);
-#elif defined(__APPLE__)
-  void *ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (ptr == MAP_FAILED) {
-    LOG_ERROR("mmap failed for contiguous memory, size=%zu", size);
-    return nullptr;
-  }
-  return static_cast<char *>(ptr);
-#elif defined(_WIN32)
-  void *ptr = ::_aligned_malloc(size, ailego::MemoryHelper::PageSize());
+  void *ptr = ailego::MemoryHelper::AllocateHugePage(size);
   if (!ptr) {
-    LOG_ERROR("_aligned_malloc failed for contiguous memory, size=%zu", size);
+    LOG_ERROR("AllocateHugePage failed for contiguous memory, size=%zu", size);
     return nullptr;
   }
   return static_cast<char *>(ptr);
-#else
-  void *ptr = std::aligned_alloc(ailego::MemoryHelper::PageSize(), size);
-  if (!ptr) {
-    LOG_ERROR("aligned_alloc failed, size=%zu", size);
-    return nullptr;
-  }
-  return static_cast<char *>(ptr);
-#endif
 }
 
 int VamanaContiguousStreamerEntity::build_contiguous_memory() {
-  node_memory_.reset();
-  node_base_ = nullptr;
+  vector_memory_.reset();
+  vector_base_ = nullptr;
+  vector_stride_ = 0;
+  graph_memory_.reset();
+  graph_base_ = nullptr;
 
   const uint32_t total_docs = doc_cnt();
   if (total_docs == 0) return 0;
 
   const size_t per_node = node_size();
-  const size_t total_node_data = static_cast<size_t>(total_docs) * per_node;
-  size_t node_memory_size = AlignHugePageSize(total_node_data);
-  char *raw_node = allocate_contiguous(node_memory_size);
-  if (!raw_node) return IndexError_Runtime;
-  node_memory_.reset(raw_node, ContiguousDeleter{node_memory_size});
-  node_base_ = raw_node;
+  const size_t vec_size = vector_size();
 
-  // Copy node data from chunks into contiguous memory
+  // Pad per-vector stride up to kVectorAlignment (64B) so every vector
+  // starts on a cache-line boundary.
+  vector_stride_ =
+      (vec_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
+  // graph_stride = key + neighbors (everything except vector)
+  graph_stride_ = sizeof(key_t) + neighbors_size();
+
+  // Allocate flat vector array (stride = vector_stride_, padded for 64B)
+  const size_t total_vec_data =
+      static_cast<size_t>(total_docs) * vector_stride_;
+  size_t vector_memory_size = AlignHugePageSize(total_vec_data);
+  char *raw_vec = allocate_contiguous(vector_memory_size);
+  if (!raw_vec) return IndexError_Runtime;
+  vector_memory_.reset(raw_vec, ContiguousDeleter{vector_memory_size});
+  vector_base_ = raw_vec;
+
+  // Allocate graph array (stride = sizeof(key_t) + neighbors_size)
+  const size_t total_graph_data =
+      static_cast<size_t>(total_docs) * graph_stride_;
+  size_t graph_memory_size = AlignHugePageSize(total_graph_data);
+  char *raw_graph = allocate_contiguous(graph_memory_size);
+  if (!raw_graph) {
+    vector_memory_.reset();
+    vector_base_ = nullptr;
+    vector_stride_ = 0;
+    return IndexError_Runtime;
+  }
+  graph_memory_.reset(raw_graph, ContiguousDeleter{graph_memory_size});
+  graph_base_ = raw_graph;
+
+  // Split node data from chunks into vector / graph arrays.
+  // Original node layout: [vector (vec_size) | key (8B) | neighbors]
+  // Padding bytes in vector_base_ are left zero (anon mmap is zero-filled).
   const auto &chunks = node_chunks_;
   const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
   for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
@@ -613,14 +618,27 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
     uint32_t count_in_chunk = std::min(nodes_per_chunk, total_docs - base_id);
 
     const char *src = static_cast<const char *>(chunk_data);
-    char *dst = node_base_ + static_cast<size_t>(base_id) * per_node;
-    std::memcpy(dst, src, static_cast<size_t>(count_in_chunk) * per_node);
+    for (uint32_t i = 0; i < count_in_chunk; ++i) {
+      const char *node_src = src + static_cast<size_t>(i) * per_node;
+      size_t global_id = static_cast<size_t>(base_id + i);
+
+      // Copy vector to flat vector array at padded stride
+      std::memcpy(vector_base_ + global_id * vector_stride_, node_src,
+                  vec_size);
+
+      // Copy key + neighbors to graph array
+      std::memcpy(graph_base_ + global_id * graph_stride_, node_src + vec_size,
+                  graph_stride_);
+    }
   }
 
   LOG_INFO(
-      "Built Vamana contiguous memory: node_size=%zu total_docs=%u "
-      "node_chunks=%zu",
-      node_memory_size, total_docs, chunks.size());
+      "Built Vamana contiguous memory: "
+      "vector_mem=%zu graph_mem=%zu total_docs=%u "
+      "node_chunks=%zu vector_size=%zu vector_stride=%zu "
+      "(cache-line aligned to %zuB)",
+      vector_memory_size, graph_memory_size, total_docs, chunks.size(),
+      vec_size, vector_stride_, kVectorAlignment);
 
   return 0;
 }

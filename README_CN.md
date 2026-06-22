@@ -35,40 +35,37 @@
 **Zvec** 是一款开源的嵌入式(进程内)向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置提供生产级、低延迟、可扩展的向量检索能力。
 
 > [!IMPORTANT]
-> 🚀  **v0.4.0（2026 年 5 月 9 日）**
+> 🚀  **v0.5.0（2026 年 6 月 12 日）**
 >
-> - **Dart/Flutter SDK**：发布官方 [zvec](https://github.com/zvec-ai/zvec-dart) Flutter 包，提供 Dart/Flutter FFI 绑定，支持 Android（arm64-v8a）和 iOS（arm64），无需手动编译原生库。
-> - **iOS 构建支持**：新增 iOS 平台构建支持，进一步扩展跨平台覆盖范围。
-> - **扩大 topK 上限**：放宽 topK 结果数量上限，支持更大规模的召回场景。
-> - **修复**：SQ8 量化器召回率下降问题；Windows 路径处理修复；稀疏向量索引顺序修复。
+> - **全文检索（FTS）**：原生全文检索能力——可为任意字符串字段挂载 FTS 索引，使用自然语言或结构化表达式检索，无需外接搜索引擎。
+> - **混合检索**：在单次 `MultiQuery` 中融合全文与向量检索，跨稠密向量、稀疏向量、标量过滤与文本。
+> - **DiskANN 索引**：全新磁盘索引，将索引主体存于磁盘，大幅降低大规模数据集的内存占用。
+> - **生态与平台**：全新官方 [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDK、可视化工具 [Zvec Studio](https://github.com/zvec-ai/zvec-studio)，以及 RISC-V 架构支持。
 >
-> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.4.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.5.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 核心特性
 
 - **极致性能**：毫秒级响应，轻松检索数十亿级向量。
 - **开箱即用**：[安装](#-安装)后即刻开始搜索，纯本地运行，无需服务器、无需配置、零门槛。
-- **稠密 + 稀疏向量**：支持稠密向量和稀疏向量，提供多向量联合查询的原生支持。
-- **混合检索**：向量语义搜索 + 标量条件过滤，获得精确结果。
+- **稠密 + 稀疏向量**：支持稠密向量、稀疏向量与多向量查询，以及从内存到磁盘、丰富多样的[向量索引类型](https://zvec.org/zh/docs/db/concepts/vector-index/#向量索引类型)。
+- **全文检索（FTS）**：原生的基于关键词的全文检索——使用自然语言或结构化表达式检索字符串字段。
+- **混合检索**：在单次查询中融合向量语义、全文检索与标量过滤，获得精确结果。
 - **持久化存储**：WAL 预写日志保障数据持久性 — 即使进程崩溃或意外断电，数据也不会丢失。
 - **并发访问**：支持多进程同时读取同一个 Collection；写入为单进程独占模式。
 - **进程内运行**：无需单独部署服务，纯进程内运行。Notebook、高性能服务器、CLI 工具、边缘设备 — 随处可用。
 
 ## 📦 安装
 
-### [Python](https://pypi.org/project/zvec/)
+Zvec 提供多语言官方 SDK：
 
-**环境要求**：Python 3.10 - 3.14
+- **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 Python 3.10–3.14）
+- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
+- **[Go](https://github.com/zvec-ai/zvec-go)**：高性能的 Go 绑定。
+- **[Rust](https://github.com/zvec-ai/zvec-rust)**：高性能的 Rust 绑定。
+- **[Dart/Flutter](https://pub.dev/packages/zvec)**：`flutter pub add zvec`
 
-```bash
-pip install zvec
-```
-
-### [Node.js](https://www.npmjs.com/package/@zvec/zvec)
-
-```bash
-npm install @zvec/zvec
-```
+想要图形界面？试试 **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**，零代码浏览数据与调试查询。
 
 ### ✅ 支持的平台
 

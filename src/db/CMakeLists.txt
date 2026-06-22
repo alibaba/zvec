@@ -14,7 +14,7 @@ cc_directory(sqlengine)
 file(GLOB_RECURSE ALL_DB_SRCS *.cc *.c *.h)
 
 # Ensure bitpacked_simd_sse41.cc is compiled with SSE4.1 flag and
-# bitpacked_simd_avx2.cc with AVX2 flag in the packed zvec_db target as well
+# bitpacked_simd_avx2.cc with AVX2 flag in the packed zvec target as well
 # (they are also compiled separately in zvec_index).
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
     if(HOST_ARCH MATCHES "^(x86|x64)$")
@@ -31,7 +31,7 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
 endif()
 
 cc_library(
-  NAME zvec_db STATIC STRICT SRCS_NO_GLOB PACKED
+  NAME zvec STATIC STRICT SRCS_NO_GLOB PACKED
   SRCS ${ALL_DB_SRCS} ${CMAKE_CURRENT_BINARY_DIR}/proto/zvec.pb.cc
   INCS . ${CMAKE_CURRENT_BINARY_DIR}
   PUBINCS ${PROJECT_ROOT_DIR}/src/include
@@ -46,6 +46,7 @@ cc_library(
     FastPFOR
     cppjieba
     Arrow::arrow_static
+    Arrow::parquet_static
     Arrow::arrow_compute
     Arrow::arrow_dataset
     Arrow::arrow_acero

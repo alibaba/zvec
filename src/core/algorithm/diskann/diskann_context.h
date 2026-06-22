@@ -118,9 +118,7 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Update the parameters of context
-  virtual int update(const ailego::Params & /*params*/) override {
-    return 0;
-  }
+  int update(const ailego::Params &params) override;
 
   inline DistCalculator &dist_calculator() {
     return dc_;

@@ -3747,7 +3747,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
   {
     MultiQuery mvq;
     mvq.topk = 10;
-    mvq.reranker = std::make_shared<RrfReranker>(60);
+    mvq.rerank = reranker::RrfParams{60};
     auto result = collection->Query(mvq);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
@@ -3788,7 +3788,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
   {
     MultiQuery mvq;
     mvq.topk = 10;
-    mvq.reranker = std::make_shared<RrfReranker>(60);
+    mvq.rerank = reranker::RrfParams{60};
 
     SubQuery vq1;
     vq1.num_candidates_ = 10;
@@ -3809,6 +3809,30 @@ TEST_F(CollectionTest, Feature_MultiQuery_Validate) {
     EXPECT_EQ(result.error().code(), StatusCode::INVALID_ARGUMENT);
   }
 
+  // Test 4: Duplicate field names should succeed (same field, different
+  // vectors)
+  {
+    MultiQuery mvq;
+    mvq.topk = 10;
+    mvq.rerank = reranker::RrfParams{60};
+
+    SubQuery vq1;
+    vq1.num_candidates_ = 10;
+    vq1.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq1.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq1);
+
+    SubQuery vq2;
+    vq2.num_candidates_ = 10;
+    vq2.target_.field_name_ = "dense_fp32";
+    std::get<VectorClause>(vq2.target_.clause_)
+        .query_vector_.assign(128 * sizeof(float), '\0');
+    mvq.queries.push_back(vq2);
+
+    auto result = collection->Query(mvq);
+    ASSERT_TRUE(result.has_value());
+  }
 }
 
 TEST_F(CollectionTest, Feature_MultiQuery_SingleFieldWithReranker) {
@@ -3826,7 +3850,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_SingleFieldWithReranker) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq;
   vq.num_candidates_ = 10;
@@ -3857,7 +3881,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldRRF) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   // Query dense_fp32 and dense_fp16 fields with different vectors
   auto vector1 = query_doc.get<std::vector<float>>("dense_fp32");
@@ -3917,8 +3941,9 @@ TEST_F(CollectionTest, Feature_MultiQuery_MultiFieldWeighted) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker =
-      std::make_shared<WeightedReranker>(std::vector<double>{0.7, 0.3});
+  // Weights are positional, parallel to the sub-query order below
+  // (dense_fp32 first, sparse_fp32 second).
+  mvq.rerank = reranker::WeightedParams{{0.7, 0.3}};
 
   // Query dense_fp32 field
   {
@@ -3972,7 +3997,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_WithFilter) {
   MultiQuery mvq;
   mvq.topk = 10;
   mvq.filter = "int32 > 50";
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq1;
   vq1.num_candidates_ = 10;
@@ -4022,7 +4047,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_WithOutputFields) {
   mvq.include_vector = false;
   mvq.output_fields = std::make_optional<std::vector<std::string>>(
       std::vector<std::string>{"int32", "string"});
-  mvq.reranker = std::make_shared<RrfReranker>(60);
+  mvq.rerank = reranker::RrfParams{60};
 
   SubQuery vq1;
   vq1.num_candidates_ = 10;
@@ -4067,10 +4092,12 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 
   auto query_doc = TestHelper::CreateDoc(1, *schema);
 
-  // Use CallbackReranker with a lambda that merges and sorts by score
+  // Use a callback rerank strategy with a lambda that merges and sorts by
+  // score.
   bool callback_invoked = false;
   auto callback_fn = [&callback_invoked](
                          const std::vector<DocPtrList> &query_results,
+                         const std::vector<FieldSchema::Ptr> & /*fields*/,
                          int topn) -> DocPtrList {
     callback_invoked = true;
     DocPtrList all_docs;
@@ -4091,7 +4118,7 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
 
   MultiQuery mvq;
   mvq.topk = 10;
-  mvq.reranker = std::make_shared<CallbackReranker>(callback_fn);
+  mvq.rerank = reranker::CallbackParams{callback_fn};
 
   // Query dense_fp32 field
   {
@@ -6021,5 +6048,115 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
 
     col.reset();
     FileHelper::RemoveDirectory(col_path);
+  }
+}
+
+TEST_F(CollectionTest, Feature_DropAndRecreateScalarIndex) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
+  int doc_count = 100;
+
+  auto schema = TestHelper::CreateNormalSchema(false, "demo");
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+
+  ASSERT_TRUE(collection->Flush().ok());
+  ASSERT_EQ(collection->Stats().value().doc_count, doc_count);
+
+  auto index_params = std::make_shared<InvertIndexParams>(false);
+
+  // Round 1: create index
+  auto s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Round 1 create failed: " << s.message();
+
+  // Round 1: drop index
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok()) << "Round 1 drop failed: " << s.message();
+
+  // Round 2: recreate index on same field — this was the bug
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Round 2 create failed: " << s.message();
+
+  // Round 2: drop again
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok()) << "Round 2 drop failed: " << s.message();
+
+  // Round 3: one more cycle
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Round 3 create failed: " << s.message();
+
+  // Verify data integrity after multiple create/drop cycles
+  for (int i = 0; i < doc_count; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, *schema);
+    auto result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
+  }
+
+  // Final drop
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok()) << "Final drop failed: " << s.message();
+}
+
+TEST_F(CollectionTest, Feature_DropAndRecreateScalarIndex_MultipleFields) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
+  int doc_count = 100;
+
+  auto schema = TestHelper::CreateNormalSchema(false, "demo");
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+
+  ASSERT_TRUE(collection->Flush().ok());
+
+  auto index_params = std::make_shared<InvertIndexParams>(false);
+
+  // Create index on two fields
+  auto s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok());
+  s = collection->CreateIndex("string", index_params);
+  ASSERT_TRUE(s.ok());
+
+  // Drop only one field — the other should remain functional
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok());
+
+  // Recreate the dropped one
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Recreate int32 after partial drop failed: "
+                      << s.message();
+
+  // Drop both
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok());
+  s = collection->DropIndex("string");
+  ASSERT_TRUE(s.ok());
+
+  // Recreate both
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Recreate int32 after full drop failed: "
+                      << s.message();
+  s = collection->CreateIndex("string", index_params);
+  ASSERT_TRUE(s.ok()) << "Recreate string after full drop failed: "
+                      << s.message();
+
+  // Verify data integrity
+  for (int i = 0; i < doc_count; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, *schema);
+    auto result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
   }
 }

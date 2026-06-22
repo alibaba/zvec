@@ -14,6 +14,7 @@
 
 #include "diskann_context.h"
 #include <chrono>
+#include "diskann_params.h"
 #include "diskann_pq_table.h"
 #include "diskann_util.h"
 
@@ -91,6 +92,13 @@ DiskAnnContext::~DiskAnnContext() {
   if (type_ == kSearcherContext) {
     destroy_io_ctx(io_ctx_);
   }
+}
+
+int DiskAnnContext::update(const ailego::Params &params) {
+  uint32_t list_size = list_size_;
+  params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size);
+  list_size_ = list_size;
+  return 0;
 }
 
 int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,

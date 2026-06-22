@@ -14,6 +14,8 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
+#include "utility/block_heap.h"
+#include "utility/linear_pool.h"
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
 #include "hnsw_dist_calculator.h"
@@ -117,6 +119,20 @@ class HnswContext : public IndexContext {
 
   inline const HnswEntity &get_entity() const {
     return *entity_;
+  }
+
+  //! Bind an external vector source to this context. It is stored so that it
+  //! can be re-applied after the entity is re-cloned inside update_context,
+  //! and immediately forwarded to the current entity clone.
+  inline void set_vector_source(const VectorSource *src) {
+    vector_source_ = src;
+    if (entity_) {
+      entity_->set_vector_source(src);
+    }
+  }
+
+  inline const VectorSource *vector_source() const {
+    return vector_source_;
   }
 
   inline void resize_results(size_t size) {
@@ -275,6 +291,15 @@ class HnswContext : public IndexContext {
     return update_heap_;
   }
 
+  inline LinearPool<dist_t> &pool() {
+    return pool_;
+  }
+
+  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
+  inline BlockHeap &block_pool() {
+    return block_pool_;
+  }
+
   inline VisitFilter &visit_filter() {
     return visit_filter_;
   }
@@ -297,6 +322,26 @@ class HnswContext : public IndexContext {
 
   inline void set_ef(uint32_t v) {
     ef_ = v;
+  }
+
+  inline uint32_t ef(void) const {
+    return ef_;
+  }
+
+  inline void set_po(uint32_t v) {
+    po_ = v;
+  }
+
+  inline uint32_t po(void) const {
+    return po_;
+  }
+
+  inline void set_pl(uint32_t v) {
+    pl_ = v;
+  }
+
+  inline uint32_t pl(void) const {
+    return pl_;
   }
 
   inline void set_filter_mode(uint32_t v) {
@@ -343,6 +388,7 @@ class HnswContext : public IndexContext {
     set_fetch_vector(false);
     set_group_params(0, 0);
     reset_group_by();
+    set_vector_source(nullptr);
   }
 
   inline std::map<std::string, TopkHeap> &group_topk_heaps() {
@@ -497,6 +543,7 @@ class HnswContext : public IndexContext {
   HnswEntity::Pointer entity_;
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
+  const VectorSource *vector_source_{nullptr};
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};
@@ -509,6 +556,8 @@ class HnswContext : public IndexContext {
   uint32_t filter_mode_{VisitFilter::ByteMap};
   float negative_probability_{HnswEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswEntity::kDefaultEf};
+  uint32_t po_{8};
+  uint32_t pl_{0};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
   uint32_t magic_{0U};
   std::vector<IndexDocumentList> results_{};
@@ -530,6 +579,9 @@ class HnswContext : public IndexContext {
   uint32_t stats_get_vector_cnt_{0u};
   uint32_t stats_visit_dup_cnt_{0u};
   std::string preprocess_buffer_;
+
+  LinearPool<dist_t> pool_;
+  BlockHeap block_pool_;
 };
 
 }  // namespace core

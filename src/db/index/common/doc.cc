@@ -907,13 +907,22 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
-          if (sort_and_find_duplicates(
-                  sparse_indices.data(),
-                  reinterpret_cast<char *>(sparse_values.data()),
-                  sparse_indices.size(), sizeof(float16_t))) {
+          auto status = need_sanitize_sparse(sparse_indices.data(),
+                                             sparse_indices.size());
+          if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
                 "Invalid doc[", pk_, "]: sparse vector field[", field_name,
                 "] contains duplicate indices");
+          }
+          if (status == SparseIndicesStatus::kNeedSort) {
+            if (sort_and_find_duplicates(
+                    sparse_indices.data(),
+                    reinterpret_cast<char *>(sparse_values.data()),
+                    sparse_indices.size(), sizeof(float16_t))) {
+              return Status::InvalidArgument(
+                  "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                  "] contains duplicate indices");
+            }
           }
         }
         break;
@@ -936,13 +945,22 @@ Status Doc::validate_and_sanitize(const CollectionSchema::Ptr &schema,
                 "] exceeds the maximum number of sparse indices (",
                 kSparseMaxDimSize, ")");
           }
-          if (sort_and_find_duplicates(
-                  sparse_indices.data(),
-                  reinterpret_cast<char *>(sparse_values.data()),
-                  sparse_indices.size(), sizeof(float))) {
+          auto status = need_sanitize_sparse(sparse_indices.data(),
+                                             sparse_indices.size());
+          if (status == SparseIndicesStatus::kHasDuplicate) {
             return Status::InvalidArgument(
                 "Invalid doc[", pk_, "]: sparse vector field[", field_name,
                 "] contains duplicate indices");
+          }
+          if (status == SparseIndicesStatus::kNeedSort) {
+            if (sort_and_find_duplicates(
+                    sparse_indices.data(),
+                    reinterpret_cast<char *>(sparse_values.data()),
+                    sparse_indices.size(), sizeof(float))) {
+              return Status::InvalidArgument(
+                  "Invalid doc[", pk_, "]: sparse vector field[", field_name,
+                  "] contains duplicate indices");
+            }
           }
         }
         break;

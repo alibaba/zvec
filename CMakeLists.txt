@@ -74,13 +74,19 @@ endif()
 include_directories(${PROJECT_ROOT_DIR}/src/include)
 include_directories(${PROJECT_ROOT_DIR}/src)
 
+option(BUILD_ZVEC_SHARED "Build all-in-one C++ shared library libzvec" ON)
+option(BUILD_ZVEC_AILEGO_SHARED "Build all-in-one zvec-ailego shared library libzvec_ailego" ON)
+option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec_core" ON)
+
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
-message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
-
 option(BUILD_C_BINDINGS "Build C bindings" ON)
-message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
-
 option(BUILD_TOOLS "Build tools" ON)
+
+message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
+message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
+message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
+message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
+message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
 option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
@@ -135,6 +141,7 @@ message(STATUS "USE_OSS_MIRROR:${USE_OSS_MIRROR}")
 
 cc_directory(thirdparty)
 cc_directories(src)
+
 cc_directories(tests)
 
 add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
@@ -164,7 +171,11 @@ if(BUILD_PYTHON_BINDINGS)
     endif()
 
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
-    install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+    # COMPONENT python: only these runtime artifacts are pulled into the wheel
+    # (see install.components in pyproject.toml). The cc_library(PACKED) SDK
+    # install rules use the default component and are excluded from the wheel.
+    install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}
+            COMPONENT python)
 
     # DiskAnn ships as a runtime-loaded shared module
     # (libzvec_diskann_plugin.so) that is brought online implicitly the
@@ -175,7 +186,8 @@ if(BUILD_PYTHON_BINDINGS)
     # The target exists only on platforms where DiskAnn is buildable
     # (currently Linux x86_64 with libaio).
     if(TARGET core_knn_diskann)
-        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}
+                COMPONENT python)
     endif()
     # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
     # out of the box. python/zvec/__init__.py resolves this directory via
@@ -185,5 +197,6 @@ if(BUILD_PYTHON_BINDINGS)
     install(FILES
         "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
         "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict)
+        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
+        COMPONENT python)
 endif()

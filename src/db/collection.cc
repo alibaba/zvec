@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <variant>
@@ -1666,14 +1667,14 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
 
-  SearchQuery sanitized = query;
   // When field_name_ is set, use get_field to retrieve the schema uniformly.
-  // validate_and_sanitize checks that the field type matches the query type
+  // validate checks that the field type matches the query type
   // (FTS query requires an FTS field, vector query requires a vector field).
-  const auto &field_name = sanitized.target_.field_name_;
+  const auto &field_name = query.target_.field_name_;
   const FieldSchema *field_schema =
       field_name.empty() ? nullptr : schema_->get_field(field_name);
-  auto s = sanitized.validate_and_sanitize(field_schema);
+  bool need_sanitize = false;
+  auto s = query.validate(field_schema, &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();
@@ -1681,7 +1682,15 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
     return DocPtrList();
   }
 
-  return sql_engine_->execute(schema_, std::move(sanitized), segments);
+  if (!need_sanitize) {
+    return sql_engine_->execute(schema_, query, segments);
+  }
+
+  // Sparse needs sanitization: make a mutable copy and sort indices in place.
+  SearchQuery sanitized_query = query;
+  auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
+  CHECK_RETURN_STATUS_EXPECTED(ss);
+  return sql_engine_->execute(schema_, std::move(sanitized_query), segments);
 }
 
 Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
@@ -1695,9 +1704,9 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
         query.queries.size()));
   }
 
-  if (!query.reranker) {
-    return tl::make_unexpected(Status::InvalidArgument(
-        "Invalid query: MultiQuery requires a reranker"));
+  if (auto s = validate_topk_and_output_fields(query.topk, query.output_fields);
+      !s.ok()) {
+    return tl::make_unexpected(s);
   }
 
   auto segments = get_all_segments();
@@ -1706,15 +1715,23 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
   }
 
   // Convert each SubQuery to a SearchQuery and validate.
-  std::vector<SearchQuery> search_queries;
-  std::vector<std::string> field_names;
-  search_queries.reserve(query.queries.size());
-  field_names.reserve(query.queries.size());
+  std::vector<SearchQuery> pending_queries;
+  std::vector<FieldSchema::Ptr> field_schemas;
+  pending_queries.reserve(query.queries.size());
+  field_schemas.reserve(query.queries.size());
 
   for (const auto &sub : query.queries) {
     const auto &target = sub.target_;
+    auto field_ptr = schema_->get_field_ptr(target.field_name_);
+    if (!field_ptr) {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "Invalid query: field ", target.field_name_, " not found"));
+    }
+    auto *field_schema = field_ptr.get();
 
-    auto *field_schema = schema_->get_field(target.field_name_);
+    bool need_sanitize = false;
+    auto s = target.validate(field_schema, &need_sanitize);
+    CHECK_RETURN_STATUS_EXPECTED(s);
 
     SearchQuery sq;
     sq.target_ = target;
@@ -1724,47 +1741,48 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
     sq.include_doc_id_ = query.include_doc_id_;
     sq.output_fields_ = query.output_fields;
 
-    auto s = sq.validate_and_sanitize(field_schema);
-    CHECK_RETURN_STATUS_EXPECTED(s);
-    field_names.push_back(target.field_name_);
-    search_queries.push_back(std::move(sq));
+    if (need_sanitize) {
+      auto ss = sanitize_sparse_vector(sq.target_, field_schema);
+      CHECK_RETURN_STATUS_EXPECTED(ss);
+    }
+    pending_queries.push_back(std::move(sq));
+    field_schemas.push_back(std::move(field_ptr));
   }
 
-  // Execute sub-queries.
-  auto execute_query = [&](SearchQuery &sq) -> Result<DocPtrList> {
+  auto execute_query = [&](SearchQuery &pending) -> Result<DocPtrList> {
     auto engine = sqlengine::SQLEngine::create(std::make_shared<Profiler>());
-    return engine->execute(schema_, std::move(sq), segments);
+    return engine->execute(schema_, std::move(pending), segments);
   };
 
-  std::vector<Result<DocPtrList>> results(search_queries.size());
+  std::vector<Result<DocPtrList>> results(pending_queries.size());
 
   // Single-segment queries have no segment-level fanout; multi-segment queries
   // already use the query pool per sub-query.
   if (segments.size() == 1) {
     auto group = GlobalResource::Instance().query_thread_pool()->make_group();
-    for (size_t i = 0; i < search_queries.size(); ++i) {
+    for (size_t i = 0; i < pending_queries.size(); ++i) {
       group->execute(
-          [&, i]() { results[i] = execute_query(search_queries[i]); });
+          [&, i]() { results[i] = execute_query(pending_queries[i]); });
     }
     group->wait_finish();
   } else {
-    for (size_t i = 0; i < search_queries.size(); ++i) {
-      results[i] = execute_query(search_queries[i]);
+    for (size_t i = 0; i < pending_queries.size(); ++i) {
+      results[i] = execute_query(pending_queries[i]);
     }
   }
 
-  // Collect results and rerank.
   std::vector<DocPtrList> query_results;
-  query_results.reserve(results.size());
-  for (auto &result : results) {
-    if (!result) {
-      return tl::make_unexpected(result.error());
+  query_results.reserve(pending_queries.size());
+  for (size_t i = 0; i < pending_queries.size(); ++i) {
+    if (!results[i]) {
+      return tl::make_unexpected(results[i].error());
     }
-    query_results.push_back(std::move(result.value()));
+    query_results.push_back(std::move(results[i].value()));
   }
 
-  query.reranker->bind_schema(schema_, field_names);
-  return query.reranker->rerank(query_results, query.topk);
+  // Dispatch rerank — schema info injected via field_schemas
+  return reranker::rerank(query.rerank, query_results, field_schemas,
+                          query.topk);
 }
 
 Result<GroupResults> CollectionImpl::GroupByQuery(
@@ -1778,7 +1796,22 @@ Result<GroupResults> CollectionImpl::GroupByQuery(
     return GroupResults();
   }
 
-  return sql_engine_->execute_group_by(schema_, query, segments);
+  // Determine vector data source (zero-copy for dense, copy+sort for sparse)
+  const FieldSchema *field_schema =
+      schema_->get_field(query.target_.field_name_);
+  bool need_sanitize = false;
+  auto s = query.target_.validate(field_schema, &need_sanitize);
+  CHECK_RETURN_STATUS_EXPECTED(s);
+
+  if (!need_sanitize) {
+    return sql_engine_->execute_group_by(schema_, query, segments);
+  }
+
+  // Sparse needs sanitization: make a mutable copy and sort indices in place.
+  GroupByVectorQuery sanitized_query = query;
+  auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
+  CHECK_RETURN_STATUS_EXPECTED(ss);
+  return sql_engine_->execute_group_by(schema_, sanitized_query, segments);
 }
 
 Result<DocPtrMap> CollectionImpl::Fetch(

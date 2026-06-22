@@ -3,6 +3,6 @@ Checks: >
   modernize-use-nullptr,
   modernize-use-override,
 WarningsAsErrors: "*"
-HeaderFilterRegex: "^(src|tests|tools)/(?!db/sqlengine/antlr/gen/).*"
+HeaderFilterRegex: "^(src|tests|tools)/(?!db/sqlengine/antlr/gen/|db/index/column/fts_column/gen/|include/zvec/ailego/encoding/json/mod_json\\.h).*"
 FormatStyle: none
 SystemHeaders: false

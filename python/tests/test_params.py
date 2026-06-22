@@ -152,7 +152,7 @@ class TestIVFIndexParam:
     def test_default(self):
         param = IVFIndexParam()
         assert param.metric_type == MetricType.IP
-        assert param.n_list == 0
+        assert param.n_list == 10
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.type == IndexType.IVF
 
@@ -325,13 +325,26 @@ class TestHnswQueryParam:
         assert param.is_using_refiner == False
         assert param.radius == 0
         assert param.is_linear == False
+        assert param.prefetch_offset == 8
+        assert param.prefetch_lines == 0
 
     def test_custom(self):
-        param = HnswQueryParam(ef=10, is_using_refiner=True, radius=30, is_linear=True)
+        param = HnswQueryParam(
+            ef=10,
+            is_using_refiner=True,
+            radius=30,
+            is_linear=True,
+            extra_params={
+                "prefetch_offset": 16,
+                "prefetch_lines": 4,
+            },
+        )
         assert param.ef == 10
         assert param.is_using_refiner == True
         assert param.radius == 30
         assert param.is_linear == True
+        assert param.prefetch_offset == 16
+        assert param.prefetch_lines == 4
 
     def test_readonly_attributes(self):
         param = HnswQueryParam()
@@ -413,6 +426,11 @@ class TestQuery:
     def test_validate_fails_on_both_id_and_vector(self):
         vq = Query(field_name="test", id="doc123", vector=[0.1])
         with pytest.raises(ValueError):
+            vq._validate()
+
+    def test_validate_fails_on_both_id_and_numpy_vector(self):
+        vq = Query(field_name="test", id="doc123", vector=np.array([0.1]))
+        with pytest.raises(ValueError, match="Cannot provide both id and vector"):
             vq._validate()
 
 

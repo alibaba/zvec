@@ -844,12 +844,50 @@ const HnswEntity::Pointer HnswContiguousStreamerEntity::clone() const {
   }
 
   // Share contiguous memory with the clone (zero-copy)
-  entity->node_memory_ = node_memory_;
-  entity->node_base_ = node_base_;
+  entity->vector_memory_ = vector_memory_;
+  entity->vector_base_ = vector_base_;
+  entity->graph_memory_ = graph_memory_;
+  entity->graph_base_ = graph_base_;
+  entity->graph_stride_ = graph_stride_;
   entity->upper_neighbor_memory_ = upper_neighbor_memory_;
   entity->upper_neighbor_base_ = upper_neighbor_base_;
   entity->upper_chunk_offsets_ = upper_chunk_offsets_;
 
+  return HnswEntity::Pointer(entity);
+}
+
+const HnswEntity::Pointer HnswExternalStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> node_chunks;
+  node_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0UL; i < node_chunks_.size(); ++i) {
+    node_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!node_chunks[i])) {
+      LOG_ERROR("HnswExternalStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  std::vector<Chunk::Pointer> upper_neighbor_chunks;
+  upper_neighbor_chunks.reserve(upper_neighbor_chunks_.size());
+  for (size_t i = 0UL; i < upper_neighbor_chunks_.size(); ++i) {
+    upper_neighbor_chunks.emplace_back(upper_neighbor_chunks_[i]->clone());
+    if (ailego_unlikely(!upper_neighbor_chunks[i])) {
+      LOG_ERROR("HnswExternalStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  // Note: vec_src_ is intentionally NOT shared with the clone; it stays null
+  // and is re-bound per add/search call via HnswContext::set_vector_source.
+  auto *entity = new (std::nothrow) HnswExternalStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
+      upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
+      keys_map_, use_key_info_map_, std::move(node_chunks),
+      std::move(upper_neighbor_chunks), broker_, nullptr, nullptr);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("HnswExternalStreamerEntity new failed");
+  }
   return HnswEntity::Pointer(entity);
 }
 
@@ -900,8 +938,10 @@ char *HnswContiguousStreamerEntity::allocate_contiguous(size_t size) {
 }
 
 int HnswContiguousStreamerEntity::build_contiguous_memory() {
-  node_memory_.reset();
-  node_base_ = nullptr;
+  vector_memory_.reset();
+  vector_base_ = nullptr;
+  graph_memory_.reset();
+  graph_base_ = nullptr;
   upper_neighbor_memory_.reset();
   upper_neighbor_base_ = nullptr;
   upper_chunk_offsets_.clear();
@@ -911,20 +951,36 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
     return 0;
   }
 
-  // --- Build contiguous node memory ---
   const size_t per_node = node_size();
-  const size_t total_node_data = static_cast<size_t>(total_docs) * per_node;
-  size_t node_memory_size = AlignHugePageSize(total_node_data);
-  char *raw_node = allocate_contiguous(node_memory_size);
-  if (!raw_node) {
+  const size_t vec_size = vector_size();
+  // graph_stride = key + L0 neighbors (everything except vector)
+  graph_stride_ = sizeof(key_t) + neighbor_size_;
+
+  // --- Allocate flat vector array (stride = vector_size) ---
+  const size_t total_vec_data = static_cast<size_t>(total_docs) * vec_size;
+  size_t vector_memory_size = AlignHugePageSize(total_vec_data);
+  char *raw_vec = allocate_contiguous(vector_memory_size);
+  if (!raw_vec) {
     return IndexError_Runtime;
   }
-  node_memory_.reset(raw_node, ContiguousDeleter{node_memory_size});
-  node_base_ = raw_node;
+  vector_memory_.reset(raw_vec, ContiguousDeleter{vector_memory_size});
+  vector_base_ = raw_vec;
 
-  // Copy node data from chunks into contiguous memory
-  // Each chunk holds node_cnt_per_chunk nodes, laid out at offset
-  // (id & mask) * node_size within the chunk.
+  // --- Allocate graph array (stride = sizeof(key_t) + neighbor_size) ---
+  const size_t total_graph_data =
+      static_cast<size_t>(total_docs) * graph_stride_;
+  size_t graph_memory_size = AlignHugePageSize(total_graph_data);
+  char *raw_graph = allocate_contiguous(graph_memory_size);
+  if (!raw_graph) {
+    vector_memory_.reset();
+    vector_base_ = nullptr;
+    return IndexError_Runtime;
+  }
+  graph_memory_.reset(raw_graph, ContiguousDeleter{graph_memory_size});
+  graph_base_ = raw_graph;
+
+  // Split node data from chunks into vector and graph arrays.
+  // Original node layout: [vector (vec_size) | key (8B) | L0 neighbors]
   const auto &chunks = node_chunks_;
   const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
   for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
@@ -932,19 +988,30 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
     size_t data_size = chunks[chunk_idx]->data_size();
     chunks[chunk_idx]->read(0, &chunk_data, data_size);
 
-    // Number of nodes in this chunk
     uint32_t base_id = chunk_idx * nodes_per_chunk;
     uint32_t count_in_chunk = std::min(nodes_per_chunk, total_docs - base_id);
 
-    // Copy each node's data
     const char *src = static_cast<const char *>(chunk_data);
-    char *dst = node_base_ + static_cast<size_t>(base_id) * per_node;
-    std::memcpy(dst, src, static_cast<size_t>(count_in_chunk) * per_node);
+    for (uint32_t i = 0; i < count_in_chunk; ++i) {
+      const char *node_src = src + static_cast<size_t>(i) * per_node;
+      size_t global_id = static_cast<size_t>(base_id + i);
+
+      // Copy vector to flat vector array
+      std::memcpy(vector_base_ + global_id * vec_size, node_src, vec_size);
+
+      // Copy key + L0 neighbors to graph array
+      std::memcpy(graph_base_ + global_id * graph_stride_, node_src + vec_size,
+                  graph_stride_);
+    }
   }
 
   // --- Build contiguous upper neighbor memory ---
   const auto &upper_chunks = upper_neighbor_chunks_;
   if (upper_chunks.empty()) {
+    LOG_INFO(
+        "Built HNSW contiguous memory (split layout): "
+        "vector_mem=%zu graph_mem=%zu total_docs=%u node_chunks=%zu",
+        vector_memory_size, graph_memory_size, total_docs, chunks.size());
     return 0;
   }
 
@@ -962,8 +1029,10 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
   size_t upper_memory_size = AlignHugePageSize(total_upper_size);
   char *raw_upper = allocate_contiguous(upper_memory_size);
   if (!raw_upper) {
-    node_memory_.reset();
-    node_base_ = nullptr;
+    vector_memory_.reset();
+    vector_base_ = nullptr;
+    graph_memory_.reset();
+    graph_base_ = nullptr;
     return IndexError_Runtime;
   }
   upper_neighbor_memory_.reset(raw_upper, ContiguousDeleter{upper_memory_size});
@@ -979,10 +1048,11 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
   }
 
   LOG_INFO(
-      "Built contiguous memory: node_size=%zu upper_neighbor_size=%zu "
+      "Built HNSW contiguous memory (split layout): "
+      "vector_mem=%zu graph_mem=%zu upper_neighbor_mem=%zu "
       "total_docs=%u node_chunks=%zu upper_chunks=%zu",
-      node_memory_size, upper_memory_size, total_docs, chunks.size(),
-      upper_chunks.size());
+      vector_memory_size, graph_memory_size, upper_memory_size, total_docs,
+      chunks.size(), upper_chunks.size());
 
   return 0;
 }

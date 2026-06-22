@@ -215,6 +215,8 @@ class HnswStreamer : public IndexStreamer {
   uint32_t upper_max_neighbor_cnt_{HnswEntity::kDefaultUpperMaxNeighborCnt};
   uint32_t l0_max_neighbor_cnt_{HnswEntity::kDefaultL0MaxNeighborCnt};
   uint32_t ef_{HnswEntity::kDefaultEf};
+  uint32_t po_{8};
+  uint32_t pl_{0};
   uint32_t ef_construction_{HnswEntity::kDefaultEfConstruction};
   uint32_t scaling_factor_{HnswEntity::kDefaultScalingFactor};
   size_t bruteforce_threshold_{HnswEntity::kDefaultBruteForceThreshold};
@@ -232,6 +234,7 @@ class HnswStreamer : public IndexStreamer {
   bool force_padding_topk_enabled_{false};
   bool use_id_map_{true};
   bool use_contiguous_memory_{false};
+  bool use_external_vector_{false};
 
   //! avoid add vector while dumping index
   ailego::SharedMutex shared_mutex_{};

@@ -19,16 +19,21 @@
 #include <queue>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/reranker.h>
 
 namespace zvec {
+namespace {
 
-// ==================== ScoreBasedReranker ====================
+// Shared score-based rerank logic used by RRF and Weighted.
+// score_fn(doc_score, rank, field_index) -> contribution score
+using ScoreFn = std::function<Result<double>(double, int, size_t)>;
 
-Result<DocPtrList> ScoreBasedReranker::rerank(
-    const std::vector<DocPtrList> &query_results, int topn) const {
+Result<DocPtrList> score_based_rerank(const ScoreFn &score_fn,
+                                      const std::vector<DocPtrList> &results,
+                                      int topn) {
   if (topn <= 0) {
     return DocPtrList();
   }
@@ -36,14 +41,13 @@ Result<DocPtrList> ScoreBasedReranker::rerank(
   std::unordered_map<std::string, double> scores;
   std::unordered_map<std::string, Doc::Ptr> id_to_doc;
 
-  for (size_t query_index = 0; query_index < query_results.size();
-       ++query_index) {
-    const auto &docs = query_results[query_index];
+  for (size_t field_idx = 0; field_idx < results.size(); ++field_idx) {
+    const auto &docs = results[field_idx];
     for (size_t rank = 0; rank < docs.size(); ++rank) {
       const auto &doc = docs[rank];
       const std::string &doc_id = doc->pk();
-      auto rs = rescore(static_cast<double>(doc->score()),
-                        static_cast<int>(rank), static_cast<int>(query_index));
+      auto rs = score_fn(static_cast<double>(doc->score()),
+                         static_cast<int>(rank), field_idx);
       if (!rs.has_value()) {
         return tl::make_unexpected(rs.error());
       }
@@ -69,52 +73,26 @@ Result<DocPtrList> ScoreBasedReranker::rerank(
     }
   }
 
-  DocPtrList results;
-  results.reserve(pq.size());
+  DocPtrList result;
+  result.reserve(pq.size());
   while (!pq.empty()) {
     const auto &[doc_id, score] = pq.top();
     auto doc = std::move(id_to_doc[doc_id]);
     doc->set_score(static_cast<float>(score));
-    results.push_back(std::move(doc));
+    result.push_back(std::move(doc));
     pq.pop();
   }
-  std::reverse(results.begin(), results.end());
-  return results;
+  std::reverse(result.begin(), result.end());
+  return result;
 }
 
-// ==================== RrfReranker ====================
-
-Result<double> RrfReranker::rescore(double /*score*/, int rank,
-                                    int /*query_index*/) const {
-  return 1.0 / (static_cast<double>(rank_constant_) +
-                static_cast<double>(rank) + 1.0);
-}
-
-// ==================== WeightedReranker ====================
-
-WeightedReranker::WeightedReranker(const std::vector<double> &weights)
-    : weights_(weights) {}
-
-void WeightedReranker::bind_schema(
-    CollectionSchema::Ptr schema, const std::vector<std::string> &field_names) {
-  schema_ = std::move(schema);
-  field_names_ = field_names;
-}
-
-Result<double> WeightedReranker::normalize_score(double score,
-                                                 const FieldSchema &field) {
-  // FTS field: BM25 scores are non-negative; normalize via arctan to [0, 1).
+Result<double> normalize_score(double score, const FieldSchema &field) {
   if (field.index_type() == IndexType::FTS) {
+    // Non-vector FTS/BM25 fields: map positive scores to [0, 1).
     return 2.0 * std::atan(score) / M_PI;
   }
-
   auto *vip =
       dynamic_cast<const VectorIndexParams *>(field.index_params().get());
-  if (!vip) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("WeightedReranker: field '", field.name(),
-                                "' has no vector index params"));
-  }
   switch (vip->metric_type()) {
     case MetricType::L2:
       return 1.0 - 2.0 * std::atan(score) / M_PI;
@@ -129,33 +107,61 @@ Result<double> WeightedReranker::normalize_score(double score,
   }
 }
 
-Result<double> WeightedReranker::rescore(double score, int /*rank*/,
-                                         int query_index) const {
-  if (!schema_) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("WeightedReranker: schema is null"));
-  }
-  if (query_index < 0 ||
-      static_cast<size_t>(query_index) >= field_names_.size()) {
-    return tl::make_unexpected(
-        Status::InvalidArgument("WeightedReranker: query_index out of range: ",
-                                std::to_string(query_index)));
-  }
-  const auto &field_name = field_names_[query_index];
-  const auto *field = schema_->get_field(field_name);
-  if (!field) {
-    return tl::make_unexpected(Status::InvalidArgument(
-        "WeightedReranker: field not found: '", field_name + "'"));
-  }
-  auto normalized = normalize_score(score, *field);
-  if (!normalized.has_value()) {
-    return tl::make_unexpected(normalized.error());
-  }
-  double weight = 1.0;
-  if (static_cast<size_t>(query_index) < weights_.size()) {
-    weight = weights_[query_index];
-  }
-  return normalized.value() * weight;
+}  // anonymous namespace
+
+namespace reranker {
+
+Result<DocPtrList> rerank(const RerankParams &params,
+                          const std::vector<DocPtrList> &results,
+                          const std::vector<FieldSchema::Ptr> &fields,
+                          int topn) {
+  return std::visit(
+      [&](const auto &p) -> Result<DocPtrList> {
+        using T = std::decay_t<decltype(p)>;
+
+        if constexpr (std::is_same_v<T, RrfParams>) {
+          auto score_fn = [&p](double /*score*/, int rank,
+                               size_t /*field_idx*/) -> Result<double> {
+            return 1.0 / (static_cast<double>(p.rank_constant) +
+                          static_cast<double>(rank) + 1.0);
+          };
+          return score_based_rerank(score_fn, results, topn);
+
+        } else if constexpr (std::is_same_v<T, WeightedParams>) {
+          if (p.weights.size() != results.size()) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "WeightedParams: weights count (", p.weights.size(),
+                ") != results count (", results.size(), ")"));
+          }
+          if (fields.size() != results.size()) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "WeightedParams: fields count (", fields.size(),
+                ") != results count (", results.size(), ")"));
+          }
+          auto score_fn = [&p, &fields](double score, int /*rank*/,
+                                        size_t field_idx) -> Result<double> {
+            if (!fields[field_idx]) {
+              return tl::make_unexpected(Status::InvalidArgument(
+                  "WeightedParams: null field schema at index ", field_idx));
+            }
+            auto normalized = normalize_score(score, *fields[field_idx]);
+            if (!normalized.has_value()) {
+              return tl::make_unexpected(normalized.error());
+            }
+            return normalized.value() * p.weights[field_idx];
+          };
+          return score_based_rerank(score_fn, results, topn);
+
+        } else if constexpr (std::is_same_v<T, CallbackParams>) {
+          if (!p.callback) {
+            return tl::make_unexpected(
+                Status::InvalidArgument("CallbackParams: callback is empty"));
+          }
+          return p.callback(results, fields, topn);
+        }
+      },
+      params);
 }
 
+}  // namespace reranker
 }  // namespace zvec

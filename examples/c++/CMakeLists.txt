@@ -13,66 +13,116 @@ if(NOT DEFINED HOST_BUILD_DIR)
     set(HOST_BUILD_DIR "build")
 endif()
 
-set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
-set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../${HOST_BUILD_DIR}/lib)
+get_filename_component(ZVEC_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(ZVEC_INCLUDE_DIR ${ZVEC_ROOT_DIR}/src/include)
+set(ZVEC_LIB_DIR ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/lib)
 
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR})
-link_directories(${ZVEC_LIB_DIR})
+set(ZVEC_LIB_SEARCH_DIRS ${ZVEC_LIB_DIR})
 
 # Support multi-config builds (MSVC puts libs in Debug/Release subdirectories)
 if(CMAKE_BUILD_TYPE)
-    link_directories(${ZVEC_LIB_DIR}/${CMAKE_BUILD_TYPE})
+    set(ZVEC_CONFIG_LIB_DIR ${ZVEC_LIB_DIR}/${CMAKE_BUILD_TYPE})
+    if(EXISTS "${ZVEC_CONFIG_LIB_DIR}")
+        list(APPEND ZVEC_LIB_SEARCH_DIRS ${ZVEC_CONFIG_LIB_DIR})
+    endif()
 endif()
 if(WIN32)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-find_package(Threads REQUIRED)
+function(zvec_find_shared_library OUT_VAR LIB_NAME)
+    unset(${OUT_VAR} CACHE)
+    if(WIN32)
+        find_library(${OUT_VAR}
+            NAMES ${LIB_NAME}_shared ${LIB_NAME}
+            PATHS ${ZVEC_LIB_SEARCH_DIRS}
+            NO_DEFAULT_PATH
+            NO_CMAKE_FIND_ROOT_PATH
+        )
+    else()
+        set(ZVEC_ORIGINAL_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+        if(APPLE)
+            set(CMAKE_FIND_LIBRARY_SUFFIXES ".dylib")
+        else()
+            set(CMAKE_FIND_LIBRARY_SUFFIXES ".so")
+        endif()
+        find_library(${OUT_VAR}
+            NAMES ${LIB_NAME}
+            PATHS ${ZVEC_LIB_SEARCH_DIRS}
+            NO_DEFAULT_PATH
+            NO_CMAKE_FIND_ROOT_PATH
+        )
+        set(CMAKE_FIND_LIBRARY_SUFFIXES "${ZVEC_ORIGINAL_LIBRARY_SUFFIXES}")
+    endif()
+    set(${OUT_VAR} "${${OUT_VAR}}" PARENT_SCOPE)
+endfunction()
+
+function(zvec_require_shared_library OUT_VAR LIB_NAME)
+    zvec_find_shared_library(${OUT_VAR} ${LIB_NAME})
+    if(NOT ${OUT_VAR})
+        message(FATAL_ERROR
+            "lib${LIB_NAME} shared library was not found in ${ZVEC_LIB_SEARCH_DIRS}. "
+            "Build zvec first, or pass -DHOST_BUILD_DIR=<build-dir>.")
+    endif()
+    set(${OUT_VAR} "${${OUT_VAR}}" PARENT_SCOPE)
+endfunction()
+
+zvec_require_shared_library(ZVEC_SHARED_LIBRARY zvec)
+zvec_require_shared_library(ZVEC_AILEGO_SHARED_LIBRARY zvec_ailego)
+zvec_require_shared_library(ZVEC_CORE_SHARED_LIBRARY zvec_core)
 
 # --- Create INTERFACE target for libzvec (all-in-one C++ shared library) ---
 # libzvec.so/.dylib/.dll already bundles all zvec internal components
-# (zvec_db, zvec_core, zvec_ailego, zvec_turbo), so no individual dependency
+# (zvec, zvec_core, zvec_ailego, zvec_turbo), so no individual dependency
 # libraries need to be specified by the consumer.
 add_library(zvec-lib INTERFACE)
-target_link_libraries(zvec-lib INTERFACE
-    zvec
-    Threads::Threads
-)
-if(NOT WIN32)
-    target_link_libraries(zvec-lib INTERFACE ${CMAKE_DL_LIBS})
-endif()
+target_link_libraries(zvec-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
+
+# --- Create INTERFACE target for libzvec_ailego (ailego-only all-in-one library) ---
+# The ailego example intentionally depends only on libzvec_ailego.
+add_library(zvec-ailego-lib INTERFACE)
+target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_AILEGO_SHARED_LIBRARY}")
+
+# --- Create INTERFACE target for libzvec_core (core-only all-in-one library) ---
+# The core example intentionally depends only on libzvec_core.
+add_library(zvec-core-lib INTERFACE)
+target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_CORE_SHARED_LIBRARY}")
 
 # --- Executables ---
+set(ZVEC_EXAMPLE_TARGETS)
+
 add_executable(db-example db/main.cc)
 target_link_libraries(db-example PRIVATE zvec-lib)
 if(ANDROID)
     target_link_libraries(db-example PRIVATE log)
 endif()
-
-add_executable(core-example core/main.cc)
-target_link_libraries(core-example PRIVATE zvec-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS db-example)
 
 add_executable(ailego-example ailego/main.cc)
-target_link_libraries(ailego-example PRIVATE zvec-lib)
+target_link_libraries(ailego-example PRIVATE zvec-ailego-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS ailego-example)
+
+add_executable(core-example core/main.cc)
+target_link_libraries(core-example PRIVATE zvec-core-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS core-example)
+
+add_executable(external-vector-example core/external_vector_example.cc)
+target_link_libraries(external-vector-example PRIVATE zvec-core-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS external-vector-example)
 
 # Strip symbols to reduce executable size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
-    add_custom_command(TARGET db-example POST_BUILD
-        COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:db-example>"
-        COMMENT "Stripping symbols from db-example")
-    add_custom_command(TARGET core-example POST_BUILD
-        COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:core-example>"
-        COMMENT "Stripping symbols from core-example")
-    add_custom_command(TARGET ailego-example POST_BUILD
-        COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:ailego-example>"
-        COMMENT "Stripping symbols from ailego-example")
+    foreach(ZVEC_EXAMPLE_TARGET ${ZVEC_EXAMPLE_TARGETS})
+        add_custom_command(TARGET ${ZVEC_EXAMPLE_TARGET} POST_BUILD
+            COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:${ZVEC_EXAMPLE_TARGET}>"
+            COMMENT "Stripping symbols from ${ZVEC_EXAMPLE_TARGET}")
+    endforeach()
 endif()
 
 # Optimize for size
-if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
-    set_property(TARGET db-example core-example ailego-example
-                 PROPERTY COMPILE_FLAGS "-Os")
-    set_property(TARGET db-example core-example ailego-example
-                 PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID AND ZVEC_EXAMPLE_TARGETS)
+    set_property(TARGET ${ZVEC_EXAMPLE_TARGETS} PROPERTY COMPILE_FLAGS "-Os")
+    set_property(TARGET ${ZVEC_EXAMPLE_TARGETS} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()

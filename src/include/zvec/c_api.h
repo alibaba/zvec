@@ -826,6 +826,7 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_HNSW 1
 #define ZVEC_INDEX_TYPE_IVF 2
 #define ZVEC_INDEX_TYPE_FLAT 3
+#define ZVEC_INDEX_TYPE_VAMANA 6
 #define ZVEC_INDEX_TYPE_INVERT 10
 #define ZVEC_INDEX_TYPE_FTS 11
 
@@ -987,6 +988,37 @@ ZVEC_EXPORT int ZVEC_CALL
 zvec_index_params_get_hnsw_ef_construction(const zvec_index_params_t *params);
 
 /**
+ * @brief Set Vamana specific parameters
+ * @param params Index parameters (must be VAMANA type)
+ * @param max_degree Maximum out-degree (R) of every node (default: 64)
+ * @param search_list_size Candidate list size during construction (default:
+ * 100)
+ * @param alpha RobustPrune alpha factor (default: 1.2)
+ * @param saturate_graph Force every node to reach max_degree (default: false)
+ * @param use_contiguous_memory Allocate contiguous memory arena (default:
+ * false)
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_vamana_params(
+    zvec_index_params_t *params, int max_degree, int search_list_size,
+    float alpha, bool saturate_graph, bool use_contiguous_memory);
+
+/**
+ * @brief Get Vamana parameters (all at once)
+ * @param params Index parameters (must be VAMANA type)
+ * @param[out] out_max_degree Maximum out-degree
+ * @param[out] out_search_list_size Construction candidate list size
+ * @param[out] out_alpha RobustPrune alpha factor
+ * @param[out] out_saturate_graph Whether saturate graph is enabled
+ * @param[out] out_use_contiguous_memory Whether contiguous memory is enabled
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_vamana_params(
+    const zvec_index_params_t *params, int *out_max_degree,
+    int *out_search_list_size, float *out_alpha, bool *out_saturate_graph,
+    bool *out_use_contiguous_memory);
+
+/**
  * @brief Set IVF specific parameters
  * @param params Index parameters (must be IVF type)
  * @param n_list Number of cluster centers
@@ -1102,6 +1134,16 @@ typedef struct zvec_flat_query_params_t zvec_flat_query_params_t;
  */
 typedef struct zvec_fts_query_params_t zvec_fts_query_params_t;
 
+/**
+ * @brief Vamana query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::VamanaQueryParams* (raw pointer).
+ * Created by zvec_query_params_vamana_create() and destroyed by
+ * zvec_query_params_vamana_destroy(). Caller owns the pointer and must
+ * explicitly destroy it.
+ */
+typedef struct zvec_vamana_query_params_t zvec_vamana_query_params_t;
+
 
 // =============================================================================
 // Query Structures (Opaque Pointer Pattern)
@@ -1137,13 +1179,6 @@ typedef struct zvec_fts_t zvec_fts_t;
  */
 typedef struct zvec_doc_t zvec_doc_t;
 
-/**
- * @brief Reranker structure (opaque pointer)
- * Aligned with zvec::Reranker
- * Use zvec_create_rrf_reranker() or zvec_create_weighted_reranker() to create
- * and zvec_destroy_reranker() to destroy
- */
-typedef struct zvec_reranker_t zvec_reranker_t;
 typedef struct zvec_collection_schema_t zvec_collection_schema_t;
 
 /**
@@ -1498,6 +1533,99 @@ ZVEC_EXPORT const char *ZVEC_CALL zvec_query_params_fts_get_default_operator(
     const zvec_fts_query_params_t *params);
 
 // -----------------------------------------------------------------------------
+// zvec_vamana_query_params_t (Vamana Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create Vamana query parameters
+ * @param ef_search Search-time candidate list size (default: 200)
+ * @param radius Search radius (default: 0.0)
+ * @param is_linear Whether linear search (default: false)
+ * @param is_using_refiner Whether using refiner (default: false)
+ * @return zvec_vamana_query_params_t* Pointer to the newly created Vamana
+ *         query parameters
+ */
+ZVEC_EXPORT zvec_vamana_query_params_t *ZVEC_CALL
+zvec_query_params_vamana_create(int ef_search, float radius, bool is_linear,
+                                bool is_using_refiner);
+
+/**
+ * @brief Destroy Vamana query parameters
+ * @param params Vamana query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_vamana_destroy(zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set search-time candidate list size
+ * @param params Vamana query parameters pointer
+ * @param ef_search Candidate list size
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_vamana_set_ef_search(
+    zvec_vamana_query_params_t *params, int ef_search);
+
+/**
+ * @brief Get search-time candidate list size
+ * @param params Vamana query parameters pointer
+ * @return int Candidate list size
+ */
+ZVEC_EXPORT int ZVEC_CALL zvec_query_params_vamana_get_ef_search(
+    const zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set search radius
+ * @param params Vamana query parameters pointer
+ * @param radius Search radius
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_vamana_set_radius(
+    zvec_vamana_query_params_t *params, float radius);
+
+/**
+ * @brief Get search radius
+ * @param params Vamana query parameters pointer
+ * @return float Search radius
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_query_params_vamana_get_radius(const zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set linear search mode
+ * @param params Vamana query parameters pointer
+ * @param is_linear Whether linear search
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_vamana_set_is_linear(
+    zvec_vamana_query_params_t *params, bool is_linear);
+
+/**
+ * @brief Get linear search mode
+ * @param params Vamana query parameters pointer
+ * @return bool Whether linear search
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_vamana_get_is_linear(
+    const zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set whether to use refiner
+ * @param params Vamana query parameters pointer
+ * @param is_using_refiner Whether to use refiner
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_vamana_set_is_using_refiner(
+    zvec_vamana_query_params_t *params, bool is_using_refiner);
+
+/**
+ * @brief Get whether to use refiner
+ * @param params Vamana query parameters pointer
+ * @return bool Whether to use refiner
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_vamana_get_is_using_refiner(
+    const zvec_vamana_query_params_t *params);
+
+// -----------------------------------------------------------------------------
 // zvec_vector_query_t (Vector Query)
 // -----------------------------------------------------------------------------
 
@@ -1678,6 +1806,15 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_flat_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_fts_params(
     zvec_vector_query_t *query, zvec_fts_query_params_t *fts_params);
+
+/**
+ * @brief Set Vamana query parameters for vector query
+ * @param query Vector query pointer
+ * @param vamana_params Vamana query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_vamana_params(
+    zvec_vector_query_t *query, zvec_vamana_query_params_t *vamana_params);
 
 // -----------------------------------------------------------------------------
 // zvec_fts_t (FTS query payload)
@@ -1951,40 +2088,39 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_group_by_vector_query_set_flat_params(
     zvec_group_by_vector_query_t *query, zvec_flat_query_params_t *flat_params);
 
+/**
+ * @brief Set Vamana query parameters (takes ownership)
+ * @param query Group by vector query pointer
+ * @param vamana_params Vamana query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_group_by_vector_query_set_vamana_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_vamana_query_params_t *vamana_params);
+
 // -----------------------------------------------------------------------------
-// zvec_reranker_t (Reranker)
+// Rerank Strategy (set on MultiQuery)
 // -----------------------------------------------------------------------------
 
 /**
- * @brief Create an RRF (Reciprocal Rank Fusion) reranker
+ * @brief Set RRF rerank strategy on a multi-query.
+ * @param query Multi-query pointer
  * @param rank_constant RRF rank constant (default: 60)
- * @return zvec_reranker_t* Pointer to the newly created reranker
+ * @return Error code
  */
-ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
-zvec_create_rrf_reranker(int rank_constant);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_rerank_rrf(zvec_multi_query_t *query, int rank_constant);
 
 /**
- * @brief Create a Weighted reranker
- * @param weights Array of weights for each query
- * @param weight_count Number of weight entries
- * @return zvec_reranker_t* Pointer to the newly created reranker
+ * @brief Set Weighted rerank strategy on a multi-query.
+ * @param query Multi-query pointer
+ * @param weights Array of per-sub-query weights
+ * @param weight_count Number of weights
+ * @return Error code
  */
-ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
-zvec_create_weighted_reranker(const double *weights, size_t weight_count);
-
-/**
- * @brief Destroy reranker
- * @param reranker Reranker pointer
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_destroy_reranker(zvec_reranker_t *reranker);
-
-/**
- * @brief Get RRF rank constant (only valid for RRF reranker)
- * @param reranker Reranker pointer
- * @return int Rank constant, or -1 if not an RRF reranker
- */
-ZVEC_EXPORT int ZVEC_CALL
-zvec_get_reranker_rank_constant(const zvec_reranker_t *reranker);
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_rerank_weighted(
+    zvec_multi_query_t *query, const double *weights, size_t weight_count);
 
 // -----------------------------------------------------------------------------
 // zvec_multi_query_t (Multi Query)
@@ -2093,17 +2229,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_output_fields(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_get_output_fields(
     zvec_multi_query_t *query, const char ***fields, size_t *count);
-
-/**
- * @brief Set reranker (copies shared pointer, caller must still destroy
- * reranker)
- * @param query Multi-vector query pointer
- * @param reranker Reranker pointer (remains valid, caller must call
- *        zvec_destroy_reranker after use)
- * @return zvec_error_code_t Error code
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_reranker(
-    zvec_multi_query_t *query, zvec_reranker_t *reranker);
 
 // -----------------------------------------------------------------------------
 // zvec_sub_query_t (Sub-Query for Multi Query)
@@ -2224,6 +2349,16 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_ivf_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_flat_params(
     zvec_sub_query_t *query, zvec_flat_query_params_t *flat_params);
+
+/**
+ * @brief Set Vamana query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param vamana_params Vamana query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_vamana_params(
+    zvec_sub_query_t *query, zvec_vamana_query_params_t *vamana_params);
+
 // =============================================================================
 // Collection Options and Statistics (Opaque Pointer Pattern)
 // =============================================================================

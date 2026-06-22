@@ -41,6 +41,12 @@ struct StorageOptions {
   StorageType type = StorageType::kNone;
   bool create_new = false;
   bool read_only = false;
+
+  // Only meaningful when type == kMMAP.
+  // false: MAP_SHARED. Writes through mmap auto-persist to the file.
+  // true : MAP_PRIVATE on a writable file. Flush/close forces dirty pages
+  //        back to disk via explicit pwrite.
+  bool copy_on_write = false;
 };
 
 struct MergeOptions {
@@ -86,6 +92,7 @@ enum class QuantizerType {
   kInt8,
   kInt4,
   kRabitq,
+  kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
 };
 
 struct SerializableBase {
@@ -184,6 +191,8 @@ struct HNSWQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<HNSWQueryParam>;
 
   uint32_t ef_search = kDefaultHnswEfSearch;
+  uint32_t prefetch_offset = kDefaultPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultPrefetchLines;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<HNSWQueryParam>(*this);
@@ -218,6 +227,10 @@ struct IVFQueryParam : public BaseIndexQueryParam {
 struct DiskAnnQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<DiskAnnQueryParam>;
 
+  // Beam-search candidate list size used at query time. Larger values improve
+  // recall at the cost of latency.
+  uint32_t list_size = kDefaultDiskAnnListSize;
+
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<DiskAnnQueryParam>(*this);
   }
@@ -244,6 +257,7 @@ class BaseIndexParam : public SerializableBase {
   bool is_huge_page = false;
   DataType data_type = DataType::DT_UNDEFINED;
   bool use_id_map = true;
+  bool use_external_vector = false;
 
   // IndexMeta meta;
   ailego::Params params;
@@ -372,6 +386,8 @@ struct VamanaQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<VamanaQueryParam>;
 
   uint32_t ef_search = kDefaultVamanaEfSearch;
+  uint32_t prefetch_offset = kDefaultPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultPrefetchLines;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<VamanaQueryParam>(*this);

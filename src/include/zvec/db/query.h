@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 #include <zvec/db/doc.h>
@@ -25,11 +26,29 @@
 
 namespace zvec {
 
+struct VectorViewClause;
+
 struct VectorClause {
   std::string query_vector_;
   std::string sparse_indices_;
   std::string sparse_values_;
+
+  // Return a non-owning view of this clause.  Caller must ensure this
+  // VectorClause outlives the returned VectorViewClause.
+  VectorViewClause to_view() const;
 };
+
+// Non-owning view counterpart of VectorClause.  The referenced strings
+// must outlive any VectorViewClause instance.
+struct VectorViewClause {
+  std::string_view query_vector_;
+  std::string_view sparse_indices_;
+  std::string_view sparse_values_;
+};
+
+inline VectorViewClause VectorClause::to_view() const {
+  return VectorViewClause{query_vector_, sparse_indices_, sparse_values_};
+}
 
 struct FtsClause {
   std::string query_string_;
@@ -38,7 +57,7 @@ struct FtsClause {
 
 struct QueryTarget {
   std::string field_name_;
-  std::variant<VectorClause, FtsClause> clause_;
+  std::variant<VectorClause, VectorViewClause, FtsClause> clause_;
   QueryParams::Ptr query_params_;
 
   // Mutators ensure clause_ holds a VectorClause.
@@ -53,6 +72,14 @@ struct QueryTarget {
     return std::get_if<VectorClause>(&clause_);
   }
 
+  // nullptr when clause_ holds a non-VectorViewClause alternative.
+  VectorViewClause *get_vector_view_clause() {
+    return std::get_if<VectorViewClause>(&clause_);
+  }
+  const VectorViewClause *get_vector_view_clause() const {
+    return std::get_if<VectorViewClause>(&clause_);
+  }
+
   // nullptr when clause_ holds a non-FtsClause alternative.
   FtsClause *get_fts_clause() {
     return std::get_if<FtsClause>(&clause_);
@@ -60,6 +87,28 @@ struct QueryTarget {
   const FtsClause *get_fts_clause() const {
     return std::get_if<FtsClause>(&clause_);
   }
+
+  // Unified accessor: returns a view regardless of whether the variant
+  // holds VectorClause or VectorViewClause.  Returns nullopt for FTS.
+  std::optional<VectorViewClause> get_vector_view() const {
+    return std::visit(
+        [](auto &&arg) -> std::optional<VectorViewClause> {
+          using T = std::decay_t<decltype(arg)>;
+          if constexpr (std::is_same_v<T, VectorClause>) {
+            return arg.to_view();
+          } else if constexpr (std::is_same_v<T, VectorViewClause>) {
+            return arg;
+          } else {
+            return std::nullopt;
+          }
+        },
+        clause_);
+  }
+
+  // Read-only validation of vector/FTS target (dimension, types, sizes).
+  // For sparse vectors, checks if indices are sorted; sets *need_sanitize=true
+  // if sorting is needed (when need_sanitize is non-null).
+  Status validate(const FieldSchema *schema, bool *need_sanitize) const;
 
  private:
   // Resets clause_ to an empty VectorClause unless it already holds one.
@@ -94,9 +143,22 @@ struct SearchQuery {
   //   non-empty -> select only the listed fields
   std::optional<std::vector<std::string>> output_fields_;
 
-  // FtsClause currently bypasses validation (FTS not yet implemented).
-  Status validate_and_sanitize(const FieldSchema *schema);
+  // Read-only validation (topk, output_fields, target).
+  // For sparse vectors: sets *need_sanitize=true if indices are not sorted.
+  Status validate(const FieldSchema *schema, bool *need_sanitize) const;
 };
+
+// Validate topk and output_fields bounds.
+Status validate_topk_and_output_fields(
+    int topk, const std::optional<std::vector<std::string>> &output_fields);
+
+// Sort sparse indices in-place and check for duplicates.
+// Returns error if duplicates are found after sorting.
+Status sanitize_sparse_vector(VectorClause &vc, const FieldSchema *schema);
+
+// Materializes VectorViewClause into VectorClause if needed, then sorts
+// sparse indices in place.  Operates on the QueryTarget's clause_ variant.
+Status sanitize_sparse_vector(QueryTarget &target, const FieldSchema *schema);
 
 struct GroupByVectorQuery {
   QueryTarget target_;
@@ -137,7 +199,7 @@ struct MultiQuery {
   //   empty     -> select no field
   //   non-empty -> select only the listed fields
   std::optional<std::vector<std::string>> output_fields;
-  std::shared_ptr<Reranker> reranker{nullptr};
+  reranker::RerankParams rerank;  // Value semantics, defaults to RRF k=60
 };
 
 

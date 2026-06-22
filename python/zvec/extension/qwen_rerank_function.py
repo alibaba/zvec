@@ -13,11 +13,14 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..model.doc import Doc, DocList
 from .qwen_function import QwenFunctionBase
 from .rerank_function import RerankFunction
+
+if TYPE_CHECKING:
+    from ..model.schema import FieldSchema, VectorSchema
 
 
 class QwenReRanker(QwenFunctionBase, RerankFunction):
@@ -77,50 +80,59 @@ class QwenReRanker(QwenFunctionBase, RerankFunction):
             ValueError: If query is empty or API key is unavailable.
         """
         QwenFunctionBase.__init__(self, model=model, api_key=api_key)
-        RerankFunction.__init__(self)
+        self._rerank_field = rerank_field
 
         if not query:
             raise ValueError("Query is required for QwenReRanker")
         self._query = query
-        self._rerank_field = rerank_field
-
-    @property
-    def query(self) -> str:
-        """str: Query text used for semantic re-ranking."""
-        return self._query
 
     @property
     def rerank_field(self) -> Optional[str]:
         """Optional[str]: Field name used as re-ranking input."""
         return self._rerank_field
 
-    def rerank(self, query_results: list[DocList], topn: int) -> DocList:
+    @property
+    def query(self) -> str:
+        """str: Query text used for semantic re-ranking."""
+        return self._query
+
+    def rerank(
+        self,
+        query_results: list[list[Doc]],
+        topn: int = 10,
+        *,
+        fields: list[FieldSchema | VectorSchema] | None = None,  # noqa: ARG002
+    ) -> DocList:
         """Re-rank documents using Qwen's TextReRank API.
 
         Sends document texts to DashScope TextReRank service along with the query.
         Returns documents sorted by relevance scores from the cross-encoder model.
 
         Args:
-            query_results (list[DocList]): Multi-route recall results,
-                positionally aligned with the queries supplied to
-                ``collection.query()``. Documents from all routes are
-                deduplicated and re-ranked together.
-            topn (int): Maximum number of documents to return after re-ranking.
+            query_results (list[list[Doc]]): Per-sub-query lists of retrieved
+                documents. Documents from all lists are deduplicated and
+                re-ranked together.
+            topn (int): Maximum number of documents to return.
+            fields: Unused; present for interface compatibility.
 
         Returns:
-            DocList: Re-ranked documents (up to ``topn``) with updated
-                ``score`` fields containing relevance scores from the API.
+            list[Doc]: Re-ranked documents (up to ``topn``) with updated ``score``
+                fields containing relevance scores from the API.
 
         Raises:
             ValueError: If no valid documents are found or API call fails.
 
         Note:
-            - Duplicate documents (same ID) across routes are processed once
+            - Duplicate documents (same ID) across lists are processed once
             - Documents with empty/missing ``rerank_field`` content are skipped
             - Returned scores are relevance scores from the cross-encoder model
         """
         if not query_results:
             return []
+
+        # Accept both dict (legacy) and list formats
+        if isinstance(query_results, dict):
+            query_results = list(query_results.values())
 
         # Collect and deduplicate documents
         id_to_doc: dict[str, Doc] = {}

@@ -119,6 +119,12 @@ int VamanaContext::update(const ailego::Params &params) {
   params.get(PARAM_VAMANA_STREAMER_EF, &ef);
   ef_ = ef;
   topk_heap_.limit(std::max(topk_, ef_));
+  uint32_t po = po_;
+  params.get(PARAM_VAMANA_STREAMER_PO, &po);
+  po_ = po;
+  uint32_t pl = pl_;
+  params.get(PARAM_VAMANA_STREAMER_PL, &pl);
+  pl_ = pl;
   return 0;
 }
 

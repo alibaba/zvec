@@ -22,6 +22,8 @@ constexpr static uint32_t kDefaultHnswEfConstruction = 500;
 constexpr static uint32_t kDefaultHnswNeighborCnt = 50;
 
 constexpr static uint32_t kDefaultHnswEfSearch = 300;
+constexpr static uint32_t kDefaultPrefetchOffset = 8;
+constexpr static uint32_t kDefaultPrefetchLines = 0;
 
 constexpr static uint32_t kDefaultVamanaMaxDegree = 64;
 constexpr static uint32_t kDefaultVamanaSearchListSize = 100;

@@ -121,7 +121,5 @@ cc_library(
     NAME zvec_ailego STATIC STRICT PACKED
     SRCS    ${ALL_SRCS}
     LIBS    ${EXTRA_LIBS}
-            Arrow::arrow_static
-            Arrow::parquet_static
     VERSION "${GIT_SRCS_VER}"
 )

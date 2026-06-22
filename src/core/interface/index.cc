@@ -17,6 +17,7 @@
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
+#include "utility/utility_params.h"
 
 namespace zvec::core_interface {
 
@@ -171,6 +172,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kRabitq:
           // no converter here
           return 0;
+        case QuantizerType::kUniformInt8:
+          converter_name = "UniformInt8StreamingConverter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;
@@ -187,13 +191,17 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
   }
 
   proxima_index_meta_ = converter_->meta();
-  reformer_ =
-      core::IndexFactory::CreateReformer(proxima_index_meta_.reformer_name());
-  if (reformer_ == nullptr ||
-      reformer_->init(proxima_index_meta_.reformer_params()) != 0) {
-    LOG_ERROR("Failed to create and init reformer");
-    return core::IndexError_Runtime;
+
+  if (!proxima_index_meta_.reformer_name().empty()) {
+    reformer_ =
+        core::IndexFactory::CreateReformer(proxima_index_meta_.reformer_name());
+    if (reformer_ == nullptr ||
+        reformer_->init(proxima_index_meta_.reformer_params()) != 0) {
+      LOG_ERROR("Failed to create and init reformer");
+      return core::IndexError_Runtime;
+    }
   }
+
   streamer_vector_meta_.set_meta(proxima_index_meta_.data_type(),
                                  proxima_index_meta_.dimension());
   streamer_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
@@ -248,6 +256,16 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
   // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
   // 1024);
+
+  storage_params.set(core::MMAPFILE_STORAGE_COPY_ON_WRITE,
+                     storage_options.copy_on_write);
+  // force_flush must be enabled with copy_on_write so that
+  // IndexMapping::flush() actually persists data written via file_.write() to
+  // disk; without it, data would be lost. See IndexMapping::flush() in
+  // index_mapping.cc.
+  storage_params.set(core::MMAPFILE_STORAGE_FORCE_FLUSH,
+                     storage_options.copy_on_write);
+
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
       storage_ = core::IndexFactory::CreateStorage("MMapFileStorage");
@@ -292,6 +310,27 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
+  }
+
+  // If a converter exists but reformer was not created during Init()
+  // (converters like UniformInt8 whose reformer params are only available
+  // after train()), create it now from the persisted meta that the streamer
+  // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
+  // is nullptr by design — skip this block entirely.
+  if (converter_ != nullptr && reformer_ == nullptr) {
+    const auto &meta = streamer_->meta();
+    if (meta.reformer_name().empty()) {
+      LOG_ERROR(
+          "Index::Open: converter exists but reformer not initialized and "
+          "no reformer in persisted meta");
+      return core::IndexError_Runtime;
+    }
+    reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
+    if (!reformer_ || reformer_->init(meta.reformer_params()) != 0) {
+      LOG_ERROR("Failed to create reformer '%s' from persisted meta",
+                meta.reformer_name().c_str());
+      return core::IndexError_Runtime;
+    }
   }
 
   // converter/reformer/metric are created in IndexFactory::CreateIndex
@@ -353,6 +392,13 @@ int Index::Flush() {
   return 0;
 }
 
+bool Index::IsDirty() const {
+  if (!storage_) {
+    return false;
+  }
+  return storage_->is_dirty();
+}
+
 int Index::Fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
@@ -391,6 +437,19 @@ int Index::Add(const VectorData &vector_data, const uint32_t doc_id) {
   return ret;
 }
 
+int Index::AddWithSource(const VectorData & /*vector*/, uint32_t /*doc_id*/,
+                         const core::VectorSource & /*src*/) {
+  LOG_ERROR("AddWithSource is not supported by this index type");
+  return core::IndexError_Unsupported;
+}
+
+int Index::SearchWithSource(
+    const VectorData & /*query*/,
+    const BaseIndexQueryParam::Pointer & /*search_param*/,
+    const core::VectorSource & /*src*/, SearchResult * /*result*/) {
+  LOG_ERROR("SearchWithSource is not supported by this index type");
+  return core::IndexError_Unsupported;
+}
 
 int Index::Search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,
