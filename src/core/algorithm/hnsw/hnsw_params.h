@@ -115,5 +115,8 @@ static const std::string PARAM_HNSW_REDUCER_EFCONSTRUCTION(
 static const std::string PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY(
     "proxima.hnsw.streamer.use_contiguous_memory");
 
+static const std::string PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR(
+    "proxima.hnsw.streamer.use_external_vector");
+
 }  // namespace core
 }  // namespace zvec

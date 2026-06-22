@@ -14,19 +14,24 @@
 
 #pragma once
 
-#include <zvec/db/query.h>
-#include <zvec/db/status.h>
-#include "db/sqlengine/common/group_by.h"
-#include "db/sqlengine/parser/node.h"
-#include "db/sqlengine/parser/sql_info.h"
+#include <cstdint>
 
-namespace zvec::sqlengine {
+namespace zvec {
+namespace core {
 
-class SQLInfoHelper {
+class VectorSource {
  public:
-  static Result<sqlengine::SQLInfo::Ptr> BuildSQLInfoFromSearchQuery(
-      const SearchQuery &query, Node::Ptr filter_node,
-      std::shared_ptr<GroupBy> group_by);
+  virtual ~VectorSource() = default;
+
+  virtual const void *get_vector(uint32_t node_id) const = 0;
+
+  virtual void get_vectors(const uint32_t *ids, uint32_t count,
+                           const void **out) const {
+    for (uint32_t i = 0; i < count; ++i) {
+      out[i] = get_vector(ids[i]);
+    }
+  }
 };
 
-}  // namespace zvec::sqlengine
+}  // namespace core
+}  // namespace zvec

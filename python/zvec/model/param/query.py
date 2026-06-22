@@ -109,7 +109,7 @@ class Query:
     def _validate(self) -> None:
         if self.field_name is None:
             raise ValueError("Field name cannot be empty")
-        if self.id and self.vector:
+        if self.has_id() and self.has_vector():
             raise ValueError("Cannot provide both id and vector")
         if self.has_fts() and (
             self.has_vector() or self.has_id() or self.param is not None

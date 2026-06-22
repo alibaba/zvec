@@ -202,15 +202,15 @@ class QueryVectorMatrixNode : public QueryNode {
 
   std::string text() const override;
 
-  const std::string &matrix() const {
+  std::string_view matrix() const {
     return node_->matrix();
   }
 
-  const std::string &sparse_indices() const {
+  std::string_view sparse_indices() const {
     return node_->sparse_indices();
   }
 
-  const std::string &sparse_values() const {
+  std::string_view sparse_values() const {
     return node_->sparse_values();
   }
 

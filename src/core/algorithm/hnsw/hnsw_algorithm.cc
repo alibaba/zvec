@@ -693,6 +693,7 @@ void HnswAlgorithm<EntityType>::reverse_update_neighbors(
 template class HnswAlgorithm<HnswMmapStreamerEntity>;
 template class HnswAlgorithm<HnswBufferPoolStreamerEntity>;
 template class HnswAlgorithm<HnswContiguousStreamerEntity>;
+template class HnswAlgorithm<HnswExternalStreamerEntity>;
 
 }  // namespace core
 }  // namespace zvec
