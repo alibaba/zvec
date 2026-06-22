@@ -146,17 +146,19 @@ bool VectorPageTable::extend(size_t new_entry_num) {
 char *VectorPageTable::acquire_block(block_id_t block_id) {
   assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
-  while (true) {
-    int current_count = e.ref_count.load(std::memory_order_acquire);
-    if (current_count < 0) {
-      return nullptr;
-    }
-    if (e.ref_count.compare_exchange_weak(current_count, current_count + 1,
-                                          std::memory_order_acq_rel,
-                                          std::memory_order_acquire)) {
-      return e.buffer;
+  int old = e.ref_count.fetch_add(1, std::memory_order_acq_rel);
+  if (ailego_likely(old >= 0)) {
+    return e.buffer;
+  }
+  int cur = old + 1;
+  while (cur < 0 && cur != std::numeric_limits<int>::min()) {
+    if (e.ref_count.compare_exchange_weak(cur, cur - 1,
+                                           std::memory_order_relaxed,
+                                           std::memory_order_relaxed)) {
+      break;
     }
   }
+  return nullptr;
 }
 
 void VectorPageTable::release_block(block_id_t block_id) {
@@ -182,12 +184,7 @@ void VectorPageTable::evict_block(block_id_t block_id) {
   assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
   int expected = 0;
-  // Two-phase eviction to prevent data race on e.buffer with
-  // set_block_acquired.  We first CAS to kEvicting (-1), which causes
-  // set_block_acquired to spin-wait; then do the actual work (flush, free,
-  // null buffer); finally store INT_MIN ("evicted") which unblocks
-  // set_block_acquired.
-  static constexpr int kEvicting = -1;
+  static constexpr int kEvicting = std::numeric_limits<int>::min() / 2;
   if (e.ref_count.compare_exchange_strong(expected, kEvicting)) {
     char *buffer = e.buffer;
     if (buffer && e.is_dirty.load(std::memory_order_relaxed) &&
@@ -199,8 +196,6 @@ void VectorPageTable::evict_block(block_id_t block_id) {
       e.buffer = nullptr;
       MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
-    // Transition to fully-evicted state.  Use release so that the
-    // set_block_acquired acquire-load sees e.buffer == nullptr.
     e.ref_count.store(std::numeric_limits<int>::min(),
                       std::memory_order_release);
   }
@@ -211,11 +206,6 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
                                           size_t file_offset) {
   assert(block_id < entry_num_.load(std::memory_order_acquire));
   Entry &e = entry_at(block_id);
-  // Diagnostics for the kEvicting wait. The wait itself never gives up:
-  // the only thread that can transition kEvicting -> INT_MIN is the
-  // evict_block() owner, so abandoning the spin here would orphan the
-  // entry in kEvicting forever. Instead, we use bounded backoff and emit
-  // tiered logs so a stuck eviction is observable.
   using clock = std::chrono::steady_clock;
   const auto wait_start = clock::now();
   auto last_log = wait_start;
@@ -231,7 +221,6 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
         return e.buffer;
       }
     } else if (current_count == std::numeric_limits<int>::min()) {
-      // Fully evicted — safe to claim this entry for our new buffer.
       e.buffer = buffer;
       e.file_offset = file_offset;
       e.in_evict_queue.store(false, std::memory_order_relaxed);
@@ -239,11 +228,8 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
       e.ref_count.store(1, std::memory_order_release);
       return e.buffer;
     } else {
-      // kEvicting (-1): eviction is in progress on this entry.
-      // Tiered backoff: hot spin first, then short sleep, then longer sleep.
       ++spin_count;
       if (spin_count < 64) {
-        // Pure busy wait for the common ~μs case.
       } else if (spin_count < 1024) {
         std::this_thread::yield();
       } else if (spin_count < 8192) {
@@ -251,7 +237,6 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
       } else {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
-      // Tiered diagnostics: warn once after 100ms, error every 1s after 1s.
       const auto now = clock::now();
       const auto elapsed = now - wait_start;
       if (!warned && elapsed >= std::chrono::milliseconds(100)) {
