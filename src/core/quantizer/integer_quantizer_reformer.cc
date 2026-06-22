@@ -19,8 +19,8 @@
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
-#include "record_quantizer.h"
 #include "rotator/rotator.h"
+#include "record_quantizer.h"
 
 namespace zvec {
 namespace core {

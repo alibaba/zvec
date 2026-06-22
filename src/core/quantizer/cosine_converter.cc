@@ -18,8 +18,8 @@
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
-#include "record_quantizer.h"
 #include "rotator/rotator.h"
+#include "record_quantizer.h"
 #include "../metric/metric_params.h"
 
 namespace zvec {
@@ -56,7 +56,6 @@ class CosineConverterHolder : public IndexHolder {
           buffer_.resize(element_size, 0);
         }
 
-        // Allocate rotate buffer if owner has a rotator
         if (owner_->rotator_) {
           rotate_buffer_.resize(owner_->rotator_->dimension());
         }
@@ -124,7 +123,6 @@ class CosineConverterHolder : public IndexHolder {
         float *buf = reinterpret_cast<float *>(&normalize_buffer_[0]);
         const float *vec = buf;
 
-        // Apply rotation if enabled
         if (owner_->rotator_) {
           owner_->rotator_->rotate(vec, rotate_buffer_.data());
           vec = rotate_buffer_.data();
@@ -283,12 +281,10 @@ class CosineConverter : public IndexConverter {
       return IndexError_Unsupported;
     }
 
-    // Read rotation config
     params.get(COSINE_CONVERTER_ENABLE_ROTATE, &enable_rotate_);
 
     ailego::Params reformer_params;
 
-    // Create rotator if rotation is enabled
     if (enable_rotate_) {
       size_t dim = index_meta.dimension();
       rotator_ = std::make_shared<RecordRotator>();
@@ -367,7 +363,7 @@ class CosineConverter : public IndexConverter {
     return 0;
   }
 
-  //! Dump index into storage (writes rotator segment if present)
+  //! Dump index into storage
   int dump(const IndexDumper::Pointer &dumper) override {
     if (rotator_) {
       return rotator_->dump(dumper);
@@ -375,7 +371,7 @@ class CosineConverter : public IndexConverter {
     return 0;
   }
 
-  //! Dump converter state to storage (rotator)
+  //! Dump converter state to storage
   int dump_to_storage(const IndexStorage::Pointer &storage) override {
     if (rotator_) {
       return rotator_->dump(storage);
