@@ -43,25 +43,35 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
   endif()
 endif()
 
-# quantizer/record_rotator.cc uses FFHT AVX inline assembly guarded by
-# __AVX2__/__AVX512F__. zvec_core glob-collects this source, so per-file
-# AVX2 flags must be set here as well (in addition to the core_quantizer
-# target in quantizer/CMakeLists.txt). Without this the zvec_core copy
-# would compile without AVX2 and the fast path would never be emitted.
+# quantizer/rotator/fht_rotator_*.cc use ISA-specific intrinsics.
+# zvec_core glob-collects these sources, so per-file flags must be set here.
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
   if(HOST_ARCH MATCHES "^(x86|x64)$")
     setup_compiler_march_for_x86(
         _ROTATOR_MARCH_SSE _ROTATOR_MARCH_AVX2
         _ROTATOR_MARCH_AVX512 _ROTATOR_MARCH_AVX512FP16)
+    if(_ROTATOR_MARCH_SSE)
+      set_source_files_properties(
+          quantizer/rotator/fht_rotator_sse.cc
+          PROPERTIES COMPILE_FLAGS "${_ROTATOR_MARCH_SSE}")
+    endif()
     if(_ROTATOR_MARCH_AVX2)
       set_source_files_properties(
-          quantizer/record_rotator.cc
-          PROPERTIES
-          COMPILE_FLAGS "${_ROTATOR_MARCH_AVX2}"
-      )
+          quantizer/rotator/fht_rotator_avx2.cc
+          PROPERTIES COMPILE_FLAGS "${_ROTATOR_MARCH_AVX2}")
     endif()
+    if(_ROTATOR_MARCH_AVX512)
+      set_source_files_properties(
+          quantizer/rotator/fht_rotator_avx512.cc
+          PROPERTIES COMPILE_FLAGS "${_ROTATOR_MARCH_AVX512}")
+    endif()
+  elseif(HOST_ARCH MATCHES "^(arm|arm64)$" AND NOT MSVC)
+    set_source_files_properties(
+        quantizer/rotator/fht_rotator_neon.cc
+        PROPERTIES COMPILE_FLAGS "-march=armv8-a")
   endif()
 endif()
+
 
 cc_directory(framework)
 cc_directory(algorithm)

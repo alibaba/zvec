@@ -96,7 +96,8 @@ class RecordRotator {
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
 
   //! Dump the rotator to an IndexDumper as a named segment.
-  //! Format: [Header: type(1B)|origin_dim(4B)|reserved(4B)] [rotation blob]
+  //! Format: [RotatorSerHeader (24B): magic|version|rotator_type|in_dim|
+  //!          out_dim|payload_size|reserved] [payload blob]
   //! Appends padding for 32-byte alignment.
   int dump(const IndexDumper::Pointer &dumper,
            const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;

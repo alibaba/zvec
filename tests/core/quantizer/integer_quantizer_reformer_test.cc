@@ -18,7 +18,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
-#include "quantizer/record_rotator.h"
+#include "quantizer/rotator/rotator.h"
 #include "tests/test_util.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_holder.h"
