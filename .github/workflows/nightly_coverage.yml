@@ -48,7 +48,12 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
+<<<<<<< Updated upstream
           sudo apt-get install -y lcov libaio-dev
+=======
+          sudo apt-get install -y --no-install-recommends \
+            lcov libaio-dev
+>>>>>>> Stashed changes
         shell: bash
 
       - name: Install dependencies
