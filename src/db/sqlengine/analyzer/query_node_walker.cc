@@ -173,6 +173,14 @@ ControlOp SearchCondCheckWalker::access(const QueryNode::Ptr &query_node,
     return ControlOp::BREAK;
   }
 
+  // FTS field can only be used as a query target, not as a filter condition.
+  if (forward_field->index_type() == zvec::IndexType::FTS) {
+    err_msg_ = ailego::StringHelper::Concat(
+        "fts field is not allowed in filter condition: ",
+        query_rel_node->text());
+    return ControlOp::BREAK;
+  }
+
   // only string field or is null allow empty string value
   if (right->text().empty() &&
       (forward_field->element_data_type() != DataType::STRING &&
@@ -185,7 +193,7 @@ ControlOp SearchCondCheckWalker::access(const QueryNode::Ptr &query_node,
 
   if (query_node->op() == QueryNodeOp::Q_IS_NULL ||
       query_node->op() == QueryNodeOp::Q_IS_NOT_NULL) {
-    if (forward_field->index_params() != nullptr) {
+    if (forward_field->has_invert_index()) {
       add_invert_filter(query_rel_node.get());
     } else {
       add_forward_filter(query_rel_node.get(), field_name);
@@ -205,7 +213,7 @@ ControlOp SearchCondCheckWalker::access(const QueryNode::Ptr &query_node,
   // invert index analysis, if field exists on both forward and index,
   // as long as the cond conform to index cond criteria,
   // it is regarded as index cond, not forward cond.
-  if (forward_field->index_params() != nullptr) {
+  if (forward_field->has_invert_index()) {
     if (const auto ret = check_array_and_contain_compatible(
             query_rel_node, forward_field, true);
         ret != std::nullopt) {
@@ -371,7 +379,7 @@ tl::expected<void, std::string> SearchCondCheckWalker::array_length_func_check(
         right_node->op_name());
   }
 
-  if (arg0_schema->index_params() != nullptr) {
+  if (arg0_schema->has_invert_index()) {
     if (!check_and_convert_value_type(DataType::UINT32, right_node)) {
       return tl::make_unexpected(
           "array_length right side only support integer, got " +

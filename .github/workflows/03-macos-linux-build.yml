@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -58,6 +58,14 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y clang libomp-dev
+        shell: bash
+
+      - name: Install AIO 
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libaio-dev
         shell: bash
 
       - name: Print CPU info
@@ -88,7 +96,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip \
+          python -m pip install --upgrade pip
+          python -m pip install \
             pybind11==3.0 \
             cmake==3.30.0 \
             ninja==1.11.1 \
@@ -96,6 +105,27 @@ jobs:
             pytest-xdist \
             scikit-build-core \
             setuptools_scm
+        shell: bash       
+
+      - name: Check CMake subproject integration
+        if: matrix.platform == 'linux-x64'
+        run: |
+          SMOKE_SOURCE="$RUNNER_TEMP/zvec-subproject-smoke"
+          SMOKE_BUILD="$RUNNER_TEMP/zvec-subproject-build"
+
+          mkdir -p "$SMOKE_SOURCE" "$SMOKE_BUILD"
+          cp "$GITHUB_WORKSPACE/.github/cmake/subproject-integration/CMakeLists.txt" \
+            "$SMOKE_SOURCE/CMakeLists.txt"
+
+          cmake -S "$SMOKE_SOURCE" -B "$SMOKE_BUILD" -G Ninja \
+            -DZVEC_SOURCE_DIR="$GITHUB_WORKSPACE" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_C_BINDINGS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DENABLE_WERROR=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         shell: bash
 
       - name: Build from source
@@ -107,6 +137,7 @@ jobs:
           python -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS=ON' \
+            --config-settings='cmake.define.ENABLE_WERROR=ON' \
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache' \
             ${{ matrix.arch_flag }}

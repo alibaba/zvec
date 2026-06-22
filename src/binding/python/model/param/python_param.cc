@@ -17,6 +17,7 @@
 #include <pybind11/stl.h>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/index_params.h>
+#include <zvec/db/query.h>
 #include <zvec/db/query_params.h>
 #include "python_doc.h"
 
@@ -36,8 +37,12 @@ static std::string index_type_to_string(const IndexType type) {
       return "OMEGA";
     case IndexType::HNSW_RABITQ:
       return "HNSW_RABITQ";
+    case IndexType::DISKANN:
+      return "DISKANN";
     case IndexType::VAMANA:
       return "VAMANA";
+    case IndexType::FTS:
+      return "FTS";
     default:
       return "UNDEFINED";
   }
@@ -252,6 +257,88 @@ Note: Prefix search is always enabled regardless of this setting.
               throw std::runtime_error("Invalid state for InvertIndexParams");
             return std::make_shared<InvertIndexParams>(t[0].cast<bool>(),
                                                        t[1].cast<bool>());
+          }));
+
+  // binding fts index params
+  py::class_<FtsIndexParams, IndexParams, std::shared_ptr<FtsIndexParams>>
+      fts_index_params(m, "FtsIndexParam", R"pbdoc(
+Parameters for configuring a full-text search (FTS) index.
+
+Controls the tokenizer pipeline used during indexing and querying.
+
+Attributes:
+    type (IndexType): Always ``IndexType.FTS``.
+    tokenizer_name (str): Name of the tokenizer (e.g., "standard", "jieba").
+        Default is "standard".
+    filters (list[str]): List of token filter names applied after tokenization.
+        Default is ["lowercase"].
+    extra_params (str): Additional parameters passed to the tokenizer.
+        Default is "".
+
+Examples:
+    >>> params = FtsIndexParam(tokenizer_name="jieba", filters=["lowercase"])
+    >>> print(params.tokenizer_name)
+    jieba
+)pbdoc");
+  fts_index_params
+      .def(py::init<std::string, std::vector<std::string>, std::string>(),
+           py::arg("tokenizer_name") = "standard",
+           py::arg("filters") = std::vector<std::string>{"lowercase"},
+           py::arg("extra_params") = "",
+           R"pbdoc(
+Constructs an FtsIndexParam instance.
+
+Args:
+    tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
+    filters (list[str], optional): Token filter names. Defaults to ["lowercase"].
+    extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+)pbdoc")
+      .def_property_readonly("tokenizer_name", &FtsIndexParams::tokenizer_name,
+                             "str: Name of the tokenizer.")
+      .def_property_readonly("filters", &FtsIndexParams::filters,
+                             "list[str]: Token filter names.")
+      .def_property_readonly("extra_params", &FtsIndexParams::extra_params,
+                             "str: Additional tokenizer parameters.")
+      .def(
+          "to_dict",
+          [](const FtsIndexParams &self) -> py::dict {
+            py::dict dict;
+            dict["type"] = index_type_to_string(self.type());
+            dict["tokenizer_name"] = self.tokenizer_name();
+            dict["filters"] = self.filters();
+            dict["extra_params"] = self.extra_params();
+            return dict;
+          },
+          "Convert to dictionary with all fields")
+      .def("__repr__",
+           [](const FtsIndexParams &self) -> std::string {
+             std::string filters_str = "[";
+             for (size_t i = 0; i < self.filters().size(); ++i) {
+               if (i > 0) {
+                 filters_str += ",";
+               }
+               filters_str += "\"" + self.filters()[i] + "\"";
+             }
+             filters_str += "]";
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"tokenizer_name\":\"" + self.tokenizer_name() +
+                    "\", \"filters\":" + filters_str + ", \"extra_params\":\"" +
+                    self.extra_params() + "\"}";
+           })
+      .def(py::pickle(
+          [](const FtsIndexParams &self) {
+            return py::make_tuple(self.tokenizer_name(), self.filters(),
+                                  self.extra_params());
+          },
+          [](py::tuple t) {
+            if (t.size() != 3) {
+              throw std::runtime_error("Invalid state for FtsIndexParams");
+            }
+            return std::make_shared<FtsIndexParams>(
+                t[0].cast<std::string>(), t[1].cast<std::vector<std::string>>(),
+                t[2].cast<std::string>());
           }));
 
   // binding base vector index params
@@ -710,8 +797,7 @@ Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
     n_list (int): Number of clusters (inverted lists) to partition the dataset into.
-        If set to 0, the system will auto-select a reasonable value based on data size.
-        Default is 0 (auto).
+        Default is 10.
     n_iters (int): Number of iterations for k-means clustering during index training.
         Higher values yield more stable centroids. Default is 10.
     use_soar (bool): Whether to enable SOAR (Scalable Optimized Adaptive Routing)
@@ -733,7 +819,7 @@ Examples:
 )pbdoc");
   ivf_params
       .def(py::init<MetricType, int, int, bool, QuantizeType>(),
-           py::arg("metric_type") = MetricType::IP, py::arg("n_list") = 0,
+           py::arg("metric_type") = MetricType::IP, py::arg("n_list") = 10,
            py::arg("n_iters") = 10, py::arg("use_soar") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            R"pbdoc(
@@ -741,8 +827,8 @@ Constructs an IVFIndexParam instance.
 
 Args:
     metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
-    n_list (int, optional): Number of inverted lists (clusters). Set to 0 for auto.
-        Defaults to 0.
+    n_list (int, optional): Number of inverted lists (clusters).
+        Defaults to 10.
     n_iters (int, optional): Number of k-means iterations during training.
         Defaults to 10.
     use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
@@ -750,7 +836,7 @@ Args:
         Defaults to QuantizeType.UNDEFINED.
 )pbdoc")
       .def_property_readonly("n_list", &IVFIndexParams::n_list,
-                             "int: Number of inverted lists (0 = auto).")
+                             "int: Number of inverted lists.")
       .def_property_readonly(
           "n_iters", &IVFIndexParams::n_iters,
           "int: Number of k-means iterations during training.")
@@ -800,57 +886,6 @@ Args:
              std::shared_ptr<OmegaIndexParams>>
       omega_params(m, "OmegaIndexParam", R"pbdoc(
 Parameters for configuring an OMEGA index.
-
-OMEGA is an advanced graph-based index that uses machine learning to optimize
-search performance. It builds on HNSW and can automatically train a model to
-predict when to stop searching.
-
-Attributes:
-    metric_type (MetricType): Distance metric used for similarity computation.
-        Default is ``MetricType.IP`` (inner product).
-    m (int): Number of bi-directional links created for every new element
-        during construction. Higher values improve accuracy but increase
-        memory usage and construction time. Default is 100.
-    ef_construction (int): Size of the dynamic candidate list for nearest
-        neighbors during index construction. Larger values yield better
-        graph quality at the cost of slower build time. Default is 500.
-    quantize_type (QuantizeType): Optional quantization type for vector
-        compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
-        disable quantization.
-    min_vector_threshold (int): Minimum number of vectors required to enable
-        OMEGA optimization. Below this threshold, standard HNSW is used.
-        Default is 100000.
-    num_training_queries (int): Number of training queries to generate for
-        OMEGA model training. Default is 1000.
-    ef_training (int): Size of the candidate list (ef) used during training
-        searches. Larger values collect more training data but take longer.
-        Default is 1000.
-    window_size (int): Size of the sliding window for computing distance
-        statistics during search. Must be the same for training and inference.
-        Default is 100.
-    ef_groundtruth (int): Size of the candidate list (ef) used when computing
-        ground truth for training. If 0, brute force search is used (slower but exact).
-        If > 0, HNSW search with this ef is used (faster but approximate).
-        Default is 0 (brute force).
-    k_train (int): Number of top ground-truth results that must be present in
-        the current top-k before a training record is labeled positive.
-        Default is 1.
-
-Examples:
-    >>> from zvec.typing import MetricType, QuantizeType
-    >>> params = OmegaIndexParam(
-    ...     metric_type=MetricType.L2,
-    ...     m=16,
-    ...     ef_construction=200,
-    ...     min_vector_threshold=50000,
-    ...     num_training_queries=500,
-    ...     ef_training=800,
-    ...     window_size=100,
-    ...     ef_groundtruth=2000,  # Use HNSW for faster ground truth computation
-    ...     k_train=10
-    ... )
-    >>> print(params.k_train)
-    10
 )pbdoc");
   omega_params
       .def(py::init<MetricType, int, int, QuantizeType, uint32_t, size_t, int,
@@ -864,49 +899,35 @@ Examples:
            py::arg("num_training_queries") = 1000,
            py::arg("ef_training") = 1000, py::arg("window_size") = 100,
            py::arg("ef_groundtruth") = 0, py::arg("k_train") = 1)
-      .def_property_readonly(
-          "m", &OmegaIndexParams::m,
-          "int: Maximum number of neighbors per node in upper layers.")
-      .def_property_readonly(
-          "ef_construction", &OmegaIndexParams::ef_construction,
-          "int: Candidate list size during index construction.")
-      .def_property_readonly(
-          "min_vector_threshold", &OmegaIndexParams::min_vector_threshold,
-          "int: Minimum vectors required to enable OMEGA optimization.")
-      .def_property_readonly(
-          "num_training_queries", &OmegaIndexParams::num_training_queries,
-          "int: Number of training queries for OMEGA model training.")
-      .def_property_readonly(
-          "ef_training", &OmegaIndexParams::ef_training,
-          "int: Candidate list size (ef) used during training searches.")
-      .def_property_readonly(
-          "window_size", &OmegaIndexParams::window_size,
-          "int: Sliding window size for distance statistics.")
-      .def_property_readonly(
-          "ef_groundtruth", &OmegaIndexParams::ef_groundtruth,
-          "int: ef for ground truth computation (0=brute force, >0=HNSW).")
-      .def_property_readonly("k_train", &OmegaIndexParams::k_train,
-                             "int: Number of top GT results required for a "
-                             "positive training label.")
-      .def(
-          "to_dict",
-          [](const OmegaIndexParams &self) -> py::dict {
-            py::dict dict;
-            dict["type"] = index_type_to_string(self.type());
-            dict["metric_type"] = metric_type_to_string(self.metric_type());
-            dict["m"] = self.m();
-            dict["ef_construction"] = self.ef_construction();
-            dict["min_vector_threshold"] = self.min_vector_threshold();
-            dict["num_training_queries"] = self.num_training_queries();
-            dict["ef_training"] = self.ef_training();
-            dict["window_size"] = self.window_size();
-            dict["ef_groundtruth"] = self.ef_groundtruth();
-            dict["k_train"] = self.k_train();
-            dict["quantize_type"] =
-                quantize_type_to_string(self.quantize_type());
-            return dict;
-          },
-          "Convert to dictionary with all fields")
+      .def_property_readonly("m", &OmegaIndexParams::m)
+      .def_property_readonly("ef_construction",
+                             &OmegaIndexParams::ef_construction)
+      .def_property_readonly("min_vector_threshold",
+                             &OmegaIndexParams::min_vector_threshold)
+      .def_property_readonly("num_training_queries",
+                             &OmegaIndexParams::num_training_queries)
+      .def_property_readonly("ef_training", &OmegaIndexParams::ef_training)
+      .def_property_readonly("window_size", &OmegaIndexParams::window_size)
+      .def_property_readonly("ef_groundtruth",
+                             &OmegaIndexParams::ef_groundtruth)
+      .def_property_readonly("k_train", &OmegaIndexParams::k_train)
+      .def("to_dict",
+           [](const OmegaIndexParams &self) -> py::dict {
+             py::dict dict;
+             dict["type"] = index_type_to_string(self.type());
+             dict["metric_type"] = metric_type_to_string(self.metric_type());
+             dict["m"] = self.m();
+             dict["ef_construction"] = self.ef_construction();
+             dict["min_vector_threshold"] = self.min_vector_threshold();
+             dict["num_training_queries"] = self.num_training_queries();
+             dict["ef_training"] = self.ef_training();
+             dict["window_size"] = self.window_size();
+             dict["ef_groundtruth"] = self.ef_groundtruth();
+             dict["k_train"] = self.k_train();
+             dict["quantize_type"] =
+                 quantize_type_to_string(self.quantize_type());
+             return dict;
+           })
       .def("__repr__",
            [](const OmegaIndexParams &self) -> std::string {
              return "{"
@@ -950,6 +971,58 @@ Examples:
                 t[3].cast<QuantizeType>(), t[4].cast<uint32_t>(),
                 t[5].cast<size_t>(), t[6].cast<int>(), t[7].cast<int>(),
                 t[8].cast<int>(), 1);
+          }));
+
+  // DiskAnnIndexParams
+  py::class_<DiskAnnIndexParams, VectorIndexParams,
+             std::shared_ptr<DiskAnnIndexParams>>
+      diskann_params(m, "DiskAnnIndexParam", R"pbdoc(
+Parameters for configuring a DiskAnn index.
+)pbdoc");
+  diskann_params
+      .def(py::init<MetricType, int, int, int, QuantizeType>(),
+           py::arg("metric_type") = MetricType::IP, py::arg("max_degree") = 100,
+           py::arg("list_size") = 50, py::arg("pq_chunk_num") = 0,
+           py::arg("quantize_type") = QuantizeType::UNDEFINED)
+      .def_property_readonly("max_degree", &DiskAnnIndexParams::max_degree)
+      .def_property_readonly("list_size", &DiskAnnIndexParams::list_size)
+      .def_property_readonly("pq_chunk_num", &DiskAnnIndexParams::pq_chunk_num)
+      .def("to_dict",
+           [](const DiskAnnIndexParams &self) -> py::dict {
+             py::dict dict;
+             dict["type"] = index_type_to_string(self.type());
+             dict["metric_type"] = metric_type_to_string(self.metric_type());
+             dict["max_degree"] = self.max_degree();
+             dict["list_size"] = self.list_size();
+             dict["pq_chunk_num"] = self.pq_chunk_num();
+             dict["quantize_type"] =
+                 quantize_type_to_string(self.quantize_type());
+             return dict;
+           })
+      .def(
+          "__repr__",
+          [](const DiskAnnIndexParams &self) {
+            return "{"
+                   "\"metric_type\":" +
+                   metric_type_to_string(self.metric_type()) +
+                   ", \"max_degree\":" + std::to_string(self.max_degree()) +
+                   ", \"list_size\":" + std::to_string(self.list_size()) +
+                   ", \"pq_chunk_num\":" + std::to_string(self.pq_chunk_num()) +
+                   ", \"quantize_type\":" +
+                   quantize_type_to_string(self.quantize_type()) + "}";
+          })
+      .def(py::pickle(
+          [](const DiskAnnIndexParams &self) {
+            return py::make_tuple(self.metric_type(), self.max_degree(),
+                                  self.list_size(), self.pq_chunk_num(),
+                                  self.quantize_type());
+          },
+          [](py::tuple t) {
+            if (t.size() != 5)
+              throw std::runtime_error("Invalid state for DiskAnnIndexParams");
+            return std::make_shared<DiskAnnIndexParams>(
+                t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<int>(), t[4].cast<QuantizeType>());
           }));
 }
 
@@ -1025,10 +1098,24 @@ Examples:
     {"type":"HNSW", "ef":300}
 )pbdoc");
   hnsw_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init([](int ef, float radius, bool is_linear,
+                       bool is_using_refiner, py::dict extra_params) {
+             auto obj = std::make_shared<HnswQueryParams>(ef, radius, is_linear,
+                                                          is_using_refiner);
+             if (extra_params.contains("prefetch_offset")) {
+               obj->set_prefetch_offset(
+                   extra_params["prefetch_offset"].cast<uint32_t>());
+             }
+             if (extra_params.contains("prefetch_lines")) {
+               obj->set_prefetch_lines(
+                   extra_params["prefetch_lines"].cast<uint32_t>());
+             }
+             return obj;
+           }),
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
+           py::arg("extra_params") = py::dict(),
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
@@ -1038,10 +1125,29 @@ Args:
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    extra_params (dict, optional): Additional search parameters. Supported keys:
+        - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+          ``0`` disables prefetching. Default is ``8``.
+          Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
+          per neighbour vector (PL). ``0`` (default) uses the auto-derived
+          value ``ceil(vector_size/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef", [](const HnswQueryParams &self) -> int { return self.ef(); },
           "int: Size of the dynamic candidate list during HNSW search.")
+      .def_property_readonly(
+          "prefetch_offset",
+          [](const HnswQueryParams &self) -> uint32_t {
+            return self.prefetch_offset();
+          },
+          "int: Graph prefetch offset used by the HNSW fast path.")
+      .def_property_readonly(
+          "prefetch_lines",
+          [](const HnswQueryParams &self) -> uint32_t {
+            return self.prefetch_lines();
+          },
+          "int: Override of prefetch cache lines per vector (0=auto).")
       .def("__repr__",
            [](const HnswQueryParams &self) -> std::string {
              return "{"
@@ -1051,20 +1157,32 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"prefetch_offset\":" +
+                    std::to_string(self.prefetch_offset()) +
+                    ", \"prefetch_lines\":" +
+                    std::to_string(self.prefetch_lines()) + "}";
            })
       .def(py::pickle(
           [](const HnswQueryParams &self) {
             return py::make_tuple(self.ef(), self.radius(), self.is_linear(),
-                                  self.is_using_refiner());
+                                  self.is_using_refiner(),
+                                  self.prefetch_offset(),
+                                  self.prefetch_lines());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for HnswQueryParams");
             auto obj = std::make_shared<HnswQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() >= 5) {
+              obj->set_prefetch_offset(t[4].cast<uint32_t>());
+            }
+            if (t.size() >= 6) {
+              obj->set_prefetch_lines(t[5].cast<uint32_t>());
+            }
             return obj;
           }));
 
@@ -1272,6 +1390,54 @@ Args:
             return obj;
           }));
 
+  // binding diskann query params
+  py::class_<DiskAnnQueryParams, QueryParams,
+             std::shared_ptr<DiskAnnQueryParams>>
+      diskann_params(m, "DiskAnnQueryParam", R"pbdoc(
+Query parameters for DiskAnn index.
+
+Attributes:
+    type (IndexType): Always ``IndexType.DISKANN``.
+    list_size (int): Beam-search candidate list size used at query time.
+        Higher values improve recall but increase latency. Default is 10.
+
+Examples:
+    >>> params = DiskAnnQueryParam(list_size=20)
+    >>> print(params.list_size)
+    20
+)pbdoc");
+  diskann_params
+      .def(py::init<int>(), py::arg("list_size") = 300, R"pbdoc(
+Constructs an DiskAnnQueryParams instance.
+
+Args:
+    list_size (int, optional): Beam-search candidate list size during
+        graph search. Higher values improve recall at the cost of latency.
+        Defaults to 300.
+)pbdoc")
+      .def_property_readonly(
+          "list_size",
+          [](const DiskAnnQueryParams &self) -> int {
+            return self.list_size();
+          },
+          "int: Beam-search candidate list size during DiskAnn query.")
+      .def("__repr__",
+           [](const DiskAnnQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":" +
+                    index_type_to_string(self.type()) +
+                    ", \"list_size\":" + std::to_string(self.list_size()) + "}";
+           })
+      .def(py::pickle(
+          [](const DiskAnnQueryParams &self) {
+            return py::make_tuple(self.list_size());
+          },
+          [](py::tuple t) {
+            if (t.size() != 1)
+              throw std::runtime_error("Invalid state for DiskAnnQueryParams");
+            return std::make_shared<DiskAnnQueryParams>(t[0].cast<int>());
+          }));
+
   // binding vamana query params
   py::class_<VamanaQueryParams, QueryParams, std::shared_ptr<VamanaQueryParams>>
       vamana_query_params(m, "VamanaQueryParam", R"pbdoc(
@@ -1297,10 +1463,24 @@ Examples:
     200
 )pbdoc");
   vamana_query_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init([](int ef_search, float radius, bool is_linear,
+                       bool is_using_refiner, py::dict extra_params) {
+             auto obj = std::make_shared<VamanaQueryParams>(
+                 ef_search, radius, is_linear, is_using_refiner);
+             if (extra_params.contains("prefetch_offset")) {
+               obj->set_prefetch_offset(
+                   extra_params["prefetch_offset"].cast<uint32_t>());
+             }
+             if (extra_params.contains("prefetch_lines")) {
+               obj->set_prefetch_lines(
+                   extra_params["prefetch_lines"].cast<uint32_t>());
+             }
+             return obj;
+           }),
            py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
+           py::arg("extra_params") = py::dict(),
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1311,11 +1491,30 @@ Args:
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    extra_params (dict, optional): Additional search parameters. Supported keys:
+        - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+          ``0`` disables prefetching. Default is ``8``.
+          Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
+          per neighbour vector (PL). ``0`` (default) uses the auto-derived
+          value ``ceil(dim/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef_search",
           [](const VamanaQueryParams &self) -> int { return self.ef_search(); },
           "int: Size of the dynamic candidate list during Vamana search.")
+      .def_property_readonly(
+          "prefetch_offset",
+          [](const VamanaQueryParams &self) -> uint32_t {
+            return self.prefetch_offset();
+          },
+          "int: Graph prefetch offset used by the Vamana fast path.")
+      .def_property_readonly(
+          "prefetch_lines",
+          [](const VamanaQueryParams &self) -> uint32_t {
+            return self.prefetch_lines();
+          },
+          "int: Override of prefetch cache lines per vector (0=auto).")
       .def("__repr__",
            [](const VamanaQueryParams &self) -> std::string {
              return "{"
@@ -1325,20 +1524,90 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"prefetch_offset\":" +
+                    std::to_string(self.prefetch_offset()) +
+                    ", \"prefetch_lines\":" +
+                    std::to_string(self.prefetch_lines()) + "}";
            })
       .def(py::pickle(
           [](const VamanaQueryParams &self) {
             return py::make_tuple(self.ef_search(), self.radius(),
-                                  self.is_linear(), self.is_using_refiner());
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.prefetch_offset(),
+                                  self.prefetch_lines());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for VamanaQueryParams");
             auto obj = std::make_shared<VamanaQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() >= 5) {
+              obj->set_prefetch_offset(t[4].cast<uint32_t>());
+            }
+            if (t.size() >= 6) {
+              obj->set_prefetch_lines(t[5].cast<uint32_t>());
+            }
+            return obj;
+          }));
+
+  // binding fts query params
+  py::class_<FtsQueryParams, QueryParams, std::shared_ptr<FtsQueryParams>>
+      fts_query_params(m, "FtsQueryParam", R"pbdoc(
+Query parameters for full-text search (FTS) index.
+
+Controls the default boolean operator used to combine adjacent bare terms
+in a query string.
+
+Attributes:
+    type (IndexType): Always ``IndexType.FTS``.
+    default_operator (str): Default boolean operator for adjacent bare terms.
+        Supported values (case-insensitive): "OR" (default), "AND".
+
+Examples:
+    >>> params = FtsQueryParam(default_operator="AND")
+    >>> print(params.default_operator)
+    AND
+)pbdoc");
+  fts_query_params
+      .def(py::init([](const std::string &default_operator) {
+             auto params = std::make_shared<FtsQueryParams>();
+             if (!default_operator.empty()) {
+               params->set_default_operator(default_operator);
+             }
+             return params;
+           }),
+           py::arg("default_operator") = "",
+           R"pbdoc(
+Constructs an FtsQueryParam instance.
+
+Args:
+    default_operator (str, optional): Default boolean operator for adjacent
+        bare terms. Supported: "OR", "AND". Defaults to "" (uses engine default).
+)pbdoc")
+      .def_property_readonly("default_operator",
+                             &FtsQueryParams::default_operator,
+                             "str: Default boolean operator for bare terms.")
+      .def("__repr__",
+           [](const FtsQueryParams &self) -> std::string {
+             return "{"
+                    "\"type\":\"" +
+                    index_type_to_string(self.type()) +
+                    "\", \"default_operator\":\"" + self.default_operator() +
+                    "\"}";
+           })
+      .def(py::pickle(
+          [](const FtsQueryParams &self) {
+            return py::make_tuple(self.default_operator());
+          },
+          [](py::tuple t) {
+            if (t.size() != 1) {
+              throw std::runtime_error("Invalid state for FtsQueryParams");
+            }
+            auto obj = std::make_shared<FtsQueryParams>();
+            obj->set_default_operator(t[0].cast<std::string>());
             return obj;
           }));
 }
@@ -1664,18 +1933,80 @@ Args:
 }
 
 void ZVecPyParams::bind_vector_query(py::module_ &m) {
-  py::class_<VectorQuery>(m, "_VectorQuery")
+  // bind Fts
+  py::class_<FtsClause>(m, "_Fts")
+      .def(py::init<>())
+      .def_readwrite("query_string", &FtsClause::query_string_)
+      .def_readwrite("match_string", &FtsClause::match_string_)
+      .def(py::pickle(
+          [](const FtsClause &self) {
+            return py::make_tuple(self.query_string_, self.match_string_);
+          },
+          [](py::tuple t) {
+            if (t.size() != 2)
+              throw std::runtime_error("Invalid pickle data for Fts");
+            FtsClause obj{};
+            obj.query_string_ = t[0].cast<std::string>();
+            obj.match_string_ = t[1].cast<std::string>();
+            return obj;
+          }));
+
+  // Bind SubQuery (used by MultiQuery)
+  py::class_<SubQuery>(m, "_SubQuery")
+      .def(py::init<>())
+      .def_readwrite("num_candidates", &SubQuery::num_candidates_)
+      .def_static(
+          "from_search_query",
+          [](const SearchQuery &sq) {
+            SubQuery sub;
+            sub.num_candidates_ = sq.topk_;
+            sub.target_ = sq.target_;
+            return sub;
+          },
+          py::arg("search_query"),
+          "Create a SubQuery from a single-target search query.");
+
+  // _SearchQuery is the Python class name; it wraps the
+  // single-target SearchQuery so external Python code keeps working unchanged.
+  py::class_<SearchQuery>(m, "_SearchQuery")
       .def(py::init<>())
       // properties
-      .def_readwrite("topk", &VectorQuery::topk_)
-      .def_readwrite("field_name", &VectorQuery::field_name_)
-      .def_readwrite("filter", &VectorQuery::filter_)
-      .def_readwrite("include_vector", &VectorQuery::include_vector_)
-      .def_readwrite("query_params", &VectorQuery::query_params_)
-      .def_readwrite("output_fields", &VectorQuery::output_fields_)
+      .def_readwrite("topk", &SearchQuery::topk_)
+      .def_property(
+          "field_name",
+          [](const SearchQuery &s) { return s.target_.field_name_; },
+          [](SearchQuery &s, std::string v) {
+            s.target_.field_name_ = std::move(v);
+          })
+      .def_readwrite("filter", &SearchQuery::filter_)
+      .def_readwrite("include_vector", &SearchQuery::include_vector_)
+      .def_property(
+          "query_params",
+          [](const SearchQuery &s) { return s.target_.query_params_; },
+          [](SearchQuery &s, QueryParams::Ptr p) {
+            s.target_.query_params_ = std::move(p);
+          })
+      .def_readwrite("output_fields", &SearchQuery::output_fields_)
+      .def_property(
+          "fts",
+          [](const SearchQuery &self) -> py::object {
+            const auto *fc = self.target_.get_fts_clause();
+            if (fc != nullptr) {
+              return py::cast(*fc);
+            }
+            return py::none();
+          },
+          [](SearchQuery &self, const py::object &obj) {
+            if (obj.is_none()) {
+              // Clearing FTS resets the target to an empty vector clause.
+              self.target_.clause_ = VectorClause{};
+            } else {
+              self.target_.clause_ = obj.cast<FtsClause>();
+            }
+          })
       // vector
       .def("set_vector",
-           [](VectorQuery &self, const FieldSchema &field_schema,
+           [](SearchQuery &self, const FieldSchema &field_schema,
               const py::object &obj) {
              const DataType data_type = field_schema.data_type();
 
@@ -1694,23 +2025,23 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                const auto buf = arr.request();
                switch (data_type) {
                  case DataType::VECTOR_FP32: {
-                   self.query_vector_ = serialize_vector<float>(
-                       static_cast<const float *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<float>(
+                       static_cast<const float *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_FP64: {
-                   self.query_vector_ = serialize_vector<double>(
-                       static_cast<const double *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<double>(
+                       static_cast<const double *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_INT8: {
-                   self.query_vector_ = serialize_vector<int8_t>(
-                       static_cast<const int8_t *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<int8_t>(
+                       static_cast<const int8_t *>(buf.ptr), buf.size));
                    return;
                  }
                  case DataType::VECTOR_FP16: {
-                   self.query_vector_ = serialize_vector<uint16_t>(
-                       static_cast<const uint16_t *>(buf.ptr), buf.size);
+                   self.target_.set_vector(serialize_vector<uint16_t>(
+                       static_cast<const uint16_t *>(buf.ptr), buf.size));
                    return;
                  }
                  default:
@@ -1738,8 +2069,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                                  "FLOAT");
                              return ailego::Float16(f);
                            });
-                   self.query_sparse_indices_ = std::move(indices);
-                   self.query_sparse_values_ = std::move(values);
+                   self.target_.set_sparse_vector(std::move(indices),
+                                                  std::move(values));
                    break;
                  }
                  case DataType::SPARSE_VECTOR_FP32: {
@@ -1749,8 +2080,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                              h, "Sparse value[" + std::to_string(idx) + "]",
                              "FLOAT");
                        });
-                   self.query_sparse_indices_ = std::move(indices);
-                   self.query_sparse_values_ = std::move(values);
+                   self.target_.set_sparse_vector(std::move(indices),
+                                                  std::move(values));
                    break;
                  }
                  default:
@@ -1766,16 +2097,17 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
            })
       .def(
           "get_vector",
-          [](const VectorQuery &self,
+          [](const SearchQuery &self,
              const FieldSchema &field_schema) -> py::object {
             DataType data_type = field_schema.data_type();
+            const VectorClause *vc = self.target_.get_vector_clause();
             if (FieldSchema::is_dense_vector_field(data_type)) {
-              if (self.query_vector_.empty()) {
+              if (vc == nullptr || vc->query_vector_.empty()) {
                 throw std::runtime_error("No dense vector has been set");
               }
 
-              size_t byte_size = self.query_vector_.size();
-              const void *data = self.query_vector_.data();
+              size_t byte_size = vc->query_vector_.size();
+              const void *data = vc->query_vector_.data();
 
               switch (data_type) {
                 case DataType::VECTOR_FP32: {
@@ -1821,29 +2153,29 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
               }
             }
             if (FieldSchema::is_sparse_vector_field(data_type)) {
-              if (self.query_sparse_indices_.empty()) {
+              if (vc == nullptr || vc->sparse_indices_.empty()) {
                 return py::dict();
               }
 
               // Deserialize indices: stored as uint32_t[]
-              size_t indices_byte_size = self.query_sparse_indices_.size();
+              size_t indices_byte_size = vc->sparse_indices_.size();
               if (indices_byte_size % sizeof(uint32_t) != 0) {
                 throw std::runtime_error(
                     "Sparse indices buffer size not aligned to uint32_t");
               }
               size_t n = indices_byte_size / sizeof(uint32_t);
               const uint32_t *indices = reinterpret_cast<const uint32_t *>(
-                  self.query_sparse_indices_.data());
+                  vc->sparse_indices_.data());
 
               // Deserialize values
               switch (data_type) {
                 case DataType::SPARSE_VECTOR_FP32: {
-                  if (self.query_sparse_values_.size() != n * sizeof(float)) {
+                  if (vc->sparse_values_.size() != n * sizeof(float)) {
                     throw std::runtime_error(
                         "Sparse FP32 values buffer size mismatch");
                   }
                   const float *values = reinterpret_cast<const float *>(
-                      self.query_sparse_values_.data());
+                      vc->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     result[py::int_(indices[i])] = py::float_(values[i]);
@@ -1851,13 +2183,12 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                   return result;
                 }
                 case DataType::SPARSE_VECTOR_FP16: {
-                  if (self.query_sparse_values_.size() !=
-                      n * sizeof(uint16_t)) {
+                  if (vc->sparse_values_.size() != n * sizeof(uint16_t)) {
                     throw std::runtime_error(
                         "Sparse FP16 values buffer size mismatch");
                   }
                   const uint16_t *raw_bits = reinterpret_cast<const uint16_t *>(
-                      self.query_sparse_values_.data());
+                      vc->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     float f = ailego::FloatHelper::ToFP32(raw_bits[i]);
@@ -1876,29 +2207,44 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
           },
           py::arg("field_schema"))
       .def(py::pickle(
-          [](const VectorQuery &self) {
-            return py::make_tuple(
-                self.topk_, self.field_name_, self.query_vector_,
-                self.query_sparse_indices_, self.query_sparse_values_,
-                self.filter_, self.include_vector_, self.output_fields_,
-                self.query_params_ ? py::cast(self.query_params_) : py::none());
+          [](const SearchQuery &self) {
+            const VectorClause *vc = self.target_.get_vector_clause();
+            const auto *fc = self.target_.get_fts_clause();
+            return py::make_tuple(self.topk_, self.target_.field_name_,
+                                  vc ? vc->query_vector_ : std::string(),
+                                  vc ? vc->sparse_indices_ : std::string(),
+                                  vc ? vc->sparse_values_ : std::string(),
+                                  self.filter_, self.include_vector_,
+                                  self.output_fields_,
+                                  self.target_.query_params_
+                                      ? py::cast(self.target_.query_params_)
+                                      : py::none(),
+                                  fc ? py::cast(*fc) : py::none());
           },
           [](py::tuple t) {
-            if (t.size() != 9)
-              throw std::runtime_error("Invalid pickle data for VectorQuery");
+            if (t.size() != 10)
+              throw std::runtime_error("Invalid pickle data for _SearchQuery");
 
-            VectorQuery obj{};
+            SearchQuery obj{};
             obj.topk_ = t[0].cast<int>();
-            obj.field_name_ = t[1].cast<std::string>();
-            obj.query_vector_ = t[2].cast<std::string>();
-            obj.query_sparse_indices_ = t[3].cast<std::string>();
-            obj.query_sparse_values_ = t[4].cast<std::string>();
+            obj.target_.field_name_ = t[1].cast<std::string>();
+            // A vector clause and an FTS clause are mutually exclusive in the
+            // variant target; restore whichever the pickle carried.
+            if (!t[9].is_none()) {
+              obj.target_.clause_ = t[9].cast<FtsClause>();
+            } else {
+              obj.target_.clause_ = VectorClause{t[2].cast<std::string>(),
+                                                 t[3].cast<std::string>(),
+                                                 t[4].cast<std::string>()};
+            }
             obj.filter_ = t[5].cast<std::string>();
             obj.include_vector_ = t[6].cast<bool>();
-            obj.output_fields_ = t[7].cast<std::vector<std::string>>();
 
+            if (!t[7].is_none()) {
+              obj.output_fields_ = t[7].cast<std::vector<std::string>>();
+            }
             if (!t[8].is_none()) {
-              obj.query_params_ = t[8].cast<QueryParams::Ptr>();
+              obj.target_.query_params_ = t[8].cast<QueryParams::Ptr>();
             }
             return obj;
           }));

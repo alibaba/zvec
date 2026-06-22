@@ -21,6 +21,27 @@ if(RABITQ_SUPPORTED AND AUTO_DETECT_ARCH)
   endforeach()
 endif()
 
+# utility/block_heap.cc uses AVX2 intrinsics guarded by __AVX2__. When the
+# host toolchain supports it, compile this source with an AVX2-capable
+# -march so AVX2 codegen is emitted. zvec_core glob-collects this source
+# too, so per-file flags must be set here as well (in addition to the
+# core_utility target in utility/CMakeLists.txt). Callers runtime-gate
+# invocation of BlockHeap paths on CpuFeatures::AVX2.
+if(NOT ANDROID AND AUTO_DETECT_ARCH)
+  if(HOST_ARCH MATCHES "^(x86|x64)$")
+    setup_compiler_march_for_x86(
+        _BLOCK_HEAP_MARCH_SSE _BLOCK_HEAP_MARCH_AVX2
+        _BLOCK_HEAP_MARCH_AVX512 _BLOCK_HEAP_MARCH_AVX512FP16)
+    if(_BLOCK_HEAP_MARCH_AVX2)
+      set_source_files_properties(
+          utility/block_heap.cc
+          PROPERTIES
+          COMPILE_FLAGS "${_BLOCK_HEAP_MARCH_AVX2}"
+      )
+    endif()
+  endif()
+endif()
+
 cc_directory(framework)
 cc_directory(algorithm)
 cc_directory(metric)
@@ -28,6 +49,7 @@ cc_directory(quantizer)
 cc_directory(utility)
 cc_directory(interface)
 cc_directory(mixed_reducer)
+cc_directory(plugin)
 
 git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
@@ -35,24 +57,38 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 # Remove algorithm/hnsw_rabitq implementation files if not supported.
 # interface/indexes/hnsw_rabitq_index.cc is kept because it provides the vtable
 # for HNSWRabitqIndex and guards rabitqlib usage with #if RABITQ_SUPPORTED.
-if(NOT RABITQ_SUPPORTED)
-  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
-endif()
-
 if(NOT ZVEC_ENABLE_OMEGA)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/omega/.*")
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/omega_.*")
 endif()
 
-set(CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
+if(NOT RABITQ_SUPPORTED)
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
+endif()
+
+# Always exclude algorithm/diskann implementation files from zvec_core.
+# The DiskAnn algorithm is provided by the separate core_knn_diskann library
+# (real on Linux x86_64, stub on other platforms). Including them here causes
+# duplicate symbols and missing -laio when test binaries link both zvec_core
+# (via zvec) and core_knn_diskann.
+list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/diskann/.*")
+if(NOT DISKANN_SUPPORTED)
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/diskann_index\\.cc")
+endif()
+
+set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
+# The plugin loader uses dlopen/dlsym, so link libdl on Linux.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
+endif()
 if(ZVEC_ENABLE_OMEGA)
-  list(APPEND CORE_LIBS omega)
+  list(APPEND ZVEC_CORE_LIBS omega)
 endif()
 
 cc_library(
     NAME zvec_core STATIC STRICT PACKED
     SRCS ${ALL_CORE_SRCS}
-    LIBS ${CORE_LIBS}
+    LIBS ${ZVEC_CORE_LIBS}
     INCS . ${PROJECT_ROOT_DIR}/src/core
     VERSION "${GIT_SRCS_VER}"
 )

@@ -16,10 +16,8 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#if defined(__linux__) || defined(__APPLE__)
-#include <sys/mman.h>
-#endif
 #include <ailego/parallel/lock.h>
+#include <ailego/utility/memory_helper.h>
 #include <sparsehash/dense_hash_map>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/core/framework/index_framework.h>
@@ -44,28 +42,32 @@ enum class VamanaStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
 class VamanaStreamerEntity : public VamanaEntity {
  public:
   // Virtual interface implementation
-  virtual int cleanup() override;
-  virtual const VamanaEntity::Pointer clone() const override;
-  virtual key_t get_key(node_id_t id) const override;
-  virtual const void *get_vector(node_id_t id) const override;
-  virtual int get_vector(const node_id_t id,
-                         IndexStorage::MemoryBlock &block) const override;
-  virtual int get_vector(const node_id_t *ids, uint32_t count,
-                         const void **vecs) const override;
-  virtual int get_vector(
+  int cleanup() override;
+  const VamanaEntity::Pointer clone() const override;
+  key_t get_key(node_id_t id) const override;
+  const void *get_vector(node_id_t id) const override;
+  int get_vector(const node_id_t id,
+                 IndexStorage::MemoryBlock &block) const override;
+  int get_vector(const node_id_t *ids, uint32_t count,
+                 const void **vecs) const override;
+  int get_vector(
       const node_id_t *ids, uint32_t count,
       std::vector<IndexStorage::MemoryBlock> &vec_blocks) const override;
-  virtual const Neighbors get_neighbors(node_id_t id) const override;
+  const Neighbors get_neighbors(node_id_t id) const override;
 
-  virtual int add_vector(key_t key, const void *vec, node_id_t *id) override;
-  virtual int add_vector_with_id(node_id_t id, const void *vec) override;
-  virtual int update_neighbors(
+  int add_vector(key_t key, const void *vec, node_id_t *id) override;
+  int add_vector_with_id(node_id_t id, const void *vec) override;
+  int update_neighbors(
       node_id_t id,
       const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
-  virtual void add_neighbor(node_id_t id, uint32_t size,
-                            node_id_t neighbor_id) override;
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
-  virtual void update_entry_point(node_id_t ep) override;
+  void add_neighbor(node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
+  void update_entry_point(node_id_t ep) override;
+
+  // Calculate medoid: find the data point closest to the centroid
+  // of all vectors (DiskANN standard entry point selection).
+  node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type) override;
 
   // --- Neighbor distance storage ---
   int ensure_dist_storage() override;
@@ -90,13 +92,13 @@ class VamanaStreamerEntity : public VamanaEntity {
   VamanaStreamerEntity(IndexStreamer::Stats &stats);
   ~VamanaStreamerEntity();
 
-  virtual const void *get_vector_by_key(key_t key) const override {
+  const void *get_vector_by_key(key_t key) const override {
     auto id = get_id(key);
     return id == kInvalidNodeId ? nullptr : get_vector(id);
   }
 
-  virtual int get_vector_by_key(
-      const key_t key, IndexStorage::MemoryBlock &block) const override {
+  int get_vector_by_key(const key_t key,
+                        IndexStorage::MemoryBlock &block) const override {
     auto id = get_id(key);
     if (id != kInvalidNodeId) {
       return get_vector(id, block);
@@ -182,11 +184,16 @@ class VamanaStreamerEntity : public VamanaEntity {
   }
 
   //! Lazy chunk synchronization: fetches chunks from broker when needed.
-  //! Each clone entity has its own node_chunks_ vector, so concurrent
-  //! search threads do not race with the writer's emplace_back.
+  //! Protected by node_chunks_mutex_ to synchronize with add_vector's
+  //! emplace_back during concurrent build.
   void sync_chunks(ChunkBroker::CHUNK_TYPE type, size_t idx,
                    std::vector<Chunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(node_chunks_mutex_);
+    // Double-check after acquiring lock
+    if (idx < chunks->size()) {
       return;
     }
     for (size_t i = chunks->size(); i <= idx; ++i) {
@@ -307,6 +314,9 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   ChunkBroker::Pointer broker_;
 
+  //! Protects node_chunks_ against concurrent emplace_back from add_vector
+  //! (writer) and sync_chunks from greedy_search (reader threads during build).
+  mutable std::mutex node_chunks_mutex_{};
   mutable std::vector<Chunk::Pointer> node_chunks_{};
 
  private:
@@ -352,9 +362,16 @@ VamanaStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<BufferPoolMemoryBlock>();
   }
-  BufferPoolMemoryBlock block(mem_block.buffer_pool_handle_,
-                              mem_block.buffer_block_id_, mem_block.data_);
-  mem_block.buffer_pool_handle_ = nullptr;
+  BufferPoolMemoryBlock block;
+  if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
+    block = BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
+    mem_block.data_ = nullptr;
+    mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
+  } else {
+    block = BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
+                                  mem_block.buffer_block_id_, mem_block.data_);
+    mem_block.buffer_pool_handle_ = nullptr;
+  }
   return NeighborsT<BufferPoolMemoryBlock>(std::move(block));
 }
 
@@ -392,10 +409,19 @@ inline int VamanaStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i] =
-        BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
+    vec_blocks[i] = [&]() {
+      if (mem_block.type_ == IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH) {
+        BufferPoolMemoryBlock b =
+            BufferPoolMemoryBlock::MakeOwned(mem_block.data_);
+        mem_block.data_ = nullptr;
+        mem_block.type_ = IndexStorage::MemoryBlock::MBT_UNKNOWN;
+        return b;
+      }
+      BufferPoolMemoryBlock b(mem_block.buffer_pool_handle_,
                               mem_block.buffer_block_id_, mem_block.data_);
-    mem_block.buffer_pool_handle_ = nullptr;
+      mem_block.buffer_pool_handle_ = nullptr;
+      return b;
+    }();
   }
   return 0;
 }
@@ -450,7 +476,7 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
   //! static_cast<const VamanaMmapStreamerEntity&> in the algorithm is safe.
   const VamanaEntity::Pointer clone() const override;
 
-  inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
+  ailego_force_inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset =
         (id & node_index_mask_) * node_size() + vector_size() + sizeof(key_t);
@@ -459,8 +485,9 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return TypedNeighbors(std::move(block));
   }
 
-  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
-                              std::vector<MmapMemoryBlock> &vec_blocks) const {
+  ailego_force_inline int get_vector_typed(
+      const node_id_t *ids, uint32_t count,
+      std::vector<MmapMemoryBlock> &vec_blocks) const {
     vec_blocks.resize(count);
     for (auto i = 0U; i < count; ++i) {
       uint32_t chunk_idx = ids[i] >> node_index_mask_bits_;
@@ -471,7 +498,7 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return 0;
   }
 
-  inline key_t get_key_typed(node_id_t id) const {
+  ailego_force_inline key_t get_key_typed(node_id_t id) const {
     if (!use_key_info_map_) return id;
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset = (id & node_index_mask_) * node_size() + vector_size();
@@ -479,8 +506,17 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return *reinterpret_cast<const key_t *>(base + offset);
   }
 
+  //! Direct vector pointer access (no MemoryBlock wrapper).
+  //! For use in the merged search loop to avoid intermediate allocations.
+  ailego_force_inline const void *get_vector_ptr(node_id_t id) const {
+    uint32_t chunk_idx = id >> node_index_mask_bits_;
+    uint32_t offset = (id & node_index_mask_) * node_size();
+    return get_node_chunk_base(chunk_idx) + offset;
+  }
+
  private:
-  inline const char *get_node_chunk_base(uint32_t chunk_idx) const {
+  ailego_force_inline const char *get_node_chunk_base(
+      uint32_t chunk_idx) const {
     if (ailego_unlikely(chunk_idx >= node_chunk_bases_.size())) {
       sync_node_chunk_bases(chunk_idx);
     }
@@ -488,6 +524,17 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
   }
 
   void sync_node_chunk_bases(uint32_t chunk_idx) const {
+    std::lock_guard<std::mutex> lock(chunk_bases_mutex_);
+    // Double-check after acquiring lock to avoid redundant sync
+    if (chunk_idx < node_chunk_bases_.size()) {
+      return;
+    }
+    // Pre-reserve to match node_chunks_ capacity so that subsequent
+    // push_back never triggers reallocation — the lock-free fast path in
+    // get_node_chunk_base reads existing elements without holding the mutex.
+    if (node_chunk_bases_.capacity() < node_chunks_.capacity()) {
+      node_chunk_bases_.reserve(node_chunks_.capacity());
+    }
     sync_node_chunks(chunk_idx);
     const auto &chunks = node_chunks_;
     for (size_t i = node_chunk_bases_.size(); i <= chunk_idx; ++i) {
@@ -497,6 +544,7 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     }
   }
 
+  mutable std::mutex chunk_bases_mutex_{};
   mutable std::vector<const char *> node_chunk_bases_{};
 };
 
@@ -529,9 +577,11 @@ class VamanaBufferPoolStreamerEntity : public VamanaStreamerEntity {
 };
 
 // --- Typed entity subclass for contiguous memory mode ---
-// Allocates contiguous memory and copies all chunk data into it.
-// Access is via a single base pointer + offset, eliminating chunk-level
-// indirection and maximizing memory locality.
+// Splits node data into two dense arrays during build:
+//   1. vector_base_: flat vector array (stride = vector_size)
+//   2. graph_base_:  key + neighbors  (stride = graph_stride_)
+// Total memory = vector_size + graph_stride_ per node (same as original
+// node_size), but each access pattern gets optimal cache locality.
 class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
  public:
   using VamanaMmapStreamerEntity::VamanaMmapStreamerEntity;
@@ -552,13 +602,23 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! Degrade to mmap mode by releasing contiguous memory and falling back
   //! to chunk-based access.
   void degrade_to_mmap() {
-    node_memory_.reset();
-    node_base_ = nullptr;
+    vector_memory_.reset();
+    vector_base_ = nullptr;
+    vector_stride_ = 0;
+    graph_memory_.reset();
+    graph_base_ = nullptr;
     LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
   }
 
   bool is_contiguous() const {
-    return node_base_ != nullptr;
+    return vector_base_ != nullptr;
+  }
+
+  //! Per-entry stride of the flat vector array (0 if no contiguous build).
+  //! Padded up to kVectorAlignment (64B), so it is also the amount that
+  //! should be prefetched per vector.
+  size_t vector_stride() const {
+    return vector_stride_;
   }
 
   int add_vector(key_t key, const void *vec, node_id_t *id) override {
@@ -571,23 +631,25 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
   }
 
-  inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
-    if (ailego_likely(node_base_ != nullptr)) {
-      const char *ptr = node_base_ + static_cast<size_t>(id) * node_size() +
-                        vector_size() + sizeof(key_t);
+  ailego_force_inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
+    if (ailego_likely(graph_base_ != nullptr)) {
+      // graph layout: [key (sizeof(key_t)) | NeighborsHeader + neighbors]
+      const char *ptr =
+          graph_base_ + static_cast<size_t>(id) * graph_stride_ + sizeof(key_t);
       MmapMemoryBlock block(const_cast<char *>(ptr));
       return TypedNeighbors(std::move(block));
     }
     return VamanaMmapStreamerEntity::get_neighbors_typed(id);
   }
 
-  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
-                              std::vector<MmapMemoryBlock> &vec_blocks) const {
-    if (ailego_likely(node_base_ != nullptr)) {
+  ailego_force_inline int get_vector_typed(
+      const node_id_t *ids, uint32_t count,
+      std::vector<MmapMemoryBlock> &vec_blocks) const {
+    if (ailego_likely(vector_base_ != nullptr)) {
       vec_blocks.resize(count);
       for (auto i = 0U; i < count; ++i) {
         const char *ptr =
-            node_base_ + static_cast<size_t>(ids[i]) * node_size();
+            vector_base_ + static_cast<size_t>(ids[i]) * vector_stride_;
         vec_blocks[i].reset(const_cast<char *>(ptr));
       }
       return 0;
@@ -595,37 +657,53 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::get_vector_typed(ids, count, vec_blocks);
   }
 
-  inline key_t get_key_typed(node_id_t id) const {
-    if (ailego_likely(node_base_ != nullptr)) {
+  ailego_force_inline key_t get_key_typed(node_id_t id) const {
+    if (ailego_likely(graph_base_ != nullptr)) {
       if (!use_key_info_map_) return id;
-      const char *ptr =
-          node_base_ + static_cast<size_t>(id) * node_size() + vector_size();
+      // key is at offset 0 within each graph node
+      const char *ptr = graph_base_ + static_cast<size_t>(id) * graph_stride_;
       return *reinterpret_cast<const key_t *>(ptr);
     }
     return VamanaMmapStreamerEntity::get_key_typed(id);
   }
 
+  //! Direct vector pointer from flat vector array.
+  //! Stride is padded up to kVectorAlignment (64B) to preserve cache-line
+  //! alignment even when vector_size is not a multiple of 64.  The padding is
+  //! purely in-memory and does NOT affect the on-disk index file layout.
+  ailego_force_inline const void *get_vector_ptr(node_id_t id) const {
+    if (ailego_likely(vector_base_ != nullptr)) {
+      return vector_base_ + static_cast<size_t>(id) * vector_stride_;
+    }
+    return VamanaMmapStreamerEntity::get_vector_ptr(id);
+  }
+
  protected:
-  //! Custom deleter for contiguous memory (munmap / _aligned_free / free)
+  //! Custom deleter for contiguous memory allocated via
+  //! MemoryHelper::AllocateHugePage. `size` is the (already huge-page-aligned)
+  //! length passed at allocation time, required by the mmap/munmap path.
   struct ContiguousDeleter {
     size_t size;
     void operator()(char *ptr) const {
-      if (!ptr) return;
-#if defined(__linux__) || defined(__APPLE__)
-      ::munmap(ptr, size);
-#elif defined(_WIN32)
-      ::_aligned_free(ptr);
-#else
-      std::free(ptr);
-#endif
+      ailego::MemoryHelper::FreeHugePage(ptr, size);
     }
   };
 
-  //! Shared ownership of contiguous memory (enables zero-copy clone)
-  std::shared_ptr<char> node_memory_{};
+  //! Flat vector array: vectors stored densely with per-vector stride
+  //! padded up to kVectorAlignment (64B) to keep each vector's starting
+  //! address cache-line aligned. Base is page-aligned by the allocator.
+  std::shared_ptr<char> vector_memory_{};
+  char *vector_base_{nullptr};
+  //! Per-vector stride = AlignUp(vector_size(), kVectorAlignment).
+  size_t vector_stride_{0};
 
-  //! Raw pointer for hot-path access (derived from shared_ptr)
-  char *node_base_{nullptr};
+  //! Graph array: [key | neighbors] stored densely (stride = graph_stride_).
+  std::shared_ptr<char> graph_memory_{};
+  char *graph_base_{nullptr};
+  size_t graph_stride_{0};  // sizeof(key_t) + neighbors_size()
+
+  //! Cache-line alignment used for per-vector stride in the flat array.
+  static constexpr size_t kVectorAlignment = 64;
 
  private:
   static char *allocate_contiguous(size_t size);

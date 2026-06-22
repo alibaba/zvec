@@ -4,6 +4,13 @@ if(MSVC)
     set(protobuf_MSVC_STATIC_RUNTIME ${ZVEC_USE_STATIC_CRT} CACHE BOOL "" FORCE)
 endif()
 
+if(MSVC)
+    # Remove /MP for sccache compatibility (sccache cannot cache multi-file compilations).
+    set(PROTOBUF_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/protobuf-3.21.12)
+    set(PROTOBUF_WINDOWS_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/protobuf.windows.patch)
+    apply_patch_once("protobuf_windows_fix" "${PROTOBUF_SRC_DIR}" "${PROTOBUF_WINDOWS_PATCH}")
+endif()
+
 set(_SAVED_CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${EXTERNAL_LIB_DIR})
 add_subdirectory(protobuf-3.21.12/cmake protobuf-3.21.12)

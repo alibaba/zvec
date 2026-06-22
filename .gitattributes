@@ -1,0 +1,3 @@
+# Auto-generated files — collapsed in GitHub PR diffs
+src/db/index/column/fts_column/gen/** linguist-generated=true
+src/db/sqlengine/antlr/gen/** linguist-generated=true

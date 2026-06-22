@@ -26,7 +26,7 @@ namespace core {
 VamanaStreamer::VamanaStreamer() = default;
 
 VamanaStreamer::~VamanaStreamer() {
-  if (state_ == STATE_INITED) {
+  if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
 }
@@ -235,6 +235,12 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     auto metric_params = index_meta.metric_params();
     metric_params.merge(meta_.metric_params());
     meta_.set_metric(index_meta.metric_name(), 0, metric_params);
+    // Propagate reformer info from stored meta (needed for quantizers
+    // whose reformer params are computed during training, e.g. UniformInt8)
+    if (!index_meta.reformer_name().empty()) {
+      meta_.set_reformer(index_meta.reformer_name(), 0,
+                         index_meta.reformer_params());
+    }
   }
 
   // Create metric
@@ -254,17 +260,6 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     LOG_ERROR("Invalid metric distance functions");
     cleanup_on_error();
     return IndexError_InvalidArgument;
-  }
-
-  add_distance_ = metric_->distance();
-  add_batch_distance_ = metric_->batch_distance();
-  search_distance_ = add_distance_;
-  search_batch_distance_ = add_batch_distance_;
-
-  if (metric_->query_metric() && metric_->query_metric()->distance() &&
-      metric_->query_metric()->batch_distance()) {
-    search_distance_ = metric_->query_metric()->distance();
-    search_batch_distance_ = metric_->query_metric()->batch_distance();
   }
 
   // Create algorithm based on entity storage mode
@@ -341,6 +336,19 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
     LOG_ERROR("Failed to serialize meta into dumper.");
     return ret;
   }
+
+  // Calculate medoid (DiskANN standard: entry point = closest to centroid).
+  // At dump time, data_type and dimension are fully known from meta_.
+  if (entity_->doc_cnt() > 0) {
+    node_id_t medoid = entity_->calculate_medoid(
+        meta_.dimension(), static_cast<uint32_t>(meta_.data_type()));
+    if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
+      LOG_INFO("Updating entry point from %u to medoid %u",
+               entity_->entry_point(), medoid);
+      entity_->update_entry_point(medoid);
+    }
+  }
+
   return entity_->dump(dumper);
 }
 
@@ -443,8 +451,6 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -516,8 +522,6 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -580,7 +584,6 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
@@ -642,7 +645,6 @@ int VamanaStreamer::search_bf_impl(const void *query,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
 
   const auto &filter = static_cast<IndexContext *>(ctx)->filter();
@@ -684,7 +686,6 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
 
   auto &topk = ctx->topk_heap();

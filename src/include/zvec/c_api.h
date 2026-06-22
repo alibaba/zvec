@@ -680,6 +680,24 @@ ZVEC_EXPORT float ZVEC_CALL zvec_config_data_get_brute_force_by_keys_ratio(
     const zvec_config_data_t *config);
 
 /**
+ * @brief Set FTS brute force by keys ratio in configuration data
+ * @param config Configuration data pointer
+ * @param ratio FTS brute force by keys ratio
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_config_data_set_fts_brute_force_by_keys_ratio(zvec_config_data_t *config,
+                                                   float ratio);
+
+/**
+ * @brief Get FTS brute force by keys ratio from configuration data
+ * @param config Configuration data pointer
+ * @return float FTS brute force by keys ratio
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_config_data_get_fts_brute_force_by_keys_ratio(
+    const zvec_config_data_t *config);
+
+/**
  * @brief Set optimize thread count in configuration data
  * @param config Configuration data pointer
  * @param thread_count Optimize thread count
@@ -696,6 +714,20 @@ zvec_config_data_set_optimize_thread_count(zvec_config_data_t *config,
  */
 ZVEC_EXPORT uint32_t ZVEC_CALL
 zvec_config_data_get_optimize_thread_count(const zvec_config_data_t *config);
+
+/**
+ * @brief Set jieba dict directory in configuration data
+ * @param dir Dict directory; NULL or empty leaves the field empty
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_config_data_set_jieba_dict_dir(
+    zvec_config_data_t *config, const char *dir);
+
+/**
+ * @brief Get jieba dict directory from configuration data
+ * @return Pointer owned by config (do not free); empty when unset
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_config_data_get_jieba_dict_dir(const zvec_config_data_t *config);
 
 // =============================================================================
 // Initialization and Cleanup Interface
@@ -721,6 +753,26 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_shutdown(void);
  * @return true if initialized, false otherwise
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_is_initialized(void);
+
+/**
+ * @brief Set the process-wide default jieba dict directory.
+ *
+ * For language SDKs to call on module load. Thread-safe, decoupled from
+ * zvec_initialize(); last writer wins. A subsequent zvec_initialize() with
+ * non-empty config.jieba_dict_dir overrides this. JiebaTokenizer priority:
+ * per-field > ZVEC_JIEBA_DICT_DIR > this.
+ *
+ * @param dir UTF-8 directory containing jieba.dict.utf8 + hmm_model.utf8;
+ *            NULL or empty clears the value.
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_set_default_jieba_dict_dir(const char *dir);
+
+/**
+ * @brief Get the process-wide default jieba dict directory.
+ * @return Thread-local string valid until the next call on this thread;
+ *         empty when unset.
+ */
+ZVEC_EXPORT const char *ZVEC_CALL zvec_get_default_jieba_dict_dir(void);
 
 // =============================================================================
 // Data Type Enumerations
@@ -774,8 +826,12 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_HNSW 1
 #define ZVEC_INDEX_TYPE_IVF 2
 #define ZVEC_INDEX_TYPE_FLAT 3
-#define ZVEC_INDEX_TYPE_OMEGA 11
+#define ZVEC_INDEX_TYPE_HNSW_RABITQ 4
+#define ZVEC_INDEX_TYPE_VAMANA 5
+#define ZVEC_INDEX_TYPE_OMEGA 6
+#define ZVEC_INDEX_TYPE_DISKANN 7
 #define ZVEC_INDEX_TYPE_INVERT 10
+#define ZVEC_INDEX_TYPE_FTS 11
 
 /**
  * @brief Distance metric type codes (must match zvec::MetricType in
@@ -951,6 +1007,37 @@ zvec_index_params_set_omega_training_params(zvec_index_params_t *params,
                                             int ef_groundtruth);
 
 /**
+ * @brief Set Vamana specific parameters
+ * @param params Index parameters (must be VAMANA type)
+ * @param max_degree Maximum out-degree (R) of every node (default: 64)
+ * @param search_list_size Candidate list size during construction (default:
+ * 100)
+ * @param alpha RobustPrune alpha factor (default: 1.2)
+ * @param saturate_graph Force every node to reach max_degree (default: false)
+ * @param use_contiguous_memory Allocate contiguous memory arena (default:
+ * false)
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_vamana_params(
+    zvec_index_params_t *params, int max_degree, int search_list_size,
+    float alpha, bool saturate_graph, bool use_contiguous_memory);
+
+/**
+ * @brief Get Vamana parameters (all at once)
+ * @param params Index parameters (must be VAMANA type)
+ * @param[out] out_max_degree Maximum out-degree
+ * @param[out] out_search_list_size Construction candidate list size
+ * @param[out] out_alpha RobustPrune alpha factor
+ * @param[out] out_saturate_graph Whether saturate graph is enabled
+ * @param[out] out_use_contiguous_memory Whether contiguous memory is enabled
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_vamana_params(
+    const zvec_index_params_t *params, int *out_max_degree,
+    int *out_search_list_size, float *out_alpha, bool *out_saturate_graph,
+    bool *out_use_contiguous_memory);
+
+/**
  * @brief Set IVF specific parameters
  * @param params Index parameters (must be IVF type)
  * @param n_list Number of cluster centers
@@ -993,6 +1080,34 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_invert_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
     zvec_index_params_t *params, bool enable_range_opt, bool enable_wildcard);
+
+/**
+ * @brief Set FTS index specific parameters
+ * @param params Index parameters (must be FTS type)
+ * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value)
+ * @param filters Token filter names (NULL keeps current value)
+ * @param extra_params Additional tokenizer parameters (NULL keeps current
+ * value)
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_fts_params(
+    zvec_index_params_t *params, const char *tokenizer_name,
+    const zvec_string_array_t *filters, const char *extra_params);
+
+/**
+ * @brief Get FTS index parameters (all at once)
+ * @param params Index parameters (must be FTS type)
+ * @param out_tokenizer_name Output parameter for tokenizer name (can be NULL,
+ *                           owned by params, do not free)
+ * @param out_filters Output parameter for filter list (can be NULL); caller
+ *                    must call zvec_string_array_destroy() to free
+ * @param out_extra_params Output parameter for extra params (can be NULL,
+ *                         owned by params, do not free)
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_fts_params(
+    const zvec_index_params_t *params, const char **out_tokenizer_name,
+    zvec_string_array_t **out_filters, const char **out_extra_params);
 
 // =============================================================================
 // Query Parameters Structures (Opaque Pointer Pattern)
@@ -1038,6 +1153,26 @@ typedef struct zvec_ivf_query_params_t zvec_ivf_query_params_t;
  */
 typedef struct zvec_flat_query_params_t zvec_flat_query_params_t;
 
+/**
+ * @brief FTS query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::FtsQueryParams* (raw pointer).
+ * Created by zvec_query_params_fts_create() and destroyed by
+ * zvec_query_params_fts_destroy(). Caller owns the pointer and must explicitly
+ * destroy it.
+ */
+typedef struct zvec_fts_query_params_t zvec_fts_query_params_t;
+
+/**
+ * @brief Vamana query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::VamanaQueryParams* (raw pointer).
+ * Created by zvec_query_params_vamana_create() and destroyed by
+ * zvec_query_params_vamana_destroy(). Caller owns the pointer and must
+ * explicitly destroy it.
+ */
+typedef struct zvec_vamana_query_params_t zvec_vamana_query_params_t;
+
 
 // =============================================================================
 // Query Structures (Opaque Pointer Pattern)
@@ -1045,9 +1180,10 @@ typedef struct zvec_flat_query_params_t zvec_flat_query_params_t;
 
 /**
  * @brief Vector query structure (opaque pointer)
- * Aligned with zvec::VectorQuery
+ * Backed by zvec::SearchQuery internally; the C symbol name is kept for
+ * backward compatibility.
  * Use zvec_vector_query_create() to create and zvec_vector_query_destroy() to
- * destroy
+ * destroy.
  */
 typedef struct zvec_vector_query_t zvec_vector_query_t;
 
@@ -1058,6 +1194,37 @@ typedef struct zvec_vector_query_t zvec_vector_query_t;
  * zvec_group_by_vector_query_destroy() to destroy
  */
 typedef struct zvec_group_by_vector_query_t zvec_group_by_vector_query_t;
+
+/**
+ * @brief FTS query payload structure (opaque pointer)
+ * Aligned with zvec::Fts
+ * Use zvec_fts_create() to create and zvec_fts_destroy() to destroy
+ */
+typedef struct zvec_fts_t zvec_fts_t;
+
+/**
+ * @brief Document object (opaque pointer, forward declaration for reranker
+ * callback)
+ */
+typedef struct zvec_doc_t zvec_doc_t;
+
+typedef struct zvec_collection_schema_t zvec_collection_schema_t;
+
+/**
+ * @brief Multi-query query structure (opaque pointer)
+ * Aligned with zvec::MultiQuery
+ * Use zvec_multi_query_create() to create and
+ * zvec_multi_query_destroy() to destroy
+ */
+typedef struct zvec_multi_query_t zvec_multi_query_t;
+
+/**
+ * @brief Sub-query structure for multi-query (opaque pointer)
+ * Aligned with zvec::SubQuery
+ * Use zvec_sub_query_create() to create and
+ * zvec_sub_query_destroy() to destroy
+ */
+typedef struct zvec_sub_query_t zvec_sub_query_t;
 
 
 // =============================================================================
@@ -1467,6 +1634,139 @@ ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_flat_get_is_using_refiner(
     const zvec_flat_query_params_t *params);
 
 // -----------------------------------------------------------------------------
+// zvec_fts_query_params_t (FTS Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create FTS query parameters
+ * @param default_operator Default boolean operator for adjacent bare terms:
+ *                         "OR" / "AND" (case-insensitive); NULL or "" keeps
+ *                         the built-in default
+ * @return zvec_fts_query_params_t* Pointer to the newly created FTS query
+ * parameters
+ */
+ZVEC_EXPORT zvec_fts_query_params_t *ZVEC_CALL
+zvec_query_params_fts_create(const char *default_operator);
+
+/**
+ * @brief Destroy FTS query parameters
+ * @param params FTS query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_fts_destroy(zvec_fts_query_params_t *params);
+
+/**
+ * @brief Set default boolean operator
+ * @param params FTS query parameters pointer
+ * @param default_operator Default boolean operator
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_fts_set_default_operator(zvec_fts_query_params_t *params,
+                                           const char *default_operator);
+
+/**
+ * @brief Get default boolean operator
+ * @param params FTS query parameters pointer
+ * @return const char* Default boolean operator (owned by params, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL zvec_query_params_fts_get_default_operator(
+    const zvec_fts_query_params_t *params);
+
+// -----------------------------------------------------------------------------
+// zvec_vamana_query_params_t (Vamana Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create Vamana query parameters
+ * @param ef_search Search-time candidate list size (default: 200)
+ * @param radius Search radius (default: 0.0)
+ * @param is_linear Whether linear search (default: false)
+ * @param is_using_refiner Whether using refiner (default: false)
+ * @return zvec_vamana_query_params_t* Pointer to the newly created Vamana
+ *         query parameters
+ */
+ZVEC_EXPORT zvec_vamana_query_params_t *ZVEC_CALL
+zvec_query_params_vamana_create(int ef_search, float radius, bool is_linear,
+                                bool is_using_refiner);
+
+/**
+ * @brief Destroy Vamana query parameters
+ * @param params Vamana query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_vamana_destroy(zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set search-time candidate list size
+ * @param params Vamana query parameters pointer
+ * @param ef_search Candidate list size
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_vamana_set_ef_search(
+    zvec_vamana_query_params_t *params, int ef_search);
+
+/**
+ * @brief Get search-time candidate list size
+ * @param params Vamana query parameters pointer
+ * @return int Candidate list size
+ */
+ZVEC_EXPORT int ZVEC_CALL zvec_query_params_vamana_get_ef_search(
+    const zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set search radius
+ * @param params Vamana query parameters pointer
+ * @param radius Search radius
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_vamana_set_radius(
+    zvec_vamana_query_params_t *params, float radius);
+
+/**
+ * @brief Get search radius
+ * @param params Vamana query parameters pointer
+ * @return float Search radius
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_query_params_vamana_get_radius(const zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set linear search mode
+ * @param params Vamana query parameters pointer
+ * @param is_linear Whether linear search
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_vamana_set_is_linear(
+    zvec_vamana_query_params_t *params, bool is_linear);
+
+/**
+ * @brief Get linear search mode
+ * @param params Vamana query parameters pointer
+ * @return bool Whether linear search
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_vamana_get_is_linear(
+    const zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set whether to use refiner
+ * @param params Vamana query parameters pointer
+ * @param is_using_refiner Whether to use refiner
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_vamana_set_is_using_refiner(
+    zvec_vamana_query_params_t *params, bool is_using_refiner);
+
+/**
+ * @brief Get whether to use refiner
+ * @param params Vamana query parameters pointer
+ * @return bool Whether to use refiner
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_vamana_get_is_using_refiner(
+    const zvec_vamana_query_params_t *params);
+
+// -----------------------------------------------------------------------------
 // zvec_vector_query_t (Vector Query)
 // -----------------------------------------------------------------------------
 
@@ -1647,6 +1947,92 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_ivf_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_flat_params(
     zvec_vector_query_t *query, zvec_flat_query_params_t *flat_params);
+
+/**
+ * @brief Set FTS query parameters (takes ownership)
+ * @param query Vector query pointer
+ * @param fts_params FTS query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_fts_params(
+    zvec_vector_query_t *query, zvec_fts_query_params_t *fts_params);
+
+/**
+ * @brief Set Vamana query parameters for vector query
+ * @param query Vector query pointer
+ * @param vamana_params Vamana query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_vamana_params(
+    zvec_vector_query_t *query, zvec_vamana_query_params_t *vamana_params);
+
+// -----------------------------------------------------------------------------
+// zvec_fts_t (FTS query payload)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create FTS query payload
+ * @return zvec_fts_t* Pointer to the newly created FTS query payload
+ */
+ZVEC_EXPORT zvec_fts_t *ZVEC_CALL zvec_fts_create(void);
+
+/**
+ * @brief Destroy FTS query payload
+ * @param fts FTS query payload pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_fts_destroy(zvec_fts_t *fts);
+
+/**
+ * @brief Set FTS boolean / advanced query expression
+ * @param fts FTS query payload pointer
+ * @param query_string Query expression (NULL is treated as empty string)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_fts_set_query_string(zvec_fts_t *fts, const char *query_string);
+
+/**
+ * @brief Set FTS natural-language match string
+ * @param fts FTS query payload pointer
+ * @param match_string Match string (NULL is treated as empty string)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_fts_set_match_string(zvec_fts_t *fts, const char *match_string);
+
+/**
+ * @brief Get FTS query expression
+ * @param fts FTS query payload pointer
+ * @return const char* Query expression (owned by fts, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_fts_get_query_string(const zvec_fts_t *fts);
+
+/**
+ * @brief Get FTS match string
+ * @param fts FTS query payload pointer
+ * @return const char* Match string (owned by fts, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_fts_get_match_string(const zvec_fts_t *fts);
+
+/**
+ * @brief Set FTS payload on a vector query (payload is copied)
+ * @param query Vector query pointer
+ * @param fts FTS query payload pointer (NULL clears the payload)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_vector_query_set_fts(zvec_vector_query_t *query, const zvec_fts_t *fts);
+
+/**
+ * @brief Get FTS payload attached to a vector query
+ * @param query Vector query pointer
+ * @return const zvec_fts_t* FTS payload (owned by query, do not free), or
+ *         NULL if no payload is attached
+ */
+ZVEC_EXPORT const zvec_fts_t *ZVEC_CALL
+zvec_vector_query_get_fts(const zvec_vector_query_t *query);
 
 // -----------------------------------------------------------------------------
 // zvec_group_by_vector_query_t (Group By Vector Query)
@@ -1851,6 +2237,277 @@ zvec_group_by_vector_query_set_ivf_params(zvec_group_by_vector_query_t *query,
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_group_by_vector_query_set_flat_params(
     zvec_group_by_vector_query_t *query, zvec_flat_query_params_t *flat_params);
+
+/**
+ * @brief Set Vamana query parameters (takes ownership)
+ * @param query Group by vector query pointer
+ * @param vamana_params Vamana query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_group_by_vector_query_set_vamana_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_vamana_query_params_t *vamana_params);
+
+// -----------------------------------------------------------------------------
+// Rerank Strategy (set on MultiQuery)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Set RRF rerank strategy on a multi-query.
+ * @param query Multi-query pointer
+ * @param rank_constant RRF rank constant (default: 60)
+ * @return Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_rerank_rrf(zvec_multi_query_t *query, int rank_constant);
+
+/**
+ * @brief Set Weighted rerank strategy on a multi-query.
+ * @param query Multi-query pointer
+ * @param weights Array of per-sub-query weights
+ * @param weight_count Number of weights
+ * @return Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_rerank_weighted(
+    zvec_multi_query_t *query, const double *weights, size_t weight_count);
+
+// -----------------------------------------------------------------------------
+// zvec_multi_query_t (Multi Query)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create multi-query query
+ * @return zvec_multi_query_t* Pointer to the newly created multi query
+ */
+ZVEC_EXPORT zvec_multi_query_t *ZVEC_CALL zvec_multi_query_create(void);
+
+/**
+ * @brief Destroy multi-query query
+ * @param query Multi query pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_multi_query_destroy(zvec_multi_query_t *query);
+
+/**
+ * @brief Add a sub-query to the multi-query query
+ * @param query Multi query pointer
+ * @param sub_query Sub-query to add (copied, caller retains ownership)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_add_sub_query(
+    zvec_multi_query_t *query, const zvec_sub_query_t *sub_query);
+
+/**
+ * @brief Get number of sub-queries
+ * @param query Multi query pointer
+ * @return size_t Number of sub-queries
+ */
+ZVEC_EXPORT size_t ZVEC_CALL
+zvec_multi_query_get_sub_query_count(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set topk
+ * @param query Multi-vector query pointer
+ * @param topk Number of results
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_topk(zvec_multi_query_t *query, int topk);
+
+/**
+ * @brief Get topk
+ * @param query Multi-vector query pointer
+ * @return int Number of results
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_multi_query_get_topk(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set filter expression
+ * @param query Multi-vector query pointer
+ * @param filter Filter expression string
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_filter(zvec_multi_query_t *query, const char *filter);
+
+/**
+ * @brief Get filter expression
+ * @param query Multi-vector query pointer
+ * @return const char* Filter expression (owned by query, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_multi_query_get_filter(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set whether to include vector data in results
+ * @param query Multi-vector query pointer
+ * @param include Whether to include vectors
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_include_vector(zvec_multi_query_t *query, bool include);
+
+/**
+ * @brief Get whether to include vector data in results
+ * @param query Multi-vector query pointer
+ * @return bool Whether to include vectors
+ */
+ZVEC_EXPORT bool ZVEC_CALL
+zvec_multi_query_get_include_vector(const zvec_multi_query_t *query);
+
+/**
+ * @brief Set output fields
+ * @param query Multi-vector query pointer
+ * @param fields Array of field names
+ * @param count Number of fields
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_output_fields(
+    zvec_multi_query_t *query, const char **fields, size_t count);
+
+/**
+ * @brief Get output fields
+ * @param query Multi-vector query pointer
+ * @param[out] fields Output array of field names (allocated by library)
+ * @param[out] count Number of fields
+ * @return zvec_error_code_t Error code
+ *
+ * @note The returned array is allocated by the library and should be freed
+ *       using zvec_free() when no longer needed. The individual string pointers
+ *       are owned by the query and must NOT be freed.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_get_output_fields(
+    zvec_multi_query_t *query, const char ***fields, size_t *count);
+
+// -----------------------------------------------------------------------------
+// zvec_sub_query_t (Sub-Query for Multi Query)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create sub-query
+ * @return zvec_sub_query_t* Pointer to the newly created
+ * sub-query
+ */
+ZVEC_EXPORT zvec_sub_query_t *ZVEC_CALL zvec_sub_query_create(void);
+
+/**
+ * @brief Destroy sub-query
+ * @param query Sub-query pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_sub_query_destroy(zvec_sub_query_t *query);
+
+/**
+ * @brief Set number of candidates to retrieve per field
+ * @param query Sub-query pointer
+ * @param num_candidates Number of candidates
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_sub_query_set_num_candidates(zvec_sub_query_t *query, int num_candidates);
+
+/**
+ * @brief Get number of candidates
+ * @param query Sub-query pointer
+ * @return int Number of candidates
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_sub_query_get_num_candidates(const zvec_sub_query_t *query);
+
+/**
+ * @brief Set field name
+ * @param query Sub-query pointer
+ * @param field_name Field name
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_sub_query_set_field_name(zvec_sub_query_t *query, const char *field_name);
+
+/**
+ * @brief Get field name
+ * @param query Sub-query pointer
+ * @return const char* Field name (owned by query, do not free)
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_sub_query_get_field_name(const zvec_sub_query_t *query);
+
+/**
+ * @brief Set query vector data
+ * @param query Sub-query pointer
+ * @param data Vector data pointer
+ * @param size Data size in bytes
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_query_vector(
+    zvec_sub_query_t *query, const void *data, size_t size);
+
+/**
+ * @brief Set sparse vector indices and values
+ * @param query Sub-query pointer
+ * @param indices Array of uint32_t indices
+ * @param values Array of float values
+ * @param count Number of sparse vector entries
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_sparse_vector(
+    zvec_sub_query_t *query, const uint32_t *indices, const float *values,
+    size_t count);
+
+/**
+ * @brief Set sparse vector indices
+ * @param query Sub-query pointer
+ * @param indices Array of uint32_t indices
+ * @param count Number of indices
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_sparse_indices(
+    zvec_sub_query_t *query, const uint32_t *indices, size_t count);
+
+/**
+ * @brief Set sparse vector values
+ * @param query Sub-query pointer
+ * @param values Array of float values
+ * @param count Number of values
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_sparse_values(
+    zvec_sub_query_t *query, const float *values, size_t count);
+
+/**
+ * @brief Set HNSW query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param hnsw_params HNSW query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_hnsw_params(
+    zvec_sub_query_t *query, zvec_hnsw_query_params_t *hnsw_params);
+
+/**
+ * @brief Set IVF query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param ivf_params IVF query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_ivf_params(
+    zvec_sub_query_t *query, zvec_ivf_query_params_t *ivf_params);
+
+/**
+ * @brief Set Flat query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param flat_params Flat query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_flat_params(
+    zvec_sub_query_t *query, zvec_flat_query_params_t *flat_params);
+
+/**
+ * @brief Set Vamana query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param vamana_params Vamana query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_vamana_params(
+    zvec_sub_query_t *query, zvec_vamana_query_params_t *vamana_params);
 
 // =============================================================================
 // Collection Options and Statistics (Opaque Pointer Pattern)
@@ -2171,16 +2828,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_field_schema_validate(
 // =============================================================================
 // Collection Schema Structures (Opaque Pointer Pattern)
 // =============================================================================
-
-/**
- * @brief Collection schema handle (opaque pointer)
- *
- * Internally maps to zvec::CollectionSchema* (raw pointer).
- * Created by zvec_collection_schema_create() and destroyed by
- * zvec_collection_schema_destroy(). Caller owns the pointer and must explicitly
- * destroy it.
- */
-typedef struct zvec_collection_schema_t zvec_collection_schema_t;
 
 /**
  * @brief Create collection schema
@@ -2633,13 +3280,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_alter_column(
     const char *new_name, const zvec_field_schema_t *new_schema);
 
 /**
- * @brief Document structure (opaque pointer mode)
- * Internal implementation details are not visible to the outside, and
- * operations are performed through API functions
- */
-typedef struct zvec_doc_t zvec_doc_t;
-
-/**
  * @brief Per-document status returned by detailed DML APIs.
  * @note Uses ordered style: result index corresponds to input document index.
  *       Caller should access pk by index from the original input array.
@@ -2802,10 +3442,28 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
     zvec_doc_t ***results, size_t *result_count);
 
 /**
+ * @brief Multi-query with multiple sub-queries and re-ranking
+ * @param collection Collection handle
+ * @param query Multi-query query parameters pointer
+ * @param[out] results Returned document array (needs to be freed by calling
+ * zvec_docs_free)
+ * @param[out] result_count Number of returned results
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_multi_query(
+    const zvec_collection_t *collection, const zvec_multi_query_t *query,
+    zvec_doc_t ***results, size_t *result_count);
+
+/**
  * @brief Fetch documents by primary keys
  * @param collection Collection handle
  * @param primary_keys Primary key array
  * @param count Number of primary keys
+ * @param output_fields Array of field names to return; NULL means return all
+ * fields
+ * @param output_field_count Number of output_fields entries; 0 if
+ * output_fields is NULL
+ * @param include_vector Whether to include vector data in results
  * @param[out] documents Returned document array (needs to be freed by calling
  * zvec_docs_free)
  * @param[out] found_count Number of found documents
@@ -2813,7 +3471,8 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_fetch(
     zvec_collection_t *collection, const char *const *primary_keys,
-    size_t count, zvec_doc_t ***documents, size_t *found_count);
+    size_t count, const char *const *output_fields, size_t output_field_count,
+    bool include_vector, zvec_doc_t ***documents, size_t *found_count);
 
 // =============================================================================
 // Document Related Structures

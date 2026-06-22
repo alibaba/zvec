@@ -18,12 +18,14 @@
 #include <string>
 #include <unordered_map>
 #include <variant>
+#include <roaring.hh>
 #include <arrow/record_batch.h>
 #include <arrow/status.h>
 #include <zvec/db/index_params.h>
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/meta.h"
+#include "zvec/core/framework/index_provider.h"
 #include "segment.h"
 
 namespace zvec {
@@ -128,13 +130,42 @@ struct DropScalarIndexTask {
   InvertedIndexer::Ptr output_scalar_indexer_;  // nullptr means no scalar index
 };
 
+struct CreateFtsIndexTask {
+  CreateFtsIndexTask(Segment::Ptr input_segment, std::string column,
+                     IndexParams::Ptr index_params)
+      : input_segment_(input_segment),
+        column_(std::move(column)),
+        index_params_(std::move(index_params)) {}
+
+  Segment::Ptr input_segment_;
+  std::string column_;
+  IndexParams::Ptr index_params_;
+
+  // output
+  SegmentMeta::Ptr output_segment_meta_;
+  FtsIndexer::Ptr output_fts_indexer_;
+};
+
+struct DropFtsIndexTask {
+  DropFtsIndexTask(Segment::Ptr input_segment, std::string column)
+      : input_segment_(input_segment), column_(std::move(column)) {}
+
+  Segment::Ptr input_segment_;
+  std::string column_;
+
+  // output
+  SegmentMeta::Ptr output_segment_meta_;
+  FtsIndexer::Ptr output_fts_indexer_;
+};
+
 class SegmentTask {
  public:
   using Ptr = std::shared_ptr<SegmentTask>;
 
   using TaskInfo =
       std::variant<CompactTask, CreateVectorIndexTask, DropVectorIndexTask,
-                   CreateScalarIndexTask, DropScalarIndexTask>;
+                   CreateScalarIndexTask, DropScalarIndexTask,
+                   CreateFtsIndexTask, DropFtsIndexTask>;
 
   static Ptr CreateCompactTask(const CompactTask &task) {
     return std::make_shared<SegmentTask>(task);
@@ -156,6 +187,14 @@ class SegmentTask {
     return std::make_shared<SegmentTask>(task);
   }
 
+  static Ptr CreateCreateFtsIndexTask(const CreateFtsIndexTask &task) {
+    return std::make_shared<SegmentTask>(task);
+  }
+
+  static Ptr CreateDropFtsIndexTask(const DropFtsIndexTask &task) {
+    return std::make_shared<SegmentTask>(task);
+  }
+
  public:
   SegmentTask(const CompactTask &task) : task_info_(task) {}
 
@@ -166,6 +205,10 @@ class SegmentTask {
   SegmentTask(const DropVectorIndexTask &task) : task_info_(task) {}
 
   SegmentTask(const DropScalarIndexTask &task) : task_info_(task) {}
+
+  SegmentTask(const CreateFtsIndexTask &task) : task_info_(task) {}
+
+  SegmentTask(const DropFtsIndexTask &task) : task_info_(task) {}
 
   TaskInfo &task_info() {
     return task_info_;
@@ -214,6 +257,44 @@ class SegmentHelper {
       std::function<BlockID()> &block_id_generator, uint64_t min_doc_id,
       uint64_t max_doc_id, uint32_t doc_count, int concurrency,
       std::vector<BlockMeta> *output_block_metas);
+
+  // Merges `source_indexers` into a new VectorColumnIndexer at
+  // `output_index_path`. When the first indexer is eligible for reuse (see
+  // CanReuseFirstIndexer), its file is copied to the
+  // output path and opened in-place as the merge base. If `merged_indexer` is
+  // non-null, it receives the opened indexer (caller owns Close()); otherwise
+  // the indexer is closed before returning.
+  static Status MergeWithOptionalReuse(
+      const std::string &output_index_path, const FieldSchema &index_field,
+      std::vector<VectorColumnIndexer::Ptr> source_indexers,
+      const IndexFilter::Ptr &filter, int concurrency,
+      VectorColumnIndexer::Ptr *merged_indexer);
+
+  // Returns a FieldSchema clone whose index_params is ready for building the
+  // quantize indexer.
+  //   - RABITQ: clones HnswRabitqIndexParams, trains a RabitqConverter against
+  //     `raw_vector_provider`, and attaches the resulting reformer and raw
+  //     provider to the cloned params.
+  //   - Other quantize types: clones the field with its current index_params
+  //     unchanged.
+  // `raw_vector_provider` must remain alive until the quantize indexer has
+  // been flushed; it may be null for non-RABITQ cases.
+  static Status PrepareQuantizeField(
+      const FieldSchema &field,
+      const core::IndexProvider::Pointer &raw_vector_provider,
+      std::shared_ptr<FieldSchema> *out_field);
+
+  // Build a fresh FTS RocksDB under output_segment_path by streaming all
+  // FTS fields from input_segments through FtsRocksdbReducer.
+  //   - input_segments: ascending min_doc_id, contiguous doc_id range.
+  //   - delete_row_id_bitmap: deleted positions in input scan order
+  //     (shared with the vector path); empty for pure consolidation.
+  static Status ReduceFts(const CollectionSchema::Ptr &schema,
+                          const std::vector<Segment::Ptr> &input_segments,
+                          const std::string &output_segment_path,
+                          const roaring::Roaring &delete_row_id_bitmap,
+                          std::function<BlockID()> &block_id_generator,
+                          std::vector<BlockMeta> *output_block_metas);
 
   static arrow::Status FilterRecordBatch(
       const std::shared_ptr<arrow::RecordBatch> &batch,

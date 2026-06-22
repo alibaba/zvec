@@ -13,6 +13,9 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
+#include <numeric>
+#include <vector>
 #include <zvec/core/framework/index_searcher.h>
 #include "ivf_entity.h"
 
@@ -32,64 +35,113 @@ class IVFIndexProvider : public IndexProvider {
 
  public:
   //! Create a new iterator
-  virtual Iterator::Pointer create_iterator(void) override {
-    return Iterator::Pointer(new (std::nothrow) Iterator(entity_));
+  Iterator::Pointer create_iterator(void) override {
+    return Iterator::Pointer(new (std::nothrow) SortedIterator(entity_));
   }
 
   //! Retrieve count of vectors
-  virtual size_t count(void) const override {
+  size_t count(void) const override {
     return entity_->vector_count();
   }
 
   //! Retrieve dimension of vector
-  virtual size_t dimension(void) const override {
+  size_t dimension(void) const override {
     return meta_.dimension();
   }
 
   //! Retrieve type of vector
-  virtual IndexMeta::DataType data_type(void) const override {
+  IndexMeta::DataType data_type(void) const override {
     return meta_.data_type();
   }
 
   //! Retrieve vector size in bytes
-  virtual size_t element_size(void) const override {
+  size_t element_size(void) const override {
     return meta_.element_size();
   }
 
   //! Retrieve a vector using a primary key
-  virtual const void *get_vector(uint64_t key) const override {
+  const void *get_vector(uint64_t key) const override {
     return entity_->get_vector_by_key(key);
   }
 
   //! Retrieve the owner class
-  virtual const std::string &owner_class(void) const override {
+  const std::string &owner_class(void) const override {
     return owner_class_;
   }
 
  private:
+  class SortedIterator : public IndexProvider::Iterator {
+   public:
+    SortedIterator(const IVFEntity::Pointer &entity) : entity_(entity) {
+      count_ = entity_->vector_count();
+      mapping_ = entity_->get_key_order_mapping();
+      if (!mapping_) {
+        // Fallback: compute sorting if mapping segment is unavailable
+        fallback_.resize(count_);
+        std::iota(fallback_.begin(), fallback_.end(), size_t(0));
+        std::sort(fallback_.begin(), fallback_.end(), [&](size_t a, size_t b) {
+          return entity_->get_key(a) < entity_->get_key(b);
+        });
+      }
+    }
+
+    //! Retrieve pointer of data
+    //! NOTICE: the vec feature will be changed after iterating to next, so
+    //! the caller need to keep a copy of it before iterator to next vector
+    const void *data(void) const override {
+      return entity_->get_vector(current_local_id());
+    }
+
+    //! Test if the iterator is valid
+    bool is_valid(void) const override {
+      return pos_ < count_;
+    }
+
+    //! Retrieve primary key
+    uint64_t key(void) const override {
+      return entity_->get_key(current_local_id());
+    }
+
+    //! Next iterator
+    void next(void) override {
+      ++pos_;
+    }
+
+   private:
+    size_t current_local_id() const {
+      return mapping_ ? static_cast<size_t>(mapping_[pos_]) : fallback_[pos_];
+    }
+
+    //! Members
+    IVFEntity::Pointer entity_;
+    const uint32_t *mapping_{nullptr};  // points into mapping_ segment data
+    std::vector<size_t> fallback_;      // used only if mapping_ unavailable
+    size_t count_{0};
+    size_t pos_{0};
+  };
+
+  //! Original sequential iterator (kept for potential internal use)
   class Iterator : public IndexProvider::Iterator {
    public:
     Iterator(const IVFEntity::Pointer &entity) : entity_(entity) {}
 
     //! Retrieve pointer of data
-    //! NOTICE: the vec feature will be changed after iterating to next, so
-    //! the caller need to keep a copy of it before iterator to next vector
-    virtual const void *data(void) const override {
+    const void *data(void) const override {
       return entity_->get_vector(index_);
     }
 
     //! Test if the iterator is valid
-    virtual bool is_valid(void) const override {
+    bool is_valid(void) const override {
       return index_ < entity_->vector_count();
     }
 
     //! Retrieve primary key
-    virtual uint64_t key(void) const override {
+    uint64_t key(void) const override {
       return entity_->get_key(index_);
     }
 
     //! Next iterator
-    virtual void next(void) override {
+    void next(void) override {
       ++index_;
     }
 

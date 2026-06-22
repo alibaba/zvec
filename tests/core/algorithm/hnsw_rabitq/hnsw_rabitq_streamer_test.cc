@@ -614,5 +614,47 @@ TEST_F(HnswRabitqStreamerTest, TestDimensions) {
   }
 }
 
+TEST_F(HnswRabitqStreamerTest, TestExBitsMismatch) {
+  auto holder =
+      make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t doc_cnt = 500UL;
+  for (size_t i = 0; i < doc_cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = static_cast<float>(i * dim + j) / 1000.0f;
+    }
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  // Train converter with default total_bits (7, ex_bits=6)
+  RabitqConverter converter;
+  converter.init(*index_meta_ptr_, ailego::Params());
+  ASSERT_EQ(converter.train(holder), 0);
+  std::shared_ptr<IndexReformer> index_reformer;
+  ASSERT_EQ(converter.to_reformer(&index_reformer), 0);
+  auto reformer = std::dynamic_pointer_cast<RabitqReformer>(index_reformer);
+
+  // Create streamer with total_bits=2 (ex_bits=1), mismatching the reformer
+  IndexStreamer::Pointer streamer =
+      std::make_shared<HnswRabitqStreamer>(holder, reformer);
+
+  ailego::Params params;
+  params.set("proxima.hnsw_rabitq.streamer.max_neighbor_count", 16U);
+  params.set("proxima.hnsw_rabitq.streamer.upper_neighbor_count", 8U);
+  params.set("proxima.hnsw_rabitq.streamer.scaling_factor", 5U);
+  params.set("proxima.hnsw_rabitq.general.dimension", dim);
+  params.set(PARAM_RABITQ_TOTAL_BITS, 2U);
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ailego::Params stg_params;
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "/TestExBitsMismatch", true));
+
+  // open() should detect ex_bits mismatch and return IndexError_Mismatch
+  ASSERT_EQ(IndexError_Mismatch, streamer->open(storage));
+}
+
 }  // namespace core
 }  // namespace zvec

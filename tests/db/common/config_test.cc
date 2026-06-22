@@ -38,18 +38,20 @@ TEST_F(ConfigTest, InitializeWithDefaultConfig) {
 
   // Verify default values
   ASSERT_GT(GlobalConfig::Instance().memory_limit_bytes(), 0);
-  ASSERT_EQ(GlobalConfig::Instance().log_level(), GlobalConfig::LogLevel::WARN);
+  ASSERT_EQ(GlobalConfig::Instance().log_level(),
+            GlobalConfig::LogLevel::kWarn);
   ASSERT_EQ(GlobalConfig::Instance().log_type(), "ConsoleLogger");
   ASSERT_GT(GlobalConfig::Instance().query_thread_count(), 0);
   ASSERT_EQ(GlobalConfig::Instance().invert_to_forward_scan_ratio(), 0.9f);
   ASSERT_EQ(GlobalConfig::Instance().brute_force_by_keys_ratio(), 0.1f);
+  ASSERT_EQ(GlobalConfig::Instance().fts_brute_force_by_keys_ratio(), 0.05f);
   ASSERT_GT(GlobalConfig::Instance().optimize_thread_count(), 0);
 }
 
 TEST_F(ConfigTest, InitializeWithCustomConsoleLogConfig) {
   GlobalConfig::ConfigData config;
   config.log_config = std::make_shared<GlobalConfig::ConsoleLogConfig>(
-      GlobalConfig::LogLevel::DEBUG);
+      GlobalConfig::LogLevel::kDebug);
   config.memory_limit_bytes = 1024 * 1024 * 1024;  // 1GB
   config.query_thread_count = 4;
   config.optimize_thread_count = 2;
@@ -66,7 +68,7 @@ TEST_F(ConfigTest, InitializeWithCustomConsoleLogConfig) {
 TEST_F(ConfigTest, InitializeWithCustomFileLogConfig) {
   GlobalConfig::ConfigData config;
   auto file_config = std::make_shared<GlobalConfig::FileLogConfig>(
-      GlobalConfig::LogLevel::INFO, "/tmp/logs", "test.log", 1024, 14);
+      GlobalConfig::LogLevel::kInfo, "/tmp/logs", "test.log", 1024, 14);
   config.log_config = file_config;
   config.memory_limit_bytes = 2 * 1024 * 1024 * 1024ULL;  // 2GB
   config.query_thread_count = 8;
@@ -150,6 +152,16 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidRatios) {
   ASSERT_NE(status.message().find(
                 "brute_force_by_keys_ratio must be between 0 and 1"),
             std::string::npos);
+
+  // Test invalid fts_brute_force_by_keys_ratio
+  config.brute_force_by_keys_ratio = 0.1f;       // Reset to valid value
+  config.fts_brute_force_by_keys_ratio = -0.5f;  // Invalid value
+  status = config_instance.Validate(config);
+  ASSERT_FALSE(status.ok());
+  ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+  ASSERT_NE(status.message().find(
+                "fts_brute_force_by_keys_ratio must be between 0 and 1"),
+            std::string::npos);
 }
 
 TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
@@ -196,11 +208,11 @@ TEST_F(ConfigTest, ValidateConfigWithInvalidFileLogSettings) {
 }
 
 TEST_F(ConfigTest, LogLevelEnumValues) {
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::DEBUG), 0);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::INFO), 1);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::WARN), 2);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::ERROR), 3);
-  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::FATAL), 4);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kDebug), 0);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kInfo), 1);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kWarn), 2);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kError), 3);
+  ASSERT_EQ(static_cast<int>(GlobalConfig::LogLevel::kFatal), 4);
 }
 
 TEST_F(ConfigTest, LogConfigPolymorphism) {
@@ -209,4 +221,26 @@ TEST_F(ConfigTest, LogConfigPolymorphism) {
 
   ASSERT_EQ(console_config->GetLoggerType(), CONSOLE_LOG_TYPE_NAME);
   ASSERT_EQ(file_config->GetLoggerType(), FILE_LOG_TYPE_NAME);
+}
+
+// jieba_dict_dir is the only ConfigData field that can be written outside
+// of Initialize() — language SDKs call set_default_jieba_dict_dir() at
+// module-load to register the dict path they bundled. The setter is
+// independent of the Initialize() one-shot lifecycle.
+TEST_F(ConfigTest, JiebaDictDirSetterIsIndependentOfInitialize) {
+  auto saved = GlobalConfig::Instance().jieba_dict_dir();
+
+  // Setter works regardless of whether Initialize was called.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-A");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-A");
+
+  // Last writer wins.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-B");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-B");
+
+  // Empty clears.
+  GlobalConfig::Instance().set_default_jieba_dict_dir("");
+  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "");
+
+  GlobalConfig::Instance().set_default_jieba_dict_dir(saved);
 }

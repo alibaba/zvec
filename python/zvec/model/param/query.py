@@ -20,27 +20,44 @@ from typing import Optional, Union
 from ...common import VectorType
 from . import HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, OmegaQueryParam
 
-__all__ = ["Query", "VectorQuery"]
+__all__ = ["Fts", "Query", "VectorQuery"]
+
+
+@dataclass(frozen=True)
+class Fts:
+    """Full-text search query parameters.
+
+    Attributes:
+        query_string (Optional[str]): FTS query expression
+            (e.g. '+vector -slow "exact phrase"'). Mutually exclusive with match_string.
+        match_string (Optional[str]): Natural language match string,
+            tokenized and combined using the default operator.
+            Mutually exclusive with query_string.
+    """
+
+    query_string: Optional[str] = None
+    match_string: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class Query:
     """Represents a search query for a specific field in a collection.
 
-    A `Query` can be constructed using either a document ID (to look up
-    its vector) or an explicit vector. It may optionally include index-specific
-    query parameters to control search behavior (e.g., `ef` for HNSW, `nprobe` for IVF,
-    `target_recall` for OMEGA).
+    A `Query` can be constructed for either vector search or full-text search,
+    but not both simultaneously. Vector queries can use either a document ID
+    or an explicit vector, with optional index-specific parameters such as HNSW
+    `ef`, IVF `nprobe`, or OMEGA `target_recall`.
 
-    Exactly one of `id` or `vector` should be provided. If both are given,
-    behavior is implementation-defined (typically `id` takes precedence).
+    For vector search, provide `id` or `vector` (and optionally `param`).
+    For FTS, provide `fts`.
 
     Attributes:
         field_name (str): Name of the field to query.
         id (Optional[str], optional): Document ID to fetch vector from. Default is None.
         vector (VectorType, optional): Explicit query vector. Default is None.
-        param (Optional[Union[HnswQueryParam, IVFQueryParam, OmegaQueryParam]], optional):
-            Index-specific query parameters. Default is None.
+        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, OmegaQueryParam]], optional):
+            Index-specific query parameters for vector search. Default is None.
+        fts (Optional[Fts], optional): Full-text search parameters. Default is None.
 
     Examples:
         >>> import zvec
@@ -58,6 +75,11 @@ class Query:
         ...     vector=[0.1, 0.2, 0.3],
         ...     param=OmegaQueryParam(ef=300, target_recall=0.98)
         ... )
+        >>> # FTS query
+        >>> q4 = zvec.Query(
+        ...     field_name="content",
+        ...     fts=Fts(match_string="machine learning")
+        ... )
     """
 
     field_name: str
@@ -66,6 +88,7 @@ class Query:
     param: Optional[
         Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, OmegaQueryParam]
     ] = None
+    fts: Optional[Fts] = None
 
     def has_id(self) -> bool:
         """Check if the query is based on a document ID.
@@ -83,11 +106,32 @@ class Query:
         """
         return self.vector is not None and len(self.vector) > 0
 
+    def has_fts(self) -> bool:
+        """Check if the query contains an FTS (full-text search) condition.
+
+        Returns:
+            bool: True if `fts` is set with a query_string or match_string.
+        """
+        if self.fts is not None:
+            return bool(self.fts.query_string) or bool(self.fts.match_string)
+        return False
+
     def _validate(self) -> None:
         if self.field_name is None:
             raise ValueError("Field name cannot be empty")
-        if self.id and self.vector:
+        if self.has_id() and self.has_vector():
             raise ValueError("Cannot provide both id and vector")
+        if self.has_fts() and (
+            self.has_vector() or self.has_id() or self.param is not None
+        ):
+            raise ValueError(
+                "Cannot combine fts with vector search fields (id/vector/param) in a single Query"
+            )
+        if self.fts is not None and self.fts.query_string and self.fts.match_string:
+            raise ValueError(
+                "Cannot provide both query_string and match_string in Fts; "
+                "they are mutually exclusive"
+            )
 
 
 class VectorQuery(Query):

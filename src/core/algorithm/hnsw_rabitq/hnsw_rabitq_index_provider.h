@@ -83,22 +83,22 @@ class HnswRabitqIndexProvider : public IndexProvider {
     //! Retrieve pointer of data
     //! NOTICE: the vec feature will be changed after iterating to next, so
     //! the caller need to keep a copy of it before iterator to next vector
-    virtual const void *data(void) const override {
+    const void *data(void) const override {
       return entity_->get_vector(cur_id_);
     }
 
     //! Test if the iterator is valid
-    virtual bool is_valid(void) const override {
+    bool is_valid(void) const override {
       return cur_id_ < entity_->doc_cnt();
     }
 
     //! Retrieve primary key
-    virtual uint64_t key(void) const override {
+    uint64_t key(void) const override {
       return entity_->get_key(cur_id_);
     }
 
     //! Next iterator
-    virtual void next(void) override {
+    void next(void) override {
       // cur_id_ += 1;
       cur_id_ = get_next_valid_id(cur_id_ + 1);
     }

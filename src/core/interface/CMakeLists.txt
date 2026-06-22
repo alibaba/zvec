@@ -21,6 +21,7 @@ set(CORE_INTERFACE_LIBS
     core_framework
     core_mix_reducer
     core_knn_hnsw_rabitq
+    core_plugin
     sparsehash
     magic_enum
     rabitqlib)

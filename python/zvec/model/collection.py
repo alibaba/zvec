@@ -18,11 +18,11 @@ from typing import Optional, Union, overload
 
 from _zvec import _Collection
 
-from ..executor import QueryContext, QueryExecutorFactory
+from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
 from ..typing import Status
 from .convert import convert_to_cpp_doc, convert_to_py_doc
-from .doc import Doc
+from .doc import Doc, DocList
 from .param import (
     AddColumnOption,
     AlterColumnOption,
@@ -63,7 +63,7 @@ class Collection:
         inst._obj = core_collection
         schema = CollectionSchema._from_core(core_collection.Schema())
         inst._schema = schema
-        inst._querier = QueryExecutorFactory.create(schema)
+        inst._querier = QueryExecutor(schema)
         return inst
 
     @property
@@ -130,6 +130,7 @@ class Collection:
         """
         self._obj.CreateIndex(field_name, index_param, option)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
+        self._querier._schema = self._schema
 
     def drop_index(self, field_name: str) -> None:
         """Remove the index from a field.
@@ -139,6 +140,7 @@ class Collection:
         """
         self._obj.DropIndex(field_name)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
+        self._querier._schema = self._schema
 
     def optimize(self, option: OptimizeOption = OptimizeOption()) -> None:
         """Optimize the collection (e.g., merge segments, rebuild index).
@@ -168,6 +170,7 @@ class Collection:
         """
         self._obj.AddColumn(field_schema._get_object(), expression, option)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
+        self._querier._schema = self._schema
 
     def drop_column(self, field_name: str) -> None:
         """Remove a column from the collection.
@@ -177,6 +180,7 @@ class Collection:
         """
         self._obj.DropColumn(field_name)
         self._schema = CollectionSchema._from_core(self._obj.Schema())
+        self._querier._schema = self._schema
 
     def alter_column(
         self,
@@ -224,6 +228,7 @@ class Collection:
             option,
         )
         self._schema = CollectionSchema._from_core(self._obj.Schema())
+        self._querier._schema = self._schema
 
     # ========== Collection DDL Methods ==========
     @overload
@@ -337,17 +342,27 @@ class Collection:
         self._obj.DeleteByFilter(filter)
 
     # ========== Collection DQL-fetch Methods ==========
-    def fetch(self, ids: Union[str, list[str]]) -> dict[str, Doc]:
+    def fetch(
+        self,
+        ids: Union[str, list[str]],
+        *,
+        output_fields: Optional[list[str]] = None,
+        include_vector: bool = True,
+    ) -> dict[str, Doc]:
         """Retrieve documents by ID.
 
         Args:
             ids (Union[str, list[str]]): Document IDs to fetch.
+            output_fields (Optional[list[str]], optional): Scalar fields to
+                include. If None, all fields are returned. Defaults to None.
+            include_vector (bool, optional): Whether to include vector data in
+                results. Defaults to True.
 
         Returns:
             dict[str, Doc]: Mapping from ID to document. Missing IDs are omitted.
         """
         ids = [ids] if isinstance(ids, str) else ids
-        docs = self._obj.Fetch(ids)
+        docs = self._obj.Fetch(ids, output_fields, include_vector)
         return {
             doc_id: py_doc
             for doc_id, core_doc in docs.items()
@@ -366,7 +381,7 @@ class Collection:
         include_vector: bool = False,
         output_fields: Optional[list[str]] = None,
         reranker: Optional[ReRanker] = None,
-    ) -> list[Doc]:
+    ) -> DocList:
         """Perform vector similarity search with optional filtering and re-ranking.
 
         At least one `Query` must be provided via `queries`.
@@ -388,7 +403,7 @@ class Collection:
                 Defaults to None.
 
         Returns:
-            list[Doc]: Top-k matching documents, sorted by relevance score.
+            DocList: Top-k matching documents, sorted by relevance score.
 
         Examples:
             >>> from zvec import Query

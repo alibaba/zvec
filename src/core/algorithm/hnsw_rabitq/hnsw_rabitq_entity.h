@@ -113,11 +113,11 @@ struct HNSWHeader {
   }
 
   HNSWHeader(const HNSWHeader &header) {
-    memcpy(this, &header, sizeof(header));
+    memcpy(static_cast<void *>(this), &header, sizeof(header));
   }
 
   HNSWHeader &operator=(const HNSWHeader &header) {
-    memcpy(this, &header, sizeof(header));
+    memcpy(static_cast<void *>(this), &header, sizeof(header));
     return *this;
   }
 
@@ -130,7 +130,7 @@ struct HNSWHeader {
 
   //! Clear all fields to init value
   void inline clear() {
-    memset(this, 0, sizeof(HNSWHeader));
+    memset(static_cast<void *>(this), 0, sizeof(HNSWHeader));
     hnsw.entry_point = kInvalidNodeId;
     graph.size = sizeof(GraphHeader);
     hnsw.size = sizeof(HnswHeader);

@@ -13,9 +13,58 @@
 // limitations under the License.
 
 #include "type_helper.h"
+#include <algorithm>
+#include <cstring>
+#include <functional>
+#include <numeric>
+#include <vector>
 #include <zvec/core/framework/index_meta.h>
 
 namespace zvec {
+
+SparseIndicesStatus need_sanitize_sparse(const uint32_t *indices, size_t n) {
+  if (n <= 1) {
+    return SparseIndicesStatus::kOk;
+  }
+  auto it =
+      std::adjacent_find(indices, indices + n, std::greater_equal<uint32_t>());
+  if (it == indices + n) {
+    return SparseIndicesStatus::kOk;
+  }
+  if (*it == *(it + 1)) {
+    return SparseIndicesStatus::kHasDuplicate;
+  }
+  // First non-strictly-increasing pair is a > b (not equal), so unsorted.
+  // But there may still be duplicates elsewhere — we only know sorting is
+  // needed; duplicates will be detected after sort_and_find_duplicates.
+  return SparseIndicesStatus::kNeedSort;
+}
+
+bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,
+                              size_t value_byte_size) {
+  if (n <= 1) {
+    return false;
+  }
+  std::vector<size_t> perm(n);
+  std::iota(perm.begin(), perm.end(), size_t{0});
+  std::sort(perm.begin(), perm.end(),
+            [&](size_t a, size_t b) { return indices[a] < indices[b]; });
+  std::vector<uint32_t> sorted_indices(n);
+  std::vector<char> sorted_values(n * value_byte_size);
+  for (size_t i = 0; i < n; ++i) {
+    sorted_indices[i] = indices[perm[i]];
+    std::memcpy(sorted_values.data() + i * value_byte_size,
+                values + perm[i] * value_byte_size, value_byte_size);
+  }
+  std::memcpy(indices, sorted_indices.data(), n * sizeof(uint32_t));
+  std::memcpy(values, sorted_values.data(), n * value_byte_size);
+  for (size_t i = 1; i < n; ++i) {
+    if (indices[i] == indices[i - 1]) {
+      return true;
+    }
+  }
+  return false;
+}
 
 core::IndexMeta::DataType DataTypeCodeBook::to_data_type(DataType type) {
   switch (type) {

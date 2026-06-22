@@ -14,6 +14,8 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
+#include "utility/block_heap.h"
+#include "utility/linear_pool.h"
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
 #include "hnsw_dist_calculator.h"
@@ -43,58 +45,57 @@ class HnswContext : public IndexContext {
               const HnswEntity::Pointer &entity);
 
   //! Destructor
-  virtual ~HnswContext();
+  ~HnswContext() override;
 
  public:
   //! Set topk of search result
-  virtual void set_topk(uint32_t val) override {
+  void set_topk(uint32_t val) override {
     topk_ = val;
     topk_heap_.limit(std::max(val, ef_));
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result(void) const override {
     return results_[0];
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     return results_[idx];
   }
 
   //! Retrieve result object for output
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result(void) const override {
     return group_results_[0];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(
-      size_t idx) const override {
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
     return group_results_[idx];
   }
 
-  virtual uint32_t magic(void) const override {
+  uint32_t magic(void) const override {
     return magic_;
   }
 
   //! Set mode of debug
-  virtual void set_debug_mode(bool enable) override {
+  void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
 
   //! Retrieve mode of debug
-  virtual bool debug_mode(void) const override {
+  bool debug_mode(void) const override {
     return this->debugging();
   }
 
   //! Retrieve string of debug
-  virtual std::string debug_string(void) const override {
+  std::string debug_string(void) const override {
     char buf[4096];
     size_t size =
         snprintf(buf, sizeof(buf),
@@ -106,7 +107,7 @@ class HnswContext : public IndexContext {
   }
 
   //! Update the parameters of context
-  virtual int update(const ailego::Params &params) override;
+  int update(const ailego::Params &params) override;
 
  public:
   //! Init context
@@ -119,6 +120,20 @@ class HnswContext : public IndexContext {
 
   inline const HnswEntity &get_entity() const {
     return *entity_;
+  }
+
+  //! Bind an external vector source to this context. It is stored so that it
+  //! can be re-applied after the entity is re-cloned inside update_context,
+  //! and immediately forwarded to the current entity clone.
+  inline void set_vector_source(const VectorSource *src) {
+    vector_source_ = src;
+    if (entity_) {
+      entity_->set_vector_source(src);
+    }
+  }
+
+  inline const VectorSource *vector_source() const {
+    return vector_source_;
   }
 
   inline void resize_results(size_t size) {
@@ -277,6 +292,15 @@ class HnswContext : public IndexContext {
     return update_heap_;
   }
 
+  inline LinearPool<dist_t> &pool() {
+    return pool_;
+  }
+
+  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
+  inline BlockHeap &block_pool() {
+    return block_pool_;
+  }
+
   inline VisitFilter &visit_filter() {
     return visit_filter_;
   }
@@ -299,6 +323,26 @@ class HnswContext : public IndexContext {
 
   inline void set_ef(uint32_t v) {
     ef_ = v;
+  }
+
+  inline uint32_t ef(void) const {
+    return ef_;
+  }
+
+  inline void set_po(uint32_t v) {
+    po_ = v;
+  }
+
+  inline uint32_t po(void) const {
+    return po_;
+  }
+
+  inline void set_pl(uint32_t v) {
+    pl_ = v;
+  }
+
+  inline uint32_t pl(void) const {
+    return pl_;
   }
 
   inline void set_filter_mode(uint32_t v) {
@@ -345,6 +389,7 @@ class HnswContext : public IndexContext {
     set_fetch_vector(false);
     set_group_params(0, 0);
     reset_group_by();
+    set_vector_source(nullptr);
   }
 
   inline std::map<std::string, TopkHeap> &group_topk_heaps() {
@@ -503,6 +548,7 @@ class HnswContext : public IndexContext {
   HnswEntity::Pointer entity_;
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
+  const VectorSource *vector_source_{nullptr};
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};
@@ -515,6 +561,8 @@ class HnswContext : public IndexContext {
   uint32_t filter_mode_{VisitFilter::ByteMap};
   float negative_probability_{HnswEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswEntity::kDefaultEf};
+  uint32_t po_{8};
+  uint32_t pl_{0};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
   uint32_t magic_{0U};
   std::vector<IndexDocumentList> results_{};
@@ -536,6 +584,9 @@ class HnswContext : public IndexContext {
   uint32_t stats_get_vector_cnt_{0u};
   uint32_t stats_visit_dup_cnt_{0u};
   std::string preprocess_buffer_;
+
+  LinearPool<dist_t> pool_;
+  BlockHeap block_pool_;
 };
 
 }  // namespace core

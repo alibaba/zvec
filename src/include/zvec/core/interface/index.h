@@ -34,6 +34,7 @@
 #include <zvec/core/interface/training.h>
 #include <zvec/core/interface/training_capable.h>
 #include <zvec/core/interface/training_session.h>
+#include <zvec/core/interface/vector_source.h>
 #include <zvec/db/status.h>
 #include "zvec/core/framework/index_provider.h"
 
@@ -138,6 +139,7 @@ class Index {
   // TODO: static reduce
 
   virtual int Add(const VectorData &vector, uint32_t doc_id);
+
   virtual int Fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
   virtual int Search(const VectorData &query,
@@ -159,6 +161,13 @@ class Index {
     return nullptr;  // Default: capability not supported
   }
 
+  virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                            const core::VectorSource &src);
+  virtual int SearchWithSource(const VectorData &query,
+                               const BaseIndexQueryParam::Pointer &search_param,
+                               const core::VectorSource &src,
+                               SearchResult *result);
+
   virtual BaseIndexParam::Pointer GetParam() const {
     return std::make_shared<BaseIndexParam>(param_);
   }
@@ -166,6 +175,8 @@ class Index {
   virtual bool IsTrained() const {
     return is_trained_;
   }
+
+  bool IsDirty() const;
 
   uint32_t GetDocCount() const {
     if (streamer_ == nullptr) {
@@ -266,11 +277,11 @@ class FlatIndex : public Index {
 
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
 
  private:
   FlatIndexParam param_{};
@@ -281,24 +292,23 @@ class IVFIndex : public Index {
   IVFIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
 
-  virtual int Add(const VectorData &vector, uint32_t doc_id) override;
+  int Add(const VectorData &vector, uint32_t doc_id) override;
 
-  virtual int Train() override;
+  int Train() override;
 
-  virtual int Open(const std::string &file_path,
-                   StorageOptions storage_options) override;
+  int Open(const std::string &file_path,
+           StorageOptions storage_options) override;
 
-  virtual int _dense_fetch(const uint32_t doc_id,
-                           VectorDataBuffer *vector_data_buffer) override;
-  virtual int Merge(const std::vector<Index::Pointer> &indexes,
-                    const IndexFilter &filter,
-                    const MergeOptions &options) override;
+  int _dense_fetch(const uint32_t doc_id,
+                   VectorDataBuffer *vector_data_buffer) override;
+  int Merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter, const MergeOptions &options) override;
   int GenerateHolder();
 
  private:
@@ -315,18 +325,25 @@ class HNSWIndex : public Index {
   HNSWIndex() = default;
 
   //! Retrieve the storage mode of the underlying HNSW streamer entity.
-  //! Returns a string among {"mmap", "buffer_pool", "contiguous"}.
+  //! Returns a string among {"mmap", "buffer_pool", "contiguous", "external"}.
   //! Intended for introspection and debug/testing usage. Returns empty
   //! string when the streamer has not been initialized or is of an
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
 
- protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                    const core::VectorSource &src) override;
+  int SearchWithSource(const VectorData &query,
+                       const BaseIndexQueryParam::Pointer &search_param,
+                       const core::VectorSource &src,
+                       SearchResult *result) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+ protected:
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
   int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param) override;
 
@@ -339,11 +356,11 @@ class VamanaIndex : public Index {
   VamanaIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
   int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param) override;
 
@@ -356,11 +373,11 @@ class HNSWRabitqIndex : public Index {
   HNSWRabitqIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
   int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param) override;
 
@@ -368,6 +385,37 @@ class HNSWRabitqIndex : public Index {
   HNSWRabitqIndexParam param_{};
 };
 
+class DiskAnnIndex : public Index {
+ public:
+  DiskAnnIndex() = default;
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+
+  int Add(const VectorData &vector, uint32_t doc_id) override;
+
+  int Train() override;
+
+  int Open(const std::string &file_path,
+           StorageOptions storage_options) override;
+
+  int _dense_fetch(const uint32_t doc_id,
+                   VectorDataBuffer *vector_data_buffer) override;
+  int Merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter, const MergeOptions &options) override;
+  int GenerateHolder();
+
+ private:
+  DiskAnnIndexParam param_{};
+  std::mutex mutex_{};
+  std::vector<std::pair<uint64_t, std::string>> doc_cache_;
+  core::IndexHolder::Pointer holder_{};
+  std::string file_path_;
+};
 
 //! OMEGA Index - HNSW with learned early stopping
 /**

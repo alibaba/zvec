@@ -16,12 +16,19 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <zvec/core/interface/constants.h>
+#include <zvec/db/status.h>
 #include <zvec/db/type.h>
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
+
+namespace detail {
+struct FtsState;
+struct FtsPipelineHelper;
+}  // namespace detail
 
 /*
  * Column index params
@@ -47,7 +54,8 @@ class IndexParams {
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
            type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
-           type_ == IndexType::OMEGA || type_ == IndexType::VAMANA;
+           type_ == IndexType::OMEGA || type_ == IndexType::DISKANN ||
+           type_ == IndexType::VAMANA;
   }
 
   IndexType type() const {
@@ -122,7 +130,7 @@ class VectorIndexParams : public IndexParams {
         metric_type_(metric_type),
         quantize_type_(quantize_type) {}
 
-  virtual ~VectorIndexParams() = default;
+  ~VectorIndexParams() override = default;
 
   std::string vector_index_params_to_string(const std::string &class_name,
                                             MetricType metric_type,
@@ -447,6 +455,78 @@ class IVFIndexParams : public VectorIndexParams {
   bool use_soar_;
 };
 
+class DiskAnnIndexParams : public VectorIndexParams {
+ public:
+  DiskAnnIndexParams(MetricType metric_type, int max_degree = 100,
+                     int list_size = 50, int pq_chunk_num = 0,
+                     QuantizeType quantize_type = QuantizeType::UNDEFINED)
+      : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type),
+        max_degree_{max_degree},
+        list_size_{list_size},
+        pq_chunk_num_{pq_chunk_num} {}
+
+  using OPtr = std::shared_ptr<DiskAnnIndexParams>;
+
+ public:
+  Ptr clone() const override {
+    return std::make_shared<DiskAnnIndexParams>(
+        metric_type_, max_degree_, list_size_, pq_chunk_num_, quantize_type_);
+  }
+
+  std::string to_string() const override {
+    auto base_str = vector_index_params_to_string("DiskAnnIndexParams",
+                                                  metric_type_, quantize_type_);
+    std::ostringstream oss;
+    oss << base_str << ",max_degree:" << max_degree_
+        << ",list_size:" << list_size_ << ", pq_chunk_num:" << pq_chunk_num_
+        << "}";
+    return oss.str();
+  }
+
+  int max_degree() const {
+    return max_degree_;
+  }
+
+  void set_max_degree(int max_degree) {
+    max_degree_ = max_degree;
+  }
+
+  int list_size() const {
+    return list_size_;
+  }
+
+  void set_list_size(int list_size) {
+    list_size_ = list_size;
+  }
+
+  int pq_chunk_num() const {
+    return pq_chunk_num_;
+  }
+
+  void set_pq_chunk_num(int pq_chunk_num) {
+    pq_chunk_num_ = pq_chunk_num;
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    return type() == other.type() &&
+           metric_type() ==
+               static_cast<const DiskAnnIndexParams &>(other).metric_type() &&
+           max_degree_ ==
+               static_cast<const DiskAnnIndexParams &>(other).max_degree_ &&
+           list_size_ ==
+               static_cast<const DiskAnnIndexParams &>(other).list_size_ &&
+           pq_chunk_num_ ==
+               static_cast<const DiskAnnIndexParams &>(other).pq_chunk_num_ &&
+           quantize_type() ==
+               static_cast<const DiskAnnIndexParams &>(other).quantize_type();
+  }
+
+ private:
+  int max_degree_;
+  int list_size_;
+  int pq_chunk_num_;
+};
+
 /*
  * Vector: Omega index params
  */
@@ -636,6 +716,7 @@ class VamanaIndexParams : public VectorIndexParams {
   int max_degree() const {
     return max_degree_;
   }
+
   void set_max_degree(int max_degree) {
     max_degree_ = max_degree;
   }
@@ -685,6 +766,86 @@ class VamanaIndexParams : public VectorIndexParams {
   // the cost of peak memory usage.
   bool use_contiguous_memory_;
   bool use_id_map_;
+};
+
+/*
+ * FTS (Full-Text Search) index params
+ *
+ * Not copyable.  Use shared_ptr<FtsIndexParams> for shared ownership.
+ */
+class FtsIndexParams : public IndexParams {
+ public:
+  FtsIndexParams(std::string tokenizer_name = "standard",
+                 std::vector<std::string> filters = {"lowercase"},
+                 std::string extra_params = "");
+
+  // Not copyable.
+  FtsIndexParams(const FtsIndexParams &) = delete;
+  FtsIndexParams &operator=(const FtsIndexParams &) = delete;
+
+  // Movable.
+  FtsIndexParams(FtsIndexParams &&other) noexcept;
+  FtsIndexParams &operator=(FtsIndexParams &&) = delete;
+
+  ~FtsIndexParams() override;
+
+  Ptr clone() const override {
+    return std::make_shared<FtsIndexParams>(tokenizer_name_, filters_,
+                                            extra_params_);
+  }
+
+  std::string to_string() const override {
+    std::ostringstream oss;
+    oss << "{FtsIndexParams,tokenizer_name:" << tokenizer_name_ << ",filters:[";
+    for (size_t i = 0; i < filters_.size(); ++i) {
+      if (i > 0) {
+        oss << ",";
+      }
+      oss << filters_[i];
+    }
+    oss << "],extra_params:" << extra_params_ << "}";
+    return oss.str();
+  }
+
+  bool operator==(const IndexParams &other) const override {
+    if (type() != other.type()) {
+      return false;
+    }
+    auto &other_fts = static_cast<const FtsIndexParams &>(other);
+    return tokenizer_name_ == other_fts.tokenizer_name_ &&
+           filters_ == other_fts.filters_ &&
+           extra_params_ == other_fts.extra_params_;
+  }
+
+  const std::string &tokenizer_name() const {
+    return tokenizer_name_;
+  }
+  void set_tokenizer_name(std::string tokenizer_name) {
+    tokenizer_name_ = std::move(tokenizer_name);
+  }
+
+  const std::vector<std::string> &filters() const {
+    return filters_;
+  }
+  void set_filters(std::vector<std::string> filters) {
+    filters_ = std::move(filters);
+  }
+
+  const std::string &extra_params() const {
+    return extra_params_;
+  }
+  void set_extra_params(std::string extra_params) {
+    extra_params_ = std::move(extra_params);
+  }
+
+ private:
+  std::string tokenizer_name_;
+  std::vector<std::string> filters_;
+  std::string extra_params_;
+
+  std::unique_ptr<detail::FtsState> state_;
+
+  friend struct detail::FtsPipelineHelper;
 };
 
 }  // namespace zvec

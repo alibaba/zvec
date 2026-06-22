@@ -21,6 +21,43 @@ if TYPE_CHECKING:
     from importlib.metadata import PackageNotFoundError
 
 
+# Register the wheel-bundled jieba dict dir so `import zvec` alone makes
+# the jieba FTS tokenizer usable. Users can still override via
+# zvec.init(jieba_dict_dir=...), zvec.set_default_jieba_dict_dir(...),
+# ZVEC_JIEBA_DICT_DIR, or per-field FtsIndexParam.extra_params.
+try:
+    from importlib.resources import files as _resource_files
+
+    from _zvec import (
+        get_default_jieba_dict_dir,
+        set_default_jieba_dict_dir,
+    )
+
+    set_default_jieba_dict_dir(str(_resource_files("zvec").joinpath("data/jieba_dict")))
+except Exception:
+    # Custom builds without bundled dict; users must configure explicitly.
+    pass
+
+
+# ==============================
+# Public API — grouped by category
+# ==============================
+
+# —— DiskAnn runtime plugin ——
+# Re-export the plugin management entry points defined by the C++ extension.
+# DiskAnn normally auto-loads on first use; these APIs let tests and
+# diagnostic tools preload the plugin and get a clear error if libaio is
+# missing or the plugin shared object cannot be located.
+from _zvec import (
+    DISKANN_PLUGIN_DLOPEN_FAILED,
+    DISKANN_PLUGIN_LIBAIO_MISSING,
+    DISKANN_PLUGIN_OK,
+    DISKANN_PLUGIN_UNSUPPORTED_PLATFORM,
+    is_diskann_plugin_loaded,
+    is_libaio_available,
+    load_diskann_plugin,
+)
+
 from . import model as model
 from .extension import (
     BM25EmbeddingFunction,
@@ -43,12 +80,19 @@ from .extension import (
 from .model import param as param
 from .model import schema as schema
 from .model.collection import Collection
-from .model.doc import Doc
+from .model.doc import Doc, DocList
+
+# —— Query & index parameters ——
+# —— FTS params (C++ binding) ——
 from .model.param import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
+    DiskAnnIndexParam,
+    DiskAnnQueryParam,
     FlatIndexParam,
+    FtsIndexParam,
+    FtsQueryParam,
     HnswIndexParam,
     HnswQueryParam,
     HnswRabitqIndexParam,
@@ -63,7 +107,9 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Query, VectorQuery
+from .model.param.query import Fts, Query, VectorQuery
+
+# —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
 from .tool import require_module
 from .typing import (
@@ -82,9 +128,12 @@ __all__ = [
     "create_and_open",
     "init",
     "open",
+    "set_default_jieba_dict_dir",
+    "get_default_jieba_dict_dir",
     # Core classes
     "Collection",
     "Doc",
+    "DocList",
     # Schema
     "CollectionSchema",
     "FieldSchema",
@@ -93,12 +142,17 @@ __all__ = [
     # Parameters
     "Query",
     "VectorQuery",
+    "Fts",
+    "FtsIndexParam",
+    "FtsQueryParam",
     "InvertIndexParam",
     "HnswIndexParam",
     "HnswRabitqIndexParam",
     "FlatIndexParam",
     "IVFIndexParam",
     "OmegaIndexParam",
+    "DiskAnnIndexParam",
+    "DiskAnnQueryParam",
     "CollectionOption",
     "IndexOption",
     "OptimizeOption",
@@ -138,6 +192,14 @@ __all__ = [
     "StatusCode",
     # Tools
     "require_module",
+    # DiskAnn plugin
+    "load_diskann_plugin",
+    "is_diskann_plugin_loaded",
+    "is_libaio_available",
+    "DISKANN_PLUGIN_OK",
+    "DISKANN_PLUGIN_UNSUPPORTED_PLATFORM",
+    "DISKANN_PLUGIN_LIBAIO_MISSING",
+    "DISKANN_PLUGIN_DLOPEN_FAILED",
 ]
 
 # ==============================

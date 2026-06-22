@@ -14,6 +14,8 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
+#include "utility/block_heap.h"
+#include "utility/linear_pool.h"
 #include "utility/visit_filter.h"
 #include "vamana_dist_calculator.h"
 #include "vamana_entity.h"
@@ -38,44 +40,44 @@ class VamanaContext : public IndexContext {
   VamanaContext(const IndexMetric::Pointer &metric,
                 const VamanaEntity::Pointer &entity);
 
-  virtual ~VamanaContext();
+  ~VamanaContext() override;
 
-  virtual void set_topk(uint32_t val) override {
+  void set_topk(uint32_t val) override {
     topk_ = val;
     topk_heap_.limit(std::max(val, ef_));
   }
 
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result(void) const override {
     return results_[0];
   }
 
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     return results_[idx];
   }
 
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
 
-  virtual uint32_t magic(void) const override {
+  uint32_t magic(void) const override {
     return magic_;
   }
 
-  virtual void set_debug_mode(bool enable) override {
+  void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
-  virtual bool debug_mode(void) const override {
+  bool debug_mode(void) const override {
     return debug_mode_;
   }
 
-  virtual std::string debug_string(void) const override {
+  std::string debug_string(void) const override {
     char buf[4096];
     size_t size = snprintf(buf, sizeof(buf), "scan_cnt=%zu", get_scan_num());
     return std::string(buf, size);
   }
 
-  virtual int update(const ailego::Params &params) override;
+  int update(const ailego::Params &params) override;
 
   int init(ContextType type);
 
@@ -119,6 +121,14 @@ class VamanaContext : public IndexContext {
   inline TopkHeap &update_heap() {
     return update_heap_;
   }
+  inline LinearPool<dist_t> &pool() {
+    return pool_;
+  }
+  // Block-insert pool used by the AVX2-gated greedy_search fast path.
+  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
+  inline BlockHeap &block_pool() {
+    return block_pool_;
+  }
   inline VisitFilter &visit_filter() {
     return visit_filter_;
   }
@@ -149,6 +159,14 @@ class VamanaContext : public IndexContext {
     return batch_indices_buf_;
   }
 
+  //! Build-time distance offset cached from the metric. Used by RobustPrune
+  //! to shift the internal distance to a non-negative range before computing
+  //! the ratio-based occlude_factor. Zero for metrics whose internal distance
+  //! is already non-negative (e.g. SquaredEuclidean).
+  inline float build_distance_offset() const {
+    return build_distance_offset_;
+  }
+
   inline void set_max_scan_num(uint32_t max_scan_num) {
     max_scan_num_ = max_scan_num;
   }
@@ -158,6 +176,21 @@ class VamanaContext : public IndexContext {
 
   inline uint32_t ef() const {
     return ef_;
+  }
+  inline void set_po(uint32_t v) {
+    po_ = v;
+  }
+
+  inline uint32_t po() const {
+    return po_;
+  }
+
+  inline void set_pl(uint32_t v) {
+    pl_ = v;
+  }
+
+  inline uint32_t pl() const {
+    return pl_;
   }
   inline void set_max_scan_ratio(float v) {
     max_scan_ratio_ = v;
@@ -248,12 +281,6 @@ class VamanaContext : public IndexContext {
     return topk_;
   }
 
-  inline void update_dist_caculator_distance(
-      const IndexMetric::MatrixDistance &distance,
-      const IndexMetric::MatrixBatchDistance &batch_distance) {
-    dc_.update_distance(distance, batch_distance);
-  }
-
  private:
   void fill_random_to_topk_full(void);
 
@@ -284,6 +311,8 @@ class VamanaContext : public IndexContext {
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
   uint32_t ef_{VamanaEntity::kDefaultEf};
+  uint32_t po_{8};
+  uint32_t pl_{0};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};
@@ -307,8 +336,14 @@ class VamanaContext : public IndexContext {
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
 
+  //! Cached build-time distance offset (see build_distance_offset()).
+  float build_distance_offset_{0.0f};
+
   VisitFilter::Mode filter_mode_{VisitFilter::ByteMap};
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
+
+  LinearPool<dist_t> pool_;
+  BlockHeap block_pool_;
 };
 
 }  // namespace core

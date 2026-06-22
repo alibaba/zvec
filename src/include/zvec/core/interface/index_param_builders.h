@@ -37,7 +37,7 @@ class BaseIndexParamBuilder {  //  : public
   virtual ~BaseIndexParamBuilder() = default;
 
   ActualIndexParamBuilderType &WithVersion(int version) {
-    param.version = version;
+    param->version = version;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   ActualIndexParamBuilderType &WithIndexType(IndexType index_type) {
@@ -54,8 +54,7 @@ class BaseIndexParamBuilder {  //  : public
   }
   ActualIndexParamBuilderType &WithPreprocessParam(
       const PreprocessorParam &preprocess_param) {
-    param->preprocess_param =
-        std::make_shared<PreprocessorParam>(preprocess_param);
+    param->preprocess_param = preprocess_param;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   ActualIndexParamBuilderType &WithQuantizerParam(
@@ -85,6 +84,11 @@ class BaseIndexParamBuilder {  //  : public
 
   ActualIndexParamBuilderType &WithUseIDMap(bool use_id_map) {
     param->use_id_map = use_id_map;
+    return static_cast<ActualIndexParamBuilderType &>(*this);
+  }
+
+  ActualIndexParamBuilderType &WithUseExternalVector(bool use_external_vector) {
+    param->use_external_vector = use_external_vector;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
@@ -246,6 +250,28 @@ class HNSWRabitqIndexParamBuilder
   }
 };
 
+class DiskAnnIndexParamBuilder
+    : public BaseIndexParamBuilder<DiskAnnIndexParamBuilder,
+                                   DiskAnnIndexParam> {
+ public:
+  DiskAnnIndexParamBuilder() = default;
+  DiskAnnIndexParamBuilder &WithMaxDegree(int max_degree) {
+    param->max_degree = max_degree;
+    return *this;
+  }
+  DiskAnnIndexParamBuilder &WithListSize(int list_size) {
+    param->list_size = list_size;
+    return *this;
+  }
+  DiskAnnIndexParamBuilder &WithPqChunkNum(int pq_chunk_num) {
+    param->pq_chunk_num = pq_chunk_num;
+    return *this;
+  }
+  std::shared_ptr<DiskAnnIndexParam> Build() override {
+    return param;
+  }
+};
+
 class VamanaIndexParamBuilder
     : public BaseIndexParamBuilder<VamanaIndexParamBuilder, VamanaIndexParam> {
  public:
@@ -383,6 +409,16 @@ class HNSWQueryParamBuilder
     return *this;
   }
 
+  HNSWQueryParamBuilder &with_prefetch_offset(uint32_t prefetch_offset) {
+    m_param.prefetch_offset = prefetch_offset;
+    return *this;
+  }
+
+  HNSWQueryParamBuilder &with_prefetch_lines(uint32_t prefetch_lines) {
+    m_param.prefetch_lines = prefetch_lines;
+    return *this;
+  }
+
   HNSWQueryParam::Pointer build() {
     return std::make_shared<HNSWQueryParam>(std::move(m_param));
   }
@@ -469,6 +505,16 @@ class VamanaQueryParamBuilder
  public:
   VamanaQueryParamBuilder &with_ef_search(int ef_search) {
     m_param.ef_search = ef_search;
+    return *this;
+  }
+
+  VamanaQueryParamBuilder &with_prefetch_offset(uint32_t prefetch_offset) {
+    m_param.prefetch_offset = prefetch_offset;
+    return *this;
+  }
+
+  VamanaQueryParamBuilder &with_prefetch_lines(uint32_t prefetch_lines) {
+    m_param.prefetch_lines = prefetch_lines;
     return *this;
   }
 

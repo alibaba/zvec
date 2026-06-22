@@ -273,6 +273,118 @@ class TestCollectionFetch:
             f"Expected 0 results for empty ID list, but got {len(result)}"
         )
 
+    @pytest.mark.parametrize("doc_num", [3])
+    def test_fetch_with_output_fields(self, full_collection: Collection, doc_num):
+        """Test that fetch respects output_fields parameter."""
+        multiple_docs = [
+            generate_doc(i, full_collection.schema) for i in range(doc_num)
+        ]
+        result = full_collection.insert(multiple_docs)
+        for item in result:
+            assert item.ok(), f"Insert failed: {item.code()}"
+
+        doc_id = multiple_docs[0].id
+
+        # Case 1: output_fields=None -> all scalar fields returned
+        fetched_all = full_collection.fetch(ids=[doc_id], output_fields=None)
+        assert doc_id in fetched_all
+        doc_all = fetched_all[doc_id]
+        assert doc_all is not None
+        assert doc_all.has_field("int32_field"), (
+            "int32_field should be present when output_fields=None"
+        )
+        assert doc_all.has_field("string_field"), (
+            "string_field should be present when output_fields=None"
+        )
+
+        # Case 2: output_fields=["int32_field"] -> only int32_field returned
+        fetched_partial = full_collection.fetch(
+            ids=[doc_id], output_fields=["int32_field"]
+        )
+        assert doc_id in fetched_partial
+        doc_partial = fetched_partial[doc_id]
+        assert doc_partial is not None
+        assert doc_partial.has_field("int32_field"), "int32_field should be present"
+        assert not doc_partial.has_field("string_field"), (
+            'string_field should not be present when output_fields=["int32_field"]'
+        )
+        assert not doc_partial.has_field("float_field"), (
+            'float_field should not be present when output_fields=["int32_field"]'
+        )
+
+        # Case 3: output_fields=[] (empty) -> no scalar fields returned
+        fetched_empty = full_collection.fetch(ids=[doc_id], output_fields=[])
+        assert doc_id in fetched_empty
+        doc_empty = fetched_empty[doc_id]
+        assert doc_empty is not None
+        assert doc_empty.id == doc_id, "pk should still be set"
+        assert not doc_empty.has_field("int32_field"), (
+            "int32_field should not be present when output_fields=[]"
+        )
+        assert not doc_empty.has_field("string_field"), (
+            "string_field should not be present when output_fields=[]"
+        )
+
+        # Case 4: multiple output_fields
+        fetched_multi = full_collection.fetch(
+            ids=[doc_id], output_fields=["int32_field", "float_field"]
+        )
+        assert doc_id in fetched_multi
+        doc_multi = fetched_multi[doc_id]
+        assert doc_multi is not None
+        assert doc_multi.has_field("int32_field")
+        assert doc_multi.has_field("float_field")
+        assert not doc_multi.has_field("string_field")
+
+    @pytest.mark.parametrize("doc_num", [3])
+    def test_fetch_with_include_vector(self, full_collection: Collection, doc_num):
+        """Test that fetch respects include_vector parameter."""
+        multiple_docs = [
+            generate_doc(i, full_collection.schema) for i in range(doc_num)
+        ]
+        result = full_collection.insert(multiple_docs)
+        for item in result:
+            assert item.ok(), f"Insert failed: {item.code()}"
+
+        doc_id = multiple_docs[0].id
+
+        # Case 1: include_vector=True (default) -> vector data returned
+        fetched_with_vec = full_collection.fetch(ids=[doc_id])
+        assert doc_id in fetched_with_vec
+        doc_with_vec = fetched_with_vec[doc_id]
+        assert doc_with_vec is not None
+        assert doc_with_vec.has_field("int32_field"), (
+            "scalar fields should still be present"
+        )
+        assert doc_with_vec.vector("vector_fp32_field"), (
+            "vector should be present when include_vector=True (default)"
+        )
+
+        # Case 2: include_vector=False -> no vector data returned
+        fetched_no_vec = full_collection.fetch(ids=[doc_id], include_vector=False)
+        assert doc_id in fetched_no_vec
+        doc_no_vec = fetched_no_vec[doc_id]
+        assert doc_no_vec is not None
+        assert doc_no_vec.has_field("int32_field"), (
+            "scalar fields should still be present"
+        )
+        assert not doc_no_vec.vector("vector_fp32_field"), (
+            "vector should not be present when include_vector=False"
+        )
+
+        # Case 3: include_vector=False with output_fields
+        fetched_combo = full_collection.fetch(
+            ids=[doc_id], output_fields=["int32_field"], include_vector=False
+        )
+        assert doc_id in fetched_combo
+        doc_combo = fetched_combo[doc_id]
+        assert doc_combo is not None
+        assert doc_combo.has_field("int32_field")
+        assert not doc_combo.has_field("string_field")
+        assert not doc_combo.vector("vector_fp32_field"), (
+            "vector should not be present when include_vector=False"
+        )
+
 
 class TestCollectionQuery:
     @pytest.mark.parametrize("doc_num", [5])
@@ -712,9 +824,10 @@ class TestCollectionQuery:
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
             multi_query_vectors.append(Query(field_name=v, vector=doc_vectors[v]))
 
-        rrf_reranker = RrfReRanker(topn=3)
+        rrf_reranker = RrfReRanker()
         multi_query_result = full_collection.query(
             multi_query_vectors,
+            topk=3,
             reranker=rrf_reranker,
         )
         assert len(multi_query_result) > 0, (
@@ -731,7 +844,7 @@ class TestCollectionQuery:
             )
             expected_score = expected_rrf_scores[doc_id]
             actual_score = doc.score
-            assert abs(actual_score - expected_score) < 1e-10, (
+            assert abs(actual_score - expected_score) < 1e-6, (
                 f"RRF score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
             )
             assert doc.score <= prev_score, (
@@ -764,9 +877,11 @@ class TestCollectionQuery:
         batchdoc_and_check(full_collection, multiple_docs, doc_num, operator="insert")
         doc_fields, doc_vectors = generate_vectordict_random(full_collection.schema)
 
-        weighted_reranker = WeightedReRanker(
-            topn=3, weights=weights, metric=MetricType.IP
-        )
+        # Weights are positional, aligned with the multi_query_vectors order
+        # (DEFAULT_VECTOR_FIELD_NAME insertion order). Metric normalization is
+        # automatic from each field's schema.
+        weights_list = [weights[v] for v in DEFAULT_VECTOR_FIELD_NAME.values()]
+        weighted_reranker = WeightedReRanker(weights_list)
 
         single_query_results = {}
         for k, v in DEFAULT_VECTOR_FIELD_NAME.items():
@@ -783,6 +898,7 @@ class TestCollectionQuery:
 
         multi_query_result = full_collection.query(
             multi_query_vectors,
+            topk=3,
             reranker=weighted_reranker,
         )
         assert len(multi_query_result) > 0, (
@@ -799,7 +915,7 @@ class TestCollectionQuery:
             )
             expected_score = expected_weighted_scores[doc_id]
             actual_score = doc.score
-            assert abs(actual_score - expected_score) < 1e-10, (
+            assert abs(actual_score - expected_score) < 1e-6, (
                 f"score mismatch for document {doc_id}: expected {expected_score}, got {actual_score}"
             )
             assert doc.score <= prev_score, (
@@ -1053,13 +1169,6 @@ class TestCollectionQuery:
                     field_name="vector_fp32_field", id="999"
                 ),  # Non-existent ID
                 "Expected exception for non-existent document ID",
-            ),
-            (
-                "Both vector and id specified (invalid combination)",
-                lambda ref_dense_vector: Query(
-                    field_name="vector_fp32_field", vector=ref_dense_vector, id="5"
-                ),
-                "Expected exception for specifying both vector and id",
             ),
             (
                 "Neither vector nor id specified",

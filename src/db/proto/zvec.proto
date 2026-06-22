@@ -58,12 +58,16 @@ enum IndexType {
   IT_FLAT = 3;
   // Proxima HNSW RABITQ Index
   IT_HNSW_RABITQ = 4;
-  // Proxima Vamana (DiskANN) Index
+  // Proxima Vamana Index
   IT_VAMANA = 5;
   // OMEGA Index (HNSW with learned early stopping)
   IT_OMEGA = 6;
+  // Proxima DiskAnn Index
+  IT_DISKANN = 7;
   // Invert Index
   IT_INVERT = 10;
+  // Full-Text Search Index
+  IT_FTS = 11;
 };
 
 enum QuantizeType {
@@ -133,6 +137,13 @@ message OmegaIndexParams {
   int32 k_train = 10;
 }
 
+message DiskAnnIndexParams {
+  BaseIndexParams base = 1;
+  int32 max_degree = 2;
+  int32 list_size = 3;
+  int32 pq_chunk_num = 4;
+}
+
 message VamanaIndexParams {
   BaseIndexParams base = 1;
   int32 max_degree = 2;
@@ -146,15 +157,23 @@ message VamanaIndexParams {
   bool use_id_map = 7;
 }
 
+message FtsIndexParams {
+  string tokenizer_name = 1;
+  repeated string filters = 2;
+  string extra_params = 3;
+};
+
 message IndexParams {
   oneof params {
     InvertIndexParams invert = 1;
     HnswIndexParams hnsw = 2;
     FlatIndexParams flat = 3;
     IVFIndexParams ivf = 4;
-    HnswRabitqIndexParams hnsw_rabitq = 6;
+    HnswRabitqIndexParams hnsw_rabitq = 5;
+    VamanaIndexParams vamana = 6;
     OmegaIndexParams omega = 7;
-    VamanaIndexParams vamana = 8;
+    DiskAnnIndexParams diskann = 8;
+    FtsIndexParams fts = 9;
   };
 };
 
@@ -178,6 +197,7 @@ enum BlockType {
   BT_SCALAR_INDEX = 2;
   BT_VECTOR_INDEX = 3;
   BT_VECTOR_INDEX_QUANTIZE = 4;
+  BT_FTS_INDEX = 5;
 };
 
 message BlockMeta {

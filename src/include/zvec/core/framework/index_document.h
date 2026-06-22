@@ -98,6 +98,23 @@ class IndexDocument {
         vector_(vector),
         sparse_doc_(std::move(sparse_doc)) {}
 
+  //! Constructor
+  IndexDocument(uint64_t k, float v, uint32_t i, std::string vector_string)
+      : key_(k),
+        score_(v),
+        index_(i),
+        vector_string_(std::move(vector_string)) {}
+
+  //! Constructor
+  IndexDocument(uint64_t k, float v, uint32_t i, std::string vector_string,
+                IndexSparseDocument sparse_doc)
+      : key_(k),
+        score_(v),
+        index_(i),
+        vector_{nullptr},
+        vector_string_(std::move(vector_string)),
+        sparse_doc_(std::move(sparse_doc)) {}
+
   IndexDocument(uint64_t k, float v, uint32_t i,
                 IndexStorage::MemoryBlock vec_block,
                 IndexSparseDocument sparse_doc)
@@ -116,6 +133,7 @@ class IndexDocument {
         score_(rhs.score_),
         index_(rhs.index_),
         vector_(rhs.vector_),
+        vector_string_(std::move(rhs.vector_string_)),
         sparse_doc_{rhs.sparse_doc_} {
     if (rhs.has_vec_mem_block_) {
       vec_mem_block_ = rhs.vec_mem_block_;
@@ -130,6 +148,7 @@ class IndexDocument {
       score_ = rhs.score_;
       index_ = rhs.index_;
       vector_ = rhs.vector_;
+      vector_string_ = rhs.vector_string_;
       if (rhs.has_vec_mem_block_) {
         vec_mem_block_ = rhs.vec_mem_block_;
         has_vec_mem_block_ = true;
@@ -167,6 +186,11 @@ class IndexDocument {
   //! Retrieve vec
   const void *vector() const {
     return vector_;
+  }
+
+  //! Retrieve vec string
+  const std::string &vector_string() const {
+    return vector_string_;
   }
 
   //! Retrieve vec
@@ -210,6 +234,7 @@ class IndexDocument {
   float score_{0.0f};
   uint32_t index_{0u};
   const void *vector_{nullptr};
+  std::string vector_string_{};
   bool has_vec_mem_block_{false};
   mutable IndexStorage::MemoryBlock vec_mem_block_{};
   IndexSparseDocument sparse_doc_{};

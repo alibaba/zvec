@@ -67,6 +67,7 @@ typedef unsigned int id_t;
 #define ailego_bswap64(x) _byteswap_uint64(x)
 
 #define strncasecmp _strnicmp
+#define strcasecmp _stricmp
 
 #else  // !_MSC_VER
 
@@ -217,6 +218,13 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_unlikely(x) (__builtin_expect(!!(x), 0))
 #define ailego_prefetch(p) (__builtin_prefetch((p)))
 #endif  // _MSC_VER
+
+//! Force-inline hint: use on hot-path accessors (3-5 instructions).
+#ifdef _MSC_VER
+#define ailego_force_inline __forceinline
+#else
+#define ailego_force_inline inline __attribute__((always_inline))
+#endif
 
 #if defined(AILEGO_M64)
 #define ailego_ctz ailego_ctz64

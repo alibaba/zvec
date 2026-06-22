@@ -30,7 +30,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Destructor
-  virtual ~FlatStreamerContext(void) = default;
+  ~FlatStreamerContext(void) override = default;
 
   //! Set topk of search result
   void set_topk(uint32_t topk) override {
@@ -59,12 +59,11 @@ class FlatStreamerContext : public IndexStreamer::Context {
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result(void) const override {
     return group_results_[0];
   }
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(
-      size_t idx) const override {
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
     return group_results_[idx];
   }
 

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -22,6 +23,7 @@
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/db/schema.h>
 #include "db/common/constants.h"
+#include "db/sqlengine/common/fts_cond_info.h"
 #include "db/sqlengine/common/group_by.h"
 #include "query_field_info.h"
 #include "query_node.h"
@@ -46,17 +48,17 @@ class QueryInfo {
     using Ptr = std::shared_ptr<QueryVectorCondInfo>;
 
     QueryVectorCondInfo(const FieldSchema *vector_schema,
-                        const std::string &vector_term,
+                        std::string_view vector_term,
                         core::IndexMeta::DataType core_data_type, int dimension,
-                        std::string vector_sparse_indices,
-                        std::string vector_sparse_values,
+                        std::string_view vector_sparse_indices,
+                        std::string_view vector_sparse_values,
                         QueryParams::Ptr query_params)
         : vector_schema_(vector_schema),
           vector_term_(vector_term),
           data_type_(core_data_type),
           dimension_(dimension),
-          vector_sparse_indices_(std::move(vector_sparse_indices)),
-          vector_sparse_values_(std::move(vector_sparse_values)),
+          vector_sparse_indices_(vector_sparse_indices),
+          vector_sparse_values_(vector_sparse_values),
           query_params_(std::move(query_params)) {
       auto *vector_params = dynamic_cast<VectorIndexParams *>(
           vector_schema_->index_params().get());
@@ -74,7 +76,7 @@ class QueryInfo {
       return vector_schema_;
     }
 
-    const std::string &vector_term() const {
+    std::string_view vector_term() const {
       return vector_term_;
     }
 
@@ -98,11 +100,11 @@ class QueryInfo {
       return vector_sparse_indices_.size() / sizeof(uint32_t);
     }
 
-    const std::string &vector_sparse_indices() const {
+    std::string_view vector_sparse_indices() const {
       return vector_sparse_indices_;
     }
 
-    const std::string &vector_sparse_values() const {
+    std::string_view vector_sparse_values() const {
       return vector_sparse_values_;
     }
 
@@ -116,14 +118,15 @@ class QueryInfo {
 
    private:
     const FieldSchema *vector_schema_{nullptr};
-    std::string vector_term_{""};
+    std::string_view vector_term_;
     core::IndexMeta::DataType data_type_;
     uint32_t dimension_{0};
-    std::string vector_sparse_indices_{""};
-    std::string vector_sparse_values_{""};
+    std::string_view vector_sparse_indices_;
+    std::string_view vector_sparse_values_;
     QueryParams::Ptr query_params_;
     bool reverse_sort_{false};
   };
+
 
  public:
   QueryInfo() = default;
@@ -159,6 +162,14 @@ class QueryInfo {
 
   const QueryVectorCondInfo::Ptr &vector_cond_info() const {
     return vector_cond_info_;
+  }
+
+  void set_fts_cond_info(FtsCondInfo::Ptr value) {
+    fts_cond_info_ = std::move(value);
+  }
+
+  const FtsCondInfo::Ptr &fts_cond_info() const {
+    return fts_cond_info_;
   }
 
   void set_query_topn(uint32_t value) {
@@ -340,6 +351,7 @@ class QueryInfo {
   QueryNode::Ptr filter_cond_{nullptr};
 
   QueryVectorCondInfo::Ptr vector_cond_info_{nullptr};
+  FtsCondInfo::Ptr fts_cond_info_{nullptr};
 
   // these two are for post filtering only
   QueryNode::Ptr post_invert_cond_{nullptr};

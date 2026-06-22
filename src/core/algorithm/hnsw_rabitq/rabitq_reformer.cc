@@ -85,6 +85,10 @@ size_t RabitqReformer::num_clusters() const {
   return impl_->num_clusters;
 }
 
+size_t RabitqReformer::ex_bits() const {
+  return impl_->ex_bits;
+}
+
 RabitqMetricType RabitqReformer::rabitq_metric_type() const {
   return Impl::from_rabitq(impl_->metric_type);
 }
@@ -140,7 +144,7 @@ int RabitqReformer::load(IndexStorage::Pointer storage) {
     LOG_ERROR("Failed to read header");
     return IndexError_InvalidFormat;
   }
-  memcpy(&header, block.data(), sizeof(header));
+  memcpy(static_cast<void *>(&header), block.data(), sizeof(header));
   impl_->dimension = header.dim;
   impl_->padded_dim = header.padded_dim;
   impl_->ex_bits = header.ex_bits;

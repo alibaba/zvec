@@ -49,6 +49,9 @@ ailego::JsonObject BaseIndexParam::SerializeToJsonObject(
   if (!omit_empty_value || is_huge_page) {
     json_obj.set("is_huge_page", ailego::JsonValue(is_huge_page));
   }
+  if (!omit_empty_value || use_external_vector) {
+    json_obj.set("use_external_vector", ailego::JsonValue(use_external_vector));
+  }
 
   // if (preprocess_param) {
   //   json.set("preprocess_param", preprocess_param->SerializeToJson());
@@ -130,6 +133,7 @@ bool BaseIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, is_sparse);
   DESERIALIZE_VALUE_FIELD(json_obj, use_id_map);
   DESERIALIZE_VALUE_FIELD(json_obj, is_huge_page);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_external_vector);
 
   ailego::JsonValue tmp_json_value;
   if (json_obj.has("quantizer_param")) {
@@ -248,6 +252,26 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
   }
+  return json_obj;
+}
+
+bool DiskAnnIndexParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kDiskAnn) {
+    LOG_ERROR("index_type is not DiskAnn");
+    return false;
+  }
+
+  return true;
+}
+
+ailego::JsonObject DiskAnnIndexParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
   return json_obj;
 }
 

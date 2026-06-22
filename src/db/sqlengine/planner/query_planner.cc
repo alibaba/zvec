@@ -28,6 +28,7 @@
 #include "db/sqlengine/analyzer/query_info.h"
 #include "db/sqlengine/analyzer/query_node.h"
 #include "db/sqlengine/common/util.h"
+#include "db/sqlengine/planner/fts_recall_node.h"
 #include "db/sqlengine/planner/invert_recall_node.h"
 #include "db/sqlengine/planner/ops/check_not_filtered_op.h"
 #include "db/sqlengine/planner/ops/contain_op.h"
@@ -355,7 +356,10 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
   LOG_DEBUG("Making plan for collection[%s] query_info[%s]", table_name.c_str(),
             query_info->to_string().c_str());
   int topn = query_info->query_topn();
-  auto vector_cond = query_info->vector_cond_info();
+  bool has_vector = query_info->vector_cond_info() != nullptr;
+  bool has_fts = query_info->fts_cond_info() != nullptr;
+  bool vector_is_reverse =
+      has_vector && query_info->vector_cond_info()->is_reverse_sort();
   bool has_group_by = query_info->group_by() != nullptr;
 
   // optimize plan by instrument query info condition, eg adjust invert cond
@@ -392,8 +396,8 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
     // with filter
     bool single_stage_search = only_invert_before_opt && only_forward_after_opt;
     std::unique_ptr<arrow::compute::Expression> forward_filter;
-    if (query_info->filter_cond()) {
-      auto filter = parse_filter(query_info->filter_cond().get());
+    if (segment_query_info->filter_cond()) {
+      auto filter = parse_filter(segment_query_info->filter_cond().get());
       if (!filter) {
         LOG_ERROR("Parse filter failed: %s", filter.error().c_str());
         return tl::make_unexpected(filter.error());
@@ -403,10 +407,13 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
     }
 
     Result<PlanInfo::Ptr> seg_plan;
-    if (query_info->vector_cond_info()) {
+    if (segment_query_info->vector_cond_info()) {
       seg_plan = vector_scan(segment, std::move(segment_query_info),
                              std::move(forward_filter), single_stage_search);
-    } else if (query_info->invert_cond()) {
+    } else if (segment_query_info->fts_cond_info()) {
+      seg_plan = fts_scan(segment, std::move(segment_query_info),
+                          std::move(forward_filter), single_stage_search);
+    } else if (segment_query_info->invert_cond()) {
       seg_plan = invert_scan(segment, std::move(segment_query_info),
                              std::move(forward_filter));
     } else {
@@ -432,13 +439,21 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
                                       arrow::compute::Ordering::Implicit()};
   ac::Declaration node{"source", source_node_options};
 
-  if (vector_cond) {
+  if (has_vector) {
+    node = ac::Declaration{
+        "order_by",
+        {std::move(node)},
+        ac::OrderByNodeOptions{cp::Ordering{{cp::SortKey{
+            kFieldScore, vector_is_reverse ? cp::SortOrder::Descending
+                                           : cp::SortOrder::Ascending}}}}};
+  } else if (has_fts) {
+    // FTS uses BM25 where higher score = more relevant. Per-segment results
+    // are already in descending score order; merging multiple segments
+    // requires a global re-sort to keep the contract.
     node = ac::Declaration{"order_by",
                            {std::move(node)},
                            ac::OrderByNodeOptions{cp::Ordering{{cp::SortKey{
-                               kFieldScore, vector_cond->is_reverse_sort()
-                                                ? cp::SortOrder::Descending
-                                                : cp::SortOrder::Ascending}}}}};
+                               kFieldScore, cp::SortOrder::Descending}}}}};
   }
 
   // group by need to collect all docs
@@ -515,14 +530,14 @@ Result<PlanInfo::Ptr> QueryPlanner::forward_scan(
   return std::make_shared<PlanInfo>(std::move(node), std::move(schema));
 }
 
-Result<PlanInfo::Ptr> QueryPlanner::vector_scan(
-    Segment::Ptr seg, QueryInfo::Ptr query_info,
-    std::unique_ptr<arrow::compute::Expression> forward_filter,
+DocFilter::Ptr QueryPlanner::build_doc_filter(
+    const Segment::Ptr &seg, const QueryInfo::Ptr &query_info,
+    std::unique_ptr<arrow::compute::Expression> &forward_filter,
     bool single_stage_search) {
   std::unique_ptr<ac::Declaration> forward_filter_plan;
   // if single stage search is not enabled, first run acero plan to get
-  // forward bitmap, then filter during vector search. otherwise, filter
-  // forward during forward search.
+  // forward bitmap, then filter during search. otherwise, filter forward
+  // during search.
   if (forward_filter && !single_stage_search) {
     ac::RecordBatchReaderSourceNodeOptions source_options{
         seg->scan(query_info->get_forward_filter_field_names())};
@@ -536,9 +551,17 @@ Result<PlanInfo::Ptr> QueryPlanner::vector_scan(
     })});
     forward_filter.reset();
   }
-  auto doc_filter = std::make_shared<DocFilter>(seg, query_info,
-                                                std::move(forward_filter_plan),
-                                                std::move(forward_filter));
+  return std::make_shared<DocFilter>(seg, query_info,
+                                     std::move(forward_filter_plan),
+                                     std::move(forward_filter));
+}
+
+Result<PlanInfo::Ptr> QueryPlanner::vector_scan(
+    Segment::Ptr seg, QueryInfo::Ptr query_info,
+    std::unique_ptr<arrow::compute::Expression> forward_filter,
+    bool single_stage_search) {
+  auto doc_filter =
+      build_doc_filter(seg, query_info, forward_filter, single_stage_search);
 
   int topn = query_info->query_topn();
   int batch_size = get_batch_size(*query_info, false);
@@ -614,6 +637,28 @@ Result<PlanInfo::Ptr> QueryPlanner::invert_scan(
   node = ac::Declaration{
       "fetch", {std::move(node)}, ac::FetchNodeOptions{0, topn}};
   return std::make_shared<PlanInfo>(std::move(node), std::move(schema));
+}
+
+Result<PlanInfo::Ptr> QueryPlanner::fts_scan(
+    Segment::Ptr seg, QueryInfo::Ptr query_info,
+    std::unique_ptr<arrow::compute::Expression> forward_filter,
+    bool single_stage_search) {
+  auto doc_filter =
+      build_doc_filter(seg, query_info, forward_filter, single_stage_search);
+
+  auto topn = query_info->query_topn();
+  int batch_size = get_batch_size(*query_info, false);
+  auto recall_node = std::make_shared<FtsRecallNode>(
+      std::move(seg), std::move(query_info), std::move(doc_filter), batch_size);
+
+  auto source_node_options =
+      arrow::acero::SourceNodeOptions{recall_node->schema(), recall_node->gen(),
+                                      arrow::compute::Ordering::Implicit()};
+  ac::Declaration node{"source", source_node_options};
+
+  node = ac::Declaration{
+      "fetch", {std::move(node)}, ac::FetchNodeOptions{0, topn}};
+  return std::make_shared<PlanInfo>(std::move(node), recall_node->schema());
 }
 
 int QueryPlanner::get_batch_size(const QueryInfo &info, bool has_later_filter) {

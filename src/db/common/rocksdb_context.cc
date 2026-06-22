@@ -15,6 +15,8 @@
 
 #include "rocksdb_context.h"
 #include <rocksdb/filter_policy.h>
+#include <rocksdb/memtablerep.h>
+#include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/checkpoint.h>
@@ -27,39 +29,14 @@ namespace zvec {
 Status RocksdbContext::create(
     const std::string &db_path,
     std::shared_ptr<rocksdb::MergeOperator> merge_op) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (db_) {
-    LOG_ERROR("RocksDB[%s] is already opened", db_path_.c_str());
-    return Status::PermissionDenied();
-  }
-
-  if (auto s = validate_and_set_db_path(db_path, false); !s.ok()) {
-    return s;
-  }
-
-  create_opts_.create_if_missing = true;
-  prepare_options(merge_op);
-
-  // Open RocksDB
-  rocksdb::DB *db;
-  if (auto s = rocksdb::DB::Open(create_opts_, db_path, &db); !s.ok()) {
-    LOG_ERROR("Failed to create RocksDB[%s], code[%d], reason[%s]",
-              db_path.c_str(), s.code(), s.ToString().c_str());
-    return Status::InternalError();
-  }
-
-  db_.reset(db);
-  read_only_ = false;
-  write_opts_.disableWAL = true;
-  LOG_DEBUG("Created RocksDB[%s]", db_path.c_str());
-  return Status::OK();
+  return create(Args{db_path, {}, std::move(merge_op), {}});
 }
 
 
-Status RocksdbContext::create(
-    const std::string &db_path, const std::vector<std::string> &column_names,
-    std::shared_ptr<rocksdb::MergeOperator> merge_op) {
+Status RocksdbContext::create(Args args) {
+  per_cf_merge_ops_ = std::move(args.per_cf_merge_ops);
+  enable_hash_skiplist_ = args.enable_hash_skiplist;
+
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (db_) {
@@ -67,26 +44,24 @@ Status RocksdbContext::create(
     return Status::PermissionDenied();
   }
 
-  if (auto s = validate_and_set_db_path(db_path, false); !s.ok()) {
+  if (auto s = validate_and_set_db_path(args.db_path, false); !s.ok()) {
     return s;
   }
 
   create_opts_.create_if_missing = true;
-  prepare_options(merge_op);
+  prepare_options(std::move(args.merge_op));
 
-  // Open RocksDB
   rocksdb::DB *db;
-  rocksdb::Status s = rocksdb::DB::Open(create_opts_, db_path, &db);
+  rocksdb::Status s = rocksdb::DB::Open(create_opts_, args.db_path, &db);
   if (!s.ok()) {
     LOG_ERROR("Failed to create RocksDB[%s], code[%d], reason[%s]",
-              db_path.c_str(), s.code(), s.ToString().c_str());
+              args.db_path.c_str(), s.code(), s.ToString().c_str());
     return Status::InternalError();
   }
   db_.reset(db);
 
-  // Create column families
   bool has_default = false;
-  for (auto const &column_name : column_names) {
+  for (const auto &column_name : args.column_names) {
     if (column_name == rocksdb::kDefaultColumnFamilyName) {
       cf_handles_.push_back(db->DefaultColumnFamily());
       has_default = true;
@@ -94,10 +69,14 @@ Status RocksdbContext::create(
     }
     rocksdb::ColumnFamilyHandle *cf_handle{nullptr};
     rocksdb::ColumnFamilyOptions cf_options(create_opts_);
+    auto it = per_cf_merge_ops_.find(column_name);
+    if (it != per_cf_merge_ops_.end() && it->second) {
+      cf_options.merge_operator = it->second;
+    }
     s = db->CreateColumnFamily(cf_options, column_name, &cf_handle);
     if (!s.ok()) {
       LOG_ERROR("Failed to create cf[%s] in RocksDB[%s], code[%d], reason[%s]",
-                column_name.c_str(), db_path.c_str(), s.code(),
+                column_name.c_str(), args.db_path.c_str(), s.code(),
                 s.ToString().c_str());
       delete_cf_handles();
       db->Close();
@@ -112,13 +91,28 @@ Status RocksdbContext::create(
 
   read_only_ = false;
   write_opts_.disableWAL = true;
-  LOG_DEBUG("Created RocksDB[%s]", db_path.c_str());
+  LOG_DEBUG("Created RocksDB[%s] with Args", args.db_path.c_str());
   return Status::OK();
+}
+
+
+Status RocksdbContext::create(
+    const std::string &db_path, const std::vector<std::string> &column_names,
+    std::shared_ptr<rocksdb::MergeOperator> merge_op) {
+  return create(Args{db_path, column_names, std::move(merge_op), {}});
 }
 
 
 Status RocksdbContext::open(const std::string &db_path, bool read_only,
                             std::shared_ptr<rocksdb::MergeOperator> merge_op) {
+  return open(Args{db_path, {}, std::move(merge_op), {}}, read_only);
+}
+
+
+Status RocksdbContext::open(Args args, bool read_only) {
+  per_cf_merge_ops_ = std::move(args.per_cf_merge_ops);
+  enable_hash_skiplist_ = args.enable_hash_skiplist;
+
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (db_) {
@@ -126,31 +120,84 @@ Status RocksdbContext::open(const std::string &db_path, bool read_only,
     return Status::PermissionDenied();
   }
 
-  if (auto s = validate_and_set_db_path(db_path, true); !s.ok()) {
+  if (auto s = validate_and_set_db_path(args.db_path, true); !s.ok()) {
     return s;
   }
 
   create_opts_.create_if_missing = false;
-  prepare_options(merge_op);
+  prepare_options(std::move(args.merge_op));
 
-  // Open RocksDB
-  rocksdb::DB *db;
   rocksdb::Status s;
-  if (read_only) {
-    s = rocksdb::DB::OpenForReadOnly(create_opts_, db_path, &db);
+  std::vector<std::string> existing_cf_names{};
+  std::vector<rocksdb::ColumnFamilyDescriptor> cf_descriptors{};
+  s = rocksdb::DB::ListColumnFamilies(create_opts_, args.db_path,
+                                      &existing_cf_names);
+  if (!s.ok()) {
+    LOG_ERROR("Failed to list cf in RocksDB[%s], code[%d], reason[%s]",
+              args.db_path.c_str(), s.code(), s.ToString().c_str());
+    return Status::InternalError();
+  }
+
+  auto make_cf_options = [&](const std::string &cf_name) {
+    rocksdb::ColumnFamilyOptions cf_options(create_opts_);
+    auto it = per_cf_merge_ops_.find(cf_name);
+    if (it != per_cf_merge_ops_.end() && it->second) {
+      cf_options.merge_operator = it->second;
+    }
+    return cf_options;
+  };
+
+  if (args.column_names.empty()) {
+    for (const auto &column_name : existing_cf_names) {
+      cf_descriptors.emplace_back(column_name, make_cf_options(column_name));
+    }
   } else {
-    s = rocksdb::DB::Open(create_opts_, db_path, &db);
+    bool has_default = false;
+    for (const auto &column_name : args.column_names) {
+      if (std::find(existing_cf_names.begin(), existing_cf_names.end(),
+                    column_name) == existing_cf_names.end()) {
+        LOG_ERROR("Column family[%s] does not exist in RocksDB[%s]",
+                  column_name.c_str(), args.db_path.c_str());
+        return Status::InvalidArgument();
+      }
+      if (column_name == rocksdb::kDefaultColumnFamilyName) {
+        has_default = true;
+      }
+    }
+    if (read_only) {
+      for (const auto &column_name : args.column_names) {
+        cf_descriptors.emplace_back(column_name, make_cf_options(column_name));
+      }
+      if (!has_default) {
+        cf_descriptors.emplace_back(
+            rocksdb::kDefaultColumnFamilyName,
+            make_cf_options(rocksdb::kDefaultColumnFamilyName));
+      }
+    } else {
+      for (const auto &column_name : existing_cf_names) {
+        cf_descriptors.emplace_back(column_name, make_cf_options(column_name));
+      }
+    }
+  }
+
+  rocksdb::DB *db;
+  if (read_only) {
+    s = rocksdb::DB::OpenForReadOnly(create_opts_, args.db_path, cf_descriptors,
+                                     &cf_handles_, &db);
+  } else {
+    s = rocksdb::DB::Open(create_opts_, args.db_path, cf_descriptors,
+                          &cf_handles_, &db);
   }
   if (!s.ok()) {
     LOG_ERROR("Failed to open RocksDB[%s], code[%d], reason[%s]",
-              db_path.c_str(), s.code(), s.ToString().c_str());
+              args.db_path.c_str(), s.code(), s.ToString().c_str());
     return Status::InternalError();
   }
 
   db_.reset(db);
   read_only_ = read_only;
   write_opts_.disableWAL = true;
-  LOG_DEBUG("Opened RocksDB[%s]", db_path.c_str());
+  LOG_DEBUG("Opened RocksDB[%s] with Args", args.db_path.c_str());
   return Status::OK();
 }
 
@@ -159,84 +206,7 @@ Status RocksdbContext::open(const std::string &db_path,
                             const std::vector<std::string> &column_names,
                             bool read_only,
                             std::shared_ptr<rocksdb::MergeOperator> merge_op) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (db_) {
-    LOG_ERROR("RocksDB[%s] is already opened", db_path_.c_str());
-    return Status::PermissionDenied();
-  }
-
-  if (auto s = validate_and_set_db_path(db_path, true); !s.ok()) {
-    return s;
-  }
-
-  create_opts_.create_if_missing = false;
-  prepare_options(merge_op);
-
-  // Set up column families
-  rocksdb::Status s;
-  std::vector<std::string> existing_cf_names{};
-  std::vector<rocksdb::ColumnFamilyDescriptor> cf_descriptors{};
-  s = rocksdb::DB::ListColumnFamilies(create_opts_, db_path,
-                                      &existing_cf_names);
-  if (!s.ok()) {
-    LOG_ERROR("Failed to list cf in RocksDB[%s], code[%d], reason[%s]",
-              db_path.c_str(), s.code(), s.ToString().c_str());
-    return Status::InternalError();
-  }
-  rocksdb::ColumnFamilyOptions cf_options(create_opts_);
-  if (column_names.empty()) {  // Get all column families from DB
-    for (auto const &column_name : existing_cf_names) {
-      cf_descriptors.emplace_back(column_name, cf_options);
-    }
-  } else {
-    bool has_default = false;
-    for (const auto &column_name : column_names) {
-      if (std::find(existing_cf_names.begin(), existing_cf_names.end(),
-                    column_name) == existing_cf_names.end()) {
-        LOG_ERROR("Column family[%s] does not exist in RocksDB[%s]",
-                  column_name.c_str(), db_path.c_str());
-        return Status::InvalidArgument();
-      }
-      if (column_name == rocksdb::kDefaultColumnFamilyName) {
-        has_default = true;
-      }
-    }
-    if (read_only) {
-      for (const auto &column_name : column_names) {
-        cf_descriptors.emplace_back(column_name, cf_options);
-      }
-      if (!has_default) {
-        cf_descriptors.emplace_back(rocksdb::kDefaultColumnFamilyName,
-                                    cf_options);
-      }
-    } else {  // Rocksdb must be opened with all column families in write mode
-      for (auto const &column_name : existing_cf_names) {
-        cf_descriptors.emplace_back(column_name, cf_options);
-      }
-    }
-  }
-
-  // Open RocksDB
-  rocksdb::DB *db;
-  if (read_only) {
-    s = rocksdb::DB::OpenForReadOnly(create_opts_, db_path, cf_descriptors,
-                                     &cf_handles_, &db);
-  } else {
-    s = rocksdb::DB::Open(create_opts_, db_path, cf_descriptors, &cf_handles_,
-                          &db);
-  }
-  if (!s.ok()) {
-    LOG_ERROR("Failed to open RocksDB[%s], code[%d], reason[%s]",
-              db_path.c_str(), s.code(), s.ToString().c_str());
-    return Status::InternalError();
-  }
-
-  db_.reset(db);
-  read_only_ = read_only;
-  write_opts_.disableWAL = true;
-  LOG_DEBUG("Opened RocksDB[%s]", db_path.c_str());
-  return Status::OK();
+  return open(Args{db_path, column_names, std::move(merge_op), {}}, read_only);
 }
 
 
@@ -321,6 +291,18 @@ void RocksdbContext::prepare_options(
 
   // Disable direct reads (use buffered I/O instead)
   create_opts_.use_direct_reads = false;
+
+  // Hash skip list memtable for prefix-based lookups
+  if (enable_hash_skiplist_) {
+    create_opts_.prefix_extractor.reset(rocksdb::NewCappedPrefixTransform(8));
+    create_opts_.memtable_factory.reset(rocksdb::NewHashSkipListRepFactory(
+        1000000,  // bucket_count
+        4,        // skiplist_height
+        4         // skiplist_branching_factor
+        ));
+    create_opts_.allow_concurrent_memtable_write = false;
+    read_opts_.total_order_seek = true;
+  }
 }
 
 
@@ -443,8 +425,13 @@ Status RocksdbContext::create_cf(const std::string &cf_name) {
   }
 
   rocksdb::ColumnFamilyHandle *cf_handle{nullptr};
-  auto s = db_->CreateColumnFamily(rocksdb::ColumnFamilyOptions(create_opts_),
-                                   cf_name, &cf_handle);
+  rocksdb::ColumnFamilyOptions cf_options(create_opts_);
+  // Apply per-CF merge operator if one was registered for this CF name
+  auto it = per_cf_merge_ops_.find(cf_name);
+  if (it != per_cf_merge_ops_.end() && it->second) {
+    cf_options.merge_operator = it->second;
+  }
+  auto s = db_->CreateColumnFamily(cf_options, cf_name, &cf_handle);
   if (s.ok()) {
     cf_handles_.push_back(cf_handle);
     LOG_DEBUG("Created cf[%s] in RocksDB[%s]", cf_name.c_str(),
@@ -502,7 +489,7 @@ Status RocksdbContext::reset_cf(const std::string &cf_name) {
   }
 
   rocksdb::ColumnFamilyHandle *cf_handle{nullptr};
-  size_t index;
+  size_t index = 0;
   for (size_t i = 0; i < cf_handles_.size(); ++i) {
     if (cf_handles_[i]->GetName() == cf_name) {
       cf_handle = cf_handles_[i];
@@ -590,6 +577,4 @@ size_t RocksdbContext::count() {
     return 0;
   }
 }
-
-
 }  // namespace zvec

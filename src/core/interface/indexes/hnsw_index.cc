@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <zvec/core/interface/index.h>
+#include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/hnsw/hnsw_streamer_entity.h"
@@ -41,8 +42,38 @@ std::string HNSWIndex::storage_mode() const {
       return "buffer_pool";
     case core::HnswStorageMode::kContiguous:
       return "contiguous";
+    case core::HnswStorageMode::kExternal:
+      return "external";
   }
   return "";
+}
+
+int HNSWIndex::AddWithSource(const VectorData &vector_data,
+                             const uint32_t doc_id,
+                             const core::VectorSource &src) {
+  auto &context = acquire_context();
+  if (!context) {
+    LOG_ERROR("Failed to acquire context for AddWithSource");
+    return core::IndexError_Runtime;
+  }
+  if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+    ctx->set_vector_source(&src);
+  }
+  return Index::Add(vector_data, doc_id);
+}
+
+int HNSWIndex::SearchWithSource(
+    const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+    const core::VectorSource &src, SearchResult *result) {
+  auto &context = acquire_context();
+  if (!context) {
+    LOG_ERROR("Failed to acquire context for SearchWithSource");
+    return core::IndexError_Runtime;
+  }
+  if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+    ctx->set_vector_source(&src);
+  }
+  return Index::Search(query, search_param, result);
 }
 
 int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
@@ -84,6 +115,8 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                               param_.use_id_map);
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
                               param_.use_contiguous_memory);
+    proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
+                              param_.use_external_vector);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
   }
 
@@ -139,6 +172,12 @@ int HNSWIndex::_prepare_for_search(
 #endif
   }
 
+  const uint32_t real_search_po =
+      std::min(256u, hnsw_search_param->prefetch_offset);
+  params.set(core::PARAM_HNSW_STREAMER_PO, real_search_po);
+  const uint32_t real_search_pl =
+      std::min(256u, hnsw_search_param->prefetch_lines);
+  params.set(core::PARAM_HNSW_STREAMER_PL, real_search_pl);
   context->update(params);
   return 0;
 }

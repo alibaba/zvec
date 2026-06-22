@@ -1,4 +1,4 @@
-include(${CMAKE_SOURCE_DIR}/cmake/bazel.cmake)
+include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
 file(GLOB_RECURSE ALL_TEST_SRCS *_test.cc)
 
@@ -11,7 +11,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
            core_knn_hnsw core_knn_hnsw_rabitq core_knn_flat core_knn_omega core_interface
            core_mix_reducer omega
       SRCS ${CC_SRCS}
-      INCS . ${CMAKE_SOURCE_DIR}/src/core ${CMAKE_SOURCE_DIR}/src/core/algorithm
-           ${CMAKE_SOURCE_DIR}/thirdparty/omega/OMEGALib/include
+      INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+           ${PROJECT_ROOT_DIR}/thirdparty/omega/OMEGALib/include
     )
 endforeach()

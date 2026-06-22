@@ -16,7 +16,12 @@
 #pragma once
 
 
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include <rocksdb/db.h>
+#include <rocksdb/write_batch.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/db/status.h>
 
@@ -27,9 +32,18 @@ namespace zvec {
 // A very thin wrapper around RocksDB
 struct RocksdbContext {
  public:
+  struct Args {
+    std::string db_path;
+    std::vector<std::string> column_names;
+    std::shared_ptr<rocksdb::MergeOperator> merge_op;
+    std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+        per_cf_merge_ops;
+    bool enable_hash_skiplist = false;
+  };
   std::unique_ptr<rocksdb::DB> db_{nullptr};
   std::string db_path_;
   bool read_only_;
+  bool enable_hash_skiplist_{false};
   std::vector<rocksdb::ColumnFamilyHandle *> cf_handles_;
   rocksdb::Options create_opts_;
   rocksdb::WriteOptions write_opts_;
@@ -37,6 +51,9 @@ struct RocksdbContext {
   rocksdb::FlushOptions flush_opts_;
   rocksdb::CompactRangeOptions compact_range_opts_;
   std::mutex mutex_;
+  // Per-CF merge operators (keyed by CF name)
+  std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
+      per_cf_merge_ops_;
 
 
  public:
@@ -79,7 +96,7 @@ struct RocksdbContext {
   rocksdb::ColumnFamilyHandle *get_cf(const std::string &cf_name);
 
 
-  // Create a column family
+  // Create a column family (uses per_cf_merge_ops_ if set for cf_name)
   Status create_cf(const std::string &cf_name);
 
 
@@ -101,6 +118,13 @@ struct RocksdbContext {
 
   // Get the estimated number of keys in the database
   size_t count();
+
+
+  // Create a Rocksdb instance from Args
+  Status create(Args args);
+
+  // Open an existing Rocksdb instance from Args
+  Status open(Args args, bool read_only);
 
 
  private:

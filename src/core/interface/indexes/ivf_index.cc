@@ -16,10 +16,9 @@
 #include <string>
 #include <zvec/core/interface/index.h>
 #include "algorithm/ivf/ivf_params.h"
+#include "holder_builder.h"
 
 namespace zvec::core_interface {
-
-static constexpr uint64_t kInvalidKey = std::numeric_limits<uint64_t>::max();
 
 int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   if (is_sparse_) {
@@ -84,15 +83,22 @@ int IVFIndex::Open(const std::string &file_path,
       break;
     }
     case StorageOptions::StorageType::kBufferPool: {
-      storage_ = core::IndexFactory::CreateStorage("BufferStorage");
+      // NOTE: IVF index is dumped via FileDumper (plain binary file), which is
+      // not compatible with BufferStorage's IndexFormat layout (header/footer
+      // chain). Until IVF gains a BufferStorage-aware dump path, fall back to
+      // MMapFileReadStorage so the freshly-dumped file can be reopened.
+      storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
       if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create BufferStorage");
+        LOG_ERROR(
+            "Failed to create MMapFileReadStorage (IVF buffer-pool fallback)");
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
-        LOG_ERROR("Failed to init BufferStorage, path: %s, err: %s",
-                  file_path_.c_str(), core::IndexError::What(ret));
+        LOG_ERROR(
+            "Failed to init MMapFileReadStorage (IVF buffer-pool fallback), "
+            "path: %s, err: %s",
+            file_path_.c_str(), core::IndexError::What(ret));
         return ret;
       }
       break;
@@ -122,60 +128,8 @@ int IVFIndex::Open(const std::string &file_path,
 }
 
 int IVFIndex::GenerateHolder() {
-  if (param_.data_type == DataType::DT_FP16) {
-    auto holder =
-        std::make_shared<zvec::core::MultiPassIndexHolder<DataType::DT_FP16>>(
-            param_.dimension);
-    for (auto doc : doc_cache_) {
-      ailego::NumericalVector<uint16_t> vec(doc.second);
-      if (doc.first == kInvalidKey) {
-        continue;
-      }
-      if (!holder->emplace(doc.first, vec)) {
-        LOG_ERROR("Failed to add vector");
-        return core::IndexError_Runtime;
-      }
-    }
-    holder_ = holder;
-  } else if (param_.data_type == DataType::DT_FP32) {
-    auto holder =
-        std::make_shared<zvec::core::MultiPassIndexHolder<DataType::DT_FP32>>(
-            param_.dimension);
-    for (auto doc : doc_cache_) {
-      ailego::NumericalVector<float> vec(doc.second);
-      if (doc.first == kInvalidKey) {
-        continue;
-      }
-      if (!holder->emplace(doc.first, vec)) {
-        LOG_ERROR("Failed to add vector");
-        return core::IndexError_Runtime;
-      }
-    }
-    holder_ = holder;
-  } else if (param_.data_type == DataType::DT_INT8) {
-    auto holder =
-        std::make_shared<zvec::core::MultiPassIndexHolder<DataType::DT_INT8>>(
-            param_.dimension);
-    for (auto doc : doc_cache_) {
-      ailego::NumericalVector<uint8_t> vec(doc.second);
-      if (doc.first == kInvalidKey) {
-        continue;
-      }
-      if (!holder->emplace(doc.first, vec)) {
-        LOG_ERROR("Failed to add vector");
-        return core::IndexError_Runtime;
-      }
-    }
-    holder_ = holder;
-  } else {
-    LOG_ERROR("data_type is not support");
-    return core::IndexError_Runtime;
-  }
-  if (converter_) {
-    core::IndexConverter::TrainAndTransform(converter_, holder_);
-    holder_ = converter_->result();
-  }
-  return 0;
+  return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
+                              converter_, &holder_);
 }
 
 int IVFIndex::Add(const VectorData &vector, uint32_t doc_id) {

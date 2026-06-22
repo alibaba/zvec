@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <zvec/db/doc.h>
+#include <zvec/db/query.h>
 #include <zvec/db/status.h>
 #include "db/common/profiler.h"
 #include "db/index/segment/segment.h"
@@ -27,7 +27,7 @@ class SQLEngine {
   virtual ~SQLEngine();
 
   virtual Result<DocPtrList> execute(
-      CollectionSchema::Ptr collection, const VectorQuery &query,
+      CollectionSchema::Ptr collection, SearchQuery query,
       const std::vector<Segment::Ptr> &segments) = 0;
 
   virtual Result<GroupResults> execute_group_by(

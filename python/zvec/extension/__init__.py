@@ -18,12 +18,13 @@ from .embedding_function import DenseEmbeddingFunction, SparseEmbeddingFunction
 from .http_embedding_function import HTTPDenseEmbedding
 from .jina_embedding_function import JinaDenseEmbedding
 from .jina_function import JinaFunctionBase
-from .multi_vector_reranker import RrfReRanker, WeightedReRanker
+from .multi_vector_reranker import CallbackReRanker, RrfReRanker, WeightedReRanker
 from .openai_embedding_function import OpenAIDenseEmbedding
 from .openai_function import OpenAIFunctionBase
 from .qwen_embedding_function import QwenDenseEmbedding, QwenSparseEmbedding
 from .qwen_function import QwenFunctionBase
 from .qwen_rerank_function import QwenReRanker
+from .rerank_function import RerankFunction
 from .rerank_function import RerankFunction as ReRanker
 from .sentence_transformer_embedding_function import (
     DefaultLocalDenseEmbedding,
@@ -34,6 +35,7 @@ from .sentence_transformer_rerank_function import DefaultLocalReRanker
 
 __all__ = [
     "BM25EmbeddingFunction",
+    "CallbackReRanker",
     "DefaultLocalDenseEmbedding",
     "DefaultLocalReRanker",
     "DefaultLocalSparseEmbedding",
@@ -48,6 +50,7 @@ __all__ = [
     "QwenReRanker",
     "QwenSparseEmbedding",
     "ReRanker",
+    "RerankFunction",
     "RrfReRanker",
     "SentenceTransformerFunctionBase",
     "SparseEmbeddingFunction",

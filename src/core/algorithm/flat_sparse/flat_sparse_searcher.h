@@ -28,7 +28,7 @@ class FlatSparseSearcher : public IndexSearcher {
 
  public:
   FlatSparseSearcher(void);
-  virtual ~FlatSparseSearcher(void);
+  ~FlatSparseSearcher(void) override;
 
   FlatSparseSearcher(const FlatSparseSearcher &) = delete;
   FlatSparseSearcher &operator=(const FlatSparseSearcher &) = delete;

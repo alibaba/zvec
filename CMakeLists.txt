@@ -5,7 +5,14 @@ set(CC_CXX_STANDARD 17)
 
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
-    add_compile_options(/FS) # handle .pdb concurrency
+    # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
+    # Use CACHE FORCE so it propagates into thirdparty subdirectories that call project().
+    foreach(_cfg DEBUG RELWITHDEBINFO)
+        foreach(_lang C CXX)
+            string(REPLACE "/Zi" "/Z7" _flags "${CMAKE_${_lang}_FLAGS_${_cfg}}")
+            set(CMAKE_${_lang}_FLAGS_${_cfg} "${_flags}" CACHE STRING "" FORCE)
+        endforeach()
+    endforeach()
     add_compile_options(/EHsc) # def c++ exception behavior
     add_compile_options(/Zc:preprocessor /Zc:__cplusplus)
     add_compile_options(/we4716) # -Werror=return-type
@@ -67,13 +74,19 @@ endif()
 include_directories(${PROJECT_ROOT_DIR}/src/include)
 include_directories(${PROJECT_ROOT_DIR}/src)
 
+option(BUILD_ZVEC_SHARED "Build all-in-one C++ shared library libzvec" ON)
+option(BUILD_ZVEC_AILEGO_SHARED "Build all-in-one zvec-ailego shared library libzvec_ailego" ON)
+option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec_core" ON)
+
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
-message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
-
 option(BUILD_C_BINDINGS "Build C bindings" ON)
-message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
-
 option(BUILD_TOOLS "Build tools" ON)
+
+message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
+message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
+message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
+message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
+message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
 if(ANDROID)
@@ -117,6 +130,17 @@ else()
 endif()
 message(STATUS "RABITQ_ARCH_FLAG: ${RABITQ_ARCH_FLAG}")
 
+# DiskAnn support (Linux x86_64 only, requires libaio)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386" AND NOT ANDROID AND NOT IOS)
+  set(DISKANN_SUPPORTED ON)
+  add_definitions(-DDISKANN_SUPPORTED=1)
+else()
+  set(DISKANN_SUPPORTED OFF)
+  add_definitions(-DDISKANN_SUPPORTED=0)
+  message(STATUS "DiskAnn support disabled - only supported on Linux x86_64")
+endif()
+message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
+
 option(USE_OSS_MIRROR "Use OSS mirror for faster third-party downloads" OFF)
 if(DEFINED ENV{USE_OSS_MIRROR} AND NOT "$ENV{USE_OSS_MIRROR}" STREQUAL "")
   set(USE_OSS_MIRROR "$ENV{USE_OSS_MIRROR}" CACHE BOOL "Use OSS mirror for faster third-party downloads" FORCE)
@@ -125,7 +149,10 @@ message(STATUS "USE_OSS_MIRROR:${USE_OSS_MIRROR}")
 
 cc_directory(thirdparty)
 cc_directories(src)
+
 cc_directories(tests)
+
+add_custom_target(clang_tidy_deps DEPENDS zvec_proto ARROW.BUILD glog gflags Lz4.BUILD)
 
 if(BUILD_TOOLS)
     cc_directories(tools)
@@ -153,4 +180,25 @@ if(BUILD_PYTHON_BINDINGS)
 
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+
+    # DiskAnn ships as a runtime-loaded shared module
+    # (libzvec_diskann_plugin.so) that is brought online implicitly the
+    # first time a DiskAnn index is created — users never call any load
+    # function. The Python extension resolves the module next to _zvec.so
+    # (see the $ORIGIN rpath in src/binding/python/CMakeLists.txt); the
+    # module must therefore be installed alongside _zvec.so in the wheel.
+    # The target exists only on platforms where DiskAnn is buildable
+    # (currently Linux x86_64 with libaio).
+    if(TARGET core_knn_diskann)
+        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+    endif()
+    # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
+    # out of the box. python/zvec/__init__.py resolves this directory via
+    # importlib.resources and registers it with set_default_jieba_dict_dir().
+    set(ZVEC_JIEBA_DICT_SRC
+        "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+    install(FILES
+        "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
+        "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
+        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict)
 endif()

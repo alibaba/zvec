@@ -50,7 +50,7 @@ class IndexSegmentStorage : public IndexStorage {
           parent_(parent->clone()) {}
 
     //! Destructor
-    virtual ~Segment(void) {}
+    ~Segment(void) override {}
 
     //! Retrieve size of data
     size_t data_size(void) const override {
@@ -105,6 +105,11 @@ class IndexSegmentStorage : public IndexStorage {
       return IndexError_NotImplemented;
     }
 
+    //! Retrieve offset of data
+    size_t data_offset(void) const override {
+      return 0;
+    }
+
     void update_data_crc(uint32_t) override {
       return;
     }
@@ -132,7 +137,7 @@ class IndexSegmentStorage : public IndexStorage {
       : parent_(seg) {}
 
   //! Destructor
-  virtual ~IndexSegmentStorage(void) {}
+  ~IndexSegmentStorage(void) override {}
 
   //! Initialize container
   int init(const ailego::Params &) override {

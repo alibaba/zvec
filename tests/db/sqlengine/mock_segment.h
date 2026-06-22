@@ -333,7 +333,7 @@ class MockSegment : public Segment {
   }
 
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
-                     int index) const override {
+                     int segment_doc_id) const override {
     LOG_ERROR("Not implemented");
     return nullptr;
   }
@@ -462,6 +462,25 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
+  Status reload_fts_index(const CollectionSchema &schema,
+                          const SegmentMeta::Ptr &segment_meta,
+                          const FtsIndexer::Ptr &new_fts_indexer) override {
+    return Status::OK();
+  }
+
+  Status create_fts_index(const std::string &column,
+                          const IndexParams::Ptr &index_params,
+                          SegmentMeta::Ptr *new_segment_meta,
+                          FtsIndexer::Ptr *output_fts_indexer) override {
+    return Status::OK();
+  }
+
+  Status drop_fts_index(const std::string &column,
+                        SegmentMeta::Ptr *new_segment_meta,
+                        FtsIndexer::Ptr *output_fts_indexer) override {
+    return Status::OK();
+  }
+
   Status Insert(Doc &doc) override {
     return Status::OK();
   }
@@ -482,7 +501,10 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Doc::Ptr Fetch(uint64_t doc_id) override {
+  Doc::Ptr Fetch(uint64_t doc_id,
+                 const std::optional<std::vector<std::string>> &output_fields =
+                     std::nullopt,
+                 bool include_vector = true) override {
     return nullptr;
   }
 
@@ -494,6 +516,17 @@ class MockSegment : public Segment {
   std::vector<VectorColumnIndexer::Ptr> get_quant_vector_indexer(
       const std::string &field_name) const override {
     return {};
+  }
+
+  fts::FtsColumnIndexerPtr get_fts_indexer(
+      const std::string &field_name) const override {
+    return nullptr;
+  }
+
+  Result<std::vector<fts::FtsResult>> fts_search(
+      const std::string &field_name, const fts::FtsAstNode &ast,
+      const fts::FtsQueryParams &params) override {
+    return std::vector<fts::FtsResult>{};
   }
 
   Status flush() override {

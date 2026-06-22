@@ -14,6 +14,7 @@ set(ZVEC_TOOL_CORE_INTERFACE_LIBS
     core_knn_vamana
     core_knn_cluster
     core_knn_ivf
+    core_knn_diskann
     core_interface
 )
 
@@ -57,7 +58,7 @@ cc_binary(
 cc_binary(
     NAME recall_original
     STRICT PACKED
-    SRCS recall_original.cc flow.cc
+    SRCS recall_original.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
     LIBS gflags yaml-cpp magic_enum roaring ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )
@@ -65,7 +66,7 @@ cc_binary(
 cc_binary(
     NAME bench_original
     STRICT PACKED
-    SRCS bench_original.cc flow.cc
+    SRCS bench_original.cc
     INCS ${PROJECT_ROOT_DIR}/src/core/
     LIBS gflags yaml-cpp magic_enum roaring ${ZVEC_TOOL_CORE_INTERFACE_LIBS} ${ZVEC_TOOL_CORE_INTERFACE_IMPL_LIBS}
 )

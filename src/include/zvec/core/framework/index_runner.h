@@ -401,7 +401,7 @@ class IndexRunner : public IndexModule {
   IndexRunner() = default;
 
   //! Destructor
-  virtual ~IndexRunner() = default;
+  ~IndexRunner() override = default;
 
   //! Retrieve statistics
   virtual const Stats &stats(void) const = 0;
@@ -445,6 +445,12 @@ class IndexRunner : public IndexModule {
   //! Fetch vector by id
   virtual const void *get_vector_by_id(uint32_t /*id*/) const {
     return nullptr;
+  }
+
+  //! Get vector by key
+  virtual int get_vector(uint64_t /*key*/, Context::Pointer & /*context*/,
+                         std::string & /*vector*/) const {
+    return IndexError_NotImplemented;
   }
 
   virtual int get_vector_by_id(const uint32_t /*id*/,

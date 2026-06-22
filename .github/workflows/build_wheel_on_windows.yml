@@ -70,7 +70,7 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-tags: true
@@ -86,7 +86,7 @@ jobs:
           python-version: '3.11'
 
       - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
 

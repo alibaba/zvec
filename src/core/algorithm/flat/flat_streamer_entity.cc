@@ -165,13 +165,20 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
 
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
-  const BlockLocation *bl =
-      reinterpret_cast<const BlockLocation *>(head_block.data());
-  if (ailego_unlikely(bl == nullptr)) {
-    LOG_ERROR("Failed to get block loc");
-    return IndexError_ReadData;
+  BlockLocation block;
+  {
+    const BlockLocation *bl =
+        reinterpret_cast<const BlockLocation *>(head_block.data());
+    if (ailego_unlikely(bl == nullptr)) {
+      LOG_ERROR("Failed to get block loc");
+      return IndexError_ReadData;
+    }
+    block = *bl;
   }
-  BlockLocation block = *bl;
+  // Release the head block reference early so that the buffer pool ref_count
+  // and memory budget held by it do not block subsequent acquire/evict in this
+  // function (alloc_block / add_to_block may compete for the same memory).
+  head_block.reset(nullptr);
 
   if (!this->is_valid_block(block)) {
     int ret = this->alloc_block(block, &block);
@@ -922,6 +929,9 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
     this->get_head_block(head_block);
     BlockLocation block =
         *reinterpret_cast<const BlockLocation *>(head_block.data());
+    // Release buffer-pool pin before any alloc_block() call that may trigger
+    // append_segment() and rebuild the pool (same reason as in add()).
+    head_block.reset(nullptr);
     if (!this->is_valid_block(block)) {
       int ret = this->alloc_block(block, &block);
       if (ailego_unlikely(ret != 0)) {

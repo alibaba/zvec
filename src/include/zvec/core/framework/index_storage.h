@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <cstring>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
+#include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_module.h>
 
@@ -34,6 +36,7 @@ class IndexStorage : public IndexModule {
       MBT_UNKNOWN = 0,
       MBT_MMAP = 1,
       MBT_BUFFERPOOL = 2,
+      MBT_HEAP_SCRATCH = 3,
     };
 
     MemoryBlock() {}
@@ -46,6 +49,20 @@ class IndexStorage : public IndexModule {
     }
     MemoryBlock(void *data) : type_(MemoryBlockType::MBT_MMAP), data_(data) {}
 
+    //! Build an HEAP_SCRATCH MemoryBlock that owns `owned` (allocated via
+    //! ailego_malloc / ailego_aligned_malloc).  `size` is the byte length of
+    //! the buffer and is required so that copy construction / copy
+    //! assignment can deep-copy the buffer instead of aliasing it (a shallow
+    //! copy would result in use-after-free once the original block is
+    //! destructed and frees the buffer).
+    static MemoryBlock MakeOwned(void *owned, size_t size) {
+      MemoryBlock mb;
+      mb.type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+      mb.data_ = owned;
+      mb.scratch_size_ = size;
+      return mb;
+    }
+
     MemoryBlock(const MemoryBlock &rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
@@ -54,6 +71,12 @@ class IndexStorage : public IndexModule {
         case MemoryBlockType::MBT_BUFFERPOOL:
           this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_, rhs.data_);
           buffer_pool_handle_->acquire_one(buffer_block_id_);
+          break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          // Deep copy: each owner must hold its own buffer, otherwise the
+          // first destructor frees the buffer and leaves the surviving
+          // copies dangling.
+          deep_copy_from(rhs);
           break;
         default:
           break;
@@ -71,6 +94,14 @@ class IndexStorage : public IndexModule {
           rhs.buffer_pool_handle_ = nullptr;
           rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
           break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+          data_ = rhs.data_;
+          scratch_size_ = rhs.scratch_size_;
+          rhs.data_ = nullptr;
+          rhs.scratch_size_ = 0;
+          rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+          break;
         default:
           break;
       }
@@ -86,6 +117,10 @@ class IndexStorage : public IndexModule {
             this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
                         rhs.data_);
             buffer_pool_handle_->acquire_one(buffer_block_id_);
+            break;
+          case MemoryBlockType::MBT_HEAP_SCRATCH:
+            release_current();
+            deep_copy_from(rhs);
             break;
           default:
             break;
@@ -106,6 +141,15 @@ class IndexStorage : public IndexModule {
             rhs.buffer_pool_handle_ = nullptr;
             rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
             break;
+          case MemoryBlockType::MBT_HEAP_SCRATCH:
+            release_current();
+            type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+            data_ = rhs.data_;
+            scratch_size_ = rhs.scratch_size_;
+            rhs.data_ = nullptr;
+            rhs.scratch_size_ = 0;
+            rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
+            break;
           default:
             break;
         }
@@ -122,10 +166,14 @@ class IndexStorage : public IndexModule {
             buffer_pool_handle_->release_one(buffer_block_id_);
           }
           break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          release_owned();
+          break;
         default:
           break;
       }
       data_ = nullptr;
+      scratch_size_ = 0;
     }
 
     const void *data() const {
@@ -136,6 +184,8 @@ class IndexStorage : public IndexModule {
                void *data) {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
         buffer_pool_handle_->release_one(buffer_block_id_);
+      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
+        release_owned();
       }
       type_ = MemoryBlockType::MBT_BUFFERPOOL;
       buffer_pool_handle_ = buffer_pool_handle;
@@ -147,6 +197,8 @@ class IndexStorage : public IndexModule {
       if (type_ == MemoryBlockType::MBT_BUFFERPOOL) {
         buffer_pool_handle_->release_one(buffer_block_id_);
         buffer_pool_handle_ = nullptr;
+      } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
+        release_owned();
       }
       type_ = MemoryBlockType::MBT_MMAP;
       data_ = data;
@@ -156,6 +208,56 @@ class IndexStorage : public IndexModule {
     void *data_{nullptr};
     mutable ailego::VecBufferPoolHandle *buffer_pool_handle_{nullptr};
     size_t buffer_block_id_{0};
+    //! Byte size of the heap-scratch buffer pointed to by `data_`; only used
+    //! when type_ == MBT_HEAP_SCRATCH.  Required for safe deep-copy on
+    //! copy-construction / copy-assignment of HEAP_SCRATCH blocks.
+    size_t scratch_size_{0};
+
+   private:
+    void release_owned() {
+      if (data_) {
+        ailego_free(data_);
+        data_ = nullptr;
+      }
+      scratch_size_ = 0;
+    }
+
+    //! Drop whatever the current MemoryBlock holds, regardless of type, so
+    //! that the slot is ready to receive new ownership.  Mirrors what the
+    //! destructor would do (minus zeroing data_) but leaves the type alone
+    //! for the caller to overwrite immediately afterwards.
+    void release_current() {
+      switch (type_) {
+        case MemoryBlockType::MBT_BUFFERPOOL:
+          if (buffer_pool_handle_) {
+            buffer_pool_handle_->release_one(buffer_block_id_);
+            buffer_pool_handle_ = nullptr;
+          }
+          break;
+        case MemoryBlockType::MBT_HEAP_SCRATCH:
+          release_owned();
+          break;
+        default:
+          break;
+      }
+      data_ = nullptr;
+      type_ = MemoryBlockType::MBT_UNKNOWN;
+    }
+
+    //! Allocate a fresh buffer of the same size as `rhs.scratch_size_`,
+    //! memcpy `rhs.data_` into it, and become the new owner.  Used by the
+    //! HEAP_SCRATCH copy ctor / copy assignment so the original and the
+    //! copy each free their own buffer independently.
+    void deep_copy_from(const MemoryBlock &rhs) {
+      type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+      scratch_size_ = rhs.scratch_size_;
+      if (scratch_size_ > 0 && rhs.data_) {
+        data_ = ailego_malloc(scratch_size_);
+        std::memcpy(data_, rhs.data_, scratch_size_);
+      } else {
+        data_ = nullptr;
+      }
+    }
   };
 
   struct SegmentData {
@@ -183,6 +285,11 @@ class IndexStorage : public IndexModule {
 
     //! Retrieve size of data
     virtual size_t data_size(void) const = 0;
+
+    //! Retrieve offset of data
+    virtual size_t data_offset(void) const {
+      return 0;
+    }
 
     //! Retrieve crc of data
     virtual uint32_t data_crc(void) const = 0;
@@ -228,7 +335,7 @@ class IndexStorage : public IndexModule {
   };
 
   //! Destructor
-  virtual ~IndexStorage(void) {}
+  ~IndexStorage(void) override {}
 
   //! Initialize storage
   virtual int init(const ailego::Params &params) = 0;
@@ -282,6 +389,16 @@ class IndexStorage : public IndexModule {
   //! Retrieve the memory block type of this storage
   virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
     return MemoryBlock::MBT_MMAP;
+  }
+
+  //! Test if the storage has unflushed data
+  virtual bool is_dirty(void) const {
+    return false;
+  }
+
+  //! Retrieve file ptr if has
+  virtual std::shared_ptr<ailego::File> file(void) const {
+    return nullptr;
   }
 };
 

@@ -30,7 +30,7 @@ class FlatStreamer : public IndexStreamer {
   using ContextPointer = IndexStreamer::Context::UPointer;
 
   FlatStreamer(void);
-  virtual ~FlatStreamer(void);
+  ~FlatStreamer(void) override;
 
   FlatStreamer(const FlatStreamer &streamer) = delete;
   FlatStreamer &operator=(const FlatStreamer &streamer) = delete;
@@ -126,12 +126,12 @@ class FlatStreamer : public IndexStreamer {
     return entity_;
   }
 
-  virtual const void *get_vector(uint64_t key) const override {
+  const void *get_vector(uint64_t key) const override {
     return this->get_vector_by_key(key);
   }
 
-  virtual int get_vector(const uint64_t key,
-                         IndexStorage::MemoryBlock &block) const override {
+  int get_vector(const uint64_t key,
+                 IndexStorage::MemoryBlock &block) const override {
     return this->get_vector_by_key(key, block);
   }
 

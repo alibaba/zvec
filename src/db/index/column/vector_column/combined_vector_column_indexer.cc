@@ -116,6 +116,18 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
       }
     }
 
+    std::unique_ptr<vector_column_params::GroupByParams> group_by;
+    if (query_params.group_by) {
+      auto group_by_func = query_params.group_by->group_by;
+      auto block_offset = block_offsets_[i];
+      group_by = std::make_unique<vector_column_params::GroupByParams>(
+          query_params.group_by->group_topk, query_params.group_by->group_count,
+          [group_by_func = std::move(group_by_func),
+           block_offset](uint64_t block_doc_id) {
+            return group_by_func(block_doc_id + block_offset);
+          });
+    }
+
     vector_column_params::QueryParams modified_query_params{
         query_params.data_type,
         query_params.dimension,
@@ -123,12 +135,7 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
         filter,
         query_params.fetch_vector,
         query_params.query_params,
-        query_params.group_by
-            ? std::make_unique<vector_column_params::GroupByParams>(
-                  query_params.group_by->group_topk,
-                  query_params.group_by->group_count,
-                  query_params.group_by->group_by)
-            : nullptr,
+        std::move(group_by),
         {},
         need_refine ? std::shared_ptr<vector_column_params::RefinerParam>(
                           new vector_column_params::RefinerParam{

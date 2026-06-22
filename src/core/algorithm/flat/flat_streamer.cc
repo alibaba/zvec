@@ -34,7 +34,7 @@ FlatStreamer<BATCH_SIZE>::FlatStreamer() : entity_(stats_) {}
 
 template <size_t BATCH_SIZE>
 FlatStreamer<BATCH_SIZE>::~FlatStreamer() {
-  if (state_ == STATE_INITED) {
+  if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
 }
@@ -181,7 +181,7 @@ int FlatStreamer<BATCH_SIZE>::flush(uint64_t checkpoint) {
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::dump(const IndexDumper::Pointer &dumper) {
   std::string searcher_name = "FlatSearcher";
-  if (BATCH_SIZE == 16) {
+  if constexpr (BATCH_SIZE == 16) {
     searcher_name = "FlatSearcher16";
   }
   meta_.set_searcher(searcher_name, 0U, ailego::Params());

@@ -14,6 +14,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/type.h>
 
@@ -70,16 +71,22 @@ class QueryParams {
 
 class HnswQueryParams : public QueryParams {
  public:
-  HnswQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
-                  float radius = 0.0f, bool is_linear = false,
-                  bool is_using_refiner = false)
-      : QueryParams(IndexType::HNSW), ef_(ef), training_query_id_(-1) {
+  HnswQueryParams(
+      int ef = core_interface::kDefaultHnswEfSearch, float radius = 0.0f,
+      bool is_linear = false, bool is_using_refiner = false,
+      uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
+      uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines)
+      : QueryParams(IndexType::HNSW),
+        ef_(ef),
+        training_query_id_(-1),
+        prefetch_offset_(prefetch_offset),
+        prefetch_lines_(prefetch_lines) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
   }
 
-  virtual ~HnswQueryParams() = default;
+  ~HnswQueryParams() override = default;
 
   int ef() const {
     return ef_;
@@ -99,9 +106,27 @@ class HnswQueryParams : public QueryParams {
     training_query_id_ = query_id;
   }
 
+  uint32_t prefetch_offset() const {
+    return prefetch_offset_;
+  }
+
+  void set_prefetch_offset(uint32_t prefetch_offset) {
+    prefetch_offset_ = prefetch_offset;
+  }
+
+  uint32_t prefetch_lines() const {
+    return prefetch_lines_;
+  }
+
+  void set_prefetch_lines(uint32_t prefetch_lines) {
+    prefetch_lines_ = prefetch_lines;
+  }
+
  private:
   int ef_;
   int training_query_id_;
+  uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
+  uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
 };
 
 class OmegaQueryParams : public HnswQueryParams {
@@ -137,7 +162,7 @@ class IVFQueryParams : public QueryParams {
     set_scale_factor(scale_factor);
   }
 
-  virtual ~IVFQueryParams() = default;
+  ~IVFQueryParams() override = default;
 
   int nprobe() const {
     return nprobe_;
@@ -171,7 +196,7 @@ class HnswRabitqQueryParams : public QueryParams {
     set_is_using_refiner(is_using_refiner);
   }
 
-  virtual ~HnswRabitqQueryParams() = default;
+  ~HnswRabitqQueryParams() override = default;
 
   int ef() const {
     return ef_;
@@ -193,7 +218,7 @@ class FlatQueryParams : public QueryParams {
     set_scale_factor(scale_factor);
   }
 
-  virtual ~FlatQueryParams() = default;
+  ~FlatQueryParams() override = default;
 
   float scale_factor() const {
     return scale_factor_;
@@ -207,18 +232,46 @@ class FlatQueryParams : public QueryParams {
   float scale_factor_{10};
 };
 
+class DiskAnnQueryParams : public QueryParams {
+ public:
+  DiskAnnQueryParams(int list_size = 300) : QueryParams(IndexType::DISKANN) {
+    set_list_size(list_size);
+  }
+
+  virtual ~DiskAnnQueryParams() = default;
+
+  int list_size() const {
+    return list_size_;
+  }
+
+  void set_list_size(int list_size) {
+    list_size_ = list_size;
+  }
+
+ private:
+  // list size: controls the size of the search frontier during graph traversal
+  // — larger values trade query latency for recall
+  int list_size_;
+};
+
 class VamanaQueryParams : public QueryParams {
  public:
-  VamanaQueryParams(int ef_search = core_interface::kDefaultVamanaEfSearch,
-                    float radius = 0.0f, bool is_linear = false,
-                    bool is_using_refiner = false)
-      : QueryParams(IndexType::VAMANA), ef_search_(ef_search) {
+  VamanaQueryParams(
+      int ef_search = core_interface::kDefaultVamanaEfSearch,
+      float radius = 0.0f, bool is_linear = false,
+      bool is_using_refiner = false,
+      uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
+      uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines)
+      : QueryParams(IndexType::VAMANA),
+        ef_search_(ef_search),
+        prefetch_offset_(prefetch_offset),
+        prefetch_lines_(prefetch_lines) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
   }
 
-  virtual ~VamanaQueryParams() = default;
+  ~VamanaQueryParams() override = default;
 
   int ef_search() const {
     return ef_search_;
@@ -228,8 +281,47 @@ class VamanaQueryParams : public QueryParams {
     ef_search_ = ef_search;
   }
 
+  uint32_t prefetch_offset() const {
+    return prefetch_offset_;
+  }
+
+  void set_prefetch_offset(uint32_t prefetch_offset) {
+    prefetch_offset_ = prefetch_offset;
+  }
+
+  uint32_t prefetch_lines() const {
+    return prefetch_lines_;
+  }
+
+  void set_prefetch_lines(uint32_t prefetch_lines) {
+    prefetch_lines_ = prefetch_lines;
+  }
+
  private:
   int ef_search_;
+  uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
+  uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
+};
+
+class FtsQueryParams : public QueryParams {
+ public:
+  using Ptr = std::shared_ptr<FtsQueryParams>;
+
+  FtsQueryParams() : QueryParams(IndexType::FTS) {}
+  ~FtsQueryParams() override = default;
+
+  const std::string &default_operator() const {
+    return default_operator_;
+  }
+
+  void set_default_operator(const std::string &default_operator) {
+    default_operator_ = default_operator;
+  }
+
+ private:
+  // Default boolean operator for adjacent bare terms.
+  // Supported values (case-insensitive): "OR" (default), "AND".
+  std::string default_operator_;
 };
 
 }  // namespace zvec

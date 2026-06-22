@@ -28,7 +28,7 @@ class IndexDumper : public IndexModule {
   typedef std::shared_ptr<IndexDumper> Pointer;
 
   //! Destructor
-  virtual ~IndexDumper(void) {}
+  ~IndexDumper(void) override {}
 
   //! Initialize dumper
   virtual int init(const ailego::Params &params) = 0;
@@ -51,6 +51,11 @@ class IndexDumper : public IndexModule {
 
   //! Retrieve magic number of index
   virtual uint32_t magic(void) const = 0;
+
+  //! Retrieve size
+  virtual size_t size(void) const {
+    return 0;
+  }
 };
 
 /*! Index Segment Dumper
@@ -65,7 +70,7 @@ class IndexSegmentDumper : public IndexDumper {
       : segment_id_(std::move(segid)), dumper_(std::move(dumper)) {}
 
   //! Destructor
-  virtual ~IndexSegmentDumper(void) {
+  ~IndexSegmentDumper(void) override {
     this->close_index();
   }
 

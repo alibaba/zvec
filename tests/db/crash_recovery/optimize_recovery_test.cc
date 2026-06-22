@@ -192,12 +192,12 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
       }
     }
 
-    VectorQuery query;
+    SearchQuery query;
     query.topk_ = 10;
     std::vector<float> feature(128, 0.0);
-    query.query_vector_.assign((const char *)feature.data(),
-                               feature.size() * sizeof(float));
-    query.field_name_ = "dense_fp32_field";
+    query.target_.set_vector(std::string((const char *)feature.data(),
+                                         feature.size() * sizeof(float)));
+    query.target_.field_name_ = "dense_fp32_field";
     auto query_result = collection->Query(query);
     ASSERT_TRUE(query_result);
     auto doc_list = query_result.value();
@@ -247,12 +247,12 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
     }
   }
 
-  VectorQuery query;
+  SearchQuery query;
   query.topk_ = 10;
   std::vector<float> feature(128, 0.0);
-  query.query_vector_.assign((const char *)feature.data(),
-                             feature.size() * sizeof(float));
-  query.field_name_ = "dense_fp32_field";
+  query.target_.set_vector(std::string((const char *)feature.data(),
+                                       feature.size() * sizeof(float)));
+  query.target_.field_name_ = "dense_fp32_field";
   auto query_result = collection->Query(query);
   ASSERT_TRUE(query_result);
   auto doc_list = query_result.value();

@@ -20,6 +20,7 @@
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/plugin/diskann_plugin.h>
 #include "ailego/internal/cpu_features.h"
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
@@ -54,8 +55,9 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 };
 
 std::unordered_set<IndexType> support_dense_vector_index = {
-    IndexType::FLAT, IndexType::HNSW,  IndexType::HNSW_RABITQ,
-    IndexType::IVF,  IndexType::OMEGA, IndexType::VAMANA};
+    IndexType::FLAT,  IndexType::HNSW,  IndexType::HNSW_RABITQ,
+    IndexType::IVF,   IndexType::OMEGA, IndexType::DISKANN,
+    IndexType::VAMANA};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
@@ -164,9 +166,38 @@ Status FieldSchema::validate() const {
               "RabitQ requires AVX2/AVX512F to be supported");
         }
 
-        if (kRabitqCompiledAvx512 && !flags.AVX512F) {
-          return Status::NotSupported(
-              "RabitQ compiled with AVX512F while runtime does not support");
+        if constexpr (kRabitqCompiledAvx512) {
+          if (!flags.AVX512F) {
+            return Status::NotSupported(
+                "RabitQ compiled with AVX512F while runtime does not support");
+          }
+        }
+      }
+
+      if (index_params_->type() == IndexType::DISKANN) {
+        // Probe the DiskAnn runtime eagerly at creation time so unsupported
+        // platforms (non Linux x86_64), missing libaio, or a missing plugin
+        // .so fail fast with a clear message instead of surfacing later during
+        // optimize(). This reuses the same gate DiskAnnIndex applies on first
+        // use (zvec::LoadDiskAnnPlugin, wrapped by EnsureDiskAnnRuntimeReady).
+        // All validate() call sites are creation-time only, so triggering the
+        // plugin load here is safe (and idempotent/cached).
+        const int rc = ::zvec::LoadDiskAnnPlugin();
+        switch (rc) {
+          case kDiskAnnPluginOk:
+            break;
+          case kDiskAnnPluginUnsupportedPlatform:
+            return Status::NotSupported(
+                "DiskAnn is not supported on this platform (Linux x86_64 "
+                "only)");
+          case kDiskAnnPluginLibAioMissing:
+            return Status::NotSupported(
+                "DiskAnn requires libaio at runtime, but it was not found on "
+                "this host. Install it (e.g. 'apt-get install libaio1', or "
+                "'libaio1t64' on Ubuntu 24.04+) and retry.");
+          default:
+            return Status::NotSupported(
+                "DiskAnn runtime could not be initialized on this host");
         }
       }
 
@@ -228,12 +259,16 @@ Status FieldSchema::validate() const {
     if (index_params_) {
       if (index_params_->is_vector_index_type()) {
         return Status::InvalidArgument(
-            "schema validate failed: scalar_field's index_params only support "
-            "INVERT "
-            "index, "
-            "but field[",
-            name_, "]'s index_type is ",
+            "schema validate failed: scalar field[", name_,
+            "] does not support vector index params, but got index_type ",
             IndexTypeCodeBook::AsString(index_params_->type()));
+      }
+      if (index_params_->type() == IndexType::FTS &&
+          data_type_ != DataType::STRING) {
+        return Status::InvalidArgument(
+            "schema validate failed: FTS index only supports STRING data type, "
+            "but field[",
+            name_, "]'s data_type is ", DataTypeCodeBook::AsString(data_type_));
       }
     }
   }
@@ -309,11 +344,11 @@ Status CollectionSchema::validate() const {
         "schema validate failed: max_doc_count_per_segment must >= ",
         MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD);
   }
-  auto v_fields = vector_fields();
-  if (v_fields.empty()) {
-    return Status::InvalidArgument(
-        "schema validate failed: vector fields is empty");
+  if (fields_.empty()) {
+    return Status::InvalidArgument("schema validate failed: collection[", name_,
+                                   "] has no fields");
   }
+  auto v_fields = vector_fields();
   if (v_fields.size() > kMaxVectorFieldSize) {
     return Status::InvalidArgument(
         "schema validate failed: collection[", name_,
@@ -555,6 +590,35 @@ FieldSchemaPtrList CollectionSchema::vector_fields() const {
     }
   }
   return vector_fields;
+}
+
+FieldSchemaPtrList CollectionSchema::invert_fields() const {
+  FieldSchemaPtrList invert;
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::INVERT) {
+      invert.push_back(field);
+    }
+  }
+  return invert;
+}
+
+bool CollectionSchema::has_fts_field() const {
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::FTS) {
+      return true;
+    }
+  }
+  return false;
+}
+
+FieldSchemaPtrList CollectionSchema::fts_fields() const {
+  FieldSchemaPtrList fts;
+  for (const auto &field : fields_) {
+    if (field->index_type() == IndexType::FTS) {
+      fts.push_back(field);
+    }
+  }
+  return fts;
 }
 
 uint64_t CollectionSchema::max_doc_count_per_segment() const {

@@ -1,0 +1,102 @@
+name: Nightly CMake Subproject Integration
+
+on:
+  schedule:
+    # Run after the other nightly jobs to avoid starting every heavy job at once.
+    - cron: '30 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  subproject-integration:
+    name: Subproject Build & Example
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: cmake-subproject-linux-x64
+          max-size: 150M
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libaio-dev
+        shell: bash
+
+      - name: Set up environment variables
+        run: |
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> "$GITHUB_PATH"
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            cmake==3.30.0 \
+            ninja==1.11.1
+        shell: bash
+
+      - name: Configure subproject integration
+        run: |
+          SMOKE_SOURCE="$RUNNER_TEMP/zvec-subproject-nightly"
+          SMOKE_BUILD="$RUNNER_TEMP/zvec-subproject-nightly-build"
+
+          mkdir -p "$SMOKE_SOURCE" "$SMOKE_BUILD"
+          cp "$GITHUB_WORKSPACE/.github/cmake/subproject-integration/CMakeLists.txt" \
+            "$SMOKE_SOURCE/CMakeLists.txt"
+
+          CMAKE_ARGS=(
+            -DZVEC_SOURCE_DIR="$GITHUB_WORKSPACE"
+            -DCMAKE_BUILD_TYPE=Release
+            -DENABLE_WERROR=ON
+            -DUSE_OSS_MIRROR=ON
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DBUILD_TOOLS=OFF
+            -DBUILD_C_BINDINGS=OFF
+            -DBUILD_PYTHON_BINDINGS=OFF
+          )
+
+          cmake -S "$SMOKE_SOURCE" -B "$SMOKE_BUILD" -G Ninja \
+            "${CMAKE_ARGS[@]}"
+
+          echo "SMOKE_BUILD=$SMOKE_BUILD" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Build subproject targets
+        run: |
+          cmake --build "$SMOKE_BUILD" --target \
+            core_knn_diskann \
+            zvec_embed_db_example \
+            zvec_embed_core_example \
+            zvec_embed_ailego_example \
+            --parallel "$NPROC"
+        shell: bash
+
+      - name: Run subproject examples
+        run: |
+          cd "$SMOKE_BUILD"
+          ./bin/zvec_embed_db_example
+          ./bin/zvec_embed_core_example
+          ./bin/zvec_embed_ailego_example
+        shell: bash

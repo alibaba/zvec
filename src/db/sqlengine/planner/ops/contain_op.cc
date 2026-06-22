@@ -27,7 +27,7 @@ bool match_value(const arrow::Array *value_array, int64_t offset,
   auto *value_typed_arr = static_cast<const ArrowArrayType *>(value_array);
   auto *value_set_typed_arr =
       static_cast<const ArrowArrayType *>(value_set_array);
-  if (contain_type == ContainType::kContainAll) {
+  if constexpr (contain_type == ContainType::kContainAll) {
     for (int j = 0; j < value_set_typed_arr->length(); ++j) {
       bool contain = false;
       for (int i = 0; i < length; ++i) {

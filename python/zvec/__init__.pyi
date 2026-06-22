@@ -11,11 +11,13 @@ from .extension import ReRanker, RrfReRanker, WeightedReRanker
 from .extension.embedding import DenseEmbeddingFunction
 from .model import param, schema
 from .model.collection import Collection
-from .model.doc import Doc
+from .model.doc import Doc, DocList
 from .model.param import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
+    DiskAnnIndexParam,
+    DiskAnnQueryParam,
     FlatIndexParam,
     HnswIndexParam,
     HnswQueryParam,
@@ -54,8 +56,10 @@ __all__: list = [
     "CollectionStats",
     "DataType",
     "DenseEmbeddingFunction",
-    "DenseEmbeddingFunction",
+    "DiskAnnIndexParam",
+    "DiskAnnQueryParam",
     "Doc",
+    "DocList",
     "FieldSchema",
     "FlatIndexParam",
     "HnswIndexParam",
@@ -75,7 +79,6 @@ __all__: list = [
     "OptimizeOption",
     "QuantizeType",
     "Query",
-    "ReRanker",
     "ReRanker",
     "RrfReRanker",
     "Status",
@@ -119,7 +122,12 @@ class _Collection:
     def Destroy(self) -> None: ...
     def DropColumn(self, arg0: str) -> None: ...
     def DropIndex(self, arg0: str) -> None: ...
-    def Fetch(self, arg0: collections.abc.Sequence[str]) -> dict[str, _Doc]: ...
+    def Fetch(
+        self,
+        pks: collections.abc.Sequence[str],
+        output_fields: list[str] | None = None,
+        include_vector: bool = True,
+    ) -> dict[str, _Doc]: ...
     def Flush(self) -> None: ...
     def GroupByQuery(self, arg0: ...) -> list[...]: ...
     def Insert(self, arg0: collections.abc.Sequence[_Doc]) -> list[typing.Status]: ...
@@ -127,7 +135,7 @@ class _Collection:
     def RetrainOmega(self, arg0: param.RetrainOmegaOption) -> None: ...
     def Options(self) -> param.CollectionOption: ...
     def Path(self) -> str: ...
-    def Query(self, arg0: param._VectorQuery) -> list[_Doc]: ...
+    def Query(self, arg0: param._SearchQuery) -> list[_Doc]: ...
     def Schema(self) -> schema._CollectionSchema: ...
     def Stats(self) -> schema.CollectionStats: ...
     def Update(self, arg0: collections.abc.Sequence[_Doc]) -> list[typing.Status]: ...

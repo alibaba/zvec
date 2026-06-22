@@ -17,7 +17,6 @@
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
-#include <arrow/compute/ordering.h>
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #include "zvec/ailego/container/params.h"
 #include "zvec/ailego/logger/logger.h"
@@ -40,7 +39,7 @@ HnswRabitqStreamer::HnswRabitqStreamer(IndexProvider::Pointer provider,
       provider_(std::move(provider)) {}
 
 HnswRabitqStreamer::~HnswRabitqStreamer() {
-  if (state_ == STATE_INITED) {
+  if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
   }
 }
@@ -318,6 +317,16 @@ int HnswRabitqStreamer::open(IndexStorage::Pointer stg) {
   if (ret != 0) {
     return ret;
   }
+
+  // Verify ex_bits consistency to avoid quantized data layout mismatch
+  if (reformer_->ex_bits() != entity_.ex_bits()) {
+    LOG_ERROR(
+        "ex_bits mismatch between reformer(%zu) and entity(%zu). "
+        "Reformer and entity must use the same total_bits configuration",
+        reformer_->ex_bits(), (size_t)entity_.ex_bits());
+    return IndexError_Mismatch;
+  }
+
   IndexMeta index_meta;
   ret = entity_.get_index_meta(&index_meta);
   if (ret == IndexError_NoExist) {

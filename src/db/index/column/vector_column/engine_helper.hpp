@@ -164,6 +164,10 @@ class ProximaEngineHelper {
           hnsw_query_param->ef_search = db_hnsw_query_params->ef();
           hnsw_query_param->training_query_id =
               db_hnsw_query_params->training_query_id();
+          hnsw_query_param->prefetch_offset =
+              db_hnsw_query_params->prefetch_offset();
+          hnsw_query_param->prefetch_lines =
+              db_hnsw_query_params->prefetch_lines();
         }
         return std::move(hnsw_query_param);
       }
@@ -187,6 +191,10 @@ class ProximaEngineHelper {
                 db_omega_query_params->target_recall();
             omega_query_param->training_query_id =
                 db_omega_query_params->training_query_id();
+            omega_query_param->prefetch_offset =
+                db_omega_query_params->prefetch_offset();
+            omega_query_param->prefetch_lines =
+                db_omega_query_params->prefetch_lines();
           }
         }
         return std::move(omega_query_param);
@@ -229,6 +237,26 @@ class ProximaEngineHelper {
         return std::move(ivf_query_param);
       }
 
+      case IndexType::DISKANN: {
+        auto diskann_query_param_result =
+            _build_common_query_param<core_interface::DiskAnnQueryParam>(
+                query_params);
+        if (!diskann_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              diskann_query_param_result.error().message()));
+        }
+        auto &diskann_query_param = diskann_query_param_result.value();
+        if (query_params.query_params) {
+          auto db_diskann_query_params =
+              dynamic_cast<const DiskAnnQueryParams *>(
+                  query_params.query_params.get());
+          diskann_query_param->list_size =
+              static_cast<uint32_t>(db_diskann_query_params->list_size());
+        }
+        return std::move(diskann_query_param);
+      }
+
       case IndexType::VAMANA: {
         auto vamana_query_param_result =
             _build_common_query_param<core_interface::VamanaQueryParam>(
@@ -244,6 +272,10 @@ class ProximaEngineHelper {
               query_params.query_params.get());
           vamana_query_param->ef_search =
               static_cast<uint32_t>(db_vamana_query_params->ef_search());
+          vamana_query_param->prefetch_offset =
+              db_vamana_query_params->prefetch_offset();
+          vamana_query_param->prefetch_lines =
+              db_vamana_query_params->prefetch_lines();
         }
         return std::move(vamana_query_param);
       }
@@ -468,6 +500,27 @@ class ProximaEngineHelper {
         index_param_builder->WithNList(db_index_params->n_list());
         index_param_builder->WithNiters(db_index_params->n_iters());
         index_param_builder->WithUseSoar(db_index_params->use_soar());
+
+        return index_param_builder->Build();
+      }
+
+      case IndexType::DISKANN: {
+        auto index_param_builder_result =
+            _build_common_index_param<DiskAnnIndexParams,
+                                      core_interface::DiskAnnIndexParamBuilder>(
+                field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const DiskAnnIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->WithMaxDegree(db_index_params->max_degree());
+        index_param_builder->WithListSize(db_index_params->list_size());
+        index_param_builder->WithPqChunkNum(db_index_params->pq_chunk_num());
 
         return index_param_builder->Build();
       }

@@ -41,9 +41,9 @@ class HnswIndexHashMap {
           items_(reinterpret_cast<const Item *>(data)) {}
     //! Return a empty loc or the key item loc
 
-    Slot(Chunk::Pointer &&chunk, IndexStorage::MemoryBlock &&mem_block)
-        : chunk_(std::move(chunk)), items_block_(std::move(mem_block)) {
-      items_ = reinterpret_cast<const Item *>(items_block_.data());
+    Slot(Chunk::Pointer &&chunk, std::vector<char> &&local_data)
+        : chunk_(std::move(chunk)), local_data_(std::move(local_data)) {
+      items_ = reinterpret_cast<const Item *>(local_data_.data());
     }
     const_iterator find(key_type key, uint32_t max_items, uint32_t mask) const {
       auto it = &items_[key & mask];
@@ -73,8 +73,8 @@ class HnswIndexHashMap {
 
    private:
     Chunk::Pointer chunk_{};
-    const Item *items_{nullptr};  // point to chunk data
-    IndexStorage::MemoryBlock items_block_{};
+    const Item *items_{nullptr};  // point to local_data_
+    std::vector<char> local_data_{};
   };
 
  public:
@@ -114,9 +114,9 @@ class HnswIndexHashMap {
   }
 
   int cleanup(void) {
-    broker_.reset();
     slots_.clear();
     slots_.shrink_to_fit();
+    broker_.reset();
     mask_bits_ = 0U;
     slot_items_ = 0U;
     slot_loc_mask_ = 0U;
@@ -141,7 +141,6 @@ class HnswIndexHashMap {
     auto idx = key >> mask_bits_;
     if (idx >= slots_.size()) {
       if (ailego_unlikely(idx >= slots_.capacity())) {
-        LOG_ERROR("no space to insert");
         return false;
       }
       for (auto i = slots_.size(); i <= idx; ++i) {
@@ -152,7 +151,6 @@ class HnswIndexHashMap {
     }
     auto it = slots_[idx].find(key, slot_items_, slot_loc_mask_);
     if (ailego_unlikely(it == nullptr)) {
-      LOG_ERROR("no space to insert");
       return false;
     }
 
@@ -179,14 +177,10 @@ class HnswIndexHashMap {
       LOG_ERROR("Chunk resize failed, size=%zu", size);
       return false;
     }
-    //! Read the whole data to memory
-    IndexStorage::MemoryBlock data_block;
-    if (ailego_unlikely(chunk->read(0U, data_block, size) != size)) {
-      LOG_ERROR("Chunk read failed, size=%zu", size);
-      return false;
-    }
-
-    slots_.emplace_back(std::move(chunk), std::move(data_block));
+    //! Use a local zero-initialized buffer; new chunks contain all zeros,
+    //! so no buffer-pool read is needed and no ref_count is pinned.
+    std::vector<char> local_buf(size, 0);
+    slots_.emplace_back(std::move(chunk), std::move(local_buf));
     return true;
   }
 
@@ -208,13 +202,14 @@ class HnswIndexHashMap {
             i, chunk->data_size(), size);
         return IndexError_InvalidFormat;
       }
-      //! Read the whole data to memory
-      IndexStorage::MemoryBlock data_block;
-      if (ailego_unlikely(chunk->read(0U, data_block, size) != size)) {
-        LOG_ERROR("Chunk read failed, size=%zu", size);
-        return false;
+      //! Copy chunk data into a local buffer via fetch() so that no
+      //! buffer-pool block is pinned for the lifetime of the Slot.
+      std::vector<char> local_buf(size);
+      if (ailego_unlikely(chunk->fetch(0U, local_buf.data(), size) != size)) {
+        LOG_ERROR("Chunk fetch failed, size=%zu", size);
+        return IndexError_InvalidFormat;
       }
-      slots_.emplace_back(std::move(chunk), std::move(data_block));
+      slots_.emplace_back(std::move(chunk), std::move(local_buf));
     }
     return 0;
   }

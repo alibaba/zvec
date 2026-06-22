@@ -28,7 +28,7 @@ jobs:
     steps:
       # ── Environment setup ──────────────────────────────────────────────
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -128,6 +128,7 @@ jobs:
             -DBUILD_TOOLS=OFF \
             -DENABLE_NATIVE=OFF \
             -DAUTO_DETECT_ARCH=OFF \
+            -DENABLE_WERROR=ON \
             -DCMAKE_INSTALL_PREFIX="$BUILD_DIR/install" \
             -DGLOBAL_CC_PROTOBUF_PROTOC="$GITHUB_WORKSPACE/build_host/bin/protoc" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \

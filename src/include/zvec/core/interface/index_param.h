@@ -41,6 +41,12 @@ struct StorageOptions {
   StorageType type = StorageType::kNone;
   bool create_new = false;
   bool read_only = false;
+
+  // Only meaningful when type == kMMAP.
+  // false: MAP_SHARED. Writes through mmap auto-persist to the file.
+  // true : MAP_PRIVATE on a writable file. Flush/close forces dirty pages
+  //        back to disk via explicit pwrite.
+  bool copy_on_write = false;
 };
 
 struct MergeOptions {
@@ -64,6 +70,7 @@ enum class IndexType {
   kHNSW,
   kOMEGA,  // HNSW with learned early stopping
   kHNSWRabitq,
+  kDiskAnn,
   kVamana,
 };
 
@@ -86,6 +93,7 @@ enum class QuantizerType {
   kInt8,
   kInt4,
   kRabitq,
+  kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
 };
 
 struct SerializableBase {
@@ -125,11 +133,10 @@ struct QuantizerParam : public SerializableBase {
 
  protected:
   friend class BaseIndexParam;
-  virtual ailego::JsonObject SerializeToJsonObject(
+  ailego::JsonObject SerializeToJsonObject(
       bool omit_empty_value = false) const override;
 
-  virtual bool DeserializeFromJsonObject(
-      const ailego::JsonObject &json_obj) override;
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
 };
 
 // preprocessor
@@ -187,6 +194,8 @@ struct HNSWQueryParam : public BaseIndexQueryParam {
   uint32_t ef_search = kDefaultHnswEfSearch;
   int training_query_id =
       -1;  // For parallel training searches, -1 means use global
+  uint32_t prefetch_offset = kDefaultPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultPrefetchLines;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<HNSWQueryParam>(*this);
@@ -228,6 +237,18 @@ struct IVFQueryParam : public BaseIndexQueryParam {
   }
 };
 
+struct DiskAnnQueryParam : public BaseIndexQueryParam {
+  using Pointer = std::shared_ptr<DiskAnnQueryParam>;
+
+  // Beam-search candidate list size used at query time. Larger values improve
+  // recall at the cost of latency.
+  uint32_t list_size = kDefaultDiskAnnListSize;
+
+  BaseIndexQueryParam::Pointer Clone() const override {
+    return std::make_shared<DiskAnnQueryParam>(*this);
+  }
+};
+
 // --- Construction Parameters ---
 // template<typename IndexQueryParamType>
 class BaseIndexParam : public SerializableBase {
@@ -249,6 +270,7 @@ class BaseIndexParam : public SerializableBase {
   bool is_huge_page = false;
   DataType data_type = DataType::DT_UNDEFINED;
   bool use_id_map = true;
+  bool use_external_vector = false;
 
   // IndexMeta meta;
   ailego::Params params;
@@ -265,9 +287,8 @@ class BaseIndexParam : public SerializableBase {
   //
 
  protected:
-  virtual bool DeserializeFromJsonObject(
-      const ailego::JsonObject &json_obj) override;
-  virtual ailego::JsonObject SerializeToJsonObject(
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
       bool omit_empty_value = false) const override;
 };
 
@@ -398,6 +419,8 @@ struct VamanaQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<VamanaQueryParam>;
 
   uint32_t ef_search = kDefaultVamanaEfSearch;
+  uint32_t prefetch_offset = kDefaultPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultPrefetchLines;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<VamanaQueryParam>(*this);
@@ -430,6 +453,29 @@ struct HNSWRabitqIndexParam : public BaseIndexParam {
       : BaseIndexParam(IndexType::kHNSWRabitq, metric, dim),
         m(m),
         ef_construction(ef_construction) {}
+
+ protected:
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+};
+
+struct DiskAnnIndexParam : public BaseIndexParam {
+  using Pointer = std::shared_ptr<DiskAnnIndexParam>;
+
+  int max_degree = kDefaultDiskAnnMaxDegree;
+  int list_size = kDefaultDiskAnnListSize;
+  int pq_chunk_num = kDefaultDiskAnnPqChunkNum;
+
+  // Constructors with delegation
+  DiskAnnIndexParam() : BaseIndexParam(IndexType::kDiskAnn) {}
+
+  DiskAnnIndexParam(MetricType metric, int dim, int max_degree, int list_size,
+                    int pq_chunk_num)
+      : BaseIndexParam(IndexType::kDiskAnn, metric, dim),
+        max_degree(max_degree),
+        list_size(list_size),
+        pq_chunk_num(pq_chunk_num) {}
 
  protected:
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
