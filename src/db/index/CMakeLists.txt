@@ -29,6 +29,7 @@ cc_library(
          Arrow::arrow_compute
          Arrow::arrow_dataset
          cppjieba
+         snowball
          FastPFOR
          utf8proc
     INCS .  ${PROJECT_ROOT_DIR}/src
