@@ -3546,6 +3546,124 @@ void test_quantizer_enable_rotate(void) {
   TEST_END();
 }
 
+void test_int8_rotate_e2e(void) {
+  TEST_START();
+
+  char temp_dir[] = "./zvec_test_int8_rotate_e2e";
+  const size_t dim = 128;
+  const size_t cnt = 2000;
+  const size_t topk = 10;
+
+  // Create schema with HNSW + INT8 + enable_rotate
+  zvec_collection_schema_t *schema =
+      zvec_collection_schema_create("int8_rotate_test");
+  TEST_ASSERT(schema != NULL);
+
+  // Add ID field
+  zvec_field_schema_t *id_field =
+      zvec_field_schema_create("id", ZVEC_DATA_TYPE_INT64, false, 0);
+  zvec_collection_schema_add_field(schema, id_field);
+
+  // Add vector field with HNSW + INT8 + rotate
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  TEST_ASSERT(hnsw_params != NULL);
+  zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_L2);
+  zvec_index_params_set_hnsw_params(hnsw_params, 16, 100);
+  zvec_index_params_set_quantize_type(hnsw_params, ZVEC_QUANTIZE_TYPE_INT8);
+  zvec_index_params_set_quantizer_enable_rotate(hnsw_params, true);
+
+  zvec_field_schema_t *vec_field = zvec_field_schema_create(
+      "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, dim);
+  zvec_field_schema_set_index_params(vec_field, hnsw_params);
+  zvec_collection_schema_add_field(schema, vec_field);
+  zvec_index_params_destroy(hnsw_params);
+
+  // Create and open collection
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(temp_dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+
+  // Insert 2000 random vectors
+  srand(42);
+  for (size_t i = 0; i < cnt; i++) {
+    float *vec = (float *)malloc(dim * sizeof(float));
+    TEST_ASSERT(vec != NULL);
+    for (size_t j = 0; j < dim; j++) {
+      vec[j] = (float)rand() / (float)RAND_MAX * 2.0f - 1.0f;
+    }
+
+    zvec_doc_t *doc = zvec_doc_create();
+    zvec_doc_set_pk(doc, zvec_test_make_pk(i + 1));
+    zvec_doc_add_field_by_value(doc, "id", ZVEC_DATA_TYPE_INT64,
+                                &(int64_t){(int64_t)(i + 1)}, sizeof(int64_t));
+    zvec_doc_add_field_by_value(doc, "embedding", ZVEC_DATA_TYPE_VECTOR_FP32,
+                                vec, dim * sizeof(float));
+
+    size_t success_count, error_count;
+    const zvec_doc_t *docs[] = {doc};
+    err = zvec_collection_insert(collection, docs, 1, &success_count,
+                                 &error_count);
+    TEST_ASSERT(err == ZVEC_OK);
+    zvec_doc_destroy(doc);
+    free(vec);
+  }
+
+  // Flush to build index
+  zvec_collection_flush(collection);
+
+  // Search
+  float *query = (float *)malloc(dim * sizeof(float));
+  TEST_ASSERT(query != NULL);
+  for (size_t j = 0; j < dim; j++) {
+    query[j] = (float)rand() / (float)RAND_MAX * 2.0f - 1.0f;
+  }
+
+  zvec_vector_query_t *vq = zvec_vector_query_create();
+  TEST_ASSERT(vq != NULL);
+  zvec_vector_query_set_field_name(vq, "embedding");
+  zvec_vector_query_set_query_vector(vq, query, dim * sizeof(float));
+  zvec_vector_query_set_topk(vq, topk);
+
+  zvec_doc_t **results = NULL;
+  size_t result_count = 0;
+  err = zvec_collection_query(collection, vq, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(result_count > 0);
+  printf("  [int8_rotate_e2e] first search returned %zu results\n",
+         result_count);
+  zvec_docs_free(results, result_count);
+
+  // Close and reopen
+  zvec_collection_close(collection);
+  collection = NULL;
+
+  err = zvec_collection_open(temp_dir, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+
+  // Search again after reopen (rotator should auto-load from storage)
+  results = NULL;
+  result_count = 0;
+  err = zvec_collection_query(collection, vq, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(result_count > 0);
+  printf("  [int8_rotate_e2e] reopen search returned %zu results\n",
+         result_count);
+  zvec_docs_free(results, result_count);
+
+  // Cleanup
+  zvec_vector_query_destroy(vq);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  free(query);
+  cleanup_temp_directory(temp_dir);
+
+  TEST_END();
+}
+
 void test_index_params_api_functions(void) {
   TEST_START();
 
@@ -6009,6 +6127,7 @@ int main(void) {
   test_index_params();
   test_index_params_functions();
   test_quantizer_enable_rotate();
+  test_int8_rotate_e2e();
   test_index_params_api_functions();
   test_index_creation_and_management();
 
