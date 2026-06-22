@@ -36,9 +36,18 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         "// Auto-generated stub for ${TARGET_NAME}\n"
     )
 
-    add_library(${TARGET_NAME} SHARED
-        ${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}_stub.cc
-    )
+    # MSVC: build as STATIC to avoid LNK1189 (PE/COFF 65535 export limit).
+    # WINDOWS_EXPORT_ALL_SYMBOLS is silently ignored for static libraries.
+    # Consumers (fts_bench, examples) still link against this target normally.
+    if(MSVC)
+        add_library(${TARGET_NAME} STATIC
+            ${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}_stub.cc
+        )
+    else()
+        add_library(${TARGET_NAME} SHARED
+            ${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}_stub.cc
+        )
+    endif()
 
     set_target_properties(${TARGET_NAME} PROPERTIES
         OUTPUT_NAME "${OUTPUT_NAME}"

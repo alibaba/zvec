@@ -141,7 +141,7 @@ jobs:
                 Copy-Item $dll.FullName -Destination . -Force
                 Write-Host "Copied $dllName from $($dll.DirectoryName)"
               } else {
-                Write-Error "$dllName not found anywhere under $buildDir"
+                Write-Host "WARNING: $dllName not found (all-in-one libs are static on MSVC, DLL not needed)"
               }
             }
           }
