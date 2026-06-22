@@ -90,6 +90,7 @@ TEST_F(SqlEngineTest, Vector) {
   query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
   query.target_.query_params_->set_radius(0.8F);
 
+
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(schema_, query, segments);
   if (!ret) {
@@ -131,6 +132,7 @@ TEST_F(SqlEngineTest, MultiSegments) {
     query.filter_ = env_var;
   }
 
+
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(schema_, query, segments);
   if (!ret) {
@@ -156,6 +158,7 @@ TEST_F(SqlEngineTest, GroupBy) {
   query.include_vector_ = true;
   query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
   query.target_.query_params_->set_radius(0.8F);
+
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute_group_by(schema_, query, segments);

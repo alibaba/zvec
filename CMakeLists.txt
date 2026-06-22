@@ -171,7 +171,11 @@ if(BUILD_PYTHON_BINDINGS)
     endif()
 
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
-    install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+    # COMPONENT python: only these runtime artifacts are pulled into the wheel
+    # (see install.components in pyproject.toml). The cc_library(PACKED) SDK
+    # install rules use the default component and are excluded from the wheel.
+    install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}
+            COMPONENT python)
 
     # DiskAnn ships as a runtime-loaded shared module
     # (libzvec_diskann_plugin.so) that is brought online implicitly the
@@ -182,7 +186,8 @@ if(BUILD_PYTHON_BINDINGS)
     # The target exists only on platforms where DiskAnn is buildable
     # (currently Linux x86_64 with libaio).
     if(TARGET core_knn_diskann)
-        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}
+                COMPONENT python)
     endif()
     # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
     # out of the box. python/zvec/__init__.py resolves this directory via
@@ -192,5 +197,6 @@ if(BUILD_PYTHON_BINDINGS)
     install(FILES
         "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
         "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict)
+        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
+        COMPONENT python)
 endif()
