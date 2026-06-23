@@ -32,6 +32,100 @@ if(WIN32)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+# =============================================================================
+# Windows: static linking (avoids LNK1189 PE/COFF 65535-section limit)
+# =============================================================================
+# On MSVC the all-in-one shared libraries (zvec.dll etc.) are not built because
+# WINDOWS_EXPORT_ALL_SYMBOLS exceeds the PE/COFF section hard limit.
+# C++ examples therefore link the component static libraries directly — the same
+# approach used by the Python binding (_zvec.pyd).
+# Linux/macOS continue to use shared libraries (see else branch below).
+if(WIN32)
+    find_library(ZVEC_STATIC_LIB zvec_static
+        PATHS ${ZVEC_LIB_SEARCH_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    find_library(ZVEC_CORE_STATIC_LIB zvec_core_static
+        PATHS ${ZVEC_LIB_SEARCH_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    find_library(ZVEC_AILEGO_STATIC_LIB zvec_ailego_static
+        PATHS ${ZVEC_LIB_SEARCH_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    find_library(ZVEC_TURBO_STATIC_LIB zvec_turbo_static
+        PATHS ${ZVEC_LIB_SEARCH_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+
+    # Core algorithm static libraries (same set as the Python binding uses
+    # via /WHOLEARCHIVE on MSVC).
+    set(ZVEC_CORE_KNN_STATIC_NAMES
+        core_knn_flat_static
+        core_knn_flat_sparse_static
+        core_knn_hnsw_static
+        core_knn_hnsw_rabitq_static
+        core_knn_hnsw_sparse_static
+        core_knn_ivf_static
+        core_knn_vamana_static
+        core_knn_cluster_static
+    )
+    set(ZVEC_CORE_INFRA_STATIC_NAMES
+        core_mix_reducer_static
+        core_metric_static
+        core_utility_static
+        core_quantizer_static
+        core_plugin
+    )
+
+    foreach(_lib_name ${ZVEC_CORE_KNN_STATIC_NAMES} ${ZVEC_CORE_INFRA_STATIC_NAMES})
+        find_library(_lib_path ${_lib_name}
+            PATHS ${ZVEC_LIB_SEARCH_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+        if(NOT _lib_path)
+            message(FATAL_ERROR "Static library ${_lib_name} not found in ${ZVEC_LIB_SEARCH_DIRS}")
+        endif()
+        list(APPEND ZVEC_ALL_STATIC_LIBS "${_lib_path}")
+        unset(_lib_path CACHE)
+    endforeach()
+
+    if(NOT ZVEC_STATIC_LIB)
+        message(FATAL_ERROR "zvec_static not found in ${ZVEC_LIB_SEARCH_DIRS}")
+    endif()
+    if(NOT ZVEC_CORE_STATIC_LIB)
+        message(FATAL_ERROR "zvec_core_static not found in ${ZVEC_LIB_SEARCH_DIRS}")
+    endif()
+    if(NOT ZVEC_AILEGO_STATIC_LIB)
+        message(FATAL_ERROR "zvec_ailego_static not found in ${ZVEC_LIB_SEARCH_DIRS}")
+    endif()
+
+    find_package(Threads REQUIRED)
+
+    # db-example: full zvec stack (db + core + ailego + turbo + all core_* libs)
+    add_library(zvec-lib INTERFACE)
+    target_link_libraries(zvec-lib INTERFACE
+        "${ZVEC_STATIC_LIB}"
+        "${ZVEC_CORE_STATIC_LIB}"
+        "${ZVEC_AILEGO_STATIC_LIB}"
+        "${ZVEC_TURBO_STATIC_LIB}"
+        ${ZVEC_ALL_STATIC_LIBS}
+        Threads::Threads
+        ws2_32
+    )
+
+    # ailego-example: ailego layer only
+    add_library(zvec-ailego-lib INTERFACE)
+    target_link_libraries(zvec-ailego-lib INTERFACE
+        "${ZVEC_AILEGO_STATIC_LIB}"
+        Threads::Threads
+    )
+
+    # core-example: core + ailego + turbo + core algorithm libs
+    add_library(zvec-core-lib INTERFACE)
+    target_link_libraries(zvec-core-lib INTERFACE
+        "${ZVEC_CORE_STATIC_LIB}"
+        "${ZVEC_AILEGO_STATIC_LIB}"
+        "${ZVEC_TURBO_STATIC_LIB}"
+        ${ZVEC_ALL_STATIC_LIBS}
+        Threads::Threads
+    )
+
+else()
+# =============================================================================
+# Linux / macOS: shared library linking (original path, unchanged)
+# =============================================================================
+
 function(zvec_find_shared_library OUT_VAR LIB_NAME)
     unset(${OUT_VAR} CACHE)
     if(WIN32)
@@ -89,6 +183,8 @@ target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_AILEGO_SHARED_LIBRARY}")
 # The core example intentionally depends only on libzvec_core.
 add_library(zvec-core-lib INTERFACE)
 target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_CORE_SHARED_LIBRARY}")
+
+endif()  # endif(WIN32) — shared library block ends here
 
 # --- Executables ---
 set(ZVEC_EXAMPLE_TARGETS)
