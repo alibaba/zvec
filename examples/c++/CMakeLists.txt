@@ -1,5 +1,9 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.15)
 cmake_policy(SET CMP0077 NEW)
+# Must be set BEFORE project() so MSVC compiler flags are generated with /MT.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 project(zvec-example-c++)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,9 +32,7 @@ if(CMAKE_BUILD_TYPE)
         list(APPEND ZVEC_LIB_SEARCH_DIRS ${ZVEC_CONFIG_LIB_DIR})
     endif()
 endif()
-if(WIN32)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
+
 
 function(zvec_find_shared_library OUT_VAR LIB_NAME)
     unset(${OUT_VAR} CACHE)

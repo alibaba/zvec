@@ -1,0 +1,465 @@
+## 量化方案新增旋转功能
+
+1. 动机：
+Int8量化采用 per-vector min-max 量化，即用每个向量自身的最小/最大值来确定量化区间 [-127, 127]，误差主要来自：
+    - 维度间的值分布不均匀：某些维度的值远大于其他维度，导致量化区间被少数极端维度"撑开"，大部分维度的量化精度被浪费。
+    - 非各向同性分布：真实embedding数据的能量往往集中在少数方向上。
+随机旋转在保持距离不变的同时，会将向量的能量均匀分散到所有维度，使每个维度的值分布更接近高斯分布，从而减小per-vector min-max量化的量化误差。
+
+2. 修改类型：
+一种可选的量化参数
+```yaml
+// 构建侧新增量化配置选项：
+ConverterParams:
+    integer_streaming.converter.enable_rotate: !!bool true
+// 搜索侧不做变化
+```
+```
+Build 阶段:
+  Converter::init()        → 读取 enable_rotate=true，创建 rabitqlib::Rotator
+  Converter::transform()   → 每条向量: rotator->rotate(x) → [normalize] → int8 量化
+  Converter::dump_to_storage() → 将 rotator 写入 IndexStorage segment（自描述格式）
+  Reformer::load(storage)  → 从 segment 加载 rotator（构建时由 local_builder 调用）
+  Reformer::convert()      → 每条向量: rotator->rotate(x) → [normalize] → int8 量化 → 写入 HNSW
+  Streamer::dump()         → 写入 meta + HNSW 图数据（不感知 converter）
+  meta.set_reformer()      → reformer_params 中写入 enable_rotate=true
+
+Search 阶段:
+  Index::Open()            → reformer_->load(storage_) → 自动检测 storage 中的 rotator segment
+                              若存在则加载（无需搜索侧配置 enable_rotate），若不存在则为 no-op
+  Reformer::transform()    → 每条 query: rotator->rotate(q) → [normalize] → int8 量化
+```
+## Int8StreamingConverter具体实现
+
+### 1: 新增参数定义 [DONE]
+```cpp
+//! IntegerStreamingConverter
+static const std::string INTEGER_STREAMING_CONVERTER_ENABLE_ROTATE =
+    "integer_streaming.converter.enable_rotate";
+//! IntegerStreamingReformer
+static const std::string INTEGER_STREAMING_REFORMER_ENABLE_ROTATE =
+    "integer_streaming.reformer.enable_rotate";
+//! CosineConverter
+static const std::string COSINE_CONVERTER_ENABLE_ROTATE =
+    "cosine.converter.enable_rotate";
+//! CosineReformer
+static const std::string COSINE_REFORMER_ENABLE_ROTATE =
+    "cosine.reformer.enable_rotate";
+```
+
+
+### 2. 新增矩阵旋转工具类 [DONE]
+1. 便于拓展，将旋转功能抽象到统一的文件`/root/code/zvec/src/core/quantizer/record_rotator.h`和`record_rotator.cc`中（pimpl模式，rabitqlib依赖仅在.cc中）
+2. 实现方式参考/root/code/zvec/src/core/algorithm/hnsw_rabitq中的旋转方式，具体实现调用第三方库/root/code/zvec/thirdparty/RaBitQ-Library
+3. 包含功能：
+  1. O(d \log d)复杂度的快速旋转
+  2. dump(IndexStorage)：将旋转矩阵写入 IndexStorage segment（自描述Header + rabitqlib blob + 32字节对齐）
+  3. open：从Storage加载序列化旋转器（通过IndexStorage读取segment，从Header解析type/dim/padded_dim，无需预先init）
+  4. load：加载用户自定义旋转矩阵（MatrixRotator，行主序 dim x padded_dim）
+```cpp
+class RecordRotator {
+ public:
+  RecordRotator();
+  ~RecordRotator();
+
+  //! Move-only (pimpl with unique_ptr)
+  RecordRotator(RecordRotator &&) noexcept;
+  RecordRotator &operator=(RecordRotator &&) noexcept;
+  RecordRotator(const RecordRotator &) = delete;
+  RecordRotator &operator=(const RecordRotator &) = delete;
+
+  //! Initialize the rotator
+  //! @param dimension     original vector dimension
+  //! @param padded_dim    padded dimension (rounded up for SIMD alignment)
+  //! @param rotator_type  rotation algorithm (default: FhtKac)
+  void init(size_t dimension, size_t padded_dim,
+            RecordRotatorType rotator_type = RecordRotatorType::FhtKac);
+
+  //! Rotate a single vector
+  //! @param in   input vector of size >= dimension
+  //! @param out  output buffer of size >= padded_dim
+  void rotate(const float *in, float *out) const;
+
+  //! Rotate a single vector into a managed buffer
+  //! @param in  input vector of size >= dimension
+  //! @return    vector<float> of size padded_dim containing rotated result
+  std::vector<float> rotate(const float *in) const;
+
+  //! Return the serialized size of the rotator in bytes (header + blob)
+  size_t dump_bytes() const;
+
+  //! Dump the rotator to an IndexStorage as a named segment.
+  //! Format: [Header: type(1B)|origin_dim(4B)|padded_dim(4B)] [rabitqlib blob]
+  //! Appends padding for 32-byte alignment.
+  int dump(const IndexStorage::Pointer &storage,
+           const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
+
+  //! Open the rotator from an IndexStorage segment (self-describing, no init needed).
+  //! Parses header to get type/dimension/padded_dim, then reconstructs the rotator.
+  int open(IndexStorage::Pointer storage,
+           const std::string &seg_id = RECORD_ROTATOR_SEG_ID);
+
+  //! Load a user-specified rotation matrix.
+  //! Always uses MatrixRotator internally.
+  //! @param matrix       row-major matrix of shape dimension x padded_dim
+  //! @param dimension    original vector dimension
+  //! @param padded_dim   padded dimension (must be multiple of 64)
+  int load(const float *matrix, size_t dimension, size_t padded_dim);
+
+  //! Return the original dimension
+  size_t dimension() const;
+
+  //! Return the padded dimension
+  size_t padded_dim() const;
+
+  //! Return the rotator type
+  RecordRotatorType rotator_type() const;
+
+  //! Check if the rotator is initialized
+  bool initialized() const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+```
+【check】: 当前直接复用rabitq的旋转方法，可能不太好，待修正
+### 3. 修改 IntegerStreaming 的 Converter 和 Reformer [DONE]
+
+1. 修改文件：`integer_quantizer_converter.cc` 和 `integer_quantizer_reformer.cc`
+2. Converter 修改：
+  1. 新增 `#include "record_rotator.h"` 和成员变量 `enable_rotate_`, `rotator_`（无 `padded_dim_`，由 `rotator_->padded_dim()` 派生）
+  2. `init()` 读取 `enable_rotate` 标记，创建 FhtKacRotator（padded_dim=向上取64倍数），将 `enable_rotate` 写入 reformer_params
+  3. `transform()` 将 `rotator_` 传入 Holder，Holder 通过 `rotator_->padded_dim()` 获取对齐维度
+  4. `dump()` 已删除（DumpPath 已移除），改为 `dump_to_storage()` 调用 `rotator_->dump(storage)` 保存旋转矩阵（自描述格式）
+  5. Holder Iterator 的 `encode_record()` 管线：rotate → normalize → quantize
+3. Reformer 修改：
+  1. `init()` 仅读取 `enable_rotate` 标记（维度信息从序列化数据自描述获取）
+  2. `load(storage)` 自动检测 storage 中的 rotator segment（通过 `storage->get(RECORD_ROTATOR_SEG_ID)` 探测），若存在则创建 rotator 并调用 `rotator_->open(storage)` 加载，设置 `enable_rotate_=true`；若不存在则为 no-op。**搜索侧无需在配置中显式指定 enable_rotate**
+  3. `transform()`/`convert()` 方法在量化前应用旋转（`convert()` 供构建侧 `do_build_by_streamer()` 调用）
+  4. `revert()` 在旋转模式下拒绝反量化
+【check】: 
+### 4. 修改 Index::Open() [DONE]
+1. 修改代码：`src/core/interface/index.cc`
+2. 在 `Index::Open()` 中 streamer 打开后，调用 `reformer_->load(storage_)` 加载序列化数据（旋转矩阵等）
+3. 对无序列化数据的 reformer（如非旋转模式），`load()` 为 no-op 直接返回 0，不干扰运行时功能
+
+### 5. 修改local_builder.cc，使其可以保存旋转矩阵 [DONE]
+1. 删除 DumpPath 相关代码（AlignSize、dump_meta_segment、dump_taglist 辅助函数，check_config 中 DumpPath 检查，do_build/do_build_sparse 中的 DUMP 代码块）
+2. 保留 IndexPath 流式构建路径，保留 UseTrainer 路径的 IndexDumper（写入 TrainerIndexPath）
+3. RecordRotator 新增 `dump(IndexStorage::Pointer)` 重载，将旋转矩阵写入 IndexStorage segment
+4. IndexConverter 基类新增 `dump_to_storage()` 虚方法（默认 no-op），IntegerStreamingConverter 重写以持久化 rotator
+5. local_builder.cc 中 `convert_holder()`/`convert_sparse_holder()` 输出 converter 指针，`build_by_streamer()`/`build_sparse_by_streamer()` 在 `streamer->open(storage)` 后调用 `converter->dump_to_storage(storage)`
+6. 删除 RecordRotator::dump(IndexDumper) 死代码（DumpPath 已删除，无调用者）
+7. `do_build_by_streamer()` 新增 storage 参数，reformer `init()` 后调用 `reformer->load(storage)` 加载 rotator，确保构建侧数据向量被旋转
+8. 修改文件清单：
+  - `tools/core/local_builder.cc`：删除 DumpPath 代码，添加 converter 传递和 dump_to_storage 调用，`do_build_by_streamer()` 传入 storage 并加载 reformer
+  - `src/core/quantizer/record_rotator.h/cc`：新增 dump(IndexStorage)，删除 dump(IndexDumper)
+  - `src/include/zvec/core/framework/index_converter.h`：新增 dump_to_storage() 虚方法
+  - `src/core/quantizer/integer_quantizer_converter.cc`：重写 dump_to_storage()，删除 dump(IndexDumper) override
+  - `src/core/quantizer/integer_quantizer_reformer.cc`：`load()` 改为自动检测 storage 中的 rotator segment
+
+### 6. 搜索侧自动检测旋转器 [DONE]
+1. `IntegerStreamingReformer::load(storage)` 自动检测 storage 中的 `RECORD_ROTATOR_SEG_ID` segment
+2. 若 segment 存在，创建 rotator 并从 storage 加载，设置 `enable_rotate_=true`
+3. 若 segment 不存在，为 no-op（非旋转索引正常工作）
+4. 搜索侧配置 `search_current.yaml` 无需指定 `enable_rotate`，旋转信息完全由索引文件自描述
+5. 修改文件：`src/core/quantizer/integer_quantizer_reformer.cc`
+
+### 7. 编译配置修复 [DONE]
+1. `record_rotator.cc` 包含 rabitqlib 的 `rotator.hpp`，其中 `flip_sign()` 和 `kacs_walk()` 使用编译时 `#if defined(__AVX2__)` 宏守卫
+2. 需要在 CMake 中为 `record_rotator.cc` 添加 `-march=core-avx2` 编译标志（即 `RABITQ_ARCH_FLAG`）
+3. 该文件被两个 CMake 目标编译，均需要添加：
+  - `src/core/CMakeLists.txt`：`zvec_core` 目标
+  - `src/core/quantizer/CMakeLists.txt`：`core_quantizer_objects` 目标（recall/bench 链接此目标，容易遗漏）
+4. 修改文件：`src/core/CMakeLists.txt`、`src/core/quantizer/CMakeLists.txt`
+
+### 8. 端到端验证 [DONE]
+1. 编译：`cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(nproc)`
+2. 构建索引：`./build/bin/local_builder config/construct.yaml`（ConverterParams 中指定 `integer_streaming.converter.enable_rotate: true`）
+3. 搜索测试：`./build/bin/bench config/search_current.yaml`、`./build/bin/recall config/search_current.yaml`
+4. 实验结果（gist 100万条 960维 FP32 → INT8，ef_search=180）：
+
+| 配置 | Recall@100 | QPS |
+|---|---|---|
+| Baseline（无旋转） | 84.317 | 21,715 |
+| 旋转索引 | 84.165 | 22,847 |
+
+## CosineInt8Converter具体实现
+1. 模仿Int8StreamingConverter具体实现，将功能拓展到CosineInt8Converter
+2. 构建索引：`./build/bin/local_builder config/construct2.yaml`
+3. baseline测试：`./build/bin/bench config/search_baseline2.yaml`、`./build/bin/recall config/search_baseline2.yaml`
+4. 搜索测试：`./build/bin/bench config/search_current2.yaml`、`./build/bin/recall config/search_current2.yaml`
+
+## python层接口
+1. 当前的enable_rotate仅仅支持int8，如果不是int8却有该配置，默认无效并警告
+2. 实现时上层和下层尽量解耦合
+
+### 实现方案 [DONE]
+
+#### 层级解耦设计
+```
+Python SDK (HnswIndexParam)
+    ↓  pybind11
+DB Layer (HnswIndexParams) — quantizer_param_ (QuantizerParam 对象)
+    ↓  engine_helper.hpp → WithEnableRotate()
+Core Layer (QuantizerParam) — enable_rotate 字段（从 BaseIndexParam 迁入）
+    ↓  index.cc CreateAndInitConverterReformer()
+Converter Layer — converter_params.set("integer_streaming.converter.enable_rotate", true)
+```
+
+#### 修改文件清单
+1. `src/include/zvec/db/index_params.h`：新增 DB 层 `QuantizerParam` 类（仅含 `enable_rotate`）；`VectorIndexParams` 基类 `enable_rotate_` 替换为 `quantizer_param_`；所有子类更新构造函数/clone/to_string/operator==
+2. `src/include/zvec/core/interface/index_param.h`：`QuantizerParam` 新增 `enable_rotate` 字段；`BaseIndexParam` 删除 `enable_rotate`（重构迁入 QuantizerParam）
+3. `src/core/interface/index_param.cc`：`QuantizerParam` 序列化/反序列化新增 `enable_rotate`
+4. `src/include/zvec/core/interface/index_param_builders.h`：`WithEnableRotate()` 写入 `param->quantizer_param.enable_rotate`
+5. `src/db/index/column/vector_column/engine_helper.hpp`：调用 `WithEnableRotate(db_index_params->enable_rotate())`（便捷 getter 保留，无需改动）
+6. `src/core/interface/index.cc`：`CreateAndInitConverterReformer()` 从 `param.enable_rotate`（QuantizerParam）读取，仅 INT8 生效
+7. `src/db/proto/zvec.proto`：新增 `QuantizerParam` message；`BaseIndexParams` 新增 `quantizer_param = 4`
+8. `src/db/index/common/proto_converter.cc`：所有向量索引的 FromPb/ToPb 读写 `base.quantizer_param.enable_rotate`
+9. `src/binding/python/model/param/python_param.cc`：新增 `QuantizerParam` Python 类绑定；所有向量索引参数类从 `enable_rotate` 替换为 `quantizer_param`
+10. `python/zvec/model/param/__init__.py`、`python/zvec/__init__.py`、`python/zvec/__init__.pyi`：导出 `QuantizerParam`
+11. `python/zvec/model/param/__init__.pyi`：新增 `QuantizerParam` 类型定义；更新所有向量索引参数类签名
+12. `examples/python/*/int8_rotate_build.py`：更新为 `quantizer_param=QuantizerParam(enable_rotate=True)` 用法
+
+#### Python 使用方式
+```python
+from zvec import HnswIndexParam, MetricType, QuantizeType, QuantizerParam
+
+# 创建带旋转的 INT8 索引
+params = HnswIndexParam(
+    metric_type=MetricType.COSINE,
+    m=15,
+    ef_construction=500,
+    quantize_type=QuantizeType.INT8,
+    quantizer_param=QuantizerParam(enable_rotate=True),  # 结构化参数对象
+)
+print(params)
+# {"metric_type":"COSINE", "m":15, "ef_construction":500, "quantize_type":"INT8", "use_contiguous_memory":false, "quantizer_param":{"enable_rotate":true}}
+```
+`QuantizerParam` 是一个独立的 Python 可见类，当前仅含 `enable_rotate`，未来可平滑添加更多字段（如 `num_bits`、`calibration_size` 等）。
+
+#### Python 示例脚本（已完成）
+模仿 `dco_build.py` / `dco_query.py`，将 `construct2.yaml` / `search_current2.yaml` 在 Python 层实现。
+
+- **构建脚本**：`examples/python/int8_rotate_build.py`
+  - 读取 `.zvec.vecs` 文件，创建 Collection（INT8 + enable_rotate=True + COSINE）
+  - 触发 CosineInt8Converter + FhtKacRotator
+  - 插入 → optimize → flush
+- **查询脚本**：`examples/python/int8_rotate_query.py`
+  - 打开已构建的 Collection，加载 Reformer（自动从 storage 检测 rotator）
+  - 执行 search + recall 评估
+
+#### 额外修复
+`src/core/interface/index.cc` `Index::Open()` 新增 L310-314：DB 构建路径（`create_new=true`）下，先将 Converter 的 rotator dump 到 storage，再让 Reformer load。修复前 DB optimize 阶段会因 Reformer 找不到 rotator segment 而失败。
+
+```cpp
+// When building a new index, dump converter state (e.g., rotator) to
+// storage so the reformer can load it.
+if (storage_options.create_new && converter_ != nullptr) {
+  converter_->dump_to_storage(storage_);
+}
+```
+
+#### 测试结果（Cohere 1M, dim=768, Cosine, INT8+rotate, m=15, ef_construction=500）
+
+| 指标 | 数值 |
+|------|------|
+| 插入速度 | ~20k docs/s |
+| HNSW 构建 | 111.5s |
+| QPS (ef=180) | ~1344 |
+| recall@100 | 94.03% |
+
+## 对接 VectorDBBench
+### baseline
+1. 环境：
+```
+conda activate vdb
+(cd /root/code/zvec git checkout main pip install .)
+```
+2. 原始指令
+```
+vectordbbench zvec \
+--path /root/code/VectorDBBench/db/cohere-1m \
+--db-label 16c64g-v0.1 \
+--case-type Performance768D1M \
+--num-concurrency 16 \
+--quantize-type int8 \
+--m 15 \
+--ef-search 180 \
+--skip-drop-old \
+--skip-load
+```
+3. 离线随机旋转方式，改为：
+```
+vectordbbench zvec \
+--path /root/code/VectorDBBench/db/cohere-1m-random \
+--db-label 16c64g-v0.1 \
+--case-type PerformanceCustomDataset \
+--custom-case-name "Cohere1M-Random" \
+--custom-dataset-name "Cohere1M-Random" \
+--custom-dataset-dir "/root/code/VectorDBBench/datasets/cohere-1m-random" \
+--custom-dataset-size 1000000 \
+--custom-dataset-dim 768 \
+--custom-dataset-file-count 1 \
+--custom-dataset-metric-type COSINE \
+--num-concurrency 16 \
+--quantize-type int8 \
+--m 15 \
+--ef-search 180 \
+--skip-drop-old \
+--skip-load
+```
+### own
+1. 环境：
+```
+conda activate baseline
+(cd /root/code/zvec git checkout int8-rotate pip install .)
+```
+2. 原始指令
+```
+vectordbbench zvec \
+--path /root/code/VectorDBBench/db/cohere-1m \
+--db-label 16c64g-v0.1 \
+--case-type Performance768D1M \
+--num-concurrency 16 \
+--quantize-type int8 \
+--m 15 \
+--ef-search 180 \
+--skip-drop-old \
+--skip-load
+```
+3. 对接随机旋转方式，改为：
+```
+vectordbbench zvec \
+--path /root/code/VectorDBBench/db/cohere-1m-exp \
+--db-label 16c64g-v0.1 \
+--case-type Performance768D1M \
+--num-concurrency 16 \
+--quantize-type int8 \
+--m 15 \
+--ef-search 180 \
+--enable-rotate \
+--skip-drop-old \
+--skip-load
+```
+
+## enable_rotate 参数归属重构：BaseIndexParam → QuantizerParam
+
+### 动机
+`enable_rotate` 最初放在 `BaseIndexParam` 中，但实际只在 INT8 量化场景下生效，与量化参数天然耦合。
+`QuantizerParam` 当前仅有一个有效字段 `type`（`num_subquantizers` 和 `num_bits` 未使用），
+将 `enable_rotate` 迁入 `QuantizerParam` 使参数归属更精确，且不增加工程复杂度。
+
+### 设计方案（方案 A：保持 WithEnableRotate Builder API 不变）
+- `QuantizerParam` 新增 `enable_rotate` 字段，构造函数新增 `bool rotate = false` 参数
+- `BaseIndexParam` 删除 `enable_rotate` 字段
+- `WithEnableRotate()` 内部改为写入 `param->quantizer_param.enable_rotate`
+- `Index::CreateAndInitConverterReformer()` 从 `param.enable_rotate`（QuantizerParam）读取
+- DB 层（`HnswIndexParams`）、Proto、Python binding 不变
+
+### 修改文件清单
+| 文件 | 改动 |
+|------|------|
+| `src/include/zvec/core/interface/index_param.h` | `QuantizerParam` 新增 `enable_rotate` 字段；`BaseIndexParam` 删除 `enable_rotate` |
+| `src/core/interface/index_param.cc` | `QuantizerParam` 序列化新增 `enable_rotate`；反序列化新增 `DESERIALIZE_VALUE_FIELD` |
+| `src/include/zvec/core/interface/index_param_builders.h` | `WithEnableRotate()` 写入 `param->quantizer_param.enable_rotate` |
+| `src/core/interface/index.cc` | `CreateAndInitConverterReformer()` 从 `param.enable_rotate` 读取 |
+
+### 不受影响的部分
+- **DB 层** `HnswIndexParams`：`enable_rotate_` 成员、getter/setter、proto 均不变
+- **Proto**：`HnswIndexParams.enable_rotate = 5` 不变
+- **Python binding**：`HnswIndexParam` 构造函数、property、pickle 均不变
+- **YAML/local_builder 路径**：完全绕过 `QuantizerParam`，不受影响
+- **Converter/Reformer**：从 `ailego::Params` KV 对读取，不受上游改动影响
+
+### 向后兼容
+- `QuantizerParam` 序列化格式新增 `enable_rotate` 字段，反序列化旧 JSON 时默认 `false`
+- `BaseIndexParam.enable_rotate` 从未被序列化，删除不影响持久化数据
+- DB/Proto/Python 接口不变，完全向后兼容
+
+## enable_rotate 扩展到所有向量索引类型
+
+### 动机
+当前 `enable_rotate` 仅在 `HnswIndexParams` 中暴露，但 Core 层的旋转功能与索引类型无关（`Index::CreateAndInitConverterReformer` 只检查 `QuantizerType` 和 `MetricType`）。
+将 `enable_rotate_` 上提到基类 `VectorIndexParams`，使 IVF、DiskANN、Vamana、Flat 等所有向量索引类型均可启用旋转。
+
+### 设计方案
+将 `enable_rotate_` 从 `HnswIndexParams` 上提到 `VectorIndexParams` 基类：
+- 所有向量索引子类自动继承 `enable_rotate()` / `set_enable_rotate()`
+- `_build_common_index_param` 模板函数统一调用 `WithEnableRotate`，无需在每个 case 分支中重复
+- Proto `BaseIndexParams` 新增 `enable_rotate` 字段，所有索引类型共享
+- Python 绑定为 Flat/IVF/DiskAnn/Vamana 新增 `enable_rotate` 构造参数
+
+### 修改文件清单
+| 文件 | 改动 |
+|------|------|
+| `src/include/zvec/db/index_params.h` | `VectorIndexParams` 新增 `enable_rotate_` 成员、getter/setter、构造函数参数；`HnswIndexParams` 删除重复的 `enable_rotate_`，构造函数委托给基类 |
+| `src/db/index/column/vector_column/engine_helper.hpp` | `_build_common_index_param` 统一添加 `WithEnableRotate`；HNSW 分支删除单独调用 |
+| `src/db/proto/zvec.proto` | `BaseIndexParams` 新增 `enable_rotate = 3`；`HnswIndexParams.enable_rotate` 标记 deprecated |
+| `src/db/index/common/proto_converter.cc` | 所有向量索引的 FromPb/ToPb 处理 `enable_rotate`（FromPb 中 OR 合并 base 和 hnsw 的 enable_rotate） |
+| `src/binding/python/model/param/python_param.cc` | Flat/IVF/DiskAnn/Vamana 绑定新增 `enable_rotate` 参数 |
+
+### 子类改动模式
+每个向量索引子类需要更新：
+- **构造函数**：新增 `enable_rotate` 参数，传递给 `VectorIndexParams` 基类
+- **clone()**：传递 `enable_rotate_`
+- **to_string()**：包含 `enable_rotate`
+- **operator==()**：比较 `enable_rotate_`
+
+### Proto 向后兼容
+- `BaseIndexParams` 新增 `bool enable_rotate = 3`（protobuf 天然向后兼容，旧数据默认 false）
+- `HnswIndexParams.enable_rotate = 5` 标记 `[deprecated = true]` 保留兼容
+- `FromPb` 逻辑：`base.enable_rotate || hnsw.enable_rotate`（OR 合并，确保旧数据不丢失）
+
+### 不受影响的部分
+- **Core 层**：`QuantizerParam.enable_rotate`、`Index::CreateAndInitConverterReformer` — 已是索引类型无关
+- **Converter/Reformer**：从 `ailego::Params` KV 对读取
+- **HNSW_RABITQ**：使用 `QuantizeType::RABITQ`，不匹配 INT8 检查，会被 WARN 忽略
+- **YAML/local_builder 路径**：完全绕过 DB 层，不受影响
+
+## Python 接口重构：enable_rotate → QuantizerParam 对象
+
+### 动机
+Python 层原先直接暴露 `enable_rotate=True` 作为构造参数，但 `enable_rotate` 终究只是 `QuantizerParam` 中的一个参数。
+将 Python 接口改为传递 `QuantizerParam` 对象，便于未来拓展更多量化参数（如 `num_bits`、`calibration_size` 等），无需每次修改构造函数签名。
+
+### Before / After
+```python
+# Before:
+HnswIndexParam(metric_type=..., quantize_type=QuantizeType.INT8, enable_rotate=True)
+
+# After:
+HnswIndexParam(metric_type=..., quantize_type=QuantizeType.INT8,
+               quantizer_param=QuantizerParam(enable_rotate=True))
+```
+
+### 修改范围
+
+| 层级 | 文件 | 改动 |
+|------|------|------|
+| DB 层 | `src/include/zvec/db/index_params.h` | 新增 `QuantizerParam` 类；`VectorIndexParams` 基类 `enable_rotate_` → `quantizer_param_`；5 个子类全部更新 |
+| Proto | `src/db/proto/zvec.proto` | 新增 `QuantizerParam` message；`BaseIndexParams` 新增 `quantizer_param = 4`；删除旧 `enable_rotate` 字段 |
+| ProtoConverter | `src/db/index/common/proto_converter.cc` | 6 个向量索引的 FromPb/ToPb 统一读写 `base.quantizer_param.enable_rotate` |
+| pybind11 | `src/binding/python/model/param/python_param.cc` | 新增 `QuantizerParam` Python 类绑定；5 个向量索引参数类全部更新构造函数/to_dict/repr/pickle |
+| Python 导出 | `python/zvec/__init__.py`、`__init__.pyi`、`model/param/__init__.py`、`.pyi` | 导出 `QuantizerParam`；更新类型定义 |
+| 示例 | `examples/python/*/int8_rotate_build.py` | 替换为 `quantizer_param=QuantizerParam(enable_rotate=True)` |
+| 测试 | `test_unrotate.py` | 同上 |
+
+### 不受影响的部分
+- **Core 层** `core_interface::QuantizerParam`、`Index::CreateAndInitConverterReformer` — 不受影响
+- **Converter/Reformer** — 从 `ailego::Params` KV 对读取，不受影响
+- **YAML/local_builder 路径** — 完全绕过 DB 层，不受影响
+- **HNSW_RABITQ** — 使用 `QuantizeType::RABITQ`，不受影响
+- **index_param_builders.h** `WithEnableRotate()` — 不受影响
+- **engine_helper.hpp** — 保留了 `VectorIndexParams::enable_rotate()` 便捷 getter，无需改动
+
+## 实现逆旋转
+1. 在RecordRotator中新增逆旋转接口，并实现，注意，禁止修改第三方库！！
+2. 修改revert（/root/code/zvec/src/core/quantizer/integer_quantizer_reformer.cc, /root/code/zvec/src/core/quantizer/cosine_reformer.cc）函数，使其将结果进行逆旋转
+3. 编译：
+```
+conda activate baseline
+pip install . --no-build-isolation
+```
+4. 验证：想办法测试
