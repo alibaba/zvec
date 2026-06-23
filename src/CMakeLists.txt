@@ -163,6 +163,7 @@ if(NOT MSVC)
                 zvec_core
                 zvec_ailego
                 zvec_turbo
+                core_knn_hnsw_rabitq
         )
     endif()
 
@@ -173,6 +174,7 @@ if(NOT MSVC)
                 zvec_core
                 zvec_ailego
                 zvec_turbo
+                core_knn_hnsw_rabitq
         )
     endif()
 else()
