@@ -43,7 +43,7 @@ class TokenFilter {
 using TokenFilterPtr = std::shared_ptr<TokenFilter>;
 
 /*! Lowercase Token Filter
- *  Convert all token text to lowercase (only handles ASCII characters)
+ *  Convert all token text to lowercase (supports full Unicode via utf8proc)
  */
 class LowercaseTokenFilter : public TokenFilter {
  public:
