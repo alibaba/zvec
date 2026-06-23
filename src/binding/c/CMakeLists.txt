@@ -116,7 +116,7 @@ if(MSVC)
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:core_knn_hnsw_rabitq>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:core_knn_hnsw_rabitq_static>
     )
 
     target_link_libraries(zvec_c_api
@@ -135,7 +135,7 @@ elseif(APPLE)
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:core_knn_hnsw_rabitq>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:core_knn_hnsw_rabitq_static>
     )
     
     # Link the libraries themselves (without force_load flags)

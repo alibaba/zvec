@@ -13,69 +13,143 @@
 // limitations under the License.
 
 #include "matrix_rotator.h"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <random>
-#include <rabitqlib/third/Eigen/Core>
-#include <rabitqlib/third/Eigen/QR>
+#include <vector>
 
 namespace zvec {
 namespace core {
 
 namespace {
 
-template <typename T>
-using RowMajorMatrix =
-    Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-
-template <typename T>
-using RowMajorMatrixMap = Eigen::Map<RowMajorMatrix<T>>;
-
-template <typename T>
-using ConstRowMajorMatrixMap = Eigen::Map<const RowMajorMatrix<T>>;
-
-template <typename T>
-RowMajorMatrix<T> random_gaussian_matrix(size_t rows, size_t cols) {
-  RowMajorMatrix<T> rand(rows, cols);
+// Generate a dim x dim random Gaussian matrix (row-major) without Eigen.
+void random_gaussian_matrix(float *mat, size_t dim) {
   static std::random_device rd;
   static std::mt19937 gen(rd());
-  std::normal_distribution<T> dist(0, 1);
+  std::normal_distribution<float> dist(0.0f, 1.0f);
+  for (size_t i = 0; i < dim * dim; ++i) {
+    mat[i] = dist(gen);
+  }
+}
 
-  for (size_t i = 0; i < rows; ++i) {
-    for (size_t j = 0; j < cols; ++j) {
-      rand(i, j) = dist(gen);
-    }
+// Householder QR decomposition: A = Q * R.
+// Computes the orthogonal matrix Q from input matrix A (row-major, dim x dim).
+// Result is stored in q (row-major, dim x dim).
+//
+// Implemented manually to avoid rabitqlib/Eigen dependency whose ISA-sensitive
+// inline functions cause ODR violations (duplicate codegen with different
+// -march flags) leading to SEGFAULT on linux-x64-clang.
+void householder_qr(const float *A_in, float *q, size_t dim) {
+  // R starts as a copy of A
+  std::vector<float> R(A_in, A_in + dim * dim);
+
+  // Q starts as identity
+  std::fill(q, q + dim * dim, 0.0f);
+  for (size_t i = 0; i < dim; ++i) {
+    q[i * dim + i] = 1.0f;
   }
 
-  return rand;
+  std::vector<float> v(dim);
+
+  for (size_t k = 0; k < dim; ++k) {
+    // x = R[k:dim, k]  (sub-column below and including diagonal)
+    float norm_x_sq = 0.0f;
+    for (size_t i = k; i < dim; ++i) {
+      norm_x_sq += R[i * dim + k] * R[i * dim + k];
+    }
+    if (norm_x_sq == 0.0f) continue;
+
+    float norm_x = std::sqrt(norm_x_sq);
+
+    // alpha = -sign(R[k][k]) * ||x||  (choose sign to avoid cancellation)
+    float alpha = (R[k * dim + k] >= 0.0f) ? -norm_x : norm_x;
+
+    // v = x - alpha * e1  (only the sub-vector [k, dim) is non-zero)
+    for (size_t i = k; i < dim; ++i) {
+      v[i - k] = R[i * dim + k];
+    }
+    v[0] -= alpha;
+
+    // Normalize v
+    float v_norm_sq = 0.0f;
+    for (size_t i = 0; i < dim - k; ++i) {
+      v_norm_sq += v[i] * v[i];
+    }
+    if (v_norm_sq == 0.0f) continue;
+    float inv_v_norm = 1.0f / std::sqrt(v_norm_sq);
+    for (size_t i = 0; i < dim - k; ++i) {
+      v[i] *= inv_v_norm;
+    }
+
+    // Apply Householder reflection to R: R[k:dim, k:dim] -= 2*v*(v^T * R)
+    for (size_t j = k; j < dim; ++j) {
+      float dot = 0.0f;
+      for (size_t i = 0; i < dim - k; ++i) {
+        dot += v[i] * R[(k + i) * dim + j];
+      }
+      dot *= 2.0f;
+      for (size_t i = 0; i < dim - k; ++i) {
+        R[(k + i) * dim + j] -= v[i] * dot;
+      }
+    }
+
+    // Accumulate Q: Q[:, k:dim] -= 2*(Q[:, k:dim] * v) * v^T
+    for (size_t i = 0; i < dim; ++i) {
+      float dot = 0.0f;
+      for (size_t j = 0; j < dim - k; ++j) {
+        dot += q[i * dim + k + j] * v[j];
+      }
+      dot *= 2.0f;
+      for (size_t j = 0; j < dim - k; ++j) {
+        q[i * dim + k + j] -= dot * v[j];
+      }
+    }
+  }
 }
 
 }  // anonymous namespace
 
 void MatrixRotatorImpl::init(size_t dim) {
   // Generate dim x dim random Gaussian matrix
-  RowMajorMatrix<float> rand_mat = random_gaussian_matrix<float>(dim, dim);
+  std::vector<float> rand_mat(dim * dim);
+  random_gaussian_matrix(rand_mat.data(), dim);
 
-  // Householder QR: numerically stable orthogonalisation
-  Eigen::HouseholderQR<RowMajorMatrix<float>> qr(rand_mat);
-  RowMajorMatrix<float> q_inv = qr.householderQ().transpose();
+  // Householder QR: A = Q * R, use Q^T as the rotation matrix
+  std::vector<float> Q(dim * dim);
+  householder_qr(rand_mat.data(), Q.data(), dim);
 
+  // Store Q^T (transpose) as the rotation matrix
   matrix.resize(dim * dim);
-  std::memcpy(matrix.data(), &q_inv(0, 0), sizeof(float) * dim * dim);
+  for (size_t i = 0; i < dim; ++i) {
+    for (size_t j = 0; j < dim; ++j) {
+      matrix[j * dim + i] = Q[i * dim + j];
+    }
+  }
 }
 
 void MatrixRotatorImpl::rotate(const float *in, float *out, size_t dim) const {
-  // v (1 x dim) * M (dim x dim) -> rv (1 x dim)
-  ConstRowMajorMatrixMap<float> v(in, 1, dim);
-  RowMajorMatrixMap<float> rv(out, 1, dim);
-  rv = v * ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim);
+  // out = in * matrix  (1 x dim) * (dim x dim) -> (1 x dim)
+  for (size_t j = 0; j < dim; ++j) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < dim; ++i) {
+      sum += in[i] * matrix[i * dim + j];
+    }
+    out[j] = sum;
+  }
 }
 
 void MatrixRotatorImpl::unrotate(const float *in, float *out,
                                  size_t dim) const {
-  // in (1 x dim) * M^T (dim x dim) -> out (1 x dim)
-  ConstRowMajorMatrixMap<float> v(in, 1, dim);
-  RowMajorMatrixMap<float> rv(out, 1, dim);
-  rv = v * ConstRowMajorMatrixMap<float>(matrix.data(), dim, dim).transpose();
+  // out = in * matrix^T  (1 x dim) * (dim x dim)^T -> (1 x dim)
+  for (size_t j = 0; j < dim; ++j) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < dim; ++i) {
+      sum += in[i] * matrix[j * dim + i];
+    }
+    out[j] = sum;
+  }
 }
 
 void MatrixRotatorImpl::save(char *data) const {
