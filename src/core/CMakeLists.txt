@@ -63,6 +63,12 @@ if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
 endif()
 
+# Exclude quantizer/rotator files from zvec_core. They are built by the
+# separate core_rotator library (with per-file ISA flags). Including them
+# here causes duplicate symbols with different codegen — clang may resolve
+# dispatch entry points to ISA-stripped stubs, leading to SEGFAULT.
+list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/quantizer/rotator/.*")
+
 # Always exclude algorithm/diskann implementation files from zvec_core.
 # The DiskAnn algorithm is provided by the separate core_knn_diskann library
 # (real on Linux x86_64, stub on other platforms). Including them here causes
@@ -73,7 +79,7 @@ if(NOT DISKANN_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/diskann_index\\.cc")
 endif()
 
-set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
+set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib core_rotator)
 # The plugin loader uses dlopen/dlsym, so link libdl on Linux.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})

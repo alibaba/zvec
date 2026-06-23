@@ -109,6 +109,7 @@ elseif (MSVC)
             core_knn_flat_static
             core_knn_flat_sparse_static
             core_knn_hnsw_static
+            core_knn_hnsw_rabitq_static
             core_knn_hnsw_sparse_static
             core_knn_ivf_static
             core_knn_vamana_static
@@ -117,6 +118,7 @@ elseif (MSVC)
             core_metric_static
             core_utility_static
             core_quantizer_static
+            core_rotator_static
             core_plugin
     )
     target_link_libraries(_zvec PRIVATE
