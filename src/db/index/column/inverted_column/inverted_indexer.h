@@ -33,7 +33,7 @@ class InvertedIndexer {
                            const std::vector<FieldSchema> &fields)
       : collection_name_(collection_name),
         working_dir_(working_dir),
-        fields_(fields){};
+        fields_(fields) {};
 
 
   virtual ~InvertedIndexer() {

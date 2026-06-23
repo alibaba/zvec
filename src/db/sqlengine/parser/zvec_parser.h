@@ -26,7 +26,7 @@ class ZVecParser {
   using Ptr = std::shared_ptr<ZVecParser>;
 
   ZVecParser() = default;
-  virtual ~ZVecParser(){};
+  virtual ~ZVecParser() {};
 
   virtual SQLInfo::Ptr parse(const std::string &query,
                              bool formatted_tree = false) = 0;

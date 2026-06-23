@@ -29,7 +29,7 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
   using Ptr = std::shared_ptr<DeleteStore>;
 
   explicit DeleteStore(std::string collection_name)
-      : collection_name_(std::move(collection_name)){};
+      : collection_name_(std::move(collection_name)) {};
 
   ~DeleteStore() {
     LOG_INFO("Closed delete store");
