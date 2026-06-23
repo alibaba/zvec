@@ -25,7 +25,7 @@ endif()
 
 cc_library(
     NAME core_rotator
-    STATIC SHARED STRICT ALWAYS_LINK
+    STATIC STRICT ALWAYS_LINK
     SRCS *.cc
     LIBS zvec_ailego core_framework rabitqlib
     INCS . .. ${PROJECT_ROOT_DIR}/src/core
