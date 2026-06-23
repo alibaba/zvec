@@ -531,6 +531,7 @@ class BufferStorage : public IndexStorage {
       this->close_index();
       return ret;
     }
+    buffer_pool_->warmup();
     LOG_INFO(
         "BufferStorage opened: file=%s, writable=%d, max_segment_size=%" PRIu64
         ", segment_count=%zu",

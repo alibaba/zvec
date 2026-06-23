@@ -50,6 +50,7 @@ class VectorPageTable : public EvictableBlockOwner {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
     std::atomic<bool> is_dirty;
+    uint8_t evict_priority{0};
     char *buffer;
     size_t file_offset;
   };
@@ -95,6 +96,13 @@ class VectorPageTable : public EvictableBlockOwner {
   void release_block(block_id_t block_id);
 
   void evict_block(block_id_t block_id) override;
+
+  void set_evict_priority(block_id_t block_id, uint8_t priority) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    Entry &e = entry_at(block_id);
+    e.evict_priority = priority;
+    e.in_evict_queue.store(false, std::memory_order_relaxed);
+  }
 
   char *set_block_acquired(block_id_t block_id, char *buffer,
                            size_t file_offset);
@@ -149,6 +157,13 @@ class VectorPageTable : public EvictableBlockOwner {
                             version_t /*version*/) override {
     const Entry &e = entry_at(block_id);
     return !e.in_evict_queue.load(std::memory_order_relaxed);
+  }
+
+  //! Check if a page is loaded (has a non-null buffer).
+  //! Used by try_acquire_buffer to avoid ref_count leaks on unloaded pages.
+  bool is_loaded(block_id_t block_id) const {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    return entry_at(block_id).buffer != nullptr;
   }
 
  private:
@@ -257,6 +272,22 @@ class VecBufferPool {
   }
 
   void batch_prefetch(const block_id_t *page_ids, size_t count);
+
+  //! Sequentially preload pages into the pool until pool is full.
+  void warmup();
+
+  //! Try to acquire a page buffer WITHOUT triggering disk I/O.
+  //! Returns the buffer pointer if the page is already in memory,
+  //! or nullptr if the page would need a pread (cache miss).
+  //! Avoids touching ref_count for unloaded pages to prevent leaks.
+  char *try_acquire_buffer(block_id_t page_id) {
+    assert(page_id < page_table_.entry_num());
+    // Quick check: if buffer is null, page not loaded - skip without
+    // incrementing ref_count (acquire_block would leak ref_count on
+    // pages with ref_count>=0 but buffer==nullptr).
+    if (!page_table_.is_loaded(page_id)) return nullptr;
+    return page_table_.acquire_block(page_id);
+  }
 
   int fd() const { return fd_; }
 

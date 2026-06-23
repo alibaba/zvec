@@ -175,7 +175,8 @@ void VectorPageTable::release_block(block_id_t block_id) {
       block.owner = this;
       block.owner_key = block_id;
       block.version = 0;
-      BlockEvictionQueue::get_instance().add_single_block(block, 0);
+      BlockEvictionQueue::get_instance().add_single_block(
+          block, static_cast<int>(e.evict_priority));
     }
   }
 }
@@ -717,6 +718,54 @@ void VecBufferPool::batch_prefetch(const block_id_t *page_ids, size_t count) {
   (void)page_ids;
   (void)count;
 #endif
+}
+
+void VecBufferPool::warmup() {
+  const size_t total_pages = page_table_.entry_num();
+  // Read in large sequential chunks to minimize syscall overhead.
+  // Each chunk = 1024 pages = 4MB (maximize sequential I/O throughput).
+  static constexpr size_t kChunkPages = 1024;
+  const size_t kChunkSize = kChunkPages * kVectorPageSize;
+
+  // Aligned buffer for bulk read (O_DIRECT requires alignment).
+  char *chunk_buf = static_cast<char *>(aligned_alloc(4096, kChunkSize));
+  if (!chunk_buf) return;
+
+  size_t loaded = 0;
+  bool pool_full = false;
+  for (size_t base = 0; base < total_pages && !pool_full; base += kChunkPages) {
+    const size_t pages_in_chunk = std::min(kChunkPages, total_pages - base);
+    const size_t read_bytes = pages_in_chunk * kVectorPageSize;
+    const size_t file_offset = base * kVectorPageSize;
+
+    // One large sequential pread instead of N individual ones.
+    ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_offset);
+    if (got != static_cast<ssize_t>(read_bytes)) break;
+
+    // Distribute chunk data into individual page buffers.
+    for (size_t j = 0; j < pages_in_chunk; ++j) {
+      auto page_id = static_cast<block_id_t>(base + j);
+      // Skip if already loaded.
+      char *existing = page_table_.acquire_block(page_id);
+      if (existing) {
+        page_table_.release_block(page_id);
+        ++loaded;
+        continue;
+      }
+      // Allocate page buffer from pool (no retry - stop if full).
+      char *buf = nullptr;
+      bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
+          kVectorPageSize, buf);
+      if (!found) { pool_full = true; break; }
+      std::memcpy(buf, chunk_buf + j * kVectorPageSize, kVectorPageSize);
+      page_table_.set_block_acquired(page_id, buf, file_offset + j * kVectorPageSize);
+      page_table_.release_block(page_id);
+      ++loaded;
+    }
+  }
+  free(chunk_buf);
+  LOG_INFO("VecBufferPool::warmup: preloaded %zu/%zu pages for file[%s]",
+           loaded, total_pages, file_name_.c_str());
 }
 
 }  // namespace ailego

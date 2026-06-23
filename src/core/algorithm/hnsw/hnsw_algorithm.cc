@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_algorithm.h"
+#include <cfloat>
 #include <type_traits>
 
 namespace zvec {
@@ -81,8 +82,12 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   }
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
+  const auto &upper_entity =
+      static_cast<const EntityType &>(ctx->get_entity());
+  upper_entity.reset_io_budget(INT32_MAX);
   for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
+    upper_entity.release_vectors();
   }
 
   auto &topk_heap = ctx->topk_heap();
@@ -103,6 +108,11 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
                                                    HnswContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
+  uint32_t buf_cap = entity.max_degree(level);
+  std::vector<node_id_t> neighbor_ids(buf_cap);
+  std::vector<const void *> neighbor_vecs(buf_cap);
+  std::vector<float> dists(buf_cap);
+
   while (true) {
     const auto neighbors = entity.get_neighbors_typed(level, *entry_point);
     if (ailego_unlikely(ctx->debugging())) {
@@ -113,31 +123,35 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
       break;
     }
 
-    std::vector<MemBlockType> neighbor_vec_blocks;
-    int ret = entity.get_vector_typed(&neighbors[0], size, neighbor_vec_blocks);
-    if (ailego_unlikely(ctx->debugging())) {
-      (*ctx->mutable_stats_get_vector())++;
+    if (size > buf_cap) {
+      buf_cap = size;
+      neighbor_ids.resize(buf_cap);
+      neighbor_vecs.resize(buf_cap);
+      dists.resize(buf_cap);
     }
-    if (ailego_unlikely(ret != 0)) {
+    for (uint32_t i = 0; i < size; ++i) {
+      neighbor_ids[i] = neighbors[i];
+    }
+
+    if (ailego_unlikely(entity.resolve_vectors(neighbor_ids.data(), size,
+                                               neighbor_vecs.data()) != 0)) {
       break;
     }
-
-    bool find_closer = false;
-
-    std::vector<float> dists(size);
-    std::vector<const void *> neighbor_vecs(size);
-    for (uint32_t i = 0; i < size; ++i) {
-      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    if (ailego_unlikely(ctx->debugging())) {
+      (*ctx->mutable_stats_get_vector())++;
     }
 
     dc.batch_dist(neighbor_vecs.data(), size, dists.data());
 
-    for (uint32_t i = 0; i < size; ++i) {
-      dist_t cur_dist = dists[i];
+    // Release per-hop pages to prevent PinnedPageSet overflow.
+    // Upper-level pages have high eviction priority, so re-acquire is cheap.
+    entity.release_vectors();
 
-      if (cur_dist < *dist) {
-        *entry_point = neighbors[i];
-        *dist = cur_dist;
+    bool find_closer = false;
+    for (uint32_t i = 0; i < size; ++i) {
+      if (neighbor_vecs[i] && dists[i] < *dist) {
+        *entry_point = neighbor_ids[i];
+        *dist = dists[i];
         find_closer = true;
       }
     }
@@ -198,6 +212,8 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
   visit.clear();
 
+  entity.reset_io_budget(static_cast<int32_t>(ef / 4));
+
   visit.set_visited(entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);
 
@@ -234,15 +250,33 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
                                                neighbor_vecs.data()) != 0))
       break;
 
-    const uint32_t po = std::min(prefetch_offset, unvisited_count);
-    for (uint32_t i = 0; i < po; ++i) {
-      const char *p = static_cast<const char *>(neighbor_vecs[i]);
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(p + cl * 64);
+    // Partition: move resolved vectors (non-null, cache hit) to front.
+    // Unresolved ones (cache miss) go to the back with FLT_MAX distance.
+    uint32_t resolved = 0;
+    for (uint32_t i = 0; i < unvisited_count; ++i) {
+      if (neighbor_vecs[i]) {
+        if (i != resolved) {
+          std::swap(neighbor_vecs[i], neighbor_vecs[resolved]);
+          std::swap(neighbor_ids[i], neighbor_ids[resolved]);
+        }
+        ++resolved;
       }
     }
 
-    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    if (resolved > 0) {
+      const uint32_t po = std::min(prefetch_offset, resolved);
+      for (uint32_t i = 0; i < po; ++i) {
+        const char *p = static_cast<const char *>(neighbor_vecs[i]);
+        for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+          ailego_prefetch(p + cl * 64);
+        }
+      }
+      dc.batch_dist(neighbor_vecs.data(), resolved, dists.data());
+    }
+    // Unresolved vectors get FLT_MAX - they won't enter the candidate pool.
+    for (uint32_t i = resolved; i < unvisited_count; ++i) {
+      dists[i] = FLT_MAX;
+    }
 
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));

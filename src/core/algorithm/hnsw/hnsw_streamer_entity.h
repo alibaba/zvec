@@ -877,6 +877,7 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   }
 
   ailego_force_inline void release_vectors() const {}
+  void reset_io_budget(int32_t) const {}  // no-op for mmap mode
 
  protected:
   //! Get cached base address for a node chunk, syncing if needed
@@ -966,14 +967,31 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
       const auto page_id = static_cast<ailego::block_id_t>(abs_off / pg_sz);
       const size_t intra = abs_off % pg_sz;
       if (ailego_likely(intra + vec_sz <= pg_sz)) {
-        char *page = pinned_pages_.get_page(page_id);
-        if (ailego_unlikely(!page)) return -1;
+        char *page = pinned_pages_.try_get_page(page_id);
+        if (!page) {
+          if (io_budget_ > 0) {
+            page = pinned_pages_.get_page(page_id);
+            if (ailego_unlikely(!page)) return -1;
+            --io_budget_;
+          } else {
+            out[i] = nullptr; continue;
+          }
+        }
         out[i] = page + intra;
       } else {
         const size_t part1 = pg_sz - intra;
-        char *p1 = pinned_pages_.get_page(page_id);
-        char *p2 = pinned_pages_.get_page(page_id + 1);
-        if (ailego_unlikely(!p1 || !p2)) return -1;
+        char *p1 = pinned_pages_.try_get_page(page_id);
+        char *p2 = pinned_pages_.try_get_page(page_id + 1);
+        if (!p1 || !p2) {
+          if (io_budget_ > 0) {
+            if (!p1) p1 = pinned_pages_.get_page(page_id);
+            if (!p2) p2 = pinned_pages_.get_page(page_id + 1);
+            if (ailego_unlikely(!p1 || !p2)) return -1;
+            --io_budget_;
+          } else {
+            out[i] = nullptr; continue;
+          }
+        }
         char *scratch = cross_page_arena_.data() + cross_page_used_ * vec_sz;
         ++cross_page_used_;
         std::memcpy(scratch, p1 + intra, part1);
@@ -986,6 +1004,70 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
 
   void release_vectors() const {
     pinned_pages_.release_all();
+  }
+
+  //! Reset I/O budget for a new search. budget = max pread calls allowed.
+  void reset_io_budget(int32_t budget) const { io_budget_ = budget; }
+
+  void mark_upper_level_pages() {
+    auto *pool = vec_buffer_pool();
+    if (!pool) return;
+    auto ep = entry_point();
+    auto max_lvl = cur_max_level();
+    if (ep == kInvalidNodeId || max_lvl == 0) return;
+
+    const uint32_t n = doc_cnt();
+    std::vector<bool> visited(n, false);
+    std::vector<node_id_t> upper_nodes;
+    upper_nodes.reserve(n / scaling_factor() + 64);
+    upper_nodes.push_back(ep);
+    visited[ep] = true;
+
+    for (level_t lvl = max_lvl; lvl >= 1; --lvl) {
+      for (size_t idx = 0; idx < upper_nodes.size(); ++idx) {
+        auto id = upper_nodes[idx];
+        auto neighbors = get_neighbors_typed(lvl, id);
+        for (uint32_t i = 0; i < neighbors.size(); ++i) {
+          auto nid = neighbors[i];
+          if (nid < n && !visited[nid]) {
+            visited[nid] = true;
+            upper_nodes.push_back(nid);
+          }
+        }
+      }
+    }
+
+    const size_t pg_sz = ailego::kVectorPageSize;
+    const size_t vec_sz = vector_size();
+    std::vector<ailego::block_id_t> page_ids;
+    page_ids.reserve(upper_nodes.size());
+    for (auto id : upper_nodes) {
+      const size_t abs_off = get_vector_abs_offset(id);
+      page_ids.push_back(
+          static_cast<ailego::block_id_t>(abs_off / pg_sz));
+      const size_t intra = abs_off % pg_sz;
+      if (intra + vec_sz > pg_sz) {
+        page_ids.push_back(
+            static_cast<ailego::block_id_t>(abs_off / pg_sz) + 1);
+      }
+    }
+    std::sort(page_ids.begin(), page_ids.end());
+    page_ids.erase(std::unique(page_ids.begin(), page_ids.end()),
+                   page_ids.end());
+
+    size_t marked = 0;
+    for (auto pid : page_ids) {
+      pool->page_table_.set_evict_priority(pid, 2);
+      char *buf = pool->acquire_buffer(pid, 50);
+      if (buf) {
+        pool->page_table_.release_block(pid);
+        ++marked;
+      }
+    }
+    LOG_INFO(
+        "mark_upper_level_pages: marked %zu/%zu pages for %zu upper-level "
+        "nodes (maxLevel=%d, priority=2)",
+        marked, page_ids.size(), upper_nodes.size(), (int)max_lvl);
   }
 
  private:
@@ -1010,6 +1092,25 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         if (ids_[slot] == kEmpty) {
           char *buf = pool_->acquire_buffer(page_id, 50);
           if (ailego_unlikely(!buf)) return nullptr;
+          ids_[slot] = page_id;
+          bufs_[slot] = buf;
+          ++count_;
+          return buf;
+        }
+        slot = (slot + 1) & kMask;
+      }
+    }
+
+    //! Try to get a page WITHOUT triggering disk I/O.
+    //! Returns buffer if page is in PinnedPageSet or already in pool memory.
+    //! Returns nullptr if page would need a pread (cache miss).
+    char *try_get_page(ailego::block_id_t page_id) {
+      size_t slot = static_cast<size_t>(page_id) & kMask;
+      for (;;) {
+        if (ids_[slot] == page_id) return bufs_[slot];
+        if (ids_[slot] == kEmpty) {
+          char *buf = pool_->try_acquire_buffer(page_id);
+          if (!buf) return nullptr;  // page not in memory, skip
           ids_[slot] = page_id;
           bufs_[slot] = buf;
           ++count_;
@@ -1065,6 +1166,7 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   mutable PinnedPageSet pinned_pages_;
   mutable std::vector<char> cross_page_arena_;
   mutable uint32_t cross_page_used_{0};
+  mutable int32_t io_budget_{INT32_MAX};
 };
 
 //! Typed entity subclass for contiguous memory mode.
@@ -1191,6 +1293,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
   }
 
   ailego_force_inline void release_vectors() const {}
+  void reset_io_budget(int32_t) const {}  // no-op for contiguous mode
 
  protected:
   //! Custom deleter for contiguous memory (munmap / _aligned_free / free)
