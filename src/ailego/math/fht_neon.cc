@@ -14,10 +14,10 @@
 
 #if defined(__ARM_NEON) && defined(__aarch64__)
 
-#include <arm_neon.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <arm_neon.h>
 
 namespace zvec {
 namespace ailego {

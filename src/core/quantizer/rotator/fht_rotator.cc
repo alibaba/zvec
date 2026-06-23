@@ -99,7 +99,8 @@ void FhtKacRotatorImpl::unrotate(const float *in, float *out,
     for (int round = 3; round >= 0; --round) {
       ailego::fht_inplace(data.data(), trunc_dim);
       ailego::fht_vec_rescale(data.data(), trunc_dim, inv_fac);
-      ailego::fht_flip_sign(flip.data() + round * dim / kByteLen, data.data(), dim);
+      ailego::fht_flip_sign(flip.data() + round * dim / kByteLen, data.data(),
+                            dim);
     }
     std::memcpy(out, data.data(), dim * sizeof(float));
     return;
