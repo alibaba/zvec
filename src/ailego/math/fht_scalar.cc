@@ -14,10 +14,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 namespace zvec {
-namespace core {
+namespace ailego {
 
 void fht_flip_sign_scalar(const uint8_t *flip, float *data, size_t dim) {
   for (size_t i = 0; i < dim; ++i) {
@@ -60,11 +59,5 @@ void fht_inplace_scalar(float *data, size_t n) {
   }
 }
 
-void fht_vec_rescale_scalar(float *data, size_t n, float factor) {
-  for (size_t i = 0; i < n; ++i) {
-    data[i] *= factor;
-  }
-}
-
-}  // namespace core
+}  // namespace ailego
 }  // namespace zvec

@@ -21,7 +21,7 @@ namespace zvec {
 namespace core {
 
 // ============================================================================
-// SIMD dispatch function declarations (implemented in ISA-specific files)
+// SIMD dispatch function declarations (ISA implementations in ailego/math/fht_*.cc)
 // ============================================================================
 
 //! Flip the sign of elements based on a packed bit-array.

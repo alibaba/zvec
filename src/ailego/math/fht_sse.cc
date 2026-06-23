@@ -20,7 +20,7 @@
 #include <cstring>
 
 namespace zvec {
-namespace core {
+namespace ailego {
 
 void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
   for (size_t i = 0; i < dim; i += 4) {
@@ -42,8 +42,6 @@ void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
 void fht_kacs_walk_sse(float *data, size_t len) {
   size_t half = len / 2;
   size_t half_end = half & ~3u;
-  const __m128 zero = _mm_setzero_ps();
-  (void)zero;
   for (size_t i = 0; i < half_end; i += 4) {
     __m128 x = _mm_loadu_ps(&data[i]);
     __m128 y = _mm_loadu_ps(&data[i + half]);
@@ -78,7 +76,7 @@ void fht_inv_kacs_walk_sse(float *data, size_t len) {
   }
 }
 
-}  // namespace core
+}  // namespace ailego
 }  // namespace zvec
 
 #endif  // __SSE2__

@@ -14,13 +14,13 @@
 
 #if defined(__ARM_NEON) && defined(__aarch64__)
 
+#include <arm_neon.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <arm_neon.h>
 
 namespace zvec {
-namespace core {
+namespace ailego {
 
 void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
   const uint32x4_t sign_bit = vdupq_n_u32(0x80000000u);
@@ -77,7 +77,7 @@ void fht_inv_kacs_walk_neon(float *data, size_t len) {
   }
 }
 
-}  // namespace core
+}  // namespace ailego
 }  // namespace zvec
 
 #endif  // __ARM_NEON && __aarch64__

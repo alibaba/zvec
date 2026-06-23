@@ -59,7 +59,7 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 # Always exclude algorithm/hnsw_rabitq implementation files.
 # They are compiled exclusively by core_knn_hnsw_rabitq with per-file ISA
 # flags (AVX2/FMA). If zvec_core's GLOB also collected them, the same
-# rabitqlib inline functions (fht_avx.hpp, rotator.hpp, space.hpp, Eigen)
+# rabitqlib inline functions (rotator.hpp, space.hpp, Eigen)
 # would be compiled twice — once with ISA flags, once without — producing
 # conflicting codegen that the linker resolves unpredictably → SEGFAULT.
 # interface/indexes/hnsw_rabitq_index.cc is kept because it provides the vtable
@@ -67,9 +67,9 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
 
 # Exclude quantizer/rotator files from zvec_core. They are built by the
-# separate core_rotator library (with per-file ISA flags). Including them
-# here causes duplicate symbols with different codegen — clang may resolve
-# dispatch entry points to ISA-stripped stubs, leading to SEGFAULT.
+# separate core_rotator library. Including them here causes duplicate
+# symbols — clang may resolve dispatch entry points to ISA-stripped
+# stubs, leading to SEGFAULT.
 list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/quantizer/rotator/.*")
 
 # Always exclude algorithm/diskann implementation files from zvec_core.
