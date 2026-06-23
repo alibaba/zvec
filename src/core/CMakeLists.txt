@@ -12,7 +12,6 @@ if(RABITQ_SUPPORTED AND AUTO_DETECT_ARCH)
   )
   set(HNSW_RABITQ_FILES_FULL ${HNSW_RABITQ_FILES})
   list(TRANSFORM HNSW_RABITQ_FILES_FULL PREPEND "algorithm/hnsw_rabitq/")
-
   foreach(FILE ${HNSW_RABITQ_FILES_FULL})
       set_source_files_properties(
           ${FILE}
@@ -43,7 +42,6 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
   endif()
 endif()
 
-
 cc_directory(framework)
 cc_directory(algorithm)
 cc_directory(metric)
@@ -56,27 +54,22 @@ cc_directory(plugin)
 git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 
-# Always exclude algorithm/hnsw_rabitq implementation files.
-# They are compiled exclusively by core_knn_hnsw_rabitq with per-file ISA
-# flags (AVX2/FMA). If zvec_core's GLOB also collected them, the same
-# rabitqlib inline functions (rotator.hpp, space.hpp, Eigen)
-# would be compiled twice — once with ISA flags, once without — producing
-# conflicting codegen that the linker resolves unpredictably → SEGFAULT.
+# Remove algorithm/hnsw_rabitq implementation files if not supported.
 # interface/indexes/hnsw_rabitq_index.cc is kept because it provides the vtable
 # for HNSWRabitqIndex and guards rabitqlib usage with #if RABITQ_SUPPORTED.
-list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
-
-# Exclude quantizer/rotator files from zvec_core. They are built by the
-# separate core_rotator library. Including them here causes duplicate
-# symbols — clang may resolve dispatch entry points to ISA-stripped
-# stubs, leading to SEGFAULT.
-list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/quantizer/rotator/.*")
+if(NOT RABITQ_SUPPORTED)
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
+endif()
 
 # Always exclude algorithm/diskann implementation files from zvec_core.
 # The DiskAnn algorithm is provided by the separate core_knn_diskann library
 # (real on Linux x86_64, stub on other platforms). Including them here causes
 # duplicate symbols and missing -laio when test binaries link both zvec_core
 # (via zvec) and core_knn_diskann.
+# Exclude quantizer/rotator files from zvec_core. They are built by the
+# separate core_rotator library.
+list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/quantizer/rotator/.*")
+
 list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/diskann/.*")
 if(NOT DISKANN_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/diskann_index\\.cc")

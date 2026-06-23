@@ -48,8 +48,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            lcov libaio-dev
+          sudo apt-get install -y lcov
         shell: bash
 
       - name: Install dependencies

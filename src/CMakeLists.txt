@@ -144,42 +144,28 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     )
 endfunction()
 
-# On MSVC, WINDOWS_EXPORT_ALL_SYMBOLS exports every COMDAT symbol.
-# Combined with the large C++ template codebase, this exceeds the PE/COFF
-# hard limit of 65535 sections (LNK1189). Skip the all-in-one shared
-# libraries on MSVC; consumers (Python binding, C binding, tools) link
-# to the static libraries directly.
-if(NOT MSVC)
-    if(BUILD_ZVEC_AILEGO_SHARED)
-        zvec_add_all_in_one_shared(zvec_ailego_shared zvec_ailego
-            LIBS
-                zvec_ailego
-        )
-    endif()
+if(BUILD_ZVEC_AILEGO_SHARED)
+    zvec_add_all_in_one_shared(zvec_ailego_shared zvec_ailego
+        LIBS
+            zvec_ailego
+    )
+endif()
 
-    if(BUILD_ZVEC_CORE_SHARED)
-        zvec_add_all_in_one_shared(zvec_core_shared zvec_core
-            LIBS
-                zvec_core
-                zvec_ailego
-                zvec_turbo
-                core_knn_hnsw_rabitq
-        )
-    endif()
+if(BUILD_ZVEC_CORE_SHARED)
+    zvec_add_all_in_one_shared(zvec_core_shared zvec_core
+        LIBS
+            zvec_core
+            zvec_ailego
+            zvec_turbo
+    )
+endif()
 
-    if(BUILD_ZVEC_SHARED)
-        zvec_add_all_in_one_shared(zvec_shared zvec
-            LIBS
-                zvec
-                zvec_core
-                zvec_ailego
-                zvec_turbo
-                core_knn_hnsw_rabitq
-        )
-    endif()
-else()
-    message(STATUS
-        "Skipping all-in-one shared library builds on MSVC "
-        "(PE/COFF 65535-section limit, LNK1189). "
-        "Consumers link to static libraries directly.")
+if(BUILD_ZVEC_SHARED)
+    zvec_add_all_in_one_shared(zvec_shared zvec
+        LIBS
+            zvec
+            zvec_core
+            zvec_ailego
+            zvec_turbo
+    )
 endif()

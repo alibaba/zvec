@@ -87,7 +87,8 @@ int main() {
 
   // Demonstrate INT8 quantization with random rotation preprocessing
   // (enable_rotate rotates vectors before INT8 quantization to reduce error)
-  zvec_index_params_set_quantize_type(hnsw_params_fast, ZVEC_QUANTIZE_TYPE_INT8);
+  zvec_index_params_set_quantize_type(hnsw_params_fast,
+                                      ZVEC_QUANTIZE_TYPE_INT8);
   zvec_index_params_set_quantizer_enable_rotate(hnsw_params_fast, true);
 
   zvec_index_params_t *hnsw_params_balanced =
