@@ -487,8 +487,12 @@ class BufferStorage : public IndexStorage {
     if (val != 0) {
       segment_meta_capacity_ = val;
     }
-    params.get(BUFFER_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_);
-    enable_direct_io_ = true;
+    // O_DIRECT benefits search (controlled I/O, no page-cache pollution)
+    // but hurts build (sequential writes benefit from page cache coalescing).
+    // Default: always on; can be overridden via params.
+    if (!params.get(BUFFER_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_)) {
+      enable_direct_io_ = true;
+    }
     return 0;
   }
 
@@ -514,11 +518,13 @@ class BufferStorage : public IndexStorage {
       }
     }
 
-    // Open in writable mode when the caller expects to modify the index
-    // (create_if_missing=true implies write intent, same as MMapFileStorage).
+    // Writable mode (build): disable O_DIRECT — sequential writes benefit
+    // from page cache coalescing.  Read-only mode (search): honour the
+    // configured enable_direct_io_ flag.
+    const bool use_direct_io = create_if_missing ? false : enable_direct_io_;
     buffer_pool_ = std::make_shared<ailego::VecBufferPool>(
         path, /*writable=*/create_if_missing,
-        /*enable_direct_io=*/enable_direct_io_);
+        /*enable_direct_io=*/use_direct_io);
     buffer_pool_handle_ = std::make_shared<ailego::VecBufferPoolHandle>(
         buffer_pool_->get_handle());
     int ret = ParseToMapping();
