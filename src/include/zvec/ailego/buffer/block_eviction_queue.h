@@ -81,13 +81,6 @@ class BlockEvictionQueue {
 
   bool add_single_block(const BlockType &block, int queue_index);
 
-  // void clear_dead_node();
-
-  bool is_valid(EvictableBlockOwner *owner) {
-    std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
-    return valid_owners_.find(owner) != valid_owners_.end();
-  }
-
   void set_valid(EvictableBlockOwner *owner) {
     std::unique_lock<std::shared_mutex> lock(valid_owners_mutex_);
     valid_owners_.insert(owner);

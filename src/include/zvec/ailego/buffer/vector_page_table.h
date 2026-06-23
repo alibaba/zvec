@@ -287,8 +287,6 @@ class VecBufferPool {
     return page_table_.acquire_block(page_id);
   }
 
-  int fd() const { return fd_; }
-
  private:
   int fd_;            // page-data channel: may carry O_DIRECT
   int meta_fd_;       // metadata channel: always buffered IO
