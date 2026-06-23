@@ -5156,6 +5156,8 @@ zvec_error_code_t zvec_vector_query_set_query_vector(zvec_vector_query_t *query,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  // Copies into VectorClause (not VectorViewClause) because the C API does
+  // not require `data` to stay alive after this call returns.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -5646,6 +5648,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -6067,6 +6070,7 @@ zvec_error_code_t zvec_sub_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   auto &payload = std::get<zvec::VectorClause>(ptr->target_.clause_);
   payload.query_vector_.assign(static_cast<const char *>(data), size);
   return ZVEC_OK;
