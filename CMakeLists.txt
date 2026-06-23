@@ -183,9 +183,14 @@ if(BUILD_PYTHON_BINDINGS)
     # function. The Python extension resolves the module next to _zvec.so
     # (see the $ORIGIN rpath in src/binding/python/CMakeLists.txt); the
     # module must therefore be installed alongside _zvec.so in the wheel.
-    # The target exists only on platforms where DiskAnn is buildable
-    # (currently Linux x86_64 with libaio).
-    if(TARGET core_knn_diskann)
+    #
+    # Gate on DISKANN_SUPPORTED, not on the target's existence: on unsupported
+    # platforms (e.g. macOS / ARM64) the core_knn_diskann target is still
+    # defined, but built from an empty stub (src/core/algorithm/CMakeLists.txt)
+    # with zero exported symbols and a runtime load path compiled out
+    # (#if DISKANN_SUPPORTED). Shipping that stub is pure dead weight, so it is
+    # only packaged where DiskAnn is real — currently Linux x86_64 with libaio.
+    if(DISKANN_SUPPORTED)
         install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}
                 COMPONENT python)
     endif()
