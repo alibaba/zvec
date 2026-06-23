@@ -116,6 +116,7 @@ if(MSVC)
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:core_knn_hnsw_rabitq>
     )
 
     target_link_libraries(zvec_c_api
@@ -124,6 +125,7 @@ if(MSVC)
             zvec_core
             zvec_ailego
             zvec_turbo
+            core_knn_hnsw_rabitq
             ${ZVEC_CXX_STD_LIB}
             Threads::Threads
     )
@@ -133,6 +135,7 @@ elseif(APPLE)
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
         ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
+        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:core_knn_hnsw_rabitq>
     )
     
     # Link the libraries themselves (without force_load flags)
@@ -142,6 +145,7 @@ elseif(APPLE)
             zvec_core
             zvec_ailego
             zvec_turbo
+            core_knn_hnsw_rabitq
             Threads::Threads
             ${CMAKE_DL_LIBS}
     )
@@ -159,6 +163,7 @@ else()
                 zvec_core
                 zvec_ailego
                 zvec_turbo  # Required by zvec_core (metric module)
+                core_knn_hnsw_rabitq  # Excluded from zvec_core (RabitqReformer, HnswRabitqStreamer)
             ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
             Threads::Threads
             ${CMAKE_DL_LIBS}

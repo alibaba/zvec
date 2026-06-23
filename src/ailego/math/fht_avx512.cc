@@ -93,95 +93,21 @@ void fht_inv_kacs_walk_avx512(float *data, size_t len) {
 }
 
 void fht_inplace_avx512(float *data, size_t n) {
-  // FFHT-inspired: levels 1-4 fused in-register (16-element groups).
-  // Avoids 4 full memory passes by doing the small-stride butterflies
-  // entirely within ZMM registers using permute + blend + cross-half ops.
-  if (n >= 16) {
-    // Permutation indices for in-register butterfly levels 1-4
-    const __m512i dup_even = _mm512_setr_epi32(
-        0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14);
-    const __m512i dup_odd = _mm512_setr_epi32(
-        1, 1, 3, 3, 5, 5, 7, 7, 9, 9, 11, 11, 13, 13, 15, 15);
-    const __m512i dup_grp4_even = _mm512_setr_epi32(
-        0, 1, 2, 3, 0, 1, 2, 3, 8, 9, 10, 11, 8, 9, 10, 11);
-    const __m512i dup_grp4_odd = _mm512_setr_epi32(
-        4, 5, 6, 7, 4, 5, 6, 7, 12, 13, 14, 15, 12, 13, 14, 15);
-    const __m512i sel_lo8 = _mm512_setr_epi32(
-        0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7);
-    const __m512i sel_hi8 = _mm512_setr_epi32(
-        8, 9, 10, 11, 12, 13, 14, 15, 8, 9, 10, 11, 12, 13, 14, 15);
-    // Blend masks
-    const __mmask16 mask_l1 = 0xAAAA;  // 1010101010101010 (alternating)
-    const __mmask16 mask_l2 = 0xAA;    // 10101010 (groups of 2)
-    const __mmask16 mask_l3 = 0xF0;    // 11110000 (groups of 4)
-    const __mmask16 mask_l4 = 0xFF00;  // upper 8 set
-
-    for (size_t i = 0; i < n; i += 16) {
-      __m512 v = _mm512_loadu_ps(&data[i]);
-
-      // Level 1: stride-1 butterfly
-      __m512 e = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(dup_even, _mm512_castps_si512(v)));
-      __m512 o = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(dup_odd, _mm512_castps_si512(v)));
-      v = _mm512_mask_blend_ps(mask_l1,
-                               _mm512_add_ps(e, o),
-                               _mm512_sub_ps(e, o));
-
-      // Level 2: stride-2 butterfly
-      e = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(dup_grp4_even, _mm512_castps_si512(v)));
-      o = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(dup_grp4_odd, _mm512_castps_si512(v)));
-      v = _mm512_mask_blend_ps(mask_l2,
-                               _mm512_add_ps(e, o),
-                               _mm512_sub_ps(e, o));
-
-      // Level 3: stride-4 butterfly
-      e = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(sel_lo8, _mm512_castps_si512(v)));
-      o = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(sel_hi8, _mm512_castps_si512(v)));
-      v = _mm512_mask_blend_ps(mask_l3,
-                               _mm512_add_ps(e, o),
-                               _mm512_sub_ps(e, o));
-
-      // Level 4: stride-8 butterfly
-      e = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(sel_lo8, _mm512_castps_si512(v)));
-      o = _mm512_castsi512_ps(
-          _mm512_permutexvar_epi32(sel_hi8, _mm512_castps_si512(v)));
-      v = _mm512_mask_blend_ps(mask_l4,
-                               _mm512_add_ps(e, o),
-                               _mm512_sub_ps(e, o));
-
-      _mm512_storeu_ps(&data[i], v);
-    }
-
-    // Levels 5+ (stride >= 16): generic vectorized loop
-    for (size_t len = 16; len < n; len <<= 1) {
-      size_t step = len << 1;
-      for (size_t i = 0; i < n; i += step) {
-        for (size_t j = 0; j < len; j += 16) {
-          __m512 u = _mm512_loadu_ps(&data[i + j]);
-          __m512 v = _mm512_loadu_ps(&data[i + j + len]);
-          _mm512_storeu_ps(&data[i + j], _mm512_add_ps(u, v));
-          _mm512_storeu_ps(&data[i + j + len], _mm512_sub_ps(u, v));
-        }
-      }
-    }
-    return;
-  }
-
-  // Fallback: n < 16 (scalar)
   for (size_t len = 1; len < n; len <<= 1) {
     size_t step = len << 1;
+    size_t simd_end = len & ~15u;
     for (size_t i = 0; i < n; i += step) {
-      for (size_t j = i; j < i + len; ++j) {
-        float u = data[j];
-        float v = data[j + len];
-        data[j] = u + v;
-        data[j + len] = u - v;
+      for (size_t j = 0; j < simd_end; j += 16) {
+        __m512 u = _mm512_loadu_ps(&data[i + j]);
+        __m512 v = _mm512_loadu_ps(&data[i + j + len]);
+        _mm512_storeu_ps(&data[i + j], _mm512_add_ps(u, v));
+        _mm512_storeu_ps(&data[i + j + len], _mm512_sub_ps(u, v));
+      }
+      for (size_t j = simd_end; j < len; ++j) {
+        float u = data[i + j];
+        float v = data[i + j + len];
+        data[i + j] = u + v;
+        data[i + j + len] = u - v;
       }
     }
   }

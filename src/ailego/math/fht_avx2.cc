@@ -88,73 +88,21 @@ void fht_inv_kacs_walk_avx2(float *data, size_t len) {
 }
 
 void fht_inplace_avx2(float *data, size_t n) {
-  // FFHT-inspired: levels 1-3 fused in-register (8-element groups).
-  // Avoids 3 full memory passes by doing the small-stride butterflies
-  // entirely within YMM registers using permute + blend + cross-lane ops.
-  if (n >= 8) {
-    // Permutation constants for in-register butterfly levels 1-3
-    const __m256i dup_even =
-        _mm256_setr_epi32(0, 0, 2, 2, 4, 4, 6, 6);
-    const __m256i dup_odd =
-        _mm256_setr_epi32(1, 1, 3, 3, 5, 5, 7, 7);
-    const __m256i sel_lo =
-        _mm256_setr_epi32(0, 1, 2, 3, 0, 1, 2, 3);
-    const __m256i sel_hi =
-        _mm256_setr_epi32(4, 5, 6, 7, 4, 5, 6, 7);
-    const __m256i blend_mask_l3 =
-        _mm256_setr_epi32(0, 0, 0, 0, -1, -1, -1, -1);
-
-    for (size_t i = 0; i < n; i += 8) {
-      __m256 v = _mm256_loadu_ps(&data[i]);
-
-      // Level 1: stride-1 butterfly (pairs within 8 elements)
-      __m256 e = _mm256_permutevar8x32_ps(v, dup_even);
-      __m256 o = _mm256_permutevar8x32_ps(v, dup_odd);
-      v = _mm256_addsub_ps(_mm256_sub_ps(_mm256_setzero_ps(), o), e);
-
-      // Level 2: stride-2 butterfly (groups of 4)
-      e = _mm256_permutevar8x32_ps(v, dup_even);
-      o = _mm256_permutevar8x32_ps(v, dup_odd);
-      __m256 sum = _mm256_add_ps(e, o);
-      __m256 diff = _mm256_sub_ps(e, o);
-      v = _mm256_blendv_ps(sum, diff,
-                           _mm256_castsi256_ps(blend_mask_l3));
-
-      // Level 3: stride-4 butterfly (full 8-element group)
-      __m256 lo = _mm256_permutevar8x32_ps(v, sel_lo);
-      __m256 hi = _mm256_permutevar8x32_ps(v, sel_hi);
-      __m256 rlo = _mm256_add_ps(lo, hi);
-      __m256 rhi = _mm256_sub_ps(lo, hi);
-      v = _mm256_blendv_ps(rlo, rhi,
-                           _mm256_castsi256_ps(blend_mask_l3));
-
-      _mm256_storeu_ps(&data[i], v);
-    }
-
-    // Levels 4+ (stride >= 8): generic vectorized loop
-    for (size_t len = 8; len < n; len <<= 1) {
-      size_t step = len << 1;
-      for (size_t i = 0; i < n; i += step) {
-        for (size_t j = 0; j < len; j += 8) {
-          __m256 u = _mm256_loadu_ps(&data[i + j]);
-          __m256 v = _mm256_loadu_ps(&data[i + j + len]);
-          _mm256_storeu_ps(&data[i + j], _mm256_add_ps(u, v));
-          _mm256_storeu_ps(&data[i + j + len], _mm256_sub_ps(u, v));
-        }
-      }
-    }
-    return;
-  }
-
-  // Fallback: n < 8 (scalar)
   for (size_t len = 1; len < n; len <<= 1) {
     size_t step = len << 1;
+    size_t simd_end = len & ~7u;
     for (size_t i = 0; i < n; i += step) {
-      for (size_t j = i; j < i + len; ++j) {
-        float u = data[j];
-        float v = data[j + len];
-        data[j] = u + v;
-        data[j + len] = u - v;
+      for (size_t j = 0; j < simd_end; j += 8) {
+        __m256 u = _mm256_loadu_ps(&data[i + j]);
+        __m256 v = _mm256_loadu_ps(&data[i + j + len]);
+        _mm256_storeu_ps(&data[i + j], _mm256_add_ps(u, v));
+        _mm256_storeu_ps(&data[i + j + len], _mm256_sub_ps(u, v));
+      }
+      for (size_t j = simd_end; j < len; ++j) {
+        float u = data[i + j];
+        float v = data[i + j + len];
+        data[i + j] = u + v;
+        data[i + j + len] = u - v;
       }
     }
   }

@@ -16,28 +16,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <ailego/math/fht.h>
 
 namespace zvec {
 namespace core {
-
-// ============================================================================
-// SIMD dispatch function declarations (ISA implementations in ailego/math/fht_*.cc)
-// ============================================================================
-
-//! Flip the sign of elements based on a packed bit-array.
-void fht_flip_sign(const uint8_t *flip, float *data, size_t dim);
-
-//! Kac random walk: butterfly add/sub between first and second halves.
-void fht_kacs_walk(float *data, size_t len);
-
-//! Inverse Kac walk: undo butterfly add/sub with 0.5 factor.
-void fht_inv_kacs_walk(float *data, size_t len);
-
-//! In-place Fast Hadamard Transform on a power-of-2 length array.
-void fht_inplace(float *data, size_t n);
-
-//! Scale each element by a constant factor.
-void fht_vec_rescale(float *data, size_t n, float factor);
 
 // ============================================================================
 // FhtKacRotatorImpl - O(d log d) FHT-based Kac random rotation
