@@ -51,6 +51,7 @@ class VectorPageTable : public EvictableBlockOwner {
     std::atomic<bool> in_evict_queue;
     std::atomic<bool> is_dirty;
     uint8_t evict_priority{0};
+    bool ever_loaded{false};  // true once the page has been loaded at least once
     char *buffer;
     size_t file_offset;
   };
@@ -122,6 +123,19 @@ class VectorPageTable : public EvictableBlockOwner {
     return entry_at(block_id).is_dirty.load(std::memory_order_relaxed);
   }
 
+  //! Get the raw buffer pointer for a loaded page (nullptr if not loaded).
+  //! Used by batched flush to memcpy page contents into a coalescing buffer.
+  char *get_block_buffer(block_id_t block_id) const {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    return entry_at(block_id).buffer;
+  }
+
+  //! Clear the dirty flag after a successful batched flush.
+  void clear_dirty(block_id_t block_id) {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    entry_at(block_id).is_dirty.store(false, std::memory_order_relaxed);
+  }
+
   //! Flush a single dirty block without evicting it. Caller guarantees the
   //! block is currently loaded (buffer != nullptr).
   int flush_block(block_id_t block_id) {
@@ -164,6 +178,14 @@ class VectorPageTable : public EvictableBlockOwner {
   bool is_loaded(block_id_t block_id) const {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
     return entry_at(block_id).buffer != nullptr;
+  }
+
+  //! Check if a page has ever been loaded (so pread is needed on reload
+  //! after eviction).  A page that was never loaded can be zero-filled
+  //! if it lies beyond the initial file size (created by extend_file).
+  bool is_ever_loaded(block_id_t block_id) const {
+    assert(block_id < entry_num_.load(std::memory_order_acquire));
+    return entry_at(block_id).ever_loaded;
   }
 
  private:
@@ -291,6 +313,9 @@ class VecBufferPool {
   int fd_;            // page-data channel: may carry O_DIRECT
   int meta_fd_;       // metadata channel: always buffered IO
   size_t file_size_;
+  size_t initial_file_size_;  // file size at open time; pages beyond this
+                              // are created by extend_file and can skip
+                              // pread on first load (content is zeros).
   std::string file_name_;
   bool writable_{false};
   bool direct_io_enabled_{false};  // whether O_DIRECT actually took effect

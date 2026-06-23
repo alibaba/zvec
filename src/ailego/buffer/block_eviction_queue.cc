@@ -78,9 +78,30 @@ bool BlockEvictionQueue::add_single_block(const BlockType &block,
   return true;
 }
 
+MemoryLimitPool::~MemoryLimitPool() {
+  drain_free_list();
+}
+
+void MemoryLimitPool::drain_free_list() {
+  std::lock_guard<std::mutex> lock(free_list_mutex_);
+  size_t drained = 0;
+  while (free_list_head_) {
+    char *buf = free_list_head_;
+    free_list_head_ = *reinterpret_cast<char **>(buf);
+    ailego_free(buf);
+    ++drained;
+  }
+  free_list_count_ = 0;
+  if (drained > 0) {
+    LOG_INFO("MemoryLimitPool: drained %zu cached buffers from free list",
+             drained);
+  }
+}
+
 int MemoryLimitPool::init(size_t pool_size) {
   pool_size_ = 0;
   BlockEvictionQueue::get_instance().recycle();
+  drain_free_list();
   pool_size_ = pool_size;
   LOG_INFO("MemoryLimitPool initialized with pool size: %lu", pool_size_);
   return 0;
@@ -96,6 +117,15 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
     }
     desired = expected + buffer_size;
   } while (!used_size_.compare_exchange_weak(expected, desired));
+  {
+    std::lock_guard<std::mutex> lock(free_list_mutex_);
+    if (free_list_head_) {
+      buffer = free_list_head_;
+      free_list_head_ = *reinterpret_cast<char **>(buffer);
+      --free_list_count_;
+      return true;
+    }
+  }
   buffer = (char *)ailego_aligned_malloc(buffer_size, 4096);
   if (!buffer) {
     used_size_.fetch_sub(buffer_size);
@@ -119,7 +149,10 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     desired = expected - buffer_size;
     assert(expected >= buffer_size);
   } while (!used_size_.compare_exchange_weak(expected, desired));
-  ailego_free(buffer);
+  std::lock_guard<std::mutex> lock(free_list_mutex_);
+  *reinterpret_cast<char **>(buffer) = free_list_head_;
+  free_list_head_ = buffer;
+  ++free_list_count_;
 }
 
 void MemoryLimitPool::release_external(const size_t buffer_size) {

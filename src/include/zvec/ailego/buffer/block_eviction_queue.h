@@ -91,9 +91,6 @@ class BlockEvictionQueue {
     valid_owners_.erase(owner);
   }
 
-  // Atomically checks under the shared lock that the owner is still valid AND
-  // the block version has not been superseded, preventing TOCTOU races when an
-  // owner is concurrently destroyed.
   bool is_valid_and_alive(const BlockType &item);
 
   void recycle();
@@ -136,10 +133,17 @@ class MemoryLimitPool {
 
  private:
   MemoryLimitPool() = default;
+  ~MemoryLimitPool();
+
+  void drain_free_list();
 
  private:
   size_t pool_size_{0};
   std::atomic<size_t> used_size_{0};
+
+  std::mutex free_list_mutex_;
+  char *free_list_head_{nullptr};
+  size_t free_list_count_{0};
 };
 
 }  // namespace ailego

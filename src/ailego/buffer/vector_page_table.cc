@@ -225,6 +225,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
       e.file_offset = file_offset;
       e.in_evict_queue.store(false, std::memory_order_relaxed);
       e.is_dirty.store(false, std::memory_order_relaxed);
+      e.ever_loaded = true;
       e.ref_count.store(1, std::memory_order_release);
       return e.buffer;
     } else {
@@ -329,6 +330,7 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
     throw std::runtime_error("Failed to stat file: " + filename);
   }
   file_size_ = st.st_size;
+  initial_file_size_ = file_size_;  // snapshot for skip-pread optimisation
 }
 
 int VecBufferPool::init() {
@@ -407,26 +409,35 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
   }
 
   size_t page_offset = page_id * kVectorPageSize;
-  // O_DIRECT requires the IO length to be a multiple of the device block
-  // size. The backing file size is always page-aligned (IndexMapping +
-  // append_segment guarantee this), so reading a full page never reads past
-  // EOF; the tail padding is the file's own zero region. In direct mode we
-  // MUST read the whole page; the buffered path keeps the legacy short-read
-  // + zero-pad behaviour.
-  size_t read_len = direct_io_enabled_
-                        ? kVectorPageSize
-                        : std::min(kVectorPageSize, file_size_ - page_offset);
-  if (read_len < kVectorPageSize) {
-    std::memset(buffer + read_len, 0, kVectorPageSize - read_len);
-  }
-  ssize_t read_bytes = zvec_pread(fd_, buffer, read_len, page_offset);
-  if (read_bytes != static_cast<ssize_t>(read_len)) {
-    LOG_ERROR(
-        "Buffer pool failed to read file at offset: file[%s], page_id[%zu], "
-        "offset[%zu], expected[%zu], got[%zd]",
-        file_name_.c_str(), page_id, page_offset, read_len, read_bytes);
-    MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
-    return nullptr;
+  // Skip pread for pages created by extend_file (beyond the original file
+  // size at open time) that have never been loaded before.  Their on-disk
+  // content is guaranteed to be zeros (ftruncate).  After eviction the
+  // ever_loaded flag stays true so reloads correctly pread the flushed data.
+  if (writable_ && page_offset >= initial_file_size_ &&
+      !page_table_.is_ever_loaded(page_id)) {
+    std::memset(buffer, 0, kVectorPageSize);
+  } else {
+    // O_DIRECT requires the IO length to be a multiple of the device block
+    // size. The backing file size is always page-aligned (IndexMapping +
+    // append_segment guarantee this), so reading a full page never reads past
+    // EOF; the tail padding is the file's own zero region. In direct mode we
+    // MUST read the whole page; the buffered path keeps the legacy short-read
+    // + zero-pad behaviour.
+    size_t read_len = direct_io_enabled_
+                          ? kVectorPageSize
+                          : std::min(kVectorPageSize, file_size_ - page_offset);
+    if (read_len < kVectorPageSize) {
+      std::memset(buffer + read_len, 0, kVectorPageSize - read_len);
+    }
+    ssize_t read_bytes = zvec_pread(fd_, buffer, read_len, page_offset);
+    if (read_bytes != static_cast<ssize_t>(read_len)) {
+      LOG_ERROR(
+          "Buffer pool failed to read file at offset: file[%s], page_id[%zu], "
+          "offset[%zu], expected[%zu], got[%zd]",
+          file_name_.c_str(), page_id, page_offset, read_len, read_bytes);
+      MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
+      return nullptr;
+    }
   }
   return page_table_.set_block_acquired(page_id, buffer, page_offset);
 }
@@ -501,23 +512,72 @@ int VecBufferPool::flush_all() {
   if (!writable_) {
     return 0;
   }
+  const size_t total = page_table_.entry_num();
+  if (total == 0) {
+    return 0;
+  }
+
+  static constexpr size_t kBatchPages = 256;
+  const size_t kBatchSize = kBatchPages * kVectorPageSize;
+  char *batch_buf =
+      static_cast<char *>(ailego_aligned_malloc(kBatchSize, 4096));
+
   int rc = 0;
   size_t total_dirty = 0;
   size_t fail_count = 0;
-  for (size_t i = 0; i < page_table_.entry_num(); ++i) {
-    if (page_table_.is_block_dirty(i)) {
-      ++total_dirty;
-      int r = page_table_.flush_block(i);
-      if (r != 0) {
-        rc = r;
-        ++fail_count;
+  size_t i = 0;
+
+  while (i < total) {
+    if (!page_table_.is_block_dirty(i)) {
+      ++i;
+      continue;
+    }
+
+    const size_t run_start = i;
+    size_t run_count = 0;
+    const size_t limit = batch_buf ? kBatchPages : 1;
+    while (i < total && run_count < limit && page_table_.is_block_dirty(i)) {
+      char *buf = page_table_.get_block_buffer(i);
+      if (!buf) break;
+      if (batch_buf) {
+        std::memcpy(batch_buf + run_count * kVectorPageSize, buf,
+                    kVectorPageSize);
+      }
+      ++run_count;
+      ++i;
+    }
+    if (run_count == 0) {
+      ++i;
+      continue;
+    }
+    total_dirty += run_count;
+
+    bool ok = false;
+    if (batch_buf && run_count > 0) {
+      const size_t write_size = run_count * kVectorPageSize;
+      ssize_t w = zvec_pwrite(fd_, batch_buf, write_size,
+                               run_start * kVectorPageSize);
+      ok = (w == static_cast<ssize_t>(write_size));
+    }
+    if (ok) {
+      for (size_t j = run_start; j < run_start + run_count; ++j) {
+        page_table_.clear_dirty(j);
+      }
+    } else {
+      for (size_t j = run_start; j < run_start + run_count; ++j) {
+        int r = page_table_.flush_block(j);
+        if (r != 0) {
+          rc = r;
+          ++fail_count;
+        }
       }
     }
   }
+
+  if (batch_buf) {
+    ailego_free(batch_buf);
+  }
   if (fail_count != 0) {
-    // Aggregated diagnostic so that callers (notably ~VecBufferPool, which
-    // discards the return value) cannot silently lose dirty pages: any
-    // unflushed page at this point means the on-disk image is now stale.
     LOG_ERROR(
         "VecBufferPool::flush_all: %zu/%zu dirty page(s) failed to flush, "
         "file[%s] last_rc=%d -- on-disk data may be stale.",
