@@ -212,7 +212,7 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
   visit.clear();
 
-  entity.reset_io_budget(static_cast<int32_t>(ef / 4));
+  entity.reset_io_budget(static_cast<int32_t>(ef / 2));
 
   visit.set_visited(entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);

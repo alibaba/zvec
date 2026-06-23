@@ -1064,7 +1064,7 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         ++marked;
       }
     }
-    LOG_INFO(
+    LOG_DEBUG(
         "mark_upper_level_pages: marked %zu/%zu pages for %zu upper-level "
         "nodes (maxLevel=%d, priority=2)",
         marked, page_ids.size(), upper_nodes.size(), (int)max_lvl);

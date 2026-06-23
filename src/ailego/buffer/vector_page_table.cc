@@ -764,7 +764,7 @@ void VecBufferPool::warmup() {
     }
   }
   free(chunk_buf);
-  LOG_INFO("VecBufferPool::warmup: preloaded %zu/%zu pages for file[%s]",
+  LOG_DEBUG("VecBufferPool::warmup: preloaded %zu/%zu pages for file[%s]",
            loaded, total_pages, file_name_.c_str());
 }
 
