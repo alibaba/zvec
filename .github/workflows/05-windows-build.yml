@@ -22,6 +22,7 @@ jobs:
 
     env:
       SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_NO_DAEMON: "1"
 
     steps:
       - name: Show env info
