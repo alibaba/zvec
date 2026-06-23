@@ -20,7 +20,6 @@
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_logger.h>
-#include "../io/aligned_async_io.h"
 #include <zvec/ailego/logger/logger.h>
 
 #if defined(_MSC_VER)
@@ -660,64 +659,6 @@ void VecBufferPoolHandle::acquire_one(block_id_t block_id) {
   // acquire_one(). The return value of acquire_block() is intentionally
   // ignored here, as a null return would indicate a contract violation.
   pool_.page_table_.acquire_block(block_id);
-}
-
-void VecBufferPool::batch_prefetch(const block_id_t *page_ids, size_t count) {
-#ifdef ZVEC_HAS_LIBAIO
-  if (count == 0) return;
-
-  static thread_local ScopedIOContext tl_io_ctx;
-  if (!tl_io_ctx.valid()) return;
-
-  std::vector<AlignedRead> reads;
-  std::vector<std::pair<block_id_t, char *>> pending;
-  reads.reserve(count);
-  pending.reserve(count);
-
-  for (size_t i = 0; i < count; ++i) {
-    block_id_t pid = page_ids[i];
-    if (pid >= page_table_.entry_num()) continue;
-    char *existing = page_table_.acquire_block(pid);
-    if (existing) {
-      page_table_.release_block(pid);
-      continue;
-    }
-    char *buf = nullptr;
-    bool found =
-        MemoryLimitPool::get_instance().try_acquire_buffer(kVectorPageSize, buf);
-    if (!found || !buf) continue;
-
-    AlignedRead rd;
-    rd.offset = static_cast<uint64_t>(pid) * kVectorPageSize;
-    rd.len = kVectorPageSize;
-    rd.buf = buf;
-    reads.push_back(rd);
-    pending.emplace_back(pid, buf);
-  }
-
-  if (reads.empty()) return;
-
-  int rc = execute_aligned_io(tl_io_ctx.get(), fd_, reads);
-  if (rc != 0) {
-    for (auto &p : pending) {
-      MemoryLimitPool::get_instance().release_buffer(p.second, kVectorPageSize);
-    }
-    return;
-  }
-
-  for (auto &p : pending) {
-    block_id_t pid = p.first;
-    char *buf = p.second;
-    size_t page_offset = static_cast<size_t>(pid) * kVectorPageSize;
-    std::lock_guard<std::mutex> lock(
-        block_mutexes_[pid % VecBufferPool::kMutexBucketCount]);
-    page_table_.set_block_acquired(pid, buf, page_offset);
-    page_table_.release_block(pid);
-  }
-#else
-  (void)page_ids;
-  (void)count;
-#endif
 }
 
 void VecBufferPool::warmup() {

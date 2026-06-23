@@ -271,8 +271,6 @@ class VecBufferPool {
     return file_size_;
   }
 
-  void batch_prefetch(const block_id_t *page_ids, size_t count);
-
   //! Sequentially preload pages into the pool until pool is full.
   void warmup();
 
@@ -332,10 +330,6 @@ class VecBufferPoolHandle {
   void release_one(block_id_t block_id);
 
   void acquire_one(block_id_t block_id);
-
-  void batch_prefetch(const block_id_t *page_ids, size_t count) {
-    pool_.batch_prefetch(page_ids, count);
-  }
 
  private:
   VecBufferPool &pool_;
