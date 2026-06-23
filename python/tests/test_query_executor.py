@@ -300,3 +300,16 @@ class TestQueryExecutor:
             results = executor._execute_python_pipeline(vectors, collection)
         assert results == [["raw1"], ["raw2"]]
         assert collection.Query.call_count == 2
+
+    def test_build_search_query_by_missing_id_raises_value_error(self):
+        vector_schema = VectorSchema(name="test", data_type=DataType.VECTOR_FP32)
+        schema = CollectionSchema(name="test_collection", vectors=[vector_schema])
+        executor = QueryExecutor(schema)
+        ctx = QueryContext(topk=5)
+        collection = MagicMock()
+        collection.Fetch.return_value = {}
+
+        with pytest.raises(ValueError, match="Document with id 'missing' not found"):
+            executor._build_search_query(
+                ctx, Query(field_name="test", id="missing"), collection
+            )

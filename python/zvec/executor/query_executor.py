@@ -249,7 +249,7 @@ class QueryExecutor:
             vec_data = query.vector
         elif query.has_id():
             fetched = collection.Fetch([query.id])
-            doc = next(iter(fetched.values()))
+            doc = next(iter(fetched.values()), None)
             if not doc:
                 raise ValueError(f"Document with id '{query.id}' not found")
             vec_data = doc.get_any(vector_schema.name, vector_schema.data_type)
