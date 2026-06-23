@@ -19,8 +19,8 @@
 namespace zvec {
 std::string CollectionStats::to_string() const {
   std::ostringstream oss;
-  oss << "CollectionStats{"
-      << "doc_count:" << doc_count << ",index_completeness:{";
+  oss << "CollectionStats{" << "doc_count:" << doc_count
+      << ",index_completeness:{";
 
   size_t i = 0;
   for (const auto &pair : index_completeness) {

@@ -5,9 +5,9 @@
 // After confirming the fix works, REMOVE this file and revert
 // the rabitqlib addition in CMakeLists.txt.
 
+#include <vector>
 #include <rabitqlib/third/Eigen/Dense>
 #include <rabitqlib/third/Eigen/Sparse>
-#include <vector>
 
 namespace zvec {
 namespace core {
@@ -15,14 +15,17 @@ namespace core {
 // Each explicit instantiation of Eigen operations generates many
 // COMDAT sections (matrix ops, decompositions, solvers, etc.)
 
-#define PROBE_EIGEN_TAG(SCALAR, TAG, ROWS, COLS)                         \
-  void _probe_eigen_impl_##SCALAR##_##TAG(                               \
-      const Eigen::Matrix<SCALAR, ROWS, COLS>& m) {                      \
-    auto a = m + m;                                                      \
-    auto b = m * 2.0f;                                                   \
-    auto c = m.transpose() * m;                                          \
-    auto d = m.array() * m.array();                                      \
-    (void)a; (void)b; (void)c; (void)d;                                  \
+#define PROBE_EIGEN_TAG(SCALAR, TAG, ROWS, COLS)    \
+  void _probe_eigen_impl_##SCALAR##_##TAG(          \
+      const Eigen::Matrix<SCALAR, ROWS, COLS> &m) { \
+    auto a = m + m;                                 \
+    auto b = m * 2.0f;                              \
+    auto c = m.transpose() * m;                     \
+    auto d = m.array() * m.array();                 \
+    (void)a;                                        \
+    (void)b;                                        \
+    (void)c;                                        \
+    (void)d;                                        \
   }
 
 #define PROBE_EIGEN(SCALAR, ROWS, COLS) \
@@ -58,35 +61,43 @@ PROBE_EIGEN_TAG(double, Dyn, Eigen::Dynamic, Eigen::Dynamic)
 #undef PROBE_EIGEN
 
 // More heavy operations: decompositions, solvers
-void _probe_decomp_f(const Eigen::MatrixXf& m) {
+void _probe_decomp_f(const Eigen::MatrixXf &m) {
   Eigen::LLT<Eigen::MatrixXf> llt(m);
   Eigen::JacobiSVD<Eigen::MatrixXf> svd(m);
   Eigen::HouseholderQR<Eigen::MatrixXf> qr(m);
   Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> eigen(m);
-  (void)llt; (void)svd; (void)qr; (void)eigen;
+  (void)llt;
+  (void)svd;
+  (void)qr;
+  (void)eigen;
 }
 
-void _probe_decomp_d(const Eigen::MatrixXd& m) {
+void _probe_decomp_d(const Eigen::MatrixXd &m) {
   Eigen::LLT<Eigen::MatrixXd> llt(m);
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(m);
   Eigen::HouseholderQR<Eigen::MatrixXd> qr(m);
   Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(m);
-  (void)llt; (void)svd; (void)qr; (void)eigen;
+  (void)llt;
+  (void)svd;
+  (void)qr;
+  (void)eigen;
 }
 
 // Sparse matrix operations
-void _probe_sparse_f(const Eigen::SparseMatrix<float>& m) {
+void _probe_sparse_f(const Eigen::SparseMatrix<float> &m) {
   Eigen::SparseLU<Eigen::SparseMatrix<float>> lu(m);
   (void)lu;
 }
 
-void _probe_sparse_d(const Eigen::SparseMatrix<double>& m) {
+void _probe_sparse_d(const Eigen::SparseMatrix<double> &m) {
   Eigen::SparseLU<Eigen::SparseMatrix<double>> lu(m);
   (void)lu;
 }
 
 // Exported function to ensure this TU is linked
-extern "C" int lnk1189_probe_trigger() { return 42; }
+extern "C" int lnk1189_probe_trigger() {
+  return 42;
+}
 
 }  // namespace core
 }  // namespace zvec

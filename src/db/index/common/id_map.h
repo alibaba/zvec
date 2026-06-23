@@ -30,7 +30,7 @@ class IDMap {
   using Ptr = std::shared_ptr<IDMap>;
 
   explicit IDMap(std::string collection_name)
-      : collection_name_(std::move(collection_name)) {};
+      : collection_name_(std::move(collection_name)){};
 
   ~IDMap() {
     if (opened_) {
