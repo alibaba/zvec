@@ -15,10 +15,10 @@
 #if defined(__SSE2__)
 
 #include <emmintrin.h>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <cmath>
 
 namespace zvec {
 namespace ailego {

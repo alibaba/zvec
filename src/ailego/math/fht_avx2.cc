@@ -15,10 +15,10 @@
 #if defined(__AVX2__)
 
 #include <immintrin.h>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <cmath>
 
 namespace zvec {
 namespace ailego {

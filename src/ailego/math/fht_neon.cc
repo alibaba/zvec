@@ -14,10 +14,10 @@
 
 #if defined(__ARM_NEON) && defined(__aarch64__)
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <cmath>
 #include <arm_neon.h>
 
 namespace zvec {
