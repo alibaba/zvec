@@ -27,6 +27,7 @@ __all__: list[str] = [
     "OmegaQueryParam",
     "OptimizeOption",
     "QueryParam",
+    "RetrainOmegaOption",
     "SegmentOption",
     "VectorIndexParam",
 ]

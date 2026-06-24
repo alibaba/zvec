@@ -30,6 +30,7 @@ from .model.param import (
     OmegaIndexParam,
     OmegaQueryParam,
     OptimizeOption,
+    RetrainOmegaOption,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -80,6 +81,7 @@ __all__: list = [
     "QuantizeType",
     "Query",
     "ReRanker",
+    "RetrainOmegaOption",
     "RrfReRanker",
     "Status",
     "StatusCode",

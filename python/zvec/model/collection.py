@@ -34,6 +34,7 @@ from .param import (
     InvertIndexParam,
     IVFIndexParam,
     OptimizeOption,
+    RetrainOmegaOption,
 )
 from .param.query import Query
 from .schema import CollectionSchema, CollectionStats, FieldSchema
@@ -150,6 +151,15 @@ class Collection:
                 Defaults to ``OptimizeOption()``.
         """
         self._obj.Optimize(option)
+
+    def retrain_omega(self, option: RetrainOmegaOption = RetrainOmegaOption()) -> None:
+        """Retrain OMEGA models on an existing OMEGA index.
+
+        Args:
+            option (Optional[RetrainOmegaOption], optional): Retraining options.
+                Defaults to ``RetrainOmegaOption()``.
+        """
+        self._obj.RetrainOmega(option)
 
     # ========== COLUMN DDL Methods ==========
     def add_column(

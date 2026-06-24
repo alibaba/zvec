@@ -95,7 +95,7 @@ def run_hnsw(
     hnsw_specific_args = hnsw_config.get("args", {})
     if not args.search_only:
         emit("\n[Phase 1] Building HNSW index...")
-        offline_metrics = build_index(
+        offline_metrics, _ = build_index(
             index_kind="HNSW",
             index_path=hnsw_path,
             dataset_spec=dataset_spec,
@@ -177,7 +177,7 @@ def run_omega(
             else "\n[Phase 1] Building OMEGA index + training model..."
         )
         emit(phase_message)
-        offline_metrics = build_index(
+        offline_metrics, _omega_collection = build_index(
             index_kind="OMEGA",
             index_path=omega_path,
             dataset_spec=dataset_spec,
