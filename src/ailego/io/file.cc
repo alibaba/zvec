@@ -769,9 +769,9 @@ void File::MemoryWarmup(void *addr, size_t len) {
 #if defined(_WIN64) || defined(_WIN32)
   typedef BOOL(WINAPI * PrefetchVirtualMemoryFn)(
       HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
-  static PrefetchVirtualMemoryFn pfn = reinterpret_cast<PrefetchVirtualMemoryFn>(
-      GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
-                     "PrefetchVirtualMemory"));
+  static PrefetchVirtualMemoryFn pfn =
+      reinterpret_cast<PrefetchVirtualMemoryFn>(GetProcAddress(
+          GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory"));
   if (pfn) {
     WIN32_MEMORY_RANGE_ENTRY entry;
     entry.VirtualAddress = addr;
