@@ -1026,6 +1026,11 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     for (level_t lvl = max_lvl; lvl >= 1; --lvl) {
       for (size_t idx = 0; idx < upper_nodes.size(); ++idx) {
         auto id = upper_nodes[idx];
+        auto it = upper_neighbor_index_->find(id);
+        if (it == upper_neighbor_index_->end()) continue;
+        auto meta =
+            reinterpret_cast<const UpperNeighborIndexMeta *>(&it->second);
+        if (lvl > static_cast<level_t>(meta->bits.level)) continue;
         auto neighbors = get_neighbors_typed(lvl, id);
         for (uint32_t i = 0; i < neighbors.size(); ++i) {
           auto nid = neighbors[i];
