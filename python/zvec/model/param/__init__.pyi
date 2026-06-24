@@ -7,13 +7,15 @@ from __future__ import annotations
 import collections
 import typing
 
-import _zvec.typing
+import zvec._zvec.typing
 
 __all__: list[str] = [
     "AddColumnOption",
     "AlterColumnOption",
     "CollectionOption",
     "FlatIndexParam",
+    "FtsIndexParam",
+    "FtsQueryParam",
     "HnswIndexParam",
     "HnswQueryParam",
     "HnswRabitqIndexParam",
@@ -159,8 +161,8 @@ class FlatIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
     ) -> None:
         """
         Constructs a FlatIndexParam instance.
@@ -219,10 +221,10 @@ class HnswIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         m: typing.SupportsInt = 50,
         ef_construction: typing.SupportsInt = 500,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
         use_contiguous_memory: bool = False,
     ) -> None: ...
     def __repr__(self) -> str: ...
@@ -363,7 +365,7 @@ class HnswRabitqIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         total_bits: typing.SupportsInt = 7,
         num_clusters: typing.SupportsInt = 16,
         m: typing.SupportsInt = 50,
@@ -491,11 +493,11 @@ class IVFIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         n_list: typing.SupportsInt = 10,
         n_iters: typing.SupportsInt = 10,
         use_soar: bool = False,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
     ) -> None:
         """
         Constructs an IVFIndexParam instance.
@@ -593,14 +595,14 @@ class VamanaIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         max_degree: typing.SupportsInt = 64,
         search_list_size: typing.SupportsInt = 100,
         alpha: typing.SupportsFloat = 1.2,
         saturate_graph: bool = False,
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -677,6 +679,107 @@ class VamanaQueryParam(QueryParam):
     def prefetch_lines(self) -> int:
         """int: Override of prefetch cache lines per vector (0=auto)."""
 
+class FtsIndexParam(IndexParam):
+    """
+
+    Parameters for configuring a full-text search (FTS) index.
+
+    Controls the tokenizer pipeline used during indexing and querying.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.FTS``.
+        tokenizer_name (str): Name of the tokenizer (e.g., "standard", "jieba").
+            Default is "standard".
+        filters (list[str]): List of token filter names applied after tokenization.
+            Default is ["lowercase"].
+        extra_params (str): Additional parameters passed to the tokenizer.
+            Default is "".
+
+    Examples:
+        >>> params = FtsIndexParam(tokenizer_name="jieba", filters=["lowercase"])
+        >>> print(params.tokenizer_name)
+        jieba
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        tokenizer_name: str = "standard",
+        filters: list[str] = ...,
+        extra_params: str = "",
+    ) -> None:
+        """
+        Constructs an FtsIndexParam instance.
+
+        Args:
+            tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
+            filters (list[str], optional): Token filter names. Defaults to ["lowercase"].
+            extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def tokenizer_name(self) -> str:
+        """
+        str: Name of the tokenizer.
+        """
+
+    @property
+    def filters(self) -> list[str]:
+        """
+        list[str]: Token filter names.
+        """
+
+    @property
+    def extra_params(self) -> str:
+        """
+        str: Additional tokenizer parameters.
+        """
+
+class FtsQueryParam(QueryParam):
+    """
+
+    Query parameters for full-text search (FTS) index.
+
+    Controls the default boolean operator used to combine adjacent bare terms
+    in a query string.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.FTS``.
+        default_operator (str): Default boolean operator for adjacent bare terms.
+            Supported values (case-insensitive): "OR" (default), "AND".
+
+    Examples:
+        >>> params = FtsQueryParam(default_operator="AND")
+        >>> print(params.default_operator)
+        AND
+    """
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        default_operator: str = "",
+    ) -> None:
+        """
+        Constructs an FtsQueryParam instance.
+
+        Args:
+            default_operator (str, optional): Default boolean operator for adjacent
+                bare terms. Supported: "OR", "AND". Defaults to "" (uses engine default).
+        """
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def default_operator(self) -> str:
+        """
+        str: Default boolean operator for bare terms.
+        """
+
 class IndexOption:
     """
 
@@ -734,7 +837,7 @@ class IndexParam:
         """
 
     @property
-    def type(self) -> _zvec.typing.IndexType:
+    def type(self) -> zvec._zvec.typing.IndexType:
         """
         IndexType: The type of the index.
         """
@@ -863,7 +966,7 @@ class QueryParam:
         IndexType: The type of index this query targets.
         """
     @property
-    def type(self) -> _zvec.typing.IndexType:
+    def type(self) -> zvec._zvec.typing.IndexType:
         """
         IndexType: The type of index this query targets.
         """
@@ -933,13 +1036,13 @@ class VectorIndexParam(IndexParam):
         """
 
     @property
-    def metric_type(self) -> _zvec.typing.MetricType:
+    def metric_type(self) -> zvec._zvec.typing.MetricType:
         """
         MetricType: Distance metric (e.g., IP, COSINE, L2).
         """
 
     @property
-    def quantize_type(self) -> _zvec.typing.QuantizeType:
+    def quantize_type(self) -> zvec._zvec.typing.QuantizeType:
         """
         QuantizeType: Vector quantization type (e.g., FP16, INT8).
         """

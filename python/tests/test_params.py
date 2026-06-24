@@ -40,7 +40,7 @@ from zvec import (
     VectorSchema,
 )
 
-from _zvec.param import _SearchQuery
+from zvec._zvec.param import _SearchQuery
 
 # ----------------------------
 # Invert Index Param Test Case

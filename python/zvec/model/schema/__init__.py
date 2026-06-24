@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from _zvec.schema import CollectionStats
+from zvec._zvec.schema import CollectionStats
 
 from .collection_schema import CollectionSchema
 from .field_schema import FieldSchema, VectorSchema

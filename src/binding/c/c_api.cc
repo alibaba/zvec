@@ -6122,6 +6122,34 @@ zvec_error_code_t zvec_sub_query_set_vamana_params(
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_sub_query_set_fts_params(
+    zvec_sub_query_t *query, zvec_fts_query_params_t *fts_params) {
+  if (!query || !fts_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Sub-query or FTS params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  auto *params_ptr = reinterpret_cast<zvec::FtsQueryParams *>(fts_params);
+  ptr->target_.query_params_.reset(params_ptr);
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_sub_query_set_fts(zvec_sub_query_t *query,
+                                         const zvec_fts_t *fts) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Sub-query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  if (!fts) {
+    ptr->target_.clause_ = zvec::VectorClause{};
+  } else {
+    ptr->target_.clause_ = *reinterpret_cast<const zvec::FtsClause *>(fts);
+  }
+  return ZVEC_OK;
+}
+
 // =============================================================================
 // Index Interface Implementation
 // =============================================================================

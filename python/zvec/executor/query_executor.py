@@ -16,8 +16,9 @@ from __future__ import annotations
 from typing import Optional, Union
 
 import numpy as np
-from _zvec import _Collection, _MultiQuery
-from _zvec.param import _Fts, _SearchQuery, _SubQuery
+
+from zvec._zvec import _Collection, _MultiQuery
+from zvec._zvec.param import _Fts, _SearchQuery, _SubQuery
 
 from ..extension import CallbackReRanker, ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
@@ -249,7 +250,7 @@ class QueryExecutor:
             vec_data = query.vector
         elif query.has_id():
             fetched = collection.Fetch([query.id])
-            doc = next(iter(fetched.values()))
+            doc = next(iter(fetched.values()), None)
             if not doc:
                 raise ValueError(f"Document with id '{query.id}' not found")
             vec_data = doc.get_any(vector_schema.name, vector_schema.data_type)
