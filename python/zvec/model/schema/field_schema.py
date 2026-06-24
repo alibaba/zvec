@@ -16,8 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
-from _zvec.schema import _FieldSchema
-
+from zvec._zvec.schema import _FieldSchema
 from zvec.model.param import (
     FlatIndexParam,
     FtsIndexParam,

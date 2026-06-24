@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from _zvec import _Doc
+from zvec._zvec import _Doc
 from zvec.model.convert import convert_to_py_doc, convert_to_cpp_doc
 from zvec import Doc, CollectionSchema, DataType, FieldSchema, VectorSchema
 

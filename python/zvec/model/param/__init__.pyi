@@ -7,7 +7,7 @@ from __future__ import annotations
 import collections
 import typing
 
-import _zvec.typing
+import zvec._zvec.typing
 
 __all__: list[str] = [
     "AddColumnOption",
@@ -164,8 +164,8 @@ class FlatIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
     ) -> None:
         """
@@ -227,10 +227,10 @@ class HnswIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         m: typing.SupportsInt = 50,
         ef_construction: typing.SupportsInt = 500,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
         use_contiguous_memory: bool = False,
         quantizer_param: QuantizerParam = ...,
     ) -> None: ...
@@ -372,7 +372,7 @@ class HnswRabitqIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         total_bits: typing.SupportsInt = 7,
         num_clusters: typing.SupportsInt = 16,
         m: typing.SupportsInt = 50,
@@ -500,11 +500,11 @@ class IVFIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         n_list: typing.SupportsInt = 10,
         n_iters: typing.SupportsInt = 10,
         use_soar: bool = False,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
     ) -> None:
         """
@@ -605,14 +605,14 @@ class VamanaIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         max_degree: typing.SupportsInt = 64,
         search_list_size: typing.SupportsInt = 100,
         alpha: typing.SupportsFloat = 1.2,
         saturate_graph: bool = False,
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -847,7 +847,7 @@ class IndexParam:
         """
 
     @property
-    def type(self) -> _zvec.typing.IndexType:
+    def type(self) -> zvec._zvec.typing.IndexType:
         """
         IndexType: The type of the index.
         """
@@ -976,7 +976,7 @@ class QueryParam:
         IndexType: The type of index this query targets.
         """
     @property
-    def type(self) -> _zvec.typing.IndexType:
+    def type(self) -> zvec._zvec.typing.IndexType:
         """
         IndexType: The type of index this query targets.
         """
@@ -1090,13 +1090,13 @@ class VectorIndexParam(IndexParam):
         """
 
     @property
-    def metric_type(self) -> _zvec.typing.MetricType:
+    def metric_type(self) -> zvec._zvec.typing.MetricType:
         """
         MetricType: Distance metric (e.g., IP, COSINE, L2).
         """
 
     @property
-    def quantize_type(self) -> _zvec.typing.QuantizeType:
+    def quantize_type(self) -> zvec._zvec.typing.QuantizeType:
         """
         QuantizeType: Vector quantization type (e.g., FP16, INT8).
         """

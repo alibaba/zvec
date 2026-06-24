@@ -7,8 +7,8 @@ from __future__ import annotations
 import collections.abc
 import typing
 
-import _zvec.param
-import _zvec.typing
+import zvec._zvec.param
+import zvec._zvec.typing
 
 from .collection_schema import CollectionSchema
 from .field_schema import FieldSchema, VectorSchema
@@ -85,20 +85,20 @@ class _FieldSchema:
     def __init__(
         self,
         name: str,
-        data_type: _zvec.typing.DataType,
+        data_type: zvec._zvec.typing.DataType,
         nullable: bool = False,
         dimension: typing.SupportsInt = 0,
-        index_param: _zvec.param.IndexParam = None,
+        index_param: zvec._zvec.param.IndexParam = None,
     ) -> None: ...
     def __ne__(self, arg0: _FieldSchema) -> bool: ...
     @property
-    def data_type(self) -> _zvec.typing.DataType: ...
+    def data_type(self) -> zvec._zvec.typing.DataType: ...
     @property
     def dimension(self) -> int: ...
     @property
     def index_param(self) -> typing.Any: ...
     @property
-    def index_type(self) -> _zvec.typing.IndexType: ...
+    def index_type(self) -> zvec._zvec.typing.IndexType: ...
     @property
     def is_dense_vector(self) -> bool: ...
     @property

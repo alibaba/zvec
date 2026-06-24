@@ -16,8 +16,9 @@ from __future__ import annotations
 from typing import Optional, Union
 
 import numpy as np
-from _zvec import _Collection, _MultiQuery
-from _zvec.param import _Fts, _SearchQuery, _SubQuery
+
+from zvec._zvec import _Collection, _MultiQuery
+from zvec._zvec.param import _Fts, _SearchQuery, _SubQuery
 
 from ..extension import CallbackReRanker, ReRanker, RrfReRanker, WeightedReRanker
 from ..model.convert import convert_to_py_doc
