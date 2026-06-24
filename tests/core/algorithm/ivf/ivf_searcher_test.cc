@@ -3257,6 +3257,268 @@ TEST_F(IVFSearcherTest, TestSameValue) {
   EXPECT_EQ(0, ret);
 }
 
+// Test: Builder with CONVERTER_CLASS produces index that auto-converts FP32
+// queries
+TEST_F(IVFSearcherTest, TestConverterClassEndToEnd) {
+  const float epsilon = 1e-2;
+
+  IVFBuilder builder;
+  auto build_params = params_;
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
+  build_params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+  build_params.set(PARAM_IVF_BUILDER_CONVERTER_CLASS, "HalfFloatConverter");
+  int ret = builder.init(index_meta_, build_params);
+  EXPECT_EQ(0, ret);
+
+  int total = 1000;
+  prepare_fp32_index_holder(0, total);
+  ret = builder.train(threads_, holder_);
+  ASSERT_EQ(0, ret);
+  ret = builder.build(threads_, holder_);
+  EXPECT_EQ(0, ret);
+
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  ret = dumper->create(index_path_);
+  EXPECT_EQ(0, ret);
+
+  ret = builder.dump(dumper);
+  EXPECT_EQ((size_t)total, builder.stats().built_count());
+  EXPECT_EQ((size_t)total, builder.stats().dumped_count());
+  EXPECT_EQ(0, dumper->close());
+
+  // Load and search with FP32 query - reformer should auto-convert
+  IVFSearcher searcher;
+  Params params;
+  params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+  params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+
+  ret = searcher.init(params);
+  EXPECT_EQ(0, ret);
+
+  IndexStorage::Pointer container =
+      IndexFactory::CreateStorage("MMapFileReadStorage");
+  EXPECT_TRUE(!!container);
+
+  Params container_params;
+  container_params.set("proxima.mmap_file.container.memory_warmup", true);
+  container->init(container_params);
+  ret = container->open(index_path_, false);
+  EXPECT_EQ(0, ret);
+
+  ret = searcher.load(container, IndexMetric::Pointer());
+  EXPECT_EQ(0, ret);
+
+  std::vector<float> query;
+  for (size_t i = 0; i < dimension_; ++i) {
+    query.push_back(-0.1f);
+  }
+
+  auto context = searcher.create_context();
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+
+  // The searcher should automatically apply reformer to convert FP32 query
+  // to FP16 before searching
+  {
+    size_t topk = 100;
+    context->set_topk(topk);
+    ret = searcher.search_bf_impl(query.data(), qmeta, context);
+    EXPECT_EQ(0, ret);
+
+    const IndexDocumentList &result = context->result(0);
+    EXPECT_EQ(topk, result.size());
+    // First result should be key 0 (closest to query -0.1)
+    for (size_t i = 0; i < topk; ++i) {
+      EXPECT_EQ((uint64_t)i, result[i].key());
+      EXPECT_NEAR((float)(0.01f * i + 0.1) * (0.01f * i + 0.1) * dimension_ /
+                      result[i].score(),
+                  1, epsilon);
+    }
+  }
+
+  // knn search
+  {
+    size_t topk = 100;
+    context->set_topk(topk);
+    ret = searcher.search_impl(query.data(), qmeta, context);
+    EXPECT_EQ(0, ret);
+
+    const IndexDocumentList &result = context->result(0);
+    EXPECT_EQ(topk, result.size());
+    for (size_t i = 0; i < topk; ++i) {
+      EXPECT_EQ((uint64_t)i, result[i].key());
+      EXPECT_NEAR((float)(0.01f * i + 0.1) * (0.01f * i + 0.1) * dimension_ /
+                      result[i].score(),
+                  1, epsilon);
+    }
+  }
+
+  ret = searcher.unload();
+  EXPECT_EQ(0, ret);
+}
+
+// Test: nprobe parameter overrides scan_ratio for centroid selection
+TEST_F(IVFSearcherTest, TestNprobeParameter) {
+  // Build index with 16 centroids, 1000 vectors
+  IVFBuilder builder;
+  Params build_params;
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "16");
+  build_params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+  dimension_ = 32;
+  index_meta_.set_meta(IndexMeta::DataType::DT_FP32, dimension_);
+
+  int ret = builder.init(index_meta_, build_params);
+  EXPECT_EQ(0, ret);
+
+  // Prepare random data so centroids get varying amount of vectors
+  MultiPassIndexHolder<IndexMeta::DataType::DT_FP32> *holder =
+      new MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>(dimension_);
+  std::srand(42);
+  for (size_t i = 0; i < 1000; ++i) {
+    NumericalVector<float> vec(dimension_);
+    for (size_t j = 0; j < dimension_; ++j) {
+      vec[j] = std::rand() % 1000 * 1.0f;
+    }
+    holder->emplace(i, vec);
+  }
+  holder_.reset(holder);
+
+  ret = builder.train(threads_, holder_);
+  ASSERT_EQ(0, ret);
+  ret = builder.build(threads_, holder_);
+  EXPECT_EQ(0, ret);
+
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  ret = dumper->create(index_path_);
+  EXPECT_EQ(0, ret);
+  ret = builder.dump(dumper);
+  EXPECT_EQ(0, dumper->close());
+
+  // Load searcher
+  IVFSearcher searcher;
+  Params search_params;
+  // scan_ratio=0.1 → selects ~2 centroids out of 16
+  search_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
+  search_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+  ret = searcher.init(search_params);
+  EXPECT_EQ(0, ret);
+
+  IndexStorage::Pointer container =
+      IndexFactory::CreateStorage("MMapFileReadStorage");
+  EXPECT_TRUE(!!container);
+  Params container_params;
+  container_params.set("proxima.mmap_file.container.memory_warmup", true);
+  container->init(container_params);
+  ret = container->open(index_path_, false);
+  EXPECT_EQ(0, ret);
+  ret = searcher.load(container, IndexMetric::Pointer());
+  EXPECT_EQ(0, ret);
+
+  std::vector<float> query(dimension_, 500.0f);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+
+  auto context = searcher.create_context();
+  size_t topk = 10;
+  context->set_topk(topk);
+
+  // Search with scan_ratio only (few centroids)
+  ret = searcher.search_impl(query.data(), qmeta, context);
+  EXPECT_EQ(0, ret);
+  const IndexDocumentList &result_low = context->result(0);
+  size_t found_low = result_low.size();
+  EXPECT_GT(found_low, 0u);
+
+  // Now update context with nprobe=16 (all centroids)
+  Params nprobe_params;
+  nprobe_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
+  nprobe_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)16);
+  nprobe_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+  ret = context->update(nprobe_params);
+  EXPECT_EQ(0, ret);
+
+  context->set_topk(topk);
+  ret = searcher.search_impl(query.data(), qmeta, context);
+  EXPECT_EQ(0, ret);
+  const IndexDocumentList &result_high = context->result(0);
+  size_t found_high = result_high.size();
+  EXPECT_EQ(found_high, topk);
+
+  // With more centroids searched, the best score should be <= the score
+  // from fewer centroids (at least as good)
+  EXPECT_LE(result_high[0].score(), result_low[0].score());
+
+  ret = searcher.unload();
+  EXPECT_EQ(0, ret);
+}
+
+// Test: nprobe=1 should only search 1 centroid
+TEST_F(IVFSearcherTest, TestNprobeOne) {
+  // Build index with many centroids
+  IVFBuilder builder;
+  Params build_params;
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "8");
+  build_params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+
+  int ret = builder.init(index_meta_, build_params);
+  EXPECT_EQ(0, ret);
+
+  prepare_index_holder(0, 1000);
+  ret = builder.train(threads_, holder_);
+  ASSERT_EQ(0, ret);
+  ret = builder.build(threads_, holder_);
+  EXPECT_EQ(0, ret);
+
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  ret = dumper->create(index_path_);
+  EXPECT_EQ(0, ret);
+  ret = builder.dump(dumper);
+  EXPECT_EQ(0, dumper->close());
+
+  IVFSearcher searcher;
+  Params search_params;
+  search_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+  search_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+  ret = searcher.init(search_params);
+  EXPECT_EQ(0, ret);
+
+  IndexStorage::Pointer container =
+      IndexFactory::CreateStorage("MMapFileReadStorage");
+  EXPECT_TRUE(!!container);
+  Params container_params;
+  container_params.set("proxima.mmap_file.container.memory_warmup", true);
+  container->init(container_params);
+  ret = container->open(index_path_, false);
+  EXPECT_EQ(0, ret);
+  ret = searcher.load(container, IndexMetric::Pointer());
+  EXPECT_EQ(0, ret);
+
+  std::vector<float> query(dimension_, 999.0f);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+
+  auto context = searcher.create_context();
+
+  // Update with nprobe=1, so only 1 centroid is selected
+  Params nprobe_params;
+  nprobe_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+  nprobe_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)1);
+  nprobe_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+  ret = context->update(nprobe_params);
+  EXPECT_EQ(0, ret);
+
+  size_t topk = 1000;
+  context->set_topk(topk);
+  ret = searcher.search_impl(query.data(), qmeta, context);
+  EXPECT_EQ(0, ret);
+
+  const IndexDocumentList &result = context->result(0);
+  // With nprobe=1, we should get fewer results than total since only
+  // 1 out of 8 centroids is searched
+  EXPECT_GT(result.size(), 0u);
+  EXPECT_LT(result.size(), 1000u);
+
+  ret = searcher.unload();
+  EXPECT_EQ(0, ret);
+}
+
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif
