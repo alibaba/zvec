@@ -33,13 +33,6 @@ int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   proxima_index_params_.set(core::PARAM_IVF_BUILDER_CENTROID_COUNT,
                             param_.nlist);
 
-  if (converter_) {
-    proxima_index_params_.set(core::PARAM_IVF_BUILDER_CONVERTER_CLASS,
-                              converter_->name());
-    proxima_index_params_.set(core::PARAM_IVF_BUILDER_CONVERTER_PARAMS,
-                              proxima_index_meta_.converter_params());
-  }
-
   // TODO: add_vector_with_id & fetch_by_id don't rely on this param
   builder_ = core::IndexFactory::CreateBuilder("IVFBuilder");
   streamer_ = core::IndexFactory::CreateStreamer("IVFStreamer");
@@ -54,9 +47,7 @@ int IVFIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   }
   IndexMeta real_meta;
   if (converter_) {
-    real_meta = proxima_index_meta_;
-    real_meta.set_meta(input_vector_meta_.data_type(),
-                       input_vector_meta_.dimension());
+    real_meta = converter_->meta();
   } else {
     real_meta = proxima_index_meta_;
   }
@@ -138,7 +129,7 @@ int IVFIndex::Open(const std::string &file_path,
 
 int IVFIndex::GenerateHolder() {
   return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
-                              nullptr, &holder_);
+                              converter_, &holder_);
 }
 
 int IVFIndex::Add(const VectorData &vector, uint32_t doc_id) {
