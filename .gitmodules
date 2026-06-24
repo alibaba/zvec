@@ -1,54 +1,64 @@
 [submodule "thirdparty/googletest/googletest-1.10.0"]
 	path = thirdparty/googletest/googletest-1.10.0
 	url = https://github.com/google/googletest.git
+	ignore = dirty
 [submodule "thirdparty/sparsehash/sparsehash-2.0.4"]
 	path = thirdparty/sparsehash/sparsehash-2.0.4
 	url = https://github.com/sparsehash/sparsehash.git
-	ignore = untracked
+	ignore = dirty
 [submodule "thirdparty/gflags/gflags-2.2.2"]
 	path = thirdparty/gflags/gflags-2.2.2
 	url = https://github.com/gflags/gflags.git
+	ignore = dirty
 [submodule "thirdparty/rocksdb/rocksdb-8.1.1"]
 	path = thirdparty/rocksdb/rocksdb-8.1.1
 	url = https://github.com/facebook/rocksdb.git
-	ignore = all
+	ignore = dirty
 [submodule "thirdparty/yaml-cpp/yaml-cpp-0.6.3"]
 	path = thirdparty/yaml-cpp/yaml-cpp-0.6.3
 	url = https://github.com/jbeder/yaml-cpp.git
+	ignore = dirty
 [submodule "thirdparty/arrow/apache-arrow-21.0.0"]
 	path = thirdparty/arrow/apache-arrow-21.0.0
 	url = https://github.com/apache/arrow.git
-	ignore = all
+	ignore = dirty
 [submodule "thirdparty/glog/glog-0.5.0"]
 	path = thirdparty/glog/glog-0.5.0
 	url = https://github.com/google/glog.git
-	ignore = all
+	ignore = dirty
 [submodule "thirdparty/protobuf/protobuf-3.21.12"]
 	path = thirdparty/protobuf/protobuf-3.21.12
 	url = https://github.com/protocolbuffers/protobuf.git
+	ignore = dirty
 [submodule "thirdparty/lz4/lz4-1.9.4"]
 	path = thirdparty/lz4/lz4-1.9.4
 	url = https://github.com/lz4/lz4.git
+	ignore = dirty
 [submodule "thirdparty/antlr/antlr4"]
 	path = thirdparty/antlr/antlr4
 	url = https://github.com/antlr/antlr4.git
-	ignore = all
+	ignore = dirty
 [submodule "thirdparty/magic_enum/magic_enum-0.9.7"]
 	path = thirdparty/magic_enum/magic_enum-0.9.7
 	url = https://github.com/Neargye/magic_enum.git
-	ignore = all
+	ignore = dirty
 [submodule "thirdparty/RaBitQ-Library/RaBitQ-Library-0.1"]
 	path = thirdparty/RaBitQ-Library/RaBitQ-Library-0.1
 	url = https://github.com/VectorDB-NTU/RaBitQ-Library.git
+	ignore = dirty
 [submodule "thirdparty/aio/libaio-0.3"]
 	path = thirdparty/aio/libaio-0.3
 	url = https://github.com/yugabyte/libaio.git
+	ignore = dirty
 [submodule "thirdparty/cppjieba/cppjieba-5.6.7"]
 	path = thirdparty/cppjieba/cppjieba-5.6.7
 	url = https://github.com/yanyiwu/cppjieba.git
+	ignore = dirty
 [submodule "thirdparty/FastPFOR/FastPFOR-0.4.0"]
 	path = thirdparty/FastPFOR/FastPFOR-0.4.0
 	url = https://github.com/fast-pack/FastPFOR.git
+	ignore = dirty
 [submodule "thirdparty/limonp/limonp-v1.0.2"]
 	path = thirdparty/limonp/limonp-v1.0.2
 	url = https://github.com/yanyiwu/limonp.git
+	ignore = dirty
