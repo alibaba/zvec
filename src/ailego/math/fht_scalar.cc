@@ -59,5 +59,11 @@ void fht_inplace_scalar(float *data, size_t n) {
   }
 }
 
+void fht_vec_rescale(float *data, size_t n, float factor) {
+  for (size_t i = 0; i < n; ++i) {
+    data[i] *= factor;
+  }
+}
+
 }  // namespace ailego
 }  // namespace zvec
