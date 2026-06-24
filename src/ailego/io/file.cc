@@ -762,36 +762,17 @@ static inline int getpagesize(void) {
 #endif
 
 void File::MemoryWarmup(void *addr, size_t len) {
-  if (!addr || !len) {
-    return;
-  }
-
-#if defined(_WIN64) || defined(_WIN32)
-  typedef BOOL(WINAPI * PrefetchVirtualMemoryFn)(
-      HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
-  static PrefetchVirtualMemoryFn pfn =
-      reinterpret_cast<PrefetchVirtualMemoryFn>(GetProcAddress(
-          GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory"));
-  if (pfn) {
-    WIN32_MEMORY_RANGE_ENTRY entry;
-    entry.VirtualAddress = addr;
-    entry.NumberOfBytes = len;
-    if (pfn(GetCurrentProcess(), 1, &entry, 0)) {
-      return;
-    }
-  }
-#elif defined(__linux__) || defined(__linux)
-  madvise(addr, len, MADV_WILLNEED);
-#endif
-
   static int page_size = getpagesize();
-  uint8_t *p = reinterpret_cast<uint8_t *>(addr);
-  uint8_t *end = p + len;
-  volatile uint8_t tmp = 0;
 
-  while (p < end) {
-    tmp ^= *p;
-    p += page_size;
+  if (addr && len) {
+    uint8_t *p = reinterpret_cast<uint8_t *>(addr);
+    uint8_t *end = p + len;
+    volatile uint8_t tmp = 0;
+
+    while (p < end) {
+      tmp ^= *p;
+      p += page_size;
+    }
   }
 }
 
