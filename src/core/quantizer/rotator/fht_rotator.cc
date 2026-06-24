@@ -20,11 +20,25 @@
 namespace zvec {
 namespace core {
 
+namespace {
+
+//! Largest power of 2 <= n (e.g. floor_pow2(97) = 64, floor_pow2(128) = 128).
+size_t floor_pow2(size_t n) {
+  if (n == 0) return 0;
+  size_t p = 1;
+  while (p * 2 <= n) p *= 2;
+  return p;
+}
+
+}  // anonymous namespace
+
 // ============================================================================
-// FhtKacRotatorImpl method implementations
+// FhtRotator method implementations
 // ============================================================================
 
-void FhtKacRotatorImpl::init(size_t dim) {
+void FhtRotator::init_impl(size_t dim) {
+  trunc_dim = floor_pow2(dim);
+  fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
   flip.resize(4 * dim / kByteLen);
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -32,7 +46,8 @@ void FhtKacRotatorImpl::init(size_t dim) {
   for (auto &b : flip) b = static_cast<uint8_t>(dist(gen));
 }
 
-void FhtKacRotatorImpl::rotate(const float *in, float *out, size_t dim) const {
+void FhtRotator::rotate(const float *in, float *out) const {
+  const size_t dim = dimension_;
   std::memcpy(out, in, sizeof(float) * dim);
 
   if (trunc_dim == dim) {
@@ -88,8 +103,8 @@ void FhtKacRotatorImpl::rotate(const float *in, float *out, size_t dim) const {
   ailego::fht_vec_rescale(out, dim, 0.25f);
 }
 
-void FhtKacRotatorImpl::unrotate(const float *in, float *out,
-                                 size_t dim) const {
+void FhtRotator::unrotate(const float *in, float *out) const {
+  const size_t dim = dimension_;
   // Copy input into working buffer
   std::vector<float> data(in, in + dim);
 
@@ -140,15 +155,25 @@ void FhtKacRotatorImpl::unrotate(const float *in, float *out,
   std::memcpy(out, data.data(), dim * sizeof(float));
 }
 
-void FhtKacRotatorImpl::save(char *data) const {
+RotatorType FhtRotator::rotator_type() const {
+  return RotatorType::FhtKac;
+}
+
+void FhtRotator::save_blob(char *data) const {
   std::memcpy(data, flip.data(), flip.size());
 }
 
-void FhtKacRotatorImpl::load(const char *data) {
+void FhtRotator::load_blob(const char *data) {
+  // Recompute derived fields from dimension_ (init_impl is not called
+  // during open, so trunc_dim/fac must be restored here)
+  trunc_dim = floor_pow2(dimension_);
+  fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
+  // Load flip data
+  flip.resize(4 * dimension_ / kByteLen);
   std::memcpy(flip.data(), data, flip.size());
 }
 
-size_t FhtKacRotatorImpl::dump_bytes() const {
+size_t FhtRotator::blob_bytes() const {
   return flip.size();
 }
 

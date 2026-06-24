@@ -57,17 +57,16 @@ class CosineReformer : public IndexReformer {
   //! Load index from container
   //! Auto-detects rotation by checking for rotator segment in storage.
   int load(IndexStorage::Pointer storage) override {
-    if (enable_rotate_ || storage->get(RECORD_ROTATOR_SEG_ID)) {
-      rotator_ = std::make_shared<RecordRotator>();
-      int ret = rotator_->open(storage);
+    if (enable_rotate_ || storage->get(ROTATOR_SEG_ID)) {
+      std::unique_ptr<Rotator> rotator_ptr;
+      int ret = Rotator::open(&rotator_ptr, storage);
       if (ret != 0) {
         if (enable_rotate_) {
           LOG_ERROR("CosineReformer: load rotator failed, ret=%d", ret);
-          rotator_.reset();
           return ret;
         }
-        rotator_.reset();
       } else {
+        rotator_ = std::move(rotator_ptr);
         enable_rotate_ = true;
         LOG_DEBUG("CosineReformer: rotator auto-loaded, dim=%zu",
                   rotator_->dimension());
@@ -312,7 +311,7 @@ class CosineReformer : public IndexReformer {
   IndexMeta::DataType original_type_{IndexMeta::DataType::DT_UNDEFINED};
   IndexMeta::DataType dst_type_{IndexMeta::DataType::DT_UNDEFINED};
   bool enable_rotate_{false};
-  std::shared_ptr<RecordRotator> rotator_{};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineNormalizeReformer, CosineReformer,

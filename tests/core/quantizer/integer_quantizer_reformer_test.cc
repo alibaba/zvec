@@ -827,11 +827,10 @@ TEST(IntegerReformer, Int4InitConverterWithTrainedParams) {
 }
 
 // Test FhtKac rotator (dim=200, 4-aligned, non-power-of-2 kacs_walk path)
-TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim200) {
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim200) {
   const size_t dim = 200;
-  RecordRotator rotator;
-  rotator.init(dim);
-  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+  auto rotator = Rotator::create(dim);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
@@ -840,10 +839,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim200) {
   for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
 
   std::vector<float> rotated(dim);
-  rotator.rotate(original.data(), rotated.data());
+  rotator->rotate(original.data(), rotated.data());
 
   std::vector<float> recovered(dim);
-  rotator.unrotate(rotated.data(), recovered.data());
+  rotator->unrotate(rotated.data(), recovered.data());
 
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)
@@ -853,11 +852,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim200) {
 }
 
 // Test FhtKac rotator (dim=96, 32-aligned but not 64-aligned, kacs_walk path)
-TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim96) {
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim96) {
   const size_t dim = 96;
-  RecordRotator rotator;
-  rotator.init(dim);
-  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+  auto rotator = Rotator::create(dim);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
@@ -866,10 +864,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim96) {
   for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
 
   std::vector<float> rotated(dim);
-  rotator.rotate(original.data(), rotated.data());
+  rotator->rotate(original.data(), rotated.data());
 
   std::vector<float> recovered(dim);
-  rotator.unrotate(rotated.data(), recovered.data());
+  rotator->unrotate(rotated.data(), recovered.data());
 
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)
@@ -879,11 +877,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim96) {
 }
 
 // Test FhtKac rotator (dim=768, real-world embedding dimension, kacs_walk)
-TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim768) {
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim768) {
   const size_t dim = 768;
-  RecordRotator rotator;
-  rotator.init(dim);
-  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+  auto rotator = Rotator::create(dim);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
@@ -892,10 +889,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim768) {
   for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
 
   std::vector<float> rotated(dim);
-  rotator.rotate(original.data(), rotated.data());
+  rotator->rotate(original.data(), rotated.data());
 
   std::vector<float> recovered(dim);
-  rotator.unrotate(rotated.data(), recovered.data());
+  rotator->unrotate(rotated.data(), recovered.data());
 
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)
@@ -905,11 +902,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim768) {
 }
 
 // Test FhtKac rotator (dim=128, power-of-2, pure FHT path)
-TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim128) {
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim128) {
   const size_t dim = 128;
-  RecordRotator rotator;
-  rotator.init(dim);
-  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+  auto rotator = Rotator::create(dim);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
@@ -918,10 +914,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim128) {
   for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
 
   std::vector<float> rotated(dim);
-  rotator.rotate(original.data(), rotated.data());
+  rotator->rotate(original.data(), rotated.data());
 
   std::vector<float> recovered(dim);
-  rotator.unrotate(rotated.data(), recovered.data());
+  rotator->unrotate(rotated.data(), recovered.data());
 
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)
@@ -931,11 +927,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim128) {
 }
 
 // Test FhtKac rotator (dim=97, odd, non-4-aligned, non-power-of-2 kacs_walk)
-TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim97) {
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim97) {
   const size_t dim = 97;
-  RecordRotator rotator;
-  rotator.init(dim);
-  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+  auto rotator = Rotator::create(dim);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
@@ -944,10 +939,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim97) {
   for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
 
   std::vector<float> rotated(dim);
-  rotator.rotate(original.data(), rotated.data());
+  rotator->rotate(original.data(), rotated.data());
 
   std::vector<float> recovered(dim);
-  rotator.unrotate(rotated.data(), recovered.data());
+  rotator->unrotate(rotated.data(), recovered.data());
 
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)
@@ -957,11 +952,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim97) {
 }
 
 // Test FhtKac rotator (dim=100, non-4-aligned, non-power-of-2 kacs_walk)
-TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim100) {
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim100) {
   const size_t dim = 100;
-  RecordRotator rotator;
-  rotator.init(dim);
-  EXPECT_EQ(rotator.rotator_type(), RecordRotatorType::FhtKac);
+  auto rotator = Rotator::create(dim);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
@@ -970,10 +964,10 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim100) {
   for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
 
   std::vector<float> rotated(dim);
-  rotator.rotate(original.data(), rotated.data());
+  rotator->rotate(original.data(), rotated.data());
 
   std::vector<float> recovered(dim);
-  rotator.unrotate(rotated.data(), recovered.data());
+  rotator->unrotate(rotated.data(), recovered.data());
 
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)
@@ -984,23 +978,22 @@ TEST(RecordRotatorTest, RotateUnrotateFhtKac_Dim100) {
 
 // Test dump/open roundtrip: serialize then deserialize, verify rotate output
 // matches.
-TEST(RecordRotatorTest, DumpOpenRoundtrip) {
+TEST(RotatorTest, DumpOpenRoundtrip) {
   const std::string test_dir = "record_rotator_dump_test_dir/";
   zvec::test_util::RemoveTestPath(test_dir);
 
   const size_t dim = 128;
 
   // Build and dump original rotator
-  RecordRotator original;
-  original.init(dim);
-  EXPECT_EQ(original.rotator_type(), RecordRotatorType::FhtKac);
+  auto original = Rotator::create(dim);
+  EXPECT_EQ(original->rotator_type(), RotatorType::FhtKac);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(storage, nullptr);
   zvec::ailego::Params stg_params;
   ASSERT_EQ(0, storage->init(stg_params));
   ASSERT_EQ(0, storage->open(test_dir + "rotator.index", true));
-  ASSERT_EQ(0, original.dump(storage));
+  ASSERT_EQ(0, original->dump(storage));
 
   // Close and reopen storage
   storage.reset();
@@ -1011,13 +1004,13 @@ TEST(RecordRotatorTest, DumpOpenRoundtrip) {
   ASSERT_EQ(0, storage2->open(test_dir + "rotator.index", false));
 
   // Load rotator from storage
-  RecordRotator loaded;
-  ASSERT_EQ(0, loaded.open(storage2));
+  std::unique_ptr<Rotator> loaded;
+  ASSERT_EQ(0, Rotator::open(&loaded, storage2));
 
   // Verify metadata
-  EXPECT_EQ(original.rotator_type(), loaded.rotator_type());
-  EXPECT_EQ(original.dimension(), loaded.dimension());
-  EXPECT_TRUE(loaded.initialized());
+  EXPECT_EQ(original->rotator_type(), loaded->rotator_type());
+  EXPECT_EQ(original->dimension(), loaded->dimension());
+  EXPECT_TRUE(loaded->initialized());
 
   // Verify rotate output matches
   std::mt19937 gen(42);
@@ -1025,8 +1018,8 @@ TEST(RecordRotatorTest, DumpOpenRoundtrip) {
   std::vector<float> vec(dim);
   for (size_t j = 0; j < dim; ++j) vec[j] = dist(gen);
 
-  auto rotated_orig = original.rotate(vec.data());
-  auto rotated_loaded = loaded.rotate(vec.data());
+  auto rotated_orig = original->rotate(vec.data());
+  auto rotated_loaded = loaded->rotate(vec.data());
 
   float max_err = 0.0f;
   for (size_t j = 0; j < dim; ++j)

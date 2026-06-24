@@ -24,108 +24,127 @@ namespace zvec {
 namespace core {
 
 //! Segment ID used when dumping/loading the rotator data
-inline const std::string RECORD_ROTATOR_SEG_ID{"enable_rotate"};
+inline const std::string ROTATOR_SEG_ID{"enable_rotate"};
 
-//! Rotator type exposed without rabitqlib dependency
-enum class RecordRotatorType : uint8_t {
+//! Rotator type
+enum class RotatorType : uint8_t {
   FhtKac = 0,  //!< O(d log d) FHT-based Kac random rotation (default)
   Matrix = 1,  //!< O(d^2) explicit random matrix rotation
 };
 
-/*! RecordRotator provides per-vector rotation without external dependencies.
+// Forward declarations for derived classes
+class FhtRotator;
+class MatrixRotator;
+
+/*! Rotator provides per-vector rotation without external dependencies.
  *
- * All rotation algorithms are implemented inline (FHT-based Kac walk and
- * explicit random matrix), so no rabitqlib headers are required.
+ * Abstract base class for rotation algorithms.  Use the static factory
+ * methods to create instances:
+ *  - create()      — build a new rotator from scratch
+ *  - open()        — load from storage (auto-detects type from header)
+ *  - load_matrix() — load a user-specified rotation matrix
  *
- * Auto-selects the rotation algorithm based on dimension alignment:
- *  - dimension % 4 == 0  -> FhtKac  (O(d log d), with scalar tails)
- *  - otherwise            -> Matrix  (O(d^2), no alignment requirement)
+ * Currently FhtRotator (O(d log d)) is the default and supports any
+ * dimension.  MatrixRotator (O(d^2)) is retained for future use.
  *
  * Rotation preserves dimension: output size == input size (no padding).
- *
- * Used by IntegerStreamingConverter/Reformer and CosineConverter/Reformer
- * when enable_rotate is true.
  */
-class RecordRotator {
+class Rotator {
  public:
-  RecordRotator();
-  ~RecordRotator();
+  virtual ~Rotator() = default;
 
-  //! Move-only (pimpl with unique_ptr)
-  RecordRotator(RecordRotator &&) noexcept;
-  RecordRotator &operator=(RecordRotator &&) noexcept;
-  RecordRotator(const RecordRotator &) = delete;
-  RecordRotator &operator=(const RecordRotator &) = delete;
+  // Static factories ---------------------------------------------------------
 
-  //! Initialize the rotator.
-  //! Auto-selects FhtKac when dimension is 4-aligned, else falls back to
-  //! Matrix.  The @p rotator_type parameter can force Matrix explicitly.
+  //! Create and initialize a new rotator.
   //! @param dimension     vector dimension (input and output size)
-  //! @param rotator_type  rotation algorithm (default: FhtKac, auto-degrades
-  //!                      to Matrix when dimension is not 4-aligned)
-  void init(size_t dimension,
-            RecordRotatorType rotator_type = RecordRotatorType::FhtKac);
+  //! @param rotator_type  rotation algorithm (default: FhtKac)
+  static std::unique_ptr<Rotator> create(
+      size_t dimension, RotatorType rotator_type = RotatorType::FhtKac);
+
+  //! Open a rotator from an IndexStorage segment (self-describing, no init
+  //! needed).  Parses header to get type/dimension, then reconstructs the
+  //! appropriate derived class.
+  //! @param out      on success, stores the rotator; on failure, nullptr
+  //! @param storage  index storage
+  //! @param seg_id   segment identifier
+  //! @return 0 on success, error code on failure
+  static int open(std::unique_ptr<Rotator> *out, IndexStorage::Pointer storage,
+                  const std::string &seg_id = ROTATOR_SEG_ID);
+
+  //! Load a user-specified rotation matrix (always creates MatrixRotator).
+  //! @param matrix    row-major square matrix of shape dimension x dimension
+  //! @param dimension vector dimension
+  static std::unique_ptr<Rotator> load_matrix(const float *matrix,
+                                              size_t dimension);
+
+  // Virtual interface --------------------------------------------------------
 
   //! Rotate a single vector
-  //! @param in   input vector of size >= dimension
-  //! @param out  output buffer of size >= dimension
-  void rotate(const float *in, float *out) const;
-
-  //! Rotate a single vector into a managed buffer
-  //! @param in  input vector of size >= dimension
-  //! @return    vector<float> of size dimension containing rotated result
-  std::vector<float> rotate(const float *in) const;
+  virtual void rotate(const float *in, float *out) const = 0;
 
   //! Inverse-rotate a single vector (from rotated space back to original)
-  //! @param in   input vector of size >= dimension (rotated vector)
-  //! @param out  output buffer of size >= dimension (original space)
-  void unrotate(const float *in, float *out) const;
+  virtual void unrotate(const float *in, float *out) const = 0;
+
+  //! Return the rotator type
+  virtual RotatorType rotator_type() const = 0;
+
+  // Non-virtual public methods ----------------------------------------------
+
+  //! Rotate a single vector into a managed buffer
+  std::vector<float> rotate(const float *in) const;
 
   //! Inverse-rotate a single vector into a managed buffer
-  //! @param in  input vector of size >= dimension (rotated vector)
-  //! @return    vector<float> of size dimension containing inverse-rotated
-  //! result
   std::vector<float> unrotate(const float *in) const;
 
   //! Return the serialized size of the rotator in bytes (header + blob)
   size_t dump_bytes() const;
 
   //! Dump the rotator to an IndexStorage as a named segment.
-  //! Same self-describing format as the dumper variant.
   int dump(const IndexStorage::Pointer &storage,
-           const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
+           const std::string &seg_id = ROTATOR_SEG_ID) const;
 
   //! Dump the rotator to an IndexDumper as a named segment.
-  //! Format: [RotatorSerHeader (24B): magic|version|rotator_type|in_dim|
+  //! Format: [Header (24B): magic|version|rotator_type|in_dim|
   //!          out_dim|payload_size|reserved] [payload blob]
   //! Appends padding for 32-byte alignment.
   int dump(const IndexDumper::Pointer &dumper,
-           const std::string &seg_id = RECORD_ROTATOR_SEG_ID) const;
-
-  //! Open the rotator from an IndexStorage segment (self-describing, no init
-  //! needed). Parses header to get type/dimension, then reconstructs the
-  //! rotator.
-  int open(IndexStorage::Pointer storage,
-           const std::string &seg_id = RECORD_ROTATOR_SEG_ID);
-
-  //! Load a user-specified rotation matrix.
-  //! Always uses MatrixRotator internally.
-  //! @param matrix       row-major square matrix of shape dimension x dimension
-  //! @param dimension    vector dimension
-  int load(const float *matrix, size_t dimension);
+           const std::string &seg_id = ROTATOR_SEG_ID) const;
 
   //! Return the vector dimension
-  size_t dimension() const;
-
-  //! Return the rotator type
-  RecordRotatorType rotator_type() const;
+  size_t dimension() const {
+    return dimension_;
+  }
 
   //! Check if the rotator is initialized
-  bool initialized() const;
+  bool initialized() const {
+    return initialized_;
+  }
 
- private:
-  struct Impl;
-  std::unique_ptr<Impl> impl_;
+ protected:
+  // Protected virtuals — implemented by derived classes ---------------------
+
+  //! Initialize the rotator's internal state for the given dimension.
+  virtual void init_impl(size_t dim) = 0;
+
+  //! Return the serialized blob size (without header)
+  virtual size_t blob_bytes() const = 0;
+
+  //! Write the payload blob to the given buffer
+  virtual void save_blob(char *data) const = 0;
+
+  //! Read the payload blob from the given buffer
+  virtual void load_blob(const char *data) = 0;
+
+  // Protected members --------------------------------------------------------
+
+  size_t dimension_{0};
+  bool initialized_{false};
+
+  // Serialization constants (shared by dump/open)
+  static constexpr size_t kHeaderSize = 24;
+  static constexpr size_t kLegacyHeaderSize = 12;
+  static constexpr uint32_t kMagic = 0x52544F52;  // "ROTR"
+  static constexpr uint16_t kVersion = 1;
 };
 
 }  // namespace core

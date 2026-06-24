@@ -394,8 +394,7 @@ class IntegerStreamingConverter : public IndexConverter {
 
     // Create rotator if rotation is enabled
     if (enable_rotate_) {
-      rotator_ = std::make_shared<RecordRotator>();
-      rotator_->init(index_meta.dimension());
+      rotator_ = Rotator::create(index_meta.dimension());
       LOG_DEBUG("IntegerStreamingConverter: rotation enabled, dim=%zu",
                 static_cast<size_t>(index_meta.dimension()));
     }
@@ -564,7 +563,7 @@ class IntegerStreamingConverter : public IndexConverter {
     IntegerStreamingConverterHolder(IndexHolder::Pointer front,
                                     IndexMeta::DataType tp,
                                     bool enable_normalize, bool is_euclidean,
-                                    std::shared_ptr<RecordRotator> rotator)
+                                    std::shared_ptr<Rotator> rotator)
         : front_(std::move(front)),
           data_type_(tp),
           dimension_(front_->dimension()),
@@ -613,7 +612,7 @@ class IntegerStreamingConverter : public IndexConverter {
     uint32_t dimension_{0};
     bool enable_normalize_{false};
     bool is_euclidean_{false};
-    std::shared_ptr<RecordRotator> rotator_{};
+    std::shared_ptr<Rotator> rotator_{};
   };
 
   static size_t ExtraDimension(IndexMeta::DataType type) {
@@ -633,7 +632,7 @@ class IntegerStreamingConverter : public IndexConverter {
   bool enable_normalize_{false};
   bool enable_rotate_{false};
   bool is_euclidean_{false};
-  std::shared_ptr<RecordRotator> rotator_{};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(

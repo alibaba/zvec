@@ -111,7 +111,7 @@ void householder_qr(const float *A_in, float *q, size_t dim) {
 
 }  // anonymous namespace
 
-void MatrixRotatorImpl::init(size_t dim) {
+void MatrixRotator::init_impl(size_t dim) {
   // Generate dim x dim random Gaussian matrix
   std::vector<float> rand_mat(dim * dim);
   random_gaussian_matrix(rand_mat.data(), dim);
@@ -121,47 +121,56 @@ void MatrixRotatorImpl::init(size_t dim) {
   householder_qr(rand_mat.data(), Q.data(), dim);
 
   // Store Q^T (transpose) as the rotation matrix
-  matrix.resize(dim * dim);
+  matrix_.resize(dim * dim);
   for (size_t i = 0; i < dim; ++i) {
     for (size_t j = 0; j < dim; ++j) {
-      matrix[j * dim + i] = Q[i * dim + j];
+      matrix_[j * dim + i] = Q[i * dim + j];
     }
   }
 }
 
-void MatrixRotatorImpl::rotate(const float *in, float *out, size_t dim) const {
-  // out = in * matrix  (1 x dim) * (dim x dim) -> (1 x dim)
+void MatrixRotator::rotate(const float *in, float *out) const {
+  const size_t dim = dimension_;
+  // out = in * matrix_  (1 x dim) * (dim x dim) -> (1 x dim)
   for (size_t j = 0; j < dim; ++j) {
     float sum = 0.0f;
     for (size_t i = 0; i < dim; ++i) {
-      sum += in[i] * matrix[i * dim + j];
+      sum += in[i] * matrix_[i * dim + j];
     }
     out[j] = sum;
   }
 }
 
-void MatrixRotatorImpl::unrotate(const float *in, float *out,
-                                 size_t dim) const {
-  // out = in * matrix^T  (1 x dim) * (dim x dim)^T -> (1 x dim)
+void MatrixRotator::unrotate(const float *in, float *out) const {
+  const size_t dim = dimension_;
+  // out = in * matrix_^T  (1 x dim) * (dim x dim)^T -> (1 x dim)
   for (size_t j = 0; j < dim; ++j) {
     float sum = 0.0f;
     for (size_t i = 0; i < dim; ++i) {
-      sum += in[i] * matrix[j * dim + i];
+      sum += in[i] * matrix_[j * dim + i];
     }
     out[j] = sum;
   }
 }
 
-void MatrixRotatorImpl::save(char *data) const {
-  std::memcpy(data, matrix.data(), matrix.size() * sizeof(float));
+RotatorType MatrixRotator::rotator_type() const {
+  return RotatorType::Matrix;
 }
 
-void MatrixRotatorImpl::load(const char *data) {
-  std::memcpy(matrix.data(), data, matrix.size() * sizeof(float));
+void MatrixRotator::save_blob(char *data) const {
+  std::memcpy(data, matrix_.data(), matrix_.size() * sizeof(float));
 }
 
-size_t MatrixRotatorImpl::dump_bytes() const {
-  return matrix.size() * sizeof(float);
+void MatrixRotator::load_blob(const char *data) {
+  // matrix_ must be pre-sized before loading
+  if (matrix_.empty()) {
+    matrix_.resize(dimension_ * dimension_);
+  }
+  std::memcpy(matrix_.data(), data, matrix_.size() * sizeof(float));
+}
+
+size_t MatrixRotator::blob_bytes() const {
+  return matrix_.size() * sizeof(float);
 }
 
 }  // namespace core

@@ -17,31 +17,42 @@
 #include <cstdint>
 #include <vector>
 #include <ailego/math/fht.h>
+#include "rotator.h"
 
 namespace zvec {
 namespace core {
 
 // ============================================================================
-// FhtKacRotatorImpl - O(d log d) FHT-based Kac random rotation
+// FhtRotator - O(d log d) FHT-based Kac random rotation
 //
 // Works with any dimension (non-power-of-2 uses trunc_dim + KacsWalk).
 // When dimension is a power of 2, uses 4 rounds of (flip -> FHT -> rescale).
 // When dimension is NOT a power of 2, uses kacs_walk reduction.
 // ============================================================================
 
-struct FhtKacRotatorImpl {
+class FhtRotator : public Rotator {
+ public:
+  FhtRotator() = default;
+  ~FhtRotator() override = default;
+
+  // Virtual interface
+  void rotate(const float *in, float *out) const override;
+  void unrotate(const float *in, float *out) const override;
+  RotatorType rotator_type() const override;
+
+ protected:
+  // Protected virtuals for base class factory/serialization
+  void init_impl(size_t dim) override;
+  size_t blob_bytes() const override;
+  void save_blob(char *data) const override;
+  void load_blob(const char *data) override;
+
+ private:
   std::vector<uint8_t> flip;
   size_t trunc_dim{0};
   float fac{0};
 
   static constexpr size_t kByteLen = 8;
-
-  void init(size_t dim);
-  void rotate(const float *in, float *out, size_t dim) const;
-  void unrotate(const float *in, float *out, size_t dim) const;
-  void save(char *data) const;
-  void load(const char *data);
-  size_t dump_bytes() const;
 };
 
 }  // namespace core

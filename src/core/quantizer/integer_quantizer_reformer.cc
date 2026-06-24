@@ -302,20 +302,19 @@ class IntegerStreamingReformer : public IndexReformer {
   int load(IndexStorage::Pointer storage) override {
     // If config explicitly enables rotate but rotator not yet loaded, try
     // storage If config doesn't enable rotate, still try storage (auto-detect)
-    if (enable_rotate_ || storage->get(RECORD_ROTATOR_SEG_ID)) {
-      rotator_ = std::make_shared<RecordRotator>();
-      int ret = rotator_->open(storage);
+    if (enable_rotate_ || storage->get(ROTATOR_SEG_ID)) {
+      std::unique_ptr<Rotator> rotator_ptr;
+      int ret = Rotator::open(&rotator_ptr, storage);
       if (ret != 0) {
         if (enable_rotate_) {
           // Config said enable_rotate but storage has no rotator — error
           LOG_ERROR("IntegerStreamingReformer: load rotator failed, ret=%d",
                     ret);
-          rotator_.reset();
           return ret;
         }
         // No rotator in storage, rotation not available
-        rotator_.reset();
       } else {
+        rotator_ = std::move(rotator_ptr);
         enable_rotate_ = true;
         LOG_DEBUG("IntegerStreamingReformer: rotator auto-loaded, dim=%zu",
                   rotator_->dimension());
@@ -527,7 +526,7 @@ class IntegerStreamingReformer : public IndexReformer {
   bool enable_normalize_{false};
   bool is_euclidean_{false};
   bool enable_rotate_{false};
-  std::shared_ptr<RecordRotator> rotator_{};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(

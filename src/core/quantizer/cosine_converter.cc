@@ -174,7 +174,7 @@ class CosineConverterHolder : public IndexHolder {
   CosineConverterHolder(IndexHolder::Pointer front,
                         IndexMeta::DataType original_type,
                         IndexMeta::DataType type,
-                        std::shared_ptr<RecordRotator> rotator = nullptr)
+                        std::shared_ptr<Rotator> rotator = nullptr)
       : front_(std::move(front)),
         original_type_(original_type),
         type_(type),
@@ -238,7 +238,7 @@ class CosineConverterHolder : public IndexHolder {
   IndexMeta::DataType original_type_{};
   IndexMeta::DataType type_{};
   uint32_t dimension_{0};
-  std::shared_ptr<RecordRotator> rotator_{};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 /*! Converter of Cosine
@@ -287,8 +287,7 @@ class CosineConverter : public IndexConverter {
 
     if (enable_rotate_) {
       size_t dim = index_meta.dimension();
-      rotator_ = std::make_shared<RecordRotator>();
-      rotator_->init(dim);
+      rotator_ = Rotator::create(dim);
       LOG_DEBUG("CosineConverter: rotation enabled, dim=%zu", dim);
     }
 
@@ -416,7 +415,7 @@ class CosineConverter : public IndexConverter {
   IndexMeta::DataType original_type_{IndexMeta::DataType::DT_UNDEFINED};
   IndexMeta::DataType dst_type_{IndexMeta::DataType::DT_UNDEFINED};
   bool enable_rotate_{false};
-  std::shared_ptr<RecordRotator> rotator_{};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineNormalizeConverter,
