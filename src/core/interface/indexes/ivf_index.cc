@@ -211,7 +211,6 @@ int IVFIndex::_prepare_for_search(
   if (ivf_search_param->nprobe > 0) {
     // TODO: 1. sparse; 2. default ef
     ailego::Params params;
-    // need fix
     params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
     context->update(params);
   }
