@@ -142,7 +142,9 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   ailego::ElapsedTime timer;
 
 
-  const size_t add_thread_count = enable_pk_rewrite_ ? 1 : num_of_add_threads_;
+  // PK rewrite is assigned by the producer before enqueueing; consumers can
+  // still feed the target streamer in parallel.
+  const size_t add_thread_count = num_of_add_threads_;
   std::vector<int> add_results(add_thread_count, -1);
   auto add_group = thread_pool_->make_group();
 
