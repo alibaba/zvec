@@ -79,8 +79,18 @@ class IVFSearcherContext : public IndexSearcher::Context {
     }
 
     centroid_searcher_ctx_->set_topk(topk_val);
-    max_scan_count_ =
-        static_cast<uint32_t>(std::ceil(entity_->vector_count() * scan_ratio_));
+
+    // When nprobe is explicitly set, scale max_scan_count proportionally
+    // to ensure all probed clusters can be fully scanned.
+    if (nprobe > 0 && entity_->inverted_list_count() > 0) {
+      float probe_ratio = static_cast<float>(nprobe) /
+                          static_cast<float>(entity_->inverted_list_count());
+      max_scan_count_ = static_cast<uint32_t>(
+          std::ceil(entity_->vector_count() * probe_ratio));
+    } else {
+      max_scan_count_ = static_cast<uint32_t>(
+          std::ceil(entity_->vector_count() * scan_ratio_));
+    }
     max_scan_count_ = std::max(bruteforce_threshold_, max_scan_count_);
     return 0;
   }
