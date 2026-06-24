@@ -16,7 +16,7 @@ from __future__ import annotations
 import warnings
 from typing import Optional, Union, overload
 
-from _zvec import _Collection
+from zvec._zvec import _Collection
 
 from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker

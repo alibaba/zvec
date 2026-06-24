@@ -79,7 +79,7 @@ class TestFtsQueryBinding:
 
     def test_import_fts_query(self):
         """_Fts should be importable from _zvec.param."""
-        from _zvec.param import _Fts
+        from zvec._zvec.param import _Fts
 
         fts = _Fts()
         assert fts.query_string == ""
@@ -87,7 +87,7 @@ class TestFtsQueryBinding:
 
     def test_fts_query_set_fields(self):
         """Setting fields on _Fts should work."""
-        from _zvec.param import _Fts
+        from zvec._zvec.param import _Fts
 
         fts = _Fts()
         fts.query_string = "+hello -world"
@@ -99,7 +99,7 @@ class TestFtsQueryBinding:
 
     def test_fts_query_pickle(self):
         """_Fts should support pickling."""
-        from _zvec.param import _Fts
+        from zvec._zvec.param import _Fts
 
         fts = _Fts()
         fts.query_string = "+vector search"
@@ -112,7 +112,7 @@ class TestFtsQueryBinding:
 
     def test_search_query_fts_field(self):
         """_SearchQuery should have fts field."""
-        from _zvec.param import _Fts, _SearchQuery
+        from zvec._zvec.param import _Fts, _SearchQuery
 
         vq = _SearchQuery()
         # fts should be None by default (optional)
@@ -127,7 +127,7 @@ class TestFtsQueryBinding:
 
     def test_search_query_pickle_with_fts(self):
         """_SearchQuery with fts should survive pickling."""
-        from _zvec.param import _Fts, _SearchQuery
+        from zvec._zvec.param import _Fts, _SearchQuery
 
         vq = _SearchQuery()
         vq.topk = 10
@@ -145,7 +145,7 @@ class TestFtsQueryBinding:
 
     def test_search_query_pickle_without_fts(self):
         """_SearchQuery without fts should survive pickling."""
-        from _zvec.param import _SearchQuery
+        from zvec._zvec.param import _SearchQuery
 
         vq = _SearchQuery()
         vq.topk = 5

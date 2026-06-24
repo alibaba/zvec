@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import math
-from _zvec.param import _SearchQuery
+from zvec._zvec.param import _SearchQuery
 
 import pytest
 from zvec.executor.query_executor import (
