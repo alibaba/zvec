@@ -89,7 +89,8 @@ class IVFSearcherContext : public IndexSearcher::Context {
           static_cast<uint32_t>(entity_->inverted_list_count());
       max_scan_count_ = static_cast<uint32_t>(
           (static_cast<uint64_t>(entity_->vector_count()) * nprobe +
-           list_count - 1) / list_count);
+           list_count - 1) /
+          list_count);
     } else {
       max_scan_count_ = static_cast<uint32_t>(
           std::ceil(entity_->vector_count() * scan_ratio_));
