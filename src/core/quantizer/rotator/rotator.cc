@@ -175,12 +175,9 @@ RecordRotator &RecordRotator::operator=(RecordRotator &&) noexcept = default;
 void RecordRotator::init(size_t dimension, RecordRotatorType rotator_type) {
   impl_->dimension = dimension;
 
-  // Auto-select implementation based on dimension alignment when FhtKac
-  // is requested.  FhtKac requires the dimension to be a multiple of 4;
-  // scalar tails handle the SIMD remainder.  When the dimension is not
-  // 4-aligned we transparently fall back to the O(d^2) Matrix rotator.
-  bool use_fht =
-      (rotator_type == RecordRotatorType::FhtKac) && (dimension % 4 == 0);
+  // FhtKac supports any dimension via trunc_dim + KacsWalk.
+  // SIMD functions have scalar tails for non-aligned remainders.
+  bool use_fht = (rotator_type == RecordRotatorType::FhtKac);
 
   if (use_fht) {
     impl_->type = RecordRotatorType::FhtKac;
@@ -190,12 +187,6 @@ void RecordRotator::init(size_t dimension, RecordRotatorType rotator_type) {
         1.0f / std::sqrt(static_cast<float>(impl_->fht_impl->trunc_dim));
     impl_->fht_impl->init(dimension);
   } else {
-    if (rotator_type == RecordRotatorType::FhtKac) {
-      LOG_DEBUG(
-          "RecordRotator::init: dimension %zu is not 4-aligned, "
-          "falling back from FhtKac to Matrix rotator",
-          dimension);
-    }
     impl_->type = RecordRotatorType::Matrix;
     impl_->mat_impl = std::make_unique<MatrixRotatorImpl>();
     impl_->mat_impl->init(dimension);

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 namespace zvec {
 namespace ailego {
@@ -56,39 +57,49 @@ void fht_flip_sign_avx512(const uint8_t *flip, float *data, size_t dim) {
 
 void fht_kacs_walk_avx512(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
   size_t half_end = half & ~15u;
   for (size_t i = 0; i < half_end; i += 16) {
     __m512 x = _mm512_loadu_ps(&data[i]);
-    __m512 y = _mm512_loadu_ps(&data[i + half]);
+    __m512 y = _mm512_loadu_ps(&data[i + offset]);
     _mm512_storeu_ps(&data[i], _mm512_add_ps(x, y));
-    _mm512_storeu_ps(&data[i + half], _mm512_sub_ps(x, y));
+    _mm512_storeu_ps(&data[i + offset], _mm512_sub_ps(x, y));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float x = data[i];
-    float y = data[i + half];
+    float y = data[i + offset];
     data[i] = x + y;
-    data[i + half] = x - y;
+    data[i + offset] = x - y;
+  }
+  if (base != 0) {
+    data[half] *= std::sqrt(2.0f);
   }
 }
 
 void fht_inv_kacs_walk_avx512(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
+  if (base != 0) {
+    data[half] *= std::sqrt(0.5f);
+  }
   size_t half_end = half & ~15u;
   const __m512 half_fac = _mm512_set1_ps(0.5f);
   for (size_t i = 0; i < half_end; i += 16) {
     __m512 a = _mm512_loadu_ps(&data[i]);
-    __m512 b = _mm512_loadu_ps(&data[i + half]);
+    __m512 b = _mm512_loadu_ps(&data[i + offset]);
     _mm512_storeu_ps(&data[i], _mm512_mul_ps(_mm512_add_ps(a, b), half_fac));
-    _mm512_storeu_ps(&data[i + half],
+    _mm512_storeu_ps(&data[i + offset],
                      _mm512_mul_ps(_mm512_sub_ps(a, b), half_fac));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float a = data[i];
-    float b = data[i + half];
+    float b = data[i + offset];
     data[i] = (a + b) * 0.5f;
-    data[i + half] = (a - b) * 0.5f;
+    data[i + offset] = (a - b) * 0.5f;
   }
 }
 

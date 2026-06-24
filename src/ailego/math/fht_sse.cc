@@ -18,12 +18,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 namespace zvec {
 namespace ailego {
 
 void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
-  for (size_t i = 0; i < dim; i += 4) {
+  size_t simd_end = dim & ~3u;
+  for (size_t i = 0; i < simd_end; i += 4) {
     uint16_t bits16;
     std::memcpy(&bits16, &flip[i / 8], sizeof(bits16));
     bits16 >>= (i % 8);
@@ -37,42 +39,58 @@ void fht_flip_sign_sse(const uint8_t *flip, float *data, size_t dim) {
     v = _mm_xor_ps(v, _mm_castsi128_ps(sign_mask));
     _mm_storeu_ps(&data[i], v);
   }
+  // Scalar tail
+  for (size_t i = simd_end; i < dim; ++i) {
+    if (flip[i / 8] & (1u << (i % 8))) {
+      data[i] = -data[i];
+    }
+  }
 }
 
 void fht_kacs_walk_sse(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
   size_t half_end = half & ~3u;
   for (size_t i = 0; i < half_end; i += 4) {
     __m128 x = _mm_loadu_ps(&data[i]);
-    __m128 y = _mm_loadu_ps(&data[i + half]);
+    __m128 y = _mm_loadu_ps(&data[i + offset]);
     _mm_storeu_ps(&data[i], _mm_add_ps(x, y));
-    _mm_storeu_ps(&data[i + half], _mm_sub_ps(x, y));
+    _mm_storeu_ps(&data[i + offset], _mm_sub_ps(x, y));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float x = data[i];
-    float y = data[i + half];
+    float y = data[i + offset];
     data[i] = x + y;
-    data[i + half] = x - y;
+    data[i + offset] = x - y;
+  }
+  if (base != 0) {
+    data[half] *= std::sqrt(2.0f);
   }
 }
 
 void fht_inv_kacs_walk_sse(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
+  if (base != 0) {
+    data[half] *= std::sqrt(0.5f);
+  }
   size_t half_end = half & ~3u;
   const __m128 half_fac = _mm_set1_ps(0.5f);
   for (size_t i = 0; i < half_end; i += 4) {
     __m128 a = _mm_loadu_ps(&data[i]);
-    __m128 b = _mm_loadu_ps(&data[i + half]);
+    __m128 b = _mm_loadu_ps(&data[i + offset]);
     _mm_storeu_ps(&data[i], _mm_mul_ps(_mm_add_ps(a, b), half_fac));
-    _mm_storeu_ps(&data[i + half], _mm_mul_ps(_mm_sub_ps(a, b), half_fac));
+    _mm_storeu_ps(&data[i + offset], _mm_mul_ps(_mm_sub_ps(a, b), half_fac));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float a = data[i];
-    float b = data[i + half];
+    float b = data[i + offset];
     data[i] = (a + b) * 0.5f;
-    data[i + half] = (a - b) * 0.5f;
+    data[i + offset] = (a - b) * 0.5f;
   }
 }
 

@@ -56,7 +56,7 @@ void FhtKacRotatorImpl::rotate(const float *in, float *out, size_t dim) const {
     return;
   }
 
-  // Non-power-of-2 (64-aligned, e.g. 192, 320): 4 rounds with kacs_walk
+  // Non-power-of-2 (e.g. 97, 100, 192, 320): 4 rounds with kacs_walk
   size_t start = dim - trunc_dim;
   float *trunc_ptr = out + start;
 

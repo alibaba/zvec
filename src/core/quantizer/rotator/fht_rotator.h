@@ -24,7 +24,7 @@ namespace core {
 // ============================================================================
 // FhtKacRotatorImpl - O(d log d) FHT-based Kac random rotation
 //
-// Requires dimension % 4 == 0 (scalar tails handle SIMD remainder).
+// Works with any dimension (non-power-of-2 uses trunc_dim + KacsWalk).
 // When dimension is a power of 2, uses 4 rounds of (flip -> FHT -> rescale).
 // When dimension is NOT a power of 2, uses kacs_walk reduction.
 // ============================================================================

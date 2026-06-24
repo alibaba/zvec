@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 
 namespace zvec {
 namespace ailego {
@@ -28,21 +29,31 @@ void fht_flip_sign_scalar(const uint8_t *flip, float *data, size_t dim) {
 
 void fht_kacs_walk_scalar(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
   for (size_t i = 0; i < half; ++i) {
     float x = data[i];
-    float y = data[i + half];
+    float y = data[i + offset];
     data[i] = x + y;
-    data[i + half] = x - y;
+    data[i + offset] = x - y;
+  }
+  if (base != 0) {
+    data[half] *= std::sqrt(2.0f);
   }
 }
 
 void fht_inv_kacs_walk_scalar(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
+  if (base != 0) {
+    data[half] *= std::sqrt(0.5f);
+  }
   for (size_t i = 0; i < half; ++i) {
     float a = data[i];
-    float b = data[i + half];
+    float b = data[i + offset];
     data[i] = (a + b) * 0.5f;
-    data[i + half] = (a - b) * 0.5f;
+    data[i + offset] = (a - b) * 0.5f;
   }
 }
 

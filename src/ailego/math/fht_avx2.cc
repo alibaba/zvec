@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 namespace zvec {
 namespace ailego {
@@ -51,39 +52,49 @@ void fht_flip_sign_avx2(const uint8_t *flip, float *data, size_t dim) {
 
 void fht_kacs_walk_avx2(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
   size_t half_end = half & ~7u;
   for (size_t i = 0; i < half_end; i += 8) {
     __m256 x = _mm256_loadu_ps(&data[i]);
-    __m256 y = _mm256_loadu_ps(&data[i + half]);
+    __m256 y = _mm256_loadu_ps(&data[i + offset]);
     _mm256_storeu_ps(&data[i], _mm256_add_ps(x, y));
-    _mm256_storeu_ps(&data[i + half], _mm256_sub_ps(x, y));
+    _mm256_storeu_ps(&data[i + offset], _mm256_sub_ps(x, y));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float x = data[i];
-    float y = data[i + half];
+    float y = data[i + offset];
     data[i] = x + y;
-    data[i + half] = x - y;
+    data[i + offset] = x - y;
+  }
+  if (base != 0) {
+    data[half] *= std::sqrt(2.0f);
   }
 }
 
 void fht_inv_kacs_walk_avx2(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
+  if (base != 0) {
+    data[half] *= std::sqrt(0.5f);
+  }
   size_t half_end = half & ~7u;
   const __m256 half_fac = _mm256_set1_ps(0.5f);
   for (size_t i = 0; i < half_end; i += 8) {
     __m256 a = _mm256_loadu_ps(&data[i]);
-    __m256 b = _mm256_loadu_ps(&data[i + half]);
+    __m256 b = _mm256_loadu_ps(&data[i + offset]);
     _mm256_storeu_ps(&data[i], _mm256_mul_ps(_mm256_add_ps(a, b), half_fac));
-    _mm256_storeu_ps(&data[i + half],
+    _mm256_storeu_ps(&data[i + offset],
                      _mm256_mul_ps(_mm256_sub_ps(a, b), half_fac));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float a = data[i];
-    float b = data[i + half];
+    float b = data[i + offset];
     data[i] = (a + b) * 0.5f;
-    data[i + half] = (a - b) * 0.5f;
+    data[i + offset] = (a - b) * 0.5f;
   }
 }
 

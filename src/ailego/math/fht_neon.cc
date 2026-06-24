@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <arm_neon.h>
 
 namespace zvec {
@@ -24,7 +25,8 @@ namespace ailego {
 
 void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
   const uint32x4_t sign_bit = vdupq_n_u32(0x80000000u);
-  for (size_t i = 0; i < dim; i += 4) {
+  size_t simd_end = dim & ~3u;
+  for (size_t i = 0; i < simd_end; i += 4) {
     uint16_t bits16;
     std::memcpy(&bits16, &flip[i / 8], sizeof(bits16));
     bits16 >>= (i % 8);
@@ -38,42 +40,58 @@ void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
     v = vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(v), sign_mask));
     vst1q_f32(&data[i], v);
   }
+  // Scalar tail
+  for (size_t i = simd_end; i < dim; ++i) {
+    if (flip[i / 8] & (1u << (i % 8))) {
+      data[i] = -data[i];
+    }
+  }
 }
 
 void fht_kacs_walk_neon(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
   size_t half_end = half & ~3u;
   for (size_t i = 0; i < half_end; i += 4) {
     float32x4_t x = vld1q_f32(&data[i]);
-    float32x4_t y = vld1q_f32(&data[i + half]);
+    float32x4_t y = vld1q_f32(&data[i + offset]);
     vst1q_f32(&data[i], vaddq_f32(x, y));
-    vst1q_f32(&data[i + half], vsubq_f32(x, y));
+    vst1q_f32(&data[i + offset], vsubq_f32(x, y));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float x = data[i];
-    float y = data[i + half];
+    float y = data[i + offset];
     data[i] = x + y;
-    data[i + half] = x - y;
+    data[i + offset] = x - y;
+  }
+  if (base != 0) {
+    data[half] *= std::sqrt(2.0f);
   }
 }
 
 void fht_inv_kacs_walk_neon(float *data, size_t len) {
   size_t half = len / 2;
+  size_t base = len % 2;
+  size_t offset = base + half;
+  if (base != 0) {
+    data[half] *= std::sqrt(0.5f);
+  }
   size_t half_end = half & ~3u;
   const float32x4_t half_fac = vdupq_n_f32(0.5f);
   for (size_t i = 0; i < half_end; i += 4) {
     float32x4_t a = vld1q_f32(&data[i]);
-    float32x4_t b = vld1q_f32(&data[i + half]);
+    float32x4_t b = vld1q_f32(&data[i + offset]);
     vst1q_f32(&data[i], vmulq_f32(vaddq_f32(a, b), half_fac));
-    vst1q_f32(&data[i + half], vmulq_f32(vsubq_f32(a, b), half_fac));
+    vst1q_f32(&data[i + offset], vmulq_f32(vsubq_f32(a, b), half_fac));
   }
   // Scalar tail
   for (size_t i = half_end; i < half; ++i) {
     float a = data[i];
-    float b = data[i + half];
+    float b = data[i + offset];
     data[i] = (a + b) * 0.5f;
-    data[i + half] = (a - b) * 0.5f;
+    data[i + offset] = (a - b) * 0.5f;
   }
 }
 
