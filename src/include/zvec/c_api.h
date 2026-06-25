@@ -3761,7 +3761,8 @@ zvec_index_type_to_string(zvec_index_type_t index_type);
  * @param metric_type Metric type
  * @return const char* Metric type string
  */
-const char *zvec_metric_type_to_string(zvec_metric_type_t metric_type);
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_metric_type_to_string(zvec_metric_type_t metric_type);
 
 // =============================================================================
 // Helper Functions
