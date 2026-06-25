@@ -62,27 +62,39 @@ class IVFSearcherContext : public IndexSearcher::Context {
     params.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
                &bruteforce_threshold_);
     params.get(PARAM_IVF_SEARCHER_SCAN_RATIO, &scan_ratio_);
-    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe_);
     if (scan_ratio_ <= 0.0) {
       LOG_ERROR("Invalid params %s=%f", PARAM_IVF_SEARCHER_SCAN_RATIO.c_str(),
                 scan_ratio_);
       return IndexError_InvalidArgument;
     }
-    size_t nlist = entity_->inverted_list_count();
-    size_t topk_val;
-    if (nprobe_ > 0) {
-      //! nprobe explicitly controls how many inverted lists (centroids) to
-      //! probe. Do not let max_scan_count_ cut off the probed lists.
-      topk_val = std::min(static_cast<size_t>(nprobe_), nlist);
-      topk_val = std::max(topk_val, static_cast<size_t>(1));
-      max_scan_count_ = static_cast<uint32_t>(entity_->vector_count());
+    size_t topk_val =
+        std::max(static_cast<uint32_t>(
+                     std::round(entity_->inverted_list_count() * scan_ratio_)),
+                 1u);
+
+    uint32_t nprobe = 0;
+    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe);
+    if (nprobe > 0) {
+      nprobe = std::min(nprobe,
+                        static_cast<uint32_t>(entity_->inverted_list_count()));
+      topk_val = nprobe;
+    }
+
+    centroid_searcher_ctx_->set_topk(topk_val);
+
+    // When nprobe is explicitly set, scale max_scan_count proportionally
+    // to ensure all probed clusters can be fully scanned.
+    if (nprobe > 0 && entity_->inverted_list_count() > 0) {
+      uint32_t list_count =
+          static_cast<uint32_t>(entity_->inverted_list_count());
+      max_scan_count_ = static_cast<uint32_t>(
+          (static_cast<uint64_t>(entity_->vector_count()) * nprobe +
+           list_count - 1) /
+          list_count);
     } else {
-      topk_val =
-          std::max(static_cast<uint32_t>(std::round(nlist * scan_ratio_)), 1u);
       max_scan_count_ = static_cast<uint32_t>(
           std::ceil(entity_->vector_count() * scan_ratio_));
     }
-    centroid_searcher_ctx_->set_topk(static_cast<uint32_t>(topk_val));
     max_scan_count_ = std::max(bruteforce_threshold_, max_scan_count_);
     return 0;
   }
@@ -224,7 +236,6 @@ class IVFSearcherContext : public IndexSearcher::Context {
   uint32_t topk_{0};
   uint32_t magic_{0};
   float scan_ratio_{kDefaultScanRatio};
-  int nprobe_{0};
   uint32_t max_scan_count_{0};
   uint32_t bruteforce_threshold_{kDefaultBfThreshold};
 };
