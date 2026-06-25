@@ -256,7 +256,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
   auto context = searcher.create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
 
-  // single bf serch
+  // single bf search
   {
     size_t topk = 33;
     context->set_topk(topk);
