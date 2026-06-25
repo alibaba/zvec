@@ -61,7 +61,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             $<TARGET_FILE:core_metric_static>
             $<TARGET_FILE:core_utility_static>
             $<TARGET_FILE:core_quantizer_static>
-            $<TARGET_FILE:core_rotator>
             $<TARGET_FILE:core_plugin>
             -Wl,--no-whole-archive
             zvec
@@ -99,7 +98,6 @@ elseif (APPLE)
             -Wl,-force_load,$<TARGET_FILE:core_metric_static>
             -Wl,-force_load,$<TARGET_FILE:core_utility_static>
             -Wl,-force_load,$<TARGET_FILE:core_quantizer_static>
-            -Wl,-force_load,$<TARGET_FILE:core_rotator>
             -Wl,-force_load,$<TARGET_FILE:core_plugin>
             zvec
     )
@@ -119,7 +117,6 @@ elseif (MSVC)
             core_metric_static
             core_utility_static
             core_quantizer_static
-            core_rotator
             core_plugin
     )
     target_link_libraries(_zvec PRIVATE

@@ -6,13 +6,11 @@ if(NOT APPLE)
       "-Wl,--exclude-libs,libparquet.a:libarrow.a:libarrow_bundled_dependencies.a")
 endif()
 
-cc_directory(rotator)
-
 cc_library(
         NAME core_quantizer 
         STATIC SHARED STRICT ALWAYS_LINK
-        SRCS *.cc
-        LIBS zvec_ailego zvec_turbo core_framework core_rotator
+        SRCS *.cc rotator/*.cc
+        LIBS zvec_ailego zvec_turbo core_framework
         INCS . ${PROJECT_ROOT_DIR}/src/core
         LDFLAGS "${CORE_QUANTIZER_LDFLAGS}"
         VERSION "${PROXIMA_ZVEC_VERSION}"
