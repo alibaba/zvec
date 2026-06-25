@@ -234,6 +234,7 @@ class HnswStreamer : public IndexStreamer {
   bool force_padding_topk_enabled_{false};
   bool use_id_map_{true};
   bool use_contiguous_memory_{false};
+  bool use_external_vector_{false};
 
   //! avoid add vector while dumping index
   ailego::SharedMutex shared_mutex_{};

@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from _zvec.typing import (
+from zvec._zvec.typing import (
     DataType,
     IndexType,
     MetricType,

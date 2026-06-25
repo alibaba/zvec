@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 from ...common import VectorType
-from . import HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam
+from . import FtsQueryParam, HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam
 
 __all__ = ["Fts", "Query", "VectorQuery"]
 
@@ -53,8 +53,8 @@ class Query:
         field_name (str): Name of the field to query.
         id (Optional[str], optional): Document ID to fetch vector from. Default is None.
         vector (VectorType, optional): Explicit query vector. Default is None.
-        param (Optional[Union[HnswQueryParam, IVFQueryParam]], optional):
-            Index-specific query parameters for vector search. Default is None.
+        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, FtsQueryParam]], optional):
+            Index-specific query parameters. Default is None.
         fts (Optional[Fts], optional): Full-text search parameters. Default is None.
 
     Examples:
@@ -72,12 +72,20 @@ class Query:
         ...     field_name="content",
         ...     fts=Fts(match_string="machine learning")
         ... )
+        >>> # FTS query with custom operator
+        >>> q4 = zvec.Query(
+        ...     field_name="content",
+        ...     fts=Fts(match_string="machine learning"),
+        ...     param=FtsQueryParam(default_operator="AND")
+        ... )
     """
 
     field_name: str
     id: Optional[str] = None
     vector: VectorType = None
-    param: Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam]] = None
+    param: Optional[
+        Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam, FtsQueryParam]
+    ] = None
     fts: Optional[Fts] = None
 
     def has_id(self) -> bool:
@@ -109,13 +117,11 @@ class Query:
     def _validate(self) -> None:
         if self.field_name is None:
             raise ValueError("Field name cannot be empty")
-        if self.id and self.vector:
+        if self.has_id() and self.has_vector():
             raise ValueError("Cannot provide both id and vector")
-        if self.has_fts() and (
-            self.has_vector() or self.has_id() or self.param is not None
-        ):
+        if self.has_fts() and (self.has_vector() or self.has_id()):
             raise ValueError(
-                "Cannot combine fts with vector search fields (id/vector/param) in a single Query"
+                "Cannot combine fts with vector search fields (id/vector) in a single Query"
             )
         if self.fts is not None and self.fts.query_string and self.fts.match_string:
             raise ValueError(

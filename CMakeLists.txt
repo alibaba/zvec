@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.26)
 cmake_policy(SET CMP0077 NEW)
 project(zvec)
 set(CC_CXX_STANDARD 17)
@@ -171,18 +171,32 @@ if(BUILD_PYTHON_BINDINGS)
     endif()
 
     message(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
-    install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+    # COMPONENT python: only these runtime artifacts are pulled into the wheel
+    # (see install.components in pyproject.toml). The cc_library(PACKED) SDK
+    # install rules use the default component and are excluded from the wheel.
+    # Install the extension inside the zvec package (zvec/_zvec*.so) rather than
+    # at the site-packages root, so it does not pollute the top-level namespace.
+    # The Python code imports it as `zvec._zvec` accordingly.
+    install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec
+            COMPONENT python)
 
     # DiskAnn ships as a runtime-loaded shared module
     # (libzvec_diskann_plugin.so) that is brought online implicitly the
     # first time a DiskAnn index is created — users never call any load
     # function. The Python extension resolves the module next to _zvec.so
     # (see the $ORIGIN rpath in src/binding/python/CMakeLists.txt); the
-    # module must therefore be installed alongside _zvec.so in the wheel.
-    # The target exists only on platforms where DiskAnn is buildable
-    # (currently Linux x86_64 with libaio).
-    if(TARGET core_knn_diskann)
-        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
+    # module must therefore be installed alongside _zvec.so, i.e. inside the
+    # zvec package directory as well.
+    #
+    # Gate on DISKANN_SUPPORTED, not on the target's existence: on unsupported
+    # platforms (e.g. macOS / ARM64) the core_knn_diskann target is still
+    # defined, but built from an empty stub (src/core/algorithm/CMakeLists.txt)
+    # with zero exported symbols and a runtime load path compiled out
+    # (#if DISKANN_SUPPORTED). Shipping that stub is pure dead weight, so it is
+    # only packaged where DiskAnn is real — currently Linux x86_64 with libaio.
+    if(DISKANN_SUPPORTED)
+        install(TARGETS core_knn_diskann LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec
+                COMPONENT python)
     endif()
     # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
     # out of the box. python/zvec/__init__.py resolves this directory via
@@ -192,5 +206,6 @@ if(BUILD_PYTHON_BINDINGS)
     install(FILES
         "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
         "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict)
+        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
+        COMPONENT python)
 endif()

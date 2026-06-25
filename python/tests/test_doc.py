@@ -17,7 +17,7 @@ import math
 import pytest
 
 
-from _zvec import _Doc
+from zvec._zvec import _Doc
 from zvec import FieldSchema, VectorSchema, Doc, DataType
 
 

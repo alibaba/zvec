@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from typing import Optional, Union
 
-from _zvec.schema import _CollectionSchema, _FieldSchema
+from zvec._zvec.schema import _CollectionSchema, _FieldSchema
 
 from .field_schema import FieldSchema, VectorSchema
 

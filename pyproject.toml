@@ -102,6 +102,11 @@ cmake.version = ">=3.26,<4.0"
 ninja.version = ">=1.11"
 cmake.build-type = "Release"
 install.strip = true  # Strip symbols in release builds to reduce wheel size
+# Only pull the runtime artifacts tagged COMPONENT "python" into the wheel.
+# This excludes the C++ SDK install rules (static/shared libs under lib/ and
+# public headers under include/) that cc_library(PACKED) registers for a
+# standalone `make install`, which would otherwise bloat the wheel.
+install.components = ["python"]
 
 # Build directory
 build-dir = "build"

@@ -171,6 +171,11 @@ Result<FtsCondInfo::Ptr> SQLEngineImpl::parse_fts_query(
   }
 
   auto *fts_query_param = dynamic_cast<FtsQueryParams *>(query_params.get());
+  if (query_params && !fts_query_param) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "FTS query only accepts FtsQueryParam, got incompatible query param "
+        "type"));
+  }
 
   // Determine default operator once, shared by both query_string and
   // match_string paths. Accept "and"/"or" case-insensitively, empty means OR;
@@ -280,7 +285,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::parse_sql_info(
 }
 
 Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
-    CollectionSchema::Ptr collection, SearchQuery request,
+    CollectionSchema::Ptr collection, const SearchQuery &request,
     std::shared_ptr<GroupBy> group_by) {
   ScopedProfilerStage stage_guard(profiler_, "build_sql_info");
   Node::Ptr filter_node;
@@ -317,7 +322,7 @@ Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
   }
 
   auto sql_info = sqlengine::SQLInfoHelper::BuildSQLInfoFromSearchQuery(
-      std::move(request), std::move(filter_node), std::move(group_by));
+      request, std::move(filter_node), std::move(group_by));
   if (!sql_info) {
     return tl::make_unexpected(sql_info.error());
   }

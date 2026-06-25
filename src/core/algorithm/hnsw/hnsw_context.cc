@@ -262,6 +262,9 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
 
   entity_ = entity;
   dc_.update(entity_.get(), metric, meta.dimension());
+  if (vector_source_) {
+    entity_->set_vector_source(vector_source_);
+  }
   magic_ = magic_num;
   level_topks_.clear();
 

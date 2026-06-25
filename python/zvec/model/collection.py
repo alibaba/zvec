@@ -16,7 +16,7 @@ from __future__ import annotations
 import warnings
 from typing import Optional, Union, overload
 
-from _zvec import _Collection
+from zvec._zvec import _Collection
 
 from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
@@ -28,6 +28,7 @@ from .param import (
     AlterColumnOption,
     CollectionOption,
     FlatIndexParam,
+    FtsIndexParam,
     HnswIndexParam,
     HnswRabitqIndexParam,
     IndexOption,
@@ -112,6 +113,7 @@ class Collection:
             IVFIndexParam,
             FlatIndexParam,
             InvertIndexParam,
+            FtsIndexParam,
         ],
         option: IndexOption = IndexOption(),
     ) -> None:
@@ -119,10 +121,11 @@ class Collection:
 
         Vector index types (HNSW, IVF, FLAT) can only be applied to vector fields.
         Inverted index (`InvertIndexParam`) is for scalar fields.
+        FTS index (`FtsIndexParam`) is for full-text search on STRING fields.
 
         Args:
             field_name (str): Name of the field to index.
-            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam]):
+            index_param (Union[HnswIndexParam, HnswRabitqIndexParam, IVFIndexParam, FlatIndexParam, InvertIndexParam, FtsIndexParam]):
                 Index configuration.
             option (Optional[IndexOption], optional): Index creation options.
                 Defaults to ``IndexOption()``.

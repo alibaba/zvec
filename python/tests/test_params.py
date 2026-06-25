@@ -40,7 +40,7 @@ from zvec import (
     VectorSchema,
 )
 
-from _zvec.param import _SearchQuery
+from zvec._zvec.param import _SearchQuery
 
 # ----------------------------
 # Invert Index Param Test Case
@@ -426,6 +426,11 @@ class TestQuery:
     def test_validate_fails_on_both_id_and_vector(self):
         vq = Query(field_name="test", id="doc123", vector=[0.1])
         with pytest.raises(ValueError):
+            vq._validate()
+
+    def test_validate_fails_on_both_id_and_numpy_vector(self):
+        vq = Query(field_name="test", id="doc123", vector=np.array([0.1]))
+        with pytest.raises(ValueError, match="Cannot provide both id and vector"):
             vq._validate()
 
 
