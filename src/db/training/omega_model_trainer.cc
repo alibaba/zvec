@@ -116,8 +116,8 @@ Status OmegaModelTrainer::TrainModelWithGtCmps(
     return Status::InternalError("OMEGA model training failed");
   }
 
-  LOG_INFO("[TIMING] TrainModelWithGtCmps (C++ LightGBM) TOTAL: %ld ms",
-           total_ms);
+  LOG_INFO("[TIMING] TrainModelWithGtCmps (C++ LightGBM) TOTAL: %lld ms",
+           static_cast<long long>(total_ms));
   LOG_INFO("Successfully trained OMEGA model, output: %s",
            options.output_dir.c_str());
 

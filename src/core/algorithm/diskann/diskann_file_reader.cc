@@ -102,9 +102,9 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
         continue;
       }
       LOG_WARN(
-          "io_submit failed; returned: %d, expected=%lu. falling back to "
+          "io_submit failed; returned: %d, expected=%llu. falling back to "
           "pread",
-          ret, n_ops);
+          ret, static_cast<unsigned long long>(n_ops));
       return execute_io_pread(fd, read_reqs);
     }
 
@@ -121,9 +121,9 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
         continue;
       }
       LOG_WARN(
-          "io_getevents failed; returned: %d, expected=%lu, errno=%d, %s, "
+          "io_getevents failed; returned: %d, expected=%llu, errno=%d, %s, "
           "falling back to pread",
-          ret, n_ops, errno, ::strerror(-ret));
+          ret, static_cast<unsigned long long>(n_ops), errno, ::strerror(-ret));
       return execute_io_pread(fd, read_reqs);
     }
 

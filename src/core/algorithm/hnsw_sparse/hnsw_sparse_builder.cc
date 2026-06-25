@@ -242,7 +242,7 @@ int HnswSparseBuilder::build(IndexThreads::Pointer threads,
   }
 
   if (sparse_holder->count() != static_cast<size_t>(-1)) {
-    LOG_DEBUG("HnswSparseBuilder holder documents count %lu",
+    LOG_DEBUG("HnswSparseBuilder holder documents count %zu",
               sparse_holder->count());
 
     int ret = entity_.reserve_space(sparse_holder->count(),
@@ -433,7 +433,7 @@ int HnswSparseBuilder::build(IndexThreads::Pointer threads,
 
   auto start_time = ailego::Monotime::MilliSeconds();
 
-  LOG_INFO("Begin HnswSparseBuilder::build sparse, documents count %lu", count);
+  LOG_INFO("Begin HnswSparseBuilder::build sparse, documents count %zu", count);
 
   size_t total_sparse_count = sparse_indptr[count];
 

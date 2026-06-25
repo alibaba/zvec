@@ -147,7 +147,7 @@ int64_t DiskAnnBuilderEntity::dump_segment(const IndexDumper::Pointer &dumper,
                                            size_t size) const {
   size_t len = dumper->write(data, size);
   if (len != size) {
-    LOG_ERROR("Dump segment %s data failed, expect: %lu, actual: %lu",
+    LOG_ERROR("Dump segment %s data failed, expect: %zu, actual: %zu",
               segment_id.c_str(), size, len);
     return IndexError_WriteData;
   }
@@ -156,7 +156,7 @@ int64_t DiskAnnBuilderEntity::dump_segment(const IndexDumper::Pointer &dumper,
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return IndexError_WriteData;
     }
   }
@@ -178,7 +178,7 @@ int DiskAnnBuilderEntity::dump_pq_meta_segment(
   // write meta
   size_t size_pq_meta = dumper->write(&pq_meta_, sizeof(DiskAnnPqMeta));
   if (size_pq_meta != sizeof(DiskAnnPqMeta)) {
-    LOG_ERROR("Failed to dump PQ meta data, expect: %lu, actual: %lu",
+    LOG_ERROR("Failed to dump PQ meta data, expect: %zu, actual: %zu",
               sizeof(DiskAnnPqMeta), size_pq_meta);
     return IndexError_WriteData;
   }
@@ -231,7 +231,7 @@ int DiskAnnBuilderEntity::dump_pq_meta_segment(
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return IndexError_WriteData;
     }
   }
@@ -271,7 +271,7 @@ int DiskAnnBuilderEntity::dump_pq_data_segment(
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return IndexError_WriteData;
     }
   }
@@ -298,7 +298,7 @@ int DiskAnnBuilderEntity::dump_dummy_segment(
   if (dummy_size != 0) {
     std::string dummpy_data(dummy_size, '\0');
     if (dumper->write(dummpy_data.data(), dummy_size) != dummy_size) {
-      LOG_ERROR("write dummy failed, size %lu", dummy_size);
+      LOG_ERROR("write dummy failed, size %zu", dummy_size);
       return IndexError_WriteData;
     }
 
@@ -563,7 +563,7 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return IndexError_WriteData;
     }
   }
