@@ -290,6 +290,7 @@ class HnswQueryParam(QueryParam):
         >>> print(params.to_dict() if hasattr(params, 'to_dict') else params)
         {"type":"HNSW", "ef":300}
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -314,6 +315,7 @@ class HnswQueryParam(QueryParam):
                 - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
                   per neighbour vector (PL). ``0`` (default) means auto-derive from vector size.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -437,6 +439,7 @@ class HnswRabitqQueryParam(QueryParam):
         >>> print(params.ef)
         300
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -455,6 +458,7 @@ class HnswRabitqQueryParam(QueryParam):
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -568,6 +572,7 @@ class IVFQueryParam(QueryParam):
         >>> print(params.nprobe)
         20
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(self, nprobe: typing.SupportsInt = 10) -> None:
         """
@@ -577,6 +582,7 @@ class IVFQueryParam(QueryParam):
             nprobe (int, optional): Number of inverted lists to probe during search.
                 Higher values improve accuracy. Defaults to 10.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -602,6 +608,7 @@ class VamanaIndexParam(VectorIndexParam):
     Examples:
         >>> params = VamanaIndexParam(metric_type=MetricType.COSINE, max_degree=64)
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -620,18 +627,23 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def max_degree(self) -> int:
         """int: Maximum out-degree (R) of every node in the Vamana graph."""
+
     @property
     def search_list_size(self) -> int:
         """int: Candidate list size during Vamana graph construction."""
+
     @property
     def alpha(self) -> float:
         """float: Vamana RobustPrune alpha factor."""
+
     @property
     def saturate_graph(self) -> bool:
         """bool: Whether to saturate every node to max_degree neighbors."""
+
     @property
     def use_contiguous_memory(self) -> bool:
         """bool: Whether to allocate a single contiguous memory arena."""
+
     @property
     def use_id_map(self) -> bool:
         """bool: Reserved flag for engine-level id remapping."""
@@ -654,6 +666,7 @@ class VamanaQueryParam(QueryParam):
         >>> print(params.ef_search)
         200
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -677,14 +690,17 @@ class VamanaQueryParam(QueryParam):
                 - ``prefetch_lines`` (int): Cache lines to prefetch per vector (PL).
                   ``0`` (default) means auto-derive from vector size.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
     def ef_search(self) -> int:
         """int: Size of the dynamic candidate list during Vamana search."""
+
     @property
     def prefetch_offset(self) -> int:
         """int: Graph prefetch offset used by the Vamana fast path."""
+
     @property
     def prefetch_lines(self) -> int:
         """int: Override of prefetch cache lines per vector (0=auto)."""
@@ -770,6 +786,7 @@ class FtsQueryParam(QueryParam):
         >>> print(params.default_operator)
         AND
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -782,6 +799,7 @@ class FtsQueryParam(QueryParam):
             default_operator (str, optional): Default boolean operator for adjacent
                 bare terms. Supported: "OR", "AND". Defaults to "" (uses engine default).
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -875,6 +893,7 @@ class InvertIndexParam(IndexParam):
         >>> print(config)
         {'enable_range_optimization': True, 'enable_extended_wildcard': False}
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -890,18 +909,21 @@ class InvertIndexParam(IndexParam):
             enable_extended_wildcard (bool, optional): If True, enables extended wildcard
                 search including suffix and infix patterns. Defaults to False.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     def to_dict(self) -> dict:
         """
         Convert to dictionary with all fields
         """
+
     @property
     def enable_extended_wildcard(self) -> bool:
         """
         bool: Whether extended wildcard (suffix and infix) search is enabled.
         Note: Prefix search is always enabled regardless of this setting.
         """
+
     @property
     def enable_range_optimization(self) -> bool:
         """
@@ -958,6 +980,7 @@ class QueryParam:
             using the index. Useful for debugging or small datasets. Default is False.
         is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
     """
+
     def __getstate__(self) -> tuple: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -965,16 +988,19 @@ class QueryParam:
         """
         bool: Whether to bypass the index and use brute-force linear search.
         """
+
     @property
     def is_using_refiner(self) -> bool:
         """
         bool: Whether to use refiner for the query.
         """
+
     @property
     def radius(self) -> float:
         """
         IndexType: The type of index this query targets.
         """
+
     @property
     def type(self) -> zvec._zvec.typing.IndexType:
         """
@@ -1079,7 +1105,7 @@ class VectorIndexParam(IndexParam):
         type (IndexType): The specific vector index type (e.g., HNSW, FLAT).
         metric_type (MetricType): Distance metric used for similarity search.
         quantize_type (QuantizeType): Optional vector quantization type.
-        quantizer_param (QuantizerParam): Optional quantizer parameters. 
+        quantizer_param (QuantizerParam): Optional quantizer parameters.
     """
 
     def __getstate__(self) -> tuple: ...
