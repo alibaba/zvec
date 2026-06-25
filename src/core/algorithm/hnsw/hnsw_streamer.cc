@@ -777,10 +777,10 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     if (ShouldLogHnswQueryStats(query_seq)) {
       LOG_INFO(
           "HNSW query stats: query_seq=%llu hook_mode=%s cmps=%zu "
-          "pairwise_dist_cnt=%zu pure_search_ms=%.3f latency_ms=%.3f",
+          "pairwise_dist_cnt=%llu pure_search_ms=%.3f latency_ms=%.3f",
           static_cast<unsigned long long>(query_seq),
           use_empty_hooks ? "empty" : "none", ctx->get_scan_num(),
-          ctx->get_pairwise_dist_num(),
+          static_cast<unsigned long long>(ctx->get_pairwise_dist_num()),
           static_cast<double>(query_search_time_ns) / 1e6,
           static_cast<double>(query_latency_ns) / 1e6);
     }
@@ -904,10 +904,10 @@ int HnswStreamer::search_bf_impl(
       uint64_t query_seq = HnswQueryStatsSequence().fetch_add(1);
       if (ShouldLogHnswQueryStats(query_seq)) {
         LOG_INFO(
-            "HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%zu "
+            "HNSW query stats: query_seq=%llu cmps=%zu pairwise_dist_cnt=%llu "
             "latency_ms=%.3f",
             static_cast<unsigned long long>(query_seq), ctx->get_scan_num(),
-            ctx->get_pairwise_dist_num(),
+            static_cast<unsigned long long>(ctx->get_pairwise_dist_num()),
             static_cast<double>(query_latency_ns) / 1e6);
       }
       ctx->topk_to_result(q);
