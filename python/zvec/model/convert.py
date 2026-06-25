@@ -11,7 +11,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from _zvec import _Doc
+from zvec._zvec import _Doc
 
 from .doc import Doc
 from .schema import CollectionSchema

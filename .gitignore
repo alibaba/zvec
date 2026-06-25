@@ -26,6 +26,14 @@ dist
 html
 *.lcov.info
 
+# Compiled extension modules must never live in the source package: they are
+# built by CMake and installed into the wheel. A stray copy left here gets
+# bundled verbatim by scikit-build's wheel.packages and breaks the wheel
+# (e.g. a stale binary with the wrong macOS deployment target).
+python/zvec/*.so
+python/zvec/*.dylib
+python/zvec/*.pyd
+
 # Dependencies
 /node_modules
 

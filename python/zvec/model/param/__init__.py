@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from _zvec.param import (
+from zvec._zvec.param import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,

@@ -6050,3 +6050,113 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     FileHelper::RemoveDirectory(col_path);
   }
 }
+
+TEST_F(CollectionTest, Feature_DropAndRecreateScalarIndex) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
+  int doc_count = 100;
+
+  auto schema = TestHelper::CreateNormalSchema(false, "demo");
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+
+  ASSERT_TRUE(collection->Flush().ok());
+  ASSERT_EQ(collection->Stats().value().doc_count, doc_count);
+
+  auto index_params = std::make_shared<InvertIndexParams>(false);
+
+  // Round 1: create index
+  auto s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Round 1 create failed: " << s.message();
+
+  // Round 1: drop index
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok()) << "Round 1 drop failed: " << s.message();
+
+  // Round 2: recreate index on same field — this was the bug
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Round 2 create failed: " << s.message();
+
+  // Round 2: drop again
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok()) << "Round 2 drop failed: " << s.message();
+
+  // Round 3: one more cycle
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Round 3 create failed: " << s.message();
+
+  // Verify data integrity after multiple create/drop cycles
+  for (int i = 0; i < doc_count; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, *schema);
+    auto result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
+  }
+
+  // Final drop
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok()) << "Final drop failed: " << s.message();
+}
+
+TEST_F(CollectionTest, Feature_DropAndRecreateScalarIndex_MultipleFields) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
+  int doc_count = 100;
+
+  auto schema = TestHelper::CreateNormalSchema(false, "demo");
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+
+  ASSERT_TRUE(collection->Flush().ok());
+
+  auto index_params = std::make_shared<InvertIndexParams>(false);
+
+  // Create index on two fields
+  auto s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok());
+  s = collection->CreateIndex("string", index_params);
+  ASSERT_TRUE(s.ok());
+
+  // Drop only one field — the other should remain functional
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok());
+
+  // Recreate the dropped one
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Recreate int32 after partial drop failed: "
+                      << s.message();
+
+  // Drop both
+  s = collection->DropIndex("int32");
+  ASSERT_TRUE(s.ok());
+  s = collection->DropIndex("string");
+  ASSERT_TRUE(s.ok());
+
+  // Recreate both
+  s = collection->CreateIndex("int32", index_params);
+  ASSERT_TRUE(s.ok()) << "Recreate int32 after full drop failed: "
+                      << s.message();
+  s = collection->CreateIndex("string", index_params);
+  ASSERT_TRUE(s.ok()) << "Recreate string after full drop failed: "
+                      << s.message();
+
+  // Verify data integrity
+  for (int i = 0; i < doc_count; i++) {
+    auto expect_doc = TestHelper::CreateDoc(i, *schema);
+    auto result = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result.value().size(), 1);
+    auto doc = result.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
+  }
+}

@@ -19,6 +19,8 @@ from .model.param import (
     DiskAnnIndexParam,
     DiskAnnQueryParam,
     FlatIndexParam,
+    FtsIndexParam,
+    FtsQueryParam,
     HnswIndexParam,
     HnswQueryParam,
     HnswRabitqIndexParam,
@@ -34,7 +36,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Query, VectorQuery
+from .model.param.query import Fts, Query, VectorQuery
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
 from .tool import require_module
 from .typing import (
@@ -63,6 +65,9 @@ __all__: list = [
     "DocList",
     "FieldSchema",
     "FlatIndexParam",
+    "Fts",
+    "FtsIndexParam",
+    "FtsQueryParam",
     "HnswIndexParam",
     "HnswQueryParam",
     "HnswRabitqIndexParam",

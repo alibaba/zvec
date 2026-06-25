@@ -44,7 +44,7 @@ from zvec import (
     VectorSchema,
 )
 
-from _zvec.param import _SearchQuery
+from zvec._zvec.param import _SearchQuery
 
 IS_ANDROID = hasattr(sys, "getandroidapilevel") or "ANDROID_ROOT" in os.environ
 OMEGA_ENABLED = os.environ.get("ZVEC_ENABLE_OMEGA", "1").lower() not in {

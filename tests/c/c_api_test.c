@@ -4307,6 +4307,45 @@ void test_fts_wiring_on_vector_query(void) {
   TEST_END();
 }
 
+void test_fts_wiring_on_sub_query(void) {
+  TEST_START();
+
+  zvec_fts_t *fts = zvec_fts_create();
+  TEST_ASSERT(fts != NULL);
+
+  zvec_error_code_t err =
+      zvec_fts_set_query_string(fts, "+hello -world \"phrase\"");
+  TEST_ASSERT(err == ZVEC_OK);
+  err = zvec_fts_set_match_string(fts, "machine learning");
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_sub_query_t *sq = zvec_sub_query_create();
+  TEST_ASSERT(sq != NULL);
+
+  // Set FTS clause.
+  err = zvec_sub_query_set_fts(sq, fts);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // Clearing.
+  err = zvec_sub_query_set_fts(sq, NULL);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // Attach FtsQueryParams (transfers ownership).
+  zvec_fts_query_params_t *fts_params = zvec_query_params_fts_create("AND");
+  TEST_ASSERT(fts_params != NULL);
+  err = zvec_sub_query_set_fts_params(sq, fts_params);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // NULL argument checks.
+  TEST_ASSERT(zvec_sub_query_set_fts(NULL, fts) == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_sub_query_set_fts_params(NULL, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_sub_query_destroy(sq);
+  zvec_fts_destroy(fts);
+  TEST_END();
+}
+
 void test_fts_end_to_end(void) {
   TEST_START();
 
@@ -5964,6 +6003,7 @@ int main(void) {
   test_fts_index_params_functions();
   test_fts_query_params_functions();
   test_fts_wiring_on_vector_query();
+  test_fts_wiring_on_sub_query();
   test_fts_end_to_end();
 
   test_multi_vector_query_with_rrf_reranker();

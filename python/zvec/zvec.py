@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from _zvec import Initialize, _Collection
+from zvec._zvec import Initialize, _Collection
 
 from .model import Collection
 from .model.param import CollectionOption

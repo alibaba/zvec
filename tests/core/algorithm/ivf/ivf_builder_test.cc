@@ -404,6 +404,70 @@ TEST_F(IVFBuilderTest, TestTrainClusterParams) {
   EXPECT_EQ(0, builder.dump(dumper));
 }
 
+TEST_F(IVFBuilderTest, TestBuildWithConverterClass) {
+  IVFBuilder builder;
+  Params params;
+  params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
+  params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+  params.set(PARAM_IVF_BUILDER_CONVERTER_CLASS, "HalfFloatConverter");
+
+  int ret = builder.init(index_meta_, params);
+  EXPECT_EQ(0, ret);
+
+  prepare_index_holder(0, 1000);
+
+  ret = builder.train(threads_, holder_);
+  EXPECT_EQ(0, ret);
+
+  ret = builder.build(threads_, holder_);
+  EXPECT_EQ(0, ret);
+
+  auto centroid_index = builder.centroid_index();
+  EXPECT_GT(centroid_index->centroids_count(), 0u);
+
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("MemoryDumper");
+  ret = dumper->create("path");
+  EXPECT_EQ(0, ret);
+
+  ret = builder.dump(dumper);
+  EXPECT_EQ((size_t)1000, builder.stats().built_count());
+  EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
+  EXPECT_EQ((size_t)0, builder.stats().discarded_count());
+}
+
+TEST_F(IVFBuilderTest, TestBuildWithConverterClassMultiLevel) {
+  IVFBuilder builder;
+  Params params;
+  params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4*2");
+  params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster*KmeansCluster");
+  params.set(PARAM_IVF_BUILDER_CONVERTER_CLASS, "HalfFloatConverter");
+
+  int ret = builder.init(index_meta_, params);
+  EXPECT_EQ(0, ret);
+
+  prepare_index_holder(0, 1000);
+
+  ret = builder.train(threads_, holder_);
+  EXPECT_EQ(0, ret);
+
+  ret = builder.build(threads_, holder_);
+  EXPECT_EQ(0, ret);
+
+  auto centroid_index = builder.centroid_index();
+  EXPECT_EQ(centroid_index->centroids_count(), 8);
+
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  ret = dumper->create("./ivf_converter_test.index");
+  EXPECT_EQ(0, ret);
+
+  ret = builder.dump(dumper);
+  EXPECT_EQ((size_t)1000, builder.stats().built_count());
+  EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
+  EXPECT_EQ((size_t)0, builder.stats().discarded_count());
+  EXPECT_EQ(0, dumper->close());
+  File::RemovePath("./ivf_converter_test.index");
+}
+
 TEST_F(IVFBuilderTest, TestIndexThreads) {
   IndexBuilder::Pointer builder1 = IndexFactory::CreateBuilder("IVFBuilder");
   ASSERT_NE(builder1, nullptr);
