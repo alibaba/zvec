@@ -231,7 +231,7 @@ def open(path: str, option: CollectionOption = CollectionOption()) -> Collection
 
     Args:
         path (str): Path or name of the existing collection.
-        option (CollectionOption): Configuration options
+        option (CollectionOption, optional): Configuration options
             for opening the collection. Defaults to a default-constructed
             ``CollectionOption()`` if not provided.
 
