@@ -3721,13 +3721,6 @@ ZVEC_EXPORT size_t ZVEC_CALL zvec_doc_memory_usage(const zvec_doc_t *doc);
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_doc_to_detail_string(const zvec_doc_t *doc, char **detail_str);
 
-/**
- * @brief Free docs array memory
- * @param docs Document array pointer
- * @param count Document count
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_docs_free(zvec_doc_t **docs, size_t count);
-
 // =============================================================================
 // Utility Functions
 // =============================================================================
