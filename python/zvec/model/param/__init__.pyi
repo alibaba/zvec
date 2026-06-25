@@ -148,8 +148,8 @@ class FlatIndexParam(VectorIndexParam):
         quantize_type (QuantizeType): Optional quantization type for vector
             compression (e.g., FP16, INT8). Use ``QuantizeType.UNDEFINED`` to
             disable quantization. Default is ``QuantizeType.UNDEFINED``.
-        quantizer_param (QuantizerParam): Quantizer configuration (e.g., enable_rotate).
-            Default is ``QuantizerParam()``.
+        quantizer_param (QuantizerParam): Optional quantizer parameters. See
+            ``QuantizerParam`` for available options. Default is ``QuantizerParam()``.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -1028,10 +1028,10 @@ class SegmentOption:
 class QuantizerParam:
     """
 
-    Parameters for quantizer configuration.
+    Optional parameters for quantizer configuration.
 
-    Encapsulates quantization-related settings such as enable_rotate.
-    Designed for future extensibility.
+    This class is only needed when customizing quantizer behavior (e.g., enabling
+    random rotation). It can be omitted for default quantization settings.
 
     Attributes:
         enable_rotate (bool): Whether to apply random rotation before INT8
@@ -1079,7 +1079,7 @@ class VectorIndexParam(IndexParam):
         type (IndexType): The specific vector index type (e.g., HNSW, FLAT).
         metric_type (MetricType): Distance metric used for similarity search.
         quantize_type (QuantizeType): Optional vector quantization type.
-        quantizer_param (QuantizerParam): Quantizer configuration (e.g., enable_rotate).
+        quantizer_param (QuantizerParam): Optional quantizer parameters. 
     """
 
     def __getstate__(self) -> tuple: ...
