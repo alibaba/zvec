@@ -25,7 +25,10 @@ endif()
 
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR})
-set(ZVEC_LIB_SEARCH_DIRS ${ZVEC_LIB_DIR})
+set(ZVEC_LIB_SEARCH_DIRS
+    ${ZVEC_LIB_DIR}
+    ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/external/usr/local/lib
+)
 
 # Support multi-config builds (MSVC puts libs in Debug/Release subdirectories)
 if(CMAKE_BUILD_TYPE)
@@ -75,26 +78,46 @@ function(zvec_require_shared_library OUT_VAR LIB_NAME)
     set(${OUT_VAR} "${${OUT_VAR}}" PARENT_SCOPE)
 endfunction()
 
-zvec_require_shared_library(ZVEC_SHARED_LIBRARY zvec)
-zvec_require_shared_library(ZVEC_AILEGO_SHARED_LIBRARY zvec_ailego)
-zvec_require_shared_library(ZVEC_CORE_SHARED_LIBRARY zvec_core)
+if(WIN32)
+    set(ZVEC_WINDOWS_LIBRARIES)
+    foreach(ZVEC_LIB_SEARCH_DIR ${ZVEC_LIB_SEARCH_DIRS})
+        file(GLOB ZVEC_WINDOWS_LIBS_IN_DIR "${ZVEC_LIB_SEARCH_DIR}/*.lib")
+        list(APPEND ZVEC_WINDOWS_LIBRARIES ${ZVEC_WINDOWS_LIBS_IN_DIR})
+    endforeach()
+    list(FILTER ZVEC_WINDOWS_LIBRARIES EXCLUDE REGEX "(_shared|zvec_c_api)\\.lib$")
+    list(REMOVE_DUPLICATES ZVEC_WINDOWS_LIBRARIES)
+    if(NOT ZVEC_WINDOWS_LIBRARIES)
+        message(FATAL_ERROR
+            "No zvec libraries were found in ${ZVEC_LIB_SEARCH_DIRS}. "
+            "Build zvec first, or pass -DHOST_BUILD_DIR=<build-dir>.")
+    endif()
 
-# --- Create INTERFACE target for libzvec (all-in-one C++ shared library) ---
-# libzvec.so/.dylib/.dll already bundles all zvec internal components
-# (zvec, zvec_core, zvec_ailego, zvec_turbo), so no individual dependency
-# libraries need to be specified by the consumer.
-add_library(zvec-lib INTERFACE)
-target_link_libraries(zvec-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
+    add_library(zvec-lib INTERFACE)
+    target_link_libraries(zvec-lib INTERFACE ${ZVEC_WINDOWS_LIBRARIES})
 
-# --- Create INTERFACE target for libzvec_ailego (ailego-only all-in-one library) ---
-# The ailego example intentionally depends only on libzvec_ailego.
-add_library(zvec-ailego-lib INTERFACE)
-target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_AILEGO_SHARED_LIBRARY}")
+    add_library(zvec-ailego-lib INTERFACE)
+    target_link_libraries(zvec-ailego-lib INTERFACE ${ZVEC_WINDOWS_LIBRARIES})
 
-# --- Create INTERFACE target for libzvec_core (core-only all-in-one library) ---
-# The core example intentionally depends only on libzvec_core.
-add_library(zvec-core-lib INTERFACE)
-target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_CORE_SHARED_LIBRARY}")
+    add_library(zvec-core-lib INTERFACE)
+    target_link_libraries(zvec-core-lib INTERFACE ${ZVEC_WINDOWS_LIBRARIES})
+else()
+    zvec_require_shared_library(ZVEC_SHARED_LIBRARY zvec)
+    zvec_require_shared_library(ZVEC_AILEGO_SHARED_LIBRARY zvec_ailego)
+    zvec_require_shared_library(ZVEC_CORE_SHARED_LIBRARY zvec_core)
+
+    # --- Create INTERFACE target for libzvec (all-in-one C++ shared library) ---
+    # libzvec.so/.dylib already bundles all zvec internal components.
+    add_library(zvec-lib INTERFACE)
+    target_link_libraries(zvec-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
+
+    # --- Create INTERFACE target for libzvec_ailego (ailego-only all-in-one library) ---
+    add_library(zvec-ailego-lib INTERFACE)
+    target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_AILEGO_SHARED_LIBRARY}")
+
+    # --- Create INTERFACE target for libzvec_core (core-only all-in-one library) ---
+    add_library(zvec-core-lib INTERFACE)
+    target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_CORE_SHARED_LIBRARY}")
+endif()
 
 # --- Executables ---
 set(ZVEC_EXAMPLE_TARGETS)

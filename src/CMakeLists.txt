@@ -48,21 +48,35 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     if(WIN32)
         set_target_properties(${TARGET_NAME} PROPERTIES
             ARCHIVE_OUTPUT_NAME "${TARGET_NAME}"
+            WINDOWS_EXPORT_ALL_SYMBOLS OFF
         )
     endif()
     target_compile_features(${TARGET_NAME} PUBLIC cxx_std_17)
 
     if(MSVC)
+        set(ZVEC_ALLIN_MSVC_LINK_LIBS)
+        set(ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS)
         foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
-            target_sources(${TARGET_NAME} PRIVATE
-                $<TARGET_OBJECTS:${ZVEC_ALLIN_LIB}>
-            )
+            if(TARGET ${ZVEC_ALLIN_LIB}_static)
+                list(APPEND ZVEC_ALLIN_MSVC_LINK_LIBS ${ZVEC_ALLIN_LIB}_static)
+                list(APPEND ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS
+                    /WHOLEARCHIVE:$<TARGET_FILE:${ZVEC_ALLIN_LIB}_static>
+                )
+            else()
+                list(APPEND ZVEC_ALLIN_MSVC_LINK_LIBS ${ZVEC_ALLIN_LIB})
+                list(APPEND ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS
+                    /WHOLEARCHIVE:$<TARGET_FILE:${ZVEC_ALLIN_LIB}>
+                )
+            endif()
         endforeach()
 
         target_link_libraries(${TARGET_NAME}
             PRIVATE
-                ${ZVEC_ALLIN_LIBS}
+                ${ZVEC_ALLIN_MSVC_LINK_LIBS}
                 Threads::Threads
+        )
+        target_link_options(${TARGET_NAME} PRIVATE
+            ${ZVEC_ALLIN_MSVC_WHOLEARCHIVE_OPTS}
         )
     elseif(APPLE)
         foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})

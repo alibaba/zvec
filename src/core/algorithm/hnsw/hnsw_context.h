@@ -97,12 +97,13 @@ class HnswContext : public IndexContext {
   //! Retrieve string of debug
   std::string debug_string(void) const override {
     char buf[4096];
-    size_t size =
-        snprintf(buf, sizeof(buf),
-                 "scan_cnt=%zu,pairwise_dist_cnt=%zu,get_vector_cnt=%u,get_"
-                 "neighbors_cnt=%u,dup_node=%u",
-                 get_scan_num(), get_pairwise_dist_num(), stats_get_vector_cnt_,
-                 stats_get_neighbors_cnt_, stats_visit_dup_cnt_);
+    size_t size = snprintf(
+        buf, sizeof(buf),
+        "scan_cnt=%llu,pairwise_dist_cnt=%llu,get_vector_cnt=%u,get_"
+        "neighbors_cnt=%u,dup_node=%u",
+        static_cast<unsigned long long>(get_scan_num()),
+        static_cast<unsigned long long>(get_pairwise_dist_num()),
+        stats_get_vector_cnt_, stats_get_neighbors_cnt_, stats_visit_dup_cnt_);
     return std::string(buf, size);
   }
 

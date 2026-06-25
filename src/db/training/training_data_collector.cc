@@ -379,8 +379,8 @@ TrainingDataCollector::CollectTrainingDataFromQueriesImpl(
     auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         search_end - search_start)
                         .count();
-    LOG_INFO("Training searches completed in %zu ms (%zu threads)", total_ms,
-             actual_threads);
+    LOG_INFO("Training searches completed in %lld ms (%zu threads)",
+             static_cast<long long>(total_ms), actual_threads);
   }
 
   LOG_INFO("Collecting training records from indexers");
@@ -568,9 +568,9 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
         // ef_groundtruth=0 (Eigen brute force)
         if (warmup_ms > 60000) {
           LOG_INFO(
-              "HNSW warmup took %zu ms. For cold indexes, consider using "
+              "HNSW warmup took %lld ms. For cold indexes, consider using "
               "ef_groundtruth=0 (Eigen brute force)",
-              warmup_ms);
+              static_cast<long long>(warmup_ms));
         }
       }
 
@@ -645,8 +645,9 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
       auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           end_time - start_time)
                           .count();
-      LOG_INFO("Computed ground truth (HNSW ef=%d) for %zu queries in %zu ms",
-               ef_groundtruth, queries.size(), total_ms);
+      LOG_INFO("Computed ground truth (HNSW ef=%d) for %zu queries in %lld ms",
+               ef_groundtruth, queries.size(),
+               static_cast<long long>(total_ms));
       return ground_truth;
     }
   }
@@ -771,9 +772,10 @@ std::vector<std::vector<uint64_t>> TrainingDataCollector::ComputeGroundTruth(
                       .count();
 
   LOG_INFO(
-      "Computed ground truth (Eigen brute force) for %zu queries in %zu ms "
-      "(load: %zu ms, compute: %zu ms)",
-      queries.size(), total_ms, load_ms, compute_ms);
+      "Computed ground truth (Eigen brute force) for %zu queries in %lld ms "
+      "(load: %lld ms, compute: %lld ms)",
+      queries.size(), static_cast<long long>(total_ms),
+      static_cast<long long>(load_ms), static_cast<long long>(compute_ms));
 
   return ground_truth;
 }
