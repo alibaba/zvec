@@ -271,7 +271,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
     }
   }
 
-  // batch bf serch
+  // batch bf search
   {
     size_t topk = 1;
     context->set_topk(topk);
