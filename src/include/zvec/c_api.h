@@ -2359,6 +2359,24 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_flat_params(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_vamana_params(
     zvec_sub_query_t *query, zvec_vamana_query_params_t *vamana_params);
 
+/**
+ * @brief Set FTS query parameters on a sub-query (takes ownership)
+ * @param query Sub-query pointer
+ * @param fts_params FTS query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_fts_params(
+    zvec_sub_query_t *query, zvec_fts_query_params_t *fts_params);
+
+/**
+ * @brief Set FTS clause on a sub-query (copies the FTS clause)
+ * @param query Sub-query pointer
+ * @param fts FTS clause pointer, or NULL to clear
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_sub_query_set_fts(zvec_sub_query_t *query, const zvec_fts_t *fts);
+
 // =============================================================================
 // Collection Options and Statistics (Opaque Pointer Pattern)
 // =============================================================================

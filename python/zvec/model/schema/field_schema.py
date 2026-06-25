@@ -16,10 +16,10 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
-from _zvec.schema import _FieldSchema
-
+from zvec._zvec.schema import _FieldSchema
 from zvec.model.param import (
     FlatIndexParam,
+    FtsIndexParam,
     HnswIndexParam,
     HnswRabitqIndexParam,
     InvertIndexParam,
@@ -72,18 +72,25 @@ class FieldSchema:
         data_type (DataType): Data type of the field (e.g., INT64, STRING).
         nullable (bool, optional): Whether the field can contain null values.
             Defaults to False.
-        index_param (Optional[InvertIndexParam], optional): Inverted index
-            parameters for this field. Only applicable to fields that support
-            indexing (e.g., scalar fields used in filtering). Defaults to None.
+        index_param (Optional[Union[InvertIndexParam, FtsIndexParam]], optional):
+            Index parameters for this field. Use ``InvertIndexParam`` for scalar
+            inverted indexing, or ``FtsIndexParam`` for full-text search indexing
+            on STRING fields. Defaults to None.
 
     Examples:
         >>> from zvec.typing import DataType
-        >>> from zvec.model.param import InvertIndexParam
+        >>> from zvec.model.param import InvertIndexParam, FtsIndexParam
         >>> id_field = FieldSchema(
         ...     name="id",
         ...     data_type=DataType.INT64,
         ...     nullable=False,
         ...     index_param=InvertIndexParam(enable_range_optimization=True)
+        ... )
+        >>> content_field = FieldSchema(
+        ...     name="content",
+        ...     data_type=DataType.STRING,
+        ...     nullable=False,
+        ...     index_param=FtsIndexParam(tokenizer_name="standard")
         ... )
     """
 
@@ -92,7 +99,7 @@ class FieldSchema:
         name: str,
         data_type: DataType,
         nullable: bool = False,
-        index_param: Optional[InvertIndexParam] = None,
+        index_param: Optional[Union[InvertIndexParam, FtsIndexParam]] = None,
     ):
         if name is None or not isinstance(name, str):
             raise ValueError(
@@ -141,8 +148,8 @@ class FieldSchema:
         return self._cpp_obj.nullable
 
     @property
-    def index_param(self) -> Optional[InvertIndexParam]:
-        """Optional[InvertIndexParam]: Inverted index configuration, if any."""
+    def index_param(self) -> Optional[Union[InvertIndexParam, FtsIndexParam]]:
+        """Optional[Union[InvertIndexParam, FtsIndexParam]]: Index configuration, if any."""
         return self._cpp_obj.index_param
 
     def __dict__(self) -> dict[str, Any]:
