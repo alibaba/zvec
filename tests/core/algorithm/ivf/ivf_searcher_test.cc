@@ -469,7 +469,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
   auto context = searcher.create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
 
-  // single bf serch
+  // single bf search
   {
     size_t topk = (size_t)total;
     context->set_topk(topk);
