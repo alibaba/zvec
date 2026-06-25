@@ -301,7 +301,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
     }
   }
 
-  // batch knn serch
+  // batch knn search
   {
     size_t topk = 1;
     context->set_topk(topk);
