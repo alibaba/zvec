@@ -233,7 +233,7 @@ class IVFEntity {
       return this->convert_to_normalize_value(scale);
     }
 
-    return norm_value_;
+    return 1.0f;
   }
 
   //! Check whether the feature segment exist
