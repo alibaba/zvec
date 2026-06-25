@@ -196,7 +196,7 @@ def create_and_open(
     Args:
         path (str): Path or name of the collection to create.
         schema (CollectionSchema): Schema defining the structure of the collection.
-        option (CollectionOption): Configuration options
+        option (Optional[CollectionOption]): Configuration options
             for opening the collection. Defaults to a default-constructed
             ``CollectionOption()`` if not provided.
 
