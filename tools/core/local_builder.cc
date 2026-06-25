@@ -35,6 +35,7 @@
 #include "zvec/core/framework/index_reformer.h"
 #include "zvec/core/framework/index_streamer.h"
 #include "index_meta_helper.h"
+#include "meta_segment_common.h"
 #include "vecs_index_holder.h"
 
 #ifdef __clang__
@@ -205,11 +206,84 @@ bool check_config(YAML::Node &config_root) {
       return false;
     }
   }
+  if (!common["DumpPath"]) {
+    LOG_ERROR("Can not find [DumpPath] in config");
+    return false;
+  }
   if (!config_root["BuilderParams"]) {
     LOG_ERROR("Can not find [BuilderParams] in config");
     return false;
   }
   return true;
+}
+
+static inline size_t AlignSize(size_t size) {
+  return (size + 0x1F) & (~0x1F);
+}
+
+bool dump_meta_segment(const IndexDumper::Pointer &dumper,
+                       const std::string &segment_id, const void *data,
+                       size_t size, size_t &writes) {
+  size_t len = dumper->write(data, size);
+  if (len != size) {
+    LOG_ERROR("Dump segment %s data failed, expect: %lu, actual: %lu",
+              segment_id.c_str(), size, len);
+    return false;
+  }
+
+  size_t padding_size = AlignSize(size) - size;
+  if (padding_size > 0) {
+    std::string padding(padding_size, '\0');
+    if (dumper->write(padding.data(), padding_size) != padding_size) {
+      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      return false;
+    }
+  }
+
+  uint32_t crc = ailego::Crc32c::Hash(data, size);
+  int ret = dumper->append(segment_id, size, padding_size, crc);
+  if (ret != 0) {
+    LOG_ERROR("Dump segment %s meta failed, ret=%d", segment_id.c_str(), ret);
+    return false;
+  }
+
+  writes = len + padding_size;
+
+  return true;
+}
+
+int dump_taglist(IndexDumper::Pointer dumper, size_t num_vecs,
+                 const void *key_base, const void *taglist_data,
+                 uint64_t taglist_size) {
+  TagListHeader taglist_header;
+
+  taglist_header.num_vecs = num_vecs;
+
+  size_t total_writes;
+
+  bool ret =
+      dump_meta_segment(dumper, TAGLIST_HEADER_SEGMENT_NAME, &taglist_header,
+                        sizeof(TagListHeader), total_writes);
+  if (ret == false) {
+    LOG_ERROR("dump taglist meta failed");
+    return IndexError_WriteData;
+  }
+
+  ret = dump_meta_segment(dumper, TAGLIST_KEY_SEGMENT_NAME, key_base,
+                          num_vecs * sizeof(uint64_t), total_writes);
+  if (ret == false) {
+    LOG_ERROR("dump taglist key failed");
+    return IndexError_WriteData;
+  }
+
+  ret = dump_meta_segment(dumper, TAGLIST_DATA_SEGMENT_NAME, taglist_data,
+                          taglist_size, total_writes);
+  if (ret == false) {
+    LOG_ERROR("dump taglist data failed");
+    return IndexError_WriteData;
+  }
+
+  return 0;
 }
 
 int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
@@ -820,6 +894,45 @@ int do_build_sparse(YAML::Node &config_root, YAML::Node &config_common) {
   cout << "Build finished, consume " << build_time << "ms." << endl;
   signal(SIGINT, SIG_DFL);
 
+  // DUMP
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  if (!dumper) {
+    LOG_ERROR("Failed to create FileDumper.");
+    return -1;
+  }
+  string dump_prefix = config_common["DumpPath"].as<string>();
+  ret = dumper->create(dump_prefix);
+  if (ret != 0) {
+    LOG_ERROR("Failed to create in dumper, ret=%d", ret);
+    return -1;
+  }
+  timer.reset();
+  ret = streamer ? streamer->dump(dumper) : builder->dump(dumper);
+  size_t dump_time = timer.milli_seconds();
+  if (ret == IndexError_NotImplemented) {
+    LOG_WARN("Dump index not implemented");
+  } else if (ret < 0) {
+    LOG_ERROR("Failed to dump in builder, ret=%d", ret);
+    return -1;
+  }
+
+  if (build_holder->has_taglist()) {
+    size_t taglist_size{0};
+    const void *taglist_data = build_holder->get_taglist_data(taglist_size);
+    const void *key_base = build_holder->get_key_base();
+
+    dump_taglist(dumper, build_holder->get_num_vecs(), key_base, taglist_data,
+                 taglist_size);
+  }
+
+  ret = dumper->close();
+  if (ret != 0) {
+    LOG_ERROR("Dumper failed to close, ret=%d", ret);
+    return -1;
+  }
+  std::cout << "Dump to [" << dump_prefix << "] finished, consume " << dump_time
+            << "ms." << std::endl;
+
   if (builder) {
     auto &stats =
         reinterpret_cast<const IndexBuilder *>(builder.get())->stats();
@@ -1112,6 +1225,45 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   }
   cout << "Build finished, consume " << build_time << "ms." << endl;
   signal(SIGINT, SIG_DFL);
+
+  // DUMP
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  if (!dumper) {
+    LOG_ERROR("Failed to create FileDumper.");
+    return -1;
+  }
+  string dump_prefix = config_common["DumpPath"].as<string>();
+  ret = dumper->create(dump_prefix);
+  if (ret != 0) {
+    LOG_ERROR("Failed to create in dumper, ret=%d", ret);
+    return -1;
+  }
+  timer.reset();
+  ret = streamer ? streamer->dump(dumper) : builder->dump(dumper);
+  size_t dump_time = timer.milli_seconds();
+  if (ret == IndexError_NotImplemented) {
+    LOG_WARN("Dump index not implemented");
+  } else if (ret < 0) {
+    LOG_ERROR("Failed to dump in builder, ret=%d", ret);
+    return -1;
+  }
+
+  if (build_holder->has_taglist()) {
+    size_t taglist_size{0};
+    const void *taglist_data = build_holder->get_taglist_data(taglist_size);
+    const void *key_base = build_holder->get_key_base();
+
+    dump_taglist(dumper, build_holder->get_num_vecs(), key_base, taglist_data,
+                 taglist_size);
+  }
+
+  ret = dumper->close();
+  if (ret != 0) {
+    LOG_ERROR("Dumper failed to close, ret=%d", ret);
+    return -1;
+  }
+  std::cout << "Dump to [" << dump_prefix << "] finished, consume " << dump_time
+            << "ms." << std::endl;
 
   if (builder) {
     auto &stats =
