@@ -58,10 +58,6 @@ struct OptimizeOptions {
   int concurrency_{0};
 };
 
-struct RetrainOmegaOptions {
-  int concurrency_{0};
-};
-
 struct AddColumnOptions {
   int concurrency_{0};
 };

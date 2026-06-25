@@ -1805,54 +1805,6 @@ Args:
             return obj;
           }));
 
-  // RetrainOmegaOptions
-  py::class_<RetrainOmegaOptions>(m, "RetrainOmegaOption", R"pbdoc(
-Options for retraining OMEGA models on existing indexes.
-
-This operation retrains the OMEGA early-stopping models without modifying
-the underlying HNSW graph structure. It is only valid for collections with
-OMEGA indexes.
-
-Attributes:
-    concurrency (int): Number of threads to use during retraining.
-        If 0, the system will choose an optimal value automatically.
-        Default is 0.
-
-Examples:
-    >>> opt = RetrainOmegaOption(concurrency=2)
-    >>> print(opt.concurrency)
-    2
-)pbdoc")
-      .def(py::init([](int concurrency) {
-             RetrainOmegaOptions obj{};
-             obj.concurrency_ = concurrency;
-             return obj;
-           }),
-           py::arg("concurrency") = 0,
-           R"pbdoc(
-Constructs a RetrainOmegaOption instance.
-
-Args:
-    concurrency (int, optional): Number of concurrent threads.
-        0 means auto-detect. Defaults to 0.
-)pbdoc")
-      .def_property_readonly(
-          "concurrency",
-          [](const RetrainOmegaOptions &self) { return self.concurrency_; },
-          "int: Number of threads used for retraining (0 = auto).")
-      .def(py::pickle(
-          [](const RetrainOmegaOptions &self) {
-            return py::make_tuple(self.concurrency_);
-          },
-          [](py::tuple t) {
-            if (t.size() != 1)
-              throw std::runtime_error(
-                  "Invalid pickle data for RetrainOmegaOptions");
-            RetrainOmegaOptions obj{};
-            obj.concurrency_ = t[0].cast<int>();
-            return obj;
-          }));
-
   // AddColumnOptions
   py::class_<AddColumnOptions>(m, "AddColumnOption",
                                R"pbdoc(

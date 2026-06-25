@@ -104,7 +104,6 @@ from .model.param import (
     OmegaIndexParam,
     OmegaQueryParam,
     OptimizeOption,
-    RetrainOmegaOption,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -165,7 +164,6 @@ __all__ = [
     "OmegaQueryParam",
     "VamanaIndexParam",
     "VamanaQueryParam",
-    "RetrainOmegaOption",
     # Extensions
     "DenseEmbeddingFunction",
     "SparseEmbeddingFunction",

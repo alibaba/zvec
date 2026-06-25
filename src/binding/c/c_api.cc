@@ -6440,8 +6440,7 @@ zvec_error_code_t zvec_collection_retrain_omega(zvec_collection_t *collection) {
       "Exception occurred",
       auto coll_ptr =
           reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::RetrainOmegaOptions options;
-      zvec::Status status = (*coll_ptr)->RetrainOmega(options);
+      zvec::Status status = (*coll_ptr)->RetrainOmega();
       if (!status.ok()) { set_last_error(status.message()); }
 
       return status_to_error_code(status);)

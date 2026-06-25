@@ -166,15 +166,14 @@ void ZVecPyCollection::bind_ddl_methods(
              }
              throw_if_error(status);
            })
-      .def("RetrainOmega",
-           [](Collection &self, const RetrainOmegaOptions &options) {
-             Status status;
-             {
-               py::gil_scoped_release release;
-               status = self.RetrainOmega(options);
-             }
-             throw_if_error(status);
-           });
+      .def("RetrainOmega", [](Collection &self) {
+        Status status;
+        {
+          py::gil_scoped_release release;
+          status = self.RetrainOmega();
+        }
+        throw_if_error(status);
+      });
 
   // binding column ddl methods
   col.def("AddColumn",

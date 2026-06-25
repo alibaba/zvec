@@ -29,7 +29,6 @@ __all__: list[str] = [
     "OmegaQueryParam",
     "OptimizeOption",
     "QueryParam",
-    "RetrainOmegaOption",
     "SegmentOption",
     "VectorIndexParam",
 ]
@@ -937,10 +936,10 @@ class OmegaIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: _zvec.typing.MetricType = ...,
+        metric_type: zvec._zvec.typing.MetricType = ...,
         m: typing.SupportsInt = 100,
         ef_construction: typing.SupportsInt = 500,
-        quantize_type: _zvec.typing.QuantizeType = ...,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
         min_vector_threshold: typing.SupportsInt = 100000,
         num_training_queries: typing.SupportsInt = 1000,
         ef_training: typing.SupportsInt = 1000,
@@ -1111,46 +1110,6 @@ class OptimizeOption:
     def concurrency(self) -> int:
         """
         int: Number of threads used for optimization (0 = auto).
-        """
-
-class RetrainOmegaOption:
-    """
-
-    Options for retraining OMEGA models on existing indexes.
-
-    This operation retrains the OMEGA early-stopping models without modifying
-    the underlying HNSW graph structure. It is only valid for collections with
-    OMEGA indexes.
-
-    Attributes:
-        concurrency (int): Number of threads to use during retraining.
-            If 0, the system will choose an optimal value automatically.
-            Default is 0.
-
-    Examples:
-        >>> opt = RetrainOmegaOption(concurrency=2)
-        >>> print(opt.concurrency)
-        2
-    """
-
-    def __getstate__(self) -> tuple: ...
-    def __init__(
-        self,
-        concurrency: typing.SupportsInt = 0,
-    ) -> None:
-        """
-        Constructs a RetrainOmegaOption instance.
-
-        Args:
-            concurrency (int, optional): Number of concurrent threads.
-                0 means auto-detect. Defaults to 0.
-        """
-
-    def __setstate__(self, arg0: tuple) -> None: ...
-    @property
-    def concurrency(self) -> int:
-        """
-        int: Number of threads used for retraining (0 = auto).
         """
 
 class QueryParam:

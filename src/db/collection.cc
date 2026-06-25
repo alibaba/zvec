@@ -100,7 +100,7 @@ class CollectionImpl : public Collection {
 
   Status Optimize(const OptimizeOptions &options) override;
 
-  Status RetrainOmega(const RetrainOmegaOptions &options) override;
+  Status RetrainOmega() override;
 
   Status AddColumn(const FieldSchema::Ptr &column_schema,
                    const std::string &expression,
@@ -1022,7 +1022,7 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   return Status::OK();
 }
 
-Status CollectionImpl::RetrainOmega(const RetrainOmegaOptions &options) {
+Status CollectionImpl::RetrainOmega() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
   std::lock_guard lock(schema_handle_mtx_);

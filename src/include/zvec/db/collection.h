@@ -75,8 +75,7 @@ class Collection {
   virtual Status Optimize(const OptimizeOptions &options = OptimizeOptions{
                               0}) = 0;
 
-  virtual Status RetrainOmega(
-      const RetrainOmegaOptions &options = RetrainOmegaOptions{0}) = 0;
+  virtual Status RetrainOmega() = 0;
 
   virtual Status AddColumn(const FieldSchema::Ptr &column_schema,
                            const std::string &expression,

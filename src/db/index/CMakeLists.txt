@@ -58,3 +58,11 @@ cc_library(
     INCS .  ${PROJECT_ROOT_DIR}/src
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )
+
+if(ZVEC_ENABLE_OMEGA AND TARGET zvec_index)
+  target_compile_options(zvec_index PRIVATE
+      "$<$<CXX_COMPILER_ID:Clang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:AppleClang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:GNU>:-Wno-unknown-pragmas>"
+    )
+endif()

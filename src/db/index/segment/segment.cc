@@ -1645,9 +1645,6 @@ Status SegmentImpl::create_all_vector_index(
   new_segment_meta->set_indexed_vector_fields(vector_field_names);
   *segment_meta = new_segment_meta;
 
-  for (const auto &field_name : vector_field_names) {
-  }
-
   // Note: OMEGA training is now performed in merge_vector_indexer() immediately
   // after the index is built via Merge(). This is the recommended approach per
   // Alibaba expert advice - train right after reduce() completes when data is

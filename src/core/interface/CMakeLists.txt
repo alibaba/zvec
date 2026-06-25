@@ -36,3 +36,11 @@ cc_library(
         LIBS ${CORE_INTERFACE_LIBS}
         VERSION "${PROXIMA_ZVEC_VERSION}"
 )
+
+if(ZVEC_ENABLE_OMEGA AND TARGET core_interface)
+  target_compile_options(core_interface PRIVATE
+      "$<$<CXX_COMPILER_ID:Clang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:AppleClang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:GNU>:-Wno-unknown-pragmas>"
+    )
+endif()

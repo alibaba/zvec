@@ -740,7 +740,7 @@ def build_index(
 
     optimize_start = time.perf_counter()
     if retrain_only:
-        collection.retrain_omega(option=module.RetrainOmegaOption())
+        collection.retrain_omega()
     else:
         collection.optimize(option=module.OptimizeOption())
     optimize_duration = time.perf_counter() - optimize_start
