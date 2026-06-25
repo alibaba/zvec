@@ -759,8 +759,8 @@ namespace {
 
 // Only the first indexer's file is reused as the merge base; the remaining
 // indexers are merged in via Merge(). Reuse is restricted to streaming
-// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ
-// fall back to the full-rebuild merge.
+// indexes (HNSW, FLAT). Builder-rebuild indexes (IVF, VAMANA) and HNSW_RABITQ,
+// IVF_RABITQ fall back to the full-rebuild merge.
 bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
                           const FieldSchema &output_field,
                           const IndexFilter::Ptr &filter) {
@@ -876,10 +876,13 @@ Status SegmentHelper::PrepareQuantizeField(
         "raw_vector_provider is required for RABITQ training");
   }
 
-  auto rabitq_params = std::dynamic_pointer_cast<HnswRabitqIndexParams>(
-      vector_index_params->clone());
-  if (!rabitq_params) {
-    return Status::InternalError("Expect HnswRabitqIndexParams");
+  auto cloned_index_params = vector_index_params->clone();
+  auto hnsw_rabitq_params =
+      std::dynamic_pointer_cast<HnswRabitqIndexParams>(cloned_index_params);
+  auto ivf_rabitq_params =
+      std::dynamic_pointer_cast<IvfRabitqIndexParams>(cloned_index_params);
+  if (!hnsw_rabitq_params && !ivf_rabitq_params) {
+    return Status::InternalError("Expect RabitQ index params");
   }
 
   auto converter = core::IndexFactory::CreateConverter("RabitqConverter");
@@ -897,13 +900,23 @@ Status SegmentHelper::PrepareQuantizeField(
                                 .value(),
                             false),
                         0, ailego::Params{});
+  int total_bits = 0;
+  int num_clusters = 0;
+  int sample_count = 0;
+  if (hnsw_rabitq_params) {
+    total_bits = hnsw_rabitq_params->total_bits();
+    num_clusters = hnsw_rabitq_params->num_clusters();
+    sample_count = hnsw_rabitq_params->sample_count();
+  } else {
+    total_bits = ivf_rabitq_params->total_bits();
+    num_clusters = ivf_rabitq_params->nlist();
+    sample_count = ivf_rabitq_params->sample_count();
+  }
+
   ailego::Params converter_params;
-  converter_params.set(core::PARAM_RABITQ_TOTAL_BITS,
-                       rabitq_params->total_bits());
-  converter_params.set(core::PARAM_RABITQ_NUM_CLUSTERS,
-                       rabitq_params->num_clusters());
-  converter_params.set(core::PARAM_RABITQ_SAMPLE_COUNT,
-                       rabitq_params->sample_count());
+  converter_params.set(core::PARAM_RABITQ_TOTAL_BITS, total_bits);
+  converter_params.set(core::PARAM_RABITQ_NUM_CLUSTERS, num_clusters);
+  converter_params.set(core::PARAM_RABITQ_SAMPLE_COUNT, sample_count);
   if (int ret = converter->init(index_meta, converter_params); ret != 0) {
     return Status::InternalError("Failed to init rabitq converter:", ret);
   }
@@ -914,10 +927,15 @@ Status SegmentHelper::PrepareQuantizeField(
   if (int ret = converter->to_reformer(&reformer); ret != 0) {
     return Status::InternalError("Failed to to get rabitq reformer:", ret);
   }
-  rabitq_params->set_rabitq_reformer(reformer);
-  rabitq_params->set_raw_vector_provider(raw_vector_provider);
+  if (hnsw_rabitq_params) {
+    hnsw_rabitq_params->set_rabitq_reformer(reformer);
+    hnsw_rabitq_params->set_raw_vector_provider(raw_vector_provider);
+  } else {
+    ivf_rabitq_params->set_rabitq_reformer(reformer);
+    ivf_rabitq_params->set_raw_vector_provider(raw_vector_provider);
+  }
 
-  field_clone->set_index_params(rabitq_params);
+  field_clone->set_index_params(cloned_index_params);
   *out_field = field_clone;
   return Status::OK();
 #endif

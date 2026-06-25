@@ -70,6 +70,7 @@ enum class IndexType {
   kIVF,  // it's actual a two-layer index
   kHNSW,
   kHNSWRabitq,
+  kIVFRabitq,
   kDiskAnn,
   kVamana,
 };
@@ -439,6 +440,42 @@ struct HNSWRabitqIndexParam : public BaseIndexParam {
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
   ailego::JsonObject SerializeToJsonObject(
       bool omit_empty_value = false) const override;
+};
+
+struct IVFRabitqIndexParam : public BaseIndexParam {
+  using Pointer = std::shared_ptr<IVFRabitqIndexParam>;
+
+  // IVF parameters
+  int nlist = kDefaultIvfRabitqNlist;
+
+  // Rabitq parameters
+  int total_bits = kDefaultRabitqTotalBits;
+  int sample_count = 0;
+  core::IndexProvider::Pointer provider = nullptr;
+  core::IndexReformer::Pointer reformer = nullptr;
+
+  IVFRabitqIndexParam() : BaseIndexParam(IndexType::kIVFRabitq) {}
+
+  IVFRabitqIndexParam(int nlist)
+      : BaseIndexParam(IndexType::kIVFRabitq), nlist(nlist) {}
+
+  IVFRabitqIndexParam(MetricType metric, int dim, int nlist)
+      : BaseIndexParam(IndexType::kIVFRabitq, metric, dim), nlist(nlist) {}
+
+ protected:
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+};
+
+struct IVFRabitqQueryParam : public BaseIndexQueryParam {
+  using Pointer = std::shared_ptr<IVFRabitqQueryParam>;
+
+  uint32_t nprobe = kDefaultIvfRabitqNprobe;
+
+  BaseIndexQueryParam::Pointer Clone() const override {
+    return std::make_shared<IVFRabitqQueryParam>(*this);
+  }
 };
 
 struct DiskAnnIndexParam : public BaseIndexParam {

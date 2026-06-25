@@ -828,6 +828,7 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_FLAT 3
 #define ZVEC_INDEX_TYPE_DISKANN 5
 #define ZVEC_INDEX_TYPE_VAMANA 6
+#define ZVEC_INDEX_TYPE_IVF_RABITQ 7
 #define ZVEC_INDEX_TYPE_INVERT 10
 #define ZVEC_INDEX_TYPE_FTS 11
 
@@ -857,6 +858,7 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_FP16 1
 #define ZVEC_QUANTIZE_TYPE_INT8 2
 #define ZVEC_QUANTIZE_TYPE_INT4 3
+#define ZVEC_QUANTIZE_TYPE_RABITQ 4
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)
@@ -1103,6 +1105,29 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_ivf_params(
     bool *out_use_soar);
 
 /**
+ * @brief Set IVF RaBitQ specific parameters
+ * @param params Index parameters (must be IVF_RABITQ type)
+ * @param nlist Number of cluster centers
+ * @param total_bits Total bits for RaBitQ quantization
+ * @param sample_count Sample count for training, 0 means use all vectors
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_ivf_rabitq_params(
+    zvec_index_params_t *params, int nlist, int total_bits, int sample_count);
+
+/**
+ * @brief Get IVF RaBitQ parameters (all at once)
+ * @param params Index parameters (must be IVF_RABITQ type)
+ * @param out_nlist Output parameter for nlist
+ * @param out_total_bits Output parameter for total_bits
+ * @param out_sample_count Output parameter for sample_count
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_ivf_rabitq_params(
+    const zvec_index_params_t *params, int *out_nlist, int *out_total_bits,
+    int *out_sample_count);
+
+/**
  * @brief Get invert index parameters (all at once)
  * @param params Index parameters (must not be NULL)
  * @param out_enable_range_opt Output parameter for enable_range_optimization
@@ -1195,6 +1220,16 @@ typedef struct zvec_hnsw_query_params_t zvec_hnsw_query_params_t;
  * destroy it.
  */
 typedef struct zvec_ivf_query_params_t zvec_ivf_query_params_t;
+
+/**
+ * @brief IVF RaBitQ query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::IvfRabitqQueryParams* (raw pointer).
+ * Created by zvec_query_params_ivf_rabitq_create() and destroyed by
+ * zvec_query_params_ivf_rabitq_destroy(). Caller owns the pointer and must
+ * explicitly destroy it.
+ */
+typedef struct zvec_ivf_rabitq_query_params_t zvec_ivf_rabitq_query_params_t;
 
 /**
  * @brief Flat query parameters handle (opaque pointer)
@@ -1493,6 +1528,100 @@ zvec_query_params_ivf_set_is_using_refiner(zvec_ivf_query_params_t *params,
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_ivf_get_is_using_refiner(
     const zvec_ivf_query_params_t *params);
+
+// -----------------------------------------------------------------------------
+// zvec_ivf_rabitq_query_params_t (IVF RaBitQ Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create IVF RaBitQ query parameters
+ * @param nprobe Number of clusters to probe (default: 10)
+ * @param radius Search radius (default: 0.0)
+ * @param is_linear Whether linear search (default: false)
+ * @param is_using_refiner Whether using refiner (default: false)
+ * @return zvec_ivf_rabitq_query_params_t* Pointer to the newly created IVF
+ * RaBitQ query parameters
+ */
+ZVEC_EXPORT zvec_ivf_rabitq_query_params_t *ZVEC_CALL
+zvec_query_params_ivf_rabitq_create(int nprobe, float radius, bool is_linear,
+                                    bool is_using_refiner);
+
+/**
+ * @brief Destroy IVF RaBitQ query parameters
+ * @param params IVF RaBitQ query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_ivf_rabitq_destroy(zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set number of probe clusters
+ * @param params IVF RaBitQ query parameters pointer
+ * @param nprobe Number of probe clusters
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_ivf_rabitq_set_nprobe(
+    zvec_ivf_rabitq_query_params_t *params, int nprobe);
+
+/**
+ * @brief Get number of probe clusters
+ * @param params IVF RaBitQ query parameters pointer
+ * @return int Number of probe clusters
+ */
+ZVEC_EXPORT int ZVEC_CALL zvec_query_params_ivf_rabitq_get_nprobe(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set search radius
+ * @param params IVF RaBitQ query parameters pointer
+ * @param radius Search radius
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_ivf_rabitq_set_radius(
+    zvec_ivf_rabitq_query_params_t *params, float radius);
+
+/**
+ * @brief Get search radius
+ * @param params IVF RaBitQ query parameters pointer
+ * @return float Search radius
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_ivf_rabitq_get_radius(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set linear search mode
+ * @param params IVF RaBitQ query parameters pointer
+ * @param is_linear Whether linear search
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_ivf_rabitq_set_is_linear(
+    zvec_ivf_rabitq_query_params_t *params, bool is_linear);
+
+/**
+ * @brief Get linear search mode
+ * @param params IVF RaBitQ query parameters pointer
+ * @return bool Whether linear search
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_ivf_rabitq_get_is_linear(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
+ * @brief Set whether to use refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @param is_using_refiner Whether to use refiner
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_ivf_rabitq_set_is_using_refiner(
+    zvec_ivf_rabitq_query_params_t *params, bool is_using_refiner);
+
+/**
+ * @brief Get whether to use refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @return bool Whether to use refiner
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_ivf_rabitq_get_is_using_refiner(
+    const zvec_ivf_rabitq_query_params_t *params);
 
 // -----------------------------------------------------------------------------
 // zvec_flat_query_params_t (Flat Query Parameters)
@@ -1971,6 +2100,16 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_ivf_params(
     zvec_vector_query_t *query, zvec_ivf_query_params_t *ivf_params);
 
 /**
+ * @brief Set IVF RaBitQ query parameters (takes ownership)
+ * @param query Vector query pointer
+ * @param ivf_rabitq_params IVF RaBitQ query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_ivf_rabitq_params(
+    zvec_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params);
+
+/**
  * @brief Set Flat query parameters (takes ownership)
  * @param query Vector query pointer
  * @param flat_params Flat query parameters pointer
@@ -2269,6 +2408,17 @@ zvec_group_by_vector_query_set_ivf_params(zvec_group_by_vector_query_t *query,
                                           zvec_ivf_query_params_t *ivf_params);
 
 /**
+ * @brief Set IVF RaBitQ query parameters (takes ownership)
+ * @param query Group by vector query pointer
+ * @param ivf_rabitq_params IVF RaBitQ query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_group_by_vector_query_set_ivf_rabitq_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_ivf_rabitq_query_params_t *ivf_rabitq_params);
+
+/**
  * @brief Set Flat query parameters (takes ownership)
  * @param query Group by vector query pointer
  * @param flat_params Flat query parameters pointer
@@ -2541,6 +2691,15 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_hnsw_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_ivf_params(
     zvec_sub_query_t *query, zvec_ivf_query_params_t *ivf_params);
+
+/**
+ * @brief Set IVF RaBitQ query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param ivf_rabitq_params IVF RaBitQ query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_ivf_rabitq_params(
+    zvec_sub_query_t *query, zvec_ivf_rabitq_query_params_t *ivf_rabitq_params);
 
 /**
  * @brief Set Flat query parameters (takes ownership)

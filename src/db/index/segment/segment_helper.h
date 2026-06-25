@@ -272,7 +272,7 @@ class SegmentHelper {
 
   // Returns a FieldSchema clone whose index_params is ready for building the
   // quantize indexer.
-  //   - RABITQ: clones HnswRabitqIndexParams, trains a RabitqConverter against
+  //   - RABITQ: clones RabitQ index params, trains a RabitqConverter against
   //     `raw_vector_provider`, and attaches the resulting reformer and raw
   //     provider to the cloned params.
   //   - Other quantize types: clones the field with its current index_params

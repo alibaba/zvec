@@ -114,6 +114,35 @@ TEST(ConverterTest, IVFIndexParamsConversion) {
   EXPECT_EQ(pb_result.base().quantize_type(), proto::QT_INT4);
 }
 
+#if RABITQ_SUPPORTED
+TEST(ConverterTest, IvfRabitqIndexParamsConversion) {
+  proto::IvfRabitqIndexParams ivf_rabitq_pb;
+  auto *base_params = ivf_rabitq_pb.mutable_base();
+  base_params->set_metric_type(proto::MT_COSINE);
+  base_params->set_quantize_type(proto::QT_RABITQ);
+  ivf_rabitq_pb.set_nlist(32);
+  ivf_rabitq_pb.set_total_bits(1);
+  ivf_rabitq_pb.set_sample_count(5);
+
+  auto ivf_rabitq_params = ProtoConverter::FromPb(ivf_rabitq_pb);
+  ASSERT_NE(ivf_rabitq_params, nullptr);
+  EXPECT_EQ(ivf_rabitq_params->metric_type(), MetricType::COSINE);
+  EXPECT_EQ(ivf_rabitq_params->quantize_type(), QuantizeType::RABITQ);
+  EXPECT_EQ(ivf_rabitq_params->type(), IndexType::IVF_RABITQ);
+  EXPECT_EQ(ivf_rabitq_params->nlist(), 32);
+  EXPECT_EQ(ivf_rabitq_params->total_bits(), 1);
+  EXPECT_EQ(ivf_rabitq_params->sample_count(), 5);
+
+  IvfRabitqIndexParams original_params(MetricType::IP, 64, 7, 3);
+  auto pb_result = ProtoConverter::ToPb(&original_params);
+  EXPECT_EQ(pb_result.base().metric_type(), proto::MT_IP);
+  EXPECT_EQ(pb_result.base().quantize_type(), proto::QT_RABITQ);
+  EXPECT_EQ(pb_result.nlist(), 64);
+  EXPECT_EQ(pb_result.total_bits(), 7);
+  EXPECT_EQ(pb_result.sample_count(), 3);
+}
+#endif
+
 TEST(ConverterTest, IndexParamsConversion) {
   // Test conversion from protobuf to C++ IndexParams for HNSW
   proto::IndexParams index_pb;
@@ -183,6 +212,38 @@ TEST(ConverterTest, IndexParamsConversion) {
   auto pb_result3 = ProtoConverter::ToPb(&ivf_original);
   EXPECT_EQ(pb_result3.base().metric_type(), proto::MT_COSINE);
   EXPECT_EQ(pb_result3.n_list(), 256);
+
+#if RABITQ_SUPPORTED
+  // Test conversion from protobuf to C++ IndexParams for IVF_RABITQ
+  proto::IndexParams index_pb5;
+  auto *ivf_rabitq_pb = index_pb5.mutable_ivf_rabitq();
+  auto *base_params5 = ivf_rabitq_pb->mutable_base();
+  base_params5->set_metric_type(proto::MT_IP);
+  base_params5->set_quantize_type(proto::QT_RABITQ);
+  ivf_rabitq_pb->set_nlist(32);
+  ivf_rabitq_pb->set_total_bits(1);
+  ivf_rabitq_pb->set_sample_count(5);
+
+  auto index_params5 = ProtoConverter::FromPb(index_pb5);
+  ASSERT_NE(index_params5, nullptr);
+  EXPECT_EQ(index_params5->type(), IndexType::IVF_RABITQ);
+  auto ivf_rabitq_cast =
+      std::dynamic_pointer_cast<IvfRabitqIndexParams>(index_params5);
+  ASSERT_NE(ivf_rabitq_cast, nullptr);
+  EXPECT_EQ(ivf_rabitq_cast->metric_type(), MetricType::IP);
+  EXPECT_EQ(ivf_rabitq_cast->quantize_type(), QuantizeType::RABITQ);
+  EXPECT_EQ(ivf_rabitq_cast->nlist(), 32);
+  EXPECT_EQ(ivf_rabitq_cast->total_bits(), 1);
+  EXPECT_EQ(ivf_rabitq_cast->sample_count(), 5);
+
+  IvfRabitqIndexParams ivf_rabitq_original(MetricType::COSINE, 64, 7, 3);
+  auto pb_result5 = ProtoConverter::ToPb(&ivf_rabitq_original);
+  EXPECT_EQ(pb_result5.base().metric_type(), proto::MT_COSINE);
+  EXPECT_EQ(pb_result5.base().quantize_type(), proto::QT_RABITQ);
+  EXPECT_EQ(pb_result5.nlist(), 64);
+  EXPECT_EQ(pb_result5.total_bits(), 7);
+  EXPECT_EQ(pb_result5.sample_count(), 3);
+#endif
 
   // Test conversion from protobuf to C++ IndexParams for INVERT
   proto::IndexParams index_pb4;

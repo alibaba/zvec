@@ -1781,7 +1781,7 @@ Status SegmentImpl::create_vector_index(
     field_with_new_index_params->set_index_params(index_params);
 
     // For RABITQ, PrepareQuantizeField trains a reformer with
-    // raw_vector_provider and attaches it to a cloned HnswRabitqIndexParams.
+    // raw_vector_provider and attaches it to cloned RabitQ index params.
     // For other quantize types, field_with_new_index_params is reused as-is.
     std::shared_ptr<FieldSchema> field_for_quantize;
     {

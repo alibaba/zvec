@@ -19,6 +19,24 @@ if(RABITQ_SUPPORTED AND AUTO_DETECT_ARCH)
           COMPILE_FLAGS "${RABITQ_ARCH_FLAG}"
       )
   endforeach()
+
+  set(IVF_RABITQ_FILES
+      ivf_rabitq_builder.cc
+      ivf_rabitq_entity.cc
+      ivf_rabitq_reformer.cc
+      ivf_rabitq_register.cc
+      ivf_rabitq_streamer.cc
+      ivf_rabitq_util.cc
+  )
+  set(IVF_RABITQ_FILES_FULL ${IVF_RABITQ_FILES})
+  list(TRANSFORM IVF_RABITQ_FILES_FULL PREPEND "algorithm/ivf_rabitq/")
+  foreach(FILE ${IVF_RABITQ_FILES_FULL})
+      set_source_files_properties(
+          ${FILE}
+          PROPERTIES
+          COMPILE_FLAGS "${RABITQ_ARCH_FLAG}"
+      )
+  endforeach()
 endif()
 
 # utility/block_heap.cc uses AVX2 intrinsics guarded by __AVX2__. When the
@@ -59,6 +77,7 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 # for HNSWRabitqIndex and guards rabitqlib usage with #if RABITQ_SUPPORTED.
 if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/ivf_rabitq/.*")
 endif()
 
 # Always exclude algorithm/diskann implementation files from zvec_core.

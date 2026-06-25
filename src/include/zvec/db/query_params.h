@@ -170,6 +170,30 @@ class HnswRabitqQueryParams : public QueryParams {
   int ef_;
 };
 
+class IvfRabitqQueryParams : public QueryParams {
+ public:
+  IvfRabitqQueryParams(int nprobe = core_interface::kDefaultIvfRabitqNprobe,
+                       float radius = 0.0f, bool is_linear = false,
+                       bool is_using_refiner = false)
+      : QueryParams(IndexType::IVF_RABITQ), nprobe_(nprobe) {
+    set_radius(radius);
+    set_is_linear(is_linear);
+    set_is_using_refiner(is_using_refiner);
+  }
+
+  ~IvfRabitqQueryParams() override = default;
+
+  int nprobe() const {
+    return nprobe_;
+  }
+  void set_nprobe(int nprobe) {
+    nprobe_ = nprobe;
+  }
+
+ private:
+  int nprobe_;
+};
+
 class FlatQueryParams : public QueryParams {
  public:
   FlatQueryParams(bool is_using_refiner = false, float scale_factor = 10)

@@ -183,6 +183,35 @@ ailego::JsonObject HNSWRabitqIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
+bool IVFRabitqIndexParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kIVFRabitq) {
+    LOG_ERROR("index_type is not kIVFRabitq");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
+  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
+
+  return true;
+}
+
+ailego::JsonObject IVFRabitqIndexParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  json_obj.set("nlist", ailego::JsonValue(nlist));
+  json_obj.set("total_bits", ailego::JsonValue(total_bits));
+  if (!omit_empty_value || sample_count != 0) {
+    json_obj.set("sample_count", ailego::JsonValue(sample_count));
+  }
+  return json_obj;
+}
+
 ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
     bool omit_empty_value) const {
   auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);

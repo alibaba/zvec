@@ -139,21 +139,30 @@ class IndexType:
 
       HNSW
 
+      HNSW_RABITQ
+
       IVF
 
+      IVF_RABITQ
+
       FLAT
+
+      VAMANA
 
       INVERT
     """
 
-    FLAT: typing.ClassVar[IndexType]  # value = <IndexType.FLAT: 4>
+    FLAT: typing.ClassVar[IndexType]  # value = <IndexType.FLAT: 3>
     HNSW: typing.ClassVar[IndexType]  # value = <IndexType.HNSW: 1>
+    HNSW_RABITQ: typing.ClassVar[IndexType]  # value = <IndexType.HNSW_RABITQ: 4>
     INVERT: typing.ClassVar[IndexType]  # value = <IndexType.INVERT: 10>
-    IVF: typing.ClassVar[IndexType]  # value = <IndexType.IVF: 3>
+    IVF: typing.ClassVar[IndexType]  # value = <IndexType.IVF: 2>
+    IVF_RABITQ: typing.ClassVar[IndexType]  # value = <IndexType.IVF_RABITQ: 7>
     UNDEFINED: typing.ClassVar[IndexType]  # value = <IndexType.UNDEFINED: 0>
+    VAMANA: typing.ClassVar[IndexType]  # value = <IndexType.VAMANA: 6>
     __members__: typing.ClassVar[
         dict[str, IndexType]
-    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'IVF': <IndexType.IVF: 3>, 'FLAT': <IndexType.FLAT: 4>, 'INVERT': <IndexType.INVERT: 10>}
+    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'HNSW_RABITQ': <IndexType.HNSW_RABITQ: 4>, 'IVF': <IndexType.IVF: 2>, 'IVF_RABITQ': <IndexType.IVF_RABITQ: 7>, 'FLAT': <IndexType.FLAT: 3>, 'VAMANA': <IndexType.VAMANA: 6>, 'INVERT': <IndexType.INVERT: 10>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
@@ -236,15 +245,18 @@ class QuantizeType:
       INT8
 
       INT4
+
+      RABITQ
     """
 
     FP16: typing.ClassVar[QuantizeType]  # value = <QuantizeType.FP16: 1>
     INT4: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT4: 3>
     INT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT8: 2>
+    RABITQ: typing.ClassVar[QuantizeType]  # value = <QuantizeType.RABITQ: 4>
     UNDEFINED: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNDEFINED: 0>
     __members__: typing.ClassVar[
         dict[str, QuantizeType]
-    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>}
+    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>, 'RABITQ': <QuantizeType.RABITQ: 4>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...

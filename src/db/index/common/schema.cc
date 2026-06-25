@@ -57,8 +57,9 @@ std::unordered_set<DataType> support_sparse_vector_type = {
 };
 
 std::unordered_set<IndexType> support_dense_vector_index = {
-    IndexType::FLAT, IndexType::HNSW,    IndexType::HNSW_RABITQ,
-    IndexType::IVF,  IndexType::DISKANN, IndexType::VAMANA};
+    IndexType::FLAT,  IndexType::HNSW,       IndexType::HNSW_RABITQ,
+    IndexType::IVF,   IndexType::IVF_RABITQ, IndexType::DISKANN,
+    IndexType::VAMANA};
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
@@ -160,23 +161,24 @@ Status FieldSchema::validate() const {
         }
       }
 
-      if (index_params_->type() == IndexType::HNSW_RABITQ) {
+      if (index_params_->type() == IndexType::HNSW_RABITQ ||
+          index_params_->type() == IndexType::IVF_RABITQ) {
         if (dimension_ < kMinRabitqDimSize || dimension_ > kMaxRabitqDimSize) {
           return Status::InvalidArgument(
-              "schema validate failed: HNSW_RABITQ index only support "
+              "schema validate failed: RabitQ index only support "
               "dimension in [",
               kMinRabitqDimSize, ", ", kMaxRabitqDimSize, "]");
         }
         if (data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "schema validate failed: HNSW_RABITQ index only support FP32 "
+              "schema validate failed: RabitQ index only support FP32 "
               "data types");
         }
         auto metric_type = vector_index_params->metric_type();
         if (metric_type != MetricType::L2 && metric_type != MetricType::IP &&
             metric_type != MetricType::COSINE) {
           return Status::InvalidArgument(
-              "schema validate failed: HNSW_RABITQ index only support "
+              "schema validate failed: RabitQ index only support "
               "L2/IP/COSINE metric");
         }
 #if !RABITQ_SUPPORTED
