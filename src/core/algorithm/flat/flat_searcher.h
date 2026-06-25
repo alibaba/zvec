@@ -50,6 +50,7 @@ class FlatSearcher : public IndexSearcher {
     container_ = nullptr;
     measure_ = nullptr;
     features_segment_ = nullptr;
+    keys_segment_ = nullptr;
     keys_ = nullptr;
     key_id_mapping_.clear();
     return 0;
@@ -172,6 +173,7 @@ class FlatSearcher : public IndexSearcher {
   IndexMetric::Pointer measure_{};
   ailego::Params params_{};
   IndexStorage::Segment::Pointer features_segment_{};
+  IndexStorage::Segment::Pointer keys_segment_{};
   mutable std::vector<uint32_t> mapping_{};
   mutable std::mutex mapping_mutex_{};
   FlatDistanceMatrix<BATCH_SIZE> distance_matrix_{};

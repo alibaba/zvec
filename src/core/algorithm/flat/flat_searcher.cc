@@ -147,6 +147,9 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
     return IndexError_ReadData;
   }
 
+  // Keep the segment alive so that keys_ pointer remains valid
+  keys_segment_ = std::move(keys_segment);
+
   for (size_t i = 0; i < keys_count; i++) {
     key_id_mapping_[keys_[i]] = i;
   }
