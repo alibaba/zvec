@@ -28,8 +28,8 @@ from .typing.enum import LogLevel, LogType
 
 def init(
     *,
-    log_type: Optional[LogType] = LogType.CONSOLE,
-    log_level: Optional[LogLevel] = LogLevel.WARN,
+    log_type: Optional[LogType] = None,
+    log_level: Optional[LogLevel] = None,
     log_dir: Optional[str] = "./logs",
     log_basename: Optional[str] = "zvec.log",
     log_file_size: Optional[int] = 2048,
