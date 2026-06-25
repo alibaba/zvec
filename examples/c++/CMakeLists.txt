@@ -1,8 +1,45 @@
 cmake_minimum_required(VERSION 3.13)
 cmake_policy(SET CMP0077 NEW)
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+
+option(ZVEC_USE_STATIC_CRT "Use static CRT (/MT) instead of dynamic CRT (/MD), default=ON" ON)
+if(ZVEC_USE_STATIC_CRT)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+endif()
+
 project(zvec-example-c++)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(MSVC)
+    set(
+        _ZVEC_EXAMPLE_COMPILER_FLAGS
+        CMAKE_CXX_FLAGS
+        CMAKE_CXX_FLAGS_DEBUG
+        CMAKE_CXX_FLAGS_RELEASE
+        CMAKE_CXX_FLAGS_RELWITHDEBINFO
+        CMAKE_CXX_FLAGS_MINSIZEREL
+        CMAKE_C_FLAGS
+        CMAKE_C_FLAGS_DEBUG
+        CMAKE_C_FLAGS_RELEASE
+        CMAKE_C_FLAGS_RELWITHDEBINFO
+        CMAKE_C_FLAGS_MINSIZEREL
+    )
+    if(ZVEC_USE_STATIC_CRT)
+        foreach(_ZVEC_EXAMPLE_COMPILER_FLAG ${_ZVEC_EXAMPLE_COMPILER_FLAGS})
+            string(REPLACE "/MD" "/MT" ${_ZVEC_EXAMPLE_COMPILER_FLAG} "${${_ZVEC_EXAMPLE_COMPILER_FLAG}}")
+        endforeach()
+    else()
+        foreach(_ZVEC_EXAMPLE_COMPILER_FLAG ${_ZVEC_EXAMPLE_COMPILER_FLAGS})
+            string(REPLACE "/MT" "/MD" ${_ZVEC_EXAMPLE_COMPILER_FLAG} "${${_ZVEC_EXAMPLE_COMPILER_FLAG}}")
+        endforeach()
+    endif()
+    unset(_ZVEC_EXAMPLE_COMPILER_FLAGS)
+endif()
 
 # Enable compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -37,10 +74,6 @@ if(CMAKE_BUILD_TYPE)
         list(APPEND ZVEC_LIB_SEARCH_DIRS ${ZVEC_CONFIG_LIB_DIR})
     endif()
 endif()
-if(WIN32)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-
 function(zvec_find_shared_library OUT_VAR LIB_NAME)
     unset(${OUT_VAR} CACHE)
     if(WIN32)
