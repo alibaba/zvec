@@ -336,6 +336,11 @@ class IndexStorage : public IndexModule {
     virtual size_t abs_data_offset(void) const {
       return 0;
     }
+
+    virtual void prefetch(size_t offset, size_t len) {
+      (void)offset;
+      (void)len;
+    }
   };
 
   //! Destructor

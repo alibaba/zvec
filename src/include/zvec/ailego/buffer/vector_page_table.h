@@ -296,6 +296,8 @@ class VecBufferPool {
   //! Sequentially preload pages into the pool until pool is full.
   void warmup();
 
+  void prefetch_pages(block_id_t first_page, size_t page_count);
+
   //! Try to acquire a page buffer WITHOUT triggering disk I/O.
   //! Returns the buffer pointer if the page is already in memory,
   //! or nullptr if the page would need a pread (cache miss).
@@ -339,6 +341,8 @@ class VecBufferPoolHandle {
   char *get_single_page(size_t file_offset, size_t len, size_t &out_page_id);
 
   bool read_range(size_t file_offset, size_t len, char *out);
+
+  void prefetch_range(size_t file_offset, size_t len);
 
   int get_meta(size_t offset, size_t length, char *buffer);
 

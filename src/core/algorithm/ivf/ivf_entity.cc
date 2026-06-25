@@ -593,11 +593,13 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   auto list_meta = this->inverted_list_meta(inverted_list_id);
   ivf_assert(list_meta, IndexError_ReadData);
 
+  const size_t block_size = header_.block_size;
+  inverted_->prefetch(list_meta->offset, list_meta->block_count * block_size);
+
   const void *data = nullptr;
   const size_t block_vecs = header_.block_vector_count;
   std::vector<float> distances(block_vecs);
   const size_t batch_size = kBatchBlocks;
-  const size_t block_size = header_.block_size;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
   for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
     //! Read vecs
@@ -667,11 +669,13 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   auto list_meta = inverted_list_meta(inverted_list_id);
   ivf_assert(list_meta, IndexError_ReadData);
 
+  const size_t block_size = header_.block_size;
+  inverted_->prefetch(list_meta->offset, list_meta->block_count * block_size);
+
   const void *data = nullptr;
   const size_t block_vecs = header_.block_vector_count;
   std::vector<float> distances(block_vecs);
   const size_t batch_size = kBatchBlocks;
-  const size_t block_size = header_.block_size;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
   for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
     //! Read vecs

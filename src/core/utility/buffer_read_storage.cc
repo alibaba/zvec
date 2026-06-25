@@ -238,6 +238,14 @@ class BufferReadStorage : public IndexStorage {
       return std::make_shared<BufferReadStorage::Segment>(*this);
     }
 
+    void prefetch(size_t offset, size_t len) override {
+      if (offset + len > region_size_) {
+        len = (offset > region_size_) ? 0 : region_size_ - offset;
+      }
+      if (len == 0) return;
+      handle_->prefetch_range(data_offset_ + offset, len);
+    }
+
     //! No stable base pointer: data lives in an evictable paged cache.
     const uint8_t *base_data(void) const override {
       return nullptr;

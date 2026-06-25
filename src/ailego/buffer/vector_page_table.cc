@@ -769,5 +769,72 @@ void VecBufferPool::warmup() {
            loaded, total_pages, file_name_.c_str());
 }
 
+void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count) {
+  size_t end_page = first_page + page_count;
+  if (end_page > page_table_.entry_num()) {
+    end_page = page_table_.entry_num();
+  }
+  if (first_page >= end_page) return;
+
+  bool all_loaded = true;
+  for (size_t pg = first_page; pg < end_page; ++pg) {
+    if (!page_table_.is_loaded(pg)) {
+      all_loaded = false;
+      break;
+    }
+  }
+  if (all_loaded) return;
+
+  static constexpr size_t kChunkPages = 1024;
+  const size_t kChunkSize = kChunkPages * kVectorPageSize;
+  char *chunk_buf = static_cast<char *>(aligned_alloc(4096, kChunkSize));
+  if (!chunk_buf) return;
+
+  size_t pg = first_page;
+  while (pg < end_page) {
+    if (page_table_.is_loaded(pg)) {
+      ++pg;
+      continue;
+    }
+    size_t run_start = pg;
+    size_t run_end = pg + 1;
+    while (run_end < end_page && !page_table_.is_loaded(run_end) &&
+           (run_end - run_start) < kChunkPages) {
+      ++run_end;
+    }
+
+    size_t run_pages = run_end - run_start;
+    size_t read_bytes = run_pages * kVectorPageSize;
+    size_t file_off = run_start * kVectorPageSize;
+    ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_off);
+    if (got != static_cast<ssize_t>(read_bytes)) {
+      pg = run_end;
+      continue;
+    }
+
+    for (size_t j = 0; j < run_pages; ++j) {
+      block_id_t pid = static_cast<block_id_t>(run_start + j);
+      if (page_table_.is_loaded(pid)) continue;
+      char *buf = nullptr;
+      bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
+          kVectorPageSize, buf);
+      if (!found) break;
+      std::memcpy(buf, chunk_buf + j * kVectorPageSize, kVectorPageSize);
+      page_table_.set_block_acquired(pid, buf, file_off + j * kVectorPageSize);
+      page_table_.release_block(pid);
+    }
+    pg = run_end;
+  }
+  free(chunk_buf);
+}
+
+void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len) {
+  if (len == 0) return;
+  size_t first_page = file_offset / kVectorPageSize;
+  size_t last_page = (file_offset + len - 1) / kVectorPageSize;
+  pool_.prefetch_pages(static_cast<block_id_t>(first_page),
+                       last_page - first_page + 1);
+}
+
 }  // namespace ailego
 }  // namespace zvec
