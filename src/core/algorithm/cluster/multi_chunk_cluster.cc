@@ -201,16 +201,18 @@ int MultiChunkClusterAlgorithm::cluster(IndexThreads::Pointer threads,
                              threads->count(), &cents, &finished));
   }
 
-  while (!task_group->is_finished()) {
+  {
     std::unique_lock<std::mutex> lk(mutex_);
-    cond_.wait_until(lk, std::chrono::system_clock::now() +
-                             std::chrono::seconds(check_interval_secs_));
-    if (error_.load(std::memory_order_acquire)) {
-      LOG_ERROR("Failed to cluster while waiting finish");
-      return errcode_;
+    while (finished.load() < chunk_count_) {
+      cond_.wait_until(lk, std::chrono::system_clock::now() +
+                               std::chrono::seconds(check_interval_secs_));
+      if (error_.load(std::memory_order_acquire)) {
+        LOG_ERROR("Failed to cluster while waiting finish");
+        return errcode_;
+      }
+      LOG_INFO("Finish Chunk Count %zu, Finished Percent %.3f%%",
+               finished.load(), finished.load() * 100.0f / chunk_count_);
     }
-    LOG_INFO("Finish Chunk Count %zu, Finished Percent %.3f%%", finished.load(),
-             finished.load() * 100.0f / chunk_count_);
   }
 
   if (error_.load(std::memory_order_acquire)) {
@@ -284,16 +286,18 @@ int MultiChunkClusterAlgorithm::label(IndexThreads::Pointer threads,
                              threads->count(), cents, out, &finished));
   }
 
-  while (!task_group->is_finished()) {
+  {
     std::unique_lock<std::mutex> lk(mutex_);
-    cond_.wait_until(lk, std::chrono::system_clock::now() +
-                             std::chrono::seconds(check_interval_secs_));
-    if (error_.load(std::memory_order_acquire)) {
-      LOG_ERROR("Failed to cluster while waiting finish");
-      return errcode_;
+    while (finished.load() < features_count) {
+      cond_.wait_until(lk, std::chrono::system_clock::now() +
+                               std::chrono::seconds(check_interval_secs_));
+      if (error_.load(std::memory_order_acquire)) {
+        LOG_ERROR("Failed to cluster while waiting finish");
+        return errcode_;
+      }
+      LOG_INFO("Finish label cnt %zu, finished percent %.3f%%", finished.load(),
+               finished.load() * 100.0f / features_count);
     }
-    LOG_INFO("Finish label cnt %zu, finished percent %.3f%%", finished.load(),
-             finished.load() * 100.0f / features_count);
   }
 
   if (error_.load(std::memory_order_acquire)) {
