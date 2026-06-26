@@ -285,7 +285,9 @@ class CosineConverter : public IndexConverter {
 
     ailego::Params reformer_params;
 
-    if (enable_rotate_) {
+    // Rotation only applies to integer quantization (INT8/INT4).
+    if (enable_rotate_ && (dst_type_ == IndexMeta::DataType::DT_INT8 ||
+                           dst_type_ == IndexMeta::DataType::DT_INT4)) {
       size_t dim = index_meta.dimension();
       int ret = Rotator::create(&rotator_, dim);
       if (ret != 0) {
@@ -294,6 +296,8 @@ class CosineConverter : public IndexConverter {
         return ret;
       }
       LOG_DEBUG("CosineConverter: rotation enabled, dim=%zu", dim);
+    } else {
+      enable_rotate_ = false;
     }
 
     if (dst_type_ == IndexMeta::DataType::DT_INT8) {

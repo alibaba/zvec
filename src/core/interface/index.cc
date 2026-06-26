@@ -182,18 +182,21 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
     }
   }
 
-  // Pass enable_rotate to converter_params (only effective for INT8)
+  // Pass enable_rotate to converter_params (effective for INT8 and INT4)
   if (param.enable_rotate) {
-    if (param.type == QuantizerType::kInt8) {
+    if (param.type == QuantizerType::kInt8 ||
+        param.type == QuantizerType::kInt4) {
       if (index_param.metric_type == MetricType::kCosine) {
         converter_params.set("cosine.converter.enable_rotate", true);
       } else {
         converter_params.set("integer_streaming.converter.enable_rotate", true);
       }
     } else {
-      LOG_WARN(
-          "enable_rotate is only supported for INT8 quantizer, "
-          "ignoring for current quantizer type");
+      LOG_ERROR(
+          "enable_rotate is only supported for INT8/INT4 quantizer, "
+          "but got quantizer type: %d",
+          static_cast<int>(param.type));
+      return core::IndexError_Unsupported;
     }
   }
 
@@ -358,7 +361,11 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     // storage so the reformer can load it.  This is needed for
     // enable_rotate with INT8 quantization.
     if (storage_options.create_new && converter_ != nullptr) {
-      converter_->dump_to_storage(storage_);
+      if (converter_->dump_to_storage(storage_) != 0) {
+        LOG_ERROR("Failed to dump converter to storage, path: %s",
+                  file_path.c_str());
+        return core::IndexError_Runtime;
+      }
     }
     if (reformer_->load(storage_) != 0) {
       LOG_ERROR("Failed to load reformer, path: %s", file_path.c_str());

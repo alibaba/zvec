@@ -145,7 +145,6 @@ class Rotator {
 
   // Serialization constants (shared by dump/open)
   static constexpr size_t kHeaderSize = 24;
-  static constexpr size_t kLegacyHeaderSize = 12;
   static constexpr uint32_t kMagic = 0x52544F52;  // "ROTR"
   static constexpr uint16_t kVersion = 1;
 };

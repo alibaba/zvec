@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <vector>
 #include <ailego/algorithm/integer_quantizer.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
@@ -509,10 +508,7 @@ class IntegerStreamingReformer : public IndexReformer {
 
     // Step 2: Inverse rotate in-place if rotation was applied
     if (enable_rotate_ && rotator_) {
-      std::vector<float> tmp(rotator_->dimension());
-      rotator_->unrotate(out_buf, tmp.data());
-      out->assign(reinterpret_cast<const char *>(tmp.data()),
-                  tmp.size() * sizeof(float));
+      rotator_->unrotate(out_buf, out_buf);
     }
 
     return 0;

@@ -1060,9 +1060,9 @@ class QuantizerParam:
     random rotation). It can be omitted for default quantization settings.
 
     Attributes:
-        enable_rotate (bool): Whether to apply random rotation before INT8
+        enable_rotate (bool): Whether to apply random rotation before INT8/INT4
             quantization to reduce quantization error.
-            Only effective with quantize_type=INT8. Defaults to False.
+            Only effective with quantize_type=INT8 or INT4. Defaults to False.
 
     Examples:
         >>> qp = QuantizerParam(enable_rotate=True)
@@ -1077,7 +1077,7 @@ class QuantizerParam:
 
         Args:
             enable_rotate (bool, optional): Whether to apply random rotation
-                before INT8 quantization. Defaults to False.
+                before INT8/INT4 quantization. Defaults to False.
         """
 
     def __repr__(self) -> str: ...
@@ -1091,7 +1091,7 @@ class QuantizerParam:
     @property
     def enable_rotate(self) -> bool:
         """
-        bool: Whether random rotation is enabled before INT8 quantization.
+        bool: Whether random rotation is enabled before INT8/INT4 quantization.
         """
 
 class VectorIndexParam(IndexParam):

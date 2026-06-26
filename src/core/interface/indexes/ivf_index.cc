@@ -122,8 +122,9 @@ int IVFIndex::Open(const std::string &file_path,
       return core::IndexError_Runtime;
     }
     // Load reformer data from storage (e.g., rotation matrix for INT8+rotate)
-    if (reformer_ != nullptr) {
-      reformer_->load(storage_);
+    if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
+      LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
+      return core::IndexError_Runtime;
     }
     is_trained_ = true;
   }
@@ -169,8 +170,9 @@ int IVFIndex::Train() {
   dumper->create(file_path_);
   builder_->dump(dumper);
   // Dump converter state (e.g., rotator for INT8+rotate) to dumper
-  if (converter_) {
-    converter_->dump(dumper);
+  if (converter_ && converter_->dump(dumper) != 0) {
+    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
   }
   dumper->close();
   int ret = storage_->open(file_path_, false);
@@ -184,8 +186,9 @@ int IVFIndex::Train() {
     return core::IndexError_Runtime;
   }
   // Load reformer data from storage (e.g., rotation matrix)
-  if (reformer_ != nullptr) {
-    reformer_->load(storage_);
+  if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
+    LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
   }
   is_trained_ = true;
   return 0;
@@ -239,8 +242,9 @@ int IVFIndex::Merge(const std::vector<Index::Pointer> &indexes,
   dumper->create(file_path_);
   builder_->dump(dumper);
   // Dump converter state (e.g., rotator for INT8+rotate) to dumper
-  if (converter_) {
-    converter_->dump(dumper);
+  if (converter_ && converter_->dump(dumper) != 0) {
+    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
   }
   dumper->close();
   int ret = storage_->open(file_path_, false);
@@ -254,8 +258,9 @@ int IVFIndex::Merge(const std::vector<Index::Pointer> &indexes,
     return core::IndexError_Runtime;
   }
   // Load reformer data from storage (e.g., rotation matrix)
-  if (reformer_ != nullptr) {
-    reformer_->load(storage_);
+  if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
+    LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
   }
   is_trained_ = true;
   return 0;

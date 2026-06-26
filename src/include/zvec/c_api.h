@@ -962,10 +962,10 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
- * @brief Set enable_rotate for quantizer (only effective with INT8 quantize
- * type)
+ * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
+ * quantize type)
  *
- * When enabled, vectors are randomly rotated before INT8 quantization to
+ * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
  * reduce quantization error. The rotation matrix is stored with the index
  * and automatically applied to query vectors at search time.
  *

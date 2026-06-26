@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <memory>
-#include <vector>
 #include <ailego/algorithm/integer_quantizer.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
@@ -109,17 +108,10 @@ class CosineReformer : public IndexReformer {
       float *buf = reinterpret_cast<float *>(&normalized_buffer[0]);
 
       if (enable_rotate_ && rotator_) {
-        // Rotate then normalize the rotated vector
-        std::vector<float> rotate_buffer(rotator_->dimension());
-        rotator_->rotate(vec, rotate_buffer.data());
-        std::memcpy(buf, rotate_buffer.data(),
-                    origin_dimension * sizeof(float));
-        ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
-        vec = buf;
-      } else {
-        ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
-        vec = buf;
+        rotator_->rotate(vec, buf);
       }
+      ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
+      vec = buf;
 
       ::memcpy(reinterpret_cast<uint8_t *>(&(*out)[0]) + ometa->element_size() -
                    NORM_SIZE,
@@ -216,10 +208,9 @@ class CosineReformer : public IndexReformer {
                  NORM_SIZE,
              NORM_SIZE);
 
-    // Rotation was applied in transform() for all FP32-origin paths (FP32,
-    // INT8, INT4 stored types). FP16 input path never rotates.
-    const bool need_inv_rotate =
-        (type != IndexMeta::DataType::DT_FP16 && enable_rotate_ && rotator_);
+    // Rotation only applies to INT8/INT4 targets (guarded at converter init).
+    // For FP32/FP16 stored types, rotator_ is always null.
+    const bool need_inv_rotate = (enable_rotate_ && rotator_);
 
     if (type == IndexMeta::DataType::DT_FP32) {
       if (dst_type_ != IndexMeta::DataType::DT_FP32) {
@@ -231,9 +222,7 @@ class CosineReformer : public IndexReformer {
 
       this->denormalize(in_buf, out_buf, qmeta, norm);
       if (need_inv_rotate) {
-        std::vector<float> tmp(dimension);
-        rotator_->unrotate(out_buf, tmp.data());
-        std::memcpy(out_buf, tmp.data(), dimension * sizeof(float));
+        rotator_->unrotate(out_buf, out_buf);
       }
     } else if (type == IndexMeta::DataType::DT_FP16) {
       if (dst_type_ != IndexMeta::DataType::DT_FP16) {
@@ -270,9 +259,7 @@ class CosineReformer : public IndexReformer {
 
       this->denormalize(out_buf, out_buf, qmeta, norm);
       if (need_inv_rotate) {
-        std::vector<float> tmp(dimension);
-        rotator_->unrotate(out_buf, tmp.data());
-        std::memcpy(out_buf, tmp.data(), dimension * sizeof(float));
+        rotator_->unrotate(out_buf, out_buf);
       }
     }
 

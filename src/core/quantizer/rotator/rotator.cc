@@ -134,7 +134,7 @@ int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
   }
 
   const size_t data_size = segment->data_size();
-  if (data_size <= kLegacyHeaderSize) {
+  if (data_size <= kHeaderSize) {
     LOG_ERROR("Rotator::open: data too small (%zu bytes)", data_size);
     return IndexError_InvalidFormat;
   }
@@ -158,31 +158,18 @@ int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
     }
   }
 
-  // Detect format version via magic, then parse header accordingly
   const char *raw = reinterpret_cast<const char *>(block.data());
   uint32_t maybe_magic = read_u32_le(raw);
-  size_t header_size = 0;
-  RotatorType type;
-  size_t dim;
-
-  if (maybe_magic == kMagic) {
-    // New format (24B header)
-    if (data_size <= kHeaderSize) {
-      LOG_ERROR("Rotator::open: new-format data too small (%zu bytes)",
-                data_size);
-      return IndexError_InvalidFormat;
-    }
-    Header header;
-    header.read_from(raw);
-    type = Header::ser_to_type(header.rotator_type);
-    dim = static_cast<size_t>(header.in_dim);
-    header_size = kHeaderSize;
-  } else {
-    // Legacy format fallback (12B header)
-    type = static_cast<RotatorType>(static_cast<uint8_t>(raw[0]));
-    dim = static_cast<size_t>(read_u32_le(raw + 4));
-    header_size = kLegacyHeaderSize;
+  if (maybe_magic != kMagic) {
+    LOG_ERROR("Rotator::open: invalid magic (expected 0x%08x, got 0x%08x)",
+              kMagic, maybe_magic);
+    return IndexError_InvalidFormat;
   }
+
+  Header header;
+  header.read_from(raw);
+  RotatorType type = Header::ser_to_type(header.rotator_type);
+  size_t dim = static_cast<size_t>(header.in_dim);
 
   // Reconstruct the rotator from header info and load blob
   std::unique_ptr<Rotator> rot;
@@ -192,7 +179,7 @@ int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
     rot = std::make_unique<MatrixRotator>();
   }
   rot->dimension_ = dim;
-  rot->load_blob(raw + header_size);
+  rot->load_blob(raw + kHeaderSize);
   rot->initialized_ = true;
 
   LOG_DEBUG("Rotator::open done: seg=%s, dim=%zu, data_size=%zu",
