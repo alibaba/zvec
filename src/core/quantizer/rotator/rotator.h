@@ -56,10 +56,12 @@ class Rotator {
   // Static factories ---------------------------------------------------------
 
   //! Create and initialize a new rotator.
-  //! @param dimension     vector dimension (input and output size)
-  //! @param rotator_type  rotation algorithm (default: FhtKac)
-  static std::unique_ptr<Rotator> create(
-      size_t dimension, RotatorType rotator_type = RotatorType::FhtKac);
+  //! @param out         on success, stores the rotator; on failure, nullptr
+  //! @param dimension   vector dimension (input and output size)
+  //! @param rotator_type rotation algorithm (default: FhtKac)
+  //! @return 0 on success, error code on failure
+  static int create(std::shared_ptr<Rotator> *out, size_t dimension,
+                    RotatorType rotator_type = RotatorType::FhtKac);
 
   //! Open a rotator from an IndexStorage segment (self-describing, no init
   //! needed).  Parses header to get type/dimension, then reconstructs the
@@ -68,7 +70,7 @@ class Rotator {
   //! @param storage  index storage
   //! @param seg_id   segment identifier
   //! @return 0 on success, error code on failure
-  static int open(std::unique_ptr<Rotator> *out, IndexStorage::Pointer storage,
+  static int open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
                   const std::string &seg_id = ROTATOR_SEG_ID);
 
   //! Load a user-specified rotation matrix (always creates MatrixRotator).
@@ -124,7 +126,8 @@ class Rotator {
   // Protected virtuals — implemented by derived classes ---------------------
 
   //! Initialize the rotator's internal state for the given dimension.
-  virtual void init_impl(size_t dim) = 0;
+  //! @return 0 on success, error code on failure
+  virtual int init_impl(size_t dim) = 0;
 
   //! Return the serialized blob size (without header)
   virtual size_t blob_bytes() const = 0;

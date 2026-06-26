@@ -392,9 +392,14 @@ class IntegerStreamingConverter : public IndexConverter {
       reformer_params.set(INTEGER_STREAMING_REFORMER_IS_EUCLIDEAN, true);
     }
 
-    // Create rotator if rotation is enabled
     if (enable_rotate_) {
-      rotator_ = Rotator::create(index_meta.dimension());
+      int ret = Rotator::create(&rotator_, index_meta.dimension());
+      if (ret != 0) {
+        LOG_ERROR(
+            "IntegerStreamingConverter: create rotator failed, ret=%d, dim=%u",
+            ret, index_meta.dimension());
+        return ret;
+      }
       LOG_DEBUG("IntegerStreamingConverter: rotation enabled, dim=%zu",
                 static_cast<size_t>(index_meta.dimension()));
     }

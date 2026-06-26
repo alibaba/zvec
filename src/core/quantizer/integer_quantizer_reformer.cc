@@ -303,8 +303,7 @@ class IntegerStreamingReformer : public IndexReformer {
     // If config explicitly enables rotate but rotator not yet loaded, try
     // storage If config doesn't enable rotate, still try storage (auto-detect)
     if (enable_rotate_ || storage->get(ROTATOR_SEG_ID)) {
-      std::unique_ptr<Rotator> rotator_ptr;
-      int ret = Rotator::open(&rotator_ptr, storage);
+      int ret = Rotator::open(&rotator_, storage);
       if (ret != 0) {
         if (enable_rotate_) {
           // Config said enable_rotate but storage has no rotator — error
@@ -314,7 +313,6 @@ class IntegerStreamingReformer : public IndexReformer {
         }
         // No rotator in storage, rotation not available
       } else {
-        rotator_ = std::move(rotator_ptr);
         enable_rotate_ = true;
         LOG_DEBUG("IntegerStreamingReformer: rotator auto-loaded, dim=%zu",
                   rotator_->dimension());

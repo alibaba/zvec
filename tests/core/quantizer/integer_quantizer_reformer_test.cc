@@ -829,7 +829,8 @@ TEST(IntegerReformer, Int4InitConverterWithTrainedParams) {
 // Test FhtKac rotator (dim=200, 4-aligned, non-power-of-2 kacs_walk path)
 TEST(RotatorTest, RotateUnrotateFhtKac_Dim200) {
   const size_t dim = 200;
-  auto rotator = Rotator::create(dim);
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
   EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
@@ -854,7 +855,8 @@ TEST(RotatorTest, RotateUnrotateFhtKac_Dim200) {
 // Test FhtKac rotator (dim=96, 32-aligned but not 64-aligned, kacs_walk path)
 TEST(RotatorTest, RotateUnrotateFhtKac_Dim96) {
   const size_t dim = 96;
-  auto rotator = Rotator::create(dim);
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
   EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
@@ -879,7 +881,8 @@ TEST(RotatorTest, RotateUnrotateFhtKac_Dim96) {
 // Test FhtKac rotator (dim=768, real-world embedding dimension, kacs_walk)
 TEST(RotatorTest, RotateUnrotateFhtKac_Dim768) {
   const size_t dim = 768;
-  auto rotator = Rotator::create(dim);
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
   EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
@@ -904,7 +907,8 @@ TEST(RotatorTest, RotateUnrotateFhtKac_Dim768) {
 // Test FhtKac rotator (dim=128, power-of-2, pure FHT path)
 TEST(RotatorTest, RotateUnrotateFhtKac_Dim128) {
   const size_t dim = 128;
-  auto rotator = Rotator::create(dim);
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
   EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
@@ -929,7 +933,8 @@ TEST(RotatorTest, RotateUnrotateFhtKac_Dim128) {
 // Test FhtKac rotator (dim=97, odd, non-4-aligned, non-power-of-2 kacs_walk)
 TEST(RotatorTest, RotateUnrotateFhtKac_Dim97) {
   const size_t dim = 97;
-  auto rotator = Rotator::create(dim);
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
   EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
@@ -954,7 +959,8 @@ TEST(RotatorTest, RotateUnrotateFhtKac_Dim97) {
 // Test FhtKac rotator (dim=100, non-4-aligned, non-power-of-2 kacs_walk)
 TEST(RotatorTest, RotateUnrotateFhtKac_Dim100) {
   const size_t dim = 100;
-  auto rotator = Rotator::create(dim);
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
   EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
 
   std::mt19937 gen(42);
@@ -985,7 +991,8 @@ TEST(RotatorTest, DumpOpenRoundtrip) {
   const size_t dim = 128;
 
   // Build and dump original rotator
-  auto original = Rotator::create(dim);
+  std::shared_ptr<Rotator> original;
+  ASSERT_EQ(Rotator::create(&original, dim), 0);
   EXPECT_EQ(original->rotator_type(), RotatorType::FhtKac);
 
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -1004,7 +1011,7 @@ TEST(RotatorTest, DumpOpenRoundtrip) {
   ASSERT_EQ(0, storage2->open(test_dir + "rotator.index", false));
 
   // Load rotator from storage
-  std::unique_ptr<Rotator> loaded;
+  std::shared_ptr<Rotator> loaded;
   ASSERT_EQ(0, Rotator::open(&loaded, storage2));
 
   // Verify metadata

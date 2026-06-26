@@ -26,9 +26,15 @@ namespace ailego {
 void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
   const uint32x4_t sign_bit = vdupq_n_u32(0x80000000u);
   size_t simd_end = dim & ~3u;
+  size_t flip_bytes = (dim + 7) / 8;
   for (size_t i = 0; i < simd_end; i += 4) {
     uint16_t bits16;
-    std::memcpy(&bits16, &flip[i / 8], sizeof(bits16));
+    size_t byte_pos = i / 8;
+    if (byte_pos + 1 < flip_bytes) {
+      std::memcpy(&bits16, &flip[byte_pos], sizeof(bits16));
+    } else {
+      bits16 = flip[byte_pos];
+    }
     bits16 >>= (i % 8);
     uint32_t b0 = bits16 & 1u;
     uint32_t b1 = (bits16 >> 1) & 1u;

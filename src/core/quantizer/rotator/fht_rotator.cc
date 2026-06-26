@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <zvec/core/framework/index_error.h>
 
 namespace zvec {
 namespace core {
@@ -36,14 +37,19 @@ size_t floor_pow2(size_t n) {
 // FhtRotator method implementations
 // ============================================================================
 
-void FhtRotator::init_impl(size_t dim) {
+int FhtRotator::init_impl(size_t dim) {
+  if (dim == 0) {
+    return IndexError_InvalidArgument;
+  }
   trunc_dim = floor_pow2(dim);
   fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
-  flip.resize(4 * dim / kByteLen);
+  flip_offset_ = (dim + kByteLen - 1) / kByteLen;
+  flip.resize(4 * flip_offset_);
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_int_distribution<int> dist(0, 255);
   for (auto &b : flip) b = static_cast<uint8_t>(dist(gen));
+  return 0;
 }
 
 void FhtRotator::rotate(const float *in, float *out) const {
@@ -56,15 +62,15 @@ void FhtRotator::rotate(const float *in, float *out) const {
     ailego::fht_inplace(out, trunc_dim);
     ailego::fht_vec_rescale(out, trunc_dim, fac);
 
-    ailego::fht_flip_sign(flip.data() + dim / kByteLen, out, dim);
+    ailego::fht_flip_sign(flip.data() + flip_offset_, out, dim);
     ailego::fht_inplace(out, trunc_dim);
     ailego::fht_vec_rescale(out, trunc_dim, fac);
 
-    ailego::fht_flip_sign(flip.data() + 2 * dim / kByteLen, out, dim);
+    ailego::fht_flip_sign(flip.data() + 2 * flip_offset_, out, dim);
     ailego::fht_inplace(out, trunc_dim);
     ailego::fht_vec_rescale(out, trunc_dim, fac);
 
-    ailego::fht_flip_sign(flip.data() + 3 * dim / kByteLen, out, dim);
+    ailego::fht_flip_sign(flip.data() + 3 * flip_offset_, out, dim);
     ailego::fht_inplace(out, trunc_dim);
     ailego::fht_vec_rescale(out, trunc_dim, fac);
 
@@ -82,19 +88,19 @@ void FhtRotator::rotate(const float *in, float *out) const {
   ailego::fht_kacs_walk(out, dim);
 
   // Round 2: FHT on [start, start + trunc_dim)
-  ailego::fht_flip_sign(flip.data() + dim / kByteLen, out, dim);
+  ailego::fht_flip_sign(flip.data() + flip_offset_, out, dim);
   ailego::fht_inplace(trunc_ptr, trunc_dim);
   ailego::fht_vec_rescale(trunc_ptr, trunc_dim, fac);
   ailego::fht_kacs_walk(out, dim);
 
   // Round 3: FHT on [0, trunc_dim)
-  ailego::fht_flip_sign(flip.data() + 2 * dim / kByteLen, out, dim);
+  ailego::fht_flip_sign(flip.data() + 2 * flip_offset_, out, dim);
   ailego::fht_inplace(out, trunc_dim);
   ailego::fht_vec_rescale(out, trunc_dim, fac);
   ailego::fht_kacs_walk(out, dim);
 
   // Round 4: FHT on [start, start + trunc_dim)
-  ailego::fht_flip_sign(flip.data() + 3 * dim / kByteLen, out, dim);
+  ailego::fht_flip_sign(flip.data() + 3 * flip_offset_, out, dim);
   ailego::fht_inplace(trunc_ptr, trunc_dim);
   ailego::fht_vec_rescale(trunc_ptr, trunc_dim, fac);
   ailego::fht_kacs_walk(out, dim);
@@ -114,7 +120,7 @@ void FhtRotator::unrotate(const float *in, float *out) const {
     for (int round = 3; round >= 0; --round) {
       ailego::fht_inplace(data.data(), trunc_dim);
       ailego::fht_vec_rescale(data.data(), trunc_dim, inv_fac);
-      ailego::fht_flip_sign(flip.data() + round * dim / kByteLen, data.data(),
+      ailego::fht_flip_sign(flip.data() + round * flip_offset_, data.data(),
                             dim);
     }
     std::memcpy(out, data.data(), dim * sizeof(float));
@@ -132,19 +138,19 @@ void FhtRotator::unrotate(const float *in, float *out) const {
   ailego::fht_inv_kacs_walk(data.data(), dim);
   ailego::fht_inplace(trunc_ptr, trunc_dim);
   ailego::fht_vec_rescale(trunc_ptr, trunc_dim, inv_fac);
-  ailego::fht_flip_sign(flip.data() + 3 * dim / kByteLen, data.data(), dim);
+  ailego::fht_flip_sign(flip.data() + 3 * flip_offset_, data.data(), dim);
 
   // Undo Round 3 (FHT on [0, trunc_dim))
   ailego::fht_inv_kacs_walk(data.data(), dim);
   ailego::fht_inplace(data.data(), trunc_dim);
   ailego::fht_vec_rescale(data.data(), trunc_dim, inv_fac);
-  ailego::fht_flip_sign(flip.data() + 2 * dim / kByteLen, data.data(), dim);
+  ailego::fht_flip_sign(flip.data() + 2 * flip_offset_, data.data(), dim);
 
   // Undo Round 2 (FHT on [start, start+trunc_dim))
   ailego::fht_inv_kacs_walk(data.data(), dim);
   ailego::fht_inplace(trunc_ptr, trunc_dim);
   ailego::fht_vec_rescale(trunc_ptr, trunc_dim, inv_fac);
-  ailego::fht_flip_sign(flip.data() + dim / kByteLen, data.data(), dim);
+  ailego::fht_flip_sign(flip.data() + flip_offset_, data.data(), dim);
 
   // Undo Round 1 (FHT on [0, trunc_dim))
   ailego::fht_inv_kacs_walk(data.data(), dim);
@@ -165,11 +171,12 @@ void FhtRotator::save_blob(char *data) const {
 
 void FhtRotator::load_blob(const char *data) {
   // Recompute derived fields from dimension_ (init_impl is not called
-  // during open, so trunc_dim/fac must be restored here)
+  // during open, so trunc_dim/fac/flip_offset_ must be restored here)
   trunc_dim = floor_pow2(dimension_);
   fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
+  flip_offset_ = (dimension_ + kByteLen - 1) / kByteLen;
   // Load flip data
-  flip.resize(4 * dimension_ / kByteLen);
+  flip.resize(4 * flip_offset_);
   std::memcpy(flip.data(), data, flip.size());
 }
 

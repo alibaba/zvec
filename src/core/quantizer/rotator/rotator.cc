@@ -98,8 +98,9 @@ struct Header {
 // Static factories
 // ============================================================================
 
-std::unique_ptr<Rotator> Rotator::create(size_t dimension,
-                                         RotatorType rotator_type) {
+int Rotator::create(std::shared_ptr<Rotator> *out, size_t dimension,
+                    RotatorType rotator_type) {
+  *out = nullptr;
   std::unique_ptr<Rotator> rot;
   if (rotator_type == RotatorType::FhtKac) {
     rot = std::make_unique<FhtRotator>();
@@ -107,12 +108,18 @@ std::unique_ptr<Rotator> Rotator::create(size_t dimension,
     rot = std::make_unique<MatrixRotator>();
   }
   rot->dimension_ = dimension;
-  rot->init_impl(dimension);
+  int ret = rot->init_impl(dimension);
+  if (ret != 0) {
+    LOG_ERROR("Rotator::create: init_impl failed, ret=%d, dim=%zu", ret,
+              dimension);
+    return ret;
+  }
   rot->initialized_ = true;
-  return rot;
+  *out = std::move(rot);
+  return 0;
 }
 
-int Rotator::open(std::unique_ptr<Rotator> *out, IndexStorage::Pointer storage,
+int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
                   const std::string &seg_id) {
   *out = nullptr;
   if (!storage) {

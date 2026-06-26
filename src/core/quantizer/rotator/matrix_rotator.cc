@@ -18,6 +18,7 @@
 #include <cstring>
 #include <random>
 #include <vector>
+#include <zvec/core/framework/index_error.h>
 
 namespace zvec {
 namespace core {
@@ -111,7 +112,10 @@ void householder_qr(const float *A_in, float *q, size_t dim) {
 
 }  // anonymous namespace
 
-void MatrixRotator::init_impl(size_t dim) {
+int MatrixRotator::init_impl(size_t dim) {
+  if (dim == 0) {
+    return IndexError_InvalidArgument;
+  }
   // Generate dim x dim random Gaussian matrix
   std::vector<float> rand_mat(dim * dim);
   random_gaussian_matrix(rand_mat.data(), dim);
@@ -127,6 +131,7 @@ void MatrixRotator::init_impl(size_t dim) {
       matrix_[j * dim + i] = Q[i * dim + j];
     }
   }
+  return 0;
 }
 
 void MatrixRotator::rotate(const float *in, float *out) const {

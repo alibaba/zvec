@@ -58,15 +58,13 @@ class CosineReformer : public IndexReformer {
   //! Auto-detects rotation by checking for rotator segment in storage.
   int load(IndexStorage::Pointer storage) override {
     if (enable_rotate_ || storage->get(ROTATOR_SEG_ID)) {
-      std::unique_ptr<Rotator> rotator_ptr;
-      int ret = Rotator::open(&rotator_ptr, storage);
+      int ret = Rotator::open(&rotator_, storage);
       if (ret != 0) {
         if (enable_rotate_) {
           LOG_ERROR("CosineReformer: load rotator failed, ret=%d", ret);
           return ret;
         }
       } else {
-        rotator_ = std::move(rotator_ptr);
         enable_rotate_ = true;
         LOG_DEBUG("CosineReformer: rotator auto-loaded, dim=%zu",
                   rotator_->dimension());

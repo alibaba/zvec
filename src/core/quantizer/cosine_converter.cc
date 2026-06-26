@@ -287,7 +287,12 @@ class CosineConverter : public IndexConverter {
 
     if (enable_rotate_) {
       size_t dim = index_meta.dimension();
-      rotator_ = Rotator::create(dim);
+      int ret = Rotator::create(&rotator_, dim);
+      if (ret != 0) {
+        LOG_ERROR("CosineConverter: create rotator failed, ret=%d, dim=%zu",
+                  ret, dim);
+        return ret;
+      }
       LOG_DEBUG("CosineConverter: rotation enabled, dim=%zu", dim);
     }
 

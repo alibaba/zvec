@@ -42,13 +42,14 @@ class FhtRotator : public Rotator {
 
  protected:
   // Protected virtuals for base class factory/serialization
-  void init_impl(size_t dim) override;
+  int init_impl(size_t dim) override;
   size_t blob_bytes() const override;
   void save_blob(char *data) const override;
   void load_blob(const char *data) override;
 
  private:
   std::vector<uint8_t> flip;
+  size_t flip_offset_{0};  // bytes per round: ceil(dim / 8)
   size_t trunc_dim{0};
   float fac{0};
 
