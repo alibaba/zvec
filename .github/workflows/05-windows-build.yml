@@ -118,7 +118,19 @@ jobs:
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          $oldErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
           cmake --build . --config Release --parallel $env:NPROC
+          $buildExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $oldErrorActionPreference
+          if ($buildExitCode -ne 0) {
+            Write-Host "C++ example link response files:"
+            Get-ChildItem -Path . -Filter "*.rsp" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "---- $($_.FullName) ----"
+              Get-Content $_.FullName
+            }
+            exit $buildExitCode
+          }
 
           # Copy zvec DLLs next to the example executables so Windows can find them.
           # CMake places DLLs in bin/ (RUNTIME output) and import libs in lib/.

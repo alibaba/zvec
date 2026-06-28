@@ -126,7 +126,7 @@ if(WIN32)
     endif()
 
     add_library(zvec-lib INTERFACE)
-    target_link_libraries(zvec-lib INTERFACE ${ZVEC_WINDOWS_LIBRARIES})
+    target_link_libraries(zvec-lib INTERFACE ${ZVEC_WINDOWS_LIBRARIES} Rpcrt4.lib)
 
     add_library(zvec-ailego-lib INTERFACE)
     target_link_libraries(zvec-ailego-lib INTERFACE ${ZVEC_WINDOWS_LIBRARIES})
@@ -157,9 +157,6 @@ set(ZVEC_EXAMPLE_TARGETS)
 
 add_executable(db-example db/main.cc)
 target_link_libraries(db-example PRIVATE zvec-lib)
-if(WIN32)
-    target_link_libraries(db-example PRIVATE Rpcrt4.lib)
-endif()
 if(ANDROID)
     target_link_libraries(db-example PRIVATE log)
 endif()
