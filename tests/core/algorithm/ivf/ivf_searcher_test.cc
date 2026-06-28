@@ -256,7 +256,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
   auto context = searcher.create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
 
-  // single bf serch
+  // single bf search
   {
     size_t topk = 33;
     context->set_topk(topk);
@@ -271,7 +271,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
     }
   }
 
-  // batch bf serch
+  // batch bf search
   {
     size_t topk = 1;
     context->set_topk(topk);
@@ -301,7 +301,7 @@ TEST_F(IVFSearcherTest, TestSimple) {
     }
   }
 
-  // batch knn serch
+  // batch knn search
   {
     size_t topk = 1;
     context->set_topk(topk);
@@ -469,7 +469,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
   auto context = searcher.create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
 
-  // single bf serch
+  // single bf search
   {
     size_t topk = (size_t)total;
     context->set_topk(topk);
@@ -484,7 +484,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
     }
   }
 
-  // batch bf serch
+  // batch bf search
   {
     size_t topk = 1;
     context->set_topk(topk);

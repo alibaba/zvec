@@ -120,15 +120,49 @@ class InvertIndexParams : public IndexParams {
 };
 
 /*
+ * Quantizer parameters for vector indexes.
+ * Encapsulates quantization-related settings such as enable_rotate.
+ * Designed for future extensibility (e.g., num_bits, calibration_size).
+ */
+class QuantizerParam {
+ public:
+  QuantizerParam() = default;
+  explicit QuantizerParam(bool enable_rotate) : enable_rotate_(enable_rotate) {}
+
+  bool enable_rotate() const {
+    return enable_rotate_;
+  }
+
+  void set_enable_rotate(bool v) {
+    enable_rotate_ = v;
+  }
+
+  bool operator==(const QuantizerParam &other) const {
+    return enable_rotate_ == other.enable_rotate_;
+  }
+
+  bool operator!=(const QuantizerParam &other) const {
+    return !(*this == other);
+  }
+
+ private:
+  // When enabled, vectors are rotated before INT8 quantization to reduce
+  // quantization error. Only effective with quantize_type=INT8.
+  bool enable_rotate_{false};
+};
+
+/*
  * Column index params
  */
 class VectorIndexParams : public IndexParams {
  public:
   VectorIndexParams(IndexType type, MetricType metric_type,
-                    QuantizeType quantize_type = QuantizeType::UNDEFINED)
+                    QuantizeType quantize_type = QuantizeType::UNDEFINED,
+                    QuantizerParam quantizer_param = {})
       : IndexParams(type),
         metric_type_(metric_type),
-        quantize_type_(quantize_type) {}
+        quantize_type_(quantize_type),
+        quantizer_param_(quantizer_param) {}
 
   ~VectorIndexParams() override = default;
 
@@ -152,9 +186,23 @@ class VectorIndexParams : public IndexParams {
     quantize_type_ = quantize_type;
   }
 
+  const QuantizerParam &quantizer_param() const {
+    return quantizer_param_;
+  }
+
+  void set_quantizer_param(const QuantizerParam &quantizer_param) {
+    quantizer_param_ = quantizer_param;
+  }
+
+  // Convenience getter for internal use (engine_helper, segment, etc.)
+  bool enable_rotate() const {
+    return quantizer_param_.enable_rotate();
+  }
+
  protected:
   MetricType metric_type_;
   QuantizeType quantize_type_;
+  QuantizerParam quantizer_param_;
 };
 
 /*
@@ -166,8 +214,9 @@ class HnswIndexParams : public VectorIndexParams {
       MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      bool use_contiguous_memory = false)
-      : VectorIndexParams(IndexType::HNSW, metric_type, quantize_type),
+      bool use_contiguous_memory = false, QuantizerParam quantizer_param = {})
+      : VectorIndexParams(IndexType::HNSW, metric_type, quantize_type,
+                          quantizer_param),
         m_(m),
         ef_construction_(ef_construction),
         use_contiguous_memory_(use_contiguous_memory) {}
@@ -176,9 +225,9 @@ class HnswIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<HnswIndexParams>(metric_type_, m_, ef_construction_,
-                                             quantize_type_,
-                                             use_contiguous_memory_);
+    return std::make_shared<HnswIndexParams>(
+        metric_type_, m_, ef_construction_, quantize_type_,
+        use_contiguous_memory_, quantizer_param_);
   }
 
   std::string to_string() const override {
@@ -187,7 +236,8 @@ class HnswIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
         << ",use_contiguous_memory:"
-        << (use_contiguous_memory_ ? "true" : "false") << "}";
+        << (use_contiguous_memory_ ? "true" : "false") << ",enable_rotate:"
+        << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -201,7 +251,9 @@ class HnswIndexParams : public VectorIndexParams {
            quantize_type() ==
                static_cast<const HnswIndexParams &>(other).quantize_type() &&
            use_contiguous_memory_ == static_cast<const HnswIndexParams &>(other)
-                                         .use_contiguous_memory_;
+                                         .use_contiguous_memory_ &&
+           quantizer_param_ ==
+               static_cast<const HnswIndexParams &>(other).quantizer_param_;
   }
 
   void set_m(int m) {
@@ -349,21 +401,25 @@ class HnswRabitqIndexParams : public VectorIndexParams {
 class FlatIndexParams : public VectorIndexParams {
  public:
   FlatIndexParams(MetricType metric_type,
-                  QuantizeType quantize_type = QuantizeType::UNDEFINED)
-      : VectorIndexParams(IndexType::FLAT, metric_type, quantize_type) {}
+                  QuantizeType quantize_type = QuantizeType::UNDEFINED,
+                  QuantizerParam quantizer_param = {})
+      : VectorIndexParams(IndexType::FLAT, metric_type, quantize_type,
+                          quantizer_param) {}
 
   using OPtr = std::shared_ptr<FlatIndexParams>;
 
  public:
   Ptr clone() const override {
-    return std::make_shared<FlatIndexParams>(metric_type_, quantize_type_);
+    return std::make_shared<FlatIndexParams>(metric_type_, quantize_type_,
+                                             quantizer_param_);
   }
 
   std::string to_string() const override {
     auto base_str = vector_index_params_to_string("FlatIndexParams",
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
-    oss << base_str << "}";
+    oss << base_str << ",enable_rotate:"
+        << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -372,7 +428,9 @@ class FlatIndexParams : public VectorIndexParams {
            metric_type() ==
                static_cast<const VectorIndexParams &>(other).metric_type() &&
            quantize_type() ==
-               static_cast<const VectorIndexParams &>(other).quantize_type();
+               static_cast<const VectorIndexParams &>(other).quantize_type() &&
+           quantizer_param() ==
+               static_cast<const VectorIndexParams &>(other).quantizer_param();
   }
 };
 
@@ -384,16 +442,19 @@ inline FlatIndexParams MakeDefaultVectorIndexParams(MetricType metric_type) {
 }
 
 inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
-    MetricType metric_type, QuantizeType quantize_type) {
-  return FlatIndexParams(metric_type, quantize_type);
+    MetricType metric_type, QuantizeType quantize_type,
+    QuantizerParam quantizer_param = {}) {
+  return FlatIndexParams(metric_type, quantize_type, quantizer_param);
 }
 
 class IVFIndexParams : public VectorIndexParams {
  public:
   IVFIndexParams(MetricType metric_type, int n_list = 1024, int n_iters = 10,
                  bool use_soar = false,
-                 QuantizeType quantize_type = QuantizeType::UNDEFINED)
-      : VectorIndexParams(IndexType::IVF, metric_type, quantize_type),
+                 QuantizeType quantize_type = QuantizeType::UNDEFINED,
+                 QuantizerParam quantizer_param = {})
+      : VectorIndexParams(IndexType::IVF, metric_type, quantize_type,
+                          quantizer_param),
         n_list_(n_list),
         n_iters_(n_iters),
         use_soar_(use_soar) {}
@@ -403,14 +464,17 @@ class IVFIndexParams : public VectorIndexParams {
  public:
   Ptr clone() const override {
     return std::make_shared<IVFIndexParams>(metric_type_, n_list_, n_iters_,
-                                            use_soar_, quantize_type_);
+                                            use_soar_, quantize_type_,
+                                            quantizer_param_);
   }
 
   std::string to_string() const override {
     auto base_str = vector_index_params_to_string("IVFIndexParams",
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
-    oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_ << "}";
+    oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_
+        << ",enable_rotate:"
+        << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -446,7 +510,9 @@ class IVFIndexParams : public VectorIndexParams {
            n_iters_ == static_cast<const IVFIndexParams &>(other).n_iters_ &&
            use_soar_ == static_cast<const IVFIndexParams &>(other).use_soar_ &&
            quantize_type() ==
-               static_cast<const IVFIndexParams &>(other).quantize_type();
+               static_cast<const IVFIndexParams &>(other).quantize_type() &&
+           quantizer_param_ ==
+               static_cast<const IVFIndexParams &>(other).quantizer_param_;
   }
 
  private:
@@ -459,8 +525,10 @@ class DiskAnnIndexParams : public VectorIndexParams {
  public:
   DiskAnnIndexParams(MetricType metric_type, int max_degree = 100,
                      int list_size = 50, int pq_chunk_num = 0,
-                     QuantizeType quantize_type = QuantizeType::UNDEFINED)
-      : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type),
+                     QuantizeType quantize_type = QuantizeType::UNDEFINED,
+                     QuantizerParam quantizer_param = {})
+      : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type,
+                          quantizer_param),
         max_degree_{max_degree},
         list_size_{list_size},
         pq_chunk_num_{pq_chunk_num} {}
@@ -470,7 +538,8 @@ class DiskAnnIndexParams : public VectorIndexParams {
  public:
   Ptr clone() const override {
     return std::make_shared<DiskAnnIndexParams>(
-        metric_type_, max_degree_, list_size_, pq_chunk_num_, quantize_type_);
+        metric_type_, max_degree_, list_size_, pq_chunk_num_, quantize_type_,
+        quantizer_param_);
   }
 
   std::string to_string() const override {
@@ -479,7 +548,8 @@ class DiskAnnIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",max_degree:" << max_degree_
         << ",list_size:" << list_size_ << ", pq_chunk_num:" << pq_chunk_num_
-        << "}";
+        << ",enable_rotate:"
+        << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -518,7 +588,9 @@ class DiskAnnIndexParams : public VectorIndexParams {
            pq_chunk_num_ ==
                static_cast<const DiskAnnIndexParams &>(other).pq_chunk_num_ &&
            quantize_type() ==
-               static_cast<const DiskAnnIndexParams &>(other).quantize_type();
+               static_cast<const DiskAnnIndexParams &>(other).quantize_type() &&
+           quantizer_param_ ==
+               static_cast<const DiskAnnIndexParams &>(other).quantizer_param_;
   }
 
  private:
@@ -668,8 +740,10 @@ class VamanaIndexParams : public VectorIndexParams {
       float alpha = core_interface::kDefaultVamanaAlpha,
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
-      QuantizeType quantize_type = QuantizeType::UNDEFINED)
-      : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
+      QuantizeType quantize_type = QuantizeType::UNDEFINED,
+      QuantizerParam quantizer_param = {})
+      : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type,
+                          quantizer_param),
         max_degree_(max_degree),
         search_list_size_(search_list_size),
         alpha_(alpha),
@@ -683,7 +757,7 @@ class VamanaIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<VamanaIndexParams>(
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
-        use_contiguous_memory_, use_id_map_, quantize_type_);
+        use_contiguous_memory_, use_id_map_, quantize_type_, quantizer_param_);
   }
 
   std::string to_string() const override {
@@ -695,7 +769,9 @@ class VamanaIndexParams : public VectorIndexParams {
         << ",saturate_graph:" << (saturate_graph_ ? "true" : "false")
         << ",use_contiguous_memory:"
         << (use_contiguous_memory_ ? "true" : "false")
-        << ",use_id_map:" << (use_id_map_ ? "true" : "false") << "}";
+        << ",use_id_map:" << (use_id_map_ ? "true" : "false")
+        << ",enable_rotate:"
+        << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -710,7 +786,8 @@ class VamanaIndexParams : public VectorIndexParams {
            search_list_size_ == rhs.search_list_size_ && alpha_ == rhs.alpha_ &&
            saturate_graph_ == rhs.saturate_graph_ &&
            use_contiguous_memory_ == rhs.use_contiguous_memory_ &&
-           use_id_map_ == rhs.use_id_map_;
+           use_id_map_ == rhs.use_id_map_ &&
+           quantizer_param_ == rhs.quantizer_param_;
   }
 
   int max_degree() const {
