@@ -10,6 +10,14 @@ cc_binary(
   )
 
 cc_binary(
+    NAME distance_bench
+    STRICT PACKED
+    SRCS distance_bench.cc
+    INCS ${PROJECT_ROOT_DIR}/src/
+    LIBS gflags zvec_ailego
+  )
+
+cc_binary(
     NAME local_builder
     STRICT PACKED
     SRCS local_builder.cc
