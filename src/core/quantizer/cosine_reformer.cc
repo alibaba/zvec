@@ -142,18 +142,34 @@ class CosineReformer : public IndexReformer {
     return 0;
   }
 
-  //! Transform queries
-  int transform(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
-                uint32_t /*count*/, std::string * /*out*/,
-                IndexQueryMeta * /*ometa*/) const override {
-    return IndexError_Unsupported;
+  //! Transform queries (batch)
+  int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+                std::string *out, IndexQueryMeta *ometa) const override {
+    if (count == 0) return 0;
+
+    // Compute output meta once
+    *ometa = qmeta;
+    ometa->set_meta(dst_type_, qmeta.dimension() + ExtraDimension(dst_type_));
+    size_t out_elem_size = ometa->element_size();
+    out->resize(static_cast<size_t>(count) * out_elem_size);
+
+    const char *qbase = reinterpret_cast<const char *>(query);
+    for (uint32_t i = 0; i < count; ++i) {
+      const void *q = qbase + i * qmeta.element_size();
+      std::string single_out;
+      IndexQueryMeta single_meta;
+      int ret = this->CosineReformer::transform(q, qmeta, &single_out,
+                                                &single_meta);
+      if (ret != 0) return ret;
+      ::memcpy(&(*out)[i * out_elem_size], single_out.data(), out_elem_size);
+    }
+    return 0;
   }
 
-  //! Convert records
-  int convert(const void * /*records*/, const IndexQueryMeta & /*rmeta*/,
-              uint32_t /*count*/, std::string * /*out*/,
-              IndexQueryMeta * /*ometa*/) const override {
-    return IndexError_Unsupported;
+  //! Convert records (batch)
+  int convert(const void *records, const IndexQueryMeta &rmeta, uint32_t count,
+              std::string *out, IndexQueryMeta *ometa) const override {
+    return this->transform(records, rmeta, count, out, ometa);
   }
 
   //! Normalize results

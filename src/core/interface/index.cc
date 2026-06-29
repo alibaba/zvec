@@ -529,6 +529,83 @@ int Index::Search(const VectorData &vector_data,
   return ret;
 }
 
+int Index::BatchSearch(const void *queries, uint32_t count,
+                       const BaseIndexQueryParam::Pointer &search_param,
+                       std::vector<SearchResult> *results) {
+  if (!is_open_) {
+    LOG_ERROR("Index is not open");
+    return core::IndexError_Runtime;
+  }
+  if (!queries || count == 0 || !results) {
+    LOG_ERROR("Invalid batch search arguments");
+    return core::IndexError_InvalidArgument;
+  }
+  if (is_sparse_) {
+    LOG_ERROR("BatchSearch is not supported for sparse index");
+    return core::IndexError_Unsupported;
+  }
+  if (!is_trained_ && this->Train() != 0) {
+    LOG_ERROR("Failed to train index");
+    return core::IndexError_Runtime;
+  }
+
+  auto &context = acquire_context();
+  if (!context) {
+    LOG_ERROR("Failed to acquire context");
+    return core::IndexError_Runtime;
+  }
+
+  // Prepare context (set topk, filter, etc.)
+  DenseVector dummy_dense;
+  dummy_dense.data = queries;
+  VectorData dummy_vector_data;
+  dummy_vector_data.vector = dummy_dense;
+  if (_prepare_for_search(dummy_vector_data, search_param, context) != 0) {
+    LOG_ERROR("Failed to prepare for batch search");
+    context->reset();
+    return core::IndexError_Runtime;
+  }
+
+  // Apply reformer if needed
+  const void *search_queries = queries;
+  core::IndexQueryMeta search_meta = input_vector_meta_;
+  std::string reformer_buffer;
+  if (reformer_ != nullptr) {
+    core::IndexQueryMeta new_meta;
+    if (reformer_->transform(queries, input_vector_meta_, count,
+                             &reformer_buffer, &new_meta) != 0) {
+      LOG_ERROR("Failed to transform batch queries");
+      context->reset();
+      return core::IndexError_Runtime;
+    }
+    search_queries = reformer_buffer.data();
+    search_meta = new_meta;
+  }
+
+  // Call streamer with batch count
+  int ret = streamer_->search_impl(search_queries, search_meta, count, context);
+  if (ret != 0) {
+    LOG_ERROR("Failed to batch search, ret=%d", ret);
+    context->reset();
+    return ret;
+  }
+
+  // Extract per-query results
+  results->resize(count);
+  for (uint32_t q = 0; q < count; ++q) {
+    auto &doc_list = context->result(q);
+    (*results)[q].doc_list_ = doc_list;
+    if (metric_ && metric_->support_normalize()) {
+      for (auto &doc : (*results)[q].doc_list_) {
+        metric_->normalize(doc.mutable_score());
+      }
+    }
+  }
+
+  context->reset();
+  return 0;
+}
+
 
 int Index::_dense_fetch(const uint32_t doc_id,
                         VectorDataBuffer *vector_data_buffer) {

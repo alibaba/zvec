@@ -13,7 +13,11 @@
 // limitations under the License.
 #include "ivf_entity.h"
 #include <iostream>
+#include <thread>
 #include "ivf_utility.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 namespace zvec {
 namespace core {
 
@@ -712,6 +716,172 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
         }
       }
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
+    }
+  }
+
+  *scan_count = list_meta->vector_count;
+  return 0;
+}
+
+//! Block-level batch search: scan cluster once, compute for all queries (with filter)
+int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
+                            BatchQueryItem *items, size_t query_count,
+                            uint32_t *scan_count) const {
+  ailego_assert_with(inverted_list_id < header_.inverted_list_count,
+                     "invalid id");
+  auto list_meta = this->inverted_list_meta(inverted_list_id);
+  ivf_assert(list_meta, IndexError_ReadData);
+
+  const size_t block_size = header_.block_size;
+  // Prefetch guard: only prefetch when cluster fits in a reasonable cache budget
+  static constexpr size_t kMaxPrefetchSize = 64u * 1024 * 1024;  // 64MB
+  const size_t total_data_size = list_meta->block_count * block_size;
+  if (total_data_size <= kMaxPrefetchSize) {
+    inverted_->prefetch(list_meta->offset, total_data_size);
+  }
+
+  const void *data = nullptr;
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t batch_size = kBatchBlocks;
+  const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
+
+  for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
+    //! Read vecs - ONCE for all queries
+    const size_t off = list_meta->offset + i * block_size;
+    const size_t blocks = std::min(batch_size, list_meta->block_count - i);
+    const size_t size =
+        std::min(blocks * block_size,
+                 static_cast<size_t>(header_.inverted_body_size - off));
+    if (inverted_->read(off, &data, size) != size) {
+      LOG_ERROR("Failed to read block, off=%zu, size=%zu", off, size);
+      return IndexError_ReadData;
+    }
+
+    //! Read keys - ONCE for all queries
+    size_t items_count = std::min(blocks * block_vecs,
+                                  list_meta->vector_count - (i * block_vecs));
+    auto keys = get_keys(list_meta->id_offset + i * block_vecs, items_count);
+    if (!keys) {
+      return IndexError_ReadData;
+    }
+
+    //! For each block, compute distances for ALL queries
+    for (size_t b = 0; b < blocks; ++b) {
+      const size_t vecs_count =
+          std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
+      auto block_keys = keys + b * block_vecs;
+
+      // Build filter bitmask once (shared across queries)
+      size_t keeps = 0;
+      ailego_assert_with(block_vecs < sizeof(keeps) * 8, "bits overflow");
+      for (size_t k = 0; k < vecs_count; ++k) {
+        if (!filter(block_keys[k])) {
+          keeps |= (1ULL << k);
+        }
+      }
+      size_t filtered = vecs_count - __builtin_popcountll(keeps);
+
+      if (keeps == 0) {
+        // All filtered - update stats for all queries
+        for (size_t q = 0; q < query_count; ++q) {
+          *(items[q].stats->mutable_filtered_count()) += filtered;
+        }
+        continue;
+      }
+
+      const void *block_data = static_cast<const char *>(data) + b * block_size;
+      uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
+
+      // Parallel query distance computation: each query has independent heap
+#ifdef _OPENMP
+      #pragma omp parallel for schedule(dynamic, 4) if(query_count > 4)
+#endif
+      for (size_t q = 0; q < query_count; ++q) {
+        std::vector<float> local_distances(block_vecs);
+        calculator_->query_features_distance(items[q].query, block_data,
+                                             vecs_count, local_distances.data());
+        *(items[q].stats->mutable_dist_calced_count()) += vecs_count;
+        *(items[q].stats->mutable_filtered_count()) += filtered;
+
+        for (size_t k = 0; k < vecs_count; ++k) {
+          if ((keeps & (1ULL << k)) && block_keys[k] != kInvalidKey) {
+            items[q].heap->emplace(block_keys[k], local_distances[k] * norm_val,
+                                   id_off + k);
+          }
+        }
+      }
+    }
+  }
+
+  *scan_count = list_meta->vector_count;
+  return 0;
+}
+
+//! Block-level batch search without filter
+int IVFEntity::search_batch(size_t inverted_list_id, BatchQueryItem *items,
+                            size_t query_count, uint32_t *scan_count) const {
+  ailego_assert_with(inverted_list_id < header_.inverted_list_count,
+                     "invalid id");
+  auto list_meta = inverted_list_meta(inverted_list_id);
+  ivf_assert(list_meta, IndexError_ReadData);
+
+  const size_t block_size = header_.block_size;
+  // Prefetch guard: only prefetch when cluster fits in a reasonable cache budget
+  static constexpr size_t kMaxPrefetchSize = 64u * 1024 * 1024;  // 64MB
+  const size_t total_data_size = list_meta->block_count * block_size;
+  if (total_data_size <= kMaxPrefetchSize) {
+    inverted_->prefetch(list_meta->offset, total_data_size);
+  }
+
+  const void *data = nullptr;
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t batch_size = kBatchBlocks;
+  const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
+
+  for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
+    //! Read vecs - ONCE for all queries
+    const size_t off = list_meta->offset + i * block_size;
+    const size_t blocks = std::min(batch_size, list_meta->block_count - i);
+    const size_t size =
+        std::min(blocks * block_size,
+                 static_cast<size_t>(header_.inverted_body_size - off));
+    if (inverted_->read(off, &data, size) != size) {
+      LOG_ERROR("Failed to read block, off=%zu, size=%zu", off, size);
+      return IndexError_ReadData;
+    }
+
+    //! Read keys - ONCE for all queries
+    size_t items_count = std::min(blocks * block_vecs,
+                                  list_meta->vector_count - (i * block_vecs));
+    auto keys = get_keys(list_meta->id_offset + i * block_vecs, items_count);
+    if (!keys) {
+      return IndexError_ReadData;
+    }
+
+    //! For each block, compute distances for ALL queries
+    for (size_t b = 0; b < blocks; ++b) {
+      const size_t vecs_count =
+          std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
+      auto block_keys = keys + b * block_vecs;
+      const void *block_data = static_cast<const char *>(data) + b * block_size;
+      uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
+
+      // Parallel query distance computation: each query has independent heap
+#ifdef _OPENMP
+      #pragma omp parallel for schedule(dynamic, 4) if(query_count > 4)
+#endif
+      for (size_t q = 0; q < query_count; ++q) {
+        std::vector<float> local_distances(block_vecs);
+        calculator_->query_features_distance(items[q].query, block_data,
+                                             vecs_count, local_distances.data());
+        for (size_t k = 0; k < vecs_count; ++k) {
+          if (block_keys[k] != kInvalidKey) {
+            items[q].heap->emplace(block_keys[k], local_distances[k] * norm_val,
+                                   id_off + k);
+          }
+        }
+        *(items[q].stats->mutable_dist_calced_count()) += vecs_count;
+      }
     }
   }
 

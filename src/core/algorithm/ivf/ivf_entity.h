@@ -53,6 +53,22 @@ class IVFEntity {
   int search(size_t inverted_list_id, const void *query, uint32_t *scan_count,
              IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
 
+  //! Batch query item for block-level parallel search
+  struct BatchQueryItem {
+    const void *query;
+    IndexDocumentHeap *heap;
+    IndexContext::Stats *stats;
+  };
+
+  //! Block-level batch search: scan cluster once, compute for all queries
+  int search_batch(size_t inverted_list_id, const IndexFilter &filter,
+                   BatchQueryItem *items, size_t query_count,
+                   uint32_t *scan_count) const;
+
+  //! Block-level batch search without filter
+  int search_batch(size_t inverted_list_id, BatchQueryItem *items,
+                   size_t query_count, uint32_t *scan_count) const;
+
   //! search all inverted list with filter
   int search(const void *query, const IndexFilter &filter,
              IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;

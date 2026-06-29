@@ -165,6 +165,51 @@ class IVFSearcherContext : public IndexSearcher::Context {
     result_heap_.set_threshold(this->threshold());
   }
 
+  //! Reset batch heaps for cluster-first batch search
+  void reset_batch_heaps(size_t qnum) {
+    reset_results(qnum);
+    batch_heaps_.resize(qnum);
+    for (size_t i = 0; i < qnum; ++i) {
+      batch_heaps_[i].clear();
+      batch_heaps_[i].limit(topk_);
+      batch_heaps_[i].set_threshold(this->threshold());
+    }
+  }
+
+  //! Get mutable batch heap for a specific query
+  IndexDocumentHeap &mutable_batch_heap(size_t q) {
+    ailego_assert_with(q < batch_heaps_.size(), "invalid q");
+    return batch_heaps_[q];
+  }
+
+  //! Convert batch heap to final result for a query
+  void batch_topk_to_result(uint32_t q) {
+    auto &heap = batch_heaps_[q];
+    if (ailego_unlikely(heap.size() == 0)) {
+      return;
+    }
+
+    ailego_assert_with(q < results_.size(), "invalid idx");
+    int size = std::min(topk_, static_cast<uint32_t>(heap.size()));
+    heap.sort();
+    results_[q].clear();
+    for (int i = 0; i < size; ++i) {
+      auto score = heap[i].score();
+      if (score > this->threshold()) {
+        break;
+      }
+
+      key_t key = heap[i].key();
+      if (fetch_vector_) {
+        IndexStorage::MemoryBlock block;
+        entity_->get_vector_by_key(key, block);
+        results_[q].emplace_back(key, score, key, block);
+      } else {
+        results_[q].emplace_back(key, score);
+      }
+    }
+  }
+
   //! Update context, the context may be shared by different searcher
   int update_context(IVFEntity::Pointer &new_entity,
                      IndexSearcher::Context::Pointer &centroid_ctx,
@@ -229,6 +274,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   IVFEntity::Pointer entity_{};
   IndexSearcher::Context::Pointer centroid_searcher_ctx_{};
   IndexDocumentHeap result_heap_;
+  std::vector<IndexDocumentHeap> batch_heaps_{};
   std::vector<IndexDocumentList> results_{};
   std::vector<Stats> stats_vec_{};
 

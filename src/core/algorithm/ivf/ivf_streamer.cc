@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_streamer.h"
+#include <unordered_map>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_segment_storage.h>
 #include "ivf_centroid_index.h"
@@ -217,9 +218,10 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ret = entity->transform(query, qmeta, count, &query, &iv_qmeta);
   ivf_check_with_msg(ret, "Failed to transform querys");
 
-  for (size_t q = 0; q < count; ++q) {
-    auto &centroids = centroid_index_ctx->result(q);
-    auto &context_stats = ctx->mutable_stats(q);
+  if (count == 1) {
+    // Single query: original per-query path
+    auto &centroids = centroid_index_ctx->result(0);
+    auto &context_stats = ctx->mutable_stats(0);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
     uint32_t total_scan_count = 0;
@@ -238,15 +240,86 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                          IndexError::What(ret));
       total_scan_count += scan_count;
     }
-    heap.sort();  // sort the results
+    heap.sort();
     if (!filter.is_valid()) {
-      // mapping the local id to key if query without filter
+      ret = entity->retrieve_keys(&heap);
+      ivf_check_error_code(ret);
+    }
+    entity->normalize(0, &heap);
+    ctx->topk_to_result(0);
+    query = static_cast<const char *>(query) + iv_qmeta.element_size();
+    return 0;
+  }
+
+  // Cluster-first batch path: group queries by cluster, load each cluster once
+  ctx->reset_batch_heaps(count);
+
+  struct QueryRef {
+    uint32_t q_idx;
+    const void *query_ptr;
+  };
+  std::unordered_map<size_t, std::vector<QueryRef>> cluster_queries;
+  std::vector<uint32_t> per_query_scan(count, 0);
+
+  const char *qbase = static_cast<const char *>(query);
+  for (size_t q = 0; q < count; ++q) {
+    auto &centroids = centroid_index_ctx->result(q);
+    const void *qptr = qbase + q * iv_qmeta.element_size();
+    for (size_t i = 0; i < centroids.size(); ++i) {
+      auto cid = centroids[i].key();
+      cluster_queries[cid].push_back({static_cast<uint32_t>(q), qptr});
+    }
+  }
+
+  // Iterate by cluster: block-level multi-query parallel search
+  for (auto &kv : cluster_queries) {
+    size_t cid = kv.first;
+    auto &qrefs = kv.second;
+
+    std::vector<IVFEntity::BatchQueryItem> batch_items;
+    std::vector<uint32_t> batch_q_indices;
+    batch_items.reserve(qrefs.size());
+    batch_q_indices.reserve(qrefs.size());
+
+    for (auto &ref : qrefs) {
+      if (per_query_scan[ref.q_idx] >= ctx->max_scan_count()) {
+        continue;
+      }
+      IVFEntity::BatchQueryItem item;
+      item.query = ref.query_ptr;
+      item.heap = &ctx->mutable_batch_heap(ref.q_idx);
+      item.stats = &ctx->mutable_stats(ref.q_idx);
+      batch_items.push_back(item);
+      batch_q_indices.push_back(ref.q_idx);
+    }
+
+    if (batch_items.empty()) continue;
+
+    uint32_t scan_count = 0;
+    if (!filter.is_valid()) {
+      ret = entity->search_batch(cid, batch_items.data(), batch_items.size(),
+                                 &scan_count);
+    } else {
+      ret = entity->search_batch(cid, filter, batch_items.data(),
+                                 batch_items.size(), &scan_count);
+    }
+    ivf_check_with_msg(ret, "Failed to search_batch in entity for %s",
+                       IndexError::What(ret));
+
+    for (auto q_idx : batch_q_indices) {
+      per_query_scan[q_idx] += scan_count;
+    }
+  }
+
+  // Finalize results for each query
+  for (size_t q = 0; q < count; ++q) {
+    auto &heap = ctx->mutable_batch_heap(q);
+    if (!filter.is_valid()) {
       ret = entity->retrieve_keys(&heap);
       ivf_check_error_code(ret);
     }
     entity->normalize(q, &heap);
-    ctx->topk_to_result(q);
-    query = static_cast<const char *>(query) + iv_qmeta.element_size();
+    ctx->batch_topk_to_result(static_cast<uint32_t>(q));
   }
 
   return 0;

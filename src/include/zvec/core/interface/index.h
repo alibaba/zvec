@@ -134,6 +134,11 @@ class Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
+  //! Batch search: N queries in one call, cluster-first for IVF
+  virtual int BatchSearch(const void *queries, uint32_t count,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          std::vector<SearchResult> *results);
+
   virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
                             const core::VectorSource &src);
   virtual int SearchWithSource(const VectorData &query,
