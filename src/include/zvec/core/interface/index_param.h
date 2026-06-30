@@ -122,12 +122,17 @@ struct QuantizerParam : public SerializableBase {
   QuantizerType type = QuantizerType::kNone;
   int num_subquantizers = 8;  // M
   int num_bits = 8;           // bits per subquantizer
+  bool enable_rotate =
+      false;  // rotate vectors before quantization to reduce error
 
   // Constructors
   // QuantizerParam() = default;
   QuantizerParam(QuantizerType t = QuantizerType::kNone, int subquantizers = 8,
-                 int bits = 8)
-      : type(t), num_subquantizers(subquantizers), num_bits(bits) {}
+                 int bits = 8, bool rotate = false)
+      : type(t),
+        num_subquantizers(subquantizers),
+        num_bits(bits),
+        enable_rotate(rotate) {}
 
 
  protected:

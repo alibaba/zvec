@@ -187,3 +187,95 @@ TEST(IndexParamsTest, DynamicPointerCast) {
   auto &hnsw_ref = dynamic_cast<HnswIndexParams &>(base_ref);
   EXPECT_EQ(hnsw_ref.type(), IndexType::HNSW);
 }
+
+// ==================== QuantizerParam tests ====================
+
+TEST(IndexParamsTest, QuantizerParamBasic) {
+  // Default constructor: enable_rotate should be false
+  QuantizerParam qp_default;
+  EXPECT_FALSE(qp_default.enable_rotate());
+
+  // Constructor with true
+  QuantizerParam qp_true(true);
+  EXPECT_TRUE(qp_true.enable_rotate());
+
+  // Constructor with false
+  QuantizerParam qp_false(false);
+  EXPECT_FALSE(qp_false.enable_rotate());
+
+  // Setter
+  qp_default.set_enable_rotate(true);
+  EXPECT_TRUE(qp_default.enable_rotate());
+  qp_default.set_enable_rotate(false);
+  EXPECT_FALSE(qp_default.enable_rotate());
+
+  // Equality
+  EXPECT_TRUE(qp_true == QuantizerParam(true));
+  EXPECT_TRUE(qp_false == QuantizerParam(false));
+  EXPECT_FALSE(qp_true == qp_false);
+
+  // Inequality
+  EXPECT_TRUE(qp_true != qp_false);
+  EXPECT_FALSE(qp_true != QuantizerParam(true));
+}
+
+TEST(IndexParamsTest, QuantizerParamWithVectorIndex) {
+  // HnswIndexParams
+  {
+    HnswIndexParams params(MetricType::COSINE, 16, 100, QuantizeType::INT8);
+    EXPECT_FALSE(params.quantizer_param().enable_rotate());
+    EXPECT_FALSE(params.enable_rotate());  // convenience getter
+
+    params.set_quantizer_param(QuantizerParam(true));
+    EXPECT_TRUE(params.quantizer_param().enable_rotate());
+    EXPECT_TRUE(params.enable_rotate());
+
+    // Clone preserves quantizer_param
+    auto cloned = params.clone();
+    auto *cloned_hnsw = dynamic_cast<HnswIndexParams *>(cloned.get());
+    ASSERT_NE(cloned_hnsw, nullptr);
+    EXPECT_TRUE(cloned_hnsw->quantizer_param().enable_rotate());
+    EXPECT_TRUE(*cloned == params);
+
+    // Equality: different enable_rotate -> not equal
+    HnswIndexParams params2(MetricType::COSINE, 16, 100, QuantizeType::INT8);
+    params2.set_quantizer_param(QuantizerParam(false));
+    EXPECT_FALSE(params == params2);
+  }
+
+  // FlatIndexParams
+  {
+    FlatIndexParams params(MetricType::L2, QuantizeType::INT8);
+    EXPECT_FALSE(params.quantizer_param().enable_rotate());
+
+    params.set_quantizer_param(QuantizerParam(true));
+    EXPECT_TRUE(params.quantizer_param().enable_rotate());
+    EXPECT_TRUE(params.enable_rotate());
+
+    auto cloned = params.clone();
+    auto *cloned_flat = dynamic_cast<FlatIndexParams *>(cloned.get());
+    ASSERT_NE(cloned_flat, nullptr);
+    EXPECT_TRUE(cloned_flat->quantizer_param().enable_rotate());
+
+    FlatIndexParams params2(MetricType::L2, QuantizeType::INT8);
+    EXPECT_FALSE(params == params2);
+  }
+
+  // IVFIndexParams
+  {
+    IVFIndexParams params(MetricType::IP, 128, 10, false, QuantizeType::INT8);
+    EXPECT_FALSE(params.quantizer_param().enable_rotate());
+
+    params.set_quantizer_param(QuantizerParam(true));
+    EXPECT_TRUE(params.quantizer_param().enable_rotate());
+    EXPECT_TRUE(params.enable_rotate());
+
+    auto cloned = params.clone();
+    auto *cloned_ivf = dynamic_cast<IVFIndexParams *>(cloned.get());
+    ASSERT_NE(cloned_ivf, nullptr);
+    EXPECT_TRUE(cloned_ivf->quantizer_param().enable_rotate());
+
+    IVFIndexParams params2(MetricType::IP, 128, 10, false, QuantizeType::INT8);
+    EXPECT_FALSE(params == params2);
+  }
+}

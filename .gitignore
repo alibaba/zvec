@@ -60,3 +60,9 @@ allure-*
 !build_android.sh
 !build_ios.sh
 
+# congfig
+doc/
+config/
+examples/python/
+examples/c_api/
+logs/
