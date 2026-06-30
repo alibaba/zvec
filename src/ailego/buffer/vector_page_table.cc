@@ -149,12 +149,15 @@ char *VectorPageTable::acquire_block(block_id_t block_id) {
   if (ailego_likely(old >= 0)) {
     return e.buffer;
   }
+  // Undo the increment: the entry is in eviction state.
+  // Bounded retry to prevent livelock under extreme contention.
   int cur = old + 1;
-  while (cur < 0 && cur != std::numeric_limits<int>::min()) {
+  for (int attempts = 0; attempts < 64; ++attempts) {
+    if (cur >= 0 || cur == std::numeric_limits<int>::min()) break;
     if (e.ref_count.compare_exchange_weak(cur, cur - 1,
                                            std::memory_order_relaxed,
                                            std::memory_order_relaxed)) {
-      break;
+      return nullptr;
     }
   }
   return nullptr;
@@ -693,7 +696,7 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
     size_t run_bytes = run_pages * kVectorPageSize;
     size_t run_file_off = run_start * kVectorPageSize;
 
-    char *bulk_buf = static_cast<char *>(aligned_alloc(4096, run_bytes));
+    char *bulk_buf = static_cast<char *>(ailego_aligned_malloc(run_bytes, 4096));
     if (!bulk_buf) {
       page = pool_.acquire_buffer(pg, 50);
       if (!page) return false;
@@ -709,7 +712,7 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
 
     ssize_t got = zvec_pread(pool_.fd_, bulk_buf, run_bytes, run_file_off);
     if (got != static_cast<ssize_t>(run_bytes)) {
-      free(bulk_buf);
+      ailego_free(bulk_buf);
       LOG_ERROR("read_range bulk pread failed: off=%zu len=%zu got=%zd",
                 run_file_off, run_bytes, got);
       return false;
@@ -740,7 +743,7 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
         }
       }
     }
-    free(bulk_buf);
+    ailego_free(bulk_buf);
     pg = run_end - 1;
   }
   return true;
@@ -787,7 +790,7 @@ void VecBufferPool::warmup() {
   const size_t kChunkSize = kChunkPages * kVectorPageSize;
 
   // Aligned buffer for bulk read (O_DIRECT requires alignment).
-  char *chunk_buf = static_cast<char *>(aligned_alloc(4096, kChunkSize));
+  char *chunk_buf = static_cast<char *>(ailego_aligned_malloc(kChunkSize, 4096));
   if (!chunk_buf) return;
 
   size_t loaded = 0;
@@ -822,7 +825,7 @@ void VecBufferPool::warmup() {
       ++loaded;
     }
   }
-  free(chunk_buf);
+  ailego_free(chunk_buf);
   LOG_DEBUG("VecBufferPool::warmup: preloaded %zu/%zu pages for file[%s]",
            loaded, total_pages, file_name_.c_str());
 }
@@ -845,7 +848,7 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count) {
 
   static constexpr size_t kChunkPages = 1024;
   const size_t kChunkSize = kChunkPages * kVectorPageSize;
-  char *chunk_buf = static_cast<char *>(aligned_alloc(4096, kChunkSize));
+  char *chunk_buf = static_cast<char *>(ailego_aligned_malloc(kChunkSize, 4096));
   if (!chunk_buf) return;
 
   bool pool_full = false;
@@ -889,7 +892,7 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count) {
     }
     pg = run_end;
   }
-  free(chunk_buf);
+  ailego_free(chunk_buf);
 }
 
 void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len) {

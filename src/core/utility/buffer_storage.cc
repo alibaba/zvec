@@ -489,7 +489,6 @@ class BufferStorage : public IndexStorage {
     }
     // O_DIRECT is always on for memory controllability.
     params.get(BUFFER_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_);
-    enable_direct_io_ = true;
     return 0;
   }
 
@@ -1546,8 +1545,8 @@ class BufferStorage : public IndexStorage {
   uint32_t segment_meta_capacity_{4096u};
 
   // When true, the page-data fd is opened with O_DIRECT (metadata fd stays
-  // buffered).  Defaults to false: identical behaviour to the legacy path.
-  bool enable_direct_io_{false};
+  // buffered).  Defaults to true for memory controllability.
+  bool enable_direct_io_{true};
 
   // Per-header-chain file offsets used by flush_index() and append_segment().
   struct MetaChain {

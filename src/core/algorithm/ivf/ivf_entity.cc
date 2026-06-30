@@ -825,16 +825,15 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
       #pragma omp parallel for num_threads(omp_threads) schedule(static) if(omp_threads > 1)
 #endif
       for (size_t q = 0; q < query_count; ++q) {
-        thread_local std::vector<float> tl_distances;
-        tl_distances.resize(block_vecs);
+        std::vector<float> local_distances(block_vecs);
         calculator_->query_features_distance(items[q].query, block_data,
-                                             vecs_count, tl_distances.data());
+                                             vecs_count, local_distances.data());
         *(items[q].stats->mutable_dist_calced_count()) += vecs_count;
         *(items[q].stats->mutable_filtered_count()) += filtered;
 
         for (size_t k = 0; k < vecs_count; ++k) {
           if ((keeps & (1ULL << k)) && block_keys[k] != kInvalidKey) {
-            items[q].heap->emplace(block_keys[k], tl_distances[k] * norm_val,
+            items[q].heap->emplace(block_keys[k], local_distances[k] * norm_val,
                                    id_off + k);
           }
         }
@@ -897,13 +896,12 @@ int IVFEntity::search_batch(size_t inverted_list_id, BatchQueryItem *items,
       #pragma omp parallel for num_threads(omp_threads) schedule(static) if(omp_threads > 1)
 #endif
       for (size_t q = 0; q < query_count; ++q) {
-        thread_local std::vector<float> tl_distances;
-        tl_distances.resize(block_vecs);
+        std::vector<float> local_distances(block_vecs);
         calculator_->query_features_distance(items[q].query, block_data,
-                                             vecs_count, tl_distances.data());
+                                             vecs_count, local_distances.data());
         for (size_t k = 0; k < vecs_count; ++k) {
           if (block_keys[k] != kInvalidKey) {
-            items[q].heap->emplace(block_keys[k], tl_distances[k] * norm_val,
+            items[q].heap->emplace(block_keys[k], local_distances[k] * norm_val,
                                    id_off + k);
           }
         }

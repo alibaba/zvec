@@ -1084,6 +1084,8 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   struct PinnedPageSet {
     static constexpr size_t kCapacity = 128;
     static constexpr size_t kMask = kCapacity - 1;
+    // Max load factor ~75% to guarantee open-addressing termination.
+    static constexpr size_t kMaxLoad = kCapacity * 3 / 4;
     static constexpr ailego::block_id_t kEmpty =
         std::numeric_limits<ailego::block_id_t>::max();
 
@@ -1096,8 +1098,12 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     bool bound() const { return pool_ != nullptr; }
 
     char *get_page(ailego::block_id_t page_id) {
+      // Flush if load factor exceeded to prevent infinite probe loop.
+      if (ailego_unlikely(count_ >= kMaxLoad)) {
+        release_all();
+      }
       size_t slot = static_cast<size_t>(page_id) & kMask;
-      for (;;) {
+      for (size_t probe = 0; probe < kCapacity; ++probe) {
         if (ids_[slot] == page_id) return bufs_[slot];
         if (ids_[slot] == kEmpty) {
           char *buf = pool_->acquire_buffer(page_id, 50);
@@ -1109,14 +1115,19 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         }
         slot = (slot + 1) & kMask;
       }
+      // Should never reach here due to kMaxLoad guard, but be safe.
+      return nullptr;
     }
 
     //! Try to get a page WITHOUT triggering disk I/O.
     //! Returns buffer if page is in PinnedPageSet or already in pool memory.
     //! Returns nullptr if page would need a pread (cache miss).
     char *try_get_page(ailego::block_id_t page_id) {
+      if (ailego_unlikely(count_ >= kMaxLoad)) {
+        release_all();
+      }
       size_t slot = static_cast<size_t>(page_id) & kMask;
-      for (;;) {
+      for (size_t probe = 0; probe < kCapacity; ++probe) {
         if (ids_[slot] == page_id) return bufs_[slot];
         if (ids_[slot] == kEmpty) {
           char *buf = pool_->try_acquire_buffer(page_id);
@@ -1128,6 +1139,7 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         }
         slot = (slot + 1) & kMask;
       }
+      return nullptr;
     }
 
     void release_all() {

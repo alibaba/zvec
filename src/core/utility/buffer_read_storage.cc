@@ -133,7 +133,7 @@ class BufferReadStorage : public IndexStorage {
         *data = buffer_.data();
         return 0;
       }
-      buffer_.reserve(len);
+      buffer_.resize(len);
       if (!handle_->read_range(data_offset_ + offset, len,
                                reinterpret_cast<char *>(buffer_.data()))) {
         LOG_ERROR(
@@ -209,7 +209,7 @@ class BufferReadStorage : public IndexStorage {
       }
       ailego_false_if_false(total != 0);
 
-      buffer_.reserve(total);
+      buffer_.resize(total);
       uint8_t *buf = buffer_.data();
       for (auto *it = iovec, *end = iovec + count; it != end; ++it) {
         ailego_false_if_false(
@@ -271,7 +271,6 @@ class BufferReadStorage : public IndexStorage {
     params.get(BUFFER_READ_STORAGE_HEADER_OFFSET, &header_offset_);
     params.get(BUFFER_READ_STORAGE_FOOTER_OFFSET, &footer_offset_);
     params.get(BUFFER_READ_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_);
-    enable_direct_io_ = true;
     return 0;
   }
 
@@ -325,7 +324,7 @@ class BufferReadStorage : public IndexStorage {
         }
         len = end_offset - off;
       }
-      scratch_.reserve(len);
+      scratch_.resize(len);
       *data = scratch_.data();
       if (len == 0) {
         return 0;

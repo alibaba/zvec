@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_searcher.h"
+#include <algorithm>
 #include <unordered_map>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_segment_storage.h>
@@ -269,9 +270,14 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   // Iterate by cluster: block-level multi-query parallel search
-  for (auto &kv : cluster_queries) {
-    size_t cid = kv.first;
-    auto &qrefs = kv.second;
+  // Sort cluster IDs for stable LRU behavior and sequential I/O access.
+  std::vector<size_t> sorted_cids;
+  sorted_cids.reserve(cluster_queries.size());
+  for (auto &kv : cluster_queries) sorted_cids.push_back(kv.first);
+  std::sort(sorted_cids.begin(), sorted_cids.end());
+
+  for (size_t cid : sorted_cids) {
+    auto &qrefs = cluster_queries[cid];
 
     // Build BatchQueryItems for this cluster (skip queries exceeding scan limit)
     std::vector<IVFEntity::BatchQueryItem> batch_items;
