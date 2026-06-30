@@ -16,8 +16,8 @@
 
 #include <algorithm>
 #include <atomic>
-#include <iostream>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -876,8 +876,7 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
 
   ailego_force_inline int resolve_vectors(const node_id_t *ids, uint32_t count,
                                           const void **out) const {
-    for (uint32_t i = 0; i < count; ++i)
-      out[i] = get_vector_ptr(ids[i]);
+    for (uint32_t i = 0; i < count; ++i) out[i] = get_vector_ptr(ids[i]);
     return 0;
   }
 
@@ -976,10 +975,14 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         if (!page) {
           if (io_budget_ > 0) {
             page = pinned_pages_.get_page(page_id);
-            if (ailego_unlikely(!page)) { out[i] = nullptr; continue; }
+            if (ailego_unlikely(!page)) {
+              out[i] = nullptr;
+              continue;
+            }
             --io_budget_;
           } else {
-            out[i] = nullptr; continue;
+            out[i] = nullptr;
+            continue;
           }
         }
         out[i] = page + intra;
@@ -992,15 +995,27 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
           // A cross-page vector may need 1 or 2 preads depending on which
           // pages are already cached.
           if (!p1) {
-            if (io_budget_ <= 0) { out[i] = nullptr; continue; }
+            if (io_budget_ <= 0) {
+              out[i] = nullptr;
+              continue;
+            }
             p1 = pinned_pages_.get_page(page_id);
-            if (ailego_unlikely(!p1)) { out[i] = nullptr; continue; }
+            if (ailego_unlikely(!p1)) {
+              out[i] = nullptr;
+              continue;
+            }
             --io_budget_;
           }
           if (!p2) {
-            if (io_budget_ <= 0) { out[i] = nullptr; continue; }
+            if (io_budget_ <= 0) {
+              out[i] = nullptr;
+              continue;
+            }
             p2 = pinned_pages_.get_page(page_id + 1);
-            if (ailego_unlikely(!p2)) { out[i] = nullptr; continue; }
+            if (ailego_unlikely(!p2)) {
+              out[i] = nullptr;
+              continue;
+            }
             --io_budget_;
           }
         }
@@ -1019,7 +1034,9 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   }
 
   //! Reset I/O budget for a new search. budget = max pread calls allowed.
-  void reset_io_budget(int32_t budget) const { io_budget_ = budget; }
+  void reset_io_budget(int32_t budget) const {
+    io_budget_ = budget;
+  }
 
   void mark_upper_level_pages() {
     auto *pool = vec_buffer_pool();
@@ -1060,12 +1077,11 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     page_ids.reserve(upper_nodes.size());
     for (auto id : upper_nodes) {
       const size_t abs_off = get_vector_abs_offset(id);
-      page_ids.push_back(
-          static_cast<ailego::block_id_t>(abs_off / pg_sz));
+      page_ids.push_back(static_cast<ailego::block_id_t>(abs_off / pg_sz));
       const size_t intra = abs_off % pg_sz;
       if (intra + vec_sz > pg_sz) {
-        page_ids.push_back(
-            static_cast<ailego::block_id_t>(abs_off / pg_sz) + 1);
+        page_ids.push_back(static_cast<ailego::block_id_t>(abs_off / pg_sz) +
+                           1);
       }
     }
     std::sort(page_ids.begin(), page_ids.end());
@@ -1096,13 +1112,21 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     static constexpr ailego::block_id_t kEmpty =
         std::numeric_limits<ailego::block_id_t>::max();
 
-    PinnedPageSet() { reset_table(); }
-    ~PinnedPageSet() { release_all(); }
+    PinnedPageSet() {
+      reset_table();
+    }
+    ~PinnedPageSet() {
+      release_all();
+    }
     PinnedPageSet(const PinnedPageSet &) = delete;
     PinnedPageSet &operator=(const PinnedPageSet &) = delete;
 
-    void bind(ailego::VecBufferPool *pool) { pool_ = pool; }
-    bool bound() const { return pool_ != nullptr; }
+    void bind(ailego::VecBufferPool *pool) {
+      pool_ = pool;
+    }
+    bool bound() const {
+      return pool_ != nullptr;
+    }
 
     char *get_page(ailego::block_id_t page_id) {
       size_t slot = static_cast<size_t>(page_id) & kMask;
@@ -1320,8 +1344,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
 
   ailego_force_inline int resolve_vectors(const node_id_t *ids, uint32_t count,
                                           const void **out) const {
-    for (uint32_t i = 0; i < count; ++i)
-      out[i] = get_vector_ptr(ids[i]);
+    for (uint32_t i = 0; i < count; ++i) out[i] = get_vector_ptr(ids[i]);
     return 0;
   }
 

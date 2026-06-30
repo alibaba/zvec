@@ -51,7 +51,8 @@ class VectorPageTable : public EvictableBlockOwner {
     std::atomic<bool> in_evict_queue;
     std::atomic<bool> is_dirty;
     uint8_t evict_priority{0};
-    bool ever_loaded{false};  // true once the page has been loaded at least once
+    bool ever_loaded{
+        false};  // true once the page has been loaded at least once
     char *buffer;
     size_t file_offset;
   };
@@ -313,8 +314,8 @@ class VecBufferPool {
 
  private:
   friend class VecBufferPoolHandle;
-  int fd_;            // page-data channel: may carry O_DIRECT
-  int meta_fd_;       // metadata channel: always buffered IO
+  int fd_;       // page-data channel: may carry O_DIRECT
+  int meta_fd_;  // metadata channel: always buffered IO
   size_t file_size_;
   size_t initial_file_size_;  // file size at open time; pages beyond this
                               // are created by extend_file and can skip

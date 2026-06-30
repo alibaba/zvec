@@ -25,14 +25,19 @@ namespace {
 std::atomic<int> g_active_batch_callers{0};
 
 struct BatchCallerGuard {
-  BatchCallerGuard() { g_active_batch_callers.fetch_add(1, std::memory_order_relaxed); }
-  ~BatchCallerGuard() { g_active_batch_callers.fetch_sub(1, std::memory_order_relaxed); }
+  BatchCallerGuard() {
+    g_active_batch_callers.fetch_add(1, std::memory_order_relaxed);
+  }
+  ~BatchCallerGuard() {
+    g_active_batch_callers.fetch_sub(1, std::memory_order_relaxed);
+  }
 };
 
 inline int adaptive_thread_count(size_t query_count) {
   if (query_count <= 4) return 1;
   // Use omp_get_max_threads() which respects OMP_NUM_THREADS env var.
-  // In multi-process deployment, orchestrator sets OMP_NUM_THREADS=cores/num_procs.
+  // In multi-process deployment, orchestrator sets
+  // OMP_NUM_THREADS=cores/num_procs.
 #ifdef _OPENMP
   int hw = omp_get_max_threads();
 #else
@@ -765,7 +770,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   return 0;
 }
 
-//! Block-level batch search: scan cluster once, compute for all queries (with filter)
+//! Block-level batch search: scan cluster once, compute for all queries (with
+//! filter)
 int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
                             BatchQueryItem *items, size_t query_count,
                             uint32_t *scan_count) const {
@@ -775,7 +781,8 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
   ivf_assert(list_meta, IndexError_ReadData);
 
   const size_t block_size = header_.block_size;
-  // Prefetch guard: only prefetch when cluster fits in a reasonable cache budget
+  // Prefetch guard: only prefetch when cluster fits in a reasonable cache
+  // budget
   static constexpr size_t kMaxPrefetchSize = 256u * 1024 * 1024;  // 256MB
   const size_t total_data_size = list_meta->block_count * block_size;
   if (total_data_size <= kMaxPrefetchSize) {
@@ -838,12 +845,13 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
 
       // Adaptive parallel: auto-tune threads based on concurrent callers
 #ifdef _OPENMP
-      #pragma omp parallel for num_threads(omp_threads) schedule(static) if(omp_threads > 1)
+#pragma omp parallel for num_threads(omp_threads) \
+    schedule(static) if (omp_threads > 1)
 #endif
       for (size_t q = 0; q < query_count; ++q) {
         std::vector<float> local_distances(block_vecs);
-        calculator_->query_features_distance(items[q].query, block_data,
-                                             vecs_count, local_distances.data());
+        calculator_->query_features_distance(
+            items[q].query, block_data, vecs_count, local_distances.data());
         *(items[q].stats->mutable_dist_calced_count()) += vecs_count;
         *(items[q].stats->mutable_filtered_count()) += filtered;
 
@@ -909,12 +917,13 @@ int IVFEntity::search_batch(size_t inverted_list_id, BatchQueryItem *items,
 
       // Adaptive parallel: auto-tune threads based on concurrent callers
 #ifdef _OPENMP
-      #pragma omp parallel for num_threads(omp_threads) schedule(static) if(omp_threads > 1)
+#pragma omp parallel for num_threads(omp_threads) \
+    schedule(static) if (omp_threads > 1)
 #endif
       for (size_t q = 0; q < query_count; ++q) {
         std::vector<float> local_distances(block_vecs);
-        calculator_->query_features_distance(items[q].query, block_data,
-                                             vecs_count, local_distances.data());
+        calculator_->query_features_distance(
+            items[q].query, block_data, vecs_count, local_distances.data());
         for (size_t k = 0; k < vecs_count; ++k) {
           if (block_keys[k] != kInvalidKey) {
             items[q].heap->emplace(block_keys[k], local_distances[k] * norm_val,

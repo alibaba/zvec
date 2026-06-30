@@ -128,8 +128,8 @@ class IndexSegmentStorage : public IndexStorage {
     //! Clone the segment (each clone gets an independent parent buffer
     //! for thread safety — concurrent reads require separate buffers).
     IndexStorage::Segment::Pointer clone(void) override {
-      return std::make_shared<Segment>(
-          parent_->clone(), data_offset_, data_size_, padding_size_, data_crc_);
+      return std::make_shared<Segment>(parent_->clone(), data_offset_,
+                                       data_size_, padding_size_, data_crc_);
     }
 
    private:

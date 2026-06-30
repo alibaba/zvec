@@ -286,7 +286,8 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   for (size_t cid : sorted_cids) {
     auto &qrefs = cluster_queries[cid];
 
-    // Build BatchQueryItems for this cluster (skip queries exceeding scan limit)
+    // Build BatchQueryItems for this cluster (skip queries exceeding scan
+    // limit)
     std::vector<IVFEntity::BatchQueryItem> batch_items;
     std::vector<uint32_t> batch_q_indices;
     batch_items.reserve(qrefs.size());

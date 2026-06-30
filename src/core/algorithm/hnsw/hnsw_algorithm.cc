@@ -82,8 +82,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   }
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
-  const auto &upper_entity =
-      static_cast<const EntityType &>(ctx->get_entity());
+  const auto &upper_entity = static_cast<const EntityType &>(ctx->get_entity());
   upper_entity.reset_io_budget(INT32_MAX);
   for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);

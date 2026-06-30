@@ -180,8 +180,8 @@ class CosineReformer : public IndexReformer {
       const void *q = qbase + i * qmeta.element_size();
       std::string single_out;
       IndexQueryMeta single_meta;
-      int ret = this->CosineReformer::transform(q, qmeta, &single_out,
-                                                &single_meta);
+      int ret =
+          this->CosineReformer::transform(q, qmeta, &single_out, &single_meta);
       if (ret != 0) return ret;
       ::memcpy(&(*out)[i * out_elem_size], single_out.data(), out_elem_size);
     }
