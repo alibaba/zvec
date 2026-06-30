@@ -214,6 +214,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
   auto last_log = wait_start;
   unsigned spin_count = 0;
   bool warned = false;
+  static constexpr auto kHardTimeout = std::chrono::seconds(30);
   while (true) {
     int current_count = e.ref_count.load(std::memory_order_acquire);
     if (current_count >= 0) {
@@ -249,6 +250,17 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
             "(>=100ms); evict_block may be slow",
             static_cast<size_t>(block_id));
         warned = true;
+      }
+      if (elapsed >= kHardTimeout) {
+        LOG_ERROR(
+            "set_block_acquired: hard timeout (%lld s) on block_id=%zu; "
+            "giving up to prevent indefinite thread hang",
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::seconds>(elapsed)
+                    .count()),
+            static_cast<size_t>(block_id));
+        MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
+        return nullptr;
       }
       if (elapsed >= std::chrono::seconds(1) &&
           (now - last_log) >= std::chrono::seconds(1)) {
@@ -357,8 +369,7 @@ int VecBufferPool::init() {
   // the backing file without needing to know about fd_ directly.
   if (writable_) {
     int fd = fd_;
-    const std::string &name = file_name_;
-    page_table_.set_flush_callback([fd, &name](block_id_t /*block_id*/,
+    page_table_.set_flush_callback([fd, &fn = file_name_](block_id_t /*block_id*/,
                                                char *buf, size_t sz,
                                                size_t off) -> int {
       ssize_t w = zvec_pwrite(fd, buf, sz, off);
@@ -366,7 +377,7 @@ int VecBufferPool::init() {
         LOG_ERROR(
             "Buffer pool flush failed: file[%s], offset[%zu], "
             "expected[%zu], got[%zd]",
-            name.c_str(), off, sz, w);
+            fn.c_str(), off, sz, w);
         return -1;
       }
       return 0;

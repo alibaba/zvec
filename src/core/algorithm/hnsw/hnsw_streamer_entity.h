@@ -976,7 +976,7 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         if (!page) {
           if (io_budget_ > 0) {
             page = pinned_pages_.get_page(page_id);
-            if (ailego_unlikely(!page)) return -1;
+            if (ailego_unlikely(!page)) { out[i] = nullptr; continue; }
             --io_budget_;
           } else {
             out[i] = nullptr; continue;
@@ -988,13 +988,20 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         char *p1 = pinned_pages_.try_get_page(page_id);
         char *p2 = pinned_pages_.try_get_page(page_id + 1);
         if (!p1 || !p2) {
-          if (io_budget_ > 0) {
-            if (!p1) p1 = pinned_pages_.get_page(page_id);
-            if (!p2) p2 = pinned_pages_.get_page(page_id + 1);
-            if (ailego_unlikely(!p1 || !p2)) return -1;
+          // Decrement io_budget_ per actual page load (not per vector).
+          // A cross-page vector may need 1 or 2 preads depending on which
+          // pages are already cached.
+          if (!p1) {
+            if (io_budget_ <= 0) { out[i] = nullptr; continue; }
+            p1 = pinned_pages_.get_page(page_id);
+            if (ailego_unlikely(!p1)) { out[i] = nullptr; continue; }
             --io_budget_;
-          } else {
-            out[i] = nullptr; continue;
+          }
+          if (!p2) {
+            if (io_budget_ <= 0) { out[i] = nullptr; continue; }
+            p2 = pinned_pages_.get_page(page_id + 1);
+            if (ailego_unlikely(!p2)) { out[i] = nullptr; continue; }
+            --io_budget_;
           }
         }
         char *scratch = cross_page_arena_.data() + cross_page_used_ * vec_sz;
@@ -1098,14 +1105,19 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     bool bound() const { return pool_ != nullptr; }
 
     char *get_page(ailego::block_id_t page_id) {
-      // Flush if load factor exceeded to prevent infinite probe loop.
-      if (ailego_unlikely(count_ >= kMaxLoad)) {
-        release_all();
-      }
       size_t slot = static_cast<size_t>(page_id) & kMask;
       for (size_t probe = 0; probe < kCapacity; ++probe) {
         if (ids_[slot] == page_id) return bufs_[slot];
         if (ids_[slot] == kEmpty) {
+          // Refuse insertion when load factor exceeded.  Returning nullptr
+          // is safe: the caller treats it as an unresolvable vector (gets
+          // FLT_MAX distance).  We must NOT call release_all() here because
+          // earlier iterations of resolve_vectors() already handed out
+          // pointers into pinned page buffers — releasing them would create
+          // dangling pointers and UAF in the subsequent batch_dist() call.
+          if (ailego_unlikely(count_ >= kMaxLoad)) {
+            return nullptr;
+          }
           char *buf = pool_->acquire_buffer(page_id, 50);
           if (ailego_unlikely(!buf)) return nullptr;
           ids_[slot] = page_id;
@@ -1115,21 +1127,20 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         }
         slot = (slot + 1) & kMask;
       }
-      // Should never reach here due to kMaxLoad guard, but be safe.
       return nullptr;
     }
 
     //! Try to get a page WITHOUT triggering disk I/O.
     //! Returns buffer if page is in PinnedPageSet or already in pool memory.
-    //! Returns nullptr if page would need a pread (cache miss).
+    //! Returns nullptr if page would need a pread (cache miss) or set is full.
     char *try_get_page(ailego::block_id_t page_id) {
-      if (ailego_unlikely(count_ >= kMaxLoad)) {
-        release_all();
-      }
       size_t slot = static_cast<size_t>(page_id) & kMask;
       for (size_t probe = 0; probe < kCapacity; ++probe) {
         if (ids_[slot] == page_id) return bufs_[slot];
         if (ids_[slot] == kEmpty) {
+          if (ailego_unlikely(count_ >= kMaxLoad)) {
+            return nullptr;
+          }
           char *buf = pool_->try_acquire_buffer(page_id);
           if (!buf) return nullptr;  // page not in memory, skip
           ids_[slot] = page_id;
