@@ -312,6 +312,7 @@ class VecBufferPool {
   }
 
  private:
+  friend class VecBufferPoolHandle;
   int fd_;            // page-data channel: may carry O_DIRECT
   int meta_fd_;       // metadata channel: always buffered IO
   size_t file_size_;

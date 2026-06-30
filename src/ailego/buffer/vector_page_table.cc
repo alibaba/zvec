@@ -667,23 +667,81 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
   size_t last_page = (file_offset + len - 1) / kVectorPageSize;
   size_t remaining = len;
   size_t dst_cursor = 0;
+
+  static constexpr size_t kMaxRunPages = 1024;  // 4MB max per bulk read
+
   for (size_t pg = first_page; pg <= last_page; ++pg) {
-    char *page = pool_.acquire_buffer(pg, 50);
-    if (!page) {
-      LOG_ERROR(
-          "VecBufferPoolHandle::read_range: acquire_buffer failed, "
-          "file_offset=%zu, len=%zu, page=%zu, first_page=%zu, last_page=%zu, "
-          "page_size=%zu",
-          file_offset, len, pg, first_page, last_page, kVectorPageSize);
+    char *page = pool_.page_table_.acquire_block(pg);
+    if (page) {
+      size_t page_start = pg * kVectorPageSize;
+      size_t intra_offset = (pg == first_page) ? (file_offset - page_start) : 0;
+      size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
+      std::memcpy(out + dst_cursor, page + intra_offset, chunk);
+      pool_.page_table_.release_block(pg);
+      dst_cursor += chunk;
+      remaining -= chunk;
+      continue;
+    }
+
+    size_t run_start = pg;
+    size_t run_end = pg + 1;
+    while (run_end <= last_page && !pool_.page_table_.is_loaded(run_end) &&
+           (run_end - run_start) < kMaxRunPages) {
+      ++run_end;
+    }
+    size_t run_pages = run_end - run_start;
+    size_t run_bytes = run_pages * kVectorPageSize;
+    size_t run_file_off = run_start * kVectorPageSize;
+
+    char *bulk_buf = static_cast<char *>(aligned_alloc(4096, run_bytes));
+    if (!bulk_buf) {
+      page = pool_.acquire_buffer(pg, 50);
+      if (!page) return false;
+      size_t page_start = pg * kVectorPageSize;
+      size_t intra_offset = (pg == first_page) ? (file_offset - page_start) : 0;
+      size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
+      std::memcpy(out + dst_cursor, page + intra_offset, chunk);
+      pool_.page_table_.release_block(pg);
+      dst_cursor += chunk;
+      remaining -= chunk;
+      continue;
+    }
+
+    ssize_t got = zvec_pread(pool_.fd_, bulk_buf, run_bytes, run_file_off);
+    if (got != static_cast<ssize_t>(run_bytes)) {
+      free(bulk_buf);
+      LOG_ERROR("read_range bulk pread failed: off=%zu len=%zu got=%zd",
+                run_file_off, run_bytes, got);
       return false;
     }
-    size_t page_start = pg * kVectorPageSize;
-    size_t intra_offset = (pg == first_page) ? (file_offset - page_start) : 0;
-    size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
-    std::memcpy(out + dst_cursor, page + intra_offset, chunk);
-    pool_.page_table_.release_block(pg);
-    dst_cursor += chunk;
-    remaining -= chunk;
+
+    for (size_t j = 0; j < run_pages; ++j) {
+      block_id_t pid = static_cast<block_id_t>(run_start + j);
+      size_t page_start = pid * kVectorPageSize;
+      size_t intra_offset = (pid == first_page) ? (file_offset - page_start) : 0;
+      size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
+      std::memcpy(out + dst_cursor, bulk_buf + j * kVectorPageSize + intra_offset, chunk);
+      dst_cursor += chunk;
+      remaining -= chunk;
+
+      if (!pool_.page_table_.is_loaded(pid)) {
+        char *page_buf = nullptr;
+        bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
+            kVectorPageSize, page_buf);
+        if (!found) {
+          BlockEvictionQueue::get_instance().recycle();
+          found = MemoryLimitPool::get_instance().try_acquire_buffer(
+              kVectorPageSize, page_buf);
+        }
+        if (found) {
+          std::memcpy(page_buf, bulk_buf + j * kVectorPageSize, kVectorPageSize);
+          pool_.page_table_.set_block_acquired(pid, page_buf, run_file_off + j * kVectorPageSize);
+          pool_.page_table_.release_block(pid);
+        }
+      }
+    }
+    free(bulk_buf);
+    pg = run_end - 1;
   }
   return true;
 }
@@ -790,8 +848,9 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count) {
   char *chunk_buf = static_cast<char *>(aligned_alloc(4096, kChunkSize));
   if (!chunk_buf) return;
 
+  bool pool_full = false;
   size_t pg = first_page;
-  while (pg < end_page) {
+  while (pg < end_page && !pool_full) {
     if (page_table_.is_loaded(pg)) {
       ++pg;
       continue;
@@ -818,7 +877,12 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count) {
       char *buf = nullptr;
       bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
           kVectorPageSize, buf);
-      if (!found) break;
+      if (!found) {
+        BlockEvictionQueue::get_instance().recycle();
+        found = MemoryLimitPool::get_instance().try_acquire_buffer(
+            kVectorPageSize, buf);
+        if (!found) { pool_full = true; break; }
+      }
       std::memcpy(buf, chunk_buf + j * kVectorPageSize, kVectorPageSize);
       page_table_.set_block_acquired(pid, buf, file_off + j * kVectorPageSize);
       page_table_.release_block(pid);
