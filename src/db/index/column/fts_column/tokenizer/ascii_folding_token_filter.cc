@@ -203,6 +203,28 @@ const char *lookup_extra_fold(utf8proc_int32_t cp) {
   return nullptr;
 }
 
+bool fold_codepoint_to_ascii(const utf8proc_uint8_t *data, utf8proc_ssize_t len,
+                             std::string *out) {
+  utf8proc_uint8_t *mapped_raw = nullptr;
+  utf8proc_ssize_t mapped_len = utf8proc_map(
+      data, len, &mapped_raw,
+      static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPAT |
+                                     UTF8PROC_DECOMPOSE | UTF8PROC_STRIPMARK));
+  // RAII guard: utf8proc_map allocates with malloc, free with free().
+  std::unique_ptr<utf8proc_uint8_t, decltype(&free)> mapped(mapped_raw, &free);
+  if (mapped_len <= 0) {
+    return false;
+  }
+  for (utf8proc_ssize_t i = 0; i < mapped_len; ++i) {
+    if (mapped_raw[i] >= 0x80) {
+      return false;
+    }
+  }
+  out->assign(reinterpret_cast<const char *>(mapped_raw),
+              static_cast<size_t>(mapped_len));
+  return true;
+}
+
 }  // namespace
 
 std::vector<Token> AsciiFoldingTokenFilter::filter(
@@ -219,69 +241,47 @@ std::vector<Token> AsciiFoldingTokenFilter::filter(
       continue;
     }
 
-    // NFKD decomposition + strip combining marks via utf8proc.
-    utf8proc_uint8_t *mapped_raw = nullptr;
-    utf8proc_ssize_t mapped_len = utf8proc_map(
-        reinterpret_cast<const utf8proc_uint8_t *>(token.text.data()),
-        static_cast<utf8proc_ssize_t>(token.text.size()), &mapped_raw,
-        static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPAT |
-                                       UTF8PROC_DECOMPOSE |
-                                       UTF8PROC_STRIPMARK));
-    // RAII guard: utf8proc_map allocates with malloc, free with free().
-    std::unique_ptr<utf8proc_uint8_t, decltype(&free)> mapped(mapped_raw,
-                                                              &free);
-    if (mapped_len < 0) {
-      // Keep original token on invalid UTF-8 / mapping failure.
-      continue;
-    }
-
-    // Scan the mapped result. If already pure ASCII, use it directly.
-    // Otherwise, apply the supplementary folding table for characters that
-    // NFKD did not resolve.
-    bool mapped_all_ascii = true;
-    for (utf8proc_ssize_t i = 0; i < mapped_len; ++i) {
-      if (mapped_raw[i] >= 0x80) {
-        mapped_all_ascii = false;
-        break;
+    std::string result;
+    result.reserve(token.text.size());
+    const auto *str =
+        reinterpret_cast<const utf8proc_uint8_t *>(token.text.data());
+    const auto len = static_cast<utf8proc_ssize_t>(token.text.size());
+    utf8proc_ssize_t pos = 0;
+    while (pos < len) {
+      if (str[pos] < 0x80) {
+        result.push_back(static_cast<char>(str[pos]));
+        ++pos;
+        continue;
       }
-    }
 
-    if (mapped_all_ascii) {
-      token.text.assign(reinterpret_cast<const char *>(mapped_raw),
-                        static_cast<size_t>(mapped_len));
-    } else {
-      std::string result;
-      result.reserve(static_cast<size_t>(mapped_len));
-      utf8proc_ssize_t pos = 0;
-      while (pos < mapped_len) {
-        if (mapped_raw[pos] < 0x80) {
-          result.push_back(static_cast<char>(mapped_raw[pos]));
-          ++pos;
-          continue;
-        }
-        utf8proc_int32_t cp;
-        utf8proc_ssize_t bytes =
-            utf8proc_iterate(mapped_raw + pos, mapped_len - pos, &cp);
-        if (bytes < 1) {
-          result.push_back(static_cast<char>(mapped_raw[pos]));
-          ++pos;
-          continue;
-        }
-        const char *fold = lookup_extra_fold(cp);
-        if (fold) {
-          result.append(fold);
-        } else {
-          // Keep as-is (e.g. CJK, Greek, Cyrillic without ASCII equivalent)
-          result.append(reinterpret_cast<const char *>(mapped_raw + pos),
-                        static_cast<size_t>(bytes));
-        }
+      utf8proc_int32_t cp;
+      utf8proc_ssize_t bytes = utf8proc_iterate(str + pos, len - pos, &cp);
+      if (bytes < 1) {
+        result.push_back(static_cast<char>(str[pos]));
+        ++pos;
+        continue;
+      }
+
+      const char *fold = lookup_extra_fold(cp);
+      if (fold) {
+        result.append(fold);
         pos += bytes;
+        continue;
       }
-      token.text = std::move(result);
+
+      std::string ascii;
+      if (fold_codepoint_to_ascii(str + pos, bytes, &ascii)) {
+        result.append(ascii);
+      } else {
+        // Keep the original codepoint when it has no ASCII equivalent.
+        result.append(token.text, static_cast<size_t>(pos),
+                      static_cast<size_t>(bytes));
+      }
+      pos += bytes;
     }
+    token.text = std::move(result);
   }
-  // Folding may produce empty tokens (e.g. a standalone combining mark
-  // stripped by STRIPMARK). Remove them.
+  // Folding may leave empty tokens from empty input. Remove them.
   tokens.erase(std::remove_if(tokens.begin(), tokens.end(),
                               [](const Token &t) { return t.text.empty(); }),
                tokens.end());

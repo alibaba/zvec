@@ -202,6 +202,13 @@ TEST_F(AsciiFoldingTokenFilterTest, CJKPassthrough) {
   EXPECT_EQ(result[0].text, "\xE4\xB8\xAD\xE6\x96\x87");
 }
 
+TEST_F(AsciiFoldingTokenFilterTest, GreekTonosPassthrough) {
+  // Greek ά has no ASCII equivalent, so it should remain unchanged.
+  auto result = filter_.filter(make_tokens({"\xCE\xAC"}));
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].text, "\xCE\xAC");
+}
+
 // --- Mixed content ---
 
 TEST_F(AsciiFoldingTokenFilterTest, MixedAsciiAndAccented) {
@@ -216,6 +223,13 @@ TEST_F(AsciiFoldingTokenFilterTest, MixedAsciiAndCJK) {
   auto result = filter_.filter(make_tokens({"hello\xE4\xB8\xAD\xE6\x96\x87"}));
   ASSERT_EQ(result.size(), 1u);
   EXPECT_EQ(result[0].text, "hello\xE4\xB8\xAD\xE6\x96\x87");
+}
+
+TEST_F(AsciiFoldingTokenFilterTest, MixedLatinAndGreekTonos) {
+  // caféά → cafeά  (Latin folds, Greek stays original)
+  auto result = filter_.filter(make_tokens({"caf\xC3\xA9\xCE\xAC"}));
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].text, "cafe\xCE\xAC");
 }
 
 // --- Preserves offset and position ---
@@ -235,9 +249,9 @@ TEST_F(AsciiFoldingTokenFilterTest, FilterName) {
   EXPECT_STREQ(filter_.name(), "ascii_folding");
 }
 
-TEST_F(AsciiFoldingTokenFilterTest, StandaloneCombiningMarkBecomesEmpty) {
-  // U+0301 COMBINING ACUTE ACCENT — STRIPMARK removes it, leaving "".
-  // The filter must drop the empty token rather than keeping it.
+TEST_F(AsciiFoldingTokenFilterTest, StandaloneCombiningMarkPassthrough) {
+  // U+0301 COMBINING ACUTE ACCENT has no ASCII equivalent on its own.
   auto result = filter_.filter(make_tokens({"\xCC\x81"}));
-  EXPECT_TRUE(result.empty());
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].text, "\xCC\x81");
 }

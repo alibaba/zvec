@@ -137,6 +137,23 @@ TEST_F(StandardTokenizerTest, CJKWithSpaces) {
   EXPECT_EQ(tokens[1].text, "\xE5\xA5\xBD");
 }
 
+TEST_F(StandardTokenizerTest, CJKUnicode17ExtensionBlocks) {
+  // U+2EBF0 (Extension I), U+31350 (Extension H), U+323B0 (Extension J)
+  // should each be emitted as an individual CJK token.
+  auto tokens = tokenize("\xF0\xAE\xAF\xB0\xF0\xB1\x8D\x90\xF0\xB2\x8E\xB0");
+  ASSERT_EQ(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].text, "\xF0\xAE\xAF\xB0");
+  EXPECT_EQ(tokens[1].text, "\xF0\xB1\x8D\x90");
+  EXPECT_EQ(tokens[2].text, "\xF0\xB2\x8E\xB0");
+}
+
+TEST_F(StandardTokenizerTest, CJKCompatibilitySupplement) {
+  // U+2F800 CJK Compatibility Ideographs Supplement.
+  auto tokens = tokenize("\xF0\xAF\xA0\x80");
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].text, "\xF0\xAF\xA0\x80");
+}
+
 // --- Mixed scripts ---
 
 TEST_F(StandardTokenizerTest, MixedLatinAndCJK) {

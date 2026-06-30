@@ -42,7 +42,7 @@ class StandardTokenizer : public Tokenizer {
   }
 
  private:
-  // Tokens whose byte length exceeds this value are discarded.
+  // Word tokens with more codepoints than this value are split.
   uint32_t max_token_length_{255};
 };
 

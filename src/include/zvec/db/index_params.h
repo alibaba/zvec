@@ -717,6 +717,8 @@ class VamanaIndexParams : public VectorIndexParams {
 
 /*
  * FTS (Full-Text Search) index params
+ * Supported tokenizers: "standard", "jieba", "whitespace".
+ * Supported filters: "lowercase", "ascii_folding".
  *
  * Not copyable.  Use shared_ptr<FtsIndexParams> for shared ownership.
  */

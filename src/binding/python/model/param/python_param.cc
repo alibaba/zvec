@@ -265,15 +265,19 @@ Controls the tokenizer pipeline used during indexing and querying.
 
 Attributes:
     type (IndexType): Always ``IndexType.FTS``.
-    tokenizer_name (str): Name of the tokenizer (e.g., "standard", "jieba").
+    tokenizer_name (str): Name of the tokenizer (one of "standard", "jieba",
+        "whitespace").
         Default is "standard".
     filters (list[str]): List of token filter names applied after tokenization.
-        Default is ["lowercase"].
+        Supported filters are "lowercase" and "ascii_folding". Default is
+        ["lowercase"].
     extra_params (str): Additional parameters passed to the tokenizer.
         Default is "".
 
 Examples:
-    >>> params = FtsIndexParam(tokenizer_name="jieba", filters=["lowercase"])
+    >>> params = FtsIndexParam(
+    ...     tokenizer_name="jieba", filters=["lowercase", "ascii_folding"]
+    ... )
     >>> print(params.tokenizer_name)
     jieba
 )pbdoc");
@@ -287,7 +291,8 @@ Constructs an FtsIndexParam instance.
 
 Args:
     tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
-    filters (list[str], optional): Token filter names. Defaults to ["lowercase"].
+    filters (list[str], optional): Token filter names. Supports "lowercase" and
+        "ascii_folding". Defaults to ["lowercase"].
     extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
 )pbdoc")
       .def_property_readonly("tokenizer_name", &FtsIndexParams::tokenizer_name,

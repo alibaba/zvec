@@ -1089,8 +1089,10 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
 /**
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)
- * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value)
- * @param filters Token filter names (NULL keeps current value)
+ * @param tokenizer_name Tokenizer name: "standard", "jieba", or "whitespace"
+ *                       (NULL keeps current value)
+ * @param filters Token filter names: "lowercase" and/or "ascii_folding"
+ *                (NULL keeps current value)
  * @param extra_params Additional tokenizer parameters (NULL keeps current
  * value)
  * @return ZVEC_OK on success, error code on failure

@@ -19,8 +19,8 @@
 namespace zvec::fts {
 
 /*! ASCII Folding Token Filter
- *  Convert Unicode characters to their ASCII equivalents via NFKD
- *  decomposition (utf8proc) with a supplementary folding table for
+ *  Convert Unicode characters to their ASCII equivalents per codepoint via
+ *  NFKD decomposition (utf8proc) with a supplementary folding table for
  *  characters that lack decomposition mappings (e.g. ø→o, đ→d, ß→ss).
  *  Characters without a reasonable ASCII equivalent are kept as-is.
  */
