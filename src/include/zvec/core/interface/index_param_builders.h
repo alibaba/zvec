@@ -87,6 +87,11 @@ class BaseIndexParamBuilder {  //  : public
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 
+  ActualIndexParamBuilderType &WithEnableRotate(bool enable_rotate) {
+    param->quantizer_param.enable_rotate = enable_rotate;
+    return static_cast<ActualIndexParamBuilderType &>(*this);
+  }
+
   ActualIndexParamBuilderType &WithUseExternalVector(bool use_external_vector) {
     param->use_external_vector = use_external_vector;
     return static_cast<ActualIndexParamBuilderType &>(*this);

@@ -28,8 +28,8 @@ from .typing.enum import LogLevel, LogType
 
 def init(
     *,
-    log_type: Optional[LogType] = LogType.CONSOLE,
-    log_level: Optional[LogLevel] = LogLevel.WARN,
+    log_type: Optional[LogType] = None,
+    log_level: Optional[LogLevel] = None,
     log_dir: Optional[str] = "./logs",
     log_basename: Optional[str] = "zvec.log",
     log_file_size: Optional[int] = 2048,
@@ -196,7 +196,7 @@ def create_and_open(
     Args:
         path (str): Path or name of the collection to create.
         schema (CollectionSchema): Schema defining the structure of the collection.
-        option (CollectionOption): Configuration options
+        option (Optional[CollectionOption]): Configuration options
             for opening the collection. Defaults to a default-constructed
             ``CollectionOption()`` if not provided.
 
@@ -231,7 +231,7 @@ def open(path: str, option: CollectionOption = CollectionOption()) -> Collection
 
     Args:
         path (str): Path or name of the existing collection.
-        option (CollectionOption): Configuration options
+        option (CollectionOption, optional): Configuration options
             for opening the collection. Defaults to a default-constructed
             ``CollectionOption()`` if not provided.
 

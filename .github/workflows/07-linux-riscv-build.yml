@@ -165,7 +165,7 @@ jobs:
         shell: bash
 
       - name: Cache pip
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: linux-riscv64-${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}

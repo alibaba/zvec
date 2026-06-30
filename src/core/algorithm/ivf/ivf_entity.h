@@ -283,6 +283,9 @@ class IVFEntity {
     //! Initialize
     int init(const IndexMeta &imeta);
 
+    //! Load reformer state (e.g. rotation matrix) from storage
+    int load(const IndexStorage::Pointer &storage);
+
     //! Update
     int update(const IndexMeta &meta);
 

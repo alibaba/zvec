@@ -31,6 +31,7 @@ from zvec._zvec.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    QuantizerParam,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "IndexOption",
     "InvertIndexParam",
     "OptimizeOption",
+    "QuantizerParam",
     "VamanaIndexParam",
     "VamanaQueryParam",
 ]

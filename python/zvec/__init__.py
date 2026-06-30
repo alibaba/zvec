@@ -108,6 +108,7 @@ from .model.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    QuantizerParam,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -171,6 +172,7 @@ __all__ = [
     "HnswQueryParam",
     "HnswRabitqQueryParam",
     "IVFQueryParam",
+    "QuantizerParam",
     "VamanaIndexParam",
     "VamanaQueryParam",
     # Extensions
