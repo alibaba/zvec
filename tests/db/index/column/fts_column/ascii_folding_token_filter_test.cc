@@ -232,6 +232,14 @@ TEST_F(AsciiFoldingTokenFilterTest, MixedLatinAndGreekTonos) {
   EXPECT_EQ(result[0].text, "cafe\xCE\xAC");
 }
 
+TEST_F(AsciiFoldingTokenFilterTest, DecomposedLatinCombiningMarkPassthrough) {
+  // Align with ES/Lucene asciifolding: combining marks are not folded by
+  // themselves, so decomposed "cafe + U+0301" remains unchanged.
+  auto result = filter_.filter(make_tokens({"cafe\xCC\x81"}));
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].text, "cafe\xCC\x81");
+}
+
 // --- Preserves offset and position ---
 
 TEST_F(AsciiFoldingTokenFilterTest, PreservesOffsetAndPosition) {
