@@ -723,12 +723,18 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
     }
 
     ssize_t got = zvec_pread(pool_.fd_, bulk_buf, run_bytes, run_file_off);
-    if (got != static_cast<ssize_t>(run_bytes)) {
+    // Accept short reads at EOF: the bulk read may overshoot the file when
+    // the last page is not fully occupied.  We only need bytes up to
+    // (file_offset + len) which the caller guarantees is within the file.
+    size_t needed_bytes = (file_offset + len) - run_file_off;
+    if (needed_bytes > run_bytes) needed_bytes = run_bytes;
+    if (got < 0 || static_cast<size_t>(got) < needed_bytes) {
       ailego_free(bulk_buf);
-      LOG_ERROR("read_range bulk pread failed: off=%zu len=%zu got=%zd",
-                run_file_off, run_bytes, got);
+      LOG_ERROR("read_range bulk pread failed: off=%zu len=%zu got=%zd needed=%zu",
+                run_file_off, run_bytes, got, needed_bytes);
       return false;
     }
+    size_t actually_read = static_cast<size_t>(got);
 
     for (size_t j = 0; j < run_pages; ++j) {
       block_id_t pid = static_cast<block_id_t>(run_start + j);
@@ -741,7 +747,10 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
       dst_cursor += chunk;
       remaining -= chunk;
 
-      if (!pool_.page_table_.is_loaded(pid)) {
+      // Only cache pages that were fully read from disk.
+      size_t page_end_in_buf = (j + 1) * kVectorPageSize;
+      if (page_end_in_buf <= actually_read &&
+          !pool_.page_table_.is_loaded(pid)) {
         char *page_buf = nullptr;
         bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
             kVectorPageSize, page_buf);

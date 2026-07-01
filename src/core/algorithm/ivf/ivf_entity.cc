@@ -832,7 +832,7 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
           keeps |= (1ULL << k);
         }
       }
-      size_t filtered = vecs_count - __builtin_popcountll(keeps);
+      size_t filtered = vecs_count - ailego_popcount64(keeps);
 
       if (keeps == 0) {
         // All filtered - update stats for all queries
