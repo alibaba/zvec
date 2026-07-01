@@ -796,7 +796,9 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
   const size_t batch_size = kBatchBlocks;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
   BatchCallerGuard caller_guard;
+#ifdef _OPENMP
   const int omp_threads = adaptive_thread_count(query_count);
+#endif
 
   for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
     //! Read vecs - ONCE for all queries
@@ -824,7 +826,6 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
           std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
       auto block_keys = keys + b * block_vecs;
 
-      // Build filter bitmask once (shared across queries)
       size_t keeps = 0;
       ailego_assert_with(block_vecs < sizeof(keeps) * 8, "bits overflow");
       for (size_t k = 0; k < vecs_count; ++k) {
@@ -835,7 +836,6 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
       size_t filtered = vecs_count - ailego_popcount64(keeps);
 
       if (keeps == 0) {
-        // All filtered - update stats for all queries
         for (size_t q = 0; q < query_count; ++q) {
           *(items[q].stats->mutable_filtered_count()) += filtered;
         }
@@ -845,7 +845,6 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
       const void *block_data = static_cast<const char *>(data) + b * block_size;
       uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
 
-      // Adaptive parallel: auto-tune threads based on concurrent callers
 #ifdef _OPENMP
 #pragma omp parallel for num_threads(omp_threads) \
     schedule(static) if (omp_threads > 1)
@@ -880,14 +879,15 @@ int IVFEntity::search_batch(size_t inverted_list_id, BatchQueryItem *items,
   ivf_assert(list_meta, IndexError_ReadData);
 
   const size_t block_size = header_.block_size;
-  const size_t total_data_size = list_meta->block_count * block_size;
 
   const void *data = nullptr;
   const size_t block_vecs = header_.block_vector_count;
   const size_t batch_size = kBatchBlocks;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
   BatchCallerGuard caller_guard;
+#ifdef _OPENMP
   const int omp_threads = adaptive_thread_count(query_count);
+#endif
 
   for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
     //! Read vecs - ONCE for all queries
@@ -917,7 +917,6 @@ int IVFEntity::search_batch(size_t inverted_list_id, BatchQueryItem *items,
       const void *block_data = static_cast<const char *>(data) + b * block_size;
       uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
 
-      // Adaptive parallel: auto-tune threads based on concurrent callers
 #ifdef _OPENMP
 #pragma omp parallel for num_threads(omp_threads) \
     schedule(static) if (omp_threads > 1)
