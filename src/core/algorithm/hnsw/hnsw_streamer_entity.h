@@ -963,6 +963,27 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     if (ailego_unlikely(!pinned_pages_.bound())) return -1;
     const size_t vec_sz = vector_size();
     const size_t pg_sz = ailego::kVectorPageSize;
+
+    if (io_budget_ > 0) {
+      auto *pool = vec_buffer_pool();
+      if (pool && pool->aio_enabled()) {
+        ailego::block_id_t prefetch_ids[64];
+        uint32_t prefetch_count = 0;
+        for (uint32_t i = 0; i < count && prefetch_count < 64; ++i) {
+          const size_t abs_off = get_vector_abs_offset(ids[i]);
+          auto pid = static_cast<ailego::block_id_t>(abs_off / pg_sz);
+          if (pid < pool->page_table_.entry_num() &&
+              !pinned_pages_.contains(pid) &&
+              !pool->page_table_.is_loaded(pid)) {
+            prefetch_ids[prefetch_count++] = pid;
+          }
+        }
+        if (prefetch_count > 0) {
+          pool->prefetch_scattered_pages(prefetch_ids, prefetch_count);
+        }
+      }
+    }
+
     cross_page_used_ = 0;
     if (cross_page_arena_.size() < count * vec_sz)
       cross_page_arena_.resize(count * vec_sz);
@@ -1175,6 +1196,16 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
         slot = (slot + 1) & kMask;
       }
       return nullptr;
+    }
+
+    bool contains(ailego::block_id_t page_id) const {
+      size_t slot = static_cast<size_t>(page_id) & kMask;
+      for (size_t probe = 0; probe < kCapacity; ++probe) {
+        if (ids_[slot] == page_id) return true;
+        if (ids_[slot] == kEmpty) return false;
+        slot = (slot + 1) & kMask;
+      }
+      return false;
     }
 
     void release_all() {

@@ -345,7 +345,15 @@ VecBufferPool::VecBufferPool(const std::string &filename, bool writable,
     throw std::runtime_error("Failed to stat file: " + filename);
   }
   file_size_ = st.st_size;
-  initial_file_size_ = file_size_;  // snapshot for skip-pread optimisation
+  initial_file_size_ = file_size_;
+#if defined(__linux) || defined(__linux__)
+  if (direct_io_enabled_ && LibAioLoader::Instance().Load()) {
+    aio_ctx_ = nullptr;
+    if (LibAioLoader::Instance().io_setup(256, &aio_ctx_) == 0) {
+      aio_enabled_ = true;
+    }
+  }
+#endif
 }
 
 int VecBufferPool::init() {
@@ -868,6 +876,13 @@ void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count) {
   }
   if (first_page >= end_page) return;
 
+#if defined(__linux) || defined(__linux__)
+  if (aio_enabled_) {
+    prefetch_pages_aio(first_page, end_page - first_page);
+    return;
+  }
+#endif
+
   bool all_loaded = true;
   for (size_t pg = first_page; pg < end_page; ++pg) {
     if (!page_table_.is_loaded(pg)) {
@@ -936,6 +951,244 @@ void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len) {
   size_t last_page = (file_offset + len - 1) / kVectorPageSize;
   pool_.prefetch_pages(static_cast<block_id_t>(first_page),
                        last_page - first_page + 1);
+}
+
+void VecBufferPool::prefetch_pages_aio(
+    [[maybe_unused]] block_id_t first_page,
+    [[maybe_unused]] size_t page_count) {
+#if defined(__linux) || defined(__linux__)
+  static constexpr size_t kMaxBatch = 128;
+
+  size_t end_page = first_page + page_count;
+  if (end_page > page_table_.entry_num()) {
+    end_page = page_table_.entry_num();
+  }
+
+  size_t pg = first_page;
+  while (pg < end_page) {
+    std::vector<block_id_t> miss_pages;
+    miss_pages.reserve(kMaxBatch);
+    while (pg < end_page && miss_pages.size() < kMaxBatch) {
+      if (!page_table_.is_loaded(pg)) {
+        miss_pages.push_back(static_cast<block_id_t>(pg));
+      }
+      ++pg;
+    }
+    if (miss_pages.empty()) continue;
+
+    size_t count = miss_pages.size();
+    std::vector<struct iocb> cbs(count);
+    std::vector<struct iocb *> cb_ptrs(count);
+    std::vector<char *> buffers(count, nullptr);
+
+    size_t submitted = 0;
+    for (size_t i = 0; i < count; ++i) {
+      char *buf = nullptr;
+      bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
+          kVectorPageSize, buf);
+      if (!found) {
+        BlockEvictionQueue::get_instance().recycle();
+        found = MemoryLimitPool::get_instance().try_acquire_buffer(
+            kVectorPageSize, buf);
+      }
+      if (!found) break;
+      buffers[submitted] = buf;
+      size_t offset = miss_pages[i] * kVectorPageSize;
+      io_prep_pread(&cbs[submitted], fd_, buf, kVectorPageSize,
+                    static_cast<long long>(offset));
+      cb_ptrs[submitted] = &cbs[submitted];
+      ++submitted;
+    }
+
+    if (submitted == 0) return;
+
+    int ret = LibAioLoader::Instance().io_submit(
+        aio_ctx_, static_cast<long>(submitted), cb_ptrs.data());
+    if (ret != static_cast<int>(submitted)) {
+      for (size_t i = 0; i < submitted; ++i) {
+        MemoryLimitPool::get_instance().release_buffer(buffers[i],
+                                                      kVectorPageSize);
+      }
+      return;
+    }
+
+    std::vector<struct io_event> events(submitted);
+    ret = LibAioLoader::Instance().io_getevents(
+        aio_ctx_, static_cast<long>(submitted), static_cast<long>(submitted),
+        events.data(), nullptr);
+
+    size_t completed = (ret > 0) ? static_cast<size_t>(ret) : 0;
+    for (size_t i = 0; i < completed; ++i) {
+      if (static_cast<ssize_t>(events[i].res) ==
+          static_cast<ssize_t>(kVectorPageSize)) {
+        block_id_t pid = miss_pages[i];
+        page_table_.set_block_acquired(pid, buffers[i],
+                                       pid * kVectorPageSize);
+        page_table_.release_block(pid);
+      } else {
+        MemoryLimitPool::get_instance().release_buffer(buffers[i],
+                                                      kVectorPageSize);
+      }
+    }
+    for (size_t i = completed; i < submitted; ++i) {
+      MemoryLimitPool::get_instance().release_buffer(buffers[i],
+                                                    kVectorPageSize);
+    }
+  }
+#endif
+}
+
+#if defined(__linux) || defined(__linux__)
+namespace {
+struct ThreadLocalAioCtx {
+  io_context_t ctx{nullptr};
+  bool inited{false};
+  bool ok{false};
+
+  ~ThreadLocalAioCtx() {
+    if (ok && ctx) {
+      LibAioLoader::Instance().io_destroy(ctx);
+    }
+  }
+
+  bool ensure() {
+    if (inited) return ok;
+    inited = true;
+    if (!LibAioLoader::Instance().IsAvailable()) return false;
+    ctx = nullptr;
+    if (LibAioLoader::Instance().io_setup(64, &ctx) == 0) {
+      ok = true;
+    }
+    return ok;
+  }
+};
+}  // namespace
+#endif
+
+void VecBufferPool::prefetch_scattered_pages(
+    const block_id_t *page_ids, size_t count) {
+  if (count == 0) return;
+
+  block_id_t miss_pages[128];
+  size_t miss_count = 0;
+  for (size_t i = 0; i < count && miss_count < 128; ++i) {
+    if (page_ids[i] >= page_table_.entry_num()) continue;
+    if (page_table_.is_loaded(page_ids[i])) continue;
+    bool dup = false;
+    for (size_t j = 0; j < miss_count; ++j) {
+      if (miss_pages[j] == page_ids[i]) { dup = true; break; }
+    }
+    if (!dup) miss_pages[miss_count++] = page_ids[i];
+  }
+  if (miss_count == 0) return;
+
+#if defined(__linux) || defined(__linux__)
+  if (direct_io_enabled_) {
+    static thread_local ThreadLocalAioCtx tl_aio;
+    if (tl_aio.ensure()) {
+      struct iocb cbs[128];
+      struct iocb *cb_ptrs[128];
+      char *buffers[128];
+      block_id_t buf_pids[128];
+
+      size_t submitted = 0;
+      for (size_t i = 0; i < miss_count; ++i) {
+        char *buf = nullptr;
+        bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
+            kVectorPageSize, buf);
+        if (!found) {
+          BlockEvictionQueue::get_instance().recycle();
+          found = MemoryLimitPool::get_instance().try_acquire_buffer(
+              kVectorPageSize, buf);
+        }
+        if (!found) break;
+        buffers[submitted] = buf;
+        buf_pids[submitted] = miss_pages[i];
+        size_t offset = miss_pages[i] * kVectorPageSize;
+        io_prep_pread(&cbs[submitted], fd_, buf, kVectorPageSize,
+                      static_cast<long long>(offset));
+        cbs[submitted].data = reinterpret_cast<void *>(submitted);
+        cb_ptrs[submitted] = &cbs[submitted];
+        ++submitted;
+      }
+      if (submitted == 0) return;
+
+      int ret = LibAioLoader::Instance().io_submit(
+          tl_aio.ctx, static_cast<long>(submitted), cb_ptrs);
+      if (ret != static_cast<int>(submitted)) {
+        for (size_t i = 0; i < submitted; ++i) {
+          MemoryLimitPool::get_instance().release_buffer(buffers[i],
+                                                        kVectorPageSize);
+        }
+        return;
+      }
+
+      struct io_event events[128];
+      ret = LibAioLoader::Instance().io_getevents(
+          tl_aio.ctx, static_cast<long>(submitted),
+          static_cast<long>(submitted), events, nullptr);
+
+      size_t completed = (ret > 0) ? static_cast<size_t>(ret) : 0;
+      bool handled[128] = {};
+      for (size_t i = 0; i < completed; ++i) {
+        size_t idx = reinterpret_cast<size_t>(events[i].data);
+        handled[idx] = true;
+        if (static_cast<ssize_t>(events[i].res) !=
+            static_cast<ssize_t>(kVectorPageSize)) {
+          MemoryLimitPool::get_instance().release_buffer(buffers[idx],
+                                                        kVectorPageSize);
+          continue;
+        }
+        block_id_t pid = buf_pids[idx];
+        std::lock_guard<std::mutex> lock(
+            block_mutexes_[pid % VecBufferPool::kMutexBucketCount]);
+        if (page_table_.is_loaded(pid)) {
+          MemoryLimitPool::get_instance().release_buffer(buffers[idx],
+                                                        kVectorPageSize);
+        } else {
+          page_table_.set_block_acquired(pid, buffers[idx],
+                                         pid * kVectorPageSize);
+          page_table_.release_block(pid);
+        }
+      }
+      for (size_t i = 0; i < submitted; ++i) {
+        if (!handled[i]) {
+          MemoryLimitPool::get_instance().release_buffer(buffers[i],
+                                                        kVectorPageSize);
+        }
+      }
+      return;
+    }
+  }
+#endif
+
+  for (size_t i = 0; i < miss_count; ++i) {
+    block_id_t pid = miss_pages[i];
+    if (page_table_.is_loaded(pid)) continue;
+    char *buf = nullptr;
+    bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
+        kVectorPageSize, buf);
+    if (!found) {
+      BlockEvictionQueue::get_instance().recycle();
+      found = MemoryLimitPool::get_instance().try_acquire_buffer(
+          kVectorPageSize, buf);
+    }
+    if (!found) return;
+    std::lock_guard<std::mutex> lock(
+        block_mutexes_[pid % VecBufferPool::kMutexBucketCount]);
+    if (page_table_.is_loaded(pid)) {
+      MemoryLimitPool::get_instance().release_buffer(buf, kVectorPageSize);
+      continue;
+    }
+    size_t offset = pid * kVectorPageSize;
+    ssize_t got = zvec_pread(fd_, buf, kVectorPageSize, offset);
+    if (got != static_cast<ssize_t>(kVectorPageSize)) {
+      MemoryLimitPool::get_instance().release_buffer(buf, kVectorPageSize);
+      continue;
+    }
+    page_table_.set_block_acquired(pid, buf, offset);
+    page_table_.release_block(pid);
+  }
 }
 
 }  // namespace ailego

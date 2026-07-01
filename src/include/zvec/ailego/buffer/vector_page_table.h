@@ -33,6 +33,9 @@
 #include <string>
 #include <unordered_map>
 #include <zvec/ailego/internal/platform.h>
+#if defined(__linux) || defined(__linux__)
+#include <zvec/ailego/io/libaio_loader.h>
+#endif
 #include "block_eviction_queue.h"
 #include "concurrentqueue.h"
 
@@ -250,6 +253,11 @@ class VecBufferPool {
       assert(page_table_.is_released(i));
       page_table_.evict_block(i);
     }
+#if defined(__linux) || defined(__linux__)
+    if (aio_enabled_ && aio_ctx_) {
+      LibAioLoader::Instance().io_destroy(aio_ctx_);
+    }
+#endif
 #if defined(_MSC_VER)
     _close(fd_);
     _close(meta_fd_);
@@ -299,6 +307,18 @@ class VecBufferPool {
 
   void prefetch_pages(block_id_t first_page, size_t page_count);
 
+  void prefetch_pages_aio(block_id_t first_page, size_t page_count);
+
+  void prefetch_scattered_pages(const block_id_t *page_ids, size_t count);
+
+  bool aio_enabled() const {
+#if defined(__linux) || defined(__linux__)
+    return aio_enabled_;
+#else
+    return false;
+#endif
+  }
+
   //! Try to acquire a page buffer WITHOUT triggering disk I/O.
   //! Returns the buffer pointer if the page is already in memory,
   //! or nullptr if the page would need a pread (cache miss).
@@ -322,7 +342,11 @@ class VecBufferPool {
                               // pread on first load (content is zeros).
   std::string file_name_;
   bool writable_{false};
-  bool direct_io_enabled_{false};  // whether O_DIRECT actually took effect
+  bool direct_io_enabled_{false};
+#if defined(__linux) || defined(__linux__)
+  io_context_t aio_ctx_{nullptr};
+  bool aio_enabled_{false};
+#endif
 
  public:
   VectorPageTable page_table_;
