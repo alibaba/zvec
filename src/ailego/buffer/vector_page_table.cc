@@ -730,8 +730,9 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
     if (needed_bytes > run_bytes) needed_bytes = run_bytes;
     if (got < 0 || static_cast<size_t>(got) < needed_bytes) {
       ailego_free(bulk_buf);
-      LOG_ERROR("read_range bulk pread failed: off=%zu len=%zu got=%zd needed=%zu",
-                run_file_off, run_bytes, got, needed_bytes);
+      LOG_ERROR(
+          "read_range bulk pread failed: off=%zu len=%zu got=%zd needed=%zu",
+          run_file_off, run_bytes, got, needed_bytes);
       return false;
     }
     size_t actually_read = static_cast<size_t>(got);
