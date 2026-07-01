@@ -19,22 +19,30 @@ namespace zvec::fts {
 
 namespace {
 
-bool is_word_char(utf8proc_category_t cat) {
+bool is_word_start_char(utf8proc_category_t cat) {
   switch (cat) {
     case UTF8PROC_CATEGORY_LU:  // Letter, uppercase
     case UTF8PROC_CATEGORY_LL:  // Letter, lowercase
     case UTF8PROC_CATEGORY_LT:  // Letter, titlecase
     case UTF8PROC_CATEGORY_LM:  // Letter, modifier
     case UTF8PROC_CATEGORY_LO:  // Letter, other
-    case UTF8PROC_CATEGORY_MN:  // Mark, nonspacing
-    case UTF8PROC_CATEGORY_MC:  // Mark, spacing combining
-    case UTF8PROC_CATEGORY_ME:  // Mark, enclosing
     case UTF8PROC_CATEGORY_ND:  // Number, decimal digit
     case UTF8PROC_CATEGORY_NL:  // Number, letter
     case UTF8PROC_CATEGORY_NO:  // Number, other
       return true;
     default:
       return false;
+  }
+}
+
+bool is_word_continue_char(utf8proc_category_t cat) {
+  switch (cat) {
+    case UTF8PROC_CATEGORY_MN:  // Mark, nonspacing
+    case UTF8PROC_CATEGORY_MC:  // Mark, spacing combining
+    case UTF8PROC_CATEGORY_ME:  // Mark, enclosing
+      return true;
+    default:
+      return is_word_start_char(cat);
   }
 }
 
@@ -97,30 +105,18 @@ std::vector<Token> StandardTokenizer::tokenize(const std::string &text) const {
     }
 
     auto cat = utf8proc_category(cp);
-    // Skip delimiters (non-word, non-CJK).
-    if (!is_word_char(cat)) {
+    // Skip delimiters and continuation-only characters that cannot start words.
+    if (!is_word_start_char(cat)) {
       index += bytes;
       continue;
     }
 
-    // Accumulate a word token (letters, marks, digits).
-    // Split at max_token_length_ codepoints (aligned with ES behavior).
+    // Accumulate a word token. Marks can continue a token, but cannot start
+    // one. Split at max_token_length_ codepoints (aligned with ES behavior).
     utf8proc_ssize_t token_start = index;
     uint32_t codepoint_count = 1;
     index += bytes;
     while (index < len) {
-      // Emit a segment when codepoint count reaches the limit.
-      if (codepoint_count >= max_token_length_) {
-        Token token;
-        token.text = text.substr(static_cast<size_t>(token_start),
-                                 static_cast<size_t>(index - token_start));
-        token.offset = static_cast<uint32_t>(token_start);
-        token.position = position++;
-        tokens.push_back(std::move(token));
-        token_start = index;
-        codepoint_count = 0;
-      }
-
       utf8proc_int32_t next_cp;
       utf8proc_ssize_t next_bytes =
           utf8proc_iterate(str + index, len - index, &next_cp);
@@ -130,8 +126,22 @@ std::vector<Token> StandardTokenizer::tokenize(const std::string &text) const {
       if (is_cjk_ideograph(next_cp)) {
         break;
       }
-      if (!is_word_char(utf8proc_category(next_cp))) {
+      auto next_cat = utf8proc_category(next_cp);
+      if (!is_word_continue_char(next_cat)) {
         break;
+      }
+      // Emit a segment when codepoint count reaches the limit, but do not
+      // create a segment that starts with a continuation-only mark.
+      if (codepoint_count >= max_token_length_ &&
+          is_word_start_char(next_cat)) {
+        Token token;
+        token.text = text.substr(static_cast<size_t>(token_start),
+                                 static_cast<size_t>(index - token_start));
+        token.offset = static_cast<uint32_t>(token_start);
+        token.position = position++;
+        tokens.push_back(std::move(token));
+        token_start = index;
+        codepoint_count = 0;
       }
       ++codepoint_count;
       index += next_bytes;

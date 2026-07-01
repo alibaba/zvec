@@ -90,6 +90,34 @@ TEST_F(StandardTokenizerTest, AccentedLatin) {
   EXPECT_EQ(tokens[1].text, "r\xC3\xA9sum\xC3\xA9");
 }
 
+TEST_F(StandardTokenizerTest, MarksContinueButDoNotStartTokens) {
+  // e + U+0301 keeps the combining mark with the base letter.
+  // Standalone U+0301 and the heart variation selector are not indexed.
+  auto tokens = tokenize(
+      "e\xCC\x81 "
+      "\xCC\x81 "
+      "\xE2\x9D\xA4\xEF\xB8\x8F");
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].text, "e\xCC\x81");
+}
+
+TEST_F(StandardTokenizerTest, MaxTokenLengthDoesNotCreateMarkOnlyToken) {
+  FtsIndexParams params;
+  params.tokenizer_name = "standard";
+  params.filters.clear();
+  params.extra_params = R"({"max_token_length":2})";
+  auto pipeline = TokenizerFactory::create(params);
+  ASSERT_NE(pipeline, nullptr);
+
+  // ab + U+0301 + c should not split into a standalone combining mark token.
+  auto tokens = pipeline->process(
+      "ab\xCC\x81"
+      "c");
+  ASSERT_EQ(tokens.size(), 2u);
+  EXPECT_EQ(tokens[0].text, "ab\xCC\x81");
+  EXPECT_EQ(tokens[1].text, "c");
+}
+
 TEST_F(StandardTokenizerTest, GermanUmlaut) {
   // Über Straße → ["Über", "Straße"]
   auto tokens = tokenize(
