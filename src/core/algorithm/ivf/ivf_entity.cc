@@ -20,8 +20,8 @@
 #include <omp.h>
 #endif
 
+#ifdef _OPENMP
 namespace {
-// Track concurrent batch callers to auto-tune internal parallelism
 std::atomic<int> g_active_batch_callers{0};
 
 struct BatchCallerGuard {
@@ -37,20 +37,14 @@ inline int adaptive_thread_count(size_t query_count) {
   if (query_count <= 4) {
     return 1;
   }
-  // Use omp_get_max_threads() which respects OMP_NUM_THREADS env var.
-  // In multi-process deployment, orchestrator sets
-  // OMP_NUM_THREADS=cores/num_procs.
-#ifdef _OPENMP
   int hw = omp_get_max_threads();
-#else
-  int hw = static_cast<int>(std::thread::hardware_concurrency());
-#endif
   if (hw <= 0) hw = 1;
   int active = g_active_batch_callers.load(std::memory_order_relaxed);
   if (active <= 0) active = 1;
   return std::max(1, hw / active);
 }
 }  // namespace
+#endif
 namespace zvec {
 namespace core {
 
@@ -795,8 +789,8 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
   const size_t block_vecs = header_.block_vector_count;
   const size_t batch_size = kBatchBlocks;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
-  BatchCallerGuard caller_guard;
 #ifdef _OPENMP
+  BatchCallerGuard caller_guard;
   const int omp_threads = adaptive_thread_count(query_count);
 #endif
 
@@ -884,8 +878,8 @@ int IVFEntity::search_batch(size_t inverted_list_id, BatchQueryItem *items,
   const size_t block_vecs = header_.block_vector_count;
   const size_t batch_size = kBatchBlocks;
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
-  BatchCallerGuard caller_guard;
 #ifdef _OPENMP
+  BatchCallerGuard caller_guard;
   const int omp_threads = adaptive_thread_count(query_count);
 #endif
 
