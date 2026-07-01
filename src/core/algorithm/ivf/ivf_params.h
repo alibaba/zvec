@@ -70,6 +70,8 @@ static const std::string PARAM_IVF_SEARCHER_OPTIMIZER_PARAMS(
     "proxima.ivf.searcher.optimizer_params");
 static const std::string PARAM_IVF_SEARCHER_CONVERTER_REFORMER(
     "proxima.ivf.searcher.converter_reformer");
+static const std::string PARAM_IVF_SEARCHER_NPROBE(
+    "proxima.ivf.searcher.nprobe");
 
 // Constants
 static constexpr char const *kIPMetricName = "InnerProduct";

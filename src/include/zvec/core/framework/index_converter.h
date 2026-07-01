@@ -18,6 +18,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_stats.h>
+#include <zvec/core/framework/index_storage.h>
 #include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
@@ -195,6 +196,13 @@ class IndexConverter : public IndexModule {
 
   //! Dump index into storage
   virtual int dump(const IndexDumper::Pointer &dumper) = 0;
+
+  //! Dump converter state (e.g. rotator) to IndexStorage for streaming build.
+  //! Default is no-op; override in subclasses that need storage persistence.
+  virtual int dump_to_storage(const IndexStorage::Pointer &storage) {
+    (void)storage;
+    return 0;
+  }
 
   //! Retrieve statistics
   virtual const Stats &stats(void) const = 0;

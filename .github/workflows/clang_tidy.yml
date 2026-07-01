@@ -129,7 +129,7 @@ jobs:
       - name: Restore generated headers cache
         id: cache_headers
         if: steps.changed_files.outputs.any_changed == 'true'
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             build/external
@@ -144,7 +144,7 @@ jobs:
 
       - name: Save generated headers cache
         if: steps.tidy_files.outputs.any_tidy_files == 'true' && steps.cache_headers.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             build/external

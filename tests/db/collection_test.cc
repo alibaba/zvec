@@ -16,10 +16,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -185,6 +187,60 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
   };
   func(true);
   func(false);
+}
+
+// Test that read-only collection can be opened when LOCK file is read-only
+// This simulates a read-only filesystem scenario (e.g., mount -o ro)
+// See: https://github.com/zvec-ai/zvec-rust/issues/6
+TEST_F(CollectionTest, Feature_OpenReadOnly_WithReadOnlyLockFile) {
+  namespace fs = std::filesystem;
+
+  // Create a collection first
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 100 * 1024 * 1024};
+  auto collection =
+      TestHelper::CreateCollectionWithDoc(col_path, *schema, options, 0, 0);
+  ASSERT_NE(collection, nullptr);
+
+  // Close the collection
+  collection.reset();
+
+  // Make the LOCK file read-only to simulate read-only filesystem
+  std::string lock_path = col_path + "/LOCK";
+  ASSERT_TRUE(ailego::FileHelper::IsExist(lock_path.c_str()));
+
+  // Use std::filesystem to set read-only permissions (cross-platform)
+  std::error_code ec;
+  fs::permissions(lock_path,
+                  fs::perms::owner_read | fs::perms::group_read |
+                      fs::perms::others_read,
+                  fs::perm_options::replace, ec);
+  ASSERT_FALSE(ec) << "Failed to set read-only permissions: " << ec.message();
+
+  // Open with read_only=true should succeed even with read-only LOCK file
+  CollectionOptions ro_options;
+  ro_options.read_only_ = true;
+  ro_options.enable_mmap_ = true;
+
+  auto result = Collection::Open(col_path, ro_options);
+  if (!result.has_value()) {
+    std::cout << "Open read-only failed: " << result.error().message()
+              << std::endl;
+  }
+  ASSERT_TRUE(result.has_value())
+      << "Failed to open read-only collection with read-only LOCK file";
+
+  auto col = result.value();
+  ASSERT_NE(col, nullptr);
+
+  // Close collection before restoring permissions
+  col.reset();
+
+  // Restore permissions for cleanup
+  fs::permissions(lock_path,
+                  fs::perms::owner_read | fs::perms::owner_write |
+                      fs::perms::group_read | fs::perms::others_read,
+                  fs::perm_options::replace, ec);
 }
 
 TEST_F(CollectionTest, Feature_CreateAndOpen_Empty) {

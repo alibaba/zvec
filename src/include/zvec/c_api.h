@@ -962,6 +962,30 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
+ * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
+ * quantize type)
+ *
+ * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
+ * reduce quantization error. The rotation matrix is stored with the index
+ * and automatically applied to query vectors at search time.
+ *
+ * @param params Index parameters (must be vector index type)
+ * @param enable_rotate Whether to enable random rotation before quantization
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
+                                              bool enable_rotate);
+
+/**
+ * @brief Get enable_rotate setting from quantizer parameters
+ * @param params Index parameters (must not be NULL)
+ * @return true if rotation is enabled, false otherwise (default)
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
+    const zvec_index_params_t *params);
+
+/**
  * @brief Set HNSW specific parameters
  * @param params Index parameters (must be HNSW type)
  * @param m Graph connectivity parameter
@@ -2359,6 +2383,24 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_flat_params(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_vamana_params(
     zvec_sub_query_t *query, zvec_vamana_query_params_t *vamana_params);
 
+/**
+ * @brief Set FTS query parameters on a sub-query (takes ownership)
+ * @param query Sub-query pointer
+ * @param fts_params FTS query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_fts_params(
+    zvec_sub_query_t *query, zvec_fts_query_params_t *fts_params);
+
+/**
+ * @brief Set FTS clause on a sub-query (copies the FTS clause)
+ * @param query Sub-query pointer
+ * @param fts FTS clause pointer, or NULL to clear
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_sub_query_set_fts(zvec_sub_query_t *query, const zvec_fts_t *fts);
+
 // =============================================================================
 // Collection Options and Statistics (Opaque Pointer Pattern)
 // =============================================================================
@@ -3703,13 +3745,6 @@ ZVEC_EXPORT size_t ZVEC_CALL zvec_doc_memory_usage(const zvec_doc_t *doc);
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_doc_to_detail_string(const zvec_doc_t *doc, char **detail_str);
 
-/**
- * @brief Free docs array memory
- * @param docs Document array pointer
- * @param count Document count
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_docs_free(zvec_doc_t **docs, size_t count);
-
 // =============================================================================
 // Utility Functions
 // =============================================================================
@@ -3743,7 +3778,8 @@ zvec_index_type_to_string(zvec_index_type_t index_type);
  * @param metric_type Metric type
  * @return const char* Metric type string
  */
-const char *zvec_metric_type_to_string(zvec_metric_type_t metric_type);
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_metric_type_to_string(zvec_metric_type_t metric_type);
 
 // =============================================================================
 // Helper Functions

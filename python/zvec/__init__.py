@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 try:
     from importlib.resources import files as _resource_files
 
-    from _zvec import (
+    from zvec._zvec import (
         get_default_jieba_dict_dir,
         set_default_jieba_dict_dir,
     )
@@ -48,7 +48,7 @@ except Exception:
 # DiskAnn normally auto-loads on first use; these APIs let tests and
 # diagnostic tools preload the plugin and get a clear error if libaio is
 # missing or the plugin shared object cannot be located.
-from _zvec import (
+from zvec._zvec import (
     DISKANN_PLUGIN_DLOPEN_FAILED,
     DISKANN_PLUGIN_LIBAIO_MISSING,
     DISKANN_PLUGIN_OK,
@@ -108,6 +108,7 @@ from .model.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    QuantizerParam,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -171,6 +172,7 @@ __all__ = [
     "HnswQueryParam",
     "HnswRabitqQueryParam",
     "IVFQueryParam",
+    "QuantizerParam",
     "VamanaIndexParam",
     "VamanaQueryParam",
     # Extensions

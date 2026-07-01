@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstring>
+#include <vector>
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/io/file.h>
@@ -337,4 +339,66 @@ TEST(File, Seek) {
   EXPECT_TRUE(file.seek(20, File::Origin::Current));
   EXPECT_EQ((ssize_t)file.size(), file.offset());
   file.close();
+}
+
+TEST(File, MemoryWarmup) {
+  // Test with null address - should not crash
+  File::MemoryWarmup(nullptr, 1024);
+
+  // Test with zero length - should not crash
+  char buf[1];
+  File::MemoryWarmup(buf, 0);
+
+  // Test with a small buffer
+  {
+    const size_t size = 4096;
+    std::vector<uint8_t> buffer(size, 0xAA);
+    File::MemoryWarmup(buffer.data(), buffer.size());
+    // Verify buffer is still intact after warmup
+    EXPECT_EQ(buffer[0], 0xAA);
+    EXPECT_EQ(buffer[size - 1], 0xAA);
+  }
+
+  // Test with a large buffer spanning multiple pages
+  {
+    const size_t size = MemoryHelper::PageSize() * 16 + 100;
+    std::vector<uint8_t> buffer(size, 0x55);
+    File::MemoryWarmup(buffer.data(), buffer.size());
+    EXPECT_EQ(buffer[0], 0x55);
+    EXPECT_EQ(buffer[size - 1], 0x55);
+  }
+
+  // Test with memory-mapped file
+  {
+    const char *file_path = "file_warmup_testing.tmp";
+    size_t file_size = MemoryHelper::PageSize() * 4;
+
+    File file;
+    ASSERT_TRUE(file.create(file_path, file_size));
+
+    void *addr = file.map(0, file_size, File::MMAP_SHARED);
+    ASSERT_TRUE(addr != nullptr);
+
+    // Fill with data
+    memset(addr, 0x77, file_size);
+    EXPECT_TRUE(File::MemoryFlush(addr, file_size));
+    File::MemoryUnmap(addr, file_size);
+    file.close();
+
+    // Open read-only and warmup
+    ASSERT_TRUE(file.open(file_path, true));
+    addr = file.map(0, file_size, 0);
+    ASSERT_TRUE(addr != nullptr);
+
+    File::MemoryWarmup(addr, file_size);
+
+    // Verify data is accessible after warmup
+    uint8_t *p = reinterpret_cast<uint8_t *>(addr);
+    EXPECT_EQ(p[0], 0x77);
+    EXPECT_EQ(p[file_size - 1], 0x77);
+
+    File::MemoryUnmap(addr, file_size);
+    file.close();
+    File::Delete(file_path);
+  }
 }
