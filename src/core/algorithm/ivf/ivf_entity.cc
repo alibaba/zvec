@@ -34,7 +34,9 @@ struct BatchCallerGuard {
 };
 
 inline int adaptive_thread_count(size_t query_count) {
-  if (query_count <= 4) return 1;
+  if (query_count <= 4) {
+    return 1;
+  }
   // Use omp_get_max_threads() which respects OMP_NUM_THREADS env var.
   // In multi-process deployment, orchestrator sets
   // OMP_NUM_THREADS=cores/num_procs.
