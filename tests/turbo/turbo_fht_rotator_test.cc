@@ -202,3 +202,258 @@ TEST(FhtRotator, FromBlobMalformed) {
   hdr.payload_size = 0;
   EXPECT_EQ(FhtRotator::from_blob(&hdr, sizeof(hdr)), nullptr);
 }
+
+// ---------------------------------------------------------------------------
+// L2 distance preserved (orthogonal transform)
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, L2DistancePreserved) {
+  std::mt19937 gen(2024);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+  for (int dim : {32, 64, 97, 128}) {
+    auto rot = FhtRotator::create(dim);
+    ASSERT_TRUE(rot);
+    rot->train(nullptr, 0, 0);
+
+    const int N = 50;
+    std::vector<std::vector<float>> raw(N, std::vector<float>(dim));
+    std::vector<std::vector<float>> rotated(N, std::vector<float>(dim));
+    for (int i = 0; i < N; ++i) {
+      fill_random(raw[i].data(), dim, gen);
+      rot->apply(raw[i].data(), rotated[i].data());
+    }
+
+    // Check that ||rotated[i] - rotated[j]|| ≈ ||raw[i] - raw[j]||.
+    for (int i = 1; i < N; ++i) {
+      float d_raw = 0.0f, d_rot = 0.0f;
+      for (int j = 0; j < dim; ++j) {
+        float dr = raw[i][j] - raw[0][j];
+        float dt = rotated[i][j] - rotated[0][j];
+        d_raw += dr * dr;
+        d_rot += dt * dt;
+      }
+      EXPECT_NEAR(d_raw, d_rot, 1e-2f)
+          << "L2 mismatch for dim=" << dim << " i=" << i;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cosine distance preserved (orthogonal transform)
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, CosineDistancePreserved) {
+  std::mt19937 gen(777);
+  std::uniform_real_distribution<float> dist(0.1f, 1.0f);
+
+  auto cosine_dist = [](const float *a, const float *b, int dim) {
+    float dot = 0, na = 0, nb = 0;
+    for (int i = 0; i < dim; ++i) {
+      dot += a[i] * b[i];
+      na += a[i] * a[i];
+      nb += b[i] * b[i];
+    }
+    float denom = std::sqrt(na) * std::sqrt(nb);
+    return (denom < 1e-12f) ? 1.0f : 1.0f - dot / denom;
+  };
+
+  for (int dim : {32, 97, 128}) {
+    auto rot = FhtRotator::create(dim);
+    ASSERT_TRUE(rot);
+    rot->train(nullptr, 0, 0);
+
+    const int N = 50;
+    std::vector<std::vector<float>> raw(N, std::vector<float>(dim));
+    std::vector<std::vector<float>> rotated(N, std::vector<float>(dim));
+    for (int i = 0; i < N; ++i) {
+      fill_random(raw[i].data(), dim, gen);
+      rot->apply(raw[i].data(), rotated[i].data());
+    }
+
+    for (int i = 1; i < N; ++i) {
+      float d_raw = cosine_dist(raw[i].data(), raw[0].data(), dim);
+      float d_rot = cosine_dist(rotated[i].data(), rotated[0].data(), dim);
+      EXPECT_NEAR(d_raw, d_rot, 1e-3f)
+          << "Cosine mismatch for dim=" << dim << " i=" << i;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Apply is non-trivial (not identity)
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, ApplyIsNonTrivial) {
+  std::mt19937 gen(42);
+  for (int dim : {32, 97, 128}) {
+    auto rot = FhtRotator::create(dim);
+    ASSERT_TRUE(rot);
+    rot->train(nullptr, 0, 0);
+
+    std::vector<float> input(dim);
+    fill_random(input.data(), dim, gen);
+
+    std::vector<float> output(dim);
+    rot->apply(input.data(), output.data());
+
+    // At least some elements should differ from the input.
+    bool any_diff = false;
+    for (int i = 0; i < dim; ++i) {
+      if (std::abs(input[i] - output[i]) > 1e-6f) {
+        any_diff = true;
+        break;
+      }
+    }
+    EXPECT_TRUE(any_diff) << "apply is identity for dim=" << dim;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Apply is deterministic (same input → same output)
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, ApplyDeterministic) {
+  std::mt19937 gen(55);
+  for (int dim : {32, 97, 128}) {
+    auto rot = FhtRotator::create(dim);
+    ASSERT_TRUE(rot);
+    rot->train(nullptr, 0, 0);
+
+    std::vector<float> input(dim);
+    fill_random(input.data(), dim, gen);
+
+    std::vector<float> r1(dim), r2(dim);
+    rot->apply(input.data(), r1.data());
+    rot->apply(input.data(), r2.data());
+
+    for (int i = 0; i < dim; ++i) {
+      EXPECT_FLOAT_EQ(r1[i], r2[i])
+          << "non-deterministic apply at i=" << i << " dim=" << dim;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deserialize on existing object (init → serialize → deserialize on new object)
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, DeserializeOnExistingObject) {
+  std::mt19937 gen(314);
+  for (int dim : {32, 97, 128}) {
+    // Build and train original.
+    auto rot1 = FhtRotator::create(dim);
+    ASSERT_TRUE(rot1);
+    rot1->train(nullptr, 0, 0);
+
+    std::string blob;
+    ASSERT_EQ(0, rot1->serialize(&blob));
+
+    // Create a fresh rotator, then call deserialize() on it.
+    auto rot2 = FhtRotator::create(dim);
+    ASSERT_TRUE(rot2);
+    ASSERT_EQ(0, rot2->deserialize(blob.data(), blob.size()));
+
+    EXPECT_EQ(rot2->in_dim(), dim);
+    EXPECT_EQ(rot2->out_dim(), dim);
+
+    // Both rotators should produce identical results.
+    std::vector<float> input(dim);
+    fill_random(input.data(), dim, gen);
+
+    std::vector<float> r1(dim), r2(dim);
+    rot1->apply(input.data(), r1.data());
+    rot2->apply(input.data(), r2.data());
+    for (int i = 0; i < dim; ++i) {
+      EXPECT_FLOAT_EQ(r1[i], r2[i])
+          << "apply mismatch at i=" << i << " dim=" << dim;
+    }
+
+    // Inverse via rot2 should recover input.
+    check_round_trip(*rot2, input);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deserialize with truncated payload fails
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, DeserializeTruncatedPayload) {
+  std::mt19937 gen(42);
+  auto rot = FhtRotator::create(64);
+  ASSERT_TRUE(rot);
+  rot->train(nullptr, 0, 0);
+
+  std::string blob;
+  ASSERT_EQ(0, rot->serialize(&blob));
+
+  // Truncate the blob: keep header but cut half the payload.
+  auto *hdr = reinterpret_cast<const RotatorSerHeader *>(blob.data());
+  size_t truncated_len = sizeof(RotatorSerHeader) + hdr->payload_size / 2;
+
+  auto rot2 = FhtRotator::create(64);
+  ASSERT_TRUE(rot2);
+  EXPECT_NE(0, rot2->deserialize(blob.data(), truncated_len));
+
+  // Also test from_blob with truncated data.
+  EXPECT_EQ(FhtRotator::from_blob(blob.data(), truncated_len), nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Large dimension stress test
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, LargeDimension) {
+  std::mt19937 gen(2025);
+  for (int dim : {1024, 2048, 4096}) {
+    auto rot = FhtRotator::create(dim);
+    ASSERT_TRUE(rot) << "create failed for dim=" << dim;
+    rot->train(nullptr, 0, 0);
+
+    std::vector<float> input(dim);
+    fill_random(input.data(), dim, gen);
+    check_round_trip(*rot, input, 1e-2f);
+
+    // Verify serialize/deserialize round-trip.
+    std::string blob;
+    ASSERT_EQ(0, rot->serialize(&blob));
+    auto rot2 = FhtRotator::from_blob(blob.data(), blob.size());
+    ASSERT_TRUE(rot2);
+
+    std::vector<float> r1(dim), r2(dim);
+    rot->apply(input.data(), r1.data());
+    rot2->apply(input.data(), r2.data());
+    for (int i = 0; i < dim; ++i) {
+      EXPECT_FLOAT_EQ(r1[i], r2[i])
+          << "mismatch at i=" << i << " dim=" << dim;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Norm preserved (orthogonal transform preserves vector norm)
+// ---------------------------------------------------------------------------
+
+TEST(FhtRotator, NormPreserved) {
+  std::mt19937 gen(99);
+  for (int dim : {32, 97, 128}) {
+    auto rot = FhtRotator::create(dim);
+    ASSERT_TRUE(rot);
+    rot->train(nullptr, 0, 0);
+
+    std::vector<float> input(dim);
+    fill_random(input.data(), dim, gen);
+
+    float norm_in = 0.0f;
+    for (int i = 0; i < dim; ++i) norm_in += input[i] * input[i];
+
+    std::vector<float> output(dim);
+    rot->apply(input.data(), output.data());
+
+    float norm_out = 0.0f;
+    for (int i = 0; i < dim; ++i) norm_out += output[i] * output[i];
+
+    EXPECT_NEAR(norm_in, norm_out, 1e-2f)
+        << "norm not preserved for dim=" << dim;
+  }
+}
