@@ -46,7 +46,8 @@ set(ZVEC_INDEX_LIBS
          Arrow::arrow_compute
          Arrow::arrow_dataset
          cppjieba
-         FastPFOR)
+         FastPFOR
+         utf8proc)
 if(ZVEC_ENABLE_OMEGA)
   list(APPEND ZVEC_INDEX_LIBS omega)
 endif()

@@ -34,10 +34,6 @@ class QueryParams {
     return type_;
   }
 
-  void set_type(IndexType type) {
-    type_ = type;
-  }
-
   float radius() const {
     return radius_;
   }
@@ -76,7 +72,16 @@ class HnswQueryParams : public QueryParams {
       bool is_linear = false, bool is_using_refiner = false,
       uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
       uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines)
-      : QueryParams(IndexType::HNSW),
+      : HnswQueryParams(IndexType::HNSW, ef, radius, is_linear,
+                        is_using_refiner, prefetch_offset, prefetch_lines) {}
+
+  ~HnswQueryParams() override = default;
+
+ protected:
+  HnswQueryParams(IndexType type, int ef, float radius, bool is_linear,
+                  bool is_using_refiner, uint32_t prefetch_offset,
+                  uint32_t prefetch_lines)
+      : QueryParams(type),
         ef_(ef),
         prefetch_offset_(prefetch_offset),
         prefetch_lines_(prefetch_lines) {
@@ -85,8 +90,7 @@ class HnswQueryParams : public QueryParams {
     set_is_using_refiner(is_using_refiner);
   }
 
-  ~HnswQueryParams() override = default;
-
+ public:
   int ef() const {
     return ef_;
   }
@@ -122,10 +126,11 @@ class OmegaQueryParams : public HnswQueryParams {
   OmegaQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
                    float target_recall = 0.95f, float radius = 0.0f,
                    bool is_linear = false, bool is_using_refiner = false)
-      : HnswQueryParams(ef, radius, is_linear, is_using_refiner),
-        target_recall_(target_recall) {
-    set_type(IndexType::OMEGA);
-  }
+      : HnswQueryParams(IndexType::OMEGA, ef, radius, is_linear,
+                        is_using_refiner,
+                        core_interface::kDefaultPrefetchOffset,
+                        core_interface::kDefaultPrefetchLines),
+        target_recall_(target_recall) {}
 
   virtual ~OmegaQueryParams() = default;
 

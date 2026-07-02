@@ -20,16 +20,17 @@
 namespace zvec::fts {
 
 /*! Standard tokenizer
- *  Splits text on non-alphanumeric characters (punctuation, whitespace, etc.)
- *  and discards the delimiters. Produces lowercase-ready tokens composed of
- *  letters and digits only.
+ *  Unicode-aware tokenizer aligned with Elasticsearch's standard tokenizer.
+ *  Splits text on non-alphanumeric characters (punctuation, whitespace,
+ *  symbols) using Unicode categories via utf8proc. CJK ideographs are emitted
+ *  as individual single-character tokens.
  */
 class StandardTokenizer : public Tokenizer {
  public:
   /*! Initialise from JSON config.
    *  Supported keys:
-   *    "max_token_length" (uint32, default 255): tokens longer than this limit
-   *      are silently discarded.
+   *    "max_token_length" (uint32, default 255): tokens with more codepoints
+   *      than this limit are split at the boundary into multiple tokens.
    *  Always returns true.
    */
   bool init(const ailego::JsonObject &config) override;
@@ -41,7 +42,7 @@ class StandardTokenizer : public Tokenizer {
   }
 
  private:
-  // Tokens whose byte length exceeds this value are discarded.
+  // Word tokens with more codepoints than this value are split.
   uint32_t max_token_length_{255};
 };
 
