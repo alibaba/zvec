@@ -671,48 +671,63 @@ class OmegaIndexParams : public VectorIndexParams {
   void set_m(int m) {
     m_ = m;
   }
+
   int m() const {
     return m_;
   }
+
   void set_ef_construction(int ef_construction) {
     ef_construction_ = ef_construction;
   }
+
   int ef_construction() const {
     return ef_construction_;
   }
+
   void set_min_vector_threshold(uint32_t min_vector_threshold) {
     min_vector_threshold_ = min_vector_threshold;
   }
+
   uint32_t min_vector_threshold() const {
     return min_vector_threshold_;
   }
+
   void set_num_training_queries(size_t num_training_queries) {
     num_training_queries_ = num_training_queries;
   }
+
   size_t num_training_queries() const {
     return num_training_queries_;
   }
+
   void set_ef_training(int ef_training) {
     ef_training_ = ef_training;
   }
+
   int ef_training() const {
     return ef_training_;
   }
+
   void set_window_size(int window_size) {
     window_size_ = window_size;
   }
+
   int window_size() const {
     return window_size_;
   }
+
   void set_ef_groundtruth(int ef_groundtruth) {
     ef_groundtruth_ = ef_groundtruth;
   }
+
   int ef_groundtruth() const {
     return ef_groundtruth_;
   }
+
   void set_k_train(int k_train) {
     k_train_ = k_train;
   }
+
   int k_train() const {
     return k_train_;
   }
