@@ -381,11 +381,6 @@ class IndexStorage : public IndexModule {
     return false;
   }
 
-  //! Retrieve file path of storage (for OMEGA model loading)
-  virtual std::string file_path(void) const {
-    return "";  // Default: empty (not all storages have file paths)
-  }
-
   //! Retrieve the memory block type of this storage
   virtual MemoryBlock::MemoryBlockType memory_block_type(void) const {
     return MemoryBlock::MBT_MMAP;
@@ -399,6 +394,10 @@ class IndexStorage : public IndexModule {
   //! Retrieve file ptr if has
   virtual std::shared_ptr<ailego::File> file(void) const {
     return nullptr;
+  }
+
+  virtual std::string file_path(void) const {
+    return "";
   }
 };
 
