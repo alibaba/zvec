@@ -513,9 +513,6 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
-  // Clear training records before search (context may be reused from pool)
-  context->clear_training_records();
-
   if (_prepare_for_search(vector_data, search_param, context) != 0) {
     LOG_ERROR("Failed to prepare for search");
     context->reset();
@@ -778,16 +775,13 @@ int Index::_dense_search(const VectorData &vector_data,
     }
   }
 
-  // Extract training records from context (for OMEGA training mode)
-  result->training_records_ = context->take_training_records();
-
-  // Extract gt_cmps data from context (for OMEGA training mode)
-  result->gt_cmps_per_rank_ = context->take_gt_cmps();
-  result->total_cmps_ = context->get_total_cmps();
-  result->training_query_id_ = context->get_training_query_id();
+  _collect_training_artifacts(context.get(), result);
 
   return 0;
 }
+
+void Index::_collect_training_artifacts(core::IndexContext * /*context*/,
+                                        SearchResult * /*result*/) {}
 
 
 int Index::_sparse_search(const VectorData &vector_data,

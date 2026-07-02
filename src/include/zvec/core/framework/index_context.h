@@ -22,7 +22,6 @@
 #include <zvec/core/framework/index_groupby.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_stats.h>
-#include <zvec/core/interface/training.h>
 
 namespace zvec {
 namespace core {
@@ -247,32 +246,6 @@ class IndexContext {
   //! Profiler
   Profiler &profiler() {
     return profiler_;
-  }
-
-  //! Get training records collected during search (for OMEGA training mode)
-  //! Default implementation returns empty vector. Override in OmegaContext.
-  virtual std::vector<core_interface::TrainingRecord> take_training_records() {
-    return {};
-  }
-
-  //! Clear training records (call before each search if context is reused)
-  virtual void clear_training_records() {}
-
-  //! Get gt_cmps data (cmps when each GT rank was found) for OMEGA training
-  //! Returns vector where gt_cmps[rank] = cmps when GT[rank] first entered topk
-  //! Default implementation returns empty vector. Override in OmegaContext.
-  virtual std::vector<int> take_gt_cmps() {
-    return {};
-  }
-
-  //! Get total comparisons for this search (OMEGA training)
-  virtual int get_total_cmps() const {
-    return 0;
-  }
-
-  //! Get training query ID for this search (-1 means not set)
-  virtual int get_training_query_id() const {
-    return -1;
   }
 
  private:

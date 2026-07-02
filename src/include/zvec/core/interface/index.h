@@ -221,6 +221,8 @@ class Index {
       core::IndexContext::Pointer &context) = 0;
   virtual int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param);
+  virtual void _collect_training_artifacts(core::IndexContext *context,
+                                           SearchResult *result);
 
  protected:
   friend class IndexFactory;
@@ -436,6 +438,8 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
            StorageOptions storage_options) override;
   int Train() override;
   ITrainingSession::Pointer CreateTrainingSession() override;
+  void _collect_training_artifacts(core::IndexContext *context,
+                                   SearchResult *result) override;
   BaseIndexParam::Pointer GetParam() const override {
     return std::make_shared<OmegaIndexParam>(param_);
   }

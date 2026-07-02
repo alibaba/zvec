@@ -56,8 +56,8 @@ class OmegaContext : public HnswContext {
     return training_query_id_;
   }
 
-  //! Move training records out (override base class virtual method)
-  std::vector<core_interface::TrainingRecord> take_training_records() override {
+  //! Move training records out.
+  std::vector<core_interface::TrainingRecord> take_training_records() {
     return std::move(training_records_);
   }
 
@@ -66,33 +66,34 @@ class OmegaContext : public HnswContext {
     training_records_.push_back(std::move(record));
   }
 
-  //! Clear training records (override base class virtual method)
-  //! Called before each search when context is reused from pool
-  void clear_training_records() override {
-    training_records_.clear();
-    gt_cmps_per_rank_.clear();
-    total_cmps_ = 0;
-  }
-
   //! Set gt_cmps data for this query
   void set_gt_cmps(const std::vector<int> &gt_cmps, int total_cmps) {
     gt_cmps_per_rank_ = gt_cmps;
     total_cmps_ = total_cmps;
   }
 
-  //! Take gt_cmps data (override base class virtual method)
-  std::vector<int> take_gt_cmps() override {
+  //! Take gt_cmps data.
+  std::vector<int> take_gt_cmps() {
     return std::move(gt_cmps_per_rank_);
   }
 
-  //! Get total comparisons (override base class virtual method)
-  int get_total_cmps() const override {
+  //! Get total comparisons.
+  int get_total_cmps() const {
     return total_cmps_;
   }
 
-  //! Get training query ID (override base class virtual method)
-  int get_training_query_id() const override {
+  //! Get training query ID.
+  int get_training_query_id() const {
     return training_query_id_;
+  }
+
+  //! Reset context and clear per-search training artifacts.
+  void reset() override {
+    HnswContext::reset();
+    training_records_.clear();
+    gt_cmps_per_rank_.clear();
+    total_cmps_ = 0;
+    training_query_id_ = -1;
   }
 
   //! Update context parameters (overrides HnswContext::update)

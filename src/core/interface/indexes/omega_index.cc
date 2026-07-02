@@ -36,6 +36,7 @@
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/omega/omega_context.h"
 #include "algorithm/omega/omega_params.h"
 #include "algorithm/omega/omega_streamer.h"
 #include "omega_training_session.h"
@@ -825,6 +826,19 @@ ITrainingSession::Pointer OmegaIndex::CreateTrainingSession() {
     return std::make_shared<OmegaTrainingSession>(omega_streamer);
   }
   return nullptr;
+}
+
+void OmegaIndex::_collect_training_artifacts(core::IndexContext *context,
+                                             SearchResult *result) {
+  auto *omega_context = dynamic_cast<core::OmegaContext *>(context);
+  if (omega_context == nullptr || result == nullptr) {
+    return;
+  }
+
+  result->training_records_ = omega_context->take_training_records();
+  result->gt_cmps_per_rank_ = omega_context->take_gt_cmps();
+  result->total_cmps_ = omega_context->get_total_cmps();
+  result->training_query_id_ = omega_context->get_training_query_id();
 }
 
 int OmegaIndex::_prepare_for_search(
