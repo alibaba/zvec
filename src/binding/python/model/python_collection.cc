@@ -157,20 +157,11 @@ void ZVecPyCollection::bind_ddl_methods(
              }
              throw_if_error(status);
            })
-      .def("Optimize",
-           [](Collection &self, const OptimizeOptions &options) {
-             Status status;
-             {
-               py::gil_scoped_release release;
-               status = self.Optimize(options);
-             }
-             throw_if_error(status);
-           })
-      .def("RetrainOmega", [](Collection &self) {
+      .def("Optimize", [](Collection &self, const OptimizeOptions &options) {
         Status status;
         {
           py::gil_scoped_release release;
-          status = self.RetrainOmega();
+          status = self.Optimize(options);
         }
         throw_if_error(status);
       });

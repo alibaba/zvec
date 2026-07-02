@@ -229,8 +229,6 @@ class SegmentImpl : public Segment,
 
   Status flush() override;
 
-  Status retrain_omega_model() override;
-
   Status destroy() override;
 
   TablePtr fetch(const std::vector<std::string> &columns,
@@ -305,11 +303,6 @@ class SegmentImpl : public Segment,
   Status internal_update(Doc &doc);
   Status internal_upsert(Doc &doc);
   Status internal_delete(const Doc &doc);
-
-  // Auto-training for OMEGA index (called after Merge completes)
-  Status auto_train_omega_index_internal(
-      const std::string &field_name,
-      const std::vector<VectorColumnIndexer::Ptr> &indexers);
 
   Status recover();
   Status open_wal_file();
@@ -2359,62 +2352,6 @@ Status SegmentImpl::destroy() {
 Status SegmentImpl::cleanup() {
   auto seg_path = FileHelper::MakeSegmentPath(path_, segment_meta_->id());
   FileHelper::RemoveDirectory(seg_path);
-  return Status::OK();
-}
-
-Status SegmentImpl::auto_train_omega_index_internal(
-    const std::string &field_name,
-    const std::vector<VectorColumnIndexer::Ptr> &indexers) {
-  LOG_WARN("Starting auto-training for OMEGA index on field '%s' in segment %d",
-           field_name.c_str(), id());
-  for (const auto &indexer : indexers) {
-    if (indexer == nullptr || indexer->core_index() == nullptr) {
-      continue;
-    }
-    if (indexer->GetTrainingCapability() == nullptr) {
-      continue;
-    }
-    if (indexer->core_index()->Train() != 0) {
-      return Status::InternalError("Failed to retrain OMEGA model in core");
-    }
-  }
-  return Status::OK();
-}
-
-Status SegmentImpl::retrain_omega_model() {
-  for (const auto &field : collection_schema_->vector_fields()) {
-    if (!field->index_params()) {
-      continue;
-    }
-    auto omega_params =
-        std::dynamic_pointer_cast<OmegaIndexParams>(field->index_params());
-    if (!omega_params) {
-      continue;
-    }
-
-    auto indexers = get_vector_indexer(field->name());
-    if (indexers.empty()) {
-      auto s = load_vector_index_blocks();
-      CHECK_RETURN_STATUS(s);
-      indexers = get_vector_indexer(field->name());
-    }
-
-    if (indexers.empty()) {
-      LOG_INFO(
-          "Skipping OMEGA retraining for field '%s' in segment %d: no vector "
-          "indexers loaded",
-          field->name().c_str(), id());
-      continue;
-    }
-
-    LOG_WARN(
-        "Retraining OMEGA model for field '%s' in segment %d using existing "
-        "index",
-        field->name().c_str(), id());
-    auto s = auto_train_omega_index_internal(field->name(), indexers);
-    CHECK_RETURN_STATUS(s);
-  }
-
   return Status::OK();
 }
 

@@ -6484,22 +6484,6 @@ zvec_error_code_t zvec_collection_optimize(zvec_collection_t *collection) {
       return status_to_error_code(status);)
 }
 
-zvec_error_code_t zvec_collection_retrain_omega(zvec_collection_t *collection) {
-  if (!collection) {
-    set_last_error("Invalid argument: collection cannot be null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-
-  ZVEC_TRY_RETURN_ERROR(
-      "Exception occurred",
-      auto coll_ptr =
-          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
-      zvec::Status status = (*coll_ptr)->RetrainOmega();
-      if (!status.ok()) { set_last_error(status.message()); }
-
-      return status_to_error_code(status);)
-}
-
 // =============================================================================
 // Column Interface Implementation
 // =============================================================================

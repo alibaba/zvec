@@ -154,10 +154,6 @@ class Collection:
         """
         self._obj.Optimize(option)
 
-    def retrain_omega(self) -> None:
-        """Retrain OMEGA models on an existing OMEGA index."""
-        self._obj.RetrainOmega()
-
     # ========== COLUMN DDL Methods ==========
     def add_column(
         self,

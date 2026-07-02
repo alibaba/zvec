@@ -46,9 +46,6 @@
 #include "db/index/segment/segment_helper.h"
 #include "db/index/segment/segment_manager.h"
 #include "db/sqlengine/sqlengine.h"
-#include "db/training/omega_model_trainer.h"
-#include "db/training/training_data_collector.h"
-#include "zvec/core/interface/index.h"
 
 namespace zvec {
 
@@ -99,8 +96,6 @@ class CollectionImpl : public Collection {
   Status DropIndex(const std::string &column_name) override;
 
   Status Optimize(const OptimizeOptions &options) override;
-
-  Status RetrainOmega() override;
 
   Status AddColumn(const FieldSchema::Ptr &column_schema,
                    const std::string &expression,
@@ -1017,50 +1012,6 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
         CHECK_RETURN_STATUS(s);
       }
     }
-  }
-
-  return Status::OK();
-}
-
-Status CollectionImpl::RetrainOmega() {
-  CHECK_COLLECTION_READONLY_RETURN_STATUS;
-
-  std::lock_guard lock(schema_handle_mtx_);
-  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
-
-  // Verify collection has at least one OMEGA index
-  bool has_omega = false;
-  for (const auto &field : schema_->vector_fields()) {
-    if (auto omega_params = std::dynamic_pointer_cast<OmegaIndexParams>(
-            field->index_params())) {
-      has_omega = true;
-      break;
-    }
-  }
-
-  if (!has_omega) {
-    return Status::InvalidArgument(
-        "RetrainOmega requires at least one OMEGA index. "
-        "This collection has no OMEGA indexes.");
-  }
-
-  std::vector<Segment::Ptr> persist_segments;
-  {
-    std::lock_guard write_lock(write_mtx_);
-    persist_segments = get_all_persist_segments();
-  }
-
-  if (persist_segments.empty()) {
-    LOG_INFO("No persisted segments to retrain OMEGA models");
-    return Status::OK();
-  }
-
-  LOG_WARN("Retraining OMEGA models on %zu persisted segments",
-           persist_segments.size());
-
-  for (auto &segment : persist_segments) {
-    auto s = segment->retrain_omega_model();
-    CHECK_RETURN_STATUS(s);
   }
 
   return Status::OK();

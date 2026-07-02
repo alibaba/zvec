@@ -3272,14 +3272,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_drop_index(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_collection_optimize(zvec_collection_t *collection);
 
-/**
- * @brief Retrain OMEGA models on already-persisted segments without compacting
- * @param collection Collection handle
- * @return ZVEC_OK on success, error code on failure
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_collection_retrain_omega(zvec_collection_t *collection);
-
 // =============================================================================
 // Column Management Interface (DDL)
 // =============================================================================
