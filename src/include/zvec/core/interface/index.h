@@ -316,7 +316,6 @@ class IVFIndex : public Index {
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
   core::IndexHolder::Pointer holder_{};
-  std::string file_path_;
 };
 
 
@@ -414,7 +413,6 @@ class DiskAnnIndex : public Index {
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
   core::IndexHolder::Pointer holder_{};
-  std::string file_path_;
 };
 
 //! OMEGA Index - HNSW with learned early stopping
