@@ -712,28 +712,44 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
       ++run_end;
     }
     size_t run_pages = run_end - run_start;
+
+    if (run_pages <= 3) {
+      for (size_t j = 0; j < run_pages; ++j) {
+        page = pool_.acquire_buffer(static_cast<block_id_t>(run_start + j), 50);
+        if (!page) return false;
+        block_id_t pid = static_cast<block_id_t>(run_start + j);
+        size_t page_start = pid * kVectorPageSize;
+        size_t intra_offset =
+            (pid == first_page) ? (file_offset - page_start) : 0;
+        size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
+        std::memcpy(out + dst_cursor, page + intra_offset, chunk);
+        pool_.page_table_.release_block(pid);
+        dst_cursor += chunk;
+        remaining -= chunk;
+      }
+      pg = run_end - 1;
+      continue;
+    }
+
     size_t run_bytes = run_pages * kVectorPageSize;
     size_t run_file_off = run_start * kVectorPageSize;
 
     char *bulk_buf =
         static_cast<char *>(ailego_aligned_malloc(run_bytes, 4096));
     if (!bulk_buf) {
-      page = pool_.acquire_buffer(pg, 50);
+      page = pool_.acquire_buffer(static_cast<block_id_t>(pg), 50);
       if (!page) return false;
       size_t page_start = pg * kVectorPageSize;
       size_t intra_offset = (pg == first_page) ? (file_offset - page_start) : 0;
       size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
       std::memcpy(out + dst_cursor, page + intra_offset, chunk);
-      pool_.page_table_.release_block(pg);
+      pool_.page_table_.release_block(static_cast<block_id_t>(pg));
       dst_cursor += chunk;
       remaining -= chunk;
       continue;
     }
 
     ssize_t got = zvec_pread(pool_.fd_, bulk_buf, run_bytes, run_file_off);
-    // Accept short reads at EOF: the bulk read may overshoot the file when
-    // the last page is not fully occupied.  We only need bytes up to
-    // (file_offset + len) which the caller guarantees is within the file.
     size_t needed_bytes = (file_offset + len) - run_file_off;
     if (needed_bytes > run_bytes) needed_bytes = run_bytes;
     if (got < 0 || static_cast<size_t>(got) < needed_bytes) {
@@ -756,7 +772,6 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
       dst_cursor += chunk;
       remaining -= chunk;
 
-      // Only cache pages that were fully read from disk.
       size_t page_end_in_buf = (j + 1) * kVectorPageSize;
       if (page_end_in_buf <= actually_read &&
           !pool_.page_table_.is_loaded(pid)) {
