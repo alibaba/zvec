@@ -262,13 +262,30 @@ Attributes:
         Default is "standard".
     filters (list[str]): List of token filter names applied after tokenization.
         Supported values include "lowercase", "ascii_folding", and "stemmer".
-        Default is ["lowercase"]. The "stemmer" filter uses Snowball and
-        defaults to language "english"; set stemmer_lang explicitly to use
-        another language or algorithm supported by the bundled Snowball
-        version.
+        Default is ["lowercase"].
     extra_params (str): Additional tokenizer/filter parameters as an empty
-        string or JSON object string. Use {"stemmer_lang":"german"} to
-        configure the stemmer filter. Default is "".
+        string or JSON object string. Supported keys are grouped by component:
+        Tokenizers:
+            standard:
+                - "max_token_length" (positive integer).
+            jieba:
+                - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+                  hmm_model.utf8).
+                - "user_dict_path" (user dictionary path).
+                - "cut_mode" ("search", "mix", "full", or "hmm"; default
+                  "search").
+            whitespace:
+                - no extra_params.
+        Filters:
+            lowercase:
+                - no extra_params.
+            ascii_folding:
+                - no extra_params.
+            stemmer:
+                - "stemmer_lang" (Snowball language/algorithm; default
+                  "english"), for example {"stemmer_lang":"porter"} for ES
+                  behaviour.
+        Default is "".
 
 Examples:
     >>> params = FtsIndexParam(
@@ -279,7 +296,7 @@ Examples:
     >>> params = FtsIndexParam(
     ...     tokenizer_name="standard",
     ...     filters=["lowercase", "stemmer"],
-    ...     extra_params='{"stemmer_lang":"english"}',
+    ...     extra_params='{"stemmer_lang":"porter"}',
     ... )
 )pbdoc");
   fts_index_params
@@ -295,9 +312,26 @@ Args:
     filters (list[str], optional): Token filter names. Supports "lowercase",
         "ascii_folding", and "stemmer". Defaults to ["lowercase"].
     extra_params (str, optional): Extra tokenizer/filter parameters as an empty
-        string or JSON object string. For the stemmer filter, use
-        {"stemmer_lang":"english"} or another language or algorithm supported
-        by the bundled Snowball version. Defaults to "".
+        string or JSON object string. Supported keys:
+        Tokenizers:
+            standard:
+                - "max_token_length" (positive integer).
+            jieba:
+                - "jieba_dict_dir".
+                - "user_dict_path".
+                - "cut_mode" ("search", "mix", "full", or "hmm"; default
+                  "search").
+            whitespace:
+                - no extra_params.
+        Filters:
+            lowercase:
+                - no extra_params.
+            ascii_folding:
+                - no extra_params.
+            stemmer:
+                - "stemmer_lang" (Snowball language/algorithm; default
+                  "english").
+        Defaults to "".
 )pbdoc")
       .def_property_readonly("tokenizer_name", &FtsIndexParams::tokenizer_name,
                              "str: Name of the tokenizer.")

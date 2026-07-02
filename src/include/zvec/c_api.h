@@ -1092,13 +1092,28 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value).
  * Supported values are "standard", "jieba", and "whitespace".
  * @param filters Token filter names (NULL keeps current value). Supported
- * values include "lowercase", "ascii_folding", and "stemmer". The "stemmer"
- * filter uses Snowball and defaults to language "english"; set stemmer_lang
- * explicitly to use another language or algorithm supported by the bundled
- * Snowball version.
+ * values are "lowercase", "ascii_folding", and "stemmer".
  * @param extra_params Additional tokenizer/filter parameters (NULL keeps
- * current value). Must be empty or a JSON object string; use
- * {"stemmer_lang":"german"} to configure the stemmer filter.
+ * current value). Must be empty or a JSON object string. Supported keys by
+ * tokenizer/filter:
+ * Tokenizers:
+ *   standard:
+ *     - "max_token_length" (positive integer).
+ *   jieba:
+ *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+ *       hmm_model.utf8).
+ *     - "user_dict_path" (user dictionary path).
+ *     - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
+ *   whitespace:
+ *     - no extra_params.
+ * Filters:
+ *   lowercase:
+ *     - no extra_params.
+ *   ascii_folding:
+ *     - no extra_params.
+ *   stemmer:
+ *     - "stemmer_lang" (Snowball language/algorithm; default "english"),
+ *       for example {"stemmer_lang":"porter"} for ES behaviour.
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_fts_params(
