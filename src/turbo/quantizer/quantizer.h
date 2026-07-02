@@ -18,7 +18,6 @@
 #include <memory>
 #include <string>
 #include <zvec/ailego/container/params.h>
-#include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/turbo/turbo.h>
@@ -29,8 +28,23 @@ namespace turbo {
 
 using namespace zvec::core;
 
+//! Error code literals mirroring core::IndexError::Code integer values.
+//!
+//! Turbo quantizer sources use these directly instead of the
+//! `IndexError_NotImplemented` / `IndexError_Unsupported` const objects
+//! because MSVC's WINDOWS_EXPORT_ALL_SYMBOLS does not export const data
+//! with constructors from zvec_shared.dll.  zvec_turbo is a static library
+//! linked with /WHOLEARCHIVE, so referencing those unexported symbols across
+//! the DLL boundary triggers LNK2019 on Windows.
+//!
+//! IndexError::Code stores -val in its constructor, so NotImplemented(11)
+//! yields -11 and Unsupported(12) yields -12.
+constexpr int kErrNotImplemented = -11;
+constexpr int kErrUnsupported = -12;
+
 //! Magic number ('QTZR') stamped at the start of a serialized quantizer blob.
 constexpr uint32_t kQuantizerMagic = 0x52545A51u;
+
 //! Current quantizer serialization format version.
 constexpr uint16_t kQuantizerSerVersion = 1;
 
@@ -75,7 +89,7 @@ class Quantizer {
 
   //! Train the quantizer with a contiguous batch of data
   virtual int train(const void * /*data*/, size_t /*num*/, size_t /*stride*/) {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   //! Whether the quantizer requires training before use
@@ -83,7 +97,7 @@ class Quantizer {
 
   //! Train the quantizer with data from an IndexHolder
   virtual int train(IndexHolder::Pointer /*holder*/) {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   //! Byte length of a quantized datapoint vector
@@ -123,13 +137,13 @@ class Quantizer {
   virtual int quantize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
                        std::string * /*out*/,
                        IndexQueryMeta * /*ometa*/) const {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   //! Dequantize a result vector back to original format
   virtual int dequantize(const void * /*in*/, const IndexQueryMeta & /*qmeta*/,
                          std::string * /*out*/) const {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   virtual DistanceImpl distance(const void * /*query*/,
@@ -139,18 +153,18 @@ class Quantizer {
 
   //! Serialize quantizer parameters
   virtual int serialize(std::string * /*out*/) const {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   //! Deserialize quantizer parameters
   virtual int deserialize(std::string & /*in*/) {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
   //! Deserialize quantizer parameters from a raw, possibly mmap-backed buffer
   //! (zero-copy entry point for large payloads such as codebooks/matrices).
   virtual int deserialize(const void * /*data*/, size_t /*len*/) {
-    return IndexError_NotImplemented;
+    return 0;
   }
 
  protected:

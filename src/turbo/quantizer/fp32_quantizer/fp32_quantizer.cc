@@ -17,7 +17,6 @@
 #include <cstring>
 #include <vector>
 #include <ailego/math/normalizer.h>
-#include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_logger.h>
 #include "core/quantizer/record_quantizer.h"
@@ -53,7 +52,7 @@ int Fp32Quantizer::init(const IndexMeta &meta,
 int Fp32Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
                             std::string *out, IndexQueryMeta *ometa) const {
   if (qmeta.unit_size() != sizeof(float)) {
-    return IndexError_Unsupported;
+    return kErrUnsupported;
   }
 
   // qmeta.dimension() may be the inflated (data + extras) dimension when the
