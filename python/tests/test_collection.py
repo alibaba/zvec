@@ -13,10 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
-
 import pytest
 import zvec
 from zvec import (
@@ -27,13 +23,9 @@ from zvec import (
     Doc,
     FieldSchema,
     HnswIndexParam,
-    HnswQueryParam,
-    OmegaIndexParam,
-    OmegaQueryParam,
     IndexOption,
     IndexType,
     InvertIndexParam,
-    MetricType,
     LogLevel,
     LogType,
     OptimizeOption,
@@ -46,29 +38,6 @@ from zvec.extension.multi_vector_reranker import (
     RrfReRanker,
     WeightedReRanker,
 )
-
-IS_ANDROID = hasattr(sys, "getandroidapilevel") or "ANDROID_ROOT" in os.environ
-OMEGA_ENABLED = os.environ.get("ZVEC_ENABLE_OMEGA", "1").lower() not in {
-    "0",
-    "off",
-    "false",
-    "no",
-}
-OMEGA_AVAILABLE = OMEGA_ENABLED and not IS_ANDROID
-# Decorator to skip tests when OMEGA is not available (disabled or on Android)
-OMEGA_TEST_SKIP = pytest.mark.skipif(
-    not OMEGA_AVAILABLE, reason="OMEGA is disabled on this build/platform"
-)
-
-
-def _require_omega() -> None:
-    """Runtime check to skip test if OMEGA is not available.
-
-    Use OMEGA_TEST_SKIP decorator for declarative skipping, or call this
-    function for runtime conditional skipping within a test.
-    """
-    if not OMEGA_AVAILABLE:
-        pytest.skip("OMEGA is disabled on this build/platform")
 
 
 # ==================== Common ====================
@@ -184,137 +153,6 @@ def test_collection(
             except Exception as e:
                 print(f"Warning: failed to destroy collection: {e}")
 
-
-@pytest.fixture(scope="session")
-def omega_collection_schema():
-    _require_omega()
-    return zvec.CollectionSchema(
-        name="omega_test_collection",
-        fields=[
-            FieldSchema(
-                "id",
-                DataType.INT64,
-                nullable=False,
-                index_param=InvertIndexParam(enable_range_optimization=True),
-            ),
-            FieldSchema("name", DataType.STRING, nullable=False),
-        ],
-        vectors=[
-            VectorSchema(
-                "dense",
-                DataType.VECTOR_FP32,
-                dimension=128,
-                index_param=OmegaIndexParam(
-                    metric_type=MetricType.L2,
-                    min_vector_threshold=100000,
-                    num_training_queries=16,
-                    ef_training=64,
-                    window_size=32,
-                ),
-            )
-        ],
-    )
-
-
-@pytest.fixture(scope="function")
-def omega_test_collection(
-    tmp_path_factory, omega_collection_schema, collection_option
-) -> Collection:
-    _require_omega()
-    temp_dir = tmp_path_factory.mktemp("zvec_omega")
-    collection_path = temp_dir / "omega_test_collection"
-
-    coll = zvec.create_and_open(
-        path=str(collection_path),
-        schema=omega_collection_schema,
-        option=collection_option,
-    )
-
-    assert coll is not None
-    assert coll.path == str(collection_path)
-    assert coll.schema.vectors[0].index_param.type == IndexType.OMEGA
-
-    try:
-        yield coll
-    finally:
-        if hasattr(coll, "destroy") and coll is not None:
-            try:
-                coll.destroy()
-            except Exception as e:
-                print(f"Warning: failed to destroy omega collection: {e}")
-
-
-@pytest.fixture
-def omega_multiple_docs():
-    _require_omega()
-    return [
-        Doc(
-            id=f"{id}",
-            fields={"id": id, "name": f"doc-{id}"},
-            vectors={"dense": [id + 0.1] * 128},
-        )
-        for id in range(1, 65)
-    ]
-
-
-@pytest.fixture
-def omega_workflow_docs():
-    _require_omega()
-    return [
-        Doc(
-            id=f"{id}",
-            fields={"id": id, "name": f"workflow-doc-{id}"},
-            vectors={"dense": [float(id) + 0.1] * 128},
-        )
-        for id in range(1, 129)
-    ]
-
-
-def _create_vector_collection(
-    tmp_path_factory,
-    collection_option: CollectionOption,
-    collection_name: str,
-    vector_index_param,
-) -> Collection:
-    temp_dir = tmp_path_factory.mktemp(collection_name)
-    collection_path = temp_dir / collection_name
-    schema = CollectionSchema(
-        name=collection_name,
-        fields=[
-            FieldSchema(
-                "id",
-                DataType.INT64,
-                nullable=False,
-                index_param=InvertIndexParam(enable_range_optimization=True),
-            ),
-            FieldSchema("name", DataType.STRING, nullable=False),
-        ],
-        vectors=[
-            VectorSchema(
-                "dense",
-                DataType.VECTOR_FP32,
-                dimension=128,
-                index_param=vector_index_param,
-            )
-        ],
-    )
-    coll = zvec.create_and_open(
-        path=str(collection_path), schema=schema, option=collection_option
-    )
-    assert coll is not None
-    return coll
-
-
-def _omega_model_files(collection: Collection) -> set[str]:
-    return {
-        path.name
-        for path in Path(collection.path).rglob("*")
-        if path.is_file() and path.parent.name == "omega_model"
-    }
-
-
-def _result_ids(result) -> list[str]:
-    return [doc.id for doc in result]
 
 
 @pytest.fixture
@@ -1164,141 +1002,6 @@ class TestCollectionQuery:
             Query(field_name="dense", id=multiple_docs[0].id)
         )
         assert len(result) == 10
-
-    @OMEGA_TEST_SKIP
-    def test_omega_collection_schema_uses_omega_index(
-        self, omega_test_collection: Collection
-    ):
-        vector_schema = omega_test_collection.schema.vector("dense")
-        assert vector_schema is not None
-        assert vector_schema.index_param.type == IndexType.OMEGA
-
-    @OMEGA_TEST_SKIP
-    def test_omega_collection_query_by_id_with_omega_param(
-        self, omega_test_collection: Collection, omega_multiple_docs
-    ):
-        result = omega_test_collection.insert(omega_multiple_docs)
-        assert len(result) == len(omega_multiple_docs)
-        for item in result:
-            assert item.ok()
-
-        query_result = omega_test_collection.query(
-            Query(
-                field_name="dense",
-                vector=omega_multiple_docs[0].vector("dense"),
-                param=OmegaQueryParam(ef=128, target_recall=0.91),
-            ),
-            topk=5,
-        )
-        assert len(query_result) > 0
-        assert query_result[0].id == omega_multiple_docs[0].id
-
-    @OMEGA_TEST_SKIP
-    def test_omega_workflow_optimize_trains_model_and_query_runs(
-        self, tmp_path_factory, collection_option, omega_workflow_docs
-    ):
-        omega_collection = _create_vector_collection(
-            tmp_path_factory,
-            collection_option,
-            "omega_workflow_active",
-            OmegaIndexParam(
-                metric_type=MetricType.L2,
-                min_vector_threshold=32,
-                num_training_queries=16,
-                ef_training=64,
-                ef_groundtruth=128,
-                window_size=32,
-            ),
-        )
-        try:
-            result = omega_collection.insert(omega_workflow_docs)
-            assert len(result) == len(omega_workflow_docs)
-            for item in result:
-                assert item.ok()
-
-            omega_collection.optimize(option=OptimizeOption(concurrency=1))
-
-            model_files = _omega_model_files(omega_collection)
-            assert {
-                "model.txt",
-                "threshold_table.txt",
-                "interval_table.txt",
-                "gt_collected_table.txt",
-                "gt_cmps_all_table.txt",
-            }.issubset(model_files)
-
-            query_result = omega_collection.query(
-                Query(
-                    field_name="dense",
-                    vector=omega_workflow_docs[31].vector("dense"),
-                    param=OmegaQueryParam(ef=128, target_recall=0.91),
-                ),
-                topk=10,
-            )
-
-            assert len(query_result) == 10
-            assert query_result[0].id == omega_workflow_docs[31].id
-        finally:
-            omega_collection.destroy()
-
-    @OMEGA_TEST_SKIP
-    def test_omega_query_falls_back_to_hnsw_when_model_not_trained(
-        self, tmp_path_factory, collection_option, omega_workflow_docs
-    ):
-        hnsw_collection = _create_vector_collection(
-            tmp_path_factory,
-            collection_option,
-            "hnsw_workflow_baseline",
-            HnswIndexParam(metric_type=MetricType.L2),
-        )
-        omega_collection = _create_vector_collection(
-            tmp_path_factory,
-            collection_option,
-            "omega_workflow_fallback",
-            OmegaIndexParam(
-                metric_type=MetricType.L2,
-                min_vector_threshold=100000,
-                num_training_queries=16,
-                ef_training=64,
-                ef_groundtruth=128,
-                window_size=32,
-            ),
-        )
-        try:
-            hnsw_insert_result = hnsw_collection.insert(omega_workflow_docs)
-            omega_insert_result = omega_collection.insert(omega_workflow_docs)
-            assert len(hnsw_insert_result) == len(omega_workflow_docs)
-            assert len(omega_insert_result) == len(omega_workflow_docs)
-
-            hnsw_collection.optimize(option=OptimizeOption(concurrency=1))
-            omega_collection.optimize(option=OptimizeOption(concurrency=1))
-
-            assert "model.txt" not in _omega_model_files(omega_collection)
-
-            # Use a non-document query vector to avoid equal-distance ties,
-            # so fallback-to-HNSW can be checked via exact result equality.
-            query_vector = [64.3] * 128
-            hnsw_result = hnsw_collection.query(
-                Query(
-                    field_name="dense",
-                    vector=query_vector,
-                    param=HnswQueryParam(ef=128),
-                ),
-                topk=10,
-            )
-            omega_result = omega_collection.query(
-                Query(
-                    field_name="dense",
-                    vector=query_vector,
-                    param=OmegaQueryParam(ef=128, target_recall=0.91),
-                ),
-                topk=10,
-            )
-
-            assert _result_ids(omega_result) == _result_ids(hnsw_result)
-        finally:
-            omega_collection.destroy()
-            hnsw_collection.destroy()
 
     def test_collection_query_multi_vector_with_same_field(
         self, collection_with_multiple_docs: Collection, multiple_docs

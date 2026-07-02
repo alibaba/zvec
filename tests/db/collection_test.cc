@@ -46,6 +46,103 @@ using namespace zvec::test;
 
 std::string col_path = "test_collection";
 
+namespace {
+
+#if ZVEC_ENABLE_OMEGA
+constexpr char kOmegaDenseField[] = "dense";
+constexpr uint32_t kOmegaDim = 128;
+
+CollectionSchema::Ptr CreateOmegaCollectionSchema(
+    const std::string &name, IndexParams::Ptr index_params) {
+  auto schema = std::make_shared<CollectionSchema>(name);
+  schema->add_field(std::make_shared<FieldSchema>(
+      "id", DataType::INT64, false, std::make_shared<InvertIndexParams>(true)));
+  schema->add_field(std::make_shared<FieldSchema>("name", DataType::STRING));
+  schema->add_field(
+      std::make_shared<FieldSchema>(kOmegaDenseField, DataType::VECTOR_FP32,
+                                    kOmegaDim, false, std::move(index_params)));
+  return schema;
+}
+
+Doc CreateOmegaDoc(uint64_t doc_id, const CollectionSchema &schema) {
+  auto doc = TestHelper::CreateDoc(doc_id, schema, std::to_string(doc_id));
+  doc.set<std::string>("name", "doc-" + std::to_string(doc_id));
+  return doc;
+}
+
+std::vector<Doc> CreateOmegaDocs(uint64_t start_doc_id, uint64_t end_doc_id,
+                                 const CollectionSchema &schema) {
+  std::vector<Doc> docs;
+  docs.reserve(end_doc_id - start_doc_id);
+  for (uint64_t doc_id = start_doc_id; doc_id < end_doc_id; ++doc_id) {
+    docs.emplace_back(CreateOmegaDoc(doc_id, schema));
+  }
+  return docs;
+}
+
+void InsertOmegaDocs(const Collection::Ptr &collection, std::vector<Doc> docs) {
+  auto result = collection->Insert(docs);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(result.value().size(), docs.size());
+  for (const auto &status : result.value()) {
+    ASSERT_TRUE(status.ok()) << status.message();
+  }
+}
+
+SearchQuery BuildOmegaDenseQuery(
+    const std::vector<float> &query_vector, QueryParams::Ptr query_params,
+    int topk, const std::string &field_name = kOmegaDenseField) {
+  SearchQuery query;
+  query.topk_ = topk;
+  query.target_.field_name_ = field_name;
+  query.target_.query_params_ = std::move(query_params);
+  query.target_.set_vector(
+      std::string(reinterpret_cast<const char *>(query_vector.data()),
+                  query_vector.size() * sizeof(query_vector.front())));
+  return query;
+}
+
+SearchQuery BuildOmegaDenseDocQuery(
+    const Doc &doc, QueryParams::Ptr query_params, int topk,
+    const std::string &field_name = kOmegaDenseField) {
+  auto vector = doc.get<std::vector<float>>(field_name);
+  EXPECT_TRUE(vector.has_value());
+  if (!vector.has_value()) {
+    return SearchQuery{};
+  }
+  return BuildOmegaDenseQuery(vector.value(), std::move(query_params), topk,
+                              field_name);
+}
+
+std::vector<std::string> ResultPks(const DocPtrList &docs) {
+  std::vector<std::string> pks;
+  pks.reserve(docs.size());
+  for (const auto &doc : docs) {
+    pks.push_back(doc->pk());
+  }
+  return pks;
+}
+
+bool OmegaModelFileExists(const std::string &collection_path,
+                          const std::string &filename) {
+  std::error_code ec;
+  for (const auto &entry :
+       std::filesystem::recursive_directory_iterator(collection_path, ec)) {
+    if (ec) {
+      return false;
+    }
+    if (entry.is_regular_file(ec) && !ec &&
+        entry.path().parent_path().filename() == "omega_model" &&
+        entry.path().filename() == filename) {
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+
+}  // namespace
+
 class CollectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -211,10 +308,10 @@ TEST_F(CollectionTest, Feature_OpenReadOnly_WithReadOnlyLockFile) {
 
   // Use std::filesystem to set read-only permissions (cross-platform)
   std::error_code ec;
-  fs::permissions(lock_path,
-                  fs::perms::owner_read | fs::perms::group_read |
-                      fs::perms::others_read,
-                  fs::perm_options::replace, ec);
+  fs::permissions(
+      lock_path,
+      fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read,
+      fs::perm_options::replace, ec);
   ASSERT_FALSE(ec) << "Failed to set read-only permissions: " << ec.message();
 
   // Open with read_only=true should succeed even with read-only LOCK file
@@ -2859,6 +2956,12 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
         enable_mmap, std::make_shared<HnswRabitqIndexParams>(MetricType::IP, 7,
                                                              256, 16, 200, 0));
 #endif
+#if ZVEC_ENABLE_OMEGA
+    run_repeated_optimize_test(
+        enable_mmap, std::make_shared<OmegaIndexParams>(
+                         MetricType::IP, 16, 200, QuantizeType::UNDEFINED,
+                         100000, 16, 64, 32, 128));
+#endif
   }
 }
 
@@ -2947,6 +3050,205 @@ TEST_F(CollectionTest, Feature_Optimize_MetricType) {
   func(MetricType::COSINE, QuantizeType::FP16);
   func(MetricType::IP, QuantizeType::FP16);
 }
+
+#if ZVEC_ENABLE_OMEGA
+TEST_F(CollectionTest, Feature_Optimize_OmegaTrainsModelAndQueries) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = CreateOmegaCollectionSchema(
+      "omega_workflow_active",
+      std::make_shared<OmegaIndexParams>(MetricType::L2, 16, 200,
+                                         QuantizeType::UNDEFINED, 32, 16, 64,
+                                         32, 128));
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection_result =
+      Collection::CreateAndOpen(col_path, *schema, options);
+  ASSERT_TRUE(collection_result.has_value())
+      << collection_result.error().message();
+  auto collection = std::move(collection_result.value());
+
+  auto docs = CreateOmegaDocs(1, 129, *schema);
+  auto query_doc = docs[31];
+  InsertOmegaDocs(collection, std::move(docs));
+
+  auto status = collection->Optimize(OptimizeOptions{1});
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  EXPECT_TRUE(OmegaModelFileExists(col_path, "model.txt"));
+  EXPECT_TRUE(OmegaModelFileExists(col_path, "threshold_table.txt"));
+  EXPECT_TRUE(OmegaModelFileExists(col_path, "training_queries.bin"));
+
+  auto query = BuildOmegaDenseDocQuery(
+      query_doc, std::make_shared<OmegaQueryParams>(128, 0.91F), 10);
+  auto result = collection->Query(query);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(result.value().size(), 10U);
+  ASSERT_NE(result.value().front(), nullptr);
+  EXPECT_EQ(result.value().front()->pk(), query_doc.pk());
+}
+
+TEST_F(CollectionTest, Feature_Query_OmegaFallsBackToHnswWithoutModel) {
+  const std::string hnsw_path = "hnsw_workflow_baseline";
+  const std::string omega_path = "omega_workflow_fallback";
+  FileHelper::RemoveDirectory(hnsw_path);
+  FileHelper::RemoveDirectory(omega_path);
+
+  auto hnsw_schema = CreateOmegaCollectionSchema(
+      "hnsw_workflow_baseline",
+      std::make_shared<HnswIndexParams>(MetricType::L2));
+  auto omega_schema = CreateOmegaCollectionSchema(
+      "omega_workflow_fallback",
+      std::make_shared<OmegaIndexParams>(MetricType::L2, 16, 200,
+                                         QuantizeType::UNDEFINED, 100000, 16,
+                                         64, 32, 128));
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+
+  auto hnsw_collection_result =
+      Collection::CreateAndOpen(hnsw_path, *hnsw_schema, options);
+  ASSERT_TRUE(hnsw_collection_result.has_value())
+      << hnsw_collection_result.error().message();
+  auto hnsw_collection = std::move(hnsw_collection_result.value());
+
+  auto omega_collection_result =
+      Collection::CreateAndOpen(omega_path, *omega_schema, options);
+  ASSERT_TRUE(omega_collection_result.has_value())
+      << omega_collection_result.error().message();
+  auto omega_collection = std::move(omega_collection_result.value());
+
+  auto hnsw_docs = CreateOmegaDocs(1, 129, *hnsw_schema);
+  auto omega_docs = CreateOmegaDocs(1, 129, *omega_schema);
+  InsertOmegaDocs(hnsw_collection, std::move(hnsw_docs));
+  InsertOmegaDocs(omega_collection, std::move(omega_docs));
+
+  auto hnsw_status = hnsw_collection->Optimize(OptimizeOptions{1});
+  ASSERT_TRUE(hnsw_status.ok()) << hnsw_status.message();
+  auto omega_status = omega_collection->Optimize(OptimizeOptions{1});
+  ASSERT_TRUE(omega_status.ok()) << omega_status.message();
+
+  EXPECT_FALSE(OmegaModelFileExists(omega_path, "model.txt"));
+
+  const std::vector<float> query_vector(kOmegaDim, 64.3F);
+  auto hnsw_query = BuildOmegaDenseQuery(
+      query_vector, std::make_shared<HnswQueryParams>(128), 10);
+  auto omega_query = BuildOmegaDenseQuery(
+      query_vector, std::make_shared<OmegaQueryParams>(128, 0.91F), 10);
+
+  auto hnsw_result = hnsw_collection->Query(hnsw_query);
+  ASSERT_TRUE(hnsw_result.has_value()) << hnsw_result.error().message();
+  auto omega_result = omega_collection->Query(omega_query);
+  ASSERT_TRUE(omega_result.has_value()) << omega_result.error().message();
+
+  EXPECT_EQ(ResultPks(omega_result.value()), ResultPks(hnsw_result.value()));
+
+  hnsw_collection.reset();
+  omega_collection.reset();
+  FileHelper::RemoveDirectory(hnsw_path);
+  FileHelper::RemoveDirectory(omega_path);
+}
+
+TEST_F(CollectionTest, Feature_OmegaCollectionInterfaceLifecycle) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex(
+      false, "demo",
+      std::make_shared<OmegaIndexParams>(MetricType::L2, 16, 200,
+                                         QuantizeType::UNDEFINED, 100000, 16,
+                                         64, 32, 128));
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection_result =
+      Collection::CreateAndOpen(col_path, *schema, options);
+  ASSERT_TRUE(collection_result.has_value())
+      << collection_result.error().message();
+  auto collection = std::move(collection_result.value());
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, 0);
+  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+  auto create_status = collection->CreateIndex(
+      "dense_fp32", std::make_shared<OmegaIndexParams>(
+                        MetricType::L2, 16, 200, QuantizeType::UNDEFINED,
+                        100000, 16, 64, 32, 128));
+  ASSERT_TRUE(create_status.ok()) << create_status.message();
+
+  auto drop_status = collection->DropIndex("dense_fp32");
+  ASSERT_TRUE(drop_status.ok()) << drop_status.message();
+
+  create_status = collection->CreateIndex(
+      "dense_fp32", std::make_shared<OmegaIndexParams>(
+                        MetricType::L2, 16, 200, QuantizeType::UNDEFINED,
+                        100000, 16, 64, 32, 128));
+  ASSERT_TRUE(create_status.ok()) << create_status.message();
+
+  std::vector<Doc> docs;
+  docs.reserve(128);
+  for (uint64_t doc_id = 0; doc_id < 128; ++doc_id) {
+    docs.push_back(TestHelper::CreateDoc(doc_id, *schema));
+  }
+  auto write_result = collection->Insert(docs);
+  ASSERT_TRUE(write_result.has_value()) << write_result.error().message();
+  ASSERT_EQ(write_result.value().size(), docs.size());
+  for (const auto &status : write_result.value()) {
+    ASSERT_TRUE(status.ok()) << status.message();
+  }
+
+  auto update_doc = TestHelper::CreateDoc(1, *schema);
+  update_doc.set<std::string>("string", "omega_update");
+  std::vector<Doc> update_docs = {update_doc};
+  write_result = collection->Update(update_docs);
+  ASSERT_TRUE(write_result.has_value()) << write_result.error().message();
+  ASSERT_TRUE(write_result.value()[0].ok())
+      << write_result.value()[0].message();
+
+  auto upsert_doc = TestHelper::CreateDoc(128, *schema);
+  std::vector<Doc> upsert_docs = {upsert_doc};
+  write_result = collection->Upsert(upsert_docs);
+  ASSERT_TRUE(write_result.has_value()) << write_result.error().message();
+  ASSERT_TRUE(write_result.value()[0].ok())
+      << write_result.value()[0].message();
+
+  auto delete_result = collection->Delete({TestHelper::MakePK(2)});
+  ASSERT_TRUE(delete_result.has_value()) << delete_result.error().message();
+  ASSERT_TRUE(delete_result.value()[0].ok())
+      << delete_result.value()[0].message();
+
+  auto fetch_result =
+      collection->Fetch({TestHelper::MakePK(1), TestHelper::MakePK(2)});
+  ASSERT_TRUE(fetch_result.has_value()) << fetch_result.error().message();
+  ASSERT_NE(fetch_result.value()[TestHelper::MakePK(1)], nullptr);
+  ASSERT_EQ(fetch_result.value()[TestHelper::MakePK(1)]
+                ->get<std::string>("string")
+                .value(),
+            "omega_update");
+  ASSERT_EQ(fetch_result.value()[TestHelper::MakePK(2)], nullptr);
+
+  auto query_doc = TestHelper::CreateDoc(127, *schema);
+  auto query = BuildOmegaDenseDocQuery(
+      query_doc, std::make_shared<OmegaQueryParams>(128, 0.91F), 10,
+      "dense_fp32");
+  auto query_result = collection->Query(query);
+  ASSERT_TRUE(query_result.has_value()) << query_result.error().message();
+  ASSERT_EQ(query_result.value().size(), 10U);
+  ASSERT_EQ(query_result.value().front()->pk(), query_doc.pk());
+
+  auto optimize_status = collection->Optimize(OptimizeOptions{1});
+  ASSERT_TRUE(optimize_status.ok()) << optimize_status.message();
+  EXPECT_FALSE(OmegaModelFileExists(col_path, "model.txt"));
+
+  collection.reset();
+  auto reopen_result = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
+  collection = std::move(reopen_result.value());
+
+  stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, 128);
+  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+  fetch_result = collection->Fetch({query_doc.pk()});
+  ASSERT_TRUE(fetch_result.has_value()) << fetch_result.error().message();
+  ASSERT_NE(fetch_result.value()[query_doc.pk()], nullptr);
+}
+#endif
 
 TEST_F(CollectionTest, Feature_Optimize_Delete) {
   int doc_count = 1000;
