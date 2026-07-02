@@ -95,6 +95,8 @@ class BlockEvictionQueue {
 
   void recycle();
 
+  size_t batch_recycle(size_t count);
+
  private:
   BlockEvictionQueue() {
     init();
@@ -130,6 +132,8 @@ class MemoryLimitPool {
   void release_external(const size_t buffer_size);
 
   bool is_full();
+
+  size_t batch_acquire_buffers(size_t buffer_size, char **out, size_t count);
 
  private:
   MemoryLimitPool() = default;

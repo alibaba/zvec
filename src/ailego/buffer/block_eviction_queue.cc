@@ -68,6 +68,21 @@ void BlockEvictionQueue::recycle() {
   }
 }
 
+size_t BlockEvictionQueue::batch_recycle(size_t count) {
+  std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
+  size_t evicted = 0;
+  while (evicted < count) {
+    BlockType item;
+    if (!evict_single_block(item)) break;
+    if (item.owner == nullptr ||
+        valid_owners_.find(item.owner) == valid_owners_.end()) continue;
+    if (item.owner->is_dead_block(item.owner_key, item.version)) continue;
+    item.owner->evict_block(item.owner_key);
+    ++evicted;
+  }
+  return evicted;
+}
+
 bool BlockEvictionQueue::add_single_block(const BlockType &block,
                                           int queue_index) {
   bool ok = evict_queues_[queue_index].enqueue(block);
@@ -166,6 +181,44 @@ void MemoryLimitPool::release_external(const size_t buffer_size) {
 
 bool MemoryLimitPool::is_full() {
   return used_size_.load() >= pool_size_;
+}
+
+size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size,
+                                              char **out, size_t count) {
+  if (count == 0) return 0;
+  size_t total_size = count * buffer_size;
+  size_t actual_count = count;
+  size_t expected, desired;
+  do {
+    expected = used_size_.load();
+    if (expected >= pool_size_) return 0;
+    size_t avail = (pool_size_ - expected) / buffer_size;
+    if (avail == 0) return 0;
+    if (avail < actual_count) actual_count = avail;
+    total_size = actual_count * buffer_size;
+    desired = expected + total_size;
+  } while (!used_size_.compare_exchange_weak(expected, desired));
+
+  size_t from_list = 0;
+  {
+    std::lock_guard<std::mutex> lock(free_list_mutex_);
+    while (from_list < actual_count && free_list_head_) {
+      out[from_list] = free_list_head_;
+      free_list_head_ = *reinterpret_cast<char **>(out[from_list]);
+      --free_list_count_;
+      ++from_list;
+    }
+  }
+  for (size_t i = from_list; i < actual_count; ++i) {
+    out[i] = (char *)ailego_aligned_malloc(buffer_size, 4096);
+    if (!out[i]) {
+      size_t rollback = (actual_count - i) * buffer_size;
+      used_size_.fetch_sub(rollback);
+      actual_count = i;
+      break;
+    }
+  }
+  return actual_count;
 }
 
 }  // namespace ailego

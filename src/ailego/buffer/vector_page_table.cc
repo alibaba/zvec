@@ -1091,27 +1091,19 @@ void VecBufferPool::prefetch_scattered_pages(
       char *buffers[128];
       block_id_t buf_pids[128];
 
-      size_t submitted = 0;
-      for (size_t i = 0; i < miss_count; ++i) {
-        char *buf = nullptr;
-        bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
-            kVectorPageSize, buf);
-        if (!found) {
-          BlockEvictionQueue::get_instance().recycle();
-          found = MemoryLimitPool::get_instance().try_acquire_buffer(
-              kVectorPageSize, buf);
-        }
-        if (!found) break;
-        buffers[submitted] = buf;
-        buf_pids[submitted] = miss_pages[i];
-        size_t offset = miss_pages[i] * kVectorPageSize;
-        io_prep_pread(&cbs[submitted], fd_, buf, kVectorPageSize,
-                      static_cast<long long>(offset));
-        cbs[submitted].data = reinterpret_cast<void *>(submitted);
-        cb_ptrs[submitted] = &cbs[submitted];
-        ++submitted;
-      }
+      BlockEvictionQueue::get_instance().batch_recycle(miss_count);
+      size_t submitted = MemoryLimitPool::get_instance().batch_acquire_buffers(
+          kVectorPageSize, buffers, miss_count);
       if (submitted == 0) return;
+
+      for (size_t i = 0; i < submitted; ++i) {
+        buf_pids[i] = miss_pages[i];
+        size_t offset = miss_pages[i] * kVectorPageSize;
+        io_prep_pread(&cbs[i], fd_, buffers[i], kVectorPageSize,
+                      static_cast<long long>(offset));
+        cbs[i].data = reinterpret_cast<void *>(i);
+        cb_ptrs[i] = &cbs[i];
+      }
 
       int ret = LibAioLoader::Instance().io_submit(
           tl_aio.ctx, static_cast<long>(submitted), cb_ptrs);
@@ -1165,29 +1157,32 @@ void VecBufferPool::prefetch_scattered_pages(
   for (size_t i = 0; i < miss_count; ++i) {
     block_id_t pid = miss_pages[i];
     if (page_table_.is_loaded(pid)) continue;
-    char *buf = nullptr;
-    bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
-        kVectorPageSize, buf);
-    if (!found) {
-      BlockEvictionQueue::get_instance().recycle();
-      found = MemoryLimitPool::get_instance().try_acquire_buffer(
-          kVectorPageSize, buf);
+    BlockEvictionQueue::get_instance().batch_recycle(miss_count - i);
+    char *bufs[128];
+    size_t got = MemoryLimitPool::get_instance().batch_acquire_buffers(
+        kVectorPageSize, bufs, miss_count - i);
+    for (size_t j = 0; j < got; ++j) {
+      block_id_t p = miss_pages[i + j];
+      if (page_table_.is_loaded(p)) {
+        MemoryLimitPool::get_instance().release_buffer(bufs[j], kVectorPageSize);
+        continue;
+      }
+      size_t offset = p * kVectorPageSize;
+      ssize_t rd = zvec_pread(fd_, bufs[j], kVectorPageSize, offset);
+      if (rd != static_cast<ssize_t>(kVectorPageSize)) {
+        MemoryLimitPool::get_instance().release_buffer(bufs[j], kVectorPageSize);
+        continue;
+      }
+      std::lock_guard<std::mutex> lock(
+          block_mutexes_[p % VecBufferPool::kMutexBucketCount]);
+      if (page_table_.is_loaded(p)) {
+        MemoryLimitPool::get_instance().release_buffer(bufs[j], kVectorPageSize);
+      } else {
+        page_table_.set_block_acquired(p, bufs[j], offset);
+        page_table_.release_block(p);
+      }
     }
-    if (!found) return;
-    std::lock_guard<std::mutex> lock(
-        block_mutexes_[pid % VecBufferPool::kMutexBucketCount]);
-    if (page_table_.is_loaded(pid)) {
-      MemoryLimitPool::get_instance().release_buffer(buf, kVectorPageSize);
-      continue;
-    }
-    size_t offset = pid * kVectorPageSize;
-    ssize_t got = zvec_pread(fd_, buf, kVectorPageSize, offset);
-    if (got != static_cast<ssize_t>(kVectorPageSize)) {
-      MemoryLimitPool::get_instance().release_buffer(buf, kVectorPageSize);
-      continue;
-    }
-    page_table_.set_block_acquired(pid, buf, offset);
-    page_table_.release_block(pid);
+    break;
   }
 }
 
