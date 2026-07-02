@@ -313,3 +313,17 @@ class TestQueryExecutor:
             executor._build_search_query(
                 ctx, Query(field_name="test", id="missing"), collection
             )
+
+    def test_build_search_query_validates_query(self):
+        vector_schema = VectorSchema(name="test", data_type=DataType.VECTOR_FP32)
+        schema = CollectionSchema(name="test_collection", vectors=[vector_schema])
+        executor = QueryExecutor(schema)
+        ctx = QueryContext(topk=5)
+        collection = MagicMock()
+
+        with pytest.raises(ValueError, match="Cannot provide both id and vector"):
+            executor._build_search_query(
+                ctx,
+                Query(field_name="test", id="doc1", vector=np.array([0.1])),
+                collection,
+            )
