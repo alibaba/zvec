@@ -28,6 +28,73 @@ using namespace zvec::core;
 using namespace zvec::ailego;
 using namespace std;
 
+class FixedCentroidTrainer : public IndexTrainer {
+ public:
+  FixedCentroidTrainer(const IndexMeta &meta, IndexBundle::Pointer bundle)
+      : meta_(meta), bundle_(std::move(bundle)) {}
+
+  int init(const IndexMeta &, const Params &) override {
+    return 0;
+  }
+
+  int cleanup(void) override {
+    return 0;
+  }
+
+  int train(IndexThreads::Pointer, IndexHolder::Pointer) override {
+    return 0;
+  }
+
+  int load(IndexStorage::Pointer) override {
+    return 0;
+  }
+
+  int dump(const IndexDumper::Pointer &) override {
+    return 0;
+  }
+
+  const IndexMeta &meta(void) const override {
+    return meta_;
+  }
+
+  const IndexTrainer::Stats &stats(void) const override {
+    return stats_;
+  }
+
+  IndexBundle::Pointer indexes(void) const override {
+    return bundle_;
+  }
+
+ private:
+  IndexMeta meta_{};
+  IndexTrainer::Stats stats_{};
+  IndexBundle::Pointer bundle_{};
+};
+
+static IndexTrainer::Pointer CreateFixedCentroidTrainer(
+    const IndexMeta &meta, const std::vector<float> &centroid_values) {
+  IndexCluster::CentroidList centroids;
+  centroids.reserve(centroid_values.size());
+  for (float value : centroid_values) {
+    NumericalVector<float> centroid(meta.dimension());
+    for (size_t i = 0; i < meta.dimension(); ++i) {
+      centroid[i] = value;
+    }
+    IndexCluster::Centroid item;
+    item.set_feature(centroid);
+    centroids.emplace_back(std::move(item));
+  }
+
+  IndexBundle::Pointer bundle;
+  int ret = IndexCluster::Serialize(meta, centroids, &bundle);
+  EXPECT_EQ(0, ret);
+  if (ret != 0) {
+    return IndexTrainer::Pointer();
+  }
+
+  return std::make_shared<FixedCentroidTrainer>(meta, std::move(bundle));
+}
+
 class IVFSearcherTest : public testing::Test {
  public:
  protected:
@@ -3519,23 +3586,39 @@ TEST_F(IVFSearcherTest, TestNprobeOne) {
   EXPECT_EQ(0, ret);
 }
 
-// Test: nprobe should scale max_scan_count proportionally,
-// ensuring all probed clusters can be fully scanned.
-TEST_F(IVFSearcherTest, TestNprobeScalesMaxScanCount) {
-  // Build index with 8 centroids and 1000 vectors.
-  // With scan_ratio=0.1, the old max_scan_count would be 100,
-  // which truncates scanning even when nprobe wants more clusters.
+// Test: explicit nprobe scans every selected inverted list.
+TEST_F(IVFSearcherTest, TestNprobeScansAllSelectedLists) {
   IVFBuilder builder;
   Params build_params;
-  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "8");
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
   build_params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
 
   int ret = builder.init(index_meta_, build_params);
   EXPECT_EQ(0, ret);
 
-  prepare_rand_index_holder(0, 1000);
-  ret = builder.train(threads_, holder_);
-  ASSERT_EQ(0, ret);
+  auto trainer =
+      CreateFixedCentroidTrainer(index_meta_, {0.0f, 100.0f, 200.0f, 300.0f});
+  ASSERT_TRUE(!!trainer);
+  ret = builder.train(trainer);
+  EXPECT_EQ(0, ret);
+
+  MultiPassIndexHolder<IndexMeta::DataType::DT_FP32> *holder =
+      new MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>(dimension_);
+  auto append_vectors = [&](uint32_t base_key, size_t count, float value) {
+    for (size_t i = 0; i < count; ++i) {
+      NumericalVector<float> vec(dimension_);
+      for (size_t j = 0; j < dimension_; ++j) {
+        vec[j] = value;
+      }
+      holder->emplace(base_key + i, vec);
+    }
+  };
+  append_vectors(0, 80, 0.0f);
+  append_vectors(80, 10, 100.0f);
+  append_vectors(90, 5, 200.0f);
+  append_vectors(95, 5, 300.0f);
+  holder_.reset(holder);
+
   ret = builder.build(threads_, holder_);
   EXPECT_EQ(0, ret);
 
@@ -3545,7 +3628,6 @@ TEST_F(IVFSearcherTest, TestNprobeScalesMaxScanCount) {
   ret = builder.dump(dumper);
   EXPECT_EQ(0, dumper->close());
 
-  // Load searcher with a very low scan_ratio (0.1)
   IVFSearcher searcher;
   Params search_params;
   search_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
@@ -3564,60 +3646,27 @@ TEST_F(IVFSearcherTest, TestNprobeScalesMaxScanCount) {
   ret = searcher.load(container, IndexMetric::Pointer());
   EXPECT_EQ(0, ret);
 
-  std::vector<float> query(dimension_, 500.0f);
+  std::vector<float> query(dimension_, 0.0f);
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
 
   auto context = searcher.create_context();
-  size_t topk = 1000;
-  context->set_topk(topk);
+  auto *ivf_ctx = dynamic_cast<IVFSearcherContext *>(context.get());
+  ASSERT_NE(ivf_ctx, nullptr);
 
-  // Case 1: scan_ratio=0.1 only (no nprobe override).
-  // max_scan_count = 1000 * 0.1 = 100, so scanning is truncated.
-  ret = searcher.search_impl(query.data(), qmeta, context);
-  EXPECT_EQ(0, ret);
-  const IndexDocumentList &result_limited = context->result(0);
-  size_t found_limited = result_limited.size();
-
-  // Case 2: nprobe=8 (all clusters) with same low scan_ratio.
-  // After fix, max_scan_count should scale to 1000*(8/8)=1000,
-  // so all clusters can be fully scanned.
   Params nprobe_params;
   nprobe_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
-  nprobe_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)8);
+  nprobe_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)2);
   nprobe_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
   ret = context->update(nprobe_params);
   EXPECT_EQ(0, ret);
+  EXPECT_EQ(ivf_ctx->max_scan_count(), 100u);
 
+  size_t topk = 100;
   context->set_topk(topk);
   ret = searcher.search_impl(query.data(), qmeta, context);
   EXPECT_EQ(0, ret);
-  const IndexDocumentList &result_full = context->result(0);
-  size_t found_full = result_full.size();
-
-  // With nprobe=8 (all clusters), we should find all 1000 vectors.
-  // Before the fix, max_scan_count=100 would truncate this to ~100.
-  EXPECT_EQ(found_full, 1000u);
-  // The limited scan should have found fewer vectors.
-  EXPECT_LT(found_limited, found_full);
-
-  // Case 3: nprobe=4 (half clusters).
-  // max_scan_count should scale to 1000*(4/8)=500.
-  Params half_params;
-  half_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
-  half_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)4);
-  half_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
-  ret = context->update(half_params);
-  EXPECT_EQ(0, ret);
-
-  context->set_topk(topk);
-  ret = searcher.search_impl(query.data(), qmeta, context);
-  EXPECT_EQ(0, ret);
-  const IndexDocumentList &result_half = context->result(0);
-  size_t found_half = result_half.size();
-
-  // nprobe=4 should find more than scan_ratio-limited but less than all
-  EXPECT_GT(found_half, found_limited);
-  EXPECT_LE(found_half, found_full);
+  const IndexDocumentList &result = context->result(0);
+  EXPECT_EQ(result.size(), 90u);
 
   ret = searcher.unload();
   EXPECT_EQ(0, ret);
@@ -3668,19 +3717,19 @@ TEST_F(IVFSearcherTest, TestNprobeMaxScanCountValue) {
   auto *ivf_ctx = dynamic_cast<IVFSearcherContext *>(context.get());
   ASSERT_NE(ivf_ctx, nullptr);
 
-  // Default: scan_ratio=0.1, 400 vectors → max_scan_count = ceil(400*0.1) = 40
+  // Default: scan_ratio=0.1, 400 vectors -> max_scan_count = ceil(400*0.1) = 40
   EXPECT_EQ(ivf_ctx->max_scan_count(), 40u);
 
-  // Set nprobe=2 (half of 4 clusters) → max_scan_count = ceil(400*2/4) = 200
+  // Explicit nprobe uses vector_count as the scan cap.
   Params nprobe2_params;
   nprobe2_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
   nprobe2_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)2);
   nprobe2_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
   ret = context->update(nprobe2_params);
   EXPECT_EQ(0, ret);
-  EXPECT_EQ(ivf_ctx->max_scan_count(), 200u);
+  EXPECT_EQ(ivf_ctx->max_scan_count(), 400u);
 
-  // Set nprobe=4 (all clusters) → max_scan_count = ceil(400*4/4) = 400
+  // Set nprobe=4 (all clusters).
   Params nprobe4_params;
   nprobe4_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
   nprobe4_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)4);
@@ -3689,14 +3738,14 @@ TEST_F(IVFSearcherTest, TestNprobeMaxScanCountValue) {
   EXPECT_EQ(0, ret);
   EXPECT_EQ(ivf_ctx->max_scan_count(), 400u);
 
-  // Set nprobe=1 → max_scan_count = ceil(400*1/4) = 100
+  // Set nprobe=1.
   Params nprobe1_params;
   nprobe1_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
   nprobe1_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)1);
   nprobe1_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
   ret = context->update(nprobe1_params);
   EXPECT_EQ(0, ret);
-  EXPECT_EQ(ivf_ctx->max_scan_count(), 100u);
+  EXPECT_EQ(ivf_ctx->max_scan_count(), 400u);
 
   // Without nprobe (nprobe=0), falls back to scan_ratio
   Params no_nprobe_params;
@@ -3756,14 +3805,13 @@ TEST_F(IVFSearcherTest, TestNprobeClampToListCount) {
   ASSERT_NE(ivf_ctx, nullptr);
 
   // Set nprobe=100, far exceeding 4 centroids.
-  // Should be clamped to 4, so max_scan_count = ceil(400*4/4) = 400
+  // It should be clamped to 4 selected centroids and scan those lists fully.
   Params over_params;
   over_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.1);
   over_params.set(PARAM_IVF_SEARCHER_NPROBE, (uint32_t)100);
   over_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
   ret = context->update(over_params);
   EXPECT_EQ(0, ret);
-  // Clamped to 4 centroids: max_scan_count = 400*4/4 = 400
   EXPECT_EQ(ivf_ctx->max_scan_count(), 400u);
 
   // Verify search still works correctly with clamped nprobe
