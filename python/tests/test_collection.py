@@ -154,7 +154,6 @@ def test_collection(
                 print(f"Warning: failed to destroy collection: {e}")
 
 
-
 @pytest.fixture
 def collection_with_single_doc(test_collection: Collection, single_doc) -> Collection:
     # Setup: insert single doc
