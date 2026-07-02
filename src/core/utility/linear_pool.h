@@ -184,6 +184,11 @@ struct LinearPool {
   bool has_next() const {
     return cur_ < size_ && cur_ < ef_;
   }
+  // Peek the next candidate id without popping.
+  // Caller must ensure has_next() is true.
+  int peek() const {
+    return get_id(data_[cur_].id);
+  }
   int id(int i) const {
     return get_id(data_[i].id);
   }

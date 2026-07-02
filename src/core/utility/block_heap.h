@@ -70,6 +70,12 @@ struct BlockHeap {
     return cur_ < data_.size();
   }
 
+  // Peek the next candidate id without popping.
+  // Caller must ensure has_next() is true.
+  uint32_t peek() const {
+    return get_id(data_[cur_].first);
+  }
+
   // Pop the closest unpopped candidate id (without the check bit).
   // Caller must ensure has_next() is true.
   uint32_t pop();

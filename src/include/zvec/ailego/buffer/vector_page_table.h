@@ -309,7 +309,13 @@ class VecBufferPool {
 
   void prefetch_pages_aio(block_id_t first_page, size_t page_count);
 
-  void prefetch_scattered_pages(const block_id_t *page_ids, size_t count);
+  //! Submit AIO for scattered pages without waiting for completion.
+  //! Results are stored in thread-local state; call harvest_aio() later.
+  void submit_aio_async(const block_id_t *page_ids, size_t count);
+
+  //! Harvest previously submitted async AIO results (non-blocking).
+  //! Installs completed pages into page_table. Safe to call when no pending.
+  void harvest_aio();
 
   bool aio_enabled() const {
 #if defined(__linux) || defined(__linux__)

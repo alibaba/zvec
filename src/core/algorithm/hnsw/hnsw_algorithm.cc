@@ -83,7 +83,6 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
   const auto &upper_entity = static_cast<const EntityType &>(ctx->get_entity());
-  upper_entity.reset_io_budget(INT32_MAX);
   for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
     upper_entity.release_vectors();
@@ -140,15 +139,31 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
       (*ctx->mutable_stats_get_vector())++;
     }
 
-    dc.batch_dist(neighbor_vecs.data(), size, dists.data());
+    // Partition: resolved (non-null) to front
+    uint32_t resolved = 0;
+    for (uint32_t i = 0; i < size; ++i) {
+      if (neighbor_vecs[i]) {
+        if (i != resolved) {
+          std::swap(neighbor_vecs[i], neighbor_vecs[resolved]);
+          std::swap(neighbor_ids[i], neighbor_ids[resolved]);
+        }
+        ++resolved;
+      }
+    }
 
-    // Release per-hop pages to prevent PinnedPageSet overflow.
-    // Upper-level pages have high eviction priority, so re-acquire is cheap.
+    if (resolved == 0) {
+      entity.release_vectors();
+      break;  // No vectors available, can't progress
+    }
+
+    dc.batch_dist(neighbor_vecs.data(), resolved, dists.data());
+
+    // Release per-hop pages AFTER batch_dist to prevent UAF.
     entity.release_vectors();
 
     bool find_closer = false;
-    for (uint32_t i = 0; i < size; ++i) {
-      if (neighbor_vecs[i] && dists[i] < *dist) {
+    for (uint32_t i = 0; i < resolved; ++i) {
+      if (dists[i] < *dist) {
         *entry_point = neighbor_ids[i];
         *dist = dists[i];
         find_closer = true;
@@ -211,8 +226,6 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
   visit.clear();
 
-  entity.reset_io_budget(static_cast<int32_t>(ef / 2));
-
   visit.set_visited(entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);
 
@@ -220,6 +233,18 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
   std::vector<node_id_t> neighbor_ids(buf_capacity);
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
+
+  // Warm start: prefetch pages for entry_point's neighbors
+  {
+    const auto neighbors = entity.get_neighbors_typed(0, entry_point);
+    node_id_t prefetch_ids_buf[64];
+    uint32_t pc = 0;
+    for (uint32_t i = 0; i < neighbors.size() && pc < 64; ++i) {
+      if (!visit.visited(neighbors[i]))
+        prefetch_ids_buf[pc++] = neighbors[i];
+    }
+    if (pc > 0) entity.submit_prefetch(prefetch_ids_buf, pc);
+  }
 
   while (pool.has_next()) {
     auto current_node = pool.pop();
@@ -244,13 +269,15 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
 
     if (unvisited_count == 0) continue;
 
+    // Harvest AIO from previous iteration (or warm start)
+    entity.harvest_prefetch();
+
     if (ailego_unlikely(entity.resolve_vectors(neighbor_ids.data(),
                                                unvisited_count,
                                                neighbor_vecs.data()) != 0))
       break;
 
-    // Partition: move resolved vectors (non-null, cache hit) to front.
-    // Unresolved ones (cache miss) go to the back with FLT_MAX distance.
+    // Partition: move resolved vectors (non-null) to front.
     uint32_t resolved = 0;
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       if (neighbor_vecs[i]) {
@@ -262,6 +289,27 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
       }
     }
 
+    // Submit AIO for miss pages: current unresolved + next hop peek-ahead
+    {
+      node_id_t prefetch_ids[128];
+      uint32_t pc = 0;
+      // Current hop's unresolved nodes (their pages will help future hops)
+      for (uint32_t i = resolved; i < unvisited_count && pc < 64; ++i) {
+        prefetch_ids[pc++] = neighbor_ids[i];
+      }
+      // Next hop peek-ahead
+      if (pool.has_next()) {
+        node_id_t next_node = pool.peek();
+        const auto next_neighbors = entity.get_neighbors_typed(0, next_node);
+        for (uint32_t i = 0; i < next_neighbors.size() && pc < 128; ++i) {
+          if (!visit.visited(next_neighbors[i]))
+            prefetch_ids[pc++] = next_neighbors[i];
+        }
+      }
+      if (pc > 0) entity.submit_prefetch(prefetch_ids, pc);
+    }
+
+    // CPU prefetch + distance computation
     if (resolved > 0) {
       const uint32_t po = std::min(prefetch_offset, resolved);
       for (uint32_t i = 0; i < po; ++i) {
@@ -282,6 +330,9 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
 
     entity.release_vectors();
   }
+
+  // Final harvest to clean up any pending AIO
+  entity.harvest_prefetch();
 }
 
 // ============================================================================
