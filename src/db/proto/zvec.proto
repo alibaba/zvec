@@ -60,10 +60,10 @@ enum IndexType {
   IT_HNSW_RABITQ = 4;
   // Proxima Vamana Index
   IT_VAMANA = 5;
-  // OMEGA Index (HNSW with learned early stopping)
-  IT_OMEGA = 6;
   // Proxima DiskAnn Index
-  IT_DISKANN = 7;
+  IT_DISKANN = 6;
+  // OMEGA Index (HNSW with learned early stopping)
+  IT_OMEGA = 7;
   // Invert Index
   IT_INVERT = 10;
   // Full-Text Search Index
