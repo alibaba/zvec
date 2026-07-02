@@ -84,6 +84,16 @@ class HnswDistCalculator {
     batch_distance_ = batch_distance;
   }
 
+  //! Set the pairwise (SDC) distance function used for node-vs-node
+  //! comparisons (e.g. HNSW neighbor pruning).  When set, dist(lhs, rhs)
+  //! will use this function instead of the ADC distance_.  For non-PQ
+  //! quantizers this is left unset (nullptr) and dist(lhs, rhs) falls
+  //! back to distance_ as before.
+  inline void set_pairwise_distance(
+      const IndexMetric::MatrixDistance &pairwise_distance) {
+    pairwise_distance_ = pairwise_distance;
+  }
+
   //! Reset query vector data
   inline void reset_query(const void *query) {
     error_ = false;
@@ -100,7 +110,13 @@ class HnswDistCalculator {
 
     float score{0.0f};
 
-    distance_(vec_lhs, vec_rhs, dim_, &score);
+    // Use pairwise (SDC) distance when available (PQ node-vs-node path);
+    // otherwise fall back to the standard ADC distance_.
+    if (pairwise_distance_) {
+      pairwise_distance_(vec_lhs, vec_rhs, dim_, &score);
+    } else {
+      distance_(vec_lhs, vec_rhs, dim_, &score);
+    }
 
     return score;
   }
@@ -233,6 +249,7 @@ class HnswDistCalculator {
   const HnswEntity *entity_;
 
   IndexMetric::MatrixDistance distance_;
+  IndexMetric::MatrixDistance pairwise_distance_;  // SDC for PQ (optional)
   IndexMetric::MatrixBatchDistance batch_distance_;
 
   const void *query_;

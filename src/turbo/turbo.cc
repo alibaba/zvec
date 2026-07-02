@@ -22,6 +22,7 @@
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
+#include "scalar/pq/pq_scalar.h"
 
 #if defined(__SSE2__)
 #include "sse/fht/fht.h"
@@ -195,6 +196,18 @@ FhtKernels get_fht_kernels() {
   }
 #endif
   return k;  // scalar
+}
+
+PqKernels get_pq_kernels(QuantizeType quantize_type,
+                          CpuArchType cpu_arch_type) {
+  PqKernels k{};
+  if (quantize_type == QuantizeType::kPQ) {
+    // scalar is the only implementation for now; future SIMD paths gate on
+    // cpu_arch_type here (same pattern as get_distance_func).
+    k.adc_distance = scalar::pq_adc_distance;
+    k.sdc_distance = scalar::pq_sdc_distance;
+  }
+  return k;
 }
 
 }  // namespace zvec::turbo

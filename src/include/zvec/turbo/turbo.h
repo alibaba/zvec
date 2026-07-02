@@ -41,6 +41,21 @@ using FhtKacsWalkFunc = void (*)(float *data, size_t len);
 using FhtInplaceFunc = void (*)(float *data, size_t n);
 using FhtVecRescaleFunc = void (*)(float *data, size_t n, float factor);
 
+// PQ kernel function pointer types.
+//
+// ADC: LUT look-up distance between a PQ code and a query (via LUT).
+//   pq_code:           [num_subquantizers] uint8_t
+//   lut:               [num_subquantizers * 256] float
+using PqAdcDistanceFunc = void (*)(const uint8_t *pq_code, const float *lut,
+                                    size_t num_subquantizers, float *out);
+
+// SDC kernel: centroid-to-centroid distance between two PQ codes.
+//   a, b:              [num_subquantizers] uint8_t
+//   dist_table:        [num_subquantizers * 256 * 256] float
+using PqSdcKernelFunc = void (*)(const uint8_t *a, const uint8_t *b,
+                                  const float *dist_table,
+                                  size_t num_subquantizers, float *out);
+
 // Aggregate of all FHT kernels needed by FhtRotator, dispatched by ISA.
 struct FhtKernels {
   FhtFlipSignFunc flip_sign;
@@ -48,6 +63,15 @@ struct FhtKernels {
   FhtKacsWalkFunc inv_kacs_walk;
   FhtInplaceFunc inplace;
   FhtVecRescaleFunc rescale;
+};
+
+// Aggregate of all PQ-specific kernels needed by PqInt8Quantizer, dispatched
+// by ISA.  LUT computation (compute_distance_table) is NOT included here —
+// it reuses the existing fp32 BatchDistanceFunc from get_batch_distance_func()
+// which is metric-aware and already SIMD-optimized.
+struct PqKernels {
+  PqAdcDistanceFunc adc_distance;
+  PqSdcKernelFunc sdc_distance;
 };
 
 enum class MetricType {
@@ -109,5 +133,9 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 
 // Returns all FHT kernels dispatched for the current CPU.
 FhtKernels get_fht_kernels();
+
+// Returns all PQ kernels dispatched for the given quantize_type and CPU arch.
+PqKernels get_pq_kernels(QuantizeType quantize_type,
+                          CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo
