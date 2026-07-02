@@ -13,6 +13,8 @@
 // limitations under the License.
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <zvec/ailego/math_batch/utils.h>
 
@@ -32,6 +34,21 @@ using QueryPreprocessFunc =
 // to avoid indirect-call overhead on the per-record / per-query hot path.
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
+
+// FHT primitive function pointer types.
+using FhtFlipSignFunc = void (*)(const uint8_t *flip, float *data, size_t dim);
+using FhtKacsWalkFunc = void (*)(float *data, size_t len);
+using FhtInplaceFunc = void (*)(float *data, size_t n);
+using FhtVecRescaleFunc = void (*)(float *data, size_t n, float factor);
+
+// Aggregate of all FHT kernels needed by FhtRotator, dispatched by ISA.
+struct FhtKernels {
+  FhtFlipSignFunc flip_sign;
+  FhtKacsWalkFunc kacs_walk;
+  FhtKacsWalkFunc inv_kacs_walk;
+  FhtInplaceFunc inplace;
+  FhtVecRescaleFunc rescale;
+};
 
 enum class MetricType {
   kSquaredEuclidean,
@@ -89,5 +106,8 @@ QueryPreprocessFunc get_query_preprocess_func(
 // (metric/data/quantize) dispatch above; data_type is retained so the
 // interface can grow to cover other output types (e.g. fp16) in the future.
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
+
+// Returns all FHT kernels dispatched for the current CPU.
+FhtKernels get_fht_kernels();
 
 }  // namespace zvec::turbo

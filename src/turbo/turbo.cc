@@ -18,9 +18,20 @@
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_int8/quantize.h"
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
+#include "scalar/fht/fht.h"
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
+
+#if defined(__SSE2__)
+#include "sse/fht/fht.h"
+#endif
+#if defined(__AVX2__)
+#include "avx2/fht/fht.h"
+#endif
+#if defined(__AVX512F__)
+#include "avx512/fht/fht.h"
+#endif
 
 namespace zvec::turbo {
 
@@ -141,6 +152,49 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
     }
   }
   return nullptr;
+}
+
+FhtKernels get_fht_kernels() {
+  FhtKernels k;
+  // Default: scalar fallback for all
+  k.flip_sign = scalar::fht_flip_sign;
+  k.kacs_walk = scalar::fht_kacs_walk;
+  k.inv_kacs_walk = scalar::fht_inv_kacs_walk;
+  k.inplace = scalar::fht_inplace;
+  k.rescale = scalar::fht_vec_rescale;
+
+#if defined(__AVX512F__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ) {
+    k.flip_sign = avx512::fht_flip_sign_avx512;
+    k.kacs_walk = avx512::fht_kacs_walk_avx512;
+    k.inv_kacs_walk = avx512::fht_inv_kacs_walk_avx512;
+    k.inplace = avx512::fht_inplace_avx512;
+    k.rescale = avx512::fht_vec_rescale_avx512;
+    return k;
+  }
+#endif
+#if defined(__AVX2__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    k.flip_sign = avx2::fht_flip_sign_avx2;
+    k.kacs_walk = avx2::fht_kacs_walk_avx2;
+    k.inv_kacs_walk = avx2::fht_inv_kacs_walk_avx2;
+    k.inplace = avx2::fht_inplace_avx2;
+    k.rescale = avx2::fht_vec_rescale_avx2;
+    return k;
+  }
+#endif
+#if defined(__SSE2__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE2) {
+    k.flip_sign = sse::fht_flip_sign_sse;
+    k.kacs_walk = sse::fht_kacs_walk_sse;
+    k.inv_kacs_walk = sse::fht_inv_kacs_walk_sse;
+    k.rescale = sse::fht_vec_rescale_sse;
+    // inplace fallback to scalar (SSE has no fht_inplace)
+    return k;
+  }
+#endif
+  return k;  // scalar
 }
 
 }  // namespace zvec::turbo
