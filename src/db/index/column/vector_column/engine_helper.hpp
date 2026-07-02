@@ -162,8 +162,6 @@ class ProximaEngineHelper {
           auto db_hnsw_query_params = dynamic_cast<const HnswQueryParams *>(
               query_params.query_params.get());
           hnsw_query_param->ef_search = db_hnsw_query_params->ef();
-          hnsw_query_param->training_query_id =
-              db_hnsw_query_params->training_query_id();
           hnsw_query_param->prefetch_offset =
               db_hnsw_query_params->prefetch_offset();
           hnsw_query_param->prefetch_lines =

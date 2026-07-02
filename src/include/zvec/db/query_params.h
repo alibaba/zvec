@@ -78,7 +78,6 @@ class HnswQueryParams : public QueryParams {
       uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines)
       : QueryParams(IndexType::HNSW),
         ef_(ef),
-        training_query_id_(-1),
         prefetch_offset_(prefetch_offset),
         prefetch_lines_(prefetch_lines) {
     set_radius(radius);
@@ -94,16 +93,6 @@ class HnswQueryParams : public QueryParams {
 
   void set_ef(int ef) {
     ef_ = ef;
-  }
-
-  // Training query ID for parallel training searches
-  // -1 means not set (use global current_query_id from indexer)
-  int training_query_id() const {
-    return training_query_id_;
-  }
-
-  void set_training_query_id(int query_id) {
-    training_query_id_ = query_id;
   }
 
   uint32_t prefetch_offset() const {
@@ -124,7 +113,6 @@ class HnswQueryParams : public QueryParams {
 
  private:
   int ef_;
-  int training_query_id_;
   uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
   uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
 };
@@ -149,8 +137,19 @@ class OmegaQueryParams : public HnswQueryParams {
     target_recall_ = target_recall;
   }
 
+  // Training query ID for parallel OMEGA training searches.
+  // -1 means not set (use global current_query_id from indexer).
+  int training_query_id() const {
+    return training_query_id_;
+  }
+
+  void set_training_query_id(int query_id) {
+    training_query_id_ = query_id;
+  }
+
  private:
   float target_recall_;
+  int training_query_id_{-1};
 };
 
 class IVFQueryParams : public QueryParams {

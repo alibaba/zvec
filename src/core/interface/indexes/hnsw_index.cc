@@ -20,9 +20,6 @@
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/hnsw/hnsw_streamer_entity.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
-#if ZVEC_ENABLE_OMEGA
-#include "algorithm/omega/omega_params.h"
-#endif
 
 namespace zvec::core_interface {
 
@@ -164,13 +161,6 @@ int HNSWIndex::_prepare_for_search(
   const int real_search_ef =
       std::max(1u, std::min(2048u, hnsw_search_param->ef_search));
   params.set(core::PARAM_HNSW_STREAMER_EF, real_search_ef);
-
-  if (hnsw_search_param->training_query_id >= 0) {
-#if ZVEC_ENABLE_OMEGA
-    params.set(core::PARAM_OMEGA_SEARCHER_TRAINING_QUERY_ID,
-               hnsw_search_param->training_query_id);
-#endif
-  }
 
   const uint32_t real_search_po =
       std::min(256u, hnsw_search_param->prefetch_offset);
