@@ -1089,12 +1089,16 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
 /**
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)
- * @param tokenizer_name Tokenizer name: "standard", "jieba", or "whitespace"
- *                       (NULL keeps current value)
- * @param filters Token filter names: "lowercase" and/or "ascii_folding"
- *                (NULL keeps current value)
- * @param extra_params Additional tokenizer parameters (NULL keeps current
- * value)
+ * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value).
+ * Supported values are "standard", "jieba", and "whitespace".
+ * @param filters Token filter names (NULL keeps current value). Supported
+ * values include "lowercase", "ascii_folding", and "stemmer". The "stemmer"
+ * filter uses Snowball and defaults to language "english"; set stemmer_lang
+ * explicitly to use another language or algorithm supported by the bundled
+ * Snowball version.
+ * @param extra_params Additional tokenizer/filter parameters (NULL keeps
+ * current value). Must be empty or a JSON object string; use
+ * {"stemmer_lang":"german"} to configure the stemmer filter.
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_fts_params(

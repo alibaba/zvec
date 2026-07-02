@@ -156,3 +156,12 @@ TEST(StemmerTokenFilterTest, LanguageByISOCode) {
   ASSERT_EQ(tokens.size(), 1u);
   EXPECT_EQ(tokens[0].text, "run");
 }
+
+TEST(StemmerTokenFilterTest, PorterAlgorithm) {
+  auto pipeline = TokenizerFactory::create(make_stemmer_params("porter"));
+  ASSERT_NE(pipeline, nullptr);
+
+  auto tokens = pipeline->process("running");
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].text, "run");
+}

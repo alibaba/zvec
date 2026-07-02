@@ -261,10 +261,14 @@ Attributes:
         "whitespace").
         Default is "standard".
     filters (list[str]): List of token filter names applied after tokenization.
-        Supported filters are "lowercase" and "ascii_folding". Default is
-        ["lowercase"].
-    extra_params (str): Additional parameters passed to the tokenizer.
-        Default is "".
+        Supported values include "lowercase", "ascii_folding", and "stemmer".
+        Default is ["lowercase"]. The "stemmer" filter uses Snowball and
+        defaults to language "english"; set stemmer_lang explicitly to use
+        another language or algorithm supported by the bundled Snowball
+        version.
+    extra_params (str): Additional tokenizer/filter parameters as an empty
+        string or JSON object string. Use {"stemmer_lang":"german"} to
+        configure the stemmer filter. Default is "".
 
 Examples:
     >>> params = FtsIndexParam(
@@ -272,6 +276,11 @@ Examples:
     ... )
     >>> print(params.tokenizer_name)
     jieba
+    >>> params = FtsIndexParam(
+    ...     tokenizer_name="standard",
+    ...     filters=["lowercase", "stemmer"],
+    ...     extra_params='{"stemmer_lang":"english"}',
+    ... )
 )pbdoc");
   fts_index_params
       .def(py::init<std::string, std::vector<std::string>, std::string>(),
@@ -283,9 +292,12 @@ Constructs an FtsIndexParam instance.
 
 Args:
     tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
-    filters (list[str], optional): Token filter names. Supports "lowercase" and
-        "ascii_folding". Defaults to ["lowercase"].
-    extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+    filters (list[str], optional): Token filter names. Supports "lowercase",
+        "ascii_folding", and "stemmer". Defaults to ["lowercase"].
+    extra_params (str, optional): Extra tokenizer/filter parameters as an empty
+        string or JSON object string. For the stemmer filter, use
+        {"stemmer_lang":"english"} or another language or algorithm supported
+        by the bundled Snowball version. Defaults to "".
 )pbdoc")
       .def_property_readonly("tokenizer_name", &FtsIndexParams::tokenizer_name,
                              "str: Name of the tokenizer.")

@@ -720,6 +720,17 @@ class VamanaIndexParams : public VectorIndexParams {
  * Supported tokenizers: "standard", "jieba", "whitespace".
  * Supported filters: "lowercase", "ascii_folding".
  *
+ * Supported tokenizers are "standard", "jieba", and "whitespace". Supported
+ * token filters are "lowercase" and "stemmer". The "stemmer" filter uses
+ * Snowball and defaults to language "english"; set stemmer_lang explicitly to
+ * use another language or algorithm supported by the bundled Snowball version.
+ *
+ * extra_params must be either empty or a JSON object string. The "stemmer"
+ * filter reads "stemmer_lang" from extra_params, for example:
+ *   {"stemmer_lang":"german"}
+ * Tokenizers may also read tokenizer-specific keys from the same object, such
+ * as "jieba_dict_dir" for the jieba tokenizer.
+ *
  * Not copyable.  Use shared_ptr<FtsIndexParams> for shared ownership.
  */
 class FtsIndexParams : public IndexParams {

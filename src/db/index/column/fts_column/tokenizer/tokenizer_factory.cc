@@ -106,6 +106,8 @@ TokenFilterPtr TokenizerFactory::create_filter(const std::string &filter_name) {
   } else if (filter_name == "ascii_folding") {
     return std::make_shared<AsciiFoldingTokenFilter>();
   } else if (filter_name == "stemmer") {
+    // The stemmer filter uses Snowball and defaults to "english" unless
+    // extra_params overrides stemmer_lang.
     return std::make_shared<StemmerTokenFilter>();
   }
   LOG_ERROR("[TokenizerFactory] unknown filter name: %s", filter_name.c_str());

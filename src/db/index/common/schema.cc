@@ -25,6 +25,8 @@
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
 #include "db/common/utils.h"
+#include "db/index/column/fts_column/fts_types.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
@@ -60,6 +62,28 @@ std::unordered_set<IndexType> support_dense_vector_index = {
 
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
+
+static Status validate_fts_index_params(const FieldSchema &field) {
+  auto params = std::dynamic_pointer_cast<FtsIndexParams>(field.index_params());
+  if (!params) {
+    return Status::InvalidArgument(
+        "schema validate failed: FTS index requires FtsIndexParams, but field[",
+        field.name(), "] has incompatible index params");
+  }
+
+  fts::FtsIndexParams internal_params;
+  internal_params.tokenizer_name = params->tokenizer_name();
+  internal_params.filters = params->filters();
+  internal_params.extra_params = params->extra_params();
+
+  auto pipeline = fts::TokenizerFactory::create(internal_params);
+  if (!pipeline) {
+    return Status::InvalidArgument(
+        "schema validate failed: invalid FTS index params for field[",
+        field.name(), "]");
+  }
+  return Status::OK();
+}
 
 Status FieldSchema::validate() const {
   if (data_type_ == DataType::UNDEFINED) {
@@ -260,6 +284,10 @@ Status FieldSchema::validate() const {
             "schema validate failed: FTS index only supports STRING data type, "
             "but field[",
             name_, "]'s data_type is ", DataTypeCodeBook::AsString(data_type_));
+      }
+      if (index_params_->type() == IndexType::FTS) {
+        auto s = validate_fts_index_params(*this);
+        CHECK_RETURN_STATUS(s);
       }
     }
   }

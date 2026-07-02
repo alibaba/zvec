@@ -20,6 +20,10 @@
 
 namespace zvec::fts {
 
+/*! Snowball stemmer token filter.
+ *  Configure the language with extra_params key "stemmer_lang". When omitted,
+ *  the language is "english".
+ */
 class StemmerTokenFilter : public TokenFilter {
  public:
   StemmerTokenFilter() = default;
