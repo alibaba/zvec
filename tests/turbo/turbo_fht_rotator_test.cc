@@ -164,11 +164,14 @@ TEST(FhtRotator, TrainGeneratesFlip) {
     EXPECT_GT(hdr->payload_size, 0u);
 
     // Check that the flip payload is not all-zero.
-    const uint8_t *payload =
-        reinterpret_cast<const uint8_t *>(blob.data()) + sizeof(RotatorSerHeader);
+    const uint8_t *payload = reinterpret_cast<const uint8_t *>(blob.data()) +
+                             sizeof(RotatorSerHeader);
     bool any_nonzero = false;
     for (uint32_t i = 0; i < hdr->payload_size; ++i) {
-      if (payload[i] != 0) { any_nonzero = true; break; }
+      if (payload[i] != 0) {
+        any_nonzero = true;
+        break;
+      }
     }
     EXPECT_TRUE(any_nonzero) << "flip payload is all-zero for dim=" << dim;
   }
@@ -424,8 +427,7 @@ TEST(FhtRotator, LargeDimension) {
     rot->apply(input.data(), r1.data());
     rot2->apply(input.data(), r2.data());
     for (int i = 0; i < dim; ++i) {
-      EXPECT_FLOAT_EQ(r1[i], r2[i])
-          << "mismatch at i=" << i << " dim=" << dim;
+      EXPECT_FLOAT_EQ(r1[i], r2[i]) << "mismatch at i=" << i << " dim=" << dim;
     }
   }
 }

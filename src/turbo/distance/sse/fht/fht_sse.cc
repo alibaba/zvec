@@ -14,13 +14,12 @@
 
 #if defined(__SSE2__)
 
-#include "fht.h"
-
 #include <emmintrin.h>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include "fht.h"
 
 namespace zvec::turbo::sse {
 

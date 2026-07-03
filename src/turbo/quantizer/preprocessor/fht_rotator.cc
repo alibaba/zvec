@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "fht_rotator.h"
-
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -230,7 +229,8 @@ int FhtRotator::serialize(std::string *out) const {
 }
 
 int FhtRotator::deserialize(const void *data, size_t len) {
-  if (!data || len < sizeof(RotatorSerHeader)) return IndexError_InvalidArgument;
+  if (!data || len < sizeof(RotatorSerHeader))
+    return IndexError_InvalidArgument;
 
   const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(data);
   if (hdr->magic != kRotatorMagic) return IndexError_Unsupported;

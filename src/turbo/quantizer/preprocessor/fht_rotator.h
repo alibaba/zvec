@@ -18,8 +18,8 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
-#include "preprocessor.h"
 #include <zvec/turbo/turbo.h>
+#include "preprocessor.h"
 
 namespace zvec {
 namespace turbo {
@@ -46,8 +46,12 @@ class FhtRotator : public Preprocessor {
 
   // -- Preprocessor interface ------------------------------------------------
 
-  int in_dim() const override { return in_dim_; }
-  int out_dim() const override { return out_dim_; }
+  int in_dim() const override {
+    return in_dim_;
+  }
+  int out_dim() const override {
+    return out_dim_;
+  }
 
   void apply(const float *in, float *out) const override;
   void apply_inverse(const float *in, float *out) const override;
@@ -60,7 +64,9 @@ class FhtRotator : public Preprocessor {
   int deserialize(const void *data, size_t len) override;
 
   //! Rotator type tag (kFht = 1).
-  RotatorType rotator_type() const { return RotatorType::kFht; }
+  RotatorType rotator_type() const {
+    return RotatorType::kFht;
+  }
 
  private:
   FhtRotator() = default;
