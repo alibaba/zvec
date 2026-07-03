@@ -418,17 +418,17 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   payload.num_centroids = kNumCentroids;
 
   size_t centroids_bytes = centroids_.size() * sizeof(float);
-  size_t dist_table_bytes = dist_table_.size() * sizeof(float);
-  hdr.payload_size = static_cast<uint32_t>(
-      sizeof(payload) + centroids_bytes + dist_table_bytes);
+  hdr.payload_size = static_cast<uint32_t>(sizeof(payload) + centroids_bytes);
 
   out->clear();
   out->append(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
   out->append(reinterpret_cast<const char *>(&payload), sizeof(payload));
   out->append(reinterpret_cast<const char *>(centroids_.data()),
               centroids_bytes);
-  out->append(reinterpret_cast<const char *>(dist_table_.data()),
-              dist_table_bytes);
+  // dist_table_ is NOT serialized: it is a build-phase-only derivative
+  // of the codebook (used by SDC during graph construction).  Search
+  // uses ADC exclusively, so the table can be recomputed on demand if
+  // ever needed, but is unnecessary after deserialization.
   return 0;
 }
 
@@ -461,16 +461,11 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   size_t centroids_bytes =
       static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_ *
       sizeof(float);
-  size_t dist_table_bytes =
-      static_cast<size_t>(num_subquantizers_) * kNumCentroids * kNumCentroids *
-      sizeof(float);
 
   centroids_.resize(centroids_bytes / sizeof(float));
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
-  ptr += centroids_bytes;
-
-  dist_table_.resize(dist_table_bytes / sizeof(float));
-  std::memcpy(dist_table_.data(), ptr, dist_table_bytes);
+  // dist_table_ is intentionally not restored: SDC is only needed during
+  // offline build, not after deserialization (search uses ADC).
 
   // Re-dispatch kernels.
   auto pq_k = get_pq_kernels(QuantizeType::kPQ);
