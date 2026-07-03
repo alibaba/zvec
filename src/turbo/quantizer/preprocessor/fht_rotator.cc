@@ -16,14 +16,9 @@
 #include <cmath>
 #include <cstring>
 #include <random>
-#include <zvec/core/framework/index_error.h>
-
+#include "../quantizer.h"
 namespace zvec {
 namespace turbo {
-
-using core::IndexError_InvalidArgument;
-using core::IndexError_Runtime;
-using core::IndexError_Unsupported;
 
 // ============================================================================
 // FhtRotator method implementations
@@ -210,8 +205,8 @@ void FhtRotator::apply_inverse(const float *in, float *out) const {
 // ---------------------------------------------------------------------------
 
 int FhtRotator::serialize(std::string *out) const {
-  if (!out) return IndexError_InvalidArgument;
-  if (flip_.empty()) return IndexError_Runtime;
+  if (!out) return kErrInvalidArgument;
+  if (flip_.empty()) return kErrRuntime;
 
   RotatorSerHeader hdr{};
   hdr.magic = kRotatorMagic;
@@ -229,18 +224,17 @@ int FhtRotator::serialize(std::string *out) const {
 }
 
 int FhtRotator::deserialize(const void *data, size_t len) {
-  if (!data || len < sizeof(RotatorSerHeader))
-    return IndexError_InvalidArgument;
+  if (!data || len < sizeof(RotatorSerHeader)) return kErrInvalidArgument;
 
   const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(data);
-  if (hdr->magic != kRotatorMagic) return IndexError_Unsupported;
-  if (hdr->version != kRotatorSerVersion) return IndexError_Unsupported;
+  if (hdr->magic != kRotatorMagic) return kErrUnsupported;
+  if (hdr->version != kRotatorSerVersion) return kErrUnsupported;
   if (static_cast<RotatorType>(hdr->rotator_type) != RotatorType::kFht) {
-    return IndexError_Unsupported;
+    return kErrUnsupported;
   }
 
   const size_t total = sizeof(RotatorSerHeader) + hdr->payload_size;
-  if (len < total) return IndexError_InvalidArgument;
+  if (len < total) return kErrInvalidArgument;
 
   in_dim_ = static_cast<int>(hdr->in_dim);
   out_dim_ = static_cast<int>(hdr->out_dim);
