@@ -14,12 +14,12 @@
 
 #if defined(__AVX2__)
 
+#include "fht.h"
 #include <immintrin.h>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include "fht.h"
 
 namespace zvec::turbo::avx2 {
 
