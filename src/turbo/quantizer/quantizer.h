@@ -39,8 +39,10 @@ using namespace zvec::core;
 //!
 //! IndexError::Code stores -val in its constructor, so NotImplemented(11)
 //! yields -11 and Unsupported(12) yields -12.
+constexpr int kErrRuntime = -1;
 constexpr int kErrNotImplemented = -11;
 constexpr int kErrUnsupported = -12;
+constexpr int kErrInvalidArgument = -31;
 
 //! Magic number ('QTZR') stamped at the start of a serialized quantizer blob.
 constexpr uint32_t kQuantizerMagic = 0x52545A51u;
