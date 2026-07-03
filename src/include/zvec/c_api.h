@@ -962,6 +962,30 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
+ * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
+ * quantize type)
+ *
+ * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
+ * reduce quantization error. The rotation matrix is stored with the index
+ * and automatically applied to query vectors at search time.
+ *
+ * @param params Index parameters (must be vector index type)
+ * @param enable_rotate Whether to enable random rotation before quantization
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
+                                              bool enable_rotate);
+
+/**
+ * @brief Get enable_rotate setting from quantizer parameters
+ * @param params Index parameters (must not be NULL)
+ * @return true if rotation is enabled, false otherwise (default)
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
+    const zvec_index_params_t *params);
+
+/**
  * @brief Set HNSW specific parameters
  * @param params Index parameters (must be HNSW type)
  * @param m Graph connectivity parameter
@@ -1065,8 +1089,10 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
 /**
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)
- * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value)
- * @param filters Token filter names (NULL keeps current value)
+ * @param tokenizer_name Tokenizer name: "standard", "jieba", or "whitespace"
+ *                       (NULL keeps current value)
+ * @param filters Token filter names: "lowercase" and/or "ascii_folding"
+ *                (NULL keeps current value)
  * @param extra_params Additional tokenizer parameters (NULL keeps current
  * value)
  * @return ZVEC_OK on success, error code on failure

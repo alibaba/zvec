@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <iostream>
 #include <random>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include "quantizer/rotator/rotator.h"
+#include "tests/test_util.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_holder.h"
 
@@ -820,4 +824,215 @@ TEST(IntegerReformer, Int4InitConverterWithTrainedParams) {
     EXPECT_EQ(holder->dimension() / 4, qmeta.dimension());
     EXPECT_EQ(buffer, buffer2);
   }
+}
+
+// Test FhtKac rotator (dim=200, 4-aligned, non-power-of-2 kacs_walk path)
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim200) {
+  const size_t dim = 200;
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator->rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator->unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=200) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=96, 32-aligned but not 64-aligned, kacs_walk path)
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim96) {
+  const size_t dim = 96;
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator->rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator->unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=96) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=768, real-world embedding dimension, kacs_walk)
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim768) {
+  const size_t dim = 768;
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator->rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator->unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=768) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=128, power-of-2, pure FHT path)
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim128) {
+  const size_t dim = 128;
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator->rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator->unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=128) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=97, odd, non-4-aligned, non-power-of-2 kacs_walk)
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim97) {
+  const size_t dim = 97;
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator->rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator->unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=97) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test FhtKac rotator (dim=100, non-4-aligned, non-power-of-2 kacs_walk)
+TEST(RotatorTest, RotateUnrotateFhtKac_Dim100) {
+  const size_t dim = 100;
+  std::shared_ptr<Rotator> rotator;
+  ASSERT_EQ(Rotator::create(&rotator, dim), 0);
+  EXPECT_EQ(rotator->rotator_type(), RotatorType::FhtKac);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+
+  std::vector<float> original(dim);
+  for (size_t j = 0; j < dim; ++j) original[j] = dist(gen);
+
+  std::vector<float> rotated(dim);
+  rotator->rotate(original.data(), rotated.data());
+
+  std::vector<float> recovered(dim);
+  rotator->unrotate(rotated.data(), recovered.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(recovered[j] - original[j]));
+  std::cout << "FhtKac (dim=100) max error: " << max_err << std::endl;
+  EXPECT_LT(max_err, 1e-3f);
+}
+
+// Test dump/open roundtrip: serialize then deserialize, verify rotate output
+// matches.
+TEST(RotatorTest, DumpOpenRoundtrip) {
+  const std::string test_dir = "record_rotator_dump_test_dir/";
+  zvec::test_util::RemoveTestPath(test_dir);
+
+  const size_t dim = 128;
+
+  // Build and dump original rotator
+  std::shared_ptr<Rotator> original;
+  ASSERT_EQ(Rotator::create(&original, dim), 0);
+  EXPECT_EQ(original->rotator_type(), RotatorType::FhtKac);
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(storage, nullptr);
+  zvec::ailego::Params stg_params;
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(test_dir + "rotator.index", true));
+  ASSERT_EQ(0, original->dump(storage));
+
+  // Close and reopen storage
+  storage.reset();
+
+  auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(storage2, nullptr);
+  ASSERT_EQ(0, storage2->init(stg_params));
+  ASSERT_EQ(0, storage2->open(test_dir + "rotator.index", false));
+
+  // Load rotator from storage
+  std::shared_ptr<Rotator> loaded;
+  ASSERT_EQ(0, Rotator::open(&loaded, storage2));
+
+  // Verify metadata
+  EXPECT_EQ(original->rotator_type(), loaded->rotator_type());
+  EXPECT_EQ(original->dimension(), loaded->dimension());
+  EXPECT_TRUE(loaded->initialized());
+
+  // Verify rotate output matches
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+  std::vector<float> vec(dim);
+  for (size_t j = 0; j < dim; ++j) vec[j] = dist(gen);
+
+  auto rotated_orig = original->rotate(vec.data());
+  auto rotated_loaded = loaded->rotate(vec.data());
+
+  float max_err = 0.0f;
+  for (size_t j = 0; j < dim; ++j)
+    max_err = std::max(max_err, std::abs(rotated_orig[j] - rotated_loaded[j]));
+  std::cout << "DumpOpen roundtrip max error: " << max_err << std::endl;
+  EXPECT_EQ(max_err, 0.0f);
+
+  zvec::test_util::RemoveTestPath(test_dir);
 }

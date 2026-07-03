@@ -2090,7 +2090,7 @@ Status CollectionImpl::acquire_file_lock(bool create) {
       return Status::InternalError("Can't create lock file: ", lock_file_path);
     }
   } else {
-    if (!lock_file_.open(lock_file_path.c_str(), false)) {
+    if (!lock_file_.open(lock_file_path.c_str(), options_.read_only_)) {
       return Status::InternalError("Can't open lock file: ", lock_file_path);
     }
   }

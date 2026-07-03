@@ -86,6 +86,13 @@ int IVFSearcher::load(IndexStorage::Pointer container,
   }
 
   auto reformer = centroid_index_->reformer();
+  if (reformer) {
+    //! The centroid index is loaded from the centroid sub-segment which does
+    //! not contain the rotator segment. Load the reformer state (e.g. rotation
+    //! matrix) from the main container instead.
+    ret = reformer->load(container);
+    ivf_check_error_code(ret);
+  }
   params_.set(PARAM_IVF_SEARCHER_CONVERTER_REFORMER, reformer);
 
   //! load iverted index

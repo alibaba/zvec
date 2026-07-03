@@ -36,6 +36,7 @@ from zvec import (
     IndexType,
     MetricType,
     QuantizeType,
+    QuantizerParam,
     DataType,
     VectorSchema,
 )
@@ -452,3 +453,88 @@ class TestVectorQueryDeprecated:
             warnings.simplefilter("always")
             vq = VectorQuery(field_name="embedding", id="doc123")
         assert isinstance(vq, Query)
+
+
+# ----------------------------
+# QuantizerParam Test Case
+# ----------------------------
+
+
+class TestQuantizerParam:
+    def test_default(self):
+        qp = QuantizerParam()
+        assert qp.enable_rotate is False
+
+    def test_enable_rotate_true(self):
+        qp = QuantizerParam(enable_rotate=True)
+        assert qp.enable_rotate is True
+
+    def test_enable_rotate_false(self):
+        qp = QuantizerParam(enable_rotate=False)
+        assert qp.enable_rotate is False
+
+    def test_equality(self):
+        qp1 = QuantizerParam(enable_rotate=True)
+        qp2 = QuantizerParam(enable_rotate=True)
+        qp3 = QuantizerParam(enable_rotate=False)
+        assert qp1 == qp2
+        assert qp1 != qp3
+
+    def test_to_dict(self):
+        qp = QuantizerParam(enable_rotate=True)
+        d = qp.to_dict()
+        assert isinstance(d, dict)
+        assert d.get("enable_rotate") is True
+
+    def test_repr(self):
+        qp = QuantizerParam(enable_rotate=True)
+        r = repr(qp)
+        assert "enable_rotate" in r or "QuantizerParam" in r
+
+    def test_pickle_roundtrip(self):
+        import pickle
+
+        qp = QuantizerParam(enable_rotate=True)
+        data = pickle.dumps(qp)
+        qp2 = pickle.loads(data)
+        assert qp2.enable_rotate is True
+        assert qp == qp2
+
+
+# ----------------------------
+# HnswIndexParam with QuantizerParam
+# ----------------------------
+
+
+class TestHnswIndexParamQuantizer:
+    def test_default_quantizer_param(self):
+        param = HnswIndexParam()
+        assert param.quantizer_param is not None
+        assert param.quantizer_param.enable_rotate is False
+
+    def test_with_quantizer_param(self):
+        qp = QuantizerParam(enable_rotate=True)
+        param = HnswIndexParam(
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.INT8,
+            quantizer_param=qp,
+        )
+        assert param.quantizer_param.enable_rotate is True
+        assert param.quantize_type == QuantizeType.INT8
+
+
+# ----------------------------
+# FlatIndexParam with QuantizerParam
+# ----------------------------
+
+
+class TestFlatIndexParamQuantizer:
+    def test_with_quantizer_param(self):
+        qp = QuantizerParam(enable_rotate=True)
+        param = FlatIndexParam(
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.INT8,
+            quantizer_param=qp,
+        )
+        assert param.quantizer_param.enable_rotate is True
+        assert param.quantize_type == QuantizeType.INT8

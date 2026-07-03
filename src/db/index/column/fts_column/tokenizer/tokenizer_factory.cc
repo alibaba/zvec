@@ -15,6 +15,7 @@
 #include "tokenizer_factory.h"
 #include <zvec/ailego/encoding/json/mod_json_plus.h>
 #include <zvec/ailego/logger/logger.h>
+#include "ascii_folding_token_filter.h"
 #include "jieba_tokenizer.h"
 #include "standard_tokenizer.h"
 #include "whitespace_tokenizer.h"
@@ -96,6 +97,8 @@ TokenizerPtr TokenizerFactory::create_tokenizer(
 TokenFilterPtr TokenizerFactory::create_filter(const std::string &filter_name) {
   if (filter_name == "lowercase") {
     return std::make_shared<LowercaseTokenFilter>();
+  } else if (filter_name == "ascii_folding") {
+    return std::make_shared<AsciiFoldingTokenFilter>();
   }
   LOG_ERROR("[TokenizerFactory] unknown filter name: %s", filter_name.c_str());
   return nullptr;

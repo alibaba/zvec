@@ -38,7 +38,7 @@ jobs:
           max-size: 150M
 
       - name: Cache host protoc build
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build_host
           key: macos-host-protoc-${{ hashFiles('thirdparty/protobuf/**', 'CMakeLists.txt') }}

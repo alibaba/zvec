@@ -18,6 +18,7 @@
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
+#include "rotator/rotator.h"
 #include "record_quantizer.h"
 #include "../metric/metric_params.h"
 
@@ -378,6 +379,7 @@ class IntegerStreamingConverter : public IndexConverter {
     meta_ = index_meta;
     params.get(INTEGER_STREAMING_CONVERTER_ENABLE_NORMALIZE,
                &enable_normalize_);
+    params.get(INTEGER_STREAMING_CONVERTER_ENABLE_ROTATE, &enable_rotate_);
     ailego::Params reformer_params;
     if (enable_normalize_) {
       reformer_params.set(INTEGER_STREAMING_REFORMER_ENABLE_NORMALIZE, true);
@@ -390,6 +392,17 @@ class IntegerStreamingConverter : public IndexConverter {
       reformer_params.set(INTEGER_STREAMING_REFORMER_IS_EUCLIDEAN, true);
     }
 
+    if (enable_rotate_) {
+      int ret = Rotator::create(&rotator_, index_meta.dimension());
+      if (ret != 0) {
+        LOG_ERROR(
+            "IntegerStreamingConverter: create rotator failed, ret=%d, dim=%u",
+            ret, index_meta.dimension());
+        return ret;
+      }
+      LOG_DEBUG("IntegerStreamingConverter: rotation enabled, dim=%zu",
+                static_cast<size_t>(index_meta.dimension()));
+    }
 
     if (data_type_ == IndexMeta::DataType::DT_INT8) {
       meta_.set_converter("Int8StreamingConverter", 0, params);
@@ -433,12 +446,30 @@ class IntegerStreamingConverter : public IndexConverter {
 
     *stats_.mutable_transformed_count() += holder->count();
     holder_ = std::make_shared<IntegerStreamingConverterHolder>(
-        holder, data_type_, enable_normalize_, is_euclidean_);
+        holder, data_type_, enable_normalize_, is_euclidean_, rotator_);
     return 0;
   }
 
-  //! Dump index into storage
-  int dump(const IndexDumper::Pointer & /*dumper*/) override {
+  //! Dump index into storage (writes rotator segment if rotate enabled)
+  int dump(const IndexDumper::Pointer &dumper) override {
+    if (enable_rotate_ && rotator_) {
+      return rotator_->dump(dumper);
+    }
+    return 0;
+  }
+
+  //! Dump converter state to IndexStorage for streaming build
+  int dump_to_storage(const IndexStorage::Pointer &storage) override {
+    if (enable_rotate_ && rotator_) {
+      int ret = rotator_->dump(storage);
+      if (ret != 0) {
+        LOG_ERROR(
+            "IntegerStreamingConverter: dump rotator to storage failed, ret=%d",
+            ret);
+        return ret;
+      }
+      LOG_DEBUG("IntegerStreamingConverter: rotator dumped to storage");
+    }
     return 0;
   }
 
@@ -468,7 +499,8 @@ class IntegerStreamingConverter : public IndexConverter {
                IndexHolder::Iterator::Pointer &&iter)
           : owner_(owner),
             buffer_(owner->element_size(), 0),
-            normalize_buffer_(owner->front_->element_size(), 0),
+            normalize_buffer_(owner->dimension_ * sizeof(float), 0),
+            rotate_buffer_(owner->dimension_ * sizeof(float), 0),
             front_iter_(std::move(iter)) {
         this->encode_record();
       }
@@ -503,18 +535,24 @@ class IntegerStreamingConverter : public IndexConverter {
         if (front_iter_->is_valid()) {
           const float *vec =
               reinterpret_cast<const float *>(front_iter_->data());
+          size_t dim = owner_->dimension_;
+          if (owner_->rotator_) {
+            float *rotate_buf =
+                reinterpret_cast<float *>(rotate_buffer_.data());
+            owner_->rotator_->rotate(vec, rotate_buf);
+            vec = rotate_buf;
+          }
           if (owner_->enable_normalize_) {
             float norm = 0.0;
-            memcpy((void *)normalize_buffer_.data(), vec,
-                   owner_->front_->element_size());
+            memcpy((void *)normalize_buffer_.data(), vec, dim * sizeof(float));
             ailego::Normalizer<float>::L2((float *)normalize_buffer_.data(),
-                                          owner_->dimension_, &norm);
+                                          dim, &norm);
             vec = (float *)normalize_buffer_.data();
           }
 
-          RecordQuantizer::quantize_record(
-              vec, owner_->dimension_, owner_->data_type(),
-              owner_->is_euclidean_, buffer_.data());
+          RecordQuantizer::quantize_record(vec, dim, owner_->data_type(),
+                                           owner_->is_euclidean_,
+                                           buffer_.data());
         }
       }
 
@@ -522,18 +560,21 @@ class IntegerStreamingConverter : public IndexConverter {
       const IntegerStreamingConverterHolder *owner_{nullptr};
       std::vector<uint8_t> buffer_{};
       std::string normalize_buffer_{};
+      std::string rotate_buffer_{};
       IndexHolder::Iterator::Pointer front_iter_{};
     };
 
     //! Constructor
     IntegerStreamingConverterHolder(IndexHolder::Pointer front,
                                     IndexMeta::DataType tp,
-                                    bool enable_normalize, bool is_euclidean)
+                                    bool enable_normalize, bool is_euclidean,
+                                    std::shared_ptr<Rotator> rotator)
         : front_(std::move(front)),
           data_type_(tp),
           dimension_(front_->dimension()),
           enable_normalize_(enable_normalize),
-          is_euclidean_(is_euclidean) {}
+          is_euclidean_(is_euclidean),
+          rotator_(std::move(rotator)) {}
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
     size_t count(void) const override {
@@ -576,6 +617,7 @@ class IntegerStreamingConverter : public IndexConverter {
     uint32_t dimension_{0};
     bool enable_normalize_{false};
     bool is_euclidean_{false};
+    std::shared_ptr<Rotator> rotator_{};
   };
 
   static size_t ExtraDimension(IndexMeta::DataType type) {
@@ -593,7 +635,9 @@ class IntegerStreamingConverter : public IndexConverter {
   IndexHolder::Pointer holder_{};
   IndexMeta::DataType data_type_{};
   bool enable_normalize_{false};
+  bool enable_rotate_{false};
   bool is_euclidean_{false};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(

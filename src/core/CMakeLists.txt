@@ -66,6 +66,7 @@ endif()
 # (real on Linux x86_64, stub on other platforms). Including them here causes
 # duplicate symbols and missing -laio when test binaries link both zvec_core
 # (via zvec) and core_knn_diskann.
+
 list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/diskann/.*")
 if(NOT DISKANN_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/diskann_index\\.cc")

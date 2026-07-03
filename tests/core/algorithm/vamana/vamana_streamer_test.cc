@@ -785,6 +785,105 @@ TEST_F(VamanaStreamerTest, TestConcurrentBuild) {
   ASSERT_GT(result.size(), 0UL);
 }
 
+// Test Vamana + INT8 quantization + rotation end-to-end
+TEST_F(VamanaStreamerTest, TestInt8WithRotate) {
+  constexpr size_t kTestDim = 128;
+  constexpr size_t kCnt = 2000U;
+  constexpr size_t kTopk = 10;
+
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("VamanaStreamer");
+  ASSERT_NE(nullptr, streamer);
+
+  Params params;
+  params.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 32U);
+  params.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 100U);
+  params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.2f);
+  params.set(PARAM_VAMANA_STREAMER_EF, 64U);
+  params.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 500U);
+
+  IndexMeta index_meta_raw(IndexMeta::DataType::DT_FP32, kTestDim);
+  index_meta_raw.set_metric("SquaredEuclidean", 0, Params());
+
+  // Create INT8 converter with rotation enabled
+  Params converter_params;
+  converter_params.set("integer_streaming.converter.enable_rotate", true);
+  auto converter = IndexFactory::CreateConverter("Int8StreamingConverter");
+  ASSERT_NE(nullptr, converter);
+  ASSERT_EQ(0, converter->init(index_meta_raw, converter_params));
+
+  IndexMeta index_meta = converter->meta();
+
+  auto reformer = IndexFactory::CreateReformer(index_meta.reformer_name());
+  ASSERT_NE(nullptr, reformer);
+  ASSERT_EQ(0, reformer->init(index_meta.reformer_params()));
+
+  Params stg_params;
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "TestInt8WithRotate.index", true));
+  ASSERT_EQ(0, streamer->init(index_meta, params));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  // Add 2000 vectors
+  auto ctx = streamer->create_context();
+  ASSERT_TRUE(!!ctx);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, kTestDim);
+
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  for (size_t i = 0; i < kCnt; i++) {
+    NumericalVector<float> vec(kTestDim);
+    for (size_t j = 0; j < kTestDim; ++j) vec[j] = dist(gen);
+
+    std::string new_vec;
+    IndexQueryMeta new_meta;
+    ASSERT_EQ(0, reformer->convert(vec.data(), qmeta, &new_vec, &new_meta));
+    ASSERT_EQ(0, streamer->add_impl(i, new_vec.data(), new_meta, ctx));
+  }
+
+  streamer->flush(0UL);
+  streamer.reset();
+  storage.reset();
+
+  // Reopen: reformer should auto-detect rotator from storage
+  auto storage2 = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage2);
+  ASSERT_EQ(0, storage2->init(stg_params));
+  ASSERT_EQ(0, storage2->open(dir_ + "TestInt8WithRotate.index", false));
+
+  auto streamer2 = IndexFactory::CreateStreamer("VamanaStreamer");
+  ASSERT_NE(nullptr, streamer2);
+  ASSERT_EQ(0, streamer2->init(index_meta, params));
+  ASSERT_EQ(0, streamer2->open(storage2));
+
+  auto reformer2 = IndexFactory::CreateReformer(index_meta.reformer_name());
+  ASSERT_NE(nullptr, reformer2);
+  ASSERT_EQ(0, reformer2->init(index_meta.reformer_params()));
+  ASSERT_EQ(0, reformer2->load(storage2));
+
+  // Search: verify knn results are non-empty
+  auto knnCtx = streamer2->create_context();
+  knnCtx->set_topk(kTopk);
+  auto linearCtx = streamer2->create_context();
+  linearCtx->set_topk(kTopk);
+
+  NumericalVector<float> query(kTestDim);
+  for (size_t j = 0; j < kTestDim; ++j) query[j] = dist(gen);
+
+  std::string new_query;
+  IndexQueryMeta new_qmeta;
+  ASSERT_EQ(0,
+            reformer2->transform(query.data(), qmeta, &new_query, &new_qmeta));
+  ASSERT_EQ(0, streamer2->search_impl(new_query.data(), new_qmeta, knnCtx));
+  ASSERT_EQ(0,
+            streamer2->search_bf_impl(new_query.data(), new_qmeta, linearCtx));
+
+  EXPECT_EQ(kTopk, knnCtx->result().size());
+  EXPECT_EQ(kTopk, linearCtx->result().size());
+}
+
 }  // namespace core
 }  // namespace zvec
 
