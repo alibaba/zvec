@@ -1,0 +1,133 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "avx512/pq/pq_distance.h"
+
+#include <immintrin.h>
+
+namespace zvec::turbo::avx512 {
+
+namespace {
+
+// Horizontal sum of 16 floats in a __m512 register.
+inline float horizontal_sum_avx512(__m512 v) {
+  // Use _mm512_reduce_add_ps which is available in AVX512F
+  return _mm512_reduce_add_ps(v);
+}
+
+}  // namespace
+
+void pq_adc_int8_distance_avx512(const uint8_t *pq_code, const float *lut,
+                                  size_t num_subquantizers, float *out) {
+  constexpr int kNumCentroids = 256;
+  constexpr int kChunkSize = 16;  // AVX512 processes 16 floats at once
+
+  __m512 acc = _mm512_setzero_ps();
+
+  // Base offsets: [0, 256, 512, ..., 15*256] = m * 256 for m = 0..15
+  const __m512i base_offsets = _mm512_setr_epi32(
+      0 * kNumCentroids, 1 * kNumCentroids, 2 * kNumCentroids,
+      3 * kNumCentroids, 4 * kNumCentroids, 5 * kNumCentroids,
+      6 * kNumCentroids, 7 * kNumCentroids, 8 * kNumCentroids,
+      9 * kNumCentroids, 10 * kNumCentroids, 11 * kNumCentroids,
+      12 * kNumCentroids, 13 * kNumCentroids, 14 * kNumCentroids,
+      15 * kNumCentroids);
+
+  size_t m = 0;
+
+  // Main loop: process 16 subquantizers per iteration
+  for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
+    // Load 16 uint8 codes and zero-extend to int32
+    // Use unaligned load of 16 bytes
+    __m128i codes_16x8 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(pq_code + m));
+    __m512i codes_16x32 = _mm512_cvtepu8_epi32(codes_16x8);
+
+    // Add base offsets: indices[m] = m * 256 + code[m]
+    __m512i indices = _mm512_add_epi32(codes_16x32, base_offsets);
+
+    // Gather 16 floats from lut using computed indices
+    __m512 gathered =
+        _mm512_i32gather_ps(indices, lut + m * kNumCentroids, 4);
+
+    acc = _mm512_add_ps(acc, gathered);
+  }
+
+  float sum = horizontal_sum_avx512(acc);
+
+  // Scalar leftover: process remaining subquantizers
+  for (; m < num_subquantizers; ++m) {
+    sum += lut[m * kNumCentroids + pq_code[m]];
+  }
+
+  *out = sum;
+}
+
+void pq_sdc_int8_distance_avx512(const uint8_t *a, const uint8_t *b,
+                                  const float *dist_table,
+                                  size_t num_subquantizers, float *out) {
+  constexpr int kNumCentroids = 256;
+  constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
+  constexpr int kChunkSize = 16;
+
+  __m512 acc = _mm512_setzero_ps();
+
+  // Base offsets for SDC: m * 65536
+  const __m512i base_offsets = _mm512_setr_epi32(
+      0 * kTablePerSub, 1 * kTablePerSub, 2 * kTablePerSub, 3 * kTablePerSub,
+      4 * kTablePerSub, 5 * kTablePerSub, 6 * kTablePerSub, 7 * kTablePerSub,
+      8 * kTablePerSub, 9 * kTablePerSub, 10 * kTablePerSub,
+      11 * kTablePerSub, 12 * kTablePerSub, 13 * kTablePerSub,
+      14 * kTablePerSub, 15 * kTablePerSub);
+
+  // Multiplier for a[m] * 256
+  const __m512i a_multiplier = _mm512_set1_epi32(kNumCentroids);
+
+  size_t m = 0;
+
+  // Main loop: process 16 subquantizers per iteration
+  for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
+    // Load a[m..m+15] and b[m..m+15], zero-extend to int32
+    __m128i a_16x8 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + m));
+    __m128i b_16x8 =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + m));
+    __m512i a_16x32 = _mm512_cvtepu8_epi32(a_16x8);
+    __m512i b_16x32 = _mm512_cvtepu8_epi32(b_16x8);
+
+    // Compute index: a[m] * 256 + b[m] + m * 65536
+    __m512i a_shifted = _mm512_mullo_epi32(a_16x32, a_multiplier);
+    __m512i indices = _mm512_add_epi32(a_shifted, b_16x32);
+    indices = _mm512_add_epi32(indices, base_offsets);
+
+    // Gather 16 floats from dist_table
+    __m512 gathered = _mm512_i32gather_ps(indices, dist_table, 4);
+
+    acc = _mm512_add_ps(acc, gathered);
+  }
+
+  float sum = horizontal_sum_avx512(acc);
+
+  // Scalar leftover
+  for (; m < num_subquantizers; ++m) {
+    size_t idx = m * kTablePerSub +
+                 static_cast<size_t>(a[m]) * kNumCentroids +
+                 static_cast<size_t>(b[m]);
+    sum += dist_table[idx];
+  }
+
+  *out = sum;
+}
+
+}  // namespace zvec::turbo::avx512

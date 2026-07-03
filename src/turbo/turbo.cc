@@ -29,9 +29,11 @@
 #endif
 #if defined(__AVX2__)
 #include "avx2/fht/fht.h"
+#include "avx2/pq/pq_distance.h"
 #endif
 #if defined(__AVX512F__)
 #include "avx512/fht/fht.h"
+#include "avx512/pq/pq_distance.h"
 #endif
 
 namespace zvec::turbo {
@@ -200,13 +202,26 @@ FhtKernels get_fht_kernels() {
 
 PqKernels get_pq_kernels(QuantizeType quantize_type,
                           CpuArchType cpu_arch_type) {
-  (void)cpu_arch_type;  // reserved for future SIMD dispatch
+  (void)cpu_arch_type;  // currently unused, reserved for future use
   PqKernels k{};
   if (quantize_type == QuantizeType::kPQ) {
-    // scalar is the only implementation for now; future SIMD paths gate on
-    // cpu_arch_type here (same pattern as get_distance_func).
+    // Default: scalar fallback
     k.adc_distance = scalar::pq_adc_int8_distance;
     k.sdc_distance = scalar::pq_sdc_int8_distance;
+
+#if defined(__AVX512F__)
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+      k.adc_distance = avx512::pq_adc_int8_distance_avx512;
+      k.sdc_distance = avx512::pq_sdc_int8_distance_avx512;
+      return k;
+    }
+#endif
+#if defined(__AVX2__)
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+      k.adc_distance = avx2::pq_adc_int8_distance_avx2;
+      k.sdc_distance = avx2::pq_sdc_int8_distance_avx2;
+    }
+#endif
   }
   return k;
 }

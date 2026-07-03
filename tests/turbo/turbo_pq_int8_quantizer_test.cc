@@ -15,12 +15,21 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <random>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
+#include "distance/scalar/pq_quantizer_int8/pq_distance.h"
 #include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
 #include "zvec/core/framework/index_factory.h"
+
+#if defined(__AVX2__)
+#include "distance/avx2/pq/pq_distance.h"
+#endif
+#if defined(__AVX512F__)
+#include "distance/avx512/pq/pq_distance.h"
+#endif
 
 using namespace zvec;
 using namespace zvec::core;
@@ -285,4 +294,169 @@ TEST(PqInt8Quantizer, SerializeDeserialize) {
   float d1 = quantizer->calc_distance_dp_dp(code1.data(), code3.data());
   float d2 = q2->calc_distance_dp_dp(code2.data(), code4.data());
   EXPECT_NEAR(d1, d2, 1e-6f);
+}
+
+// ---------------------------------------------------------------------------
+// SIMD Consistency Tests
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Helper to generate random uint8 codes
+void fill_random_codes(uint8_t *codes, size_t len, std::mt19937 &gen) {
+  std::uniform_int_distribution<int> dist(0, 255);
+  for (size_t i = 0; i < len; ++i) {
+    codes[i] = static_cast<uint8_t>(dist(gen));
+  }
+}
+
+// Helper to generate random LUT (ADC)
+void fill_random_lut(float *lut, size_t num_subquantizers,
+                     std::mt19937 &gen) {
+  constexpr size_t kNumCentroids = 256;
+  std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+  for (size_t m = 0; m < num_subquantizers; ++m) {
+    for (size_t c = 0; c < kNumCentroids; ++c) {
+      lut[m * kNumCentroids + c] = dist(gen);
+    }
+  }
+}
+
+// Helper to generate random dist_table (SDC)
+void fill_random_sdc_table(float *table, size_t num_subquantizers,
+                           std::mt19937 &gen) {
+  constexpr size_t kTablePerSub = 256 * 256;
+  std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+  for (size_t m = 0; m < num_subquantizers; ++m) {
+    for (size_t i = 0; i < kTablePerSub; ++i) {
+      table[m * kTablePerSub + i] = dist(gen);
+    }
+  }
+}
+
+}  // anonymous namespace
+
+// Test ADC SIMD consistency across multiple M values
+TEST(PqInt8SimdConsistency, AdcDistance) {
+  std::mt19937 gen(2024);
+
+  // Test various M values including boundary cases
+  // M=4,8: exact multiples of AVX2 chunk (8)
+  // M=12: not multiple of 8, has leftover
+  // M=16: exact multiple of AVX512 chunk (16)
+  for (size_t num_sq : {4, 8, 12, 16}) {
+    constexpr size_t kNumCentroids = 256;
+    std::vector<uint8_t> codes(num_sq);
+    std::vector<float> lut(num_sq * kNumCentroids);
+
+    fill_random_codes(codes.data(), num_sq, gen);
+    fill_random_lut(lut.data(), num_sq, gen);
+
+    // Compute reference (scalar)
+    float scalar_result = 0.0f;
+    zvec::turbo::scalar::pq_adc_int8_distance(codes.data(), lut.data(),
+                                               num_sq, &scalar_result);
+
+#if defined(__AVX2__)
+    {
+      float avx2_result = 0.0f;
+      zvec::turbo::avx2::pq_adc_int8_distance_avx2(codes.data(), lut.data(),
+                                                    num_sq, &avx2_result);
+      EXPECT_NEAR(scalar_result, avx2_result, 1e-5f)
+          << "AVX2 ADC mismatch for M=" << num_sq;
+    }
+#endif
+
+#if defined(__AVX512F__)
+    {
+      float avx512_result = 0.0f;
+      zvec::turbo::avx512::pq_adc_int8_distance_avx512(codes.data(),
+                                                        lut.data(), num_sq,
+                                                        &avx512_result);
+      EXPECT_NEAR(scalar_result, avx512_result, 1e-5f)
+          << "AVX512 ADC mismatch for M=" << num_sq;
+    }
+#endif
+  }
+}
+
+// Test SDC SIMD consistency across multiple M values
+TEST(PqInt8SimdConsistency, SdcDistance) {
+  std::mt19937 gen(2025);
+
+  for (size_t num_sq : {4, 8, 12, 16}) {
+    constexpr size_t kTablePerSub = 256 * 256;
+    std::vector<uint8_t> codes_a(num_sq);
+    std::vector<uint8_t> codes_b(num_sq);
+    std::vector<float> dist_table(num_sq * kTablePerSub);
+
+    fill_random_codes(codes_a.data(), num_sq, gen);
+    fill_random_codes(codes_b.data(), num_sq, gen);
+    fill_random_sdc_table(dist_table.data(), num_sq, gen);
+
+    // Compute reference (scalar)
+    float scalar_result = 0.0f;
+    zvec::turbo::scalar::pq_sdc_int8_distance(codes_a.data(), codes_b.data(),
+                                               dist_table.data(), num_sq,
+                                               &scalar_result);
+
+#if defined(__AVX2__)
+    {
+      float avx2_result = 0.0f;
+      zvec::turbo::avx2::pq_sdc_int8_distance_avx2(codes_a.data(),
+                                                    codes_b.data(),
+                                                    dist_table.data(), num_sq,
+                                                    &avx2_result);
+      EXPECT_NEAR(scalar_result, avx2_result, 1e-5f)
+          << "AVX2 SDC mismatch for M=" << num_sq;
+    }
+#endif
+
+#if defined(__AVX512F__)
+    {
+      float avx512_result = 0.0f;
+      zvec::turbo::avx512::pq_sdc_int8_distance_avx512(codes_a.data(),
+                                                        codes_b.data(),
+                                                        dist_table.data(),
+                                                        num_sq, &avx512_result);
+      EXPECT_NEAR(scalar_result, avx512_result, 1e-5f)
+          << "AVX512 SDC mismatch for M=" << num_sq;
+    }
+#endif
+  }
+}
+
+// Test edge case: M=1 (minimum valid value)
+TEST(PqInt8SimdConsistency, AdcDistanceM1) {
+  std::mt19937 gen(123);
+  constexpr size_t kNumCentroids = 256;
+  constexpr size_t num_sq = 1;
+
+  std::vector<uint8_t> codes(num_sq);
+  std::vector<float> lut(num_sq * kNumCentroids);
+
+  fill_random_codes(codes.data(), num_sq, gen);
+  fill_random_lut(lut.data(), num_sq, gen);
+
+  float scalar_result = 0.0f;
+  zvec::turbo::scalar::pq_adc_int8_distance(codes.data(), lut.data(), num_sq,
+                                             &scalar_result);
+
+#if defined(__AVX2__)
+  {
+    float avx2_result = 0.0f;
+    zvec::turbo::avx2::pq_adc_int8_distance_avx2(codes.data(), lut.data(),
+                                                  num_sq, &avx2_result);
+    EXPECT_NEAR(scalar_result, avx2_result, 1e-5f);
+  }
+#endif
+
+#if defined(__AVX512F__)
+  {
+    float avx512_result = 0.0f;
+    zvec::turbo::avx512::pq_adc_int8_distance_avx512(codes.data(), lut.data(),
+                                                      num_sq, &avx512_result);
+    EXPECT_NEAR(scalar_result, avx512_result, 1e-5f);
+  }
+#endif
 }
