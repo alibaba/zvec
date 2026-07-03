@@ -211,10 +211,10 @@ TEST_F(CollectionTest, Feature_OpenReadOnly_WithReadOnlyLockFile) {
 
   // Use std::filesystem to set read-only permissions (cross-platform)
   std::error_code ec;
-  fs::permissions(lock_path,
-                  fs::perms::owner_read | fs::perms::group_read |
-                      fs::perms::others_read,
-                  fs::perm_options::replace, ec);
+  fs::permissions(
+      lock_path,
+      fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read,
+      fs::perm_options::replace, ec);
   ASSERT_FALSE(ec) << "Failed to set read-only permissions: " << ec.message();
 
   // Open with read_only=true should succeed even with read-only LOCK file
