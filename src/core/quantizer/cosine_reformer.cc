@@ -17,6 +17,7 @@
 #include <ailego/math/normalizer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
+#include "rotator/rotator.h"
 #include "record_quantizer.h"
 
 namespace zvec {
@@ -53,7 +54,21 @@ class CosineReformer : public IndexReformer {
   }
 
   //! Load index from container
-  int load(IndexStorage::Pointer) override {
+  //! Auto-detects rotation by checking for rotator segment in storage.
+  int load(IndexStorage::Pointer storage) override {
+    if (enable_rotate_ || storage->get(ROTATOR_SEG_ID)) {
+      int ret = Rotator::open(&rotator_, storage);
+      if (ret != 0) {
+        if (enable_rotate_) {
+          LOG_ERROR("CosineReformer: load rotator failed, ret=%d", ret);
+          return ret;
+        }
+      } else {
+        enable_rotate_ = true;
+        LOG_DEBUG("CosineReformer: rotator auto-loaded, dim=%zu",
+                  rotator_->dimension());
+      }
+    }
     return 0;
   }
 
@@ -83,28 +98,35 @@ class CosineReformer : public IndexReformer {
       ometa->set_meta(dst_type_, qmeta.dimension() + ExtraDimension(dst_type_));
       out->resize(ometa->element_size());
 
-      float norm = 0.0f;
       size_t origin_dimension = qmeta.dimension();
+      const float *vec = reinterpret_cast<const float *>(query);
+      float norm = 0.0f;
+
+      // Fast path: no rotation — matches main branch behavior exactly
       std::string normalized_buffer(reinterpret_cast<const char *>(query),
                                     qmeta.element_size());
-
       float *buf = reinterpret_cast<float *>(&normalized_buffer[0]);
 
+      if (enable_rotate_ && rotator_) {
+        rotator_->rotate(vec, buf);
+      }
       ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
+      vec = buf;
 
       ::memcpy(reinterpret_cast<uint8_t *>(&(*out)[0]) + ometa->element_size() -
                    NORM_SIZE,
                &norm, NORM_SIZE);
 
       if (dst_type_ == IndexMeta::DataType::DT_FP32) {
-        ::memcpy(reinterpret_cast<uint8_t *>(&(*out)[0]), buf,
+        ::memcpy(reinterpret_cast<uint8_t *>(&(*out)[0]), vec,
                  ometa->element_size() - NORM_SIZE);
       } else if (dst_type_ == IndexMeta::DataType::DT_FP16) {
-        RecordQuantizer::quantize_record(buf, origin_dimension, dst_type_,
-                                         false, &(*out)[0]);
+        RecordQuantizer::quantize_record(const_cast<float *>(vec),
+                                         qmeta.dimension(), dst_type_, false,
+                                         &(*out)[0]);
       } else if (dst_type_ == IndexMeta::DataType::DT_INT4 ||
                  dst_type_ == IndexMeta::DataType::DT_INT8) {
-        RecordQuantizer::quantize_record(buf, qmeta.dimension(), dst_type_,
+        RecordQuantizer::quantize_record(vec, qmeta.dimension(), dst_type_,
                                          false, &(*out)[0]);
       }
     } else if (type == IndexMeta::DataType::DT_FP16) {
@@ -186,6 +208,10 @@ class CosineReformer : public IndexReformer {
                  NORM_SIZE,
              NORM_SIZE);
 
+    // Rotation only applies to INT8/INT4 targets (guarded at converter init).
+    // For FP32/FP16 stored types, rotator_ is always null.
+    const bool need_inv_rotate = (enable_rotate_ && rotator_);
+
     if (type == IndexMeta::DataType::DT_FP32) {
       if (dst_type_ != IndexMeta::DataType::DT_FP32) {
         return IndexError_Unsupported;
@@ -195,6 +221,9 @@ class CosineReformer : public IndexReformer {
       const float *in_buf = reinterpret_cast<const float *>(in);
 
       this->denormalize(in_buf, out_buf, qmeta, norm);
+      if (need_inv_rotate) {
+        rotator_->unrotate(out_buf, out_buf);
+      }
     } else if (type == IndexMeta::DataType::DT_FP16) {
       if (dst_type_ != IndexMeta::DataType::DT_FP16) {
         return IndexError_Unsupported;
@@ -210,6 +239,7 @@ class CosineReformer : public IndexReformer {
         RecordQuantizer::unquantize_record(in, dimension, dst_type_, out_buf);
 
         this->denormalize(out_buf, out_buf, qmeta, norm);
+        // FP16 type path: no rotation was applied, skip inverse
       } else {
         ailego::Float16 *out_buf =
             reinterpret_cast<ailego::Float16 *>(&(*out)[0]);
@@ -228,6 +258,9 @@ class CosineReformer : public IndexReformer {
       RecordQuantizer::unquantize_record(in, dimension, dst_type_, out_buf);
 
       this->denormalize(out_buf, out_buf, qmeta, norm);
+      if (need_inv_rotate) {
+        rotator_->unrotate(out_buf, out_buf);
+      }
     }
 
     return 0;
@@ -262,6 +295,8 @@ class CosineReformer : public IndexReformer {
   //! Members
   IndexMeta::DataType original_type_{IndexMeta::DataType::DT_UNDEFINED};
   IndexMeta::DataType dst_type_{IndexMeta::DataType::DT_UNDEFINED};
+  bool enable_rotate_{false};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineNormalizeReformer, CosineReformer,

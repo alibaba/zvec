@@ -13,18 +13,37 @@
 // limitations under the License.
 
 #include "token_filter.h"
-#include <algorithm>
-#include <cctype>
+#include <utf8proc.h>
+#include <string>
 
 namespace zvec::fts {
 
 std::vector<Token> LowercaseTokenFilter::filter(
     std::vector<Token> tokens) const {
   for (auto &token : tokens) {
-    std::transform(token.text.begin(), token.text.end(), token.text.begin(),
-                   [](unsigned char character) {
-                     return static_cast<char>(std::tolower(character));
-                   });
+    std::string result;
+    result.reserve(token.text.size());
+    const auto *str =
+        reinterpret_cast<const utf8proc_uint8_t *>(token.text.data());
+    auto len = static_cast<utf8proc_ssize_t>(token.text.size());
+    utf8proc_ssize_t pos = 0;
+    while (pos < len) {
+      utf8proc_int32_t codepoint;
+      utf8proc_ssize_t bytes =
+          utf8proc_iterate(str + pos, len - pos, &codepoint);
+      if (bytes < 1) {
+        result.push_back(token.text[pos]);
+        ++pos;
+        continue;
+      }
+      utf8proc_int32_t lower = utf8proc_tolower(codepoint);
+      utf8proc_uint8_t buf[4];
+      utf8proc_ssize_t written = utf8proc_encode_char(lower, buf);
+      result.append(reinterpret_cast<const char *>(buf),
+                    static_cast<size_t>(written));
+      pos += bytes;
+    }
+    token.text = std::move(result);
   }
   return tokens;
 }

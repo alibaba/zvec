@@ -18,6 +18,7 @@
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
+#include "rotator/rotator.h"
 #include "record_quantizer.h"
 #include "../metric/metric_params.h"
 
@@ -53,6 +54,10 @@ class CosineConverterHolder : public IndexHolder {
             type_ == IndexMeta::DataType::DT_INT4 ||
             type_ == IndexMeta::DataType::DT_INT8) {
           buffer_.resize(element_size, 0);
+        }
+
+        if (owner_->rotator_) {
+          rotate_buffer_.resize(owner_->rotator_->dimension());
         }
       }
 
@@ -116,17 +121,26 @@ class CosineConverterHolder : public IndexHolder {
                  original_element_size);
 
         float *buf = reinterpret_cast<float *>(&normalize_buffer_[0]);
+        const float *vec = buf;
+
+        if (owner_->rotator_) {
+          owner_->rotator_->rotate(vec, rotate_buffer_.data());
+          vec = rotate_buffer_.data();
+        }
 
         float norm = 0.0f;
-        ailego::Normalizer<float>::L2(buf, original_dimension_, &norm);
+        ailego::Normalizer<float>::L2(const_cast<float *>(vec),
+                                      original_dimension_, &norm);
 
         if (type_ == IndexMeta::DataType::DT_FP32) {
+          ::memcpy(reinterpret_cast<float *>(&normalize_buffer_[0]), vec,
+                   original_dimension_ * sizeof(float));
           ::memcpy(reinterpret_cast<float *>(&normalize_buffer_[0]) +
                        original_dimension_,
                    &norm, NORM_SIZE);
         } else if (type_ == IndexMeta::DataType::DT_FP16) {
           ailego::FloatHelper::ToFP16(
-              buf, original_dimension_,
+              const_cast<float *>(vec), original_dimension_,
               reinterpret_cast<uint16_t *>(&buffer_[0]));
 
           ::memcpy(
@@ -134,9 +148,8 @@ class CosineConverterHolder : public IndexHolder {
               &norm, NORM_SIZE);
         } else if (type_ == IndexMeta::DataType::DT_INT4 ||
                    type_ == IndexMeta::DataType::DT_INT8) {
-          RecordQuantizer::quantize_record(
-              reinterpret_cast<const float *>(normalize_buffer_.data()),
-              original_dimension_, type_, false, &buffer_[0]);
+          RecordQuantizer::quantize_record(vec, original_dimension_, type_,
+                                           false, &buffer_[0]);
 
           ::memcpy(reinterpret_cast<uint8_t *>(&buffer_[0]) + element_size -
                        NORM_SIZE,
@@ -149,6 +162,7 @@ class CosineConverterHolder : public IndexHolder {
     const CosineConverterHolder *owner_{nullptr};
     std::string buffer_{};
     std::string normalize_buffer_{};
+    std::vector<float> rotate_buffer_;
     IndexHolder::Iterator::Pointer front_iter_{};
     size_t dimension_{0u};
     size_t original_dimension_{0u};
@@ -159,11 +173,13 @@ class CosineConverterHolder : public IndexHolder {
   //! Constructor
   CosineConverterHolder(IndexHolder::Pointer front,
                         IndexMeta::DataType original_type,
-                        IndexMeta::DataType type)
+                        IndexMeta::DataType type,
+                        std::shared_ptr<Rotator> rotator = nullptr)
       : front_(std::move(front)),
         original_type_(original_type),
         type_(type),
-        dimension_(front_->dimension()) {}
+        dimension_(front_->dimension()),
+        rotator_(std::move(rotator)) {}
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   size_t count(void) const override {
@@ -222,6 +238,7 @@ class CosineConverterHolder : public IndexHolder {
   IndexMeta::DataType original_type_{};
   IndexMeta::DataType type_{};
   uint32_t dimension_{0};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 /*! Converter of Cosine
@@ -264,7 +281,24 @@ class CosineConverter : public IndexConverter {
       return IndexError_Unsupported;
     }
 
+    params.get(COSINE_CONVERTER_ENABLE_ROTATE, &enable_rotate_);
+
     ailego::Params reformer_params;
+
+    // Rotation only applies to integer quantization (INT8/INT4).
+    if (enable_rotate_ && (dst_type_ == IndexMeta::DataType::DT_INT8 ||
+                           dst_type_ == IndexMeta::DataType::DT_INT4)) {
+      size_t dim = index_meta.dimension();
+      int ret = Rotator::create(&rotator_, dim);
+      if (ret != 0) {
+        LOG_ERROR("CosineConverter: create rotator failed, ret=%d, dim=%zu",
+                  ret, dim);
+        return ret;
+      }
+      LOG_DEBUG("CosineConverter: rotation enabled, dim=%zu", dim);
+    } else {
+      enable_rotate_ = false;
+    }
 
     if (dst_type_ == IndexMeta::DataType::DT_INT8) {
       meta_.set_converter("CosineInt8Converter", 0, params);
@@ -333,12 +367,23 @@ class CosineConverter : public IndexConverter {
     *stats_.mutable_transformed_count() += holder->count();
 
     holder_ = std::make_shared<CosineConverterHolder>(
-        holder, holder->data_type(), dst_type_);
+        holder, holder->data_type(), dst_type_, rotator_);
     return 0;
   }
 
   //! Dump index into storage
-  int dump(const IndexDumper::Pointer & /*dumper*/) override {
+  int dump(const IndexDumper::Pointer &dumper) override {
+    if (rotator_) {
+      return rotator_->dump(dumper);
+    }
+    return 0;
+  }
+
+  //! Dump converter state to storage
+  int dump_to_storage(const IndexStorage::Pointer &storage) override {
+    if (rotator_) {
+      return rotator_->dump(storage);
+    }
     return 0;
   }
 
@@ -378,6 +423,8 @@ class CosineConverter : public IndexConverter {
   IndexHolder::Pointer holder_{};
   IndexMeta::DataType original_type_{IndexMeta::DataType::DT_UNDEFINED};
   IndexMeta::DataType dst_type_{IndexMeta::DataType::DT_UNDEFINED};
+  bool enable_rotate_{false};
+  std::shared_ptr<Rotator> rotator_{};
 };
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineNormalizeConverter,

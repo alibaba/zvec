@@ -121,6 +121,11 @@ int IVFIndex::Open(const std::string &file_path,
       LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
       return core::IndexError_Runtime;
     }
+    // Load reformer data from storage (e.g., rotation matrix for INT8+rotate)
+    if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
+      LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
+      return core::IndexError_Runtime;
+    }
     is_trained_ = true;
   }
   is_open_ = true;
@@ -164,6 +169,11 @@ int IVFIndex::Train() {
 
   dumper->create(file_path_);
   builder_->dump(dumper);
+  // Dump converter state (e.g., rotator for INT8+rotate) to dumper
+  if (converter_ && converter_->dump(dumper) != 0) {
+    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
+  }
   dumper->close();
   int ret = storage_->open(file_path_, false);
   if (ret != 0) {
@@ -173,6 +183,11 @@ int IVFIndex::Train() {
   }
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
+  }
+  // Load reformer data from storage (e.g., rotation matrix)
+  if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
+    LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
@@ -209,7 +224,6 @@ int IVFIndex::_prepare_for_search(
   }
 
   if (ivf_search_param->nprobe > 0) {
-    // TODO: 1. sparse; 2. default ef
     ailego::Params params;
     params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
     context->update(params);
@@ -227,6 +241,11 @@ int IVFIndex::Merge(const std::vector<Index::Pointer> &indexes,
 
   dumper->create(file_path_);
   builder_->dump(dumper);
+  // Dump converter state (e.g., rotator for INT8+rotate) to dumper
+  if (converter_ && converter_->dump(dumper) != 0) {
+    LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
+  }
   dumper->close();
   int ret = storage_->open(file_path_, false);
   if (ret != 0) {
@@ -236,6 +255,11 @@ int IVFIndex::Merge(const std::vector<Index::Pointer> &indexes,
   }
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
+    return core::IndexError_Runtime;
+  }
+  // Load reformer data from storage (e.g., rotation matrix)
+  if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
+    LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
     return core::IndexError_Runtime;
   }
   is_trained_ = true;

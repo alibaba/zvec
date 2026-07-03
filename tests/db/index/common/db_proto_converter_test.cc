@@ -471,3 +471,80 @@ TEST(ConverterTest, SegmentMetaWithEmptyFields) {
   EXPECT_FALSE(pb_result.has_writing_forward_block());
   EXPECT_EQ(pb_result.indexed_vector_fields_size(), 0);
 }
+
+// ==================== enable_rotate roundtrip tests ====================
+
+TEST(ConverterTest, HnswIndexParamsWithEnableRotate) {
+  // C++ -> PB -> C++ roundtrip with enable_rotate = true
+  HnswIndexParams original(MetricType::COSINE, 16, 200, QuantizeType::INT8,
+                           false, QuantizerParam(true));
+  EXPECT_TRUE(original.quantizer_param().enable_rotate());
+
+  auto pb = ProtoConverter::ToPb(&original);
+  EXPECT_TRUE(pb.base().quantizer_param().enable_rotate());
+
+  auto restored = ProtoConverter::FromPb(pb);
+  ASSERT_NE(restored, nullptr);
+  EXPECT_TRUE(restored->quantizer_param().enable_rotate());
+  EXPECT_TRUE(restored->enable_rotate());  // convenience getter
+  EXPECT_EQ(restored->metric_type(), MetricType::COSINE);
+  EXPECT_EQ(restored->m(), 16);
+  EXPECT_EQ(restored->ef_construction(), 200);
+  EXPECT_EQ(restored->quantize_type(), QuantizeType::INT8);
+
+  // C++ -> PB -> C++ roundtrip with enable_rotate = false
+  HnswIndexParams original_no_rot(MetricType::L2, 32, 100, QuantizeType::FP16);
+  auto pb2 = ProtoConverter::ToPb(&original_no_rot);
+  EXPECT_FALSE(pb2.base().quantizer_param().enable_rotate());
+  auto restored2 = ProtoConverter::FromPb(pb2);
+  ASSERT_NE(restored2, nullptr);
+  EXPECT_FALSE(restored2->quantizer_param().enable_rotate());
+}
+
+TEST(ConverterTest, FlatIndexParamsWithEnableRotate) {
+  FlatIndexParams original(MetricType::IP, QuantizeType::INT8,
+                           QuantizerParam(true));
+  EXPECT_TRUE(original.quantizer_param().enable_rotate());
+
+  auto pb = ProtoConverter::ToPb(&original);
+  EXPECT_TRUE(pb.base().quantizer_param().enable_rotate());
+
+  auto restored = ProtoConverter::FromPb(pb);
+  ASSERT_NE(restored, nullptr);
+  EXPECT_TRUE(restored->quantizer_param().enable_rotate());
+  EXPECT_EQ(restored->metric_type(), MetricType::IP);
+  EXPECT_EQ(restored->quantize_type(), QuantizeType::INT8);
+
+  // enable_rotate = false
+  FlatIndexParams original_no_rot(MetricType::L2, QuantizeType::FP16);
+  auto pb2 = ProtoConverter::ToPb(&original_no_rot);
+  EXPECT_FALSE(pb2.base().quantizer_param().enable_rotate());
+  auto restored2 = ProtoConverter::FromPb(pb2);
+  EXPECT_FALSE(restored2->quantizer_param().enable_rotate());
+}
+
+TEST(ConverterTest, IVFIndexParamsWithEnableRotate) {
+  IVFIndexParams original(MetricType::COSINE, 256, 20, true, QuantizeType::INT8,
+                          QuantizerParam(true));
+  EXPECT_TRUE(original.quantizer_param().enable_rotate());
+
+  auto pb = ProtoConverter::ToPb(&original);
+  EXPECT_TRUE(pb.base().quantizer_param().enable_rotate());
+
+  auto restored = ProtoConverter::FromPb(pb);
+  ASSERT_NE(restored, nullptr);
+  EXPECT_TRUE(restored->quantizer_param().enable_rotate());
+  EXPECT_EQ(restored->metric_type(), MetricType::COSINE);
+  EXPECT_EQ(restored->n_list(), 256);
+  EXPECT_EQ(restored->n_iters(), 20);
+  EXPECT_TRUE(restored->use_soar());
+  EXPECT_EQ(restored->quantize_type(), QuantizeType::INT8);
+
+  // enable_rotate = false
+  IVFIndexParams original_no_rot(MetricType::L2, 128, 10, false,
+                                 QuantizeType::FP16);
+  auto pb2 = ProtoConverter::ToPb(&original_no_rot);
+  EXPECT_FALSE(pb2.base().quantizer_param().enable_rotate());
+  auto restored2 = ProtoConverter::FromPb(pb2);
+  EXPECT_FALSE(restored2->quantizer_param().enable_rotate());
+}

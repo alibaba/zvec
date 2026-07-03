@@ -53,3 +53,6 @@
 [submodule "thirdparty/limonp/limonp-v1.0.2"]
 	path = thirdparty/limonp/limonp-v1.0.2
 	url = https://github.com/yanyiwu/limonp.git
+[submodule "thirdparty/utf8proc/utf8proc-2.11.3"]
+	path = thirdparty/utf8proc/utf8proc-2.11.3
+	url = https://github.com/JuliaStrings/utf8proc.git

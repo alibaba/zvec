@@ -26,6 +26,7 @@ __all__: list[str] = [
     "IndexParam",
     "InvertIndexParam",
     "OptimizeOption",
+    "QuantizerParam",
     "QueryParam",
     "SegmentOption",
     "VectorIndexParam",
@@ -147,6 +148,8 @@ class FlatIndexParam(VectorIndexParam):
         quantize_type (QuantizeType): Optional quantization type for vector
             compression (e.g., FP16, INT8). Use ``QuantizeType.UNDEFINED`` to
             disable quantization. Default is ``QuantizeType.UNDEFINED``.
+        quantizer_param (QuantizerParam): Optional quantizer parameters. See
+            ``QuantizerParam`` for available options. Default is ``QuantizerParam()``.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -163,6 +166,7 @@ class FlatIndexParam(VectorIndexParam):
         self,
         metric_type: zvec._zvec.typing.MetricType = ...,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
+        quantizer_param: QuantizerParam = ...,
     ) -> None:
         """
         Constructs a FlatIndexParam instance.
@@ -171,6 +175,8 @@ class FlatIndexParam(VectorIndexParam):
             metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
             quantize_type (QuantizeType, optional): Vector quantization type.
                 Defaults to QuantizeType.UNDEFINED (no quantization).
+            quantizer_param (QuantizerParam, optional): Quantizer configuration.
+                Defaults to QuantizerParam().
         """
 
     def __repr__(self) -> str: ...
@@ -226,6 +232,7 @@ class HnswIndexParam(VectorIndexParam):
         ef_construction: typing.SupportsInt = 500,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         use_contiguous_memory: bool = False,
+        quantizer_param: QuantizerParam = ...,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -283,6 +290,7 @@ class HnswQueryParam(QueryParam):
         >>> print(params.to_dict() if hasattr(params, 'to_dict') else params)
         {"type":"HNSW", "ef":300}
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -307,6 +315,7 @@ class HnswQueryParam(QueryParam):
                 - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
                   per neighbour vector (PL). ``0`` (default) means auto-derive from vector size.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -430,6 +439,7 @@ class HnswRabitqQueryParam(QueryParam):
         >>> print(params.ef)
         300
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -448,6 +458,7 @@ class HnswRabitqQueryParam(QueryParam):
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -498,6 +509,7 @@ class IVFIndexParam(VectorIndexParam):
         n_iters: typing.SupportsInt = 10,
         use_soar: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
+        quantizer_param: QuantizerParam = ...,
     ) -> None:
         """
         Constructs an IVFIndexParam instance.
@@ -511,6 +523,8 @@ class IVFIndexParam(VectorIndexParam):
             use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
             quantize_type (QuantizeType, optional): Vector quantization type.
                 Defaults to QuantizeType.UNDEFINED.
+            quantizer_param (QuantizerParam, optional): Quantizer configuration.
+                Defaults to QuantizerParam().
         """
 
     def __repr__(self) -> str: ...
@@ -558,6 +572,7 @@ class IVFQueryParam(QueryParam):
         >>> print(params.nprobe)
         20
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(self, nprobe: typing.SupportsInt = 10) -> None:
         """
@@ -567,6 +582,7 @@ class IVFQueryParam(QueryParam):
             nprobe (int, optional): Number of inverted lists to probe during search.
                 Higher values improve accuracy. Defaults to 10.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -592,6 +608,7 @@ class VamanaIndexParam(VectorIndexParam):
     Examples:
         >>> params = VamanaIndexParam(metric_type=MetricType.COSINE, max_degree=64)
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -610,18 +627,23 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def max_degree(self) -> int:
         """int: Maximum out-degree (R) of every node in the Vamana graph."""
+
     @property
     def search_list_size(self) -> int:
         """int: Candidate list size during Vamana graph construction."""
+
     @property
     def alpha(self) -> float:
         """float: Vamana RobustPrune alpha factor."""
+
     @property
     def saturate_graph(self) -> bool:
         """bool: Whether to saturate every node to max_degree neighbors."""
+
     @property
     def use_contiguous_memory(self) -> bool:
         """bool: Whether to allocate a single contiguous memory arena."""
+
     @property
     def use_id_map(self) -> bool:
         """bool: Reserved flag for engine-level id remapping."""
@@ -644,6 +666,7 @@ class VamanaQueryParam(QueryParam):
         >>> print(params.ef_search)
         200
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -667,14 +690,17 @@ class VamanaQueryParam(QueryParam):
                 - ``prefetch_lines`` (int): Cache lines to prefetch per vector (PL).
                   ``0`` (default) means auto-derive from vector size.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
     def ef_search(self) -> int:
         """int: Size of the dynamic candidate list during Vamana search."""
+
     @property
     def prefetch_offset(self) -> int:
         """int: Graph prefetch offset used by the Vamana fast path."""
+
     @property
     def prefetch_lines(self) -> int:
         """int: Override of prefetch cache lines per vector (0=auto)."""
@@ -688,15 +714,19 @@ class FtsIndexParam(IndexParam):
 
     Attributes:
         type (IndexType): Always ``IndexType.FTS``.
-        tokenizer_name (str): Name of the tokenizer (e.g., "standard", "jieba").
+        tokenizer_name (str): Name of the tokenizer (one of "standard", "jieba",
+            "whitespace").
             Default is "standard".
         filters (list[str]): List of token filter names applied after tokenization.
-            Default is ["lowercase"].
+            Supported filters are "lowercase" and "ascii_folding". Default is
+            ["lowercase"].
         extra_params (str): Additional parameters passed to the tokenizer.
             Default is "".
 
     Examples:
-        >>> params = FtsIndexParam(tokenizer_name="jieba", filters=["lowercase"])
+        >>> params = FtsIndexParam(
+        ...     tokenizer_name="jieba", filters=["lowercase", "ascii_folding"]
+        ... )
         >>> print(params.tokenizer_name)
         jieba
     """
@@ -713,7 +743,8 @@ class FtsIndexParam(IndexParam):
 
         Args:
             tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
-            filters (list[str], optional): Token filter names. Defaults to ["lowercase"].
+            filters (list[str], optional): Token filter names. Supports
+                "lowercase" and "ascii_folding". Defaults to ["lowercase"].
             extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
         """
 
@@ -760,6 +791,7 @@ class FtsQueryParam(QueryParam):
         >>> print(params.default_operator)
         AND
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -772,6 +804,7 @@ class FtsQueryParam(QueryParam):
             default_operator (str, optional): Default boolean operator for adjacent
                 bare terms. Supported: "OR", "AND". Defaults to "" (uses engine default).
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -865,6 +898,7 @@ class InvertIndexParam(IndexParam):
         >>> print(config)
         {'enable_range_optimization': True, 'enable_extended_wildcard': False}
     """
+
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
@@ -880,18 +914,21 @@ class InvertIndexParam(IndexParam):
             enable_extended_wildcard (bool, optional): If True, enables extended wildcard
                 search including suffix and infix patterns. Defaults to False.
         """
+
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     def to_dict(self) -> dict:
         """
         Convert to dictionary with all fields
         """
+
     @property
     def enable_extended_wildcard(self) -> bool:
         """
         bool: Whether extended wildcard (suffix and infix) search is enabled.
         Note: Prefix search is always enabled regardless of this setting.
         """
+
     @property
     def enable_range_optimization(self) -> bool:
         """
@@ -948,6 +985,7 @@ class QueryParam:
             using the index. Useful for debugging or small datasets. Default is False.
         is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
     """
+
     def __getstate__(self) -> tuple: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     @property
@@ -955,16 +993,19 @@ class QueryParam:
         """
         bool: Whether to bypass the index and use brute-force linear search.
         """
+
     @property
     def is_using_refiner(self) -> bool:
         """
         bool: Whether to use refiner for the query.
         """
+
     @property
     def radius(self) -> float:
         """
         IndexType: The type of index this query targets.
         """
+
     @property
     def type(self) -> zvec._zvec.typing.IndexType:
         """
@@ -1015,6 +1056,49 @@ class SegmentOption:
         bool: Whether the segment is read-only.
         """
 
+class QuantizerParam:
+    """
+
+    Optional parameters for quantizer configuration.
+
+    This class is only needed when customizing quantizer behavior (e.g., enabling
+    random rotation). It can be omitted for default quantization settings.
+
+    Attributes:
+        enable_rotate (bool): Whether to apply random rotation before INT8/INT4
+            quantization to reduce quantization error.
+            Only effective with quantize_type=INT8 or INT4. Defaults to False.
+
+    Examples:
+        >>> qp = QuantizerParam(enable_rotate=True)
+        >>> print(qp.enable_rotate)
+        True
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(self, enable_rotate: bool = False) -> None:
+        """
+        Constructs a QuantizerParam instance.
+
+        Args:
+            enable_rotate (bool, optional): Whether to apply random rotation
+                before INT8/INT4 quantization. Defaults to False.
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def __eq__(self, arg0: typing.Any) -> bool: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def enable_rotate(self) -> bool:
+        """
+        bool: Whether random rotation is enabled before INT8/INT4 quantization.
+        """
+
 class VectorIndexParam(IndexParam):
     """
 
@@ -1026,6 +1110,7 @@ class VectorIndexParam(IndexParam):
         type (IndexType): The specific vector index type (e.g., HNSW, FLAT).
         metric_type (MetricType): Distance metric used for similarity search.
         quantize_type (QuantizeType): Optional vector quantization type.
+        quantizer_param (QuantizerParam): Optional quantizer parameters.
     """
 
     def __getstate__(self) -> tuple: ...
@@ -1045,6 +1130,12 @@ class VectorIndexParam(IndexParam):
     def quantize_type(self) -> zvec._zvec.typing.QuantizeType:
         """
         QuantizeType: Vector quantization type (e.g., FP16, INT8).
+        """
+
+    @property
+    def quantizer_param(self) -> QuantizerParam:
+        """
+        QuantizerParam: Quantizer configuration including enable_rotate.
         """
 
 class _SearchQuery:

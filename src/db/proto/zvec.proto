@@ -87,9 +87,19 @@ message InvertIndexParams {
   bool enable_range_optimization = 1;
 };
 
+// Quantizer-related parameters for vector indexes.
+// Designed for future extensibility.
+message QuantizerParam {
+  // When enabled, vectors are rotated before INT8 quantization to reduce
+  // quantization error. Only effective with quantize_type=INT8.
+  bool enable_rotate = 1;
+};
+
 message BaseIndexParams {
   MetricType metric_type = 1;
   QuantizeType quantize_type = 2;
+  // Quantizer parameters (enable_rotate, etc.)
+  QuantizerParam quantizer_param = 4;
 };
 
 message HnswIndexParams {

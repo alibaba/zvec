@@ -422,7 +422,8 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
 }
 
 int build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
-                             YAML::Node &config_common) {
+                             YAML::Node &config_common,
+                             const IndexConverter::Pointer &converter) {
   if (!config_common["IndexPath"]) {
     LOG_ERROR("Miss params IndexPath for Streamer");
     return IndexError_InvalidArgument;
@@ -451,6 +452,15 @@ int build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
     return IndexError_Runtime;
   }
 
+  // Dump converter state (e.g. rotator) to storage for streaming build
+  if (converter) {
+    ret = converter->dump_to_storage(storage);
+    if (ret != 0) {
+      LOG_ERROR("Failed to dump converter to storage, ret=%d", ret);
+      return ret;
+    }
+  }
+
   size_t thread_count = config_common["ThreadCount"]
                             ? config_common["ThreadCount"].as<uint64_t>()
                             : std::thread::hardware_concurrency();
@@ -464,7 +474,8 @@ int build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
 }
 
 int do_build_by_streamer(IndexStreamer::Pointer &streamer,
-                         uint32_t thread_count, RetrievalMode retrieval_mode) {
+                         uint32_t thread_count, RetrievalMode retrieval_mode,
+                         const IndexStorage::Pointer &storage = nullptr) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
   std::atomic<size_t> finished{0};
@@ -486,6 +497,14 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
         return IndexError_NoExist;
       }
       reformer->init(meta.reformer_params());
+      // Load reformer state from storage (e.g. rotator for IntegerStreaming)
+      if (storage) {
+        ret = reformer->load(storage);
+        if (ret != 0) {
+          LOG_ERROR("Failed to load reformer from storage, ret=%d", ret);
+          return ret;
+        }
+      }
     }
   }
 
@@ -593,7 +612,8 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
 }
 
 int build_by_streamer(IndexStreamer::Pointer &streamer,
-                      YAML::Node &config_common) {
+                      YAML::Node &config_common,
+                      const IndexConverter::Pointer &converter) {
   if (!config_common["IndexPath"]) {
     LOG_ERROR("Miss params IndexPath for Streamer");
     return IndexError_InvalidArgument;
@@ -624,6 +644,15 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
     return IndexError_Runtime;
   }
 
+  // Dump converter state (e.g. rotator) to storage for streaming build
+  if (converter) {
+    ret = converter->dump_to_storage(storage);
+    if (ret != 0) {
+      LOG_ERROR("Failed to dump converter to storage, ret=%d", ret);
+      return ret;
+    }
+  }
+
   size_t thread_count = config_common["ThreadCount"]
                             ? config_common["ThreadCount"].as<uint64_t>()
                             : std::thread::hardware_concurrency();
@@ -639,14 +668,15 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
 
   LOG_DEBUG("thread count: %zu, retrieval mode: %s", thread_count,
             retrieval_mode == 1 ? "Dense" : "Sparse");
-  do_build_by_streamer(streamer, thread_count, retrieval_mode);
+  do_build_by_streamer(streamer, thread_count, retrieval_mode, storage);
 
   return 0;
 }
 
 IndexSparseHolder::Pointer convert_sparse_holder(
     const std::string &name, const ailego::Params &params,
-    VecsIndexSparseHolder::Pointer &in_holder, IndexMeta &index_meta) {
+    VecsIndexSparseHolder::Pointer &in_holder, IndexMeta &index_meta,
+    IndexConverter::Pointer *out_converter) {
   IndexSparseHolder::Pointer cast_holder =
       std::dynamic_pointer_cast<IndexSparseHolder>(in_holder);
   if (name.empty()) {
@@ -679,13 +709,17 @@ IndexSparseHolder::Pointer convert_sparse_holder(
 
   index_meta = converter->meta();
 
+  if (out_converter) {
+    *out_converter = converter;
+  }
   return converter->sparse_result();
 }
 
 IndexHolder::Pointer convert_holder(const std::string &name,
                                     const ailego::Params &params,
                                     VecsIndexHolder::Pointer &in_holder,
-                                    IndexMeta &index_meta) {
+                                    IndexMeta &index_meta,
+                                    IndexConverter::Pointer *out_converter) {
   IndexHolder::Pointer cast_holder =
       std::dynamic_pointer_cast<IndexHolder>(in_holder);
   if (name.empty()) {
@@ -718,6 +752,9 @@ IndexHolder::Pointer convert_holder(const std::string &name,
 
   index_meta = converter->meta();
 
+  if (out_converter) {
+    *out_converter = converter;
+  }
   return converter->result();
 }
 
@@ -782,8 +819,9 @@ int do_build_sparse(YAML::Node &config_root, YAML::Node &config_common) {
   }
   cout << "Created builder " << builder_class << endl;
 
+  IndexConverter::Pointer build_converter;
   IndexSparseHolder::Pointer cv_build_holder = convert_sparse_holder(
-      converter_name, converter_params, build_holder, meta);
+      converter_name, converter_params, build_holder, meta, &build_converter);
   if (!cv_build_holder) {
     LOG_ERROR("Convert holder failed.");
     return -1;
@@ -819,7 +857,7 @@ int do_build_sparse(YAML::Node &config_root, YAML::Node &config_common) {
     }
 
     IndexSparseHolder::Pointer cv_train_holder = convert_sparse_holder(
-        converter_name, converter_params, train_holder, meta);
+        converter_name, converter_params, train_holder, meta, nullptr);
     if (!cv_train_holder) {
       LOG_ERROR("Convert train holder failed.");
       return -1;
@@ -846,7 +884,7 @@ int do_build_sparse(YAML::Node &config_root, YAML::Node &config_common) {
   if (builder != nullptr) {
     ret = builder->build(std::move(cv_build_holder));
   } else {
-    ret = build_sparse_by_streamer(streamer, config_common);
+    ret = build_sparse_by_streamer(streamer, config_common, build_converter);
   }
   size_t build_time = timer.milli_seconds();
   if (ret < 0) {
@@ -987,8 +1025,9 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   cout << "Created builder " << builder_class << endl;
 
 
-  IndexHolder::Pointer cv_build_holder =
-      convert_holder(converter_name, converter_params, build_holder, meta);
+  IndexConverter::Pointer build_converter;
+  IndexHolder::Pointer cv_build_holder = convert_holder(
+      converter_name, converter_params, build_holder, meta, &build_converter);
   if (!cv_build_holder) {
     LOG_ERROR("Convert holder failed.");
     return -1;
@@ -1079,8 +1118,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
 
       // support fp16 convert
 
-      IndexHolder::Pointer cv_train_holder =
-          convert_holder(converter_name, converter_params, train_holder, meta);
+      IndexHolder::Pointer cv_train_holder = convert_holder(
+          converter_name, converter_params, train_holder, meta, nullptr);
       if (!cv_train_holder) {
         LOG_ERROR("Convert train holder failed.");
         return -1;
@@ -1136,8 +1175,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     if (!metric_name.empty()) {
       train_holder->set_metric(metric_name, metric_params);
     }
-    IndexHolder::Pointer cv_train_holder =
-        convert_holder(converter_name, converter_params, train_holder, meta);
+    IndexHolder::Pointer cv_train_holder = convert_holder(
+        converter_name, converter_params, train_holder, meta, nullptr);
     if (!cv_train_holder) {
       LOG_ERROR("Convert train holder failed.");
       return -1;
@@ -1177,7 +1216,7 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       retrieval_mode = "dense";
     }
 
-    ret = build_by_streamer(streamer, config_common);
+    ret = build_by_streamer(streamer, config_common, build_converter);
   }
   size_t build_time = timer.milli_seconds();
   if (ret < 0) {

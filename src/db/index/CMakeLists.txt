@@ -30,6 +30,7 @@ cc_library(
          Arrow::arrow_dataset
          cppjieba
          FastPFOR
+         utf8proc
     INCS .  ${PROJECT_ROOT_DIR}/src
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )
