@@ -186,9 +186,8 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
   }
 
   size_t num = holder->count();
-  size_t stride = holder->element_size();
 
-  // Collect all data into a contiguous buffer (stride may include extras).
+  // Collect all data into a contiguous buffer.
   auto iter = holder->create_iterator();
   std::vector<float> all_data(num * original_dim_);
   size_t row = 0;
@@ -301,7 +300,6 @@ float PqInt8Quantizer::calc_distance_dp_query(const void *dp,
 void PqInt8Quantizer::calc_distance_dp_query_batch(
     const void *const *dp_list, int dp_num, const void *query,
     float *dist_list) const {
-  const uint8_t *lut = reinterpret_cast<const uint8_t *>(query);
   for (int i = 0; i < dp_num; ++i) {
     float d = 0.0f;
     adc_fn_(reinterpret_cast<const uint8_t *>(dp_list[i]),
@@ -360,6 +358,7 @@ int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
 
 DistanceImpl PqInt8Quantizer::distance(const void *query,
                                        const IndexQueryMeta &qmeta) const {
+  (void)qmeta;  // reserved for future use (e.g. data-type dispatch)
   // Build the LUT from the (already quantized) query.
   size_t lut_bytes = quantized_query_vector_length();
   std::string lut_storage(static_cast<const char *>(query), lut_bytes);

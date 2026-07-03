@@ -200,6 +200,7 @@ FhtKernels get_fht_kernels() {
 
 PqKernels get_pq_kernels(QuantizeType quantize_type,
                           CpuArchType cpu_arch_type) {
+  (void)cpu_arch_type;  // reserved for future SIMD dispatch
   PqKernels k{};
   if (quantize_type == QuantizeType::kPQ) {
     // scalar is the only implementation for now; future SIMD paths gate on
