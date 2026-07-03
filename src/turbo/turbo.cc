@@ -22,7 +22,7 @@
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
-#include "scalar/pq/pq_scalar.h"
+#include "scalar/pq_quantizer_int8/pq_scalar.h"
 
 #if defined(__SSE2__)
 #include "sse/fht/fht.h"
@@ -204,8 +204,8 @@ PqKernels get_pq_kernels(QuantizeType quantize_type,
   if (quantize_type == QuantizeType::kPQ) {
     // scalar is the only implementation for now; future SIMD paths gate on
     // cpu_arch_type here (same pattern as get_distance_func).
-    k.adc_distance = scalar::pq_adc_distance;
-    k.sdc_distance = scalar::pq_sdc_distance;
+    k.adc_distance = scalar::pq_adc_int8_distance;
+    k.sdc_distance = scalar::pq_sdc_int8_distance;
   }
   return k;
 }

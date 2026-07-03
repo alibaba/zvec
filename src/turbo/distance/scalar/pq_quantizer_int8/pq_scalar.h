@@ -23,8 +23,8 @@ namespace zvec::turbo::scalar {
 // PQ-encoded datapoint and a query using a precomputed LUT.
 //
 // distance = sum_{m=0}^{num_subquantizers-1} lut[m * 256 + pq_code[m]]
-void pq_adc_distance(const uint8_t *pq_code, const float *lut,
-                     size_t num_subquantizers, float *out);
+void pq_adc_int8_distance(const uint8_t *pq_code, const float *lut,
+                          size_t num_subquantizers, float *out);
 
 // SDC (Symmetric Distance Computation): compute the distance between two
 // PQ-encoded datapoints using a precomputed centroid-to-centroid distance
@@ -36,8 +36,8 @@ void pq_adc_distance(const uint8_t *pq_code, const float *lut,
 //
 // distance = sum_{m=0}^{num_subquantizers-1}
 //              dist_table[m * 65536 + a[m] * 256 + b[m]]
-void pq_sdc_distance(const uint8_t *a, const uint8_t *b,
-                     const float *dist_table, size_t num_subquantizers,
-                     float *out);
+void pq_sdc_int8_distance(const uint8_t *a, const uint8_t *b,
+                          const float *dist_table, size_t num_subquantizers,
+                          float *out);
 
 }  // namespace zvec::turbo::scalar

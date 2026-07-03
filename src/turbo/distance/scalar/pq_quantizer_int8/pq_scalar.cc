@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "scalar/pq/pq_scalar.h"
+#include "scalar/pq_quantizer_int8/pq_scalar.h"
 
 namespace zvec::turbo::scalar {
 
-void pq_adc_distance(const uint8_t *pq_code, const float *lut,
-                     size_t num_subquantizers, float *out) {
+void pq_adc_int8_distance(const uint8_t *pq_code, const float *lut,
+                          size_t num_subquantizers, float *out) {
   constexpr size_t kNumCentroids = 256;
   float sum = 0.0f;
   for (size_t m = 0; m < num_subquantizers; ++m) {
@@ -26,9 +26,9 @@ void pq_adc_distance(const uint8_t *pq_code, const float *lut,
   *out = sum;
 }
 
-void pq_sdc_distance(const uint8_t *a, const uint8_t *b,
-                     const float *dist_table, size_t num_subquantizers,
-                     float *out) {
+void pq_sdc_int8_distance(const uint8_t *a, const uint8_t *b,
+                          const float *dist_table, size_t num_subquantizers,
+                          float *out) {
   constexpr size_t kNumCentroids = 256;
   constexpr size_t kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
   float sum = 0.0f;

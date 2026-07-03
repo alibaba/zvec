@@ -375,7 +375,7 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
         reinterpret_cast<const float *>(lut), nsq, out);
   };
 
-  // SDC pairwise function: captures dist_table + sdc kernel.
+  // SDC (symmetric) function: captures dist_table + sdc kernel.
   auto sdc = sdc_fn_;
   const float *dt = dist_table_.data();
   DistanceFunc sdc_func = [nsq, sdc, dt](const void *a, const void *b,

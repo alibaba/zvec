@@ -16,6 +16,13 @@
 #include <zvec/core/framework/index_meta.h>
 #include "hnsw_entity.h"
 
+// TODO(HNSW+PQ): Adapt this file to the origin architecture:
+//   1. Integrate turbo::Quantizer + turbo::DistanceImpl (see distance.h)
+//   2. Use dist_impl_.sym_func() for zero-branch dist(void*,void*) dispatch
+//   3. HnswContext needs dual calculators: add_dc_ + search_dc_ with mode_
+//   4. reset_query() should call quantizer_->distance() to build DistanceImpl
+// Reference: origin/turbo/src/core/algorithm/hnsw/hnsw_dist_calculator.h
+
 namespace zvec {
 namespace core {
 
