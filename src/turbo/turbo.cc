@@ -22,7 +22,7 @@
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
-#include "scalar/pq_quantizer_int8/pq_scalar.h"
+#include "scalar/pq_quantizer_int8/pq_distance.h"
 
 #if defined(__SSE2__)
 #include "sse/fht/fht.h"

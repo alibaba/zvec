@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "scalar/pq_quantizer_int8/pq_scalar.h"
+#include "scalar/pq_quantizer_int8/pq_distance.h"
 
 namespace zvec::turbo::scalar {
 
