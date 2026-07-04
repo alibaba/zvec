@@ -71,7 +71,7 @@ TEST(Cube, General) {
   int int1 = cube1;
   EXPECT_EQ(11111, int1);
   EXPECT_TRUE(!cube1.empty());
-  EXPECT_EQ(sizeof(11111), cube1.size());
+  EXPECT_EQ(sizeof(int), cube1.size());
 
   Cube cube2 = 22222;
   EXPECT_EQ(22222, cube2.unsafe_cast<int>());
@@ -79,7 +79,7 @@ TEST(Cube, General) {
   int int2 = (const int &)cube2;
   EXPECT_EQ(22222, int2);
   EXPECT_TRUE(!cube2.empty());
-  EXPECT_EQ(sizeof(22222), cube2.size());
+  EXPECT_EQ(sizeof(int), cube2.size());
 
   Cube cube3 = std::vector<int>();
   cube3.unsafe_cast<std::vector<int>>().push_back(1);
