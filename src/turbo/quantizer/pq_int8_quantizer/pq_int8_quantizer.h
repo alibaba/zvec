@@ -125,6 +125,7 @@ class PqInt8Quantizer : public Quantizer {
 
   static constexpr uint32_t kNumCentroids = 256;
   static constexpr uint32_t kMaxKmeansIters = 25;
+  static constexpr size_t kMaxTrainVectors = 65535;
   static constexpr uint32_t kExtraMetaSizeCosine = sizeof(float);
 
   IndexMeta meta_{};

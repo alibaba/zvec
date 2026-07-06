@@ -252,6 +252,30 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
                 original_dim_ * sizeof(float));
   }
 
+  // Subsample if the dataset exceeds the training limit (aligned with
+  // faiss/vsag: 256 centroids * 256 max_points_per_centroid ≈ 65535).
+  if (num > kMaxTrainVectors) {
+    LOG_INFO("PQ training: subsampling %zu -> %zu vectors", num,
+             kMaxTrainVectors);
+    std::mt19937 rng(42);
+    // Fisher-Yates partial shuffle: randomly place kMaxTrainVectors vectors
+    // at the front of the buffer.
+    for (size_t i = 0; i < kMaxTrainVectors; ++i) {
+      std::uniform_int_distribution<size_t> dist(i, num - 1);
+      size_t j = dist(rng);
+      if (i != j) {
+        // Swap full vectors (dim-sized chunks).
+        for (uint32_t d = 0; d < original_dim_; ++d) {
+          std::swap(all_data[i * original_dim_ + d],
+                    all_data[j * original_dim_ + d]);
+        }
+      }
+    }
+    num = kMaxTrainVectors;
+    all_data.resize(num * original_dim_);
+    all_data.shrink_to_fit();
+  }
+
   size_t data_stride = original_dim_ * sizeof(float);
 
   // For Cosine: normalize training data to unit length so that KMeans
