@@ -708,3 +708,122 @@ TEST(PqInt8Quantizer, L2Dequantize) {
         << "recon_err=" << recon_err << " orig_norm=" << orig_norm;
   }
 }
+
+// ---------------------------------------------------------------------------
+// InnerProduct Metric Tests
+// ---------------------------------------------------------------------------
+
+// Helper to create a PqInt8Quantizer with InnerProduct metric.
+static std::shared_ptr<zvec::turbo::Quantizer> make_pq_ip_quantizer(
+    size_t dim, size_t num_subquantizers) {
+  auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  if (!q) return nullptr;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+  meta.set_metric("InnerProduct", 0, Params());
+
+  Params params;
+  params.set("num_subquantizers",
+             static_cast<uint32_t>(num_subquantizers));
+  if (q->init(meta, params) != 0) return nullptr;
+  return q;
+}
+
+// Reference inner-product distance: -dot(a, b).
+static float reference_ip_distance(const float *a, const float *b,
+                                   size_t dim) {
+  float dot = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    dot += a[i] * b[i];
+  }
+  return -dot;
+}
+
+// Verify IP metric: no extra meta, ADC distances approximate true IP.
+TEST(PqInt8Quantizer, InnerProductAdcDistance) {
+  const size_t DIM = 32;
+  const size_t NSQ = 8;
+  const size_t COUNT = 2000;
+
+  auto quantizer = make_pq_ip_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+
+  // IP metric should NOT add extra meta (unlike Cosine).
+  EXPECT_EQ(quantizer->quantized_datapoint_vector_length(), NSQ);
+
+  auto holder = make_random_holder(COUNT, DIM);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  // Collect raw vectors and PQ codes.
+  std::vector<std::vector<float>> raw_vecs(COUNT);
+  std::vector<std::vector<uint8_t>> pq_codes(COUNT);
+  size_t code_len = quantizer->quantized_datapoint_vector_length();
+  size_t lut_len = quantizer->quantized_query_vector_length();
+
+  auto iter = holder->create_iterator();
+  for (size_t i = 0; iter->is_valid(); iter->next(), ++i) {
+    const float *v = reinterpret_cast<const float *>(iter->data());
+    raw_vecs[i].assign(v, v + DIM);
+    pq_codes[i].resize(code_len);
+    quantizer->quantize_data(iter->data(), pq_codes[i].data());
+  }
+
+  // Build LUT for query = raw_vecs[0].
+  std::vector<float> lut(lut_len / sizeof(float));
+  quantizer->quantize_query(raw_vecs[0].data(), lut.data());
+
+  float max_abs_error = 0.0f;
+  for (size_t i = 1; i < COUNT; ++i) {
+    float adc_dist = quantizer->calc_distance_dp_query(
+        pq_codes[i].data(), lut.data());
+    float true_dist =
+        reference_ip_distance(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
+
+    // IP distance can be positive or negative; relative error is
+    // meaningless near zero crossings.  Use absolute error instead.
+    float abs_err = std::fabs(adc_dist - true_dist);
+    max_abs_error = std::max(max_abs_error, abs_err);
+  }
+  // PQ IP distance: absolute error should be bounded.
+  // With 8 subs and dim=32, typical max abs error is a few units.
+  EXPECT_LT(max_abs_error, static_cast<float>(DIM) * 0.5f)
+      << "max_abs_error=" << max_abs_error;
+}
+
+// Verify IP dequantize works (same as L2: centroid concat, no norm rescale).
+TEST(PqInt8Quantizer, InnerProductDequantize) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+  const size_t COUNT = 1000;
+
+  auto quantizer = make_pq_ip_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+
+  EXPECT_EQ(quantizer->quantized_datapoint_vector_length(), NSQ);
+
+  auto holder = make_random_holder(COUNT, DIM);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  auto iter = holder->create_iterator();
+  iter->is_valid();
+
+  std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
+  quantizer->quantize_data(iter->data(), code.data());
+
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  std::string decoded;
+  ASSERT_EQ(0, quantizer->dequantize(code.data(), qmeta, &decoded));
+  ASSERT_EQ(decoded.size(), DIM * sizeof(float));
+
+  const float *recon = reinterpret_cast<const float *>(decoded.data());
+  const float *orig = reinterpret_cast<const float *>(iter->data());
+
+  // IP PQ reconstruction: centroid concat, same as L2.
+  float recon_err = reference_sq_euclidean(orig, recon, DIM);
+  float orig_norm = reference_sq_euclidean(orig, orig, DIM);
+  if (orig_norm > 1e-6f) {
+    EXPECT_LT(recon_err / orig_norm, 1.0f)
+        << "recon_err=" << recon_err << " orig_norm=" << orig_norm;
+  }
+}
