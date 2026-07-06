@@ -21,13 +21,20 @@ namespace zvec::turbo::avx512 {
 
 // ADC (Asymmetric Distance Computation) via AVX512 gather.
 // Processes 16 subquantizers per _mm512_i32gather_ps iteration.
-void pq_adc_int8_distance_avx512(const uint8_t *pq_code, const float *lut,
+void pq_adc_int8_distance_avx512(const void *pq_code, const void *lut,
                                   size_t num_subquantizers, float *out);
 
 // SDC (Symmetric Distance Computation) via AVX512 gather.
 // 16-wide index computation + gather.
-void pq_sdc_int8_distance_avx512(const uint8_t *a, const uint8_t *b,
-                                  const float *dist_table,
+void pq_sdc_int8_distance_avx512(const void *a, const void *b,
+                                  const void *dist_table,
                                   size_t num_subquantizers, float *out);
+
+// Batch ADC via AVX512 gather: process 4 candidates per iteration,
+// each using 16-wide _mm512_i32gather_ps. 4 independent __m512
+// accumulators maximize ILP.
+void pq_adc_int8_batch_distance_avx512(const void **candidates, const void *lut,
+                                        size_t num, size_t num_subquantizers,
+                                        float *out);
 
 }  // namespace zvec::turbo::avx512

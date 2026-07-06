@@ -17,6 +17,7 @@
 #include <cstring>
 #include <limits>
 #include <random>
+#include <thread>
 #include <vector>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_logger.h>
@@ -66,6 +67,7 @@ int PqInt8Quantizer::init(const IndexMeta &meta,
   auto pq_k = get_pq_kernels(QuantizeType::kPQ);
   adc_fn_ = pq_k.adc_distance;
   sdc_fn_ = pq_k.sdc_distance;
+  batch_adc_fn_ = pq_k.batch_adc_distance;
 
   // LUT / dist_table computation reuses the metric-aware fp32 batch distance
   // function (already SIMD-optimized), no need for a hand-written kernel.
@@ -112,37 +114,41 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   std::vector<float> new_centroids(k * d);
   std::vector<uint32_t> counts(k);
 
+  // Pre-build centroid pointer array for SIMD batch distance.
+  std::vector<const void *> centroid_ptrs(k);
+  for (size_t c = 0; c < k; ++c) {
+    centroid_ptrs[c] = centroids_m + c * d;
+  }
+  std::vector<float> dists(k);
+
   for (uint32_t iter = 0; iter < kMaxKmeansIters; ++iter) {
     bool changed = false;
 
-    // Assignment step.
+    // Assignment step — use SIMD-accelerated fp32_batch_fn_ instead of
+    // scalar L2 loop.  Each call computes distances from one sub-vector
+    // to all k centroids in one batch.
     for (size_t i = 0; i < num; ++i) {
       const float *sub_vec =
           reinterpret_cast<const float *>(
               reinterpret_cast<const uint8_t *>(data) + i * stride) +
           sub_idx * d;
 
-      float best_dist = std::numeric_limits<float>::max();
-      uint32_t best_idx = 0;
-      for (size_t c = 0; c < k; ++c) {
-        float dist = 0.0f;
-        const float *cent = centroids_m + c * d;
-        for (size_t j = 0; j < d; ++j) {
-          float diff = sub_vec[j] - cent[j];
-          dist += diff * diff;
-        }
-        if (dist < best_dist) {
-          best_dist = dist;
-          best_idx = static_cast<uint32_t>(c);
-        }
-      }
+      fp32_batch_fn_(centroid_ptrs.data(),
+                     reinterpret_cast<const void *>(sub_vec),
+                     k, d, dists.data());
+      uint32_t best_idx = static_cast<uint32_t>(
+          std::min_element(dists.begin(), dists.end()) - dists.begin());
+
       if (assignments[i] != best_idx) {
         changed = true;
         assignments[i] = best_idx;
       }
     }
 
-    if (!changed) break;
+    if (!changed) {
+      LOG_INFO("  sub[%zu] converged at iter %u", sub_idx, iter + 1);
+      break;
+    }
 
     // Update step.
     std::fill(new_centroids.begin(), new_centroids.end(), 0.0f);
@@ -181,6 +187,10 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
 }
 
 int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
+  return train(holder, 1);
+}
+
+int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   if (!holder) {
     return kErrUnsupported;
   }
@@ -199,14 +209,56 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
 
   size_t data_stride = original_dim_ * sizeof(float);
 
-  // Train each sub-quantizer independently.
-  for (uint32_t m = 0; m < num_subquantizers_; ++m) {
-    train_subquantizer(all_data.data(), num, data_stride, m);
+  // Clamp thread count to [1, num_subquantizers_].
+  thread_count = std::max(1, std::min(thread_count,
+                                       static_cast<int>(num_subquantizers_)));
+
+  LOG_INFO("PQ training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
+           "max_iters=%u, threads=%d",
+           num, original_dim_, num_subquantizers_, sub_dim_,
+           kMaxKmeansIters, thread_count);
+
+  if (thread_count == 1) {
+    // Single-threaded path.
+    for (uint32_t m = 0; m < num_subquantizers_; ++m) {
+      train_subquantizer(all_data.data(), num, data_stride, m);
+      LOG_INFO("  sub-quantizer [%u/%u] done",
+               m + 1, num_subquantizers_);
+    }
+  } else {
+    // Multi-threaded path: each thread handles a contiguous range of
+    // sub-quantizers.  Sub-quantizers are fully independent — no
+    // synchronization needed.
+    std::vector<std::thread> threads;
+    threads.reserve(thread_count);
+
+    for (int t = 0; t < thread_count; ++t) {
+      uint32_t m_begin = static_cast<uint32_t>(
+          (static_cast<size_t>(t) * num_subquantizers_) / thread_count);
+      uint32_t m_end = static_cast<uint32_t>(
+          (static_cast<size_t>(t + 1) * num_subquantizers_) / thread_count);
+
+      threads.emplace_back([this, &all_data, num, data_stride,
+                            m_begin, m_end]() {
+        for (uint32_t m = m_begin; m < m_end; ++m) {
+          train_subquantizer(all_data.data(), num, data_stride, m);
+        }
+      });
+    }
+
+    for (auto &th : threads) {
+      th.join();
+    }
+
+    LOG_INFO("  all %u sub-quantizers trained (%d threads)",
+             num_subquantizers_, thread_count);
   }
 
   // Pre-compute SDC dist_table.
+  LOG_INFO("Computing SDC dist_table ...");
   compute_dist_table();
 
+  LOG_INFO("PQ training complete.");
   return 0;
 }
 
@@ -262,6 +314,10 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   const float *vec = reinterpret_cast<const float *>(input);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
 
+  // using _mm256_cmp_ps + _mm256_blendv_ps for branchless min+argmin
+  // without an intermediate distance buffer.  Consider adopting the same
+  // fused approach for small sub_dim to eliminate the scalar argmin loop
+  // in find_nearest_centroid.
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
     code[m] = static_cast<uint8_t>(
         find_nearest_centroid(vec + m * sub_dim_, m));
@@ -346,6 +402,10 @@ float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
 int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
                                std::string *out,
                                IndexQueryMeta *ometa) const {
+  if (qmeta.unit_size() != sizeof(float)) {
+    return kErrUnsupported;
+  }
+
   size_t lut_bytes = quantized_query_vector_length();
   out->resize(lut_bytes);
   quantize_query(query, &(*out)[0]);
@@ -358,40 +418,28 @@ int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
 
 DistanceImpl PqInt8Quantizer::distance(const void *query,
                                        const IndexQueryMeta &qmeta) const {
-  (void)qmeta;  // reserved for future use (e.g. data-type dispatch)
-  // Build the LUT from the (already quantized) query.
+  (void)qmeta;
+
+  // ADC: PqAdcDistanceFunc signature now matches DistanceFunc directly
+  // (both use void*), so we can assign without a lambda wrapper.
+  DistanceFunc adc_func = adc_fn_;
+
+  // SDC: still needs a lambda because the kernel has 5 parameters
+  // (extra dist_table pointer), vs DistanceFunc's 4.
+  auto sdc = sdc_fn_;
+  const void *dt = dist_table_.data();
+  DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b,
+                                     size_t dim, float *out) {
+    sdc(a, b, dt, dim, out);
+  };
+
+  // Batch ADC: ISA-dispatched batch4 kernel, no lambda needed.
+  BatchDistanceFunc batch_func = batch_adc_fn_;
+
+  // The query is already quantized (LUT) by the caller (reset_query)
+  // — copy it directly into DistanceImpl storage.
   size_t lut_bytes = quantized_query_vector_length();
   std::string lut_storage(static_cast<const char *>(query), lut_bytes);
-
-  // ADC function: DistanceFunc signature
-  //   (const void *candidate_pq_code, const void *lut, size_t dim, float *out)
-  // dim here is num_subquantizers (passed through DistanceImpl::dim()).
-  auto nsq = num_subquantizers_;
-  auto adc = adc_fn_;
-  DistanceFunc adc_func = [nsq, adc](const void *cand, const void *lut,
-                                      size_t /*dim*/, float *out) {
-    adc(reinterpret_cast<const uint8_t *>(cand),
-        reinterpret_cast<const float *>(lut), nsq, out);
-  };
-
-  // SDC (symmetric) function: captures dist_table + sdc kernel.
-  auto sdc = sdc_fn_;
-  const float *dt = dist_table_.data();
-  DistanceFunc sdc_func = [nsq, sdc, dt](const void *a, const void *b,
-                                          size_t /*dim*/, float *out) {
-    sdc(reinterpret_cast<const uint8_t *>(a),
-        reinterpret_cast<const uint8_t *>(b), dt, nsq, out);
-  };
-
-  // Batch ADC: iterate over candidates.
-  BatchDistanceFunc batch_func =
-      [nsq, adc](const void **candidates, const void *lut, size_t num,
-                  size_t /*dim*/, float *out) {
-        for (size_t i = 0; i < num; ++i) {
-          adc(reinterpret_cast<const uint8_t *>(candidates[i]),
-              reinterpret_cast<const float *>(lut), nsq, out + i);
-        }
-      };
 
   return DistanceImpl(std::move(adc_func), std::move(sdc_func),
                       std::move(batch_func), std::move(lut_storage),
@@ -471,6 +519,7 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   auto pq_k = get_pq_kernels(QuantizeType::kPQ);
   adc_fn_ = pq_k.adc_distance;
   sdc_fn_ = pq_k.sdc_distance;
+  batch_adc_fn_ = pq_k.batch_adc_distance;
 
   fp32_batch_fn_ = get_batch_distance_func(
       metric_from_name(meta_.metric_name()), DataType::kFp32,

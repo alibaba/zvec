@@ -37,10 +37,12 @@ inline float horizontal_sum_avx2(__m256 v) {
 
 }  // namespace
 
-void pq_adc_int8_distance_avx2(const uint8_t *pq_code, const float *lut,
+void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
                                 size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 8;  // AVX2 processes 8 floats at once
+  const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
+  const auto *lut = reinterpret_cast<const float *>(lut_v);
 
   __m256 acc = _mm256_setzero_ps();
 
@@ -82,12 +84,15 @@ void pq_adc_int8_distance_avx2(const uint8_t *pq_code, const float *lut,
   *out = sum;
 }
 
-void pq_sdc_int8_distance_avx2(const uint8_t *a, const uint8_t *b,
-                                const float *dist_table,
+void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
+                                const void *dist_table_v,
                                 size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 8;
+  const auto *a = reinterpret_cast<const uint8_t *>(a_v);
+  const auto *b = reinterpret_cast<const uint8_t *>(b_v);
+  const auto *dist_table = reinterpret_cast<const float *>(dist_table_v);
 
   __m256 acc = _mm256_setzero_ps();
 
@@ -134,6 +139,81 @@ void pq_sdc_int8_distance_avx2(const uint8_t *a, const uint8_t *b,
   }
 
   *out = sum;
+}
+
+void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
+                                      const void *lut_v, size_t num,
+                                      size_t num_subquantizers, float *out) {
+  constexpr int kNumCentroids = 256;
+  constexpr int kChunkSize = 8;
+  constexpr int kBatch = 4;
+  const auto *lut = reinterpret_cast<const float *>(lut_v);
+  const auto *candidates =
+      reinterpret_cast<const uint8_t *const *>(candidates_v);
+
+  // Base offsets: [0, 256, 512, ..., 7*256] — reused for all candidates.
+  const __m256i base_offsets =
+      _mm256_setr_epi32(0, kNumCentroids, 2 * kNumCentroids, 3 * kNumCentroids,
+                        4 * kNumCentroids, 5 * kNumCentroids, 6 * kNumCentroids,
+                        7 * kNumCentroids);
+
+  size_t i = 0;
+  for (; i + kBatch <= num; i += kBatch) {
+    const uint8_t *c0 = candidates[i];
+    const uint8_t *c1 = candidates[i + 1];
+    const uint8_t *c2 = candidates[i + 2];
+    const uint8_t *c3 = candidates[i + 3];
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
+
+    size_t m = 0;
+    for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
+      const float *lut_base = lut + m * kNumCentroids;
+
+      __m128i codes0 =
+          _mm_loadl_epi64(reinterpret_cast<const __m128i *>(c0 + m));
+      __m128i codes1 =
+          _mm_loadl_epi64(reinterpret_cast<const __m128i *>(c1 + m));
+      __m128i codes2 =
+          _mm_loadl_epi64(reinterpret_cast<const __m128i *>(c2 + m));
+      __m128i codes3 =
+          _mm_loadl_epi64(reinterpret_cast<const __m128i *>(c3 + m));
+
+      __m256i idx0 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes0), base_offsets);
+      __m256i idx1 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes1), base_offsets);
+      __m256i idx2 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes2), base_offsets);
+      __m256i idx3 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes3), base_offsets);
+
+      acc0 = _mm256_add_ps(acc0, _mm256_i32gather_ps(lut_base, idx0, 4));
+      acc1 = _mm256_add_ps(acc1, _mm256_i32gather_ps(lut_base, idx1, 4));
+      acc2 = _mm256_add_ps(acc2, _mm256_i32gather_ps(lut_base, idx2, 4));
+      acc3 = _mm256_add_ps(acc3, _mm256_i32gather_ps(lut_base, idx3, 4));
+    }
+
+    float s0 = horizontal_sum_avx2(acc0);
+    float s1 = horizontal_sum_avx2(acc1);
+    float s2 = horizontal_sum_avx2(acc2);
+    float s3 = horizontal_sum_avx2(acc3);
+
+    // Scalar leftover for remaining subquantizers.
+    for (; m < num_subquantizers; ++m) {
+      const float *tab = lut + m * kNumCentroids;
+      s0 += tab[c0[m]];
+      s1 += tab[c1[m]];
+      s2 += tab[c2[m]];
+      s3 += tab[c3[m]];
+    }
+    out[i] = s0;
+    out[i + 1] = s1;
+    out[i + 2] = s2;
+    out[i + 3] = s3;
+  }
+  // Remaining candidates: use single ADC kernel.
+  for (; i < num; ++i) {
+    pq_adc_int8_distance_avx2(candidates[i], lut, num_subquantizers, out + i);
+  }
 }
 
 }  // namespace zvec::turbo::avx2

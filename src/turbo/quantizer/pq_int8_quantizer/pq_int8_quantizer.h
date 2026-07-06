@@ -64,6 +64,8 @@ class PqInt8Quantizer : public Quantizer {
 
   int train(IndexHolder::Pointer holder) override;
 
+  int train(IndexHolder::Pointer holder, int thread_count) override;
+
   size_t quantized_datapoint_vector_length() const override {
     return num_subquantizers_;
   }
@@ -132,9 +134,10 @@ class PqInt8Quantizer : public Quantizer {
   //! [num_subquantizers * kNumCentroids * kNumCentroids]
   std::vector<float> dist_table_;
 
-  //! ISA-dispatched kernel function pointers (ADC / SDC).
+  //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
   PqAdcDistanceFunc adc_fn_{nullptr};
   PqSdcKernelFunc sdc_fn_{nullptr};
+  PqBatchAdcFunc batch_adc_fn_{nullptr};
 
   //! Reused fp32 batch distance function for LUT computation and SDC
   //! dist_table precomputation.  Obtained from get_batch_distance_func()

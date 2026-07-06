@@ -208,11 +208,13 @@ PqKernels get_pq_kernels(QuantizeType quantize_type,
     // Default: scalar fallback
     k.adc_distance = scalar::pq_adc_int8_distance;
     k.sdc_distance = scalar::pq_sdc_int8_distance;
+    k.batch_adc_distance = scalar::pq_adc_int8_batch_distance;
 
 #if defined(__AVX512F__)
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
       k.adc_distance = avx512::pq_adc_int8_distance_avx512;
       k.sdc_distance = avx512::pq_sdc_int8_distance_avx512;
+      k.batch_adc_distance = avx512::pq_adc_int8_batch_distance_avx512;
       return k;
     }
 #endif
@@ -220,6 +222,7 @@ PqKernels get_pq_kernels(QuantizeType quantize_type,
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
       k.adc_distance = avx2::pq_adc_int8_distance_avx2;
       k.sdc_distance = avx2::pq_sdc_int8_distance_avx2;
+      k.batch_adc_distance = avx2::pq_adc_int8_batch_distance_avx2;
     }
 #endif
   }
