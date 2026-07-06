@@ -16,13 +16,6 @@
 #include <zvec/core/framework/index_meta.h>
 #include "hnsw_entity.h"
 
-// TODO(HNSW+PQ): Adapt this file to the origin architecture:
-//   1. Integrate turbo::Quantizer + turbo::DistanceImpl (see distance.h)
-//   2. Use dist_impl_.sym_func() for zero-branch dist(void*,void*) dispatch
-//   3. HnswContext needs dual calculators: add_dc_ + search_dc_ with mode_
-//   4. reset_query() should call quantizer_->distance() to build DistanceImpl
-// Reference: origin/turbo/src/core/algorithm/hnsw/hnsw_dist_calculator.h
-
 namespace zvec {
 namespace core {
 
@@ -91,16 +84,6 @@ class HnswDistCalculator {
     batch_distance_ = batch_distance;
   }
 
-  //! Set the pairwise (SDC) distance function used for node-vs-node
-  //! comparisons (e.g. HNSW neighbor pruning).  When set, dist(lhs, rhs)
-  //! will use this function instead of the ADC distance_.  For non-PQ
-  //! quantizers this is left unset (nullptr) and dist(lhs, rhs) falls
-  //! back to distance_ as before.
-  inline void set_pairwise_distance(
-      const IndexMetric::MatrixDistance &pairwise_distance) {
-    pairwise_distance_ = pairwise_distance;
-  }
-
   //! Reset query vector data
   inline void reset_query(const void *query) {
     error_ = false;
@@ -117,13 +100,7 @@ class HnswDistCalculator {
 
     float score{0.0f};
 
-    // Use pairwise (SDC) distance when available (PQ node-vs-node path);
-    // otherwise fall back to the standard ADC distance_.
-    if (pairwise_distance_) {
-      pairwise_distance_(vec_lhs, vec_rhs, dim_, &score);
-    } else {
-      distance_(vec_lhs, vec_rhs, dim_, &score);
-    }
+    distance_(vec_lhs, vec_rhs, dim_, &score);
 
     return score;
   }
@@ -256,7 +233,6 @@ class HnswDistCalculator {
   const HnswEntity *entity_;
 
   IndexMetric::MatrixDistance distance_;
-  IndexMetric::MatrixDistance pairwise_distance_;  // SDC for PQ (optional)
   IndexMetric::MatrixBatchDistance batch_distance_;
 
   const void *query_;
