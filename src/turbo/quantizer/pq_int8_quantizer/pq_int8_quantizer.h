@@ -116,8 +116,9 @@ class PqInt8Quantizer : public Quantizer {
   //! Compute the centroid-to-centroid distance table for SDC.
   void compute_dist_table();
 
-  //! Find the nearest centroid for a single sub-vector.
-  size_t find_nearest_centroid(const float *sub_vec, size_t sub_idx) const;
+  //! Build centroid_ptrs_cache_ from current centroids_.
+  //! Called after train() and deserialize() when centroids are available.
+  void build_centroid_ptrs_cache();
 
   static constexpr uint32_t kNumCentroids = 256;
   static constexpr uint32_t kMaxKmeansIters = 25;
@@ -134,10 +135,17 @@ class PqInt8Quantizer : public Quantizer {
   //! [num_subquantizers * kNumCentroids * kNumCentroids]
   std::vector<float> dist_table_;
 
+  //! Pre-built centroid pointer arrays for each sub-quantizer.
+  //! Layout: centroid_ptrs_cache_[sub_idx][centroid_idx] = pointer to centroid.
+  //! Built once during init/deserialize, reused by compute_dist_table
+  //! and quantize_query to avoid repeated allocations.
+  std::vector<std::vector<const void *>> centroid_ptrs_cache_;
+
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
   PqAdcDistanceFunc adc_fn_{nullptr};
   PqSdcKernelFunc sdc_fn_{nullptr};
   PqBatchAdcFunc batch_adc_fn_{nullptr};
+
 
   //! Reused fp32 batch distance function for LUT computation and SDC
   //! dist_table precomputation.  Obtained from get_batch_distance_func()

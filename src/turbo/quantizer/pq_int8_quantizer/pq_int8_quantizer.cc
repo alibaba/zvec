@@ -82,6 +82,21 @@ int PqInt8Quantizer::init(const IndexMeta &meta,
 // ---------------------------------------------------------------------------
 // Simple Lloyd's KMeans for one sub-quantizer.
 // ---------------------------------------------------------------------------
+
+void PqInt8Quantizer::build_centroid_ptrs_cache() {
+  const size_t k = kNumCentroids;
+  const size_t d = sub_dim_;
+  centroid_ptrs_cache_.resize(num_subquantizers_);
+  for (uint32_t m = 0; m < num_subquantizers_; ++m) {
+    const float *centroids_m = centroids_.data() + static_cast<size_t>(m) * k * d;
+    auto &ptrs = centroid_ptrs_cache_[m];
+    ptrs.resize(k);
+    for (size_t c = 0; c < k; ++c) {
+      ptrs[c] = centroids_m + c * d;
+    }
+  }
+}
+
 void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
                                          size_t stride, size_t sub_idx) {
   const size_t k = kNumCentroids;
@@ -254,6 +269,9 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
              num_subquantizers_, thread_count);
   }
 
+  // Pre-build centroid pointer cache (needed by compute_dist_table).
+  build_centroid_ptrs_cache();
+
   // Pre-compute SDC dist_table.
   LOG_INFO("Computing SDC dist_table ...");
   compute_dist_table();
@@ -270,57 +288,38 @@ void PqInt8Quantizer::compute_dist_table() {
 
   // For each sub-quantizer, compute centroid-to-centroid distances via the
   // metric-aware fp32 batch distance function.
-  std::vector<const void *> centroid_ptrs(k);
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
     const float *centroids_m = centroids_.data() + m * k * d;
     float *table_m = dist_table_.data() + m * k * k;
 
-    for (uint32_t c = 0; c < k; ++c) {
-      centroid_ptrs[c] = centroids_m + c * d;
-    }
+    // Use pre-built centroid pointer cache.
+    // const_cast: .data() returns const void* const* but fp32_batch_fn_
+    // expects const void**.  The kernel never modifies the pointer array.
+    const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     for (uint32_t i = 0; i < k; ++i) {
-      fp32_batch_fn_(centroid_ptrs.data(),
+      fp32_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
                      reinterpret_cast<const void *>(centroids_m + i * d),
                      k, d, table_m + i * k);
     }
   }
 }
 
-size_t PqInt8Quantizer::find_nearest_centroid(const float *sub_vec,
-                                              size_t sub_idx) const {
-  const size_t k = kNumCentroids;
-  const size_t d = sub_dim_;
-  const float *centroids_m =
-      centroids_.data() + sub_idx * k * d;
-
-  float best_dist = std::numeric_limits<float>::max();
-  size_t best_idx = 0;
-  for (size_t c = 0; c < k; ++c) {
-    float dist = 0.0f;
-    const float *cent = centroids_m + c * d;
-    for (size_t j = 0; j < d; ++j) {
-      float diff = sub_vec[j] - cent[j];
-      dist += diff * diff;
-    }
-    if (dist < best_dist) {
-      best_dist = dist;
-      best_idx = c;
-    }
-  }
-  return best_idx;
-}
-
 void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   const float *vec = reinterpret_cast<const float *>(input);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
 
-  // using _mm256_cmp_ps + _mm256_blendv_ps for branchless min+argmin
-  // without an intermediate distance buffer.  Consider adopting the same
-  // fused approach for small sub_dim to eliminate the scalar argmin loop
-  // in find_nearest_centroid.
+  // Reuse quantize_query to build LUT (distances from each sub-vector to
+  // all 256 centroids), then argmin each sub to get the PQ code.
+  // This shares the same fp32_batch_fn_ + centroid_ptrs_cache_ path as
+  // LUT computation, eliminating the separate find_nearest_centroid.
+  const size_t lut_size = static_cast<size_t>(num_subquantizers_) * kNumCentroids;
+  std::vector<float> lut(lut_size);
+  quantize_query(vec, lut.data());
+
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
+    const float *row = lut.data() + m * kNumCentroids;
     code[m] = static_cast<uint8_t>(
-        find_nearest_centroid(vec + m * sub_dim_, m));
+        std::min_element(row, row + kNumCentroids) - row);
   }
 }
 
@@ -330,14 +329,11 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
 
   // For each sub-quantizer, compute distance from query sub-vector to all
   // 256 centroids via the metric-aware fp32 batch distance function.
-  std::vector<const void *> centroid_ptrs(kNumCentroids);
+  // Uses pre-built centroid pointer cache to avoid per-sub allocations.
+  // const_cast: see compute_dist_table for rationale.
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
-    const float *centroids_m =
-        centroids_.data() + static_cast<size_t>(m) * kNumCentroids * sub_dim_;
-    for (uint32_t k = 0; k < kNumCentroids; ++k) {
-      centroid_ptrs[k] = centroids_m + k * sub_dim_;
-    }
-    fp32_batch_fn_(centroid_ptrs.data(),
+    const auto &centroid_ptrs = centroid_ptrs_cache_[m];
+    fp32_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
                    reinterpret_cast<const void *>(query + m * sub_dim_),
                    kNumCentroids, sub_dim_, lut + m * kNumCentroids);
   }
@@ -356,12 +352,13 @@ float PqInt8Quantizer::calc_distance_dp_query(const void *dp,
 void PqInt8Quantizer::calc_distance_dp_query_batch(
     const void *const *dp_list, int dp_num, const void *query,
     float *dist_list) const {
-  for (int i = 0; i < dp_num; ++i) {
-    float d = 0.0f;
-    adc_fn_(reinterpret_cast<const uint8_t *>(dp_list[i]),
-            reinterpret_cast<const float *>(query), num_subquantizers_, &d);
-    dist_list[i] = d;
-  }
+  // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
+  // const_cast: dp_list is const void* const* (outer const from vtable
+  // signature), but batch_adc_fn_ expects const void**.  Kernel is read-only
+  // on the pointer array.
+  batch_adc_fn_(const_cast<const void **>(dp_list), query,
+                static_cast<size_t>(dp_num),
+                num_subquantizers_, dist_list);
 }
 
 float PqInt8Quantizer::calc_distance_dp_query_unquantized(
@@ -382,12 +379,11 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
   std::vector<float> lut(static_cast<size_t>(num_subquantizers_) *
                          kNumCentroids);
   quantize_query(query, lut.data());
-  for (int i = 0; i < dp_num; ++i) {
-    float d = 0.0f;
-    adc_fn_(reinterpret_cast<const uint8_t *>(dp_list[i]), lut.data(),
-            num_subquantizers_, &d);
-    dist_list[i] = d;
-  }
+  // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
+  // const_cast: see calc_distance_dp_query_batch for rationale.
+  batch_adc_fn_(const_cast<const void **>(dp_list), lut.data(),
+                static_cast<size_t>(dp_num),
+                num_subquantizers_, dist_list);
 }
 
 float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
@@ -524,6 +520,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   fp32_batch_fn_ = get_batch_distance_func(
       metric_from_name(meta_.metric_name()), DataType::kFp32,
       QuantizeType::kDefault, CpuArchType::kAuto);
+
+  // Pre-build centroid pointer cache for fast encode/search.
+  build_centroid_ptrs_cache();
 
   return 0;
 }
