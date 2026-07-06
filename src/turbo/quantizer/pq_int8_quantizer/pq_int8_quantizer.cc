@@ -22,6 +22,7 @@
 #include <vector>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_logger.h>
+#include <ailego/math/normalizer.h>
 
 namespace zvec {
 namespace turbo {
@@ -284,16 +285,8 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   if (meta_.metric_name() == "Cosine") {
     for (size_t i = 0; i < num; ++i) {
       float *v = all_data.data() + i * original_dim_;
-      float norm_sq = 0.0f;
-      for (uint32_t j = 0; j < original_dim_; ++j) {
-        norm_sq += v[j] * v[j];
-      }
-      if (norm_sq > 0.0f) {
-        const float inv_norm = 1.0f / std::sqrt(norm_sq);
-        for (uint32_t j = 0; j < original_dim_; ++j) {
-          v[j] *= inv_norm;
-        }
-      }
+      float norm = 0.0f;
+      ailego::Normalizer<float>::L2(v, original_dim_, &norm);
     }
   }
 
@@ -391,17 +384,8 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   float vec_norm = 0.0f;
   if (meta_.metric_name() == "Cosine") {
     norm_vec_storage.assign(vec, vec + original_dim_);
-    float norm_sq = 0.0f;
-    for (uint32_t j = 0; j < original_dim_; ++j) {
-      norm_sq += norm_vec_storage[j] * norm_vec_storage[j];
-    }
-    vec_norm = (norm_sq > 0.0f) ? std::sqrt(norm_sq) : 0.0f;
-    if (vec_norm > 0.0f) {
-      const float inv_norm = 1.0f / vec_norm;
-      for (uint32_t j = 0; j < original_dim_; ++j) {
-        norm_vec_storage[j] *= inv_norm;
-      }
-    }
+    ailego::Normalizer<float>::L2(norm_vec_storage.data(), original_dim_,
+                                  &vec_norm);
     vec = norm_vec_storage.data();
   }
 
@@ -450,16 +434,9 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   std::vector<float> norm_query_storage;
   if (meta_.metric_name() == "Cosine") {
     norm_query_storage.assign(query, query + original_dim_);
-    float norm_sq = 0.0f;
-    for (uint32_t i = 0; i < original_dim_; ++i) {
-      norm_sq += norm_query_storage[i] * norm_query_storage[i];
-    }
-    const float inv_norm = (norm_sq > 0.0f)
-                               ? 1.0f / std::sqrt(norm_sq)
-                               : 0.0f;
-    for (uint32_t i = 0; i < original_dim_; ++i) {
-      norm_query_storage[i] *= inv_norm;
-    }
+    float norm = 0.0f;
+    ailego::Normalizer<float>::L2(norm_query_storage.data(), original_dim_,
+                                  &norm);
     query = norm_query_storage.data();
   }
 
