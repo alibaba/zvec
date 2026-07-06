@@ -84,7 +84,10 @@ elseif(IOS)
     "CFLAGS=${_lz4_cflags}"
   )
 else()
-  list(APPEND _lz4_env "CFLAGS=-fPIC")
+  list(APPEND _lz4_env
+    "CC=${CMAKE_C_COMPILER}"
+    "CFLAGS=-fPIC"
+  )
 endif()
 
 if(MSVC)
