@@ -88,14 +88,6 @@ T checked_cast(const py::handle &h, const std::string &vector_field,
   }
 }
 
-template <typename T>
-std::string serialize_vector(const T *data, size_t n) {
-  std::string buf;
-  buf.resize(n * sizeof(T));
-  std::memcpy(buf.data(), data, n * sizeof(T));
-  return buf;
-}
-
 template <typename ValueType, typename ValueCastFn>
 std::pair<std::string, std::string> serialize_sparse_vector(
     const py::dict &sparse_dict, ValueCastFn &&value_caster) {
@@ -1943,6 +1935,15 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
             SubQuery sub;
             sub.num_candidates_ = sq.topk_;
             sub.target_ = sq.target_;
+            // SubQuery is copied by value into MultiQuery.  Materialize
+            // non-owning vector views so the copied SubQuery does not depend on
+            // the original _SearchQuery keep-alive relationship.
+            if (auto *vvc = sub.target_.get_vector_view_clause()) {
+              VectorClause vc{std::string(vvc->query_vector_),
+                              std::string(vvc->sparse_indices_),
+                              std::string(vvc->sparse_values_)};
+              sub.target_.clause_ = std::move(vc);
+            }
             return sub;
           },
           py::arg("search_query"),
@@ -1993,9 +1994,8 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
              const py::object &obj) {
             const DataType data_type = field_schema.data_type();
 
-            // dense vector — zero-copy via VectorViewClause pointing at the
-            // numpy buffer.  py::keep_alive<1, 3> on this def ensures the
-            // numpy array (obj) outlives the _SearchQuery (self).
+            // Dense vector data is referenced by the query object. Callers
+            // must not modify the source data until the query returns.
             if (FieldSchema::is_dense_vector_field(data_type)) {
               if (!py::isinstance<py::array>(obj)) {
                 throw py::type_error("Dense vector[" + field_schema.name() +
@@ -2061,14 +2061,16 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
             throw py::type_error("Unsupported vector field type for field: " +
                                  field_schema.name());
           },
-          py::keep_alive<1, 3>())
+          py::arg("field_schema"), py::arg("obj"), py::keep_alive<1, 3>(),
+          "Set query vector. Dense vector source data must not be modified "
+          "until the query finishes.")
       .def(
           "get_vector",
           [](const SearchQuery &self,
              const FieldSchema &field_schema) -> py::object {
             DataType data_type = field_schema.data_type();
             // get_vector_view() works for both VectorClause and
-            // VectorViewClause (the zero-copy dense path).
+            // VectorViewClause.
             auto vv = self.target_.get_vector_view();
             if (FieldSchema::is_dense_vector_field(data_type)) {
               if (!vv || vv->query_vector_.empty()) {
