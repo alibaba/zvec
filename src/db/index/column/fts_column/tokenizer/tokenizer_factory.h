@@ -44,8 +44,6 @@ using TokenizerPipelinePtr = std::shared_ptr<TokenizerPipeline>;
 
 /*! Tokenizer factory
  *  Create TokenizerPipeline based on FtsIndexParams configuration.
- *  Supported tokenizers: standard, jieba, whitespace.
- *  Supported filters: lowercase, ascii_folding.
  */
 class TokenizerFactory {
  public:
