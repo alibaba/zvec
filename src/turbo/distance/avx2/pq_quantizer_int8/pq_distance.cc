@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "avx2/pq/pq_distance.h"
+#include "avx2/pq_quantizer_int8/pq_distance.h"
 
 #include <immintrin.h>
 

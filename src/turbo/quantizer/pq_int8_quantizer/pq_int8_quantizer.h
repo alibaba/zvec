@@ -67,7 +67,7 @@ class PqInt8Quantizer : public Quantizer {
   int train(IndexHolder::Pointer holder, int thread_count) override;
 
   size_t quantized_datapoint_vector_length() const override {
-    return num_subquantizers_;
+    return num_subquantizers_ + extra_meta_size_;
   }
 
   size_t quantized_query_vector_length() const override {
@@ -98,6 +98,9 @@ class PqInt8Quantizer : public Quantizer {
   int quantize(const void *query, const IndexQueryMeta &qmeta,
                std::string *out, IndexQueryMeta *ometa) const override;
 
+  int dequantize(const void *in, const IndexQueryMeta &qmeta,
+                 std::string *out) const override;
+
   DistanceImpl distance(const void *query,
                         const IndexQueryMeta &qmeta) const override;
 
@@ -122,6 +125,7 @@ class PqInt8Quantizer : public Quantizer {
 
   static constexpr uint32_t kNumCentroids = 256;
   static constexpr uint32_t kMaxKmeansIters = 25;
+  static constexpr uint32_t kExtraMetaSizeCosine = sizeof(float);
 
   IndexMeta meta_{};
   uint32_t original_dim_{0};
@@ -146,11 +150,18 @@ class PqInt8Quantizer : public Quantizer {
   PqSdcKernelFunc sdc_fn_{nullptr};
   PqBatchAdcFunc batch_adc_fn_{nullptr};
 
-
-  //! Reused fp32 batch distance function for LUT computation and SDC
-  //! dist_table precomputation.  Obtained from get_batch_distance_func()
-  //! which is metric-aware and already SIMD-optimized.
+  //! Metric-aware fp32 batch distance function for search-side LUT
+  //! computation and SDC dist_table.  Obtained from
+  //! get_batch_distance_func() with the configured metric.
   BatchDistanceFunc fp32_batch_fn_{};
+
+  //! L2-only fp32 batch distance function for encoding (quantize_data)
+  //! and KMeans training (train_subquantizer).  PQ encoding must always
+  //! minimize L2 quantization error regardless of the search metric.
+  //! This separation ensures encoding and search LUT use the correct
+  //! distance semantics independently.
+  BatchDistanceFunc fp32_l2_batch_fn_{};
+
 };
 
 }  // namespace turbo

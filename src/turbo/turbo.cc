@@ -29,11 +29,11 @@
 #endif
 #if defined(__AVX2__)
 #include "avx2/fht/fht.h"
-#include "avx2/pq/pq_distance.h"
+#include "avx2/pq_quantizer_int8/pq_distance.h"
 #endif
 #if defined(__AVX512F__)
 #include "avx512/fht/fht.h"
-#include "avx512/pq/pq_distance.h"
+#include "avx512/pq_quantizer_int8/pq_distance.h"
 #endif
 
 namespace zvec::turbo {
