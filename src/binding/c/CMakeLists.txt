@@ -221,6 +221,82 @@ target_compile_options(zvec_c_api PRIVATE
     $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Wpedantic>
 )
 
+if(APPLE)
+    add_library(zvec_c_api_static_objects OBJECT
+        ${ZVEC_C_API_SOURCES}
+        ${ZVEC_C_API_HEADERS}
+    )
+
+    set_target_properties(zvec_c_api_static_objects PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+
+    target_include_directories(zvec_c_api_static_objects
+        PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/src/generated>
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src
+    )
+
+    target_compile_options(zvec_c_api_static_objects PRIVATE
+        $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Wpedantic>
+    )
+
+    set(ZVEC_C_API_STATIC_ARCHIVE ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}/libzvec_c_api.a)
+    add_custom_command(
+        OUTPUT ${ZVEC_C_API_STATIC_ARCHIVE}
+        COMMAND /usr/bin/libtool -static -o ${ZVEC_C_API_STATIC_ARCHIVE}
+            $<TARGET_OBJECTS:zvec_c_api_static_objects>
+            $<TARGET_FILE:zvec_db>
+            $<TARGET_FILE:zvec_core>
+            $<TARGET_FILE:zvec_ailego>
+            $<TARGET_FILE:zvec_turbo>
+            $<TARGET_FILE:Arrow::parquet_static>
+            $<TARGET_FILE:glog>
+            $<TARGET_FILE:gflags_nothreads_static>
+            $<TARGET_FILE:roaring>
+            $<TARGET_FILE:rocksdb>
+            $<TARGET_FILE:lz4>
+            $<TARGET_FILE:antlr4_static>
+            $<TARGET_FILE:libprotobuf>
+            $<TARGET_FILE:FastPFOR>
+            $<TARGET_FILE:Arrow::arrow_dataset>
+            $<TARGET_FILE:Arrow::arrow_acero>
+            $<TARGET_FILE:Arrow::arrow_compute>
+            $<TARGET_FILE:Arrow::arrow_static>
+            $<TARGET_FILE:Arrow::arrow_depends>
+        DEPENDS
+            zvec_c_api_static_objects
+            zvec_db
+            zvec_core
+            zvec_ailego
+            zvec_turbo
+            Arrow::parquet_static
+            glog
+            gflags_nothreads_static
+            roaring
+            rocksdb
+            lz4
+            antlr4_static
+            libprotobuf
+            FastPFOR
+            Arrow::arrow_dataset
+            Arrow::arrow_acero
+            Arrow::arrow_compute
+            Arrow::arrow_static
+            Arrow::arrow_depends
+        COMMENT "Creating fat static C API archive libzvec_c_api.a"
+        VERBATIM
+    )
+
+    add_custom_target(zvec_c_api_static ALL DEPENDS ${ZVEC_C_API_STATIC_ARCHIVE})
+endif()
+
 # Strip symbols in release builds to reduce library size
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     if(UNIX AND NOT APPLE)
@@ -249,6 +325,12 @@ install(TARGETS zvec_c_api
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+
+if(APPLE)
+    install(FILES ${ZVEC_C_API_STATIC_ARCHIVE}
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+endif()
 
 # Install headers
 install(FILES ${PROJECT_SOURCE_DIR}/src/include/zvec/c_api.h
