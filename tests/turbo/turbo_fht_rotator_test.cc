@@ -56,7 +56,6 @@ TEST(FhtRotator, PowerOf2RoundTrip) {
   for (int dim : {1, 2, 4, 8, 16, 32, 64, 128, 256}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot) << "create failed for dim=" << dim;
-    rot->train(nullptr, 0, 0);
 
     std::vector<float> input(dim);
     fill_random(input.data(), dim, gen);
@@ -73,7 +72,6 @@ TEST(FhtRotator, NonPowerOf2RoundTrip) {
   for (int dim : {3, 5, 7, 10, 13, 31, 50, 97, 100, 127, 192, 320}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot) << "create failed for dim=" << dim;
-    rot->train(nullptr, 0, 0);
 
     std::vector<float> input(dim);
     fill_random(input.data(), dim, gen);
@@ -88,10 +86,9 @@ TEST(FhtRotator, NonPowerOf2RoundTrip) {
 TEST(FhtRotator, SerializeDeserialize) {
   std::mt19937 gen(999);
   for (int dim : {32, 97, 128}) {
-    // Build and train original rotator.
+    // Build original rotator.
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot);
-    rot->train(nullptr, 0, 0);
 
     // Serialize.
     std::string blob;
@@ -140,19 +137,16 @@ TEST(FhtRotator, DimensionPreserved) {
 // Train generates non-zero flip signs
 // ---------------------------------------------------------------------------
 
-TEST(FhtRotator, TrainGeneratesFlip) {
+TEST(FhtRotator, CreateGeneratesFlip) {
   for (int dim : {8, 64, 97}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot);
 
-    // Before train, apply should not crash but flip is empty — we skip
-    // calling apply before train.  After train, serialize must succeed
-    // (which requires flip to be populated).
-    rot->train(nullptr, 0, 0);
+    // After create, flip is already populated, so serialize must succeed.
 
     std::string blob;
     EXPECT_EQ(0, rot->serialize(&blob))
-        << "serialize failed after train for dim=" << dim;
+        << "serialize failed after create for dim=" << dim;
 
     // Verify the payload is not all zeros (extremely unlikely for random bits).
     const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(blob.data());
@@ -217,7 +211,6 @@ TEST(FhtRotator, L2DistancePreserved) {
   for (int dim : {32, 64, 97, 128}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot);
-    rot->train(nullptr, 0, 0);
 
     const int N = 50;
     std::vector<std::vector<float>> raw(N, std::vector<float>(dim));
@@ -264,7 +257,6 @@ TEST(FhtRotator, CosineDistancePreserved) {
   for (int dim : {32, 97, 128}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot);
-    rot->train(nullptr, 0, 0);
 
     const int N = 50;
     std::vector<std::vector<float>> raw(N, std::vector<float>(dim));
@@ -292,7 +284,6 @@ TEST(FhtRotator, ApplyIsNonTrivial) {
   for (int dim : {32, 97, 128}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot);
-    rot->train(nullptr, 0, 0);
 
     std::vector<float> input(dim);
     fill_random(input.data(), dim, gen);
@@ -321,7 +312,6 @@ TEST(FhtRotator, ApplyDeterministic) {
   for (int dim : {32, 97, 128}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot);
-    rot->train(nullptr, 0, 0);
 
     std::vector<float> input(dim);
     fill_random(input.data(), dim, gen);
@@ -344,10 +334,9 @@ TEST(FhtRotator, ApplyDeterministic) {
 TEST(FhtRotator, DeserializeOnExistingObject) {
   std::mt19937 gen(314);
   for (int dim : {32, 97, 128}) {
-    // Build and train original.
+    // Build original.
     auto rot1 = FhtRotator::create(dim);
     ASSERT_TRUE(rot1);
-    rot1->train(nullptr, 0, 0);
 
     std::string blob;
     ASSERT_EQ(0, rot1->serialize(&blob));
@@ -385,7 +374,6 @@ TEST(FhtRotator, DeserializeTruncatedPayload) {
   std::mt19937 gen(42);
   auto rot = FhtRotator::create(64);
   ASSERT_TRUE(rot);
-  rot->train(nullptr, 0, 0);
 
   std::string blob;
   ASSERT_EQ(0, rot->serialize(&blob));
@@ -411,7 +399,6 @@ TEST(FhtRotator, LargeDimension) {
   for (int dim : {1024, 2048, 4096}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot) << "create failed for dim=" << dim;
-    rot->train(nullptr, 0, 0);
 
     std::vector<float> input(dim);
     fill_random(input.data(), dim, gen);
@@ -441,7 +428,6 @@ TEST(FhtRotator, NormPreserved) {
   for (int dim : {32, 97, 128}) {
     auto rot = FhtRotator::create(dim);
     ASSERT_TRUE(rot);
-    rot->train(nullptr, 0, 0);
 
     std::vector<float> input(dim);
     fill_random(input.data(), dim, gen);

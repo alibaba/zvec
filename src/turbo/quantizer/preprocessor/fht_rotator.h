@@ -36,8 +36,9 @@ class FhtRotator : public Preprocessor {
  public:
   using Pointer = std::shared_ptr<FhtRotator>;
 
-  //! Create an untrained rotator for \p in_dim dimensions.
-  //! Call train() afterwards to generate the random flip-sign arrays.
+  //! Create a fully-initialized rotator for \p in_dim dimensions.
+  //! Random flip-sign arrays are generated during creation; the returned
+  //! object is immediately usable for apply() / apply_inverse().
   static Pointer create(int in_dim);
 
   //! Create and restore a rotator from a serialized blob (reads the type from
@@ -56,8 +57,8 @@ class FhtRotator : public Preprocessor {
   void apply(const float *in, float *out) const override;
   void apply_inverse(const float *in, float *out) const override;
 
-  //! Generate 4 rounds of random flip-sign arrays.
-  //! For FhtRotator the training data is ignored; only \p in_dim() matters.
+  //! No-op for FhtRotator.  Flip-sign arrays are generated in create().
+  //! Provided for interface compatibility with the Preprocessor contract.
   void train(const void *data, size_t num, size_t stride) override;
 
   int serialize(std::string *out) const override;

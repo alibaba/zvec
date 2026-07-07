@@ -46,7 +46,15 @@ FhtRotator::Pointer FhtRotator::create(int dim) {
   r->inv_kacs_walk_fn_ = k.inv_kacs_walk;
   r->inplace_fn_ = k.inplace;
   r->rescale_fn_ = k.rescale;
-  // flip_ stays empty until train() is called.
+
+  // Generate 4 rounds of random flip-sign arrays so the rotator is
+  // immediately usable after create().
+  r->flip_.resize(4 * r->flip_offset_);
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<int> dist(0, 255);
+  for (auto &b : r->flip_) b = static_cast<uint8_t>(dist(gen));
+
   return r;
 }
 
@@ -72,15 +80,7 @@ FhtRotator::Pointer FhtRotator::from_blob(const void *data, size_t len) {
 
 void FhtRotator::train(const void * /*data*/, size_t /*num*/,
                        size_t /*stride*/) {
-  if (in_dim_ <= 0) return;
-
-  flip_offset_ = (static_cast<size_t>(in_dim_) + kByteLen - 1) / kByteLen;
-  flip_.resize(4 * flip_offset_);
-
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<int> dist(0, 255);
-  for (auto &b : flip_) b = static_cast<uint8_t>(dist(gen));
+  // No-op: flip-sign arrays are generated in create().
 }
 
 // ---------------------------------------------------------------------------
