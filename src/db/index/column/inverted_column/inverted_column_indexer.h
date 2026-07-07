@@ -68,7 +68,7 @@ class InvertedColumnIndexer {
         field_(field),
         path_(context.db_path_),
         ctx_(context),
-        read_only_(read_only) {};
+        read_only_(read_only){};
 
   InvertedColumnIndexer(const InvertedColumnIndexer &) = delete;
   InvertedColumnIndexer(InvertedColumnIndexer &&) = delete;

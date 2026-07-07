@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "avx512/pq_quantizer_int8/pq_distance.h"
-
 #include <immintrin.h>
 
 namespace zvec::turbo::avx512 {
@@ -29,7 +28,7 @@ inline float horizontal_sum_avx512(__m512 v) {
 }  // namespace
 
 void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
-                                  size_t num_subquantizers, float *out) {
+                                 size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 16;  // AVX512 processes 16 floats at once
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
@@ -60,8 +59,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
     __m512i indices = _mm512_add_epi32(codes_16x32, base_offsets);
 
     // Gather 16 floats from lut using computed indices
-    __m512 gathered =
-        _mm512_i32gather_ps(indices, lut + m * kNumCentroids, 4);
+    __m512 gathered = _mm512_i32gather_ps(indices, lut + m * kNumCentroids, 4);
 
     acc = _mm512_add_ps(acc, gathered);
   }
@@ -77,8 +75,8 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
 }
 
 void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
-                                  const void *dist_table_v,
-                                  size_t num_subquantizers, float *out) {
+                                 const void *dist_table_v,
+                                 size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 16;
@@ -92,9 +90,9 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
   const __m512i base_offsets = _mm512_setr_epi32(
       0 * kTablePerSub, 1 * kTablePerSub, 2 * kTablePerSub, 3 * kTablePerSub,
       4 * kTablePerSub, 5 * kTablePerSub, 6 * kTablePerSub, 7 * kTablePerSub,
-      8 * kTablePerSub, 9 * kTablePerSub, 10 * kTablePerSub,
-      11 * kTablePerSub, 12 * kTablePerSub, 13 * kTablePerSub,
-      14 * kTablePerSub, 15 * kTablePerSub);
+      8 * kTablePerSub, 9 * kTablePerSub, 10 * kTablePerSub, 11 * kTablePerSub,
+      12 * kTablePerSub, 13 * kTablePerSub, 14 * kTablePerSub,
+      15 * kTablePerSub);
 
   // Multiplier for a[m] * 256
   const __m512i a_multiplier = _mm512_set1_epi32(kNumCentroids);
@@ -104,10 +102,8 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
   // Main loop: process 16 subquantizers per iteration
   for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
     // Load a[m..m+15] and b[m..m+15], zero-extend to int32
-    __m128i a_16x8 =
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + m));
-    __m128i b_16x8 =
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + m));
+    __m128i a_16x8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + m));
+    __m128i b_16x8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + m));
     __m512i a_16x32 = _mm512_cvtepu8_epi32(a_16x8);
     __m512i b_16x32 = _mm512_cvtepu8_epi32(b_16x8);
 
@@ -126,8 +122,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
 
   // Scalar leftover
   for (; m < num_subquantizers; ++m) {
-    size_t idx = m * kTablePerSub +
-                 static_cast<size_t>(a[m]) * kNumCentroids +
+    size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
   }
@@ -136,8 +131,8 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
 }
 
 void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
-                                        const void *lut_v, size_t num,
-                                        size_t num_subquantizers, float *out) {
+                                       const void *lut_v, size_t num,
+                                       size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 16;
   constexpr int kBatch = 4;
@@ -213,8 +208,7 @@ void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
   }
   // Remaining candidates: use single ADC kernel.
   for (; i < num; ++i) {
-    pq_adc_int8_distance_avx512(candidates[i], lut, num_subquantizers,
-                                out + i);
+    pq_adc_int8_distance_avx512(candidates[i], lut, num_subquantizers, out + i);
   }
 }
 

@@ -30,7 +30,7 @@ inline uint8_t decode_nibble(const uint8_t *code, size_t m) {
 }  // namespace
 
 void pq_adc_int4_distance(const void *pq_code_v, const void *lut_v,
-                           size_t num_subquantizers, float *out) {
+                          size_t num_subquantizers, float *out) {
   constexpr size_t kNumCentroids = 16;
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
   const auto *lut = reinterpret_cast<const float *>(lut_v);
@@ -43,8 +43,8 @@ void pq_adc_int4_distance(const void *pq_code_v, const void *lut_v,
 }
 
 void pq_sdc_int4_distance(const void *a_v, const void *b_v,
-                           const void *dist_table_v,
-                           size_t num_subquantizers, float *out) {
+                          const void *dist_table_v, size_t num_subquantizers,
+                          float *out) {
   constexpr size_t kNumCentroids = 16;
   constexpr size_t kTablePerSub = kNumCentroids * kNumCentroids;  // 256
   const auto *a = reinterpret_cast<const uint8_t *>(a_v);
@@ -54,8 +54,7 @@ void pq_sdc_int4_distance(const void *a_v, const void *b_v,
   for (size_t m = 0; m < num_subquantizers; ++m) {
     uint8_t ai = decode_nibble(a, m);
     uint8_t bi = decode_nibble(b, m);
-    size_t idx = m * kTablePerSub +
-                 static_cast<size_t>(ai) * kNumCentroids +
+    size_t idx = m * kTablePerSub + static_cast<size_t>(ai) * kNumCentroids +
                  static_cast<size_t>(bi);
     sum += dist_table[idx];
   }
@@ -63,8 +62,8 @@ void pq_sdc_int4_distance(const void *a_v, const void *b_v,
 }
 
 void pq_adc_int4_batch_distance(const void **candidates_v, const void *lut_v,
-                                 size_t num, size_t num_subquantizers,
-                                 float *out) {
+                                size_t num, size_t num_subquantizers,
+                                float *out) {
   constexpr size_t kNumCentroids = 16;
   const auto *lut = reinterpret_cast<const float *>(lut_v);
   const auto *candidates =

@@ -57,19 +57,16 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq_quantizer(
   meta.set_metric("SquaredEuclidean", 0, Params());
 
   Params params;
-  params.set("num_subquantizers",
-             static_cast<uint32_t>(num_subquantizers));
+  params.set("num_subquantizers", static_cast<uint32_t>(num_subquantizers));
   if (q->init(meta, params) != 0) return nullptr;
   return q;
 }
 
 // Helper: build a holder with random fp32 vectors.
-static std::shared_ptr<
-    MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
+static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
 make_random_holder(size_t count, size_t dim, uint32_t seed = 42) {
   auto holder =
-      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
-          dim);
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
   std::mt19937 gen(seed);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
   for (size_t i = 0; i < count; ++i) {
@@ -160,8 +157,8 @@ TEST(PqInt8Quantizer, AdcDistance) {
   // but should be bounded.
   float max_rel_error = 0.0f;
   for (size_t i = 1; i < COUNT; ++i) {
-    float adc_dist = quantizer->calc_distance_dp_query(
-        pq_codes[i].data(), lut.data());
+    float adc_dist =
+        quantizer->calc_distance_dp_query(pq_codes[i].data(), lut.data());
     float true_dist =
         reference_sq_euclidean(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
     if (true_dist > 1e-6f) {
@@ -314,8 +311,7 @@ void fill_random_codes(uint8_t *codes, size_t len, std::mt19937 &gen) {
 }
 
 // Helper to generate random LUT (ADC)
-void fill_random_lut(float *lut, size_t num_subquantizers,
-                     std::mt19937 &gen) {
+void fill_random_lut(float *lut, size_t num_subquantizers, std::mt19937 &gen) {
   constexpr size_t kNumCentroids = 256;
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
   for (size_t m = 0; m < num_subquantizers; ++m) {
@@ -357,14 +353,14 @@ TEST(PqInt8SimdConsistency, AdcDistance) {
 
     // Compute reference (scalar)
     float scalar_result = 0.0f;
-    zvec::turbo::scalar::pq_adc_int8_distance(codes.data(), lut.data(),
-                                               num_sq, &scalar_result);
+    zvec::turbo::scalar::pq_adc_int8_distance(codes.data(), lut.data(), num_sq,
+                                              &scalar_result);
 
 #if defined(__AVX2__)
     {
       float avx2_result = 0.0f;
       zvec::turbo::avx2::pq_adc_int8_distance_avx2(codes.data(), lut.data(),
-                                                    num_sq, &avx2_result);
+                                                   num_sq, &avx2_result);
       EXPECT_NEAR(scalar_result, avx2_result, 1e-5f)
           << "AVX2 ADC mismatch for M=" << num_sq;
     }
@@ -373,9 +369,8 @@ TEST(PqInt8SimdConsistency, AdcDistance) {
 #if defined(__AVX512F__)
     {
       float avx512_result = 0.0f;
-      zvec::turbo::avx512::pq_adc_int8_distance_avx512(codes.data(),
-                                                        lut.data(), num_sq,
-                                                        &avx512_result);
+      zvec::turbo::avx512::pq_adc_int8_distance_avx512(codes.data(), lut.data(),
+                                                       num_sq, &avx512_result);
       EXPECT_NEAR(scalar_result, avx512_result, 1e-5f)
           << "AVX512 ADC mismatch for M=" << num_sq;
     }
@@ -400,16 +395,15 @@ TEST(PqInt8SimdConsistency, SdcDistance) {
     // Compute reference (scalar)
     float scalar_result = 0.0f;
     zvec::turbo::scalar::pq_sdc_int8_distance(codes_a.data(), codes_b.data(),
-                                               dist_table.data(), num_sq,
-                                               &scalar_result);
+                                              dist_table.data(), num_sq,
+                                              &scalar_result);
 
 #if defined(__AVX2__)
     {
       float avx2_result = 0.0f;
-      zvec::turbo::avx2::pq_sdc_int8_distance_avx2(codes_a.data(),
-                                                    codes_b.data(),
-                                                    dist_table.data(), num_sq,
-                                                    &avx2_result);
+      zvec::turbo::avx2::pq_sdc_int8_distance_avx2(
+          codes_a.data(), codes_b.data(), dist_table.data(), num_sq,
+          &avx2_result);
       EXPECT_NEAR(scalar_result, avx2_result, 1e-5f)
           << "AVX2 SDC mismatch for M=" << num_sq;
     }
@@ -418,10 +412,9 @@ TEST(PqInt8SimdConsistency, SdcDistance) {
 #if defined(__AVX512F__)
     {
       float avx512_result = 0.0f;
-      zvec::turbo::avx512::pq_sdc_int8_distance_avx512(codes_a.data(),
-                                                        codes_b.data(),
-                                                        dist_table.data(),
-                                                        num_sq, &avx512_result);
+      zvec::turbo::avx512::pq_sdc_int8_distance_avx512(
+          codes_a.data(), codes_b.data(), dist_table.data(), num_sq,
+          &avx512_result);
       EXPECT_NEAR(scalar_result, avx512_result, 1e-5f)
           << "AVX512 SDC mismatch for M=" << num_sq;
     }
@@ -443,13 +436,13 @@ TEST(PqInt8SimdConsistency, AdcDistanceM1) {
 
   float scalar_result = 0.0f;
   zvec::turbo::scalar::pq_adc_int8_distance(codes.data(), lut.data(), num_sq,
-                                             &scalar_result);
+                                            &scalar_result);
 
 #if defined(__AVX2__)
   {
     float avx2_result = 0.0f;
     zvec::turbo::avx2::pq_adc_int8_distance_avx2(codes.data(), lut.data(),
-                                                  num_sq, &avx2_result);
+                                                 num_sq, &avx2_result);
     EXPECT_NEAR(scalar_result, avx2_result, 1e-5f);
   }
 #endif
@@ -458,7 +451,7 @@ TEST(PqInt8SimdConsistency, AdcDistanceM1) {
   {
     float avx512_result = 0.0f;
     zvec::turbo::avx512::pq_adc_int8_distance_avx512(codes.data(), lut.data(),
-                                                      num_sq, &avx512_result);
+                                                     num_sq, &avx512_result);
     EXPECT_NEAR(scalar_result, avx512_result, 1e-5f);
   }
 #endif
@@ -479,8 +472,7 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq_cosine_quantizer(
   meta.set_metric("Cosine", 0, Params());
 
   Params params;
-  params.set("num_subquantizers",
-             static_cast<uint32_t>(num_subquantizers));
+  params.set("num_subquantizers", static_cast<uint32_t>(num_subquantizers));
   if (q->init(meta, params) != 0) return nullptr;
   return q;
 }
@@ -500,12 +492,10 @@ static float reference_cosine_distance(const float *a, const float *b,
 }
 
 // Helper: generate random vectors with varying norms (not unit length).
-static std::shared_ptr<
-    MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
+static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
 make_cosine_holder(size_t count, size_t dim, uint32_t seed = 42) {
   auto holder =
-      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
-          dim);
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
   std::mt19937 gen(seed);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
   std::uniform_real_distribution<float> scale(0.5f, 5.0f);
@@ -655,8 +645,8 @@ TEST(PqInt8Quantizer, CosineAdcDistance) {
   quantizer->quantize_query(raw_vecs[0].data(), lut.data());
 
   for (size_t i = 1; i < COUNT; ++i) {
-    float adc_dist = quantizer->calc_distance_dp_query(
-        pq_codes[i].data(), lut.data());
+    float adc_dist =
+        quantizer->calc_distance_dp_query(pq_codes[i].data(), lut.data());
     float true_dist =
         reference_cosine_distance(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
 
@@ -724,15 +714,13 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq_ip_quantizer(
   meta.set_metric("InnerProduct", 0, Params());
 
   Params params;
-  params.set("num_subquantizers",
-             static_cast<uint32_t>(num_subquantizers));
+  params.set("num_subquantizers", static_cast<uint32_t>(num_subquantizers));
   if (q->init(meta, params) != 0) return nullptr;
   return q;
 }
 
 // Reference inner-product distance: -dot(a, b).
-static float reference_ip_distance(const float *a, const float *b,
-                                   size_t dim) {
+static float reference_ip_distance(const float *a, const float *b, size_t dim) {
   float dot = 0.0f;
   for (size_t i = 0; i < dim; ++i) {
     dot += a[i] * b[i];
@@ -775,8 +763,8 @@ TEST(PqInt8Quantizer, InnerProductAdcDistance) {
 
   float max_abs_error = 0.0f;
   for (size_t i = 1; i < COUNT; ++i) {
-    float adc_dist = quantizer->calc_distance_dp_query(
-        pq_codes[i].data(), lut.data());
+    float adc_dist =
+        quantizer->calc_distance_dp_query(pq_codes[i].data(), lut.data());
     float true_dist =
         reference_ip_distance(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
 

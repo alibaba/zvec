@@ -45,7 +45,7 @@ class TestHelper {
  public:
   TestHelper(uint32_t num_docs, uint32_t num_write_threads = 10)
       : num_docs_(num_docs / 100 * 100),
-        num_write_threads_(num_write_threads) {};
+        num_write_threads_(num_write_threads){};
 
 
   template <typename T>
@@ -698,7 +698,8 @@ TEST_F(InvertedIndexTest, SEALED) {
 
 TEST_F(InvertedIndexTest, CREATE_SNAPSHOT) {
 #ifdef __ANDROID__
-  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink support (needed by RocksDB checkpoint)";
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
 #endif
   ASSERT_TRUE(indexer_);
 

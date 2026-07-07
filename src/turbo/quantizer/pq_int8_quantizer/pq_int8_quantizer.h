@@ -95,8 +95,8 @@ class PqInt8Quantizer : public Quantizer {
 
   float calc_distance_dp_dp(const void *dp1, const void *dp2) const override;
 
-  int quantize(const void *query, const IndexQueryMeta &qmeta,
-               std::string *out, IndexQueryMeta *ometa) const override;
+  int quantize(const void *query, const IndexQueryMeta &qmeta, std::string *out,
+               IndexQueryMeta *ometa) const override;
 
   int dequantize(const void *in, const IndexQueryMeta &qmeta,
                  std::string *out) const override;
@@ -162,7 +162,6 @@ class PqInt8Quantizer : public Quantizer {
   //! This separation ensures encoding and search LUT use the correct
   //! distance semantics independently.
   BatchDistanceFunc fp32_l2_batch_fn_{};
-
 };
 
 }  // namespace turbo

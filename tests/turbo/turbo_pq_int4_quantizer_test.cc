@@ -57,19 +57,16 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq4_quantizer(
   meta.set_metric("SquaredEuclidean", 0, Params());
 
   Params params;
-  params.set("num_subquantizers",
-             static_cast<uint32_t>(num_subquantizers));
+  params.set("num_subquantizers", static_cast<uint32_t>(num_subquantizers));
   if (q->init(meta, params) != 0) return nullptr;
   return q;
 }
 
 // Helper: build a holder with random fp32 vectors.
-static std::shared_ptr<
-    MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
+static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
 make_random_holder(size_t count, size_t dim, uint32_t seed = 42) {
   auto holder =
-      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
-          dim);
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
   std::mt19937 gen(seed);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
   for (size_t i = 0; i < count; ++i) {
@@ -172,8 +169,8 @@ TEST(PqInt4Quantizer, AdcDistance) {
 
   float max_rel_error = 0.0f;
   for (size_t i = 1; i < COUNT; ++i) {
-    float adc_dist = quantizer->calc_distance_dp_query(
-        pq_codes[i].data(), lut.data());
+    float adc_dist =
+        quantizer->calc_distance_dp_query(pq_codes[i].data(), lut.data());
     float true_dist =
         reference_sq_euclidean(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
     if (true_dist > 1e-6f) {
@@ -314,7 +311,7 @@ inline uint8_t test_decode_nibble(const uint8_t *code, size_t m) {
 }
 
 void fill_random_int4_codes(uint8_t *codes, size_t num_subquantizers,
-                             std::mt19937 &gen) {
+                            std::mt19937 &gen) {
   std::uniform_int_distribution<int> dist(0, 15);
   size_t code_bytes = num_subquantizers / 2;
   std::memset(codes, 0, code_bytes);
@@ -329,7 +326,7 @@ void fill_random_int4_codes(uint8_t *codes, size_t num_subquantizers,
 }
 
 void fill_random_int4_lut(float *lut, size_t num_subquantizers,
-                           std::mt19937 &gen) {
+                          std::mt19937 &gen) {
   constexpr size_t kNumCentroids = 16;
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
   for (size_t m = 0; m < num_subquantizers; ++m) {
@@ -361,8 +358,8 @@ TEST(PqInt4Kernel, AdcDistance) {
     }
 
     float result = 0.0f;
-    zvec::turbo::scalar::pq_adc_int4_distance(codes.data(), lut.data(),
-                                               nsq, &result);
+    zvec::turbo::scalar::pq_adc_int4_distance(codes.data(), lut.data(), nsq,
+                                              &result);
     EXPECT_NEAR(ref, result, 1e-5f) << "ADC mismatch for nsq=" << nsq;
   }
 }
@@ -389,16 +386,14 @@ TEST(PqInt4Kernel, SdcDistance) {
     for (size_t m = 0; m < nsq; ++m) {
       uint8_t ai = test_decode_nibble(codes_a.data(), m);
       uint8_t bi = test_decode_nibble(codes_b.data(), m);
-      size_t idx = m * kTablePerSub +
-                   static_cast<size_t>(ai) * kNumCentroids +
+      size_t idx = m * kTablePerSub + static_cast<size_t>(ai) * kNumCentroids +
                    static_cast<size_t>(bi);
       ref += dist_table[idx];
     }
 
     float result = 0.0f;
     zvec::turbo::scalar::pq_sdc_int4_distance(codes_a.data(), codes_b.data(),
-                                               dist_table.data(), nsq,
-                                               &result);
+                                              dist_table.data(), nsq, &result);
     EXPECT_NEAR(ref, result, 1e-5f) << "SDC mismatch for nsq=" << nsq;
   }
 }
@@ -411,7 +406,7 @@ TEST(PqInt4Kernel, BatchAdcDistance) {
   const size_t num_candidates = 7;  // not multiple of 4 to test leftover
 
   std::vector<std::vector<uint8_t>> codes(num_candidates,
-                                           std::vector<uint8_t>(nsq / 2));
+                                          std::vector<uint8_t>(nsq / 2));
   std::vector<float> lut(nsq * kNumCentroids);
 
   for (auto &c : codes) fill_random_int4_codes(c.data(), nsq, gen);
@@ -448,7 +443,7 @@ TEST(PqInt4Kernel, BatchAdcDistance) {
 // Helper to generate random SDC table for int4 (kTablePerSub = 256)
 namespace {
 void fill_random_int4_sdc_table(float *table, size_t num_subquantizers,
-                                 std::mt19937 &gen) {
+                                std::mt19937 &gen) {
   constexpr size_t kTablePerSub = 16 * 16;
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
   for (size_t m = 0; m < num_subquantizers; ++m) {
@@ -475,14 +470,14 @@ TEST(PqInt4SimdConsistency, AdcDistance) {
     fill_random_int4_lut(lut.data(), num_sq, gen);
 
     float scalar_result = 0.0f;
-    zvec::turbo::scalar::pq_adc_int4_distance(codes.data(), lut.data(),
-                                               num_sq, &scalar_result);
+    zvec::turbo::scalar::pq_adc_int4_distance(codes.data(), lut.data(), num_sq,
+                                              &scalar_result);
 
 #if defined(__AVX2__)
     {
       float avx2_result = 0.0f;
       zvec::turbo::avx2::pq_adc_int4_distance_avx2(codes.data(), lut.data(),
-                                                    num_sq, &avx2_result);
+                                                   num_sq, &avx2_result);
       EXPECT_NEAR(scalar_result, avx2_result, 1e-5f)
           << "AVX2 ADC mismatch for M=" << num_sq;
     }
@@ -491,8 +486,8 @@ TEST(PqInt4SimdConsistency, AdcDistance) {
 #if defined(__AVX512F__)
     {
       float avx512_result = 0.0f;
-      zvec::turbo::avx512::pq_adc_int4_distance_avx512(
-          codes.data(), lut.data(), num_sq, &avx512_result);
+      zvec::turbo::avx512::pq_adc_int4_distance_avx512(codes.data(), lut.data(),
+                                                       num_sq, &avx512_result);
       EXPECT_NEAR(scalar_result, avx512_result, 1e-5f)
           << "AVX512 ADC mismatch for M=" << num_sq;
     }
@@ -516,8 +511,8 @@ TEST(PqInt4SimdConsistency, SdcDistance) {
 
     float scalar_result = 0.0f;
     zvec::turbo::scalar::pq_sdc_int4_distance(codes_a.data(), codes_b.data(),
-                                               dist_table.data(), num_sq,
-                                               &scalar_result);
+                                              dist_table.data(), num_sq,
+                                              &scalar_result);
 
 #if defined(__AVX2__)
     {
@@ -547,11 +542,11 @@ TEST(PqInt4SimdConsistency, SdcDistance) {
 TEST(PqInt4SimdConsistency, BatchAdcDistance) {
   std::mt19937 gen(2026);
   constexpr size_t kNumCentroids = 16;
-  const size_t nsq = 16;  // chunk-aligned
+  const size_t nsq = 16;            // chunk-aligned
   const size_t num_candidates = 7;  // not multiple of 4 to test leftover
 
   std::vector<std::vector<uint8_t>> codes(num_candidates,
-                                           std::vector<uint8_t>(nsq / 2));
+                                          std::vector<uint8_t>(nsq / 2));
   std::vector<float> lut(nsq * kNumCentroids);
 
   for (auto &c : codes) fill_random_int4_codes(c.data(), nsq, gen);

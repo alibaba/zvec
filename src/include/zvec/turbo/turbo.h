@@ -48,21 +48,21 @@ using FhtVecRescaleFunc = void (*)(float *data, size_t n, float factor);
 //   lut:               [num_subquantizers * 256] float
 // Uses void* to match DistanceFunc signature for direct assignment.
 using PqAdcDistanceFunc = void (*)(const void *pq_code, const void *lut,
-                                    size_t num_subquantizers, float *out);
+                                   size_t num_subquantizers, float *out);
 
 // SDC kernel: centroid-to-centroid distance between two PQ codes.
 //   a, b:              [num_subquantizers] uint8_t
 //   dist_table:        [num_subquantizers * 256 * 256] float
 // Uses void* for consistency with DistanceFunc / PqAdcDistanceFunc.
 using PqSdcKernelFunc = void (*)(const void *a, const void *b,
-                                  const void *dist_table,
-                                  size_t num_subquantizers, float *out);
+                                 const void *dist_table,
+                                 size_t num_subquantizers, float *out);
 
 // Batch ADC: compute distances for multiple PQ codes against a shared LUT.
 // Signature matches BatchDistanceFunc for direct assignment (no lambda).
 using PqBatchAdcFunc = void (*)(const void **candidates, const void *lut,
-                                 size_t num, size_t num_subquantizers,
-                                 float *out);
+                                size_t num, size_t num_subquantizers,
+                                float *out);
 
 // Aggregate of all FHT kernels needed by FhtRotator, dispatched by ISA.
 struct FhtKernels {
@@ -151,7 +151,7 @@ FhtKernels get_fht_kernels();
 // Returns all PQ kernels dispatched for the given data_type, quantize_type
 // and CPU arch.  data_type selects the code packing layout (kInt8 vs kInt4).
 PqKernels get_pq_kernels(DataType data_type,
-                          QuantizeType quantize_type = QuantizeType::kPQ,
-                          CpuArchType cpu_arch_type = CpuArchType::kAuto);
+                         QuantizeType quantize_type = QuantizeType::kPQ,
+                         CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo

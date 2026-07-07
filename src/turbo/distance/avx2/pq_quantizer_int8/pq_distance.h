@@ -23,20 +23,20 @@ namespace zvec::turbo::avx2 {
 // Processes 8 subquantizers per _mm256_i32gather_ps iteration.
 // For general M: loop in chunks of 8, scalar leftover.
 void pq_adc_int8_distance_avx2(const void *pq_code, const void *lut,
-                                size_t num_subquantizers, float *out);
+                               size_t num_subquantizers, float *out);
 
 // SDC (Symmetric Distance Computation) via AVX2 gather.
 // Computes indices (a[m]*256 + b[m]) as int32, adds per-subquantizer
 // base offsets, gathers 8 floats per iteration.
 void pq_sdc_int8_distance_avx2(const void *a, const void *b,
-                                const void *dist_table,
-                                size_t num_subquantizers, float *out);
+                               const void *dist_table, size_t num_subquantizers,
+                               float *out);
 
 // Batch ADC via AVX2 gather: process 4 candidates per iteration,
 // each using 8-wide _mm256_i32gather_ps. 4 independent __m256
 // accumulators maximize ILP.
 void pq_adc_int8_batch_distance_avx2(const void **candidates, const void *lut,
-                                      size_t num, size_t num_subquantizers,
-                                      float *out);
+                                     size_t num, size_t num_subquantizers,
+                                     float *out);
 
 }  // namespace zvec::turbo::avx2

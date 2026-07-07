@@ -38,8 +38,7 @@ void pq_sdc_int8_distance(const void *a_v, const void *b_v,
   const auto *dist_table = reinterpret_cast<const float *>(dist_table_v);
   float sum = 0.0f;
   for (size_t m = 0; m < num_subquantizers; ++m) {
-    size_t idx = m * kTablePerSub +
-                 static_cast<size_t>(a[m]) * kNumCentroids +
+    size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
   }
@@ -53,8 +52,7 @@ void pq_adc_int8_batch_distance(const void **candidates_v, const void *lut_v,
   const auto *lut = reinterpret_cast<const float *>(lut_v);
   // candidates_v is const void**, but we need const uint8_t**
   // Use an intermediate cast through const char** to avoid aliasing issues.
-  auto candidates =
-      reinterpret_cast<const uint8_t *const *>(candidates_v);
+  auto candidates = reinterpret_cast<const uint8_t *const *>(candidates_v);
 
   size_t i = 0;
   // Main loop: process 4 candidates per iteration.

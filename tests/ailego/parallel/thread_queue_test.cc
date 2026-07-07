@@ -66,7 +66,7 @@ TEST(ThreadQueue, MutliThread) {
 }
 
 TEST(ThreadQueue, MultiThreadWithHighPriority) {
-// TODO(windows): add it back
+  // TODO(windows): add it back
   GTEST_SKIP();
   ThreadQueue queue;
 

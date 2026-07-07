@@ -73,7 +73,7 @@ struct HnswSparseHeader {
 
 struct SparseData {
  public:
-  SparseData() {};
+  SparseData(){};
 
   SparseData(uint32_t sparse_count, const uint32_t *sparse_indices,
              const void *sparse_vec)

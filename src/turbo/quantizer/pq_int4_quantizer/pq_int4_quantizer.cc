@@ -20,9 +20,9 @@
 #include <random>
 #include <thread>
 #include <vector>
+#include <ailego/math/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_logger.h>
-#include <ailego/math/normalizer.h>
 
 namespace zvec {
 namespace turbo {
@@ -37,8 +37,7 @@ struct PqInt4SerPayload {
   uint32_t num_centroids;  // always 16 for int4
 };
 
-int PqInt4Quantizer::init(const IndexMeta &meta,
-                          const ailego::Params &params) {
+int PqInt4Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   meta_ = meta;
 
   uint32_t d = meta.dimension();
@@ -71,8 +70,7 @@ int PqInt4Quantizer::init(const IndexMeta &meta,
 
   // Pre-allocate centroids (filled by train()).
   centroids_.resize(
-      static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_,
-      0.0f);
+      static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_, 0.0f);
 
   // Dispatch ISA kernels: int4 packed nibble path.
   auto pq_k = get_pq_kernels(DataType::kInt4, QuantizeType::kPQ);
@@ -85,20 +83,19 @@ int PqInt4Quantizer::init(const IndexMeta &meta,
 
   // L2-only batch distance: always used for encoding (quantize_data) and
   // KMeans training (train_subquantizer).
-  fp32_l2_batch_fn_ = get_batch_distance_func(
-      MetricType::kSquaredEuclidean, DataType::kFp32,
-      QuantizeType::kDefault, CpuArchType::kAuto);
+  fp32_l2_batch_fn_ =
+      get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
+                              QuantizeType::kDefault, CpuArchType::kAuto);
 
   // Metric-aware batch distance for search-side LUT and SDC table.
   fp32_batch_fn_ = get_batch_distance_func(
-      mt, DataType::kFp32,
-      QuantizeType::kDefault, CpuArchType::kAuto);
+      mt, DataType::kFp32, QuantizeType::kDefault, CpuArchType::kAuto);
 
   // For Cosine: fall back to IP (normalization applied explicitly).
   if (meta_.metric_name() == "Cosine") {
-    fp32_batch_fn_ = get_batch_distance_func(
-        MetricType::kInnerProduct, DataType::kFp32,
-        QuantizeType::kDefault, CpuArchType::kAuto);
+    fp32_batch_fn_ =
+        get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
+                                QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
   // For Cosine: reserve extra space to store the L2 norm (one float).
@@ -134,8 +131,7 @@ void PqInt4Quantizer::train_subquantizer(const float *data, size_t num,
                                          size_t stride, size_t sub_idx) {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
-  float *centroids_m =
-      centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
+  float *centroids_m = centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
 
   // -- Initialization: pick k distinct random data points -----------------
   std::mt19937 rng(42 + static_cast<uint32_t>(sub_idx));
@@ -177,8 +173,8 @@ void PqInt4Quantizer::train_subquantizer(const float *data, size_t num,
           sub_idx * d;
 
       fp32_l2_batch_fn_(centroid_ptrs.data(),
-                        reinterpret_cast<const void *>(sub_vec),
-                        k, d, dists.data());
+                        reinterpret_cast<const void *>(sub_vec), k, d,
+                        dists.data());
       uint32_t best_idx = static_cast<uint32_t>(
           std::min_element(dists.begin(), dists.end()) - dists.begin());
 
@@ -279,13 +275,14 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
-  thread_count = std::max(1, std::min(thread_count,
-                                       static_cast<int>(num_subquantizers_)));
+  thread_count =
+      std::max(1, std::min(thread_count, static_cast<int>(num_subquantizers_)));
 
-  LOG_INFO("PQ int4 training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
-           "max_iters=%u, threads=%d",
-           num, original_dim_, num_subquantizers_, sub_dim_,
-           kMaxKmeansIters, thread_count);
+  LOG_INFO(
+      "PQ int4 training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
+      "max_iters=%u, threads=%d",
+      num, original_dim_, num_subquantizers_, sub_dim_, kMaxKmeansIters,
+      thread_count);
 
   if (thread_count == 1) {
     for (uint32_t m = 0; m < num_subquantizers_; ++m) {
@@ -302,20 +299,20 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
       uint32_t m_end = static_cast<uint32_t>(
           (static_cast<size_t>(t + 1) * num_subquantizers_) / thread_count);
 
-      threads.emplace_back([this, &all_data, num, data_stride,
-                            m_begin, m_end]() {
-        for (uint32_t m = m_begin; m < m_end; ++m) {
-          train_subquantizer(all_data.data(), num, data_stride, m);
-        }
-      });
+      threads.emplace_back(
+          [this, &all_data, num, data_stride, m_begin, m_end]() {
+            for (uint32_t m = m_begin; m < m_end; ++m) {
+              train_subquantizer(all_data.data(), num, data_stride, m);
+            }
+          });
     }
 
     for (auto &th : threads) {
       th.join();
     }
 
-    LOG_INFO("  all %u sub-quantizers trained (%d threads)",
-             num_subquantizers_, thread_count);
+    LOG_INFO("  all %u sub-quantizers trained (%d threads)", num_subquantizers_,
+             thread_count);
   }
 
   build_centroid_ptrs_cache();
@@ -330,8 +327,7 @@ int PqInt4Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
 void PqInt4Quantizer::compute_dist_table() {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
-  dist_table_.resize(
-      static_cast<size_t>(num_subquantizers_) * k * k, 0.0f);
+  dist_table_.resize(static_cast<size_t>(num_subquantizers_) * k * k, 0.0f);
 
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
     const float *centroids_m = centroids_.data() + m * k * d;
@@ -340,8 +336,8 @@ void PqInt4Quantizer::compute_dist_table() {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     for (uint32_t i = 0; i < k; ++i) {
       fp32_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
-                     reinterpret_cast<const void *>(centroids_m + i * d),
-                     k, d, table_m + i * k);
+                     reinterpret_cast<const void *>(centroids_m + i * d), k, d,
+                     table_m + i * k);
     }
   }
 }
@@ -372,8 +368,8 @@ void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
 
     fp32_l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
-                      reinterpret_cast<const void *>(sub_vec),
-                      kNumCentroids, sub_dim_, dists);
+                      reinterpret_cast<const void *>(sub_vec), kNumCentroids,
+                      sub_dim_, dists);
 
     // Argmin: find nearest centroid (0..15).
     float best_dist = dists[0];
@@ -434,12 +430,12 @@ float PqInt4Quantizer::calc_distance_dp_query(const void *dp,
   return d;
 }
 
-void PqInt4Quantizer::calc_distance_dp_query_batch(
-    const void *const *dp_list, int dp_num, const void *query,
-    float *dist_list) const {
+void PqInt4Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
+                                                   int dp_num,
+                                                   const void *query,
+                                                   float *dist_list) const {
   batch_adc_fn_(const_cast<const void **>(dp_list), query,
-                static_cast<size_t>(dp_num),
-                num_subquantizers_, dist_list);
+                static_cast<size_t>(dp_num), num_subquantizers_, dist_list);
   if (meta_.metric_name() == "Cosine") {
     for (int i = 0; i < dp_num; ++i) {
       dist_list[i] = 1.0f + dist_list[i];
@@ -467,8 +463,7 @@ void PqInt4Quantizer::calc_distance_dp_query_batch_unquantized(
                          kNumCentroids);
   quantize_query(query, lut.data());
   batch_adc_fn_(const_cast<const void **>(dp_list), lut.data(),
-                static_cast<size_t>(dp_num),
-                num_subquantizers_, dist_list);
+                static_cast<size_t>(dp_num), num_subquantizers_, dist_list);
   if (meta_.metric_name() == "Cosine") {
     for (int i = 0; i < dp_num; ++i) {
       dist_list[i] = 1.0f + dist_list[i];
@@ -484,8 +479,7 @@ float PqInt4Quantizer::calc_distance_dp_dp(const void *dp1,
 }
 
 int PqInt4Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
-                               std::string *out,
-                               IndexQueryMeta *ometa) const {
+                              std::string *out, IndexQueryMeta *ometa) const {
   if (qmeta.unit_size() != sizeof(float)) {
     return kErrUnsupported;
   }
@@ -543,10 +537,8 @@ DistanceImpl PqInt4Quantizer::distance(const void *query,
 
   auto sdc = sdc_fn_;
   const void *dt = dist_table_.data();
-  DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b,
-                                     size_t dim, float *out) {
-    sdc(a, b, dt, dim, out);
-  };
+  DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b, size_t dim,
+                                    float *out) { sdc(a, b, dt, dim, out); };
 
   BatchDistanceFunc batch_func = batch_adc_fn_;
 
@@ -614,9 +606,8 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
 
   meta_.set_meta(IndexMeta::DataType::DT_FP32, original_dim_);
 
-  size_t centroids_bytes =
-      static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_ *
-      sizeof(float);
+  size_t centroids_bytes = static_cast<size_t>(num_subquantizers_) *
+                           kNumCentroids * sub_dim_ * sizeof(float);
 
   centroids_.resize(centroids_bytes / sizeof(float));
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
@@ -627,17 +618,17 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
   sdc_fn_ = pq_k.sdc_distance;
   batch_adc_fn_ = pq_k.batch_adc_distance;
 
-  fp32_l2_batch_fn_ = get_batch_distance_func(
-      MetricType::kSquaredEuclidean, DataType::kFp32,
-      QuantizeType::kDefault, CpuArchType::kAuto);
+  fp32_l2_batch_fn_ =
+      get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
+                              QuantizeType::kDefault, CpuArchType::kAuto);
 
   fp32_batch_fn_ = get_batch_distance_func(
       metric_from_name(meta_.metric_name()), DataType::kFp32,
       QuantizeType::kDefault, CpuArchType::kAuto);
   if (meta_.metric_name() == "Cosine") {
-    fp32_batch_fn_ = get_batch_distance_func(
-        MetricType::kInnerProduct, DataType::kFp32,
-        QuantizeType::kDefault, CpuArchType::kAuto);
+    fp32_batch_fn_ =
+        get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
+                                QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
   build_centroid_ptrs_cache();

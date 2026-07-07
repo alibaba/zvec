@@ -42,7 +42,7 @@ class VisitBloomFilter {
   static constexpr int N = 5;
   struct Context {
     Context()
-        : mt(std::chrono::system_clock::now().time_since_epoch().count()) {};
+        : mt(std::chrono::system_clock::now().time_since_epoch().count()){};
     VisitFilterHeader h;
     std::mt19937 mt;
     ailego::BloomFilter<N> *filter{nullptr};
@@ -358,7 +358,7 @@ class VisitFilter {
     ByteMap = VisitByteMap::mode
   };
 
-  VisitFilter() : mode_(0), ctx_(nullptr) {};
+  VisitFilter() : mode_(0), ctx_(nullptr){};
 
   inline bool visited(id_t idx) {
     PROXIMA_DISKANN_VISITFILTER_CALL_IMPL(visited, idx);

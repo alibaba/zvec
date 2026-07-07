@@ -100,8 +100,8 @@ class PqInt4Quantizer : public Quantizer {
 
   float calc_distance_dp_dp(const void *dp1, const void *dp2) const override;
 
-  int quantize(const void *query, const IndexQueryMeta &qmeta,
-               std::string *out, IndexQueryMeta *ometa) const override;
+  int quantize(const void *query, const IndexQueryMeta &qmeta, std::string *out,
+               IndexQueryMeta *ometa) const override;
 
   int dequantize(const void *in, const IndexQueryMeta &qmeta,
                  std::string *out) const override;

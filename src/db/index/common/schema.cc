@@ -296,8 +296,7 @@ Status FieldSchema::validate() const {
 
 std::string FieldSchema::to_string() const {
   std::ostringstream oss;
-  oss << "FieldSchema{"
-      << "name:'" << name_ << "'"
+  oss << "FieldSchema{" << "name:'" << name_ << "'"
       << ",data_type:" << DataTypeCodeBook::AsString(data_type_)
       << ",nullable:" << (nullable_ ? "true" : "false")
       << ",dimension:" << dimension_;
@@ -382,8 +381,7 @@ Status CollectionSchema::validate() const {
 
 std::string CollectionSchema::to_string() const {
   std::ostringstream oss;
-  oss << "CollectionSchema{"
-      << "name:'" << name_ << "'"
+  oss << "CollectionSchema{" << "name:'" << name_ << "'"
       << ",max_doc_count_per_segment:" << max_doc_count_per_segment_
       << ",fields:[";
 

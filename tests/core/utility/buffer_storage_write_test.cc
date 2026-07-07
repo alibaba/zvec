@@ -42,7 +42,9 @@ class BufferStorageWriteTest : public ::testing::Test {
     ailego::File::MakePath("buffer_storage_write_test_dir");
   }
 
-  void TearDown() override { ailego::File::Delete(file_path_); }
+  void TearDown() override {
+    ailego::File::Delete(file_path_);
+  }
 
   // Open BufferStorage in writable mode (create_if_missing=true)
   IndexStorage::Pointer OpenWritable() {
@@ -69,7 +71,8 @@ class BufferStorageWriteTest : public ::testing::Test {
 
 // ===== Basic Write Tests =====
 
-// Test: Create new index via BufferStorage, append segment, write data, read back
+// Test: Create new index via BufferStorage, append segment, write data, read
+// back
 TEST_F(BufferStorageWriteTest, WriteBasicCreateAndWrite) {
   auto storage = OpenWritable();
   ASSERT_TRUE(storage);
@@ -275,8 +278,7 @@ TEST_F(BufferStorageWriteTest, WriteMultipleFlushCycles) {
     EXPECT_EQ(0, storage->flush());
 
     // Second write at a different offset + flush
-    EXPECT_EQ(data2.size(),
-              seg->write(200, data2.data(), data2.size()));
+    EXPECT_EQ(data2.size(), seg->write(200, data2.data(), data2.size()));
     EXPECT_EQ(0, storage->flush());
     EXPECT_EQ(0, storage->close());
   }
@@ -353,8 +355,7 @@ TEST_F(BufferStorageWriteTest, WriteReadOnlyNoOp) {
 
     std::string new_data = "overwrite_attempt";
     // Should return len (silent no-op)
-    EXPECT_EQ(new_data.size(),
-              seg->write(0, new_data.data(), new_data.size()));
+    EXPECT_EQ(new_data.size(), seg->write(0, new_data.data(), new_data.size()));
 
     // Data should remain unchanged (still "initial")
     std::vector<char> buf(7);
@@ -881,7 +882,8 @@ TEST_F(BufferStorageWriteTest, CR_ConcurrentWriteAndResize) {
 // chain split. After reopen, ALL segments must be findable.
 // (Tests fix for reserve()-induced dangling pointer in append_segment.)
 TEST_F(BufferStorageWriteTest, CR_ChainSplitAllSegmentsAccessible) {
-  const int kNumSegments = 50;  // Enough to trigger chain split with default 4096 meta capacity
+  const int kNumSegments =
+      50;  // Enough to trigger chain split with default 4096 meta capacity
 
   {
     auto storage = OpenWritable();
@@ -892,7 +894,8 @@ TEST_F(BufferStorageWriteTest, CR_ChainSplitAllSegmentsAccessible) {
       ASSERT_EQ(0, storage->append(name, 4096))
           << "Failed to append segment " << i;
       auto seg = storage->get(name);
-      ASSERT_TRUE(seg) << "Failed to get segment " << name << " right after append";
+      ASSERT_TRUE(seg) << "Failed to get segment " << name
+                       << " right after append";
       // Write a marker so we can verify on reopen
       std::string marker = "marker_" + std::to_string(i);
       EXPECT_EQ(marker.size(), seg->write(0, marker.data(), marker.size()));
@@ -908,7 +911,8 @@ TEST_F(BufferStorageWriteTest, CR_ChainSplitAllSegmentsAccessible) {
     for (int i = 0; i < kNumSegments; ++i) {
       std::string name = "chain_seg_" + std::to_string(i);
       auto seg = storage->get(name);
-      ASSERT_TRUE(seg) << "Segment " << name << " missing after reopen (chain-split bug?)";
+      ASSERT_TRUE(seg) << "Segment " << name
+                       << " missing after reopen (chain-split bug?)";
       std::string expected = "marker_" + std::to_string(i);
       std::vector<char> buf(expected.size());
       EXPECT_EQ(expected.size(), seg->fetch(0, buf.data(), buf.size()));
@@ -1047,8 +1051,9 @@ TEST_F(BufferStorageWriteTest, CR_DirtyFlagNotLostAfterFlush) {
   }
 }
 
-// Stress test: Concurrent flush + write interleaving to expose dirty flag races.
-// All writes that return successfully MUST be visible after final close+reopen.
+// Stress test: Concurrent flush + write interleaving to expose dirty flag
+// races. All writes that return successfully MUST be visible after final
+// close+reopen.
 TEST_F(BufferStorageWriteTest, CR_ConcurrentFlushWriteDirtyFlagStress) {
   auto storage = OpenWritable();
   ASSERT_TRUE(storage);
@@ -1112,7 +1117,8 @@ TEST_F(BufferStorageWriteTest, CR_PointerStabilityAcrossAppend) {
 
   // Write initial data
   std::string initial = "before_append";
-  EXPECT_EQ(initial.size(), seg_first->write(0, initial.data(), initial.size()));
+  EXPECT_EQ(initial.size(),
+            seg_first->write(0, initial.data(), initial.size()));
 
   // Append many more segments (may trigger internal rehash/resize)
   for (int i = 0; i < 20; ++i) {

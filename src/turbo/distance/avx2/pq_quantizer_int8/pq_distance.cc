@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "avx2/pq_quantizer_int8/pq_distance.h"
-
 #include <immintrin.h>
 
 namespace zvec::turbo::avx2 {
@@ -38,7 +37,7 @@ inline float horizontal_sum_avx2(__m256 v) {
 }  // namespace
 
 void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
-                                size_t num_subquantizers, float *out) {
+                               size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 8;  // AVX2 processes 8 floats at once
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
@@ -48,10 +47,9 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 
   // Base offsets: [0, 256, 512, 768, 1024, 1280, 1536, 1792]
   // These represent m * 256 for m = 0..7 within each chunk.
-  const __m256i base_offsets =
-      _mm256_setr_epi32(0, kNumCentroids, 2 * kNumCentroids, 3 * kNumCentroids,
-                        4 * kNumCentroids, 5 * kNumCentroids, 6 * kNumCentroids,
-                        7 * kNumCentroids);
+  const __m256i base_offsets = _mm256_setr_epi32(
+      0, kNumCentroids, 2 * kNumCentroids, 3 * kNumCentroids, 4 * kNumCentroids,
+      5 * kNumCentroids, 6 * kNumCentroids, 7 * kNumCentroids);
 
   size_t m = 0;
 
@@ -59,8 +57,8 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
   for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
     // Load 8 uint8 codes and zero-extend to int32
     // pq_code[m..m+7] -> 8 int32 indices
-    __m128i codes_8x8 = _mm_loadl_epi64(
-        reinterpret_cast<const __m128i *>(pq_code + m));
+    __m128i codes_8x8 =
+        _mm_loadl_epi64(reinterpret_cast<const __m128i *>(pq_code + m));
     __m256i codes_8x32 = _mm256_cvtepu8_epi32(codes_8x8);
 
     // Add base offsets: indices[m] = m * 256 + code[m]
@@ -68,8 +66,7 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 
     // Gather 8 floats from lut using computed indices
     // lut_ptr + indices[i] * scale(4 bytes per float)
-    __m256 gathered =
-        _mm256_i32gather_ps(lut + m * kNumCentroids, indices, 4);
+    __m256 gathered = _mm256_i32gather_ps(lut + m * kNumCentroids, indices, 4);
 
     acc = _mm256_add_ps(acc, gathered);
   }
@@ -85,8 +82,8 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 }
 
 void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
-                                const void *dist_table_v,
-                                size_t num_subquantizers, float *out) {
+                               const void *dist_table_v,
+                               size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 8;
@@ -102,18 +99,15 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
       5 * kTablePerSub, 6 * kTablePerSub, 7 * kTablePerSub);
 
   // Multiplier for a[m] * 256
-  const __m256i a_multiplier =
-      _mm256_set1_epi32(kNumCentroids);
+  const __m256i a_multiplier = _mm256_set1_epi32(kNumCentroids);
 
   size_t m = 0;
 
   // Main loop: process 8 subquantizers per iteration
   for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
     // Load a[m..m+7] and b[m..m+7], zero-extend to int32
-    __m128i a_8x8 =
-        _mm_loadl_epi64(reinterpret_cast<const __m128i *>(a + m));
-    __m128i b_8x8 =
-        _mm_loadl_epi64(reinterpret_cast<const __m128i *>(b + m));
+    __m128i a_8x8 = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(a + m));
+    __m128i b_8x8 = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(b + m));
     __m256i a_8x32 = _mm256_cvtepu8_epi32(a_8x8);
     __m256i b_8x32 = _mm256_cvtepu8_epi32(b_8x8);
 
@@ -132,8 +126,7 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
 
   // Scalar leftover
   for (; m < num_subquantizers; ++m) {
-    size_t idx = m * kTablePerSub +
-                 static_cast<size_t>(a[m]) * kNumCentroids +
+    size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
   }
@@ -142,8 +135,8 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
 }
 
 void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
-                                      const void *lut_v, size_t num,
-                                      size_t num_subquantizers, float *out) {
+                                     const void *lut_v, size_t num,
+                                     size_t num_subquantizers, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 8;
   constexpr int kBatch = 4;
@@ -152,10 +145,9 @@ void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
       reinterpret_cast<const uint8_t *const *>(candidates_v);
 
   // Base offsets: [0, 256, 512, ..., 7*256] — reused for all candidates.
-  const __m256i base_offsets =
-      _mm256_setr_epi32(0, kNumCentroids, 2 * kNumCentroids, 3 * kNumCentroids,
-                        4 * kNumCentroids, 5 * kNumCentroids, 6 * kNumCentroids,
-                        7 * kNumCentroids);
+  const __m256i base_offsets = _mm256_setr_epi32(
+      0, kNumCentroids, 2 * kNumCentroids, 3 * kNumCentroids, 4 * kNumCentroids,
+      5 * kNumCentroids, 6 * kNumCentroids, 7 * kNumCentroids);
 
   size_t i = 0;
   for (; i + kBatch <= num; i += kBatch) {
@@ -181,10 +173,14 @@ void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
       __m128i codes3 =
           _mm_loadl_epi64(reinterpret_cast<const __m128i *>(c3 + m));
 
-      __m256i idx0 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes0), base_offsets);
-      __m256i idx1 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes1), base_offsets);
-      __m256i idx2 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes2), base_offsets);
-      __m256i idx3 = _mm256_add_epi32(_mm256_cvtepu8_epi32(codes3), base_offsets);
+      __m256i idx0 =
+          _mm256_add_epi32(_mm256_cvtepu8_epi32(codes0), base_offsets);
+      __m256i idx1 =
+          _mm256_add_epi32(_mm256_cvtepu8_epi32(codes1), base_offsets);
+      __m256i idx2 =
+          _mm256_add_epi32(_mm256_cvtepu8_epi32(codes2), base_offsets);
+      __m256i idx3 =
+          _mm256_add_epi32(_mm256_cvtepu8_epi32(codes3), base_offsets);
 
       acc0 = _mm256_add_ps(acc0, _mm256_i32gather_ps(lut_base, idx0, 4));
       acc1 = _mm256_add_ps(acc1, _mm256_i32gather_ps(lut_base, idx1, 4));

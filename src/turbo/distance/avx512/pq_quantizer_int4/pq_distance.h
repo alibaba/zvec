@@ -23,18 +23,18 @@ namespace zvec::turbo::avx512 {
 // Uses vpshufb to unpack 16 nibbles from 8 bytes, then a single
 // _mm512_i32gather_ps to process all 16 sub-quantizers at once.
 void pq_adc_int4_distance_avx512(const void *pq_code, const void *lut,
-                                  size_t num_subquantizers, float *out);
+                                 size_t num_subquantizers, float *out);
 
 // SDC (Symmetric Distance Computation) for int4 PQ codes via AVX512.
 // 16-wide index computation (a*16 + b + m*256) + single gather.
 void pq_sdc_int4_distance_avx512(const void *a, const void *b,
-                                  const void *dist_table,
-                                  size_t num_subquantizers, float *out);
+                                 const void *dist_table,
+                                 size_t num_subquantizers, float *out);
 
 // Batch ADC via AVX512: process 4 candidates per iteration,
 // each using the 16-sub vpshufb + gather kernel.
 void pq_adc_int4_batch_distance_avx512(const void **candidates, const void *lut,
-                                        size_t num, size_t num_subquantizers,
-                                        float *out);
+                                       size_t num, size_t num_subquantizers,
+                                       float *out);
 
 }  // namespace zvec::turbo::avx512

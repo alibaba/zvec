@@ -204,7 +204,7 @@ FhtKernels get_fht_kernels() {
 }
 
 PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
-                          CpuArchType cpu_arch_type) {
+                         CpuArchType cpu_arch_type) {
   (void)cpu_arch_type;  // currently unused, reserved for future use
   PqKernels k{};
   if (quantize_type == QuantizeType::kPQ) {

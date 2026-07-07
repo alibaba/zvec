@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "avx2/pq_quantizer_int4/pq_distance.h"
-
 #include <immintrin.h>
 
 namespace zvec::turbo::avx2 {
@@ -45,7 +44,7 @@ inline float horizontal_sum_avx2(__m256 v) {
 //   low nibbles  = packed & 0x0F  (subs 0-7 in bytes 0-7)
 //   high nibbles = (packed >> 4) & 0x0F  (subs 8-15 in bytes 0-7)
 inline void unpack_nibbles(const uint8_t *packed, __m128i &lo_nib,
-                            __m128i &hi_nib) {
+                           __m128i &hi_nib) {
   __m128i packed128 =
       _mm_loadl_epi64(reinterpret_cast<const __m128i *>(packed));
   __m256i packed256 = _mm256_castsi128_si256(packed128);
@@ -56,11 +55,11 @@ inline void unpack_nibbles(const uint8_t *packed, __m128i &lo_nib,
   // mask[1,1,2,2,3,3,4,4, 5,5,6,6,7,7,8,8] selects bytes 1-8
   // (byte 8 is zero since we only loaded 8 bytes into the 128-bit reg).
   // After >> 4, positions 0-7 hold high nibbles of bytes 1-8 = subs 8-15.
-  __m256i hi_mask = _mm256_setr_epi8(1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7,
-                                      8, 8, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
-                                      7, 7, 8, 8);
-  __m256i hi256 =
-      _mm256_and_si256(_mm256_srli_epi16(_mm256_shuffle_epi8(packed256, hi_mask), 4), mask_0f);
+  __m256i hi_mask =
+      _mm256_setr_epi8(1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 1, 1, 2,
+                       2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8);
+  __m256i hi256 = _mm256_and_si256(
+      _mm256_srli_epi16(_mm256_shuffle_epi8(packed256, hi_mask), 4), mask_0f);
 
   lo_nib = _mm256_castsi256_si128(lo256);  // subs 0-7 in bytes 0-7
   // For hi_nib: bytes 8-11 of the lower 128-bit lane contain subs 8-15.
@@ -72,13 +71,11 @@ inline void unpack_nibbles(const uint8_t *packed, __m128i &lo_nib,
 // Accumulate 16 sub-quantizer distances into acc using the precomputed
 // lo_nib / hi_nib nibble vectors.
 inline void accumulate_adc(__m256 &acc, const float *lut, __m128i lo_nib,
-                            __m128i hi_nib) {
+                           __m128i hi_nib) {
   // base_offsets = [0, 16, 32, ..., 7*16] — sub index offsets in float units
-  const __m256i base_offsets =
-      _mm256_setr_epi32(0, kNumCentroids, 2 * kNumCentroids,
-                         3 * kNumCentroids, 4 * kNumCentroids,
-                         5 * kNumCentroids, 6 * kNumCentroids,
-                         7 * kNumCentroids);
+  const __m256i base_offsets = _mm256_setr_epi32(
+      0, kNumCentroids, 2 * kNumCentroids, 3 * kNumCentroids, 4 * kNumCentroids,
+      5 * kNumCentroids, 6 * kNumCentroids, 7 * kNumCentroids);
 
   // Low half: subs m .. m+7
   __m256i lo32 = _mm256_cvtepu8_epi32(lo_nib);
@@ -88,13 +85,14 @@ inline void accumulate_adc(__m256 &acc, const float *lut, __m128i lo_nib,
   // High half: subs m+8 .. m+15
   __m256i hi32 = _mm256_cvtepu8_epi32(hi_nib);
   __m256i hi_idx = _mm256_add_epi32(hi32, base_offsets);
-  acc = _mm256_add_ps(acc, _mm256_i32gather_ps(lut + 8 * kNumCentroids, hi_idx, 4));
+  acc = _mm256_add_ps(acc,
+                      _mm256_i32gather_ps(lut + 8 * kNumCentroids, hi_idx, 4));
 }
 
 }  // namespace
 
 void pq_adc_int4_distance_avx2(const void *pq_code_v, const void *lut_v,
-                                size_t num_subquantizers, float *out) {
+                               size_t num_subquantizers, float *out) {
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
   const auto *lut = reinterpret_cast<const float *>(lut_v);
   __m256 acc = _mm256_setzero_ps();
@@ -117,16 +115,15 @@ void pq_adc_int4_distance_avx2(const void *pq_code_v, const void *lut_v,
 }
 
 void pq_sdc_int4_distance_avx2(const void *a_v, const void *b_v,
-                                const void *dist_table_v,
-                                size_t num_subquantizers, float *out) {
+                               const void *dist_table_v,
+                               size_t num_subquantizers, float *out) {
   const auto *a = reinterpret_cast<const uint8_t *>(a_v);
   const auto *b = reinterpret_cast<const uint8_t *>(b_v);
   const auto *dist_table = reinterpret_cast<const float *>(dist_table_v);
 
-  const __m256i base_offsets =
-      _mm256_setr_epi32(0, kTablePerSub, 2 * kTablePerSub, 3 * kTablePerSub,
-                         4 * kTablePerSub, 5 * kTablePerSub, 6 * kTablePerSub,
-                         7 * kTablePerSub);
+  const __m256i base_offsets = _mm256_setr_epi32(
+      0, kTablePerSub, 2 * kTablePerSub, 3 * kTablePerSub, 4 * kTablePerSub,
+      5 * kTablePerSub, 6 * kTablePerSub, 7 * kTablePerSub);
   const __m256i mul16 = _mm256_set1_epi32(kNumCentroids);
 
   __m256 acc = _mm256_setzero_ps();
@@ -167,8 +164,8 @@ void pq_sdc_int4_distance_avx2(const void *a_v, const void *b_v,
 }
 
 void pq_adc_int4_batch_distance_avx2(const void **candidates_v,
-                                      const void *lut_v, size_t num,
-                                      size_t num_subquantizers, float *out) {
+                                     const void *lut_v, size_t num,
+                                     size_t num_subquantizers, float *out) {
   const auto *lut = reinterpret_cast<const float *>(lut_v);
   const auto *candidates =
       reinterpret_cast<const uint8_t *const *>(candidates_v);
@@ -206,7 +203,8 @@ void pq_adc_int4_batch_distance_avx2(const void **candidates_v,
     // Scalar leftover for remaining sub-quantizers.
     for (; m < num_subquantizers; ++m) {
       const float *tab = lut + m * kNumCentroids;
-      uint8_t b0 = c0[m >> 1], b1 = c1[m >> 1], b2 = c2[m >> 1], b3 = c3[m >> 1];
+      uint8_t b0 = c0[m >> 1], b1 = c1[m >> 1], b2 = c2[m >> 1],
+              b3 = c3[m >> 1];
       s0 += tab[(m & 1u) ? (b0 >> 4) : (b0 & 0x0Fu)];
       s1 += tab[(m & 1u) ? (b1 >> 4) : (b1 & 0x0Fu)];
       s2 += tab[(m & 1u) ? (b2 >> 4) : (b2 & 0x0Fu)];

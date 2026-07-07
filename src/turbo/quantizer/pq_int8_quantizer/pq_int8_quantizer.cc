@@ -20,9 +20,9 @@
 #include <random>
 #include <thread>
 #include <vector>
+#include <ailego/math/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_logger.h>
-#include <ailego/math/normalizer.h>
 
 namespace zvec {
 namespace turbo {
@@ -37,8 +37,7 @@ struct PqInt8SerPayload {
   uint32_t num_centroids;  // always 256 for int8
 };
 
-int PqInt8Quantizer::init(const IndexMeta &meta,
-                          const ailego::Params &params) {
+int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   meta_ = meta;
 
   uint32_t d = meta.dimension();
@@ -62,8 +61,7 @@ int PqInt8Quantizer::init(const IndexMeta &meta,
 
   // Pre-allocate centroids (filled by train()).
   centroids_.resize(
-      static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_,
-      0.0f);
+      static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_, 0.0f);
 
   // Dispatch ISA kernels (scalar only for now).
   auto pq_k = get_pq_kernels(DataType::kInt8);
@@ -78,24 +76,23 @@ int PqInt8Quantizer::init(const IndexMeta &meta,
   // KMeans training (train_subquantizer).  PQ codebook is trained in L2
   // space, so encoding must minimize L2 quantization error regardless
   // of the search metric.
-  fp32_l2_batch_fn_ = get_batch_distance_func(
-      MetricType::kSquaredEuclidean, DataType::kFp32,
-      QuantizeType::kDefault, CpuArchType::kAuto);
+  fp32_l2_batch_fn_ =
+      get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
+                              QuantizeType::kDefault, CpuArchType::kAuto);
 
   // Metric-aware batch distance: used for search-side LUT computation
   // (quantize_query) and SDC dist_table.  For IP/Cosine this computes
   // inner-product-based distances instead of L2.
   fp32_batch_fn_ = get_batch_distance_func(
-      mt, DataType::kFp32,
-      QuantizeType::kDefault, CpuArchType::kAuto);
+      mt, DataType::kFp32, QuantizeType::kDefault, CpuArchType::kAuto);
 
   // For Cosine: fall back to IP for the metric-aware batch function,
   // because cosine = normalize + IP.  The normalization is applied
   // explicitly in quantize_query.
   if (meta_.metric_name() == "Cosine") {
-    fp32_batch_fn_ = get_batch_distance_func(
-        MetricType::kInnerProduct, DataType::kFp32,
-        QuantizeType::kDefault, CpuArchType::kAuto);
+    fp32_batch_fn_ =
+        get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
+                                QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
   // For Cosine: reserve extra space to store the L2 norm (one float)
@@ -118,7 +115,8 @@ void PqInt8Quantizer::build_centroid_ptrs_cache() {
   const size_t d = sub_dim_;
   centroid_ptrs_cache_.resize(num_subquantizers_);
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
-    const float *centroids_m = centroids_.data() + static_cast<size_t>(m) * k * d;
+    const float *centroids_m =
+        centroids_.data() + static_cast<size_t>(m) * k * d;
     auto &ptrs = centroid_ptrs_cache_[m];
     ptrs.resize(k);
     for (size_t c = 0; c < k; ++c) {
@@ -131,8 +129,7 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
                                          size_t stride, size_t sub_idx) {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
-  float *centroids_m =
-      centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
+  float *centroids_m = centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
 
   // -- Initialization: pick k distinct random data points -----------------
   std::mt19937 rng(42 + static_cast<uint32_t>(sub_idx));
@@ -180,8 +177,8 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
           sub_idx * d;
 
       fp32_l2_batch_fn_(centroid_ptrs.data(),
-                        reinterpret_cast<const void *>(sub_vec),
-                        k, d, dists.data());
+                        reinterpret_cast<const void *>(sub_vec), k, d,
+                        dists.data());
       uint32_t best_idx = static_cast<uint32_t>(
           std::min_element(dists.begin(), dists.end()) - dists.begin());
 
@@ -291,20 +288,20 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   }
 
   // Clamp thread count to [1, num_subquantizers_].
-  thread_count = std::max(1, std::min(thread_count,
-                                       static_cast<int>(num_subquantizers_)));
+  thread_count =
+      std::max(1, std::min(thread_count, static_cast<int>(num_subquantizers_)));
 
-  LOG_INFO("PQ training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
-           "max_iters=%u, threads=%d",
-           num, original_dim_, num_subquantizers_, sub_dim_,
-           kMaxKmeansIters, thread_count);
+  LOG_INFO(
+      "PQ training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
+      "max_iters=%u, threads=%d",
+      num, original_dim_, num_subquantizers_, sub_dim_, kMaxKmeansIters,
+      thread_count);
 
   if (thread_count == 1) {
     // Single-threaded path.
     for (uint32_t m = 0; m < num_subquantizers_; ++m) {
       train_subquantizer(all_data.data(), num, data_stride, m);
-      LOG_INFO("  sub-quantizer [%u/%u] done",
-               m + 1, num_subquantizers_);
+      LOG_INFO("  sub-quantizer [%u/%u] done", m + 1, num_subquantizers_);
     }
   } else {
     // Multi-threaded path: each thread handles a contiguous range of
@@ -319,20 +316,20 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
       uint32_t m_end = static_cast<uint32_t>(
           (static_cast<size_t>(t + 1) * num_subquantizers_) / thread_count);
 
-      threads.emplace_back([this, &all_data, num, data_stride,
-                            m_begin, m_end]() {
-        for (uint32_t m = m_begin; m < m_end; ++m) {
-          train_subquantizer(all_data.data(), num, data_stride, m);
-        }
-      });
+      threads.emplace_back(
+          [this, &all_data, num, data_stride, m_begin, m_end]() {
+            for (uint32_t m = m_begin; m < m_end; ++m) {
+              train_subquantizer(all_data.data(), num, data_stride, m);
+            }
+          });
     }
 
     for (auto &th : threads) {
       th.join();
     }
 
-    LOG_INFO("  all %u sub-quantizers trained (%d threads)",
-             num_subquantizers_, thread_count);
+    LOG_INFO("  all %u sub-quantizers trained (%d threads)", num_subquantizers_,
+             thread_count);
   }
 
   // Pre-build centroid pointer cache (needed by compute_dist_table).
@@ -349,8 +346,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
 void PqInt8Quantizer::compute_dist_table() {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
-  dist_table_.resize(
-      static_cast<size_t>(num_subquantizers_) * k * k, 0.0f);
+  dist_table_.resize(static_cast<size_t>(num_subquantizers_) * k * k, 0.0f);
 
   // For each sub-quantizer, compute centroid-to-centroid distances via
   // the metric-aware fp32 batch distance function (fp32_batch_fn_).
@@ -367,8 +363,8 @@ void PqInt8Quantizer::compute_dist_table() {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     for (uint32_t i = 0; i < k; ++i) {
       fp32_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
-                     reinterpret_cast<const void *>(centroids_m + i * d),
-                     k, d, table_m + i * k);
+                     reinterpret_cast<const void *>(centroids_m + i * d), k, d,
+                     table_m + i * k);
     }
   }
 }
@@ -401,8 +397,8 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
 
     // Compute L2 distances from this sub-vector to all 256 centroids.
     fp32_l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
-                      reinterpret_cast<const void *>(sub_vec),
-                      kNumCentroids, sub_dim_, dists);
+                      reinterpret_cast<const void *>(sub_vec), kNumCentroids,
+                      sub_dim_, dists);
 
     // Argmin: find nearest centroid.
     float best_dist = dists[0];
@@ -468,16 +464,16 @@ float PqInt8Quantizer::calc_distance_dp_query(const void *dp,
   return d;
 }
 
-void PqInt8Quantizer::calc_distance_dp_query_batch(
-    const void *const *dp_list, int dp_num, const void *query,
-    float *dist_list) const {
+void PqInt8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
+                                                   int dp_num,
+                                                   const void *query,
+                                                   float *dist_list) const {
   // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
   // const_cast: dp_list is const void* const* (outer const from vtable
   // signature), but batch_adc_fn_ expects const void**.  Kernel is read-only
   // on the pointer array.
   batch_adc_fn_(const_cast<const void **>(dp_list), query,
-                static_cast<size_t>(dp_num),
-                num_subquantizers_, dist_list);
+                static_cast<size_t>(dp_num), num_subquantizers_, dist_list);
   // For Cosine: convert -cos_sim to cosine distance.
   if (meta_.metric_name() == "Cosine") {
     for (int i = 0; i < dp_num; ++i) {
@@ -493,8 +489,8 @@ float PqInt8Quantizer::calc_distance_dp_query_unquantized(
                          kNumCentroids);
   quantize_query(query, lut.data());
   float d = 0.0f;
-  adc_fn_(reinterpret_cast<const uint8_t *>(dp), lut.data(),
-          num_subquantizers_, &d);
+  adc_fn_(reinterpret_cast<const uint8_t *>(dp), lut.data(), num_subquantizers_,
+          &d);
   if (meta_.metric_name() == "Cosine") {
     d = 1.0f + d;
   }
@@ -510,8 +506,7 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
   // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
   // const_cast: see calc_distance_dp_query_batch for rationale.
   batch_adc_fn_(const_cast<const void **>(dp_list), lut.data(),
-                static_cast<size_t>(dp_num),
-                num_subquantizers_, dist_list);
+                static_cast<size_t>(dp_num), num_subquantizers_, dist_list);
   if (meta_.metric_name() == "Cosine") {
     for (int i = 0; i < dp_num; ++i) {
       dist_list[i] = 1.0f + dist_list[i];
@@ -529,8 +524,7 @@ float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
 }
 
 int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
-                               std::string *out,
-                               IndexQueryMeta *ometa) const {
+                              std::string *out, IndexQueryMeta *ometa) const {
   if (qmeta.unit_size() != sizeof(float)) {
     return kErrUnsupported;
   }
@@ -589,10 +583,8 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
   // (extra dist_table pointer), vs DistanceFunc's 4.
   auto sdc = sdc_fn_;
   const void *dt = dist_table_.data();
-  DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b,
-                                     size_t dim, float *out) {
-    sdc(a, b, dt, dim, out);
-  };
+  DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b, size_t dim,
+                                    float *out) { sdc(a, b, dt, dim, out); };
 
   // Batch ADC: ISA-dispatched batch4 kernel, no lambda needed.
   BatchDistanceFunc batch_func = batch_adc_fn_;
@@ -667,9 +659,8 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 
   meta_.set_meta(IndexMeta::DataType::DT_FP32, original_dim_);
 
-  size_t centroids_bytes =
-      static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_ *
-      sizeof(float);
+  size_t centroids_bytes = static_cast<size_t>(num_subquantizers_) *
+                           kNumCentroids * sub_dim_ * sizeof(float);
 
   centroids_.resize(centroids_bytes / sizeof(float));
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
@@ -683,9 +674,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   batch_adc_fn_ = pq_k.batch_adc_distance;
 
   // L2-only batch distance for encoding (always L2 regardless of metric).
-  fp32_l2_batch_fn_ = get_batch_distance_func(
-      MetricType::kSquaredEuclidean, DataType::kFp32,
-      QuantizeType::kDefault, CpuArchType::kAuto);
+  fp32_l2_batch_fn_ =
+      get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
+                              QuantizeType::kDefault, CpuArchType::kAuto);
 
   // Metric-aware batch distance for search LUT.  For Cosine, use IP
   // (normalization is applied explicitly in quantize_query).
@@ -693,9 +684,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
       metric_from_name(meta_.metric_name()), DataType::kFp32,
       QuantizeType::kDefault, CpuArchType::kAuto);
   if (meta_.metric_name() == "Cosine") {
-    fp32_batch_fn_ = get_batch_distance_func(
-        MetricType::kInnerProduct, DataType::kFp32,
-        QuantizeType::kDefault, CpuArchType::kAuto);
+    fp32_batch_fn_ =
+        get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
+                                QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
   // Pre-build centroid pointer cache for fast encode/search.

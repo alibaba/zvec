@@ -36,9 +36,8 @@ void pq_adc_int8_distance(const void *pq_code, const void *lut,
 //
 // distance = sum_{m=0}^{num_subquantizers-1}
 //              dist_table[m * 65536 + a[m] * 256 + b[m]]
-void pq_sdc_int8_distance(const void *a, const void *b,
-                          const void *dist_table, size_t num_subquantizers,
-                          float *out);
+void pq_sdc_int8_distance(const void *a, const void *b, const void *dist_table,
+                          size_t num_subquantizers, float *out);
 
 // Batch ADC: compute distances for multiple PQ codes against a shared LUT.
 // Processes 4 candidates per iteration (batch4) with shared LUT pointer

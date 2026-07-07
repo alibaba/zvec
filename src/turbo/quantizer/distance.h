@@ -50,8 +50,8 @@ class DistanceImpl {
   //! from func_ which is the ADC kernel).  Non-PQ quantizers should use
   //! the constructors above where sym_func_ defaults to func_.
   DistanceImpl(DistanceFunc func, DistanceFunc sym_func,
-               BatchDistanceFunc batch_func,
-               std::string quantized_query, size_t dim)
+               BatchDistanceFunc batch_func, std::string quantized_query,
+               size_t dim)
       : func_(std::move(func)),
         sym_func_(std::move(sym_func)),
         batch_func_(std::move(batch_func)),

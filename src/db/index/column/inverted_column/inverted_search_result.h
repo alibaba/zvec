@@ -34,7 +34,7 @@ class InvertedSearchResult
   class Filter : public IndexFilter {
    public:
     explicit Filter(std::shared_ptr<const InvertedSearchResult> result)
-        : result_(std::move(result)) {};
+        : result_(std::move(result)){};
 
     bool is_filtered(uint64_t id) const override {
       return !result_->contains(id);

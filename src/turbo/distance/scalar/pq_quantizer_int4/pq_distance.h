@@ -30,7 +30,7 @@ namespace zvec::turbo::scalar {
 //
 // distance = sum_{m=0}^{nsq-1} lut[m * 16 + nibble(m)]
 void pq_adc_int4_distance(const void *pq_code, const void *lut,
-                           size_t num_subquantizers, float *out);
+                          size_t num_subquantizers, float *out);
 
 // SDC (Symmetric Distance Computation) for int4 PQ codes.
 //
@@ -38,15 +38,14 @@ void pq_adc_int4_distance(const void *pq_code, const void *lut,
 //   dist_table[m * 256 + i * 16 + j] = ||centroid[m][i] - centroid[m][j]||^2
 //
 // distance = sum_{m=0}^{nsq-1} dist_table[m*256 + nibble_a(m)*16 + nibble_b(m)]
-void pq_sdc_int4_distance(const void *a, const void *b,
-                           const void *dist_table, size_t num_subquantizers,
-                           float *out);
+void pq_sdc_int4_distance(const void *a, const void *b, const void *dist_table,
+                          size_t num_subquantizers, float *out);
 
 // Batch ADC: compute distances for multiple int4 PQ codes against a shared
 // LUT.  Processes 4 candidates per iteration (batch4) with 4 independent
 // accumulators for ILP.  Scalar leftover for remaining candidates.
 void pq_adc_int4_batch_distance(const void **candidates, const void *lut,
-                                 size_t num, size_t num_subquantizers,
-                                 float *out);
+                                size_t num, size_t num_subquantizers,
+                                float *out);
 
 }  // namespace zvec::turbo::scalar
