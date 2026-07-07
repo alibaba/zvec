@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
+#include "quantizer/pq_int4_quantizer/pq_int4_quantizer.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -28,16 +28,16 @@ namespace zvec {
 namespace turbo {
 
 // ---------------------------------------------------------------------------
-// PQ serialization payload (follows the QuantizerSerHeader).
+// PQ int4 serialization payload (follows the QuantizerSerHeader).
 // ---------------------------------------------------------------------------
-struct PqInt8SerPayload {
+struct PqInt4SerPayload {
   uint32_t original_dim;
   uint32_t num_subquantizers;
   uint32_t sub_dim;
-  uint32_t num_centroids;  // always 256 for int8
+  uint32_t num_centroids;  // always 16 for int4
 };
 
-int PqInt8Quantizer::init(const IndexMeta &meta,
+int PqInt4Quantizer::init(const IndexMeta &meta,
                           const ailego::Params &params) {
   meta_ = meta;
 
@@ -47,13 +47,22 @@ int PqInt8Quantizer::init(const IndexMeta &meta,
   // Read num_subquantizers from params (required).
   uint32_t nsq = 0;
   if (!params.get("num_subquantizers", &nsq) || nsq == 0) {
-    LOG_ERROR("PqInt8Quantizer: num_subquantizers not set or zero");
+    LOG_ERROR("PqInt4Quantizer: num_subquantizers not set or zero");
     return kErrUnsupported;
   }
   if (d % nsq != 0) {
     LOG_ERROR(
-        "PqInt8Quantizer: dim (%u) is not divisible by num_subquantizers (%u)",
+        "PqInt4Quantizer: dim (%u) is not divisible by num_subquantizers (%u)",
         d, nsq);
+    return kErrUnsupported;
+  }
+  // int4 codes are packed nibbles: 2 sub-quantizers per byte.
+  // num_subquantizers MUST be even for clean byte packing.
+  if (nsq % 2 != 0) {
+    LOG_ERROR(
+        "PqInt4Quantizer: num_subquantizers (%u) must be even for int4 "
+        "packed nibble encoding",
+        nsq);
     return kErrUnsupported;
   }
 
@@ -65,41 +74,34 @@ int PqInt8Quantizer::init(const IndexMeta &meta,
       static_cast<size_t>(num_subquantizers_) * kNumCentroids * sub_dim_,
       0.0f);
 
-  // Dispatch ISA kernels (scalar only for now).
-  auto pq_k = get_pq_kernels(DataType::kInt8);
+  // Dispatch ISA kernels: int4 packed nibble path.
+  auto pq_k = get_pq_kernels(DataType::kInt4, QuantizeType::kPQ);
   adc_fn_ = pq_k.adc_distance;
   sdc_fn_ = pq_k.sdc_distance;
   batch_adc_fn_ = pq_k.batch_adc_distance;
 
-  // Resolve the configured metric type (local only — not stored).
+  // Resolve the configured metric type.
   auto mt = metric_from_name(meta_.metric_name());
 
   // L2-only batch distance: always used for encoding (quantize_data) and
-  // KMeans training (train_subquantizer).  PQ codebook is trained in L2
-  // space, so encoding must minimize L2 quantization error regardless
-  // of the search metric.
+  // KMeans training (train_subquantizer).
   fp32_l2_batch_fn_ = get_batch_distance_func(
       MetricType::kSquaredEuclidean, DataType::kFp32,
       QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // Metric-aware batch distance: used for search-side LUT computation
-  // (quantize_query) and SDC dist_table.  For IP/Cosine this computes
-  // inner-product-based distances instead of L2.
+  // Metric-aware batch distance for search-side LUT and SDC table.
   fp32_batch_fn_ = get_batch_distance_func(
       mt, DataType::kFp32,
       QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // For Cosine: fall back to IP for the metric-aware batch function,
-  // because cosine = normalize + IP.  The normalization is applied
-  // explicitly in quantize_query.
+  // For Cosine: fall back to IP (normalization applied explicitly).
   if (meta_.metric_name() == "Cosine") {
     fp32_batch_fn_ = get_batch_distance_func(
         MetricType::kInnerProduct, DataType::kFp32,
         QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
-  // For Cosine: reserve extra space to store the L2 norm (one float)
-  // alongside each PQ code, enabling dequantize() to rescale.
+  // For Cosine: reserve extra space to store the L2 norm (one float).
   if (meta_.metric_name() == "Cosine") {
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
@@ -110,15 +112,16 @@ int PqInt8Quantizer::init(const IndexMeta &meta,
 }
 
 // ---------------------------------------------------------------------------
-// Simple Lloyd's KMeans for one sub-quantizer.
+// Simple Lloyd's KMeans for one sub-quantizer (k=16).
 // ---------------------------------------------------------------------------
 
-void PqInt8Quantizer::build_centroid_ptrs_cache() {
+void PqInt4Quantizer::build_centroid_ptrs_cache() {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   centroid_ptrs_cache_.resize(num_subquantizers_);
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
-    const float *centroids_m = centroids_.data() + static_cast<size_t>(m) * k * d;
+    const float *centroids_m =
+        centroids_.data() + static_cast<size_t>(m) * k * d;
     auto &ptrs = centroid_ptrs_cache_[m];
     ptrs.resize(k);
     for (size_t c = 0; c < k; ++c) {
@@ -127,7 +130,7 @@ void PqInt8Quantizer::build_centroid_ptrs_cache() {
   }
 }
 
-void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
+void PqInt4Quantizer::train_subquantizer(const float *data, size_t num,
                                          size_t stride, size_t sub_idx) {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
@@ -148,7 +151,6 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
         sub_idx * d;
     std::memcpy(centroids_m + i * d, src, d * sizeof(float));
   }
-  // Duplicate if num < k (rare edge case).
   for (size_t i = n_init; i < k; ++i) {
     std::memcpy(centroids_m + i * d, centroids_m + (i % n_init) * d,
                 d * sizeof(float));
@@ -159,7 +161,6 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   std::vector<float> new_centroids(k * d);
   std::vector<uint32_t> counts(k);
 
-  // Pre-build centroid pointer array for SIMD batch distance.
   std::vector<const void *> centroid_ptrs(k);
   for (size_t c = 0; c < k; ++c) {
     centroid_ptrs[c] = centroids_m + c * d;
@@ -169,10 +170,6 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   for (uint32_t iter = 0; iter < kMaxKmeansIters; ++iter) {
     bool changed = false;
 
-    // Assignment step — always use L2 distance (fp32_l2_batch_fn_) to
-    // minimize L2 quantization error, regardless of the search metric.
-    // KMeans operates in L2 space; the search metric only affects LUT
-    // construction in quantize_query.
     for (size_t i = 0; i < num; ++i) {
       const float *sub_vec =
           reinterpret_cast<const float *>(
@@ -196,7 +193,6 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
       break;
     }
 
-    // Update step.
     std::fill(new_centroids.begin(), new_centroids.end(), 0.0f);
     std::fill(counts.begin(), counts.end(), 0);
 
@@ -222,7 +218,6 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
       }
     }
 
-    // Copy back; keep old centroid for empty clusters.
     for (size_t c = 0; c < k; ++c) {
       if (counts[c] > 0) {
         std::memcpy(centroids_m + c * d, new_centroids.data() + c * d,
@@ -232,11 +227,11 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   }
 }
 
-int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
+int PqInt4Quantizer::train(IndexHolder::Pointer holder) {
   return train(holder, 1);
 }
 
-int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
+int PqInt4Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   if (!holder) {
     return kErrUnsupported;
   }
@@ -253,19 +248,15 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
                 original_dim_ * sizeof(float));
   }
 
-  // Subsample if the dataset exceeds the training limit (aligned with
-  // faiss/vsag: 256 centroids * 256 max_points_per_centroid ≈ 65535).
+  // Subsample if the dataset exceeds the training limit.
   if (num > kMaxTrainVectors) {
-    LOG_INFO("PQ training: subsampling %zu -> %zu vectors", num,
+    LOG_INFO("PQ int4 training: subsampling %zu -> %zu vectors", num,
              kMaxTrainVectors);
     std::mt19937 rng(42);
-    // Fisher-Yates partial shuffle: randomly place kMaxTrainVectors vectors
-    // at the front of the buffer.
     for (size_t i = 0; i < kMaxTrainVectors; ++i) {
       std::uniform_int_distribution<size_t> dist(i, num - 1);
       size_t j = dist(rng);
       if (i != j) {
-        // Swap full vectors (dim-sized chunks).
         for (uint32_t d = 0; d < original_dim_; ++d) {
           std::swap(all_data[i * original_dim_ + d],
                     all_data[j * original_dim_ + d]);
@@ -279,9 +270,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
 
   size_t data_stride = original_dim_ * sizeof(float);
 
-  // For Cosine: normalize training data to unit length so that KMeans
-  // centroids are learned in normalized space.  After normalization,
-  // L2 minimization is equivalent to maximizing cosine similarity.
+  // For Cosine: normalize training data to unit length.
   if (meta_.metric_name() == "Cosine") {
     for (size_t i = 0; i < num; ++i) {
       float *v = all_data.data() + i * original_dim_;
@@ -290,26 +279,20 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
-  // Clamp thread count to [1, num_subquantizers_].
   thread_count = std::max(1, std::min(thread_count,
                                        static_cast<int>(num_subquantizers_)));
 
-  LOG_INFO("PQ training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
+  LOG_INFO("PQ int4 training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
            "max_iters=%u, threads=%d",
            num, original_dim_, num_subquantizers_, sub_dim_,
            kMaxKmeansIters, thread_count);
 
   if (thread_count == 1) {
-    // Single-threaded path.
     for (uint32_t m = 0; m < num_subquantizers_; ++m) {
       train_subquantizer(all_data.data(), num, data_stride, m);
-      LOG_INFO("  sub-quantizer [%u/%u] done",
-               m + 1, num_subquantizers_);
+      LOG_INFO("  sub-quantizer [%u/%u] done", m + 1, num_subquantizers_);
     }
   } else {
-    // Multi-threaded path: each thread handles a contiguous range of
-    // sub-quantizers.  Sub-quantizers are fully independent — no
-    // synchronization needed.
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
 
@@ -335,35 +318,25 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
              num_subquantizers_, thread_count);
   }
 
-  // Pre-build centroid pointer cache (needed by compute_dist_table).
   build_centroid_ptrs_cache();
 
-  // Pre-compute SDC dist_table.
   LOG_INFO("Computing SDC dist_table ...");
   compute_dist_table();
 
-  LOG_INFO("PQ training complete.");
+  LOG_INFO("PQ int4 training complete.");
   return 0;
 }
 
-void PqInt8Quantizer::compute_dist_table() {
+void PqInt4Quantizer::compute_dist_table() {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   dist_table_.resize(
       static_cast<size_t>(num_subquantizers_) * k * k, 0.0f);
 
-  // For each sub-quantizer, compute centroid-to-centroid distances via
-  // the metric-aware fp32 batch distance function (fp32_batch_fn_).
-  // L2:  dist_table[m][i][j] = ||c_m[i] - c_m[j]||^2
-  // IP:  dist_table[m][i][j] = -dot(c_m[i], c_m[j])
-  // Cosine: centroids trained on normalized data, same as IP.
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
     const float *centroids_m = centroids_.data() + m * k * d;
     float *table_m = dist_table_.data() + m * k * k;
 
-    // Use pre-built centroid pointer cache.
-    // const_cast: .data() returns const void* const* but fp32_batch_fn_
-    // expects const void**.  The kernel never modifies the pointer array.
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     for (uint32_t i = 0; i < k; ++i) {
       fp32_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
@@ -373,13 +346,11 @@ void PqInt8Quantizer::compute_dist_table() {
   }
 }
 
-void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
+void PqInt4Quantizer::quantize_data(const void *input, void *output) const {
   const float *vec = reinterpret_cast<const float *>(input);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
 
-  // For Cosine: normalize the vector to unit length before encoding,
-  // because the codebook was trained on normalized data.  The original
-  // norm is stored after the PQ code for later dequantize().
+  // For Cosine: normalize the vector before encoding.
   std::vector<float> norm_vec_storage;
   float vec_norm = 0.0f;
   if (meta_.metric_name() == "Cosine") {
@@ -389,22 +360,22 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     vec = norm_vec_storage.data();
   }
 
-  // Encode with L2-only batch distance (search-metric independent).
-  // Process one sub-quantizer at a time, reusing a single 256-float
-  // scratch buffer and fusing argmin into the distance loop to avoid
-  // a second pass over the data.
+  // Clear packed nibble code buffer (num_subquantizers / 2 bytes).
+  size_t code_bytes = static_cast<size_t>(num_subquantizers_) / 2;
+  std::memset(code, 0, code_bytes);
+
+  // Encode each sub-quantizer and pack into nibbles.
   float dists[kNumCentroids];
 
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
     const float *sub_vec = vec + m * sub_dim_;
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
 
-    // Compute L2 distances from this sub-vector to all 256 centroids.
     fp32_l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
                       reinterpret_cast<const void *>(sub_vec),
                       kNumCentroids, sub_dim_, dists);
 
-    // Argmin: find nearest centroid.
+    // Argmin: find nearest centroid (0..15).
     float best_dist = dists[0];
     uint32_t best_idx = 0;
     for (uint32_t j = 1; j < kNumCentroids; ++j) {
@@ -413,24 +384,27 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
         best_idx = j;
       }
     }
-    code[m] = static_cast<uint8_t>(best_idx);
+
+    // Pack nibble: even m -> low 4 bits; odd m -> high 4 bits.
+    if (m & 1u) {
+      code[m >> 1] |= static_cast<uint8_t>(best_idx << 4);
+    } else {
+      code[m >> 1] |= static_cast<uint8_t>(best_idx & 0x0Fu);
+    }
   }
 
   // Store norm after PQ code for Cosine dequantize support.
   if (meta_.metric_name() == "Cosine") {
-    float *norm_out = reinterpret_cast<float *>(code + num_subquantizers_);
+    float *norm_out = reinterpret_cast<float *>(code + code_bytes);
     *norm_out = vec_norm;
   }
 }
 
-void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
+void PqInt4Quantizer::quantize_query(const void *input, void *output) const {
   const float *query = reinterpret_cast<const float *>(input);
   float *lut = reinterpret_cast<float *>(output);
 
-  // For Cosine: normalize the query to unit length first, then use IP
-  // as the LUT metric.  After normalization, dot(q_norm, c) equals the
-  // cosine similarity when centroids were trained on normalized data.
-  // IP is additive across subspaces, so sum of sub-IPs = full IP.
+  // For Cosine: normalize query, then use IP as LUT metric.
   std::vector<float> norm_query_storage;
   if (meta_.metric_name() == "Cosine") {
     norm_query_storage.assign(query, query + original_dim_);
@@ -441,11 +415,7 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   }
 
   // For each sub-quantizer, compute distance from query sub-vector to all
-  // 256 centroids via the metric-aware fp32 batch distance function.
-  // For L2: LUT[m][j] = ||q_m - c_m[j]||^2
-  // For IP: LUT[m][j] = -dot(q_m, c_m[j])
-  // For Cosine: (query is normalized) LUT[m][j] = -dot(q_norm_m, c_m[j])
-  // const_cast: see compute_dist_table for rationale.
+  // 16 centroids.  LUT stride = kNumCentroids = 16.
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     fp32_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
@@ -454,31 +424,22 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   }
 }
 
-float PqInt8Quantizer::calc_distance_dp_query(const void *dp,
+float PqInt4Quantizer::calc_distance_dp_query(const void *dp,
                                               const void *query) const {
-  // dp = pq_code (uint8_t[num_subquantizers])
-  // query = LUT (float[num_subquantizers * 256])
   float d = 0.0f;
-  adc_fn_(reinterpret_cast<const uint8_t *>(dp),
-          reinterpret_cast<const float *>(query), num_subquantizers_, &d);
-  // For Cosine: ADC sum = -cos_sim; convert to cosine distance = 1 - cos_sim.
+  adc_fn_(dp, query, num_subquantizers_, &d);
   if (meta_.metric_name() == "Cosine") {
     d = 1.0f + d;
   }
   return d;
 }
 
-void PqInt8Quantizer::calc_distance_dp_query_batch(
+void PqInt4Quantizer::calc_distance_dp_query_batch(
     const void *const *dp_list, int dp_num, const void *query,
     float *dist_list) const {
-  // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
-  // const_cast: dp_list is const void* const* (outer const from vtable
-  // signature), but batch_adc_fn_ expects const void**.  Kernel is read-only
-  // on the pointer array.
   batch_adc_fn_(const_cast<const void **>(dp_list), query,
                 static_cast<size_t>(dp_num),
                 num_subquantizers_, dist_list);
-  // For Cosine: convert -cos_sim to cosine distance.
   if (meta_.metric_name() == "Cosine") {
     for (int i = 0; i < dp_num; ++i) {
       dist_list[i] = 1.0f + dist_list[i];
@@ -486,29 +447,25 @@ void PqInt8Quantizer::calc_distance_dp_query_batch(
   }
 }
 
-float PqInt8Quantizer::calc_distance_dp_query_unquantized(
+float PqInt4Quantizer::calc_distance_dp_query_unquantized(
     const void *dp, const void *query) const {
-  // Build LUT on the fly, then use ADC.
   std::vector<float> lut(static_cast<size_t>(num_subquantizers_) *
                          kNumCentroids);
   quantize_query(query, lut.data());
   float d = 0.0f;
-  adc_fn_(reinterpret_cast<const uint8_t *>(dp), lut.data(),
-          num_subquantizers_, &d);
+  adc_fn_(dp, lut.data(), num_subquantizers_, &d);
   if (meta_.metric_name() == "Cosine") {
     d = 1.0f + d;
   }
   return d;
 }
 
-void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
+void PqInt4Quantizer::calc_distance_dp_query_batch_unquantized(
     const void *const *dp_list, int dp_num, const void *query,
     float *dist_list) const {
   std::vector<float> lut(static_cast<size_t>(num_subquantizers_) *
                          kNumCentroids);
   quantize_query(query, lut.data());
-  // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
-  // const_cast: see calc_distance_dp_query_batch for rationale.
   batch_adc_fn_(const_cast<const void **>(dp_list), lut.data(),
                 static_cast<size_t>(dp_num),
                 num_subquantizers_, dist_list);
@@ -519,16 +476,14 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
   }
 }
 
-float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
+float PqInt4Quantizer::calc_distance_dp_dp(const void *dp1,
                                            const void *dp2) const {
   float d = 0.0f;
-  sdc_fn_(reinterpret_cast<const uint8_t *>(dp1),
-          reinterpret_cast<const uint8_t *>(dp2), dist_table_.data(),
-          num_subquantizers_, &d);
+  sdc_fn_(dp1, dp2, dist_table_.data(), num_subquantizers_, &d);
   return d;
 }
 
-int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
+int PqInt4Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
                                std::string *out,
                                IndexQueryMeta *ometa) const {
   if (qmeta.unit_size() != sizeof(float)) {
@@ -545,7 +500,7 @@ int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   return 0;
 }
 
-int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
+int PqInt4Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
                                 std::string *out) const {
   (void)qmeta;
   const uint8_t *code = reinterpret_cast<const uint8_t *>(in);
@@ -553,23 +508,26 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
   out->resize(byte_size);
   float *result = reinterpret_cast<float *>(&(*out)[0]);
 
-  // Reconstruct by concatenating the selected centroids from each
-  // sub-quantizer.  This yields the PQ approximation of the vector
-  // in the space the codebook was trained in (normalized for Cosine).
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   for (uint32_t m = 0; m < num_subquantizers_; ++m) {
     const float *centroids_m =
         centroids_.data() + static_cast<size_t>(m) * k * d;
-    const float *centroid = centroids_m + static_cast<size_t>(code[m]) * d;
+
+    // Decode nibble index from packed code.
+    uint8_t byte = code[m >> 1];
+    uint8_t idx = (m & 1u) ? static_cast<uint8_t>(byte >> 4)
+                           : static_cast<uint8_t>(byte & 0x0Fu);
+
+    const float *centroid = centroids_m + static_cast<size_t>(idx) * d;
     std::memcpy(result + m * d, centroid, d * sizeof(float));
   }
 
-  // For Cosine: the codebook was trained on normalized data and the
-  // stored norm lets us rescale back to the original vector's magnitude.
+  // For Cosine: rescale by stored norm.
   if (meta_.metric_name() == "Cosine") {
+    size_t code_bytes = static_cast<size_t>(num_subquantizers_) / 2;
     float norm = 0.0f;
-    std::memcpy(&norm, code + num_subquantizers_, sizeof(float));
+    std::memcpy(&norm, code + code_bytes, sizeof(float));
     for (uint32_t j = 0; j < original_dim_; ++j) {
       result[j] *= norm;
     }
@@ -577,16 +535,12 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
   return 0;
 }
 
-DistanceImpl PqInt8Quantizer::distance(const void *query,
+DistanceImpl PqInt4Quantizer::distance(const void *query,
                                        const IndexQueryMeta &qmeta) const {
   (void)qmeta;
 
-  // ADC: PqAdcDistanceFunc signature now matches DistanceFunc directly
-  // (both use void*), so we can assign without a lambda wrapper.
   DistanceFunc adc_func = adc_fn_;
 
-  // SDC: still needs a lambda because the kernel has 5 parameters
-  // (extra dist_table pointer), vs DistanceFunc's 4.
   auto sdc = sdc_fn_;
   const void *dt = dist_table_.data();
   DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b,
@@ -594,11 +548,8 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
     sdc(a, b, dt, dim, out);
   };
 
-  // Batch ADC: ISA-dispatched batch4 kernel, no lambda needed.
   BatchDistanceFunc batch_func = batch_adc_fn_;
 
-  // The query is already quantized (LUT) by the caller (reset_query)
-  // — copy it directly into DistanceImpl storage.
   size_t lut_bytes = quantized_query_vector_length();
   std::string lut_storage(static_cast<const char *>(query), lut_bytes);
 
@@ -610,7 +561,7 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
 // ---------------------------------------------------------------------------
 // Serialization
 // ---------------------------------------------------------------------------
-int PqInt8Quantizer::serialize(std::string *out) const {
+int PqInt4Quantizer::serialize(std::string *out) const {
   if (!out) return kErrUnsupported;
 
   QuantizerSerHeader hdr{};
@@ -620,7 +571,7 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   hdr.dim = original_dim_;
   hdr.metric = static_cast<uint32_t>(metric_from_name(meta_.metric_name()));
 
-  PqInt8SerPayload payload{};
+  PqInt4SerPayload payload{};
   payload.original_dim = original_dim_;
   payload.num_subquantizers = num_subquantizers_;
   payload.sub_dim = sub_dim_;
@@ -634,19 +585,15 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   out->append(reinterpret_cast<const char *>(&payload), sizeof(payload));
   out->append(reinterpret_cast<const char *>(centroids_.data()),
               centroids_bytes);
-  // dist_table_ is NOT serialized: it is a build-phase-only derivative
-  // of the codebook (used by SDC during graph construction).  Search
-  // uses ADC exclusively, so the table can be recomputed on demand if
-  // ever needed, but is unnecessary after deserialization.
   return 0;
 }
 
-int PqInt8Quantizer::deserialize(std::string &in) {
+int PqInt4Quantizer::deserialize(std::string &in) {
   return deserialize(in.data(), in.size());
 }
 
-int PqInt8Quantizer::deserialize(const void *data, size_t len) {
-  if (len < sizeof(QuantizerSerHeader) + sizeof(PqInt8SerPayload)) {
+int PqInt4Quantizer::deserialize(const void *data, size_t len) {
+  if (len < sizeof(QuantizerSerHeader) + sizeof(PqInt4SerPayload)) {
     return kErrUnsupported;
   }
 
@@ -657,7 +604,7 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 
   if (hdr.magic != kQuantizerMagic) return kErrUnsupported;
 
-  PqInt8SerPayload payload;
+  PqInt4SerPayload payload;
   std::memcpy(&payload, ptr, sizeof(payload));
   ptr += sizeof(payload);
 
@@ -673,22 +620,17 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 
   centroids_.resize(centroids_bytes / sizeof(float));
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
-  // dist_table_ is intentionally not restored: SDC is only needed during
-  // offline build, not after deserialization (search uses ADC).
 
-  // Re-dispatch kernels.
-  auto pq_k = get_pq_kernels(DataType::kInt8);
+  // Re-dispatch int4 kernels.
+  auto pq_k = get_pq_kernels(DataType::kInt4, QuantizeType::kPQ);
   adc_fn_ = pq_k.adc_distance;
   sdc_fn_ = pq_k.sdc_distance;
   batch_adc_fn_ = pq_k.batch_adc_distance;
 
-  // L2-only batch distance for encoding (always L2 regardless of metric).
   fp32_l2_batch_fn_ = get_batch_distance_func(
       MetricType::kSquaredEuclidean, DataType::kFp32,
       QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // Metric-aware batch distance for search LUT.  For Cosine, use IP
-  // (normalization is applied explicitly in quantize_query).
   fp32_batch_fn_ = get_batch_distance_func(
       metric_from_name(meta_.metric_name()), DataType::kFp32,
       QuantizeType::kDefault, CpuArchType::kAuto);
@@ -698,13 +640,12 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
         QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
-  // Pre-build centroid pointer cache for fast encode/search.
   build_centroid_ptrs_cache();
 
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_QUANTIZER(PqInt8Quantizer);
+INDEX_FACTORY_REGISTER_QUANTIZER(PqInt4Quantizer);
 
 }  // namespace turbo
 }  // namespace zvec

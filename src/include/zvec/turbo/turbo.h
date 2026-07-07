@@ -73,10 +73,15 @@ struct FhtKernels {
   FhtVecRescaleFunc rescale;
 };
 
-// Aggregate of all PQ-specific kernels needed by PqInt8Quantizer, dispatched
-// by ISA.  LUT computation (compute_distance_table) is NOT included here —
-// it reuses the existing fp32 BatchDistanceFunc from get_batch_distance_func()
-// which is metric-aware and already SIMD-optimized.
+// Aggregate of all PQ-specific kernels needed by PqInt8Quantizer /
+// PqInt4Quantizer, dispatched by ISA and data_type.  LUT computation
+// (compute_distance_table) is NOT included here — it reuses the existing
+// fp32 BatchDistanceFunc from get_batch_distance_func() which is metric-
+// aware and already SIMD-optimized.
+//
+// data_type selects the code packing layout:
+//   kInt8: one uint8 per sub-quantizer (256 centroids, stride=256)
+//   kInt4: two sub-quantizers packed into one uint8 (16 centroids, stride=16)
 struct PqKernels {
   PqAdcDistanceFunc adc_distance;
   PqSdcKernelFunc sdc_distance;
@@ -143,8 +148,10 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 // Returns all FHT kernels dispatched for the current CPU.
 FhtKernels get_fht_kernels();
 
-// Returns all PQ kernels dispatched for the given quantize_type and CPU arch.
-PqKernels get_pq_kernels(QuantizeType quantize_type,
+// Returns all PQ kernels dispatched for the given data_type, quantize_type
+// and CPU arch.  data_type selects the code packing layout (kInt8 vs kInt4).
+PqKernels get_pq_kernels(DataType data_type,
+                          QuantizeType quantize_type = QuantizeType::kPQ,
                           CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo
