@@ -45,6 +45,7 @@ cc_library(
     libprotobuf
     FastPFOR
     cppjieba
+    snowball
     Arrow::arrow_static
     Arrow::parquet_static
     Arrow::arrow_compute
