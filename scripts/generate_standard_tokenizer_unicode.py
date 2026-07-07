@@ -141,7 +141,6 @@ def main():
     extended_pictographic_ranges = parse_binary_property(
         emoji_data_path, "Extended_Pictographic"
     )
-    emoji_ranges = parse_binary_property(emoji_data_path, "Emoji")
     emoji_modifier_base_ranges = parse_binary_property(
         emoji_data_path, "Emoji_Modifier_Base"
     )
@@ -166,7 +165,6 @@ def main():
         write_range_table(
             fout, "kExtendedPictographicRanges", extended_pictographic_ranges
         )
-        write_range_table(fout, "kEmojiRanges", emoji_ranges)
         write_range_table(fout, "kEmojiModifierBaseRanges", emoji_modifier_base_ranges)
         write_range_table(fout, "kEmojiModifierRanges", emoji_modifier_ranges)
         write_range_table(
