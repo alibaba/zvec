@@ -67,6 +67,14 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return group_results_[idx];
   }
 
+  IndexGroupDocumentList *mutable_group_result(void) override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
+  }
+
   //! Update the parameters of context
   int update(const ailego::Params & /*params*/) override {
     return 0;

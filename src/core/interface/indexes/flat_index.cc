@@ -63,6 +63,7 @@ int FlatIndex::_prepare_for_search(
   if (flat_search_param->radius > 0.0f) {
     context->set_threshold(flat_search_param->radius);
   }
+  _set_group_by_on_context(search_param, context);
 
   return 0;
 }

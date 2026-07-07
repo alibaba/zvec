@@ -113,6 +113,29 @@ static inline int FlatSearch(const uint32_t *sparse_count,
 
       auto group_result =
           ConvertGroupMapToResult(std::move(group_heap), ctx->group_num());
+
+      // Populate sparse vector data when fetch_vector is enabled
+      if (ctx->fetch_vector()) {
+        for (auto &group_doc : group_result) {
+          for (auto &doc : *group_doc.mutable_docs()) {
+            node_id_t id = entity->get_id(doc.key());
+            if (id != kInvalidNodeId) {
+              IndexSparseDocument sparse_doc;
+              IndexStorage::MemoryBlock vec_block;
+              entity->get_sparse_vector(id, vec_block);
+              const void *sparse_data = vec_block.data();
+              if (sparse_data != nullptr) {
+                SparseUtility::ReverseSparseFormat(sparse_data, sparse_doc,
+                                                   entity->sparse_unit_size());
+              }
+              // Reconstruct doc with sparse vector data
+              doc = IndexDocument(doc.key(), doc.score(), id, nullptr,
+                                  sparse_doc);
+            }
+          }
+        }
+      }
+
       ctx->mutable_group_result(q)->swap(group_result);
     }
   } else {

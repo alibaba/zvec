@@ -241,7 +241,9 @@ class GroupVectorIndexResults : public IndexResults {
       std::vector<std::vector<std::string>> &&reverted_sparse_values_list)
       : groups_(std::move(group_list)),
         reverted_vector_list_(std::move(reverted_vector_list)),
-        reverted_sparse_values_list_(std::move(reverted_sparse_values_list)) {}
+        reverted_sparse_values_list_(std::move(reverted_sparse_values_list)) {
+    init_count();
+  }
 
  public:
   IndexResults::IteratorUPtr create_iterator() override {
@@ -256,6 +258,14 @@ class GroupVectorIndexResults : public IndexResults {
  public:  // unique method
   core::IndexGroupDocumentList &groups() {
     return groups_;
+  }
+
+  std::vector<std::vector<std::string>> &reverted_vector_list() {
+    return reverted_vector_list_;
+  }
+
+  std::vector<std::vector<std::string>> &reverted_sparse_values_list() {
+    return reverted_sparse_values_list_;
   }
 
  private:
