@@ -581,6 +581,18 @@ size_t consume_extend_or_format(const std::vector<Codepoint> &codepoints,
   return index;
 }
 
+size_t consume_extend_format_and_modifier(
+    const std::vector<Codepoint> &codepoints, size_t index) {
+  while (index < codepoints.size() &&
+         is_extend_or_format(codepoints[index].cls)) {
+    ++index;
+  }
+  if (index < codepoints.size() && codepoints[index].emoji_modifier) {
+    index = consume_extend_or_format(codepoints, index + 1);
+  }
+  return index;
+}
+
 size_t scan_keycap_token(const std::vector<Codepoint> &codepoints,
                          size_t start) {
   if (!is_keycap_base(codepoints[start])) {
@@ -624,11 +636,7 @@ size_t scan_emoji_modifier_token(const std::vector<Codepoint> &codepoints,
 
 size_t scan_emoji_token(const std::vector<Codepoint> &codepoints,
                         size_t start) {
-  size_t index = start + 1;
-  while (index < codepoints.size() &&
-         is_extend_or_format(codepoints[index].cls)) {
-    ++index;
-  }
+  size_t index = consume_extend_format_and_modifier(codepoints, start + 1);
 
   while (index < codepoints.size()) {
     if (codepoints[index].cls != WordBreakClass::ZWJ) {
@@ -644,10 +652,7 @@ size_t scan_emoji_token(const std::vector<Codepoint> &codepoints,
       break;
     }
     ++index;
-    while (index < codepoints.size() &&
-           is_extend_or_format(codepoints[index].cls)) {
-      ++index;
-    }
+    index = consume_extend_format_and_modifier(codepoints, index);
   }
   return index;
 }
@@ -1046,8 +1051,8 @@ std::vector<Token> StandardTokenizer::tokenize(const std::string &text) const {
       index = end;
       continue;
     }
-    end = scan_emoji_modifier_token(codepoints, index);
-    if (end > index) {
+    if (cls == WordBreakClass::ExtendedPictographic) {
+      end = scan_emoji_token(codepoints, index);
       emit_token_span(text, codepoints, index, end, max_token_length_,
                       &position, &tokens);
       index = end;
@@ -1062,8 +1067,8 @@ std::vector<Token> StandardTokenizer::tokenize(const std::string &text) const {
         continue;
       }
     }
-    if (cls == WordBreakClass::ExtendedPictographic) {
-      end = scan_emoji_token(codepoints, index);
+    end = scan_emoji_modifier_token(codepoints, index);
+    if (end > index) {
       emit_token_span(text, codepoints, index, end, max_token_length_,
                       &position, &tokens);
       index = end;

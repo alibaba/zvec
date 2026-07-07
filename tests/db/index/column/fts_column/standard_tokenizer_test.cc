@@ -337,9 +337,12 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthDropsConnectorOnlySplitSegments) {
 }
 
 TEST_F(StandardTokenizerTest, IntraWordPunctuation) {
-  auto tokens = tokenize("dog's 3.14 1,000 example.com hello,world");
-  std::vector<std::string> expected = {"dog's",       "3.14",  "1,000",
-                                       "example.com", "hello", "world"};
+  auto tokens = tokenize(
+      "dog's 3.14 1,000 example.com hello,world host:port a:b "
+      "host:9200");
+  std::vector<std::string> expected = {
+      "dog's", "3.14",      "1,000", "example.com", "hello",
+      "world", "host:port", "a:b",   "host",        "9200"};
   EXPECT_EQ(token_texts(tokens), expected);
 }
 
@@ -378,6 +381,14 @@ TEST_F(StandardTokenizerTest, EmojiModifierSequences) {
   EXPECT_EQ(tokens[0].text, "\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD");
   EXPECT_EQ(tokens[1].text, "\xE2\x98\x9D\xEF\xB8\x8F\xF0\x9F\x8F\xBB");
   EXPECT_EQ(tokens[2].text, "\xF0\x9F\x8F\xBD");
+}
+
+TEST_F(StandardTokenizerTest, EmojiModifierInsideZwjSequence) {
+  auto tokens =
+      tokenize("\xF0\x9F\x91\xA9\xF0\x9F\x8F\xBD\xE2\x80\x8D\xF0\x9F\x92\xBB");
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].text,
+            "\xF0\x9F\x91\xA9\xF0\x9F\x8F\xBD\xE2\x80\x8D\xF0\x9F\x92\xBB");
 }
 
 TEST_F(StandardTokenizerTest, RegionalIndicatorPairs) {

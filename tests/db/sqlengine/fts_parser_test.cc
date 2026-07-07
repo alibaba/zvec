@@ -111,6 +111,12 @@ TEST_F(FtsParserTest, SingleTermWithHyphen) {
   EXPECT_EQ(as_term(*or_node.children[1]).term, "text");
 }
 
+TEST_F(FtsParserTest, BareColonQueryIsFieldPrefixSyntax) {
+  auto ast = parse("host:port");
+  EXPECT_EQ(ast, nullptr);
+  EXPECT_EQ(err_msg(), "field-prefixed queries are not supported");
+}
+
 // ============================================================
 // Must (+) and must_not (-/NOT) modifiers
 // ============================================================
@@ -762,6 +768,15 @@ TEST_F(FtsParserTest, PhraseTokensRunThroughPipeline) {
   ASSERT_EQ(phrase.terms.size(), 2u);
   EXPECT_EQ(phrase.terms[0], "machine");
   EXPECT_EQ(phrase.terms[1], "learning");
+}
+
+TEST_F(FtsParserTest, PhraseCanSearchLiteralColonToken) {
+  auto ast = parse("\"host:port\"");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::PHRASE);
+  const auto &phrase = as_phrase(*ast);
+  ASSERT_EQ(phrase.terms.size(), 1u);
+  EXPECT_EQ(phrase.terms[0], "host:port");
 }
 
 TEST_F(FtsParserTest, PhraseLowercaseFilterApplies) {
