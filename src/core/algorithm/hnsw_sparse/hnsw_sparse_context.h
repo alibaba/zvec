@@ -73,6 +73,14 @@ class HnswSparseContext : public IndexContext {
     return group_results_[idx];
   }
 
+  IndexGroupDocumentList *mutable_group_result(void) override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
+  }
+
   uint32_t magic(void) const override {
     return magic_;
   }
@@ -241,8 +249,17 @@ class HnswSparseContext : public IndexContext {
         node_id_t id = group_topk_list[i].second[j].first;
 
         if (fetch_vector_) {
+          IndexSparseDocument sparse_doc;
+          IndexStorage::MemoryBlock vec_block;
+          entity_->get_sparse_data(id, vec_block);
+          const void *sparse_data = vec_block.data();
+          if (sparse_data != nullptr) {
+            SparseUtility::ReverseSparseFormat(sparse_data, sparse_doc,
+                                               entity_->sparse_unit_size());
+          }
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score, id, entity_->get_vector_meta(id));
+              entity_->get_key(id), score, id, entity_->get_vector_meta(id),
+              sparse_doc);
         } else {
           group_results_[idx][i].mutable_docs()->emplace_back(
               entity_->get_key(id), score, id);
