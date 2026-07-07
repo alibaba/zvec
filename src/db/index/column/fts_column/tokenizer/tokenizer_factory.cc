@@ -18,6 +18,7 @@
 #include "ascii_folding_token_filter.h"
 #include "jieba_tokenizer.h"
 #include "standard_tokenizer.h"
+#include "stemmer_token_filter.h"
 #include "whitespace_tokenizer.h"
 
 namespace zvec::fts {
@@ -53,6 +54,11 @@ TokenizerPipelinePtr TokenizerFactory::create(const FtsIndexParams &params) {
     TokenFilterPtr filter = create_filter(filter_name);
     if (!filter) {
       LOG_ERROR("[TokenizerFactory] failed to create filter: %s",
+                filter_name.c_str());
+      return nullptr;
+    }
+    if (!filter->init(extra_json)) {
+      LOG_ERROR("[TokenizerFactory] failed to init filter: %s",
                 filter_name.c_str());
       return nullptr;
     }
@@ -99,6 +105,10 @@ TokenFilterPtr TokenizerFactory::create_filter(const std::string &filter_name) {
     return std::make_shared<LowercaseTokenFilter>();
   } else if (filter_name == "ascii_folding") {
     return std::make_shared<AsciiFoldingTokenFilter>();
+  } else if (filter_name == "stemmer") {
+    // The stemmer filter uses Snowball and defaults to "english" unless
+    // extra_params overrides stemmer_lang.
+    return std::make_shared<StemmerTokenFilter>();
   }
   LOG_ERROR("[TokenizerFactory] unknown filter name: %s", filter_name.c_str());
   return nullptr;

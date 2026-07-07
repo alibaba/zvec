@@ -718,7 +718,28 @@ class VamanaIndexParams : public VectorIndexParams {
 /*
  * FTS (Full-Text Search) index params
  * Supported tokenizers: "standard", "jieba", "whitespace".
- * Supported filters: "lowercase", "ascii_folding".
+ * Supported filters: "lowercase", "ascii_folding", "stemmer".
+ *
+ * extra_params must be either empty or a JSON object string. Supported keys are
+ * grouped by tokenizer/filter:
+ *   Tokenizers:
+ *     standard:
+ *       - "max_token_length" (positive integer).
+ *     jieba:
+ *       - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+ *         hmm_model.utf8).
+ *       - "user_dict_path" (user dictionary path).
+ *       - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
+ *     whitespace:
+ *       - no extra_params.
+ *   Filters:
+ *     lowercase:
+ *       - no extra_params.
+ *     ascii_folding:
+ *       - no extra_params.
+ *     stemmer:
+ *       - "stemmer_lang" (Snowball language/algorithm; default "english"),
+ *         for example {"stemmer_lang":"porter"} for ES behaviour.
  *
  * Not copyable.  Use shared_ptr<FtsIndexParams> for shared ownership.
  */

@@ -718,9 +718,30 @@ class FtsIndexParam(IndexParam):
             "whitespace").
             Default is "standard".
         filters (list[str]): List of token filter names applied after tokenization.
-            Supported filters are "lowercase" and "ascii_folding". Default is
-            ["lowercase"].
-        extra_params (str): Additional parameters passed to the tokenizer.
+            Supported filters are "lowercase", "ascii_folding", and "stemmer".
+            Default is ["lowercase"].
+        extra_params (str): Additional tokenizer/filter parameters as an empty
+            string or JSON object string. Supported keys are grouped by component:
+            Tokenizers:
+                standard:
+                    - "max_token_length" (positive integer).
+                jieba:
+                    - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+                      hmm_model.utf8).
+                    - "user_dict_path" (user dictionary path).
+                    - "cut_mode" ("search", "mix", "full", or "hmm"; default
+                      "search").
+                whitespace:
+                    - no extra_params.
+            Filters:
+                lowercase:
+                    - no extra_params.
+                ascii_folding:
+                    - no extra_params.
+                stemmer:
+                    - "stemmer_lang" (Snowball language/algorithm; default
+                      "english"), for example {"stemmer_lang":"porter"} for ES
+                      behaviour.
             Default is "".
 
     Examples:
@@ -744,8 +765,29 @@ class FtsIndexParam(IndexParam):
         Args:
             tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
             filters (list[str], optional): Token filter names. Supports
-                "lowercase" and "ascii_folding". Defaults to ["lowercase"].
-            extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+                "lowercase", "ascii_folding", and "stemmer". Defaults to
+                ["lowercase"].
+            extra_params (str, optional): Extra tokenizer/filter parameters as an
+                empty string or JSON object string. Supported keys:
+                Tokenizers:
+                    standard:
+                        - "max_token_length" (positive integer).
+                    jieba:
+                        - "jieba_dict_dir".
+                        - "user_dict_path".
+                        - "cut_mode" ("search", "mix", "full", or "hmm";
+                          default "search").
+                    whitespace:
+                        - no extra_params.
+                Filters:
+                    lowercase:
+                        - no extra_params.
+                    ascii_folding:
+                        - no extra_params.
+                    stemmer:
+                        - "stemmer_lang" (Snowball language/algorithm; default
+                          "english").
+                Defaults to "".
         """
 
     def __repr__(self) -> str: ...
@@ -1147,7 +1189,13 @@ class _SearchQuery:
     def __getstate__(self) -> tuple: ...
     def __init__(self) -> None: ...
     def __setstate__(self, arg0: tuple) -> None: ...
-    def set_vector(self, arg0: ..., arg1: typing.Any) -> None: ...
+    def set_vector(self, field_schema: typing.Any, obj: typing.Any) -> None:
+        """
+        Set the query vector.
+
+        Dense vector source data must not be modified until the query finishes.
+        """
+
     @property
     def output_fields(self) -> list[str] | None: ...
     @output_fields.setter
