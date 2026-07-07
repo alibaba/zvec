@@ -50,7 +50,8 @@ class TokenizerFactory {
   /*! Create tokenizer pipeline from FtsIndexParams.
    *  \param params  FTS index parameters containing tokenizer_name, filters,
    *                 and extra_params (JSON string for tokenizer-specific
-   *                 configuration).
+   *                 configuration). The stemmer filter reads stemmer_lang from
+   *                 extra_params and uses Snowball English by default.
    *  \return        Tokenizer pipeline, returns nullptr on failure
    */
   static TokenizerPipelinePtr create(const FtsIndexParams &params);

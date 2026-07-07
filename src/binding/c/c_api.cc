@@ -1477,6 +1477,60 @@ zvec_quantize_type_t zvec_index_params_get_quantize_type(
 }
 
 /**
+ * @brief Set enable_rotate for quantizer parameters
+ * @param params Index parameters (must be vector index type)
+ * @param enable_rotate Whether to enable random rotation before quantization
+ * @return ZVEC_OK on success, error code on failure
+ */
+zvec_error_code_t zvec_index_params_set_quantizer_enable_rotate(
+    zvec_index_params_t *params, bool enable_rotate) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Index params pointer cannot be null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
+
+  if (!cpp_params->is_vector_index_type()) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Index params is not a vector index type");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *vec_params = dynamic_cast<zvec::VectorIndexParams *>(cpp_params);
+  if (!vec_params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Failed to cast to VectorIndexParams");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  zvec::QuantizerParam qp = vec_params->quantizer_param();
+  qp.set_enable_rotate(enable_rotate);
+  vec_params->set_quantizer_param(qp);
+  return ZVEC_OK;
+}
+
+/**
+ * @brief Get enable_rotate setting from quantizer parameters
+ * @param params Index parameters
+ * @return true if rotation is enabled, false otherwise
+ */
+bool zvec_index_params_get_quantizer_enable_rotate(
+    const zvec_index_params_t *params) {
+  if (!params) {
+    return false;
+  }
+  auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
+
+  if (cpp_params->is_vector_index_type()) {
+    auto *vec_params =
+        dynamic_cast<const zvec::VectorIndexParams *>(cpp_params);
+    if (vec_params) {
+      return vec_params->quantizer_param().enable_rotate();
+    }
+  }
+  return false;
+}
+
+/**
  * @brief Get index type from index parameters
  * @param params Index parameters
  * @return Index type, or FLAT as default if NULL
@@ -5102,6 +5156,8 @@ zvec_error_code_t zvec_vector_query_set_query_vector(zvec_vector_query_t *query,
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  // Copies into VectorClause (not VectorViewClause) because the C API does
+  // not require `data` to stay alive after this call returns.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -5592,6 +5648,7 @@ zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
   return ZVEC_OK;
 }
@@ -6013,6 +6070,7 @@ zvec_error_code_t zvec_sub_query_set_query_vector(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::SubQuery *>(query);
+  // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   auto &payload = std::get<zvec::VectorClause>(ptr->target_.clause_);
   payload.query_vector_.assign(static_cast<const char *>(data), size);
   return ZVEC_OK;

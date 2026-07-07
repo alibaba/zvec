@@ -121,6 +121,7 @@ int HNSWRabitqIndex::_prepare_for_search(
       std::max(1u, std::min(2048u, hnsw_search_param->ef_search));
   params.set(core::PARAM_HNSW_RABITQ_STREAMER_EF, real_search_ef);
   context->update(params);
+  _set_group_by_on_context(search_param, context);
   return 0;
 #endif  // RABITQ_SUPPORTED
 }

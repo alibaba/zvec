@@ -267,17 +267,21 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
                                              threads->count(), &finished));
   }
 
-  while (!task_group->is_finished()) {
+  {
     std::unique_lock<std::mutex> lk(mutex_);
-    cond_.wait_until(lk, std::chrono::system_clock::now() +
-                             std::chrono::seconds(check_interval_secs_));
-    if (error_.load(std::memory_order_acquire)) {
-      LOG_ERROR("Failed to build index while waiting finish");
-      return errcode_;
+    while (finished.load() < entity_.doc_cnt()) {
+      cond_.wait_until(lk, std::chrono::system_clock::now() +
+                               std::chrono::seconds(check_interval_secs_));
+      if (error_.load(std::memory_order_acquire)) {
+        LOG_ERROR("Failed to build index while waiting finish");
+        return errcode_;
+      }
+      LOG_INFO("Built cnt %zu, finished percent %.3f%%",
+               (size_t)finished.load(),
+               finished.load() * 100.0f / entity_.doc_cnt());
     }
-    LOG_INFO("Built cnt %zu, finished percent %.3f%%", (size_t)finished.load(),
-             finished.load() * 100.0f / entity_.doc_cnt());
   }
+
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to build index while waiting finish");
     return errcode_;
@@ -300,17 +304,21 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
                                              threads->count(), &finished));
   }
 
-  while (!task_group->is_finished()) {
+  {
     std::unique_lock<std::mutex> lk(mutex_);
-    cond_.wait_until(lk, std::chrono::system_clock::now() +
-                             std::chrono::seconds(check_interval_secs_));
-    if (error_.load(std::memory_order_acquire)) {
-      LOG_ERROR("Failed to purne index while waiting finish");
-      return errcode_;
+    while (finished.load() < entity_.doc_cnt()) {
+      cond_.wait_until(lk, std::chrono::system_clock::now() +
+                               std::chrono::seconds(check_interval_secs_));
+      if (error_.load(std::memory_order_acquire)) {
+        LOG_ERROR("Failed to prune index while waiting finish");
+        return errcode_;
+      }
+      LOG_INFO("Prune cnt %zu, finished percent %.3f%%",
+               (size_t)finished.load(),
+               finished.load() * 100.0f / entity_.doc_cnt());
     }
-    LOG_INFO("Prune cnt %zu, finished percent %.3f%%", (size_t)finished.load(),
-             finished.load() * 100.0f / entity_.doc_cnt());
   }
+
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to prune index while waiting finish");
     return errcode_;

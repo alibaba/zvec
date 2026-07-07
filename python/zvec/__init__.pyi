@@ -30,6 +30,7 @@ from .model.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    QuantizerParam,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -79,6 +80,7 @@ __all__: list = [
     "MetricType",
     "OptimizeOption",
     "QuantizeType",
+    "QuantizerParam",
     "Query",
     "ReRanker",
     "RrfReRanker",

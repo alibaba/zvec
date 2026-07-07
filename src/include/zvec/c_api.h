@@ -962,6 +962,30 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
+ * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
+ * quantize type)
+ *
+ * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
+ * reduce quantization error. The rotation matrix is stored with the index
+ * and automatically applied to query vectors at search time.
+ *
+ * @param params Index parameters (must be vector index type)
+ * @param enable_rotate Whether to enable random rotation before quantization
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
+                                              bool enable_rotate);
+
+/**
+ * @brief Get enable_rotate setting from quantizer parameters
+ * @param params Index parameters (must not be NULL)
+ * @return true if rotation is enabled, false otherwise (default)
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
+    const zvec_index_params_t *params);
+
+/**
  * @brief Set HNSW specific parameters
  * @param params Index parameters (must be HNSW type)
  * @param m Graph connectivity parameter
@@ -1065,10 +1089,31 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
 /**
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)
- * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value)
- * @param filters Token filter names (NULL keeps current value)
- * @param extra_params Additional tokenizer parameters (NULL keeps current
- * value)
+ * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value).
+ * Supported values are "standard", "jieba", and "whitespace".
+ * @param filters Token filter names (NULL keeps current value). Supported
+ * values are "lowercase", "ascii_folding", and "stemmer".
+ * @param extra_params Additional tokenizer/filter parameters (NULL keeps
+ * current value). Must be empty or a JSON object string. Supported keys by
+ * tokenizer/filter:
+ * Tokenizers:
+ *   standard:
+ *     - "max_token_length" (positive integer).
+ *   jieba:
+ *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+ *       hmm_model.utf8).
+ *     - "user_dict_path" (user dictionary path).
+ *     - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
+ *   whitespace:
+ *     - no extra_params.
+ * Filters:
+ *   lowercase:
+ *     - no extra_params.
+ *   ascii_folding:
+ *     - no extra_params.
+ *   stemmer:
+ *     - "stemmer_lang" (Snowball language/algorithm; default "english"),
+ *       for example {"stemmer_lang":"porter"} for ES behaviour.
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_fts_params(
@@ -3721,13 +3766,6 @@ ZVEC_EXPORT size_t ZVEC_CALL zvec_doc_memory_usage(const zvec_doc_t *doc);
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_doc_to_detail_string(const zvec_doc_t *doc, char **detail_str);
 
-/**
- * @brief Free docs array memory
- * @param docs Document array pointer
- * @param count Document count
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_docs_free(zvec_doc_t **docs, size_t count);
-
 // =============================================================================
 // Utility Functions
 // =============================================================================
@@ -3761,7 +3799,8 @@ zvec_index_type_to_string(zvec_index_type_t index_type);
  * @param metric_type Metric type
  * @return const char* Metric type string
  */
-const char *zvec_metric_type_to_string(zvec_metric_type_t metric_type);
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_metric_type_to_string(zvec_metric_type_t metric_type);
 
 // =============================================================================
 // Helper Functions

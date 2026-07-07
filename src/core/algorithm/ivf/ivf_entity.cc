@@ -71,6 +71,16 @@ int IVFEntity::IVFReformerWrapper::init(const IndexMeta &imeta) {
   return 0;
 }
 
+//! Load reformer state (e.g. rotation matrix) from storage
+int IVFEntity::IVFReformerWrapper::load(const IndexStorage::Pointer &storage) {
+  if (!reformer_) {
+    return 0;
+  }
+  int ret = reformer_->load(storage);
+  ivf_check_with_msg(ret, "Failed to load reformer state");
+  return 0;
+}
+
 //! Update the params, Called by gpu searcher only
 int IVFEntity::IVFReformerWrapper::update(const IndexMeta &meta) {
   auto &name = meta.reformer_name();
@@ -503,6 +513,12 @@ int IVFEntity::load(const IndexStorage::Pointer &container) {
 
   //! Load the remaining segments
   container_ = container;
+
+  //! Load reformer state (e.g. rotation matrix) from the main container,
+  //! which holds the rotator segment dumped at build time.
+  ret = reformer_.load(container);
+  ivf_check_error_code(ret);
+
   size_t expect_size = header_.inverted_body_size;
   inverted_ = load_segment(IVF_INVERTED_BODY_SEG_ID, expect_size);
   if (!inverted_) {

@@ -79,6 +79,14 @@ class HnswRabitqContext : public IndexContext {
     return group_results_[idx];
   }
 
+  IndexGroupDocumentList *mutable_group_result(void) override {
+    return &group_results_[0];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
+  }
+
   uint32_t magic(void) const override {
     return magic_;
   }

@@ -237,7 +237,9 @@ class MMapFileReadStorage : public IndexStorage {
   }
 
   int close(void) override {
-    file_ptr_->close();
+    if (file_ptr_) {
+      file_ptr_->close();
+    }
     file_ptr_ = nullptr;
     segments_.clear();
     return 0;
