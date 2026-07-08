@@ -99,18 +99,51 @@ MemoryLimitPool::~MemoryLimitPool() {
 
 void MemoryLimitPool::drain_free_list() {
   std::lock_guard<std::mutex> lock(free_list_mutex_);
-  size_t drained = 0;
-  while (free_list_head_) {
-    char *buf = free_list_head_;
-    free_list_head_ = *reinterpret_cast<char **>(buf);
-    ailego_free(buf);
-    ++drained;
+  free_all_slabs_locked();
+}
+
+void MemoryLimitPool::free_all_slabs_locked() {
+  size_t n = slabs_.size();
+  for (char *base : slabs_) {
+    ailego_free(base);
   }
+  slabs_.clear();
+  slab_cursor_ = nullptr;
+  slab_remaining_ = 0;
+  free_list_head_ = nullptr;
   free_list_count_ = 0;
-  if (drained > 0) {
-    LOG_INFO("MemoryLimitPool: drained %zu cached buffers from free list",
-             drained);
+  if (n > 0) {
+    LOG_INFO("MemoryLimitPool: released %zu slabs", n);
   }
+}
+
+char *MemoryLimitPool::carve_from_slab_locked(size_t buffer_size) {
+  static constexpr size_t kSlabAlign = 4096UL;
+  static constexpr size_t kSlabBytes = 2UL * 1024UL * 1024UL;
+  if (buffer_size == 0 || (buffer_size & (kSlabAlign - 1UL)) != 0) {
+    char *p =
+        static_cast<char *>(ailego_aligned_malloc(buffer_size, kSlabAlign));
+    if (p) {
+      slabs_.push_back(p);
+    }
+    return p;
+  }
+  if (slab_remaining_ < buffer_size) {
+    size_t slab_size = (kSlabBytes < buffer_size) ? buffer_size : kSlabBytes;
+    slab_size = ((slab_size + buffer_size - 1UL) / buffer_size) * buffer_size;
+    char *base =
+        static_cast<char *>(ailego_aligned_malloc(slab_size, kSlabAlign));
+    if (!base) {
+      return nullptr;
+    }
+    slabs_.push_back(base);
+    slab_cursor_ = base;
+    slab_remaining_ = slab_size;
+  }
+  char *p = slab_cursor_;
+  slab_cursor_ += buffer_size;
+  slab_remaining_ -= buffer_size;
+  return p;
 }
 
 int MemoryLimitPool::init(size_t pool_size) {
@@ -140,8 +173,8 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
       --free_list_count_;
       return true;
     }
+    buffer = carve_from_slab_locked(buffer_size);
   }
-  buffer = (char *)ailego_aligned_malloc(buffer_size, 4096);
   if (!buffer) {
     used_size_.fetch_sub(buffer_size);
     return false;
@@ -208,14 +241,14 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size,
       --free_list_count_;
       ++from_list;
     }
-  }
-  for (size_t i = from_list; i < actual_count; ++i) {
-    out[i] = (char *)ailego_aligned_malloc(buffer_size, 4096);
-    if (!out[i]) {
-      size_t rollback = (actual_count - i) * buffer_size;
-      used_size_.fetch_sub(rollback);
-      actual_count = i;
-      break;
+    for (size_t i = from_list; i < actual_count; ++i) {
+      out[i] = carve_from_slab_locked(buffer_size);
+      if (!out[i]) {
+        size_t rollback = (actual_count - i) * buffer_size;
+        used_size_.fetch_sub(rollback);
+        actual_count = i;
+        break;
+      }
     }
   }
   return actual_count;

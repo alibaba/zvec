@@ -32,6 +32,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <zvec/ailego/internal/platform.h>
 #include "concurrentqueue.h"
 
@@ -149,6 +150,8 @@ class MemoryLimitPool {
   ~MemoryLimitPool();
 
   void drain_free_list();
+  char *carve_from_slab_locked(size_t buffer_size);
+  void free_all_slabs_locked();
 
  private:
   size_t pool_size_{0};
@@ -157,6 +160,10 @@ class MemoryLimitPool {
   std::mutex free_list_mutex_;
   char *free_list_head_{nullptr};
   size_t free_list_count_{0};
+
+  std::vector<char *> slabs_;
+  char *slab_cursor_{nullptr};
+  size_t slab_remaining_{0};
 };
 
 }  // namespace ailego
