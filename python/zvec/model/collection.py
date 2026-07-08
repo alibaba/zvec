@@ -56,6 +56,12 @@ class Collection:
         self._schema = None
         self._querier = None
 
+    def close(self) -> None:
+        """Release the underlying collection handle."""
+        self._obj = None
+        self._schema = None
+        self._querier = None
+
     @classmethod
     def _from_core(cls, core_collection: _Collection) -> Collection:
         if not core_collection:

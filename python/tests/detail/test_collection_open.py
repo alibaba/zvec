@@ -108,6 +108,23 @@ def test_collection(
 
 
 class TestCollectionOpen:
+    def test_close_releases_collection_for_reopen(
+        self, tmp_path_factory, collection_schema, collection_option
+    ):
+        temp_dir = tmp_path_factory.mktemp("zvec")
+        collection_path = temp_dir / "test_collection"
+        collection_path_str = str(collection_path)
+
+        created_coll = zvec.create_and_open(
+            path=collection_path_str, schema=collection_schema, option=collection_option
+        )
+
+        created_coll.close()
+
+        opened_coll = zvec.open(path=collection_path_str, option=collection_option)
+        assert opened_coll.path == collection_path_str
+        opened_coll.destroy()
+
     def test_open_basic_functionality(
         self, tmp_path_factory, collection_schema, collection_option
     ):
@@ -818,8 +835,9 @@ class TestCollectionOpen:
         def open_collection_thread(thread_id):
             try:
                 coll = zvec.open(path=str(collection_path), option=collection_option)
+                collection_path_result = coll.path
                 with lock:
-                    results.append((thread_id, coll))
+                    results.append((thread_id, collection_path_result))
                 # Close the collection if opened successfully
                 if hasattr(coll, "close") and coll is not None:
                     coll.close()
@@ -847,23 +865,15 @@ class TestCollectionOpen:
         )
 
         # Additional verification: check that the successful open has a valid collection
-        successful_thread_id, successful_collection = results[0]
-        assert successful_collection is not None, (
+        _, successful_collection_path = results[0]
+        assert successful_collection_path is not None, (
             "Successful open should return a valid collection"
         )
-        assert successful_collection.path == str(collection_path), (
-            "Collection path mismatch"
-        )
+        assert successful_collection_path == str(collection_path), "Collection path mismatch"
 
-        # Clean up the successfully opened collection
-        if (
-            hasattr(successful_collection, "destroy")
-            and successful_collection is not None
-        ):
-            try:
-                successful_collection.destroy()
-            except Exception as e:
-                print(f"Warning: failed to destroy collection: {e}")
+        # Clean up after the successful worker released its collection handle.
+        cleanup_coll = zvec.open(path=str(collection_path), option=collection_option)
+        cleanup_coll.destroy()
 
     def test_open_with_corrupted_files(self, tmp_path_factory):
         # First create a collection
