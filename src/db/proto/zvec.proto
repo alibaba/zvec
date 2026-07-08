@@ -3,6 +3,7 @@ syntax = "proto3";
 package zvec.proto;
 
 option cc_enable_arenas = true;
+option optimize_for = LITE_RUNTIME;
 
 // The Go package name, refers to
 // https://developers.google.com/protocol-buffers/docs/reference/go-generated#package

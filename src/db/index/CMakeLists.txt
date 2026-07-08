@@ -27,7 +27,6 @@ cc_library(
          Arrow::arrow_static
          Arrow::parquet_static
          Arrow::arrow_compute
-         Arrow::arrow_dataset
          cppjieba
          snowball
          FastPFOR

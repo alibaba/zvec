@@ -4,6 +4,13 @@ project(thirdparty)
 
 include(${PROJECT_ROOT_DIR}/cmake/utils.cmake)
 
+# Optimize third-party libraries for size (-Os) instead of speed (-O3)
+# to reduce the final binary size. zvec's own code remains at -O3.
+if(NOT MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_C_FLAGS_RELEASE "-Os -DNDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "-Os -DNDEBUG")
+endif()
+
 set(CMAKE_MACOSX_RPATH ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(EXTERNAL_BINARY_DIR ${CMAKE_BINARY_DIR}/external)

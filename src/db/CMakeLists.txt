@@ -50,14 +50,13 @@ cc_library(
     roaring
     rocksdb
     antlr4
-    libprotobuf
+    libprotobuf-lite
     FastPFOR
     cppjieba
     snowball
     Arrow::arrow_static
     Arrow::parquet_static
     Arrow::arrow_compute
-    Arrow::arrow_dataset
     Arrow::arrow_acero
     utf8proc
   DEPS zvec_proto

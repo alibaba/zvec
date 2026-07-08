@@ -22,7 +22,6 @@
 #include <string>
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
-#include <arrow/dataset/api.h>
 #include <arrow/filesystem/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
@@ -758,10 +757,10 @@ inline arrow::Result<std::shared_ptr<arrow::Array>> SelectArrayByIndices(
   return arrow::compute::Take(*arr, *indices_array);
 }
 
-inline arrow::Result<std::shared_ptr<arrow::dataset::Dataset>>
-ReadBlocksAsDataset(const std::vector<BlockMeta> &scalar_blocks,
-                    const std::string &base_path, uint32_t collection_id,
-                    bool use_parquet) {
+inline arrow::Result<std::shared_ptr<arrow::Table>>
+ReadBlocksAsTable(const std::vector<BlockMeta> &scalar_blocks,
+                  const std::string &base_path, uint32_t collection_id,
+                  bool use_parquet) {
   auto fs = std::make_shared<arrow::fs::LocalFileSystem>();
   auto pool = arrow::default_memory_pool();
 
@@ -858,45 +857,57 @@ ReadBlocksAsDataset(const std::vector<BlockMeta> &scalar_blocks,
 
   ARROW_ASSIGN_OR_RAISE(auto final_table,
                         arrow::ConcatenateTables(segment_tables));
-  auto dataset = std::make_shared<arrow::dataset::InMemoryDataset>(final_table);
-  return dataset;
+  return final_table;
 }
 
 inline arrow::Result<std::shared_ptr<arrow::Table>>
-EvaluateExpressionWithDataset(
-    const std::shared_ptr<arrow::dataset::Dataset> &dataset,
-    const std::string &new_column_name, const arrow::compute::Expression &expr,
+EvaluateExpressionOnTable(
+    const std::shared_ptr<arrow::Table> &table,
+    const std::string &new_column_name,
+    const arrow::compute::Expression &expr,
     const std::shared_ptr<arrow::DataType> &expected_type) {
-  auto new_scan_result = dataset->NewScan();
-  if (!new_scan_result.ok()) {
-    return arrow::Status::Invalid("Failed to create scanner builder");
-  }
-  auto scanner_builder = std::move(new_scan_result.ValueOrDie());
-
   arrow::compute::CastOptions cast_options;
   cast_options.to_type = expected_type;
   cast_options.allow_int_overflow = true;
   cast_options.allow_float_truncate = true;
-  arrow::Expression cast_expr = call("cast", {expr}, cast_options);
+  arrow::compute::Expression cast_expr =
+      arrow::compute::call("cast", {expr}, cast_options);
 
-  auto status = scanner_builder->Project({cast_expr}, {new_column_name});
-  if (!status.ok()) {
-    return arrow::Status::Invalid("Failed to project expression: ",
-                                  status.ToString());
-  }
-  auto scanner_result = scanner_builder->Finish();
-  if (!scanner_result.ok()) {
-    return arrow::Status::Invalid("Failed to finish scanner builder: ",
-                                  scanner_result.status().ToString());
-  }
-  auto scanner = std::move(scanner_result.ValueOrDie());
+  ARROW_ASSIGN_OR_RAISE(auto bound_expr,
+                        cast_expr.Bind(*table->schema()));
 
-  auto to_table_result = scanner->ToTable();
-  if (!to_table_result.ok()) {
-    return arrow::Status::Invalid("Failed to convert scanner to table: ",
-                                  to_table_result.status().ToString());
+  auto batches = arrow::TableBatchReader(*table);
+  std::vector<std::shared_ptr<arrow::Array>> result_arrays;
+
+  std::shared_ptr<arrow::RecordBatch> batch;
+  while (true) {
+    ARROW_RETURN_NOT_OK(batches.ReadNext(&batch));
+    if (!batch) break;
+
+    arrow::compute::ExecBatch exec_batch(*batch);
+    ARROW_ASSIGN_OR_RAISE(
+        auto datum,
+        arrow::compute::ExecuteScalarExpression(bound_expr, exec_batch));
+
+    if (datum.is_array()) {
+      result_arrays.push_back(datum.make_array());
+    } else if (datum.is_scalar()) {
+      ARROW_ASSIGN_OR_RAISE(
+          auto arr,
+          arrow::MakeArrayFromScalar(*datum.scalar(), batch->num_rows()));
+      result_arrays.push_back(arr);
+    } else {
+      return arrow::Status::Invalid(
+          "Expression result is neither array nor scalar");
+    }
   }
-  auto result_table = std::move(to_table_result.ValueOrDie());
+
+  auto result_chunked =
+      std::make_shared<arrow::ChunkedArray>(result_arrays, expected_type);
+  auto result_field = arrow::field(new_column_name, expected_type);
+  auto result_schema = arrow::schema({result_field});
+  auto result_table = arrow::Table::Make(
+      result_schema, {result_chunked}, table->num_rows());
   return result_table;
 }
 

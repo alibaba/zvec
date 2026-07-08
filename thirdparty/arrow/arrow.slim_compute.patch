@@ -1,0 +1,130 @@
+diff --git a/cpp/src/arrow/CMakeLists.txt b/cpp/src/arrow/CMakeLists.txt
+index b33acae5b9..c7c394e96a 100644
+--- a/cpp/src/arrow/CMakeLists.txt
++++ b/cpp/src/arrow/CMakeLists.txt
+@@ -747,45 +747,32 @@ if(ARROW_COMPUTE)
+     string(APPEND ARROW_COMPUTE_PC_CFLAGS "${ARROW_COMPUTE_PC_CFLAGS_PRIVATE}")
+     set(ARROW_COMPUTE_PC_CFLAGS_PRIVATE "")
+   endif()
+-  # Include the remaining kernels
++  # Include only kernels required by zvec:
++  #   - scalar_arithmetic: add/subtract/multiply/divide for add_column expressions
++  #   - scalar_boolean: AND/OR/NOT for filter expressions
++  #   - scalar_compare: comparison operators for filter expressions
++  #   - scalar_if_else: conditional expression support
++  #   - scalar_set_lookup: is_in / index_in for filter
++  #   - scalar_validity: is_null / is_valid
++  #   - vector_swizzle: Take (index-based row selection)
++  #   - util_internal: shared helpers for kernels above
++  #   - ree_util_internal: required by vector_selection
++  # Removed (~14MB of .o): aggregate_*, hash_aggregate_*, scalar_round,
++  #   scalar_string_*, scalar_temporal_*, scalar_nested, scalar_random,
++  #   vector_sort, vector_select_k, vector_array_sort, vector_cumulative_ops,
++  #   vector_nested, vector_pairwise, vector_rank, vector_replace,
++  #   vector_run_end_encode, vector_statistics, pivot_internal
+   list(APPEND
+        ARROW_COMPUTE_LIB_SRCS
+        compute/initialize.cc
+-       compute/kernels/aggregate_basic.cc
+-       compute/kernels/aggregate_mode.cc
+-       compute/kernels/aggregate_pivot.cc
+-       compute/kernels/aggregate_quantile.cc
+-       compute/kernels/aggregate_tdigest.cc
+-       compute/kernels/aggregate_var_std.cc
+-       compute/kernels/hash_aggregate.cc
+-       compute/kernels/hash_aggregate_numeric.cc
+-       compute/kernels/hash_aggregate_pivot.cc
+-       compute/kernels/pivot_internal.cc
+        compute/kernels/ree_util_internal.cc
+        compute/kernels/scalar_arithmetic.cc
+        compute/kernels/scalar_boolean.cc
+        compute/kernels/scalar_compare.cc
+        compute/kernels/scalar_if_else.cc
+-       compute/kernels/scalar_nested.cc
+-       compute/kernels/scalar_random.cc
+-       compute/kernels/scalar_round.cc
+        compute/kernels/scalar_set_lookup.cc
+-       compute/kernels/scalar_string_ascii.cc
+-       compute/kernels/scalar_string_utf8.cc
+-       compute/kernels/scalar_temporal_binary.cc
+-       compute/kernels/scalar_temporal_unary.cc
+        compute/kernels/scalar_validity.cc
+        compute/kernels/util_internal.cc
+-       compute/kernels/vector_array_sort.cc
+-       compute/kernels/vector_cumulative_ops.cc
+-       compute/kernels/vector_nested.cc
+-       compute/kernels/vector_pairwise.cc
+-       compute/kernels/vector_rank.cc
+-       compute/kernels/vector_replace.cc
+-       compute/kernels/vector_run_end_encode.cc
+-       compute/kernels/vector_select_k.cc
+-       compute/kernels/vector_sort.cc
+-       compute/kernels/vector_statistics.cc
+        compute/kernels/vector_swizzle.cc
+        compute/key_hash_internal.cc
+        compute/key_map_internal.cc
+@@ -798,9 +785,6 @@ if(ARROW_COMPUTE)
+        compute/util.cc
+        compute/util_internal.cc)
+ 
+-  append_runtime_avx2_src(ARROW_COMPUTE_LIB_SRCS compute/kernels/aggregate_basic_avx2.cc)
+-  append_runtime_avx512_src(ARROW_COMPUTE_LIB_SRCS
+-                            compute/kernels/aggregate_basic_avx512.cc)
+   append_runtime_avx2_src(ARROW_COMPUTE_LIB_SRCS compute/key_hash_internal_avx2.cc)
+   append_runtime_avx2_bmi2_src(ARROW_COMPUTE_LIB_SRCS compute/key_map_internal_avx2.cc)
+   append_runtime_avx2_src(ARROW_COMPUTE_LIB_SRCS compute/row/compare_internal_avx2.cc)
+diff --git a/cpp/src/arrow/compute/initialize.cc b/cpp/src/arrow/compute/initialize.cc
+index d126ac951f..abeb3f4bc6 100644
+--- a/cpp/src/arrow/compute/initialize.cc
++++ b/cpp/src/arrow/compute/initialize.cc
+@@ -26,47 +26,18 @@ namespace {
+ Status RegisterComputeKernels() {
+   auto registry = GetFunctionRegistry();
+ 
+-  // Register additional kernels on libarrow_compute
+-  // Scalar functions
++  // Only register kernels required by zvec:
++  // Scalar functions needed for expressions and filters
+   internal::RegisterScalarArithmetic(registry);
+   internal::RegisterScalarBoolean(registry);
+   internal::RegisterScalarComparison(registry);
+   internal::RegisterScalarIfElse(registry);
+-  internal::RegisterScalarNested(registry);
+-  internal::RegisterScalarRandom(registry);  // Nullary
+-  internal::RegisterScalarRoundArithmetic(registry);
+   internal::RegisterScalarSetLookup(registry);
+-  internal::RegisterScalarStringAscii(registry);
+-  internal::RegisterScalarStringUtf8(registry);
+-  internal::RegisterScalarTemporalBinary(registry);
+-  internal::RegisterScalarTemporalUnary(registry);
+   internal::RegisterScalarValidity(registry);
+ 
+-  // Vector functions
+-  internal::RegisterVectorArraySort(registry);
+-  internal::RegisterVectorCumulativeSum(registry);
+-  internal::RegisterVectorNested(registry);
+-  internal::RegisterVectorRank(registry);
+-  internal::RegisterVectorReplace(registry);
+-  internal::RegisterVectorSelectK(registry);
+-  internal::RegisterVectorSort(registry);
+-  internal::RegisterVectorRunEndEncode(registry);
+-  internal::RegisterVectorRunEndDecode(registry);
+-  internal::RegisterVectorPairwise(registry);
+-  internal::RegisterVectorStatistics(registry);
++  // Vector functions needed for row selection
+   internal::RegisterVectorSwizzle(registry);
+ 
+-  // Aggregate functions
+-  internal::RegisterHashAggregateBasic(registry);
+-  internal::RegisterHashAggregateNumeric(registry);
+-  internal::RegisterHashAggregatePivot(registry);
+-  internal::RegisterScalarAggregateBasic(registry);
+-  internal::RegisterScalarAggregateMode(registry);
+-  internal::RegisterScalarAggregatePivot(registry);
+-  internal::RegisterScalarAggregateQuantile(registry);
+-  internal::RegisterScalarAggregateTDigest(registry);
+-  internal::RegisterScalarAggregateVariance(registry);
+-
+   return Status::OK();
+ }
+ 
