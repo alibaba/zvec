@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cassert>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -161,6 +162,20 @@ class MemoryLimitPool {
     return pool_size_;
   }
 
+  //! Snapshot of pool-level counters for monitoring / export.
+  struct PoolStats {
+    size_t pool_size{0};
+    size_t used{0};
+    size_t free_buffers{0};           // buffers cached across all shards
+    uint64_t alloc_from_freelist{0};  // acquisitions served from a shard
+    uint64_t alloc_from_slab{0};      // acquisitions that carved a new buffer
+    uint64_t bg_evict_rounds{0};      // background reclaim passes
+    uint64_t bg_evicted_buffers{0};   // buffers reclaimed by background thread
+    uint64_t high_watermark_hits{0};  // foreground acquire hit the capacity cap
+  };
+  PoolStats stats() const;
+  void log_stats() const;
+
  private:
   MemoryLimitPool() = default;
   ~MemoryLimitPool();
@@ -168,6 +183,7 @@ class MemoryLimitPool {
   void drain_free_list();
   char *carve_from_slab_locked(size_t buffer_size);
   void free_all_slabs_locked();
+  size_t pick_shard();
 
   // Background evictor: proactively reclaims buffers down to the low
   // watermark so foreground acquire_buffer() rarely pays eviction/flush cost
@@ -183,16 +199,35 @@ class MemoryLimitPool {
   }
 
  private:
+  // Sharded free-list: spreads the hot alloc/free path across many locks so
+  // foreground threads and the background evictor rarely contend.  Each shard
+  // is cache-line aligned to avoid false sharing.
+  static constexpr size_t kNumFreeShards = 64;
+  struct alignas(64) FreeShard {
+    std::mutex mutex;
+    char *head{nullptr};
+    std::atomic<size_t> count{0};
+  };
+
   size_t pool_size_{0};
   std::atomic<size_t> used_size_{0};
 
-  std::mutex free_list_mutex_;
-  char *free_list_head_{nullptr};
-  size_t free_list_count_{0};
+  FreeShard free_shards_[kNumFreeShards];
+  std::atomic<size_t> shard_seq_{0};
 
+  // Slab allocator (cold path) guarded by its own mutex, decoupled from the
+  // free-list shards.
+  std::mutex slab_mutex_;
   std::vector<char *> slabs_;
   char *slab_cursor_{nullptr};
   size_t slab_remaining_{0};
+
+  // Observability counters (relaxed atomics; statistics only).
+  std::atomic<uint64_t> alloc_from_freelist_{0};
+  std::atomic<uint64_t> alloc_from_slab_{0};
+  std::atomic<uint64_t> bg_evict_rounds_{0};
+  std::atomic<uint64_t> bg_evicted_buffers_{0};
+  std::atomic<uint64_t> high_watermark_hits_{0};
 
   std::thread bg_thread_;
   std::atomic<bool> bg_running_{false};

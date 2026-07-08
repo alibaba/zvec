@@ -133,16 +133,16 @@ class ExternalCache : public EvictableBlockOwner {
     return iter->second.generation.load(std::memory_order_relaxed) != version;
   }
 
-  void evict_block(eviction_key_t owner_key) override {
+  bool evict_block(eviction_key_t owner_key) override {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     auto key_iter = owner_keys_.find(owner_key);
     if (key_iter == owner_keys_.end()) {
-      return;
+      return false;
     }
 
     auto iter = table_.find(key_iter->second);
     if (iter == table_.end()) {
-      return;
+      return false;
     }
 
     Entry &entry = iter->second;
@@ -152,7 +152,9 @@ class ExternalCache : public EvictableBlockOwner {
       MemoryLimitPool::get_instance().release_external(entry.size);
       entry.size = 0;
       loader_.clear(entry.payload);
+      return true;
     }
+    return false;
   }
 
  private:
