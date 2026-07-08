@@ -440,11 +440,10 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
     std::memset(buffer, 0, kVectorPageSize);
   } else {
     // O_DIRECT requires the IO length to be a multiple of the device block
-    // size. The backing file size is always page-aligned (IndexMapping +
-    // append_segment guarantee this), so reading a full page never reads past
-    // EOF; the tail padding is the file's own zero region. In direct mode we
-    // MUST read the whole page; the buffered path keeps the legacy short-read
-    // + zero-pad behaviour.
+    // size. For files whose size is page-aligned (e.g. BufferStorage), reading
+    // a full page never reads past EOF. For files that are NOT page-aligned
+    // (e.g. IVF via BufferReadStorage), the last page may be a short read;
+    // we accept it and zero-pad the remainder.
     size_t read_len = direct_io_enabled_
                           ? kVectorPageSize
                           : std::min(kVectorPageSize, file_size_ - page_offset);
@@ -453,12 +452,18 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
     }
     ssize_t read_bytes = zvec_pread(fd_, buffer, read_len, page_offset);
     if (read_bytes != static_cast<ssize_t>(read_len)) {
-      LOG_ERROR(
-          "Buffer pool failed to read file at offset: file[%s], page_id[%zu], "
-          "offset[%zu], expected[%zu], got[%zd]",
-          file_name_.c_str(), page_id, page_offset, read_len, read_bytes);
-      MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
-      return nullptr;
+      // Accept short read at EOF: last page may not be full kVectorPageSize
+      if (read_bytes > 0 &&
+          (page_offset + static_cast<size_t>(read_bytes) >= file_size_)) {
+        std::memset(buffer + read_bytes, 0, kVectorPageSize - read_bytes);
+      } else {
+        LOG_ERROR(
+            "Buffer pool failed to read file at offset: file[%s], page_id[%zu], "
+            "offset[%zu], expected[%zu], got[%zd]",
+            file_name_.c_str(), page_id, page_offset, read_len, read_bytes);
+        MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
+        return nullptr;
+      }
     }
   }
   return page_table_.set_block_acquired(page_id, buffer, page_offset);
@@ -968,11 +973,51 @@ void VecBufferPoolHandle::prefetch_range(size_t file_offset, size_t len) {
                        last_page - first_page + 1);
 }
 
+#if defined(__linux) || defined(__linux__)
+namespace {
+// Dedicated thread-local AIO context for the *blocking* prefetch path
+// (prefetch_pages_aio).  Kept separate from the shared member aio_ctx_ so that
+// each thread reaps only the events it submitted.  Sharing one context across
+// threads let thread B's io_getevents steal thread A's completions, which made
+// prefetch release buffers whose kernel DMA was still in flight -- the DMA then
+// overwrote the buffer's first 8 bytes (the MemoryLimitPool free-list next
+// pointer), corrupting the list and crashing the next try_acquire_buffer.
+struct ThreadLocalPrefetchAioCtx {
+  io_context_t ctx{nullptr};
+  bool inited{false};
+  bool ok{false};
+
+  bool ensure() {
+    if (inited) return ok;
+    inited = true;
+    if (!LibAioLoader::Instance().IsAvailable()) return false;
+    ctx = nullptr;
+    if (LibAioLoader::Instance().io_setup(256, &ctx) == 0) {
+      ok = true;
+    }
+    return ok;
+  }
+  ~ThreadLocalPrefetchAioCtx() {
+    if (ok && ctx) {
+      LibAioLoader::Instance().io_destroy(ctx);
+    }
+  }
+};
+static thread_local ThreadLocalPrefetchAioCtx tl_prefetch_aio;
+}  // namespace
+#endif
+
 void VecBufferPool::prefetch_pages_aio(
     [[maybe_unused]] block_id_t first_page,
     [[maybe_unused]] size_t page_count) {
 #if defined(__linux) || defined(__linux__)
   static constexpr size_t kMaxBatch = 128;
+
+  // Use a thread-local AIO context: each thread waits only for its own
+  // completions, so a buffer is never returned to the free-list while the
+  // kernel is still DMA-ing into it.
+  if (!tl_prefetch_aio.ensure()) return;
+  io_context_t ctx = tl_prefetch_aio.ctx;
 
   size_t end_page = first_page + page_count;
   if (end_page > page_table_.entry_num()) {
@@ -1008,9 +1053,12 @@ void VecBufferPool::prefetch_pages_aio(
       }
       if (!found) break;
       buffers[submitted] = buf;
-      size_t offset = miss_pages[i] * kVectorPageSize;
+      size_t offset = miss_pages[submitted] * kVectorPageSize;
       io_prep_pread(&cbs[submitted], fd_, buf, kVectorPageSize,
                     static_cast<long long>(offset));
+      // Record the submission index so out-of-order completions can be mapped
+      // back to the correct buffer/page.
+      cbs[submitted].data = reinterpret_cast<void *>(submitted);
       cb_ptrs[submitted] = &cbs[submitted];
       ++submitted;
     }
@@ -1018,8 +1066,8 @@ void VecBufferPool::prefetch_pages_aio(
     if (submitted == 0) return;
 
     int ret = LibAioLoader::Instance().io_submit(
-        aio_ctx_, static_cast<long>(submitted), cb_ptrs.data());
-    if (ret != static_cast<int>(submitted)) {
+        ctx, static_cast<long>(submitted), cb_ptrs.data());
+    if (ret <= 0) {
       for (size_t i = 0; i < submitted; ++i) {
         MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                       kVectorPageSize);
@@ -1027,28 +1075,57 @@ void VecBufferPool::prefetch_pages_aio(
       return;
     }
 
-    std::vector<struct io_event> events(submitted);
-    ret = LibAioLoader::Instance().io_getevents(
-        aio_ctx_, static_cast<long>(submitted), static_cast<long>(submitted),
-        events.data(), nullptr);
-
-    size_t completed = (ret > 0) ? static_cast<size_t>(ret) : 0;
-    for (size_t i = 0; i < completed; ++i) {
-      if (static_cast<ssize_t>(events[i].res) ==
-          static_cast<ssize_t>(kVectorPageSize)) {
-        block_id_t pid = miss_pages[i];
-        page_table_.set_block_acquired(pid, buffers[i],
-                                       pid * kVectorPageSize);
-        page_table_.release_block(pid);
-      } else {
-        MemoryLimitPool::get_instance().release_buffer(buffers[i],
-                                                      kVectorPageSize);
-      }
-    }
-    for (size_t i = completed; i < submitted; ++i) {
+    // io_submit may accept fewer than requested; the accepted requests are a
+    // prefix of cb_ptrs.  The tail was never submitted (no in-flight DMA), so
+    // its buffers are safe to release immediately.
+    size_t accepted = static_cast<size_t>(ret);
+    for (size_t i = accepted; i < submitted; ++i) {
       MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                     kVectorPageSize);
+      buffers[i] = nullptr;
     }
+
+    // Block until every accepted I/O completes.  The blocking wait (nullptr
+    // timeout) guarantees no DMA is still in flight when we touch the buffers
+    // below, so a buffer can never be written by the kernel after being
+    // returned to the free-list.
+    std::vector<struct io_event> events(accepted);
+    size_t done = 0;
+    while (done < accepted) {
+      int n = LibAioLoader::Instance().io_getevents(
+          ctx, static_cast<long>(accepted - done),
+          static_cast<long>(accepted - done), events.data() + done, nullptr);
+      if (n <= 0) break;
+      done += static_cast<size_t>(n);
+    }
+
+    for (size_t i = 0; i < done; ++i) {
+      size_t idx = reinterpret_cast<size_t>(events[i].data);
+      if (idx >= submitted || buffers[idx] == nullptr) continue;
+      block_id_t pid = miss_pages[idx];
+      if (static_cast<ssize_t>(events[i].res) ==
+          static_cast<ssize_t>(kVectorPageSize)) {
+        std::lock_guard<std::mutex> lock(
+            block_mutexes_[pid % VecBufferPool::kMutexBucketCount]);
+        if (page_table_.is_loaded(pid)) {
+          MemoryLimitPool::get_instance().release_buffer(buffers[idx],
+                                                        kVectorPageSize);
+        } else {
+          page_table_.set_block_acquired(pid, buffers[idx],
+                                         pid * kVectorPageSize);
+          page_table_.release_block(pid);
+        }
+      } else {
+        MemoryLimitPool::get_instance().release_buffer(buffers[idx],
+                                                      kVectorPageSize);
+      }
+      buffers[idx] = nullptr;
+    }
+
+    // If io_getevents failed before all events were harvested (done <
+    // accepted), the remaining buffers may still have in-flight DMA.  We must
+    // NOT release them here (that would reintroduce the use-after-free); leave
+    // them owned by the pool accounting.  Not expected under a blocking wait.
   }
 #endif
 }

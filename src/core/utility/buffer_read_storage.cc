@@ -246,6 +246,12 @@ class BufferReadStorage : public IndexStorage {
       handle_->prefetch_range(data_offset_ + offset, len);
     }
 
+    //! Free bytes in the shared buffer pool.  Used by the caller to decide
+    //! whether a whole cluster fits before issuing prefetch.
+    size_t prefetch_budget(void) const override {
+      return ailego::MemoryLimitPool::get_instance().available();
+    }
+
     //! No stable base pointer: data lives in an evictable paged cache.
     const uint8_t *base_data(void) const override {
       return nullptr;

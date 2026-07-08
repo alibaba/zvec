@@ -174,6 +174,18 @@ class IVFEntity {
     return static_cast<const uint64_t *>(data);
   }
 
+  //! Retrieve the keys with RAII page management (no permanent pin)
+  const uint64_t *get_keys(size_t id, size_t count,
+                           IndexStorage::MemoryBlock &block) const {
+    const size_t offset = id * sizeof(uint64_t);
+    const size_t size = count * sizeof(uint64_t);
+    if (keys_->read(offset, block, size) != size) {
+      LOG_ERROR("Failed to read keys, id=%zu, size=%zu", id, size);
+      return nullptr;
+    }
+    return static_cast<const uint64_t *>(block.data());
+  }
+
   //! Retrieve the key by local id
   uint64_t get_key(size_t id) const {
     const void *data = nullptr;

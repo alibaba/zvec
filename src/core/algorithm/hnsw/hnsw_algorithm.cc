@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "hnsw_algorithm.h"
 #include <cfloat>
+#include <cstdlib>
 #include <type_traits>
 
 namespace zvec {
@@ -225,6 +226,16 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
   visit.clear();
+
+  // I/O budget: env ZVEC_IO_BUDGET controls (-1=blocking, 0=non-blocking, >0=limit)
+  {
+    int32_t budget = static_cast<int32_t>(ef / 2);  // default: ef/2
+    const char *env = std::getenv("ZVEC_IO_BUDGET");
+    if (env && *env) {
+      budget = std::atoi(env);
+    }
+    entity.reset_io_budget(budget);
+  }
 
   visit.set_visited(entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);

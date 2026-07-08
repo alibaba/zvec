@@ -133,6 +133,15 @@ class MemoryLimitPool {
 
   bool is_full();
 
+  //! Currently available (free) bytes in the pool.  Lock-free read-only
+  //! estimate: used_size_ is atomic and pool_size_ is fixed after init().
+  //! Returns 0 when the pool is at or over capacity.  Callers use this to gate
+  //! whole-cluster prefetch under memory pressure.
+  size_t available() const {
+    size_t used = used_size_.load();
+    return (used >= pool_size_) ? 0 : (pool_size_ - used);
+  }
+
   size_t batch_acquire_buffers(size_t buffer_size, char **out, size_t count);
 
  private:

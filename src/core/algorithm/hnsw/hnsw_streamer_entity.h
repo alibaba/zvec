@@ -883,6 +883,7 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   ailego_force_inline void release_vectors() const {}
   void submit_prefetch(const node_id_t *, uint32_t) const {}  // no-op
   void harvest_prefetch() const {}  // no-op
+  void reset_io_budget(int32_t) const {}  // no-op for mmap
 
  protected:
   //! Get cached base address for a node chunk, syncing if needed
@@ -958,6 +959,12 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     return HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(id);
   }
 
+  //! Set I/O budget for the current search.
+  //!   budget < 0  → blocking mode (always pread on miss)
+  //!   budget = 0  → non-blocking mode (FLT_MAX on miss)
+  //!   budget > 0  → allow up to N preads per search
+  void reset_io_budget(int32_t budget) const { io_budget_ = budget; }
+
   int resolve_vectors(const node_id_t *ids, uint32_t count,
                       const void **out) const {
     ensure_pinned_pages();
@@ -973,22 +980,29 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
       const auto page_id = static_cast<ailego::block_id_t>(abs_off / pg_sz);
       const size_t intra = abs_off % pg_sz;
       if (ailego_likely(intra + vec_sz <= pg_sz)) {
-        // Single-page vector: cache-only, no blocking I/O
         char *page = pinned_pages_.try_get_page(page_id);
         if (!page) {
-          out[i] = nullptr;
-          continue;
+          // Cache miss: check budget
+          if (io_budget_ != 0) {
+            page = pinned_pages_.get_page(page_id);
+            if (io_budget_ > 0) --io_budget_;
+          }
+          if (!page) { out[i] = nullptr; continue; }
         }
         out[i] = page + intra;
       } else {
-        // Cross-page vector: both pages must be cached
         const size_t part1 = pg_sz - intra;
         char *p1 = pinned_pages_.try_get_page(page_id);
         char *p2 = pinned_pages_.try_get_page(page_id + 1);
-        if (!p1 || !p2) {
-          out[i] = nullptr;
-          continue;
+        if (!p1 && io_budget_ != 0) {
+          p1 = pinned_pages_.get_page(page_id);
+          if (io_budget_ > 0) --io_budget_;
         }
+        if (!p2 && io_budget_ != 0) {
+          p2 = pinned_pages_.get_page(page_id + 1);
+          if (io_budget_ > 0) --io_budget_;
+        }
+        if (!p1 || !p2) { out[i] = nullptr; continue; }
         char *scratch = cross_page_arena_.data() + cross_page_used_ * vec_sz;
         ++cross_page_used_;
         std::memcpy(scratch, p1 + intra, part1);
@@ -1143,14 +1157,26 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
       return nullptr;
     }
 
-    bool contains(ailego::block_id_t page_id) const {
+    //! Get a page WITH blocking pread if not in cache.
+    //! Returns nullptr only if PinnedPageSet is full or pool alloc fails.
+    char *get_page(ailego::block_id_t page_id) {
       size_t slot = static_cast<size_t>(page_id) & kMask;
       for (size_t probe = 0; probe < kCapacity; ++probe) {
-        if (ids_[slot] == page_id) return true;
-        if (ids_[slot] == kEmpty) return false;
+        if (ids_[slot] == page_id) return bufs_[slot];
+        if (ids_[slot] == kEmpty) {
+          if (ailego_unlikely(count_ >= kMaxLoad)) {
+            return nullptr;
+          }
+          char *buf = pool_->acquire_buffer(page_id, 50);
+          if (ailego_unlikely(!buf)) return nullptr;
+          ids_[slot] = page_id;
+          bufs_[slot] = buf;
+          ++count_;
+          return buf;
+        }
         slot = (slot + 1) & kMask;
       }
-      return false;
+      return nullptr;
     }
 
     void release_all() {
@@ -1199,6 +1225,7 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   mutable PinnedPageSet pinned_pages_;
   mutable std::vector<char> cross_page_arena_;
   mutable uint32_t cross_page_used_{0};
+  mutable int32_t io_budget_{0};  // <0: blocking, 0: non-blocking, >0: limited
 };
 
 //! Typed entity subclass for contiguous memory mode.
@@ -1326,6 +1353,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
   ailego_force_inline void release_vectors() const {}
   void submit_prefetch(const node_id_t *, uint32_t) const {}  // no-op
   void harvest_prefetch() const {}  // no-op
+  void reset_io_budget(int32_t) const {}  // no-op for contiguous
 
  protected:
   //! Custom deleter for contiguous memory (munmap / _aligned_free / free)
