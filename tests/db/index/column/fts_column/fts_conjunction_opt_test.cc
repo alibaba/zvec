@@ -284,3 +284,22 @@ TEST(ConjunctionOptTest, DisjunctionAdvanceBypassesWand) {
   doc = disj.advance(10);
   EXPECT_EQ(doc, 10u);
 }
+
+TEST(ConjunctionOptTest, ConjunctionAdvanceBypassesCompetitivePruning) {
+  std::vector<std::pair<uint32_t, float>> list1 = {{5, 0.1f}, {130, 5.0f}};
+  std::vector<std::pair<uint32_t, float>> list2 = {{5, 0.1f}, {130, 5.0f}};
+
+  std::map<uint32_t, float> bm1 = {{127, 0.5f}, {255, 5.0f}};
+  std::map<uint32_t, float> bm2 = {{127, 0.5f}, {255, 5.0f}};
+
+  std::vector<DocIteratorPtr> musts;
+  musts.push_back(std::make_unique<FakeDocIterator>(list1, 5.0f, bm1));
+  musts.push_back(std::make_unique<FakeDocIterator>(list2, 5.0f, bm2));
+
+  ConjunctionIterator conj(std::move(musts), std::vector<DocIteratorPtr>{});
+  conj.set_min_competitive_score(2.0f);
+
+  uint32_t doc = conj.advance(5);
+  EXPECT_EQ(doc, 5u);
+  EXPECT_TRUE(conj.matches());
+}

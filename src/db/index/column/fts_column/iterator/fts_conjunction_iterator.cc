@@ -55,7 +55,7 @@ uint32_t ConjunctionIterator::next_doc() {
 
   // Advance the lead iterator and try to find agreement
   uint32_t candidate = must_iterators_[0]->next_doc();
-  cached_doc_id_ = do_next(candidate);
+  cached_doc_id_ = do_next(candidate, true);
   return cached_doc_id_;
 }
 
@@ -75,7 +75,7 @@ uint32_t ConjunctionIterator::next_doc(const zvec::IndexFilter *filter) {
   // reach do_next() alignment.
   uint32_t candidate = must_iterators_[0]->next_doc(filter);
   while (candidate != NO_MORE_DOCS) {
-    candidate = do_next(candidate);
+    candidate = do_next(candidate, true);
     if (candidate == NO_MORE_DOCS || !filter->is_filtered(candidate)) {
       break;
     }
@@ -93,14 +93,8 @@ uint32_t ConjunctionIterator::advance(uint32_t target) {
     return NO_MORE_DOCS;
   }
 
-  // MaxScore pruning
-  if (min_competitive_score_ > 0.0f && max_score() < min_competitive_score_) {
-    cached_doc_id_ = NO_MORE_DOCS;
-    return NO_MORE_DOCS;
-  }
-
   uint32_t candidate = must_iterators_[0]->advance(target);
-  cached_doc_id_ = do_next(candidate);
+  cached_doc_id_ = do_next(candidate, false);
   return cached_doc_id_;
 }
 
@@ -147,7 +141,7 @@ uint32_t ConjunctionIterator::skip_non_competitive_blocks(uint32_t candidate) {
     // Current block is non-competitive, skip to the next block
     uint32_t next_block_start = min_block_end + 1;
     if (next_block_start == 0) {
-      // overflow: min_block_end was MAX → 已耗尽
+      // Overflow: min_block_end was MAX, so the iterator is exhausted.
       return NO_MORE_DOCS;
     }
     candidate = must_iterators_[0]->advance(next_block_start);
@@ -157,7 +151,8 @@ uint32_t ConjunctionIterator::skip_non_competitive_blocks(uint32_t candidate) {
   }
 }
 
-uint32_t ConjunctionIterator::do_next(uint32_t candidate) {
+uint32_t ConjunctionIterator::do_next(uint32_t candidate,
+                                      bool apply_competitive_pruning) {
   if (candidate == NO_MORE_DOCS) {
     return NO_MORE_DOCS;
   }
@@ -184,7 +179,8 @@ uint32_t ConjunctionIterator::do_next(uint32_t candidate) {
 
     if (all_match) {
       // Block-Max: skip non-competitive blocks before must_not check
-      if (min_competitive_score_ > 0.0f && candidate > block_max_up_to_) {
+      if (apply_competitive_pruning && min_competitive_score_ > 0.0f &&
+          candidate > block_max_up_to_) {
         uint32_t orig = candidate;
         candidate = skip_non_competitive_blocks(candidate);
         if (candidate == NO_MORE_DOCS) {
@@ -199,7 +195,7 @@ uint32_t ConjunctionIterator::do_next(uint32_t candidate) {
       // Check must_not exclusion
       if (!is_excluded(candidate)) {
         // optIsRequired: should clauses promoted to required
-        if (opt_is_required_) {
+        if (apply_competitive_pruning && opt_is_required_) {
           bool any_should_match = false;
           for (auto &iter : should_iterators_) {
             uint32_t doc = iter->advance(candidate);

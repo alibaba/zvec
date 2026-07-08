@@ -57,7 +57,7 @@ class ConjunctionIterator : public DocIterator {
   // Try to find the next doc_id where all must iterators agree,
   // starting from the lead iterator's current position.
   // Returns NO_MORE_DOCS if no such document exists.
-  uint32_t do_next(uint32_t candidate);
+  uint32_t do_next(uint32_t candidate, bool apply_competitive_pruning);
 
   // Check if candidate doc_id is excluded by any must_not iterator
   bool is_excluded(uint32_t candidate);
