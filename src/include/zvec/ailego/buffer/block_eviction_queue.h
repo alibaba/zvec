@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <atomic>
 #include <cassert>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,6 +31,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -53,7 +55,11 @@ class EvictableBlockOwner {
 
   virtual bool is_dead_block(eviction_key_t owner_key, version_t version) = 0;
 
-  virtual void evict_block(eviction_key_t owner_key) = 0;
+  //! Attempt to evict the block identified by owner_key.
+  //! Returns true if the block was actually evicted (its memory was released),
+  //! false if it was spared (CLOCK second chance / still pinned) so callers
+  //! can tell real reclamation from a no-op and make progress accordingly.
+  virtual bool evict_block(eviction_key_t owner_key) = 0;
 };
 
 class BlockEvictionQueue {
@@ -145,6 +151,16 @@ class MemoryLimitPool {
 
   size_t batch_acquire_buffers(size_t buffer_size, char **out, size_t count);
 
+  //! Current bytes in use (atomic, lock-free).
+  size_t used() const {
+    return used_size_.load(std::memory_order_relaxed);
+  }
+
+  //! Total capacity in bytes (fixed after init()).
+  size_t capacity() const {
+    return pool_size_;
+  }
+
  private:
   MemoryLimitPool() = default;
   ~MemoryLimitPool();
@@ -152,6 +168,19 @@ class MemoryLimitPool {
   void drain_free_list();
   char *carve_from_slab_locked(size_t buffer_size);
   void free_all_slabs_locked();
+
+  // Background evictor: proactively reclaims buffers down to the low
+  // watermark so foreground acquire_buffer() rarely pays eviction/flush cost
+  // inline, smoothing tail latency under memory pressure.
+  void start_background_evictor();
+  void stop_background_evictor();
+  void background_evict_loop();
+  size_t high_watermark() const {
+    return pool_size_ / 10 * 9;  // 90%
+  }
+  size_t low_watermark() const {
+    return pool_size_ / 4 * 3;  // 75%
+  }
 
  private:
   size_t pool_size_{0};
@@ -164,6 +193,11 @@ class MemoryLimitPool {
   std::vector<char *> slabs_;
   char *slab_cursor_{nullptr};
   size_t slab_remaining_{0};
+
+  std::thread bg_thread_;
+  std::atomic<bool> bg_running_{false};
+  std::mutex bg_mutex_;
+  std::condition_variable bg_cv_;
 };
 
 }  // namespace ailego

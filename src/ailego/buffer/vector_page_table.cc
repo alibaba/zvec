@@ -93,6 +93,7 @@ bool VectorPageTable::init(size_t entry_num) {
       segments_[s][i].ref_count.store(std::numeric_limits<int>::min());
       segments_[s][i].in_evict_queue.store(false);
       segments_[s][i].is_dirty.store(false);
+      segments_[s][i].referenced.store(false);
       segments_[s][i].buffer = nullptr;
       segments_[s][i].file_offset = 0;
     }
@@ -129,6 +130,7 @@ bool VectorPageTable::extend(size_t new_entry_num) {
       segments_[s][i].ref_count.store(std::numeric_limits<int>::min());
       segments_[s][i].in_evict_queue.store(false);
       segments_[s][i].is_dirty.store(false);
+      segments_[s][i].referenced.store(false);
       segments_[s][i].buffer = nullptr;
       segments_[s][i].file_offset = 0;
     }
@@ -147,6 +149,10 @@ char *VectorPageTable::acquire_block(block_id_t block_id) {
   Entry &e = entry_at(block_id);
   int old = e.ref_count.fetch_add(1, std::memory_order_acq_rel);
   if (ailego_likely(old >= 0)) {
+    // CLOCK: record the access so the evictor grants this page a second
+    // chance, and count the hit for observability.
+    e.referenced.store(true, std::memory_order_relaxed);
+    hit_count_.fetch_add(1, std::memory_order_relaxed);
     return e.buffer;
   }
   // Undo the increment: the entry is in eviction state.
@@ -183,26 +189,50 @@ void VectorPageTable::release_block(block_id_t block_id) {
   }
 }
 
-void VectorPageTable::evict_block(block_id_t block_id) {
+bool VectorPageTable::evict_block(block_id_t block_id) {
   assert(block_id < entry_num_.load(std::memory_order_relaxed));
   Entry &e = entry_at(block_id);
   int expected = 0;
   static constexpr int kEvicting = std::numeric_limits<int>::min() / 2;
+  bool evicted = false;
   if (e.ref_count.compare_exchange_strong(expected, kEvicting)) {
+    // CLOCK second chance: if the page was accessed since it entered the
+    // eviction queue, spare it once -- clear the bit, return it to the
+    // released state and re-enqueue it for a later eviction pass.  This is
+    // what turns the underlying FIFO queue into an approximate-LRU policy.
+    if (e.referenced.load(std::memory_order_relaxed)) {
+      e.referenced.store(false, std::memory_order_relaxed);
+      second_chance_count_.fetch_add(1, std::memory_order_relaxed);
+      // Restore the released state.  Keep in_evict_queue == true because the
+      // page is (re)inserted into the queue below; recycle() only consumed
+      // the previous slot.
+      e.ref_count.store(0, std::memory_order_release);
+      BlockEvictionQueue::BlockType block;
+      block.owner = this;
+      block.owner_key = block_id;
+      block.version = 0;
+      BlockEvictionQueue::get_instance().add_single_block(
+          block, static_cast<int>(e.evict_priority));
+      return false;  // spared, not reclaimed
+    }
     char *buffer = e.buffer;
     if (buffer && e.is_dirty.load(std::memory_order_relaxed) &&
         flush_callback_) {
       flush_callback_(block_id, buffer, kVectorPageSize, e.file_offset);
       e.is_dirty.store(false, std::memory_order_relaxed);
+      dirty_flush_count_.fetch_add(1, std::memory_order_relaxed);
     }
     if (buffer) {
       e.buffer = nullptr;
       MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     }
+    evict_count_.fetch_add(1, std::memory_order_relaxed);
     e.ref_count.store(std::numeric_limits<int>::min(),
                       std::memory_order_release);
+    evicted = true;
   }
   e.in_evict_queue.store(false, std::memory_order_relaxed);
+  return evicted;
 }
 
 char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
@@ -229,6 +259,7 @@ char *VectorPageTable::set_block_acquired(block_id_t block_id, char *buffer,
       e.file_offset = file_offset;
       e.in_evict_queue.store(false, std::memory_order_relaxed);
       e.is_dirty.store(false, std::memory_order_relaxed);
+      e.referenced.store(false, std::memory_order_relaxed);
       e.ever_loaded = true;
       e.ref_count.store(1, std::memory_order_release);
       return e.buffer;
@@ -431,6 +462,9 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry) {
   }
 
   size_t page_offset = page_id * kVectorPageSize;
+  // Cold path: the page is being loaded from disk (or zero-filled), i.e. a
+  // cache miss.  Count it for the pool hit-rate metric.
+  miss_count_.fetch_add(1, std::memory_order_relaxed);
   // Skip pread for pages created by extend_file (beyond the original file
   // size at open time) that have never been loaded before.  Their on-disk
   // content is guaranteed to be zeros (ftruncate).  After eviction the
@@ -1316,6 +1350,18 @@ void VecBufferPool::harvest_aio() {
     tl_aio.pending_pool = nullptr;
   }
 #endif
+}
+
+void VecBufferPool::log_stats() const {
+  Stats s = stats();
+  LOG_INFO(
+      "VecBufferPool stats: file[%s] hit=%llu miss=%llu hit_rate=%.4f "
+      "evict=%llu second_chance=%llu dirty_flush=%llu",
+      file_name_.c_str(), static_cast<unsigned long long>(s.hit),
+      static_cast<unsigned long long>(s.miss), s.hit_rate(),
+      static_cast<unsigned long long>(s.evict),
+      static_cast<unsigned long long>(s.second_chance),
+      static_cast<unsigned long long>(s.dirty_flush));
 }
 
 }  // namespace ailego

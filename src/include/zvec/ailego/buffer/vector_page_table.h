@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -53,6 +54,10 @@ class VectorPageTable : public EvictableBlockOwner {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
     std::atomic<bool> is_dirty;
+    // CLOCK second-chance bit: set on every cache hit, cleared when the
+    // evictor spares the page.  Turns the FIFO eviction queue into an
+    // access-aware (approximate LRU) policy without a global LRU list.
+    std::atomic<bool> referenced;
     uint8_t evict_priority{0};
     bool ever_loaded{
         false};  // true once the page has been loaded at least once
@@ -100,7 +105,7 @@ class VectorPageTable : public EvictableBlockOwner {
 
   void release_block(block_id_t block_id);
 
-  void evict_block(block_id_t block_id) override;
+  bool evict_block(block_id_t block_id) override;
 
   void set_evict_priority(block_id_t block_id, uint8_t priority) {
     assert(block_id < entry_num_.load(std::memory_order_acquire));
@@ -164,6 +169,22 @@ class VectorPageTable : public EvictableBlockOwner {
   //! segments_[s] writes performed by a concurrent extend()/init().
   size_t entry_num() const {
     return entry_num_.load(std::memory_order_acquire);
+  }
+
+  //! Cache observability counters (monotonic, relaxed atomics).
+  struct Stats {
+    uint64_t hit{0};           // acquire_block served from memory
+    uint64_t evict{0};         // pages actually reclaimed
+    uint64_t second_chance{0}; // pages spared by the CLOCK bit
+    uint64_t dirty_flush{0};   // dirty pages written back on eviction
+  };
+  Stats stats() const {
+    Stats s;
+    s.hit = hit_count_.load(std::memory_order_relaxed);
+    s.evict = evict_count_.load(std::memory_order_relaxed);
+    s.second_chance = second_chance_count_.load(std::memory_order_relaxed);
+    s.dirty_flush = dirty_flush_count_.load(std::memory_order_relaxed);
+    return s;
   }
 
   bool is_released(block_id_t block_id) const {
@@ -233,6 +254,13 @@ class VectorPageTable : public EvictableBlockOwner {
   }
 
   FlushCallback flush_callback_{};
+
+  // Observability counters.  Relaxed ordering: these are statistics, never
+  // used to make correctness decisions.
+  std::atomic<uint64_t> hit_count_{0};
+  std::atomic<uint64_t> evict_count_{0};
+  std::atomic<uint64_t> second_chance_count_{0};
+  std::atomic<uint64_t> dirty_flush_count_{0};
 };
 
 class VecBufferPoolHandle;
@@ -246,6 +274,9 @@ class VecBufferPool {
   VecBufferPool(const std::string &filename, bool writable = false,
                 bool enable_direct_io = false);
   ~VecBufferPool() {
+    // Emit a one-line cache summary (hit rate / evictions) before teardown
+    // so operators can reason about buffer-pool efficiency per file.
+    log_stats();
     // Flush any remaining dirty blocks before tearing down memory/fd so that
     // writes are not silently lost. Safe to call even in read-only mode.
     (void)this->flush_all();
@@ -268,6 +299,33 @@ class VecBufferPool {
   }
 
   int init();
+
+  //! Aggregated cache statistics for this pool.
+  struct Stats {
+    uint64_t hit{0};
+    uint64_t miss{0};
+    uint64_t evict{0};
+    uint64_t second_chance{0};
+    uint64_t dirty_flush{0};
+    double hit_rate() const {
+      uint64_t total = hit + miss;
+      return total ? static_cast<double>(hit) / static_cast<double>(total)
+                   : 0.0;
+    }
+  };
+  Stats stats() const {
+    VectorPageTable::Stats p = page_table_.stats();
+    Stats s;
+    s.hit = p.hit;
+    s.evict = p.evict;
+    s.second_chance = p.second_chance;
+    s.dirty_flush = p.dirty_flush;
+    s.miss = miss_count_.load(std::memory_order_relaxed);
+    return s;
+  }
+
+  //! Log the current cache statistics at INFO level.
+  void log_stats() const;
 
   VecBufferPoolHandle get_handle();
 
@@ -349,6 +407,10 @@ class VecBufferPool {
   std::string file_name_;
   bool writable_{false};
   bool direct_io_enabled_{false};
+  // Cache miss counter: incremented once per page fetched from disk on the
+  // cold acquire path (pread / zero-fill).  Combined with page_table_ hits it
+  // yields the pool hit rate.
+  std::atomic<uint64_t> miss_count_{0};
 #if defined(__linux) || defined(__linux__)
   io_context_t aio_ctx_{nullptr};
   bool aio_enabled_{false};

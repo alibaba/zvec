@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <chrono>
 #include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
@@ -59,11 +60,23 @@ bool BlockEvictionQueue::evict_block(BlockType &item) {
 
 void BlockEvictionQueue::recycle() {
   BlockType item;
+  // Upper bound on iterations: the CLOCK second-chance path re-enqueues
+  // spared pages, so is_full() alone could spin for a while when most queued
+  // pages are hot.  Cap the work a single foreground caller absorbs; the
+  // background evictor picks up the slack.
+  const size_t max_attempts =
+      evict_batch_size_ * 200 * CACHE_QUEUE_NUM + 16;
+  size_t attempts = 0;
   while (MemoryLimitPool::get_instance().is_full() && evict_block(item)) {
-    std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
-    if (item.owner != nullptr &&
-        valid_owners_.find(item.owner) != valid_owners_.end()) {
-      item.owner->evict_block(item.owner_key);
+    {
+      std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
+      if (item.owner != nullptr &&
+          valid_owners_.find(item.owner) != valid_owners_.end()) {
+        item.owner->evict_block(item.owner_key);
+      }
+    }
+    if (++attempts >= max_attempts) {
+      break;
     }
   }
 }
@@ -71,14 +84,18 @@ void BlockEvictionQueue::recycle() {
 size_t BlockEvictionQueue::batch_recycle(size_t count) {
   std::shared_lock<std::shared_mutex> lock(valid_owners_mutex_);
   size_t evicted = 0;
-  while (evicted < count) {
+  // Bound attempts so spared (second-chance) pages that get re-enqueued do
+  // not turn this into an unbounded loop when nothing is truly evictable.
+  const size_t max_attempts = count * 4 + 16;
+  size_t attempts = 0;
+  while (evicted < count && attempts < max_attempts) {
+    ++attempts;
     BlockType item;
     if (!evict_single_block(item)) break;
     if (item.owner == nullptr ||
         valid_owners_.find(item.owner) == valid_owners_.end()) continue;
     if (item.owner->is_dead_block(item.owner_key, item.version)) continue;
-    item.owner->evict_block(item.owner_key);
-    ++evicted;
+    if (item.owner->evict_block(item.owner_key)) ++evicted;
   }
   return evicted;
 }
@@ -94,6 +111,7 @@ bool BlockEvictionQueue::add_single_block(const BlockType &block,
 }
 
 MemoryLimitPool::~MemoryLimitPool() {
+  stop_background_evictor();
   drain_free_list();
 }
 
@@ -147,12 +165,61 @@ char *MemoryLimitPool::carve_from_slab_locked(size_t buffer_size) {
 }
 
 int MemoryLimitPool::init(size_t pool_size) {
+  // Tear down the background evictor first: it reads pool_size_ and touches
+  // the free-list, both of which we are about to reset.
+  stop_background_evictor();
   pool_size_ = 0;
   BlockEvictionQueue::get_instance().recycle();
   drain_free_list();
   pool_size_ = pool_size;
   LOG_INFO("MemoryLimitPool initialized with pool size: %lu", pool_size_);
+  if (pool_size_ > 0) {
+    start_background_evictor();
+  }
   return 0;
+}
+
+void MemoryLimitPool::start_background_evictor() {
+  bool expected = false;
+  if (!bg_running_.compare_exchange_strong(expected, true)) {
+    return;  // already running
+  }
+  bg_thread_ = std::thread([this] { background_evict_loop(); });
+}
+
+void MemoryLimitPool::stop_background_evictor() {
+  if (!bg_running_.exchange(false)) {
+    return;  // not running
+  }
+  {
+    std::lock_guard<std::mutex> lk(bg_mutex_);
+  }
+  bg_cv_.notify_all();
+  if (bg_thread_.joinable()) {
+    bg_thread_.join();
+  }
+}
+
+void MemoryLimitPool::background_evict_loop() {
+  using std::chrono::milliseconds;
+  while (bg_running_.load()) {
+    {
+      std::unique_lock<std::mutex> lk(bg_mutex_);
+      bg_cv_.wait_for(lk, milliseconds(5), [this] {
+        return !bg_running_.load() ||
+               used_size_.load() >= high_watermark();
+      });
+    }
+    if (!bg_running_.load()) break;
+    if (pool_size_ == 0) continue;
+    const size_t low = low_watermark();
+    // Reclaim proactively down to the low watermark so the foreground path
+    // finds ready buffers on the free-list instead of evicting inline.
+    while (bg_running_.load() && used_size_.load() > low) {
+      size_t n = BlockEvictionQueue::get_instance().batch_recycle(64);
+      if (n == 0) break;  // queues empty or nothing evictable right now
+    }
+  }
 }
 
 bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
@@ -161,6 +228,9 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
   do {
     expected = used_size_.load();
     if (expected >= pool_size_) {
+      // Out of budget: wake the background evictor so the next attempt is
+      // more likely to find a free buffer without inline eviction.
+      bg_cv_.notify_one();
       return false;
     }
     desired = expected + buffer_size;
