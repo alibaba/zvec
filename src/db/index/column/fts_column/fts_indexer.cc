@@ -143,12 +143,14 @@ Status FtsIndexer::close() {
 }
 
 Status FtsIndexer::create_snapshot(const std::string &snapshot_path) {
-  auto s = flush();
-  if (!s.ok()) {
-    LOG_ERROR("FtsIndexer: flush failed during snapshot");
-    return s;
+  if (fts_ctx_ && !fts_ctx_->read_only()) {
+    auto s = flush();
+    if (!s.ok()) {
+      LOG_ERROR("FtsIndexer: flush failed during snapshot");
+      return s;
+    }
   }
-  s = fts_ctx_->create_checkpoint(snapshot_path);
+  auto s = fts_ctx_->create_checkpoint(snapshot_path);
   if (!s.ok()) {
     LOG_ERROR("FtsIndexer: create_checkpoint to [%s] failed: %s",
               snapshot_path.c_str(), s.message().c_str());
