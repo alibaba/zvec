@@ -52,7 +52,7 @@ test = [
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
     "pytest-xdist >=3.5",
-    "cibuildwheel == 3.4.0",
+    "cibuildwheel == 3.4.0; python_version >= '3.11'",
 ]
 docs = [
     "mkdocs >=1.5",
@@ -71,7 +71,7 @@ dev = [
     "pytest >=8.0",
     "pytest-cov >=4.1",
     "pytest-mock >=3.12",
-    "cibuildwheel == 3.4.0",
+    "cibuildwheel == 3.4.0; python_version >= '3.11'",
     # Inherit docs deps
     "mkdocs >=1.5",
     "mkdocs-material >=9.5",
