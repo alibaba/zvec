@@ -34,7 +34,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Fts, Query, VectorQuery
+from .model.param.query import Fts, GroupByQuery, Query, VectorQuery
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
 from .tool import require_module
 from .typing import (
@@ -66,6 +66,7 @@ __all__: list = [
     "Fts",
     "FtsIndexParam",
     "FtsQueryParam",
+    "GroupByQuery",
     "HnswIndexParam",
     "HnswQueryParam",
     "HnswRabitqIndexParam",

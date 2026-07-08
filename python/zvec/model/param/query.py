@@ -20,7 +20,7 @@ from typing import Optional, Union
 from ...common import VectorType
 from . import FtsQueryParam, HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam
 
-__all__ = ["Fts", "Query", "VectorQuery"]
+__all__ = ["Fts", "GroupByQuery", "Query", "VectorQuery"]
 
 
 @dataclass(frozen=True)
@@ -141,3 +141,52 @@ class VectorQuery(Query):
             stacklevel=2,
         )
         return super().__new__(cls)
+
+
+@dataclass(frozen=True)
+class GroupByQuery:
+    """Represents a group-by vector search query.
+
+    Groups results by a scalar field value, returning the top-k documents
+    within each group.
+
+    Attributes:
+        field_name (str): Name of the vector field to search.
+        group_by_field_name (str): Name of the scalar field to group by.
+        vector (VectorType, optional): Explicit query vector. Default is None.
+        id (Optional[str], optional): Document ID to fetch vector from. Default is None.
+        param (Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam]], optional):
+            Index-specific query parameters. Default is None.
+        filter (Optional[str], optional): Boolean expression to pre-filter candidates.
+            Default is None.
+        include_vector (bool, optional): Whether to include vector data in results.
+            Default is False.
+        output_fields (Optional[list[str]], optional): Scalar fields to include.
+            If None, all fields are returned. Default is None.
+        group_count (int, optional): Maximum number of groups to return. Default is 2.
+        group_topk (int, optional): Maximum documents per group. Default is 3.
+
+    Examples:
+        >>> import zvec
+        >>> results = collection.groupby_query(
+        ...     zvec.GroupByQuery(
+        ...         field_name="embedding",
+        ...         group_by_field_name="category",
+        ...         vector=[0.1, 0.2, 0.3],
+        ...         group_count=5,
+        ...         group_topk=3,
+        ...         filter="price > 10",
+        ...     )
+        ... )
+    """
+
+    field_name: str
+    group_by_field_name: str
+    vector: VectorType = None
+    id: Optional[str] = None
+    param: Optional[Union[HnswQueryParam, HnswRabitqQueryParam, IVFQueryParam]] = None
+    filter: Optional[str] = None
+    include_vector: bool = False
+    output_fields: Optional[list[str]] = None
+    group_count: int = 2
+    group_topk: int = 3

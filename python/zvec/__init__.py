@@ -112,7 +112,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Fts, Query, VectorQuery
+from .model.param.query import Fts, GroupByQuery, Query, VectorQuery
 
 # —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
@@ -152,6 +152,7 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
+    "GroupByQuery",
     "Query",
     "VectorQuery",
     "Fts",

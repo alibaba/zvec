@@ -17,8 +17,10 @@ import warnings
 from typing import Optional, Union, overload
 
 from zvec._zvec import _Collection
+from zvec._zvec.param import _GroupByVectorQuery
 
 from ..executor import QueryContext, QueryExecutor
+from ..executor.query_executor import DTYPE_MAP, convert_to_numpy
 from ..extension import ReRanker
 from ..typing import Status
 from .convert import convert_to_cpp_doc, convert_to_py_doc
@@ -36,7 +38,7 @@ from .param import (
     IVFIndexParam,
     OptimizeOption,
 )
-from .param.query import Query
+from .param.query import GroupByQuery, Query
 from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
@@ -437,3 +439,93 @@ class Collection:
             reranker=reranker,
         )
         return self._querier.execute(ctx, self._obj)
+
+    def groupby_query(self, query: GroupByQuery) -> list[dict]:
+        """Perform group-by vector search.
+
+        Groups results by a scalar field value, returning the top-k documents
+        within each group, ordered by similarity score.
+
+        Args:
+            query (GroupByQuery): Group-by query configuration including the
+                vector field to search, the scalar field to group by, and
+                grouping parameters.
+
+        Returns:
+            list[dict]: A list of group dictionaries, each containing:
+                - ``group_by_value`` (str): The value of the group-by field.
+                - ``docs`` (list[Doc]): Documents in this group, sorted by score.
+
+        Examples:
+            >>> from zvec import GroupByQuery, HnswQueryParam
+            >>> results = collection.groupby_query(
+            ...     GroupByQuery(
+            ...         field_name="embedding",
+            ...         group_by_field_name="category",
+            ...         vector=[0.1, 0.2, 0.3],
+            ...         param=HnswQueryParam(ef=300),
+            ...         group_count=5,
+            ...         group_topk=3,
+            ...     )
+            ... )
+            >>> for group in results:
+            ...     print(group["group_by_value"], len(group["docs"]))
+        """
+
+        cpp_query = self._build_groupby_query(query)
+        raw_results = self._obj.GroupByQuery(cpp_query)
+
+        # Convert _Doc objects to Python Doc objects
+        return [
+            {
+                "group_by_value": group["group_by_value"],
+                "docs": [convert_to_py_doc(doc, self.schema) for doc in group["docs"]],
+            }
+            for group in raw_results
+        ]
+
+    def _build_groupby_query(self, query: GroupByQuery):
+        """Convert a Python GroupByQuery to a C++ _GroupByVectorQuery."""
+        cpp_query = _GroupByVectorQuery()
+        cpp_query.field_name = query.field_name
+        cpp_query.group_by_field_name = query.group_by_field_name
+        cpp_query.group_count = query.group_count
+        cpp_query.group_topk = query.group_topk
+        cpp_query.include_vector = query.include_vector
+
+        if query.filter:
+            cpp_query.filter = query.filter
+        if query.output_fields is not None:
+            cpp_query.output_fields = query.output_fields
+        if query.param:
+            cpp_query.query_params = query.param
+
+        # Resolve vector
+        vec_data = None
+        if query.vector is not None and len(query.vector) > 0:
+            vec_data = query.vector
+        elif query.id is not None:
+            fetched = self._obj.Fetch([query.id])
+            doc = next(iter(fetched.values()), None)
+            if not doc:
+                raise ValueError(f"Document with id '{query.id}' not found")
+            vector_schema = self._schema.vector(query.field_name)
+            if not vector_schema:
+                raise ValueError(
+                    f"Vector field '{query.field_name}' not found in schema"
+                )
+            vec_data = doc.get_any(vector_schema.name, vector_schema.data_type)
+
+        if vec_data is not None:
+            vector_schema = self._schema.vector(query.field_name)
+            if not vector_schema:
+                raise ValueError(
+                    f"Vector field '{query.field_name}' not found in schema"
+                )
+            target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
+            cpp_query.set_vector(
+                vector_schema._get_object(),
+                convert_to_numpy(vec_data, target_dtype) if target_dtype else vec_data,
+            )
+
+        return cpp_query

@@ -281,8 +281,21 @@ void ZVecPyCollection::bind_dql_methods(
                py::gil_scoped_release release;
                result = self.GroupByQuery(query);
              }
-             // return GroupResults
-             return unwrap_expected(result);
+             auto group_results = unwrap_expected(result);
+             // Convert to list of dicts: [{"group_by_value": str, "docs":
+             // [_Doc]}]
+             py::list py_results;
+             for (auto &gr : group_results) {
+               py::dict group_dict;
+               group_dict["group_by_value"] = gr.group_by_value_;
+               py::list py_docs;
+               for (auto &doc : gr.docs_) {
+                 py_docs.append(std::make_shared<Doc>(std::move(doc)));
+               }
+               group_dict["docs"] = py_docs;
+               py_results.append(group_dict);
+             }
+             return py_results;
            })
       .def(
           "Fetch",
