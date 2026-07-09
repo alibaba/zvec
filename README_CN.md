@@ -99,7 +99,7 @@ collection.insert([
 
 # 向量相似度检索
 results = collection.query(
-    zvec.VectorQuery("embedding", vector=[0.4, 0.3, 0.3, 0.1]),
+    zvec.Query(field_name="embedding", vector=[0.4, 0.3, 0.3, 0.1]),
     topk=10
 )
 

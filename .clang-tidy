@@ -1,5 +1,7 @@
 Checks: >
   -*,
+  bugprone-multiple-statement-macro,
+  bugprone-sizeof-expression,
   modernize-use-nullptr,
   modernize-use-override,
 WarningsAsErrors: "*"
