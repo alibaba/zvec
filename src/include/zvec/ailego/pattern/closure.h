@@ -309,7 +309,7 @@ class Callback : public Callback<void> {
 
  protected:
   //! Constructor
-  Callback(void){};
+  Callback(void) {};
 };
 
 /*! Callback Implementation
