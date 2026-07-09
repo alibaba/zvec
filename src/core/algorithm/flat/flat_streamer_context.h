@@ -197,8 +197,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
     group_topk_heaps_.clear();
   }
 
-  // Clear per-query result buffers (does not touch group-by params).
-  void clear_result_buffers() {
+  void reset() override {
     for (auto &it : results_) {
       it.clear();
     }
@@ -207,22 +206,9 @@ class FlatStreamerContext : public IndexStreamer::Context {
     }
   }
 
-  // Post-search cleanup (invoked by Index::Search after each query). Contexts
-  // are pooled and reused, so clear group-by state here to prevent a later
-  // non-group-by query from taking the group-by path with a stale (dangling)
-  // group-by function. The flat set_group_params() has no topk side effect.
-  void reset() override {
-    clear_result_buffers();
-    set_group_params(0, 0);
-    reset_group_by();
-  }
-
   //! Reset the context
   void reset(const FlatStreamer<BATCH_SIZE> *owner) {
-    // This runs at the start of a search, AFTER prepare has set the group-by
-    // params for the current query, so it must NOT touch group-by state (only
-    // per-query result buffers).
-    clear_result_buffers();
+    this->reset();
     magic_ = owner->magic();
     feature_size_ = owner->meta().element_size();
 

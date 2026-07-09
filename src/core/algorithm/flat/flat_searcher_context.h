@@ -188,15 +188,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
     group_topk_heaps_.clear();
   }
 
-  // Post-search cleanup. Contexts are pooled and reused across queries, so
-  // clear group-by state here to prevent a subsequent non-group-by query from
-  // taking the group-by path with a stale (dangling) group-by function.
-  // NOTE: the flat set_group_params() has no topk side effect (unlike the HNSW
-  // variants), so this is safe to call on cleanup.
-  void reset() override {
-    set_group_params(0, 0);
-    reset_group_by();
-  }
+  void reset() override {}
 
   //! Reset the context
   void reset(const FlatSearcher<BATCH_SIZE> *owner) {
