@@ -266,7 +266,23 @@ bool MemoryLimitPool::try_acquire_buffer(const size_t buffer_size,
       return true;
     }
   }
-  // Cold path: shard empty, carve a fresh buffer from the slab allocator.
+  // Steal path: our shard is empty, but buffers freed by other threads (most
+  // notably the background evictor, which releases into its own sticky shard)
+  // may be sitting idle in foreign shards.  Reuse one of those before carving
+  // new slab memory, otherwise slab allocations grow without bound while freed
+  // buffers pile up unused, since used_size_ accounting stays within budget.
+  for (size_t i = 1; i < kNumFreeShards; ++i) {
+    size_t victim = (s + i) % kNumFreeShards;
+    std::lock_guard<std::mutex> lock(free_shards_[victim].mutex);
+    if (free_shards_[victim].head) {
+      buffer = free_shards_[victim].head;
+      free_shards_[victim].head = *reinterpret_cast<char **>(buffer);
+      free_shards_[victim].count.fetch_sub(1, std::memory_order_relaxed);
+      alloc_from_freelist_.fetch_add(1, std::memory_order_relaxed);
+      return true;
+    }
+  }
+  // Cold path: all shards empty, carve a fresh buffer from the slab allocator.
   {
     std::lock_guard<std::mutex> lock(slab_mutex_);
     buffer = carve_from_slab_locked(buffer_size);
@@ -343,6 +359,22 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size,
   }
   if (from_list) {
     alloc_from_freelist_.fetch_add(from_list, std::memory_order_relaxed);
+  }
+  // Steal from foreign shards before carving new slab memory (see the note in
+  // try_acquire_buffer): freed buffers stranded in other shards must be reused,
+  // otherwise slab allocations grow without bound under eviction churn.
+  if (from_list < actual_count) {
+    for (size_t i = 1; i < kNumFreeShards && from_list < actual_count; ++i) {
+      size_t victim = (s + i) % kNumFreeShards;
+      std::lock_guard<std::mutex> lock(free_shards_[victim].mutex);
+      while (from_list < actual_count && free_shards_[victim].head) {
+        out[from_list] = free_shards_[victim].head;
+        free_shards_[victim].head = *reinterpret_cast<char **>(out[from_list]);
+        free_shards_[victim].count.fetch_sub(1, std::memory_order_relaxed);
+        alloc_from_freelist_.fetch_add(1, std::memory_order_relaxed);
+        ++from_list;
+      }
+    }
   }
   if (from_list < actual_count) {
     std::lock_guard<std::mutex> lock(slab_mutex_);

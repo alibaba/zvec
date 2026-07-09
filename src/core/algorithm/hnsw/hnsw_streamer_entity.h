@@ -1111,24 +1111,30 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
 
  private:
   struct PinnedPageSet {
-    static constexpr size_t kCapacity = 128;
-    static constexpr size_t kMask = kCapacity - 1;
-    // Max load factor ~75% to guarantee open-addressing termination.
-    static constexpr size_t kMaxLoad = kCapacity * 3 / 4;
+    // Open-addressing set of pinned pages for a single search hop.  It must be
+    // able to hold every distinct page a hop touches, otherwise get_page()
+    // returns nullptr on overflow and the corresponding neighbor is silently
+    // dropped -- which measurably lowers recall vs mmap.  A hop resolves up to
+    // l0_neighbor_cnt() vectors and each vector may straddle a 4K page
+    // boundary (two pages), so the worst case is 2 * l0_neighbor_cnt() pages.
+    // The table is therefore sized from the entity's neighbor count at bind()
+    // time instead of a fixed constant (see reserve_for()).
+    static constexpr size_t kMinCapacity = 128;
     static constexpr ailego::block_id_t kEmpty =
         std::numeric_limits<ailego::block_id_t>::max();
 
-    PinnedPageSet() {
-      reset_table();
-    }
+    PinnedPageSet() = default;
     ~PinnedPageSet() {
       release_all();
     }
     PinnedPageSet(const PinnedPageSet &) = delete;
     PinnedPageSet &operator=(const PinnedPageSet &) = delete;
 
-    void bind(ailego::VecBufferPool *pool) {
+    //! Bind to a pool and size the table to hold up to "max_pages" distinct
+    //! entries without ever hitting the load-factor cap.
+    void bind(ailego::VecBufferPool *pool, size_t max_pages) {
       pool_ = pool;
+      reserve_for(max_pages);
     }
     bool bound() const {
       return pool_ != nullptr;
@@ -1138,11 +1144,11 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     //! Returns buffer if page is in PinnedPageSet or already in pool memory.
     //! Returns nullptr if page would need a pread (cache miss) or set is full.
     char *try_get_page(ailego::block_id_t page_id) {
-      size_t slot = static_cast<size_t>(page_id) & kMask;
-      for (size_t probe = 0; probe < kCapacity; ++probe) {
+      size_t slot = static_cast<size_t>(page_id) & mask_;
+      for (size_t probe = 0; probe < capacity_; ++probe) {
         if (ids_[slot] == page_id) return bufs_[slot];
         if (ids_[slot] == kEmpty) {
-          if (ailego_unlikely(count_ >= kMaxLoad)) {
+          if (ailego_unlikely(count_ >= max_load_)) {
             return nullptr;
           }
           char *buf = pool_->try_acquire_buffer(page_id);
@@ -1152,7 +1158,7 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
           ++count_;
           return buf;
         }
-        slot = (slot + 1) & kMask;
+        slot = (slot + 1) & mask_;
       }
       return nullptr;
     }
@@ -1160,11 +1166,11 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     //! Get a page WITH blocking pread if not in cache.
     //! Returns nullptr only if PinnedPageSet is full or pool alloc fails.
     char *get_page(ailego::block_id_t page_id) {
-      size_t slot = static_cast<size_t>(page_id) & kMask;
-      for (size_t probe = 0; probe < kCapacity; ++probe) {
+      size_t slot = static_cast<size_t>(page_id) & mask_;
+      for (size_t probe = 0; probe < capacity_; ++probe) {
         if (ids_[slot] == page_id) return bufs_[slot];
         if (ids_[slot] == kEmpty) {
-          if (ailego_unlikely(count_ >= kMaxLoad)) {
+          if (ailego_unlikely(count_ >= max_load_)) {
             return nullptr;
           }
           char *buf = pool_->acquire_buffer(page_id, 50);
@@ -1174,14 +1180,14 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
           ++count_;
           return buf;
         }
-        slot = (slot + 1) & kMask;
+        slot = (slot + 1) & mask_;
       }
       return nullptr;
     }
 
     void release_all() {
-      if (!pool_) return;
-      for (size_t i = 0; i < kCapacity; ++i) {
+      if (!pool_ || count_ == 0) return;
+      for (size_t i = 0; i < capacity_; ++i) {
         if (ids_[i] != kEmpty) {
           pool_->page_table_.release_block(ids_[i]);
           ids_[i] = kEmpty;
@@ -1192,14 +1198,30 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     }
 
    private:
-    void reset_table() {
-      std::fill_n(ids_, kCapacity, kEmpty);
-      std::fill_n(bufs_, kCapacity, nullptr);
+    //! Size the table so its 75% load-factor cap covers "max_pages" entries.
+    //! Capacity is rounded up to a power of two so the mask-based probe works.
+    void reserve_for(size_t max_pages) {
+      size_t need = (max_pages * 4 + 2) / 3 + 1;  // invert 3/4 load factor
+      size_t cap = kMinCapacity;
+      while (cap < need) cap <<= 1;
+      if (cap == capacity_ && !ids_.empty()) {
+        release_all();
+        return;
+      }
+      capacity_ = cap;
+      mask_ = cap - 1;
+      max_load_ = cap * 3 / 4;
+      ids_.assign(cap, kEmpty);
+      bufs_.assign(cap, nullptr);
       count_ = 0;
     }
+
     ailego::VecBufferPool *pool_{nullptr};
-    ailego::block_id_t ids_[kCapacity];
-    char *bufs_[kCapacity];
+    std::vector<ailego::block_id_t> ids_{};
+    std::vector<char *> bufs_{};
+    size_t capacity_{0};
+    size_t mask_{0};
+    size_t max_load_{0};
     size_t count_{0};
   };
 
@@ -1218,7 +1240,12 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   void ensure_pinned_pages() const {
     if (!pinned_pages_.bound()) {
       auto *pool = vec_buffer_pool();
-      if (pool) pinned_pages_.bind(pool);
+      if (pool) {
+        // A single hop resolves up to l0_neighbor_cnt() vectors, each of which
+        // may straddle a 4K page boundary (two pages).  Size the set to the
+        // worst case so a hop never overflows and silently drops neighbors.
+        pinned_pages_.bind(pool, 2 * l0_neighbor_cnt() + 2);
+      }
     }
   }
 

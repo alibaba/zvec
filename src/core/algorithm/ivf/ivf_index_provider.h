@@ -74,7 +74,7 @@ class IVFIndexProvider : public IndexProvider {
    public:
     SortedIterator(const IVFEntity::Pointer &entity) : entity_(entity) {
       count_ = entity_->vector_count();
-      mapping_ = entity_->get_key_order_mapping();
+      mapping_ = entity_->get_key_order_mapping(mapping_block_);
       if (!mapping_) {
         // Fallback: compute sorting if mapping segment is unavailable
         fallback_.resize(count_);
@@ -114,6 +114,7 @@ class IVFIndexProvider : public IndexProvider {
 
     //! Members
     IVFEntity::Pointer entity_;
+    IndexStorage::MemoryBlock mapping_block_;  // owns the mapping segment data
     const uint32_t *mapping_{nullptr};  // points into mapping_ segment data
     std::vector<size_t> fallback_;      // used only if mapping_ unavailable
     size_t count_{0};

@@ -93,13 +93,13 @@ int IVFDumper::dump_container_segment(const IndexStorage::Pointer &container,
   const size_t total_size = seg->data_size() + seg->padding_size();
   size_t off = 0;
   while (off < total_size) {
-    const void *data = nullptr;
+    IndexStorage::MemoryBlock block;
     size_t rd_size = std::min(batch_size, total_size - off);
-    if (seg->read(off, &data, rd_size) != rd_size) {
+    if (seg->read(off, block, rd_size) != rd_size) {
       LOG_ERROR("Failed to read data, off=%zu size=%zu", off, rd_size);
       return IndexError_ReadData;
     }
-    if (dumper_->write(data, rd_size) != rd_size) {
+    if (dumper_->write(block.data(), rd_size) != rd_size) {
       LOG_ERROR("Failed to write data, size=%zu", rd_size);
       return IndexError_WriteData;
     }

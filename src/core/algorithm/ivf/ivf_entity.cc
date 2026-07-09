@@ -503,12 +503,14 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
               IVF_INVERTED_HEADER_SEG_ID.c_str());
     return IndexError_InvalidFormat;
   }
-  const void *data = nullptr;
-  if (header->read(0, &data, header->data_size()) != header->data_size()) {
+  IndexStorage::MemoryBlock header_block;
+  if (header->read(0, header_block, header->data_size()) !=
+      header->data_size()) {
     LOG_ERROR("Failed to read data, segment %s",
               IVF_INVERTED_HEADER_SEG_ID.c_str());
     return IndexError_ReadData;
   }
+  const void *data = header_block.data();
   std::memcpy(&header_, data, sizeof(header_));
   if (header_.header_size < sizeof(header_) + header_.index_meta_size ||
       header_.header_size > header->data_size()) {
@@ -647,7 +649,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                       IndexContext::Stats *context_stats) const {
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = this->inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = this->inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
   const size_t block_size = header_.block_size;
@@ -725,7 +728,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                       IndexContext::Stats *context_stats) const {
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
   const size_t block_size = header_.block_size;
@@ -787,7 +791,8 @@ int IVFEntity::search_batch(size_t inverted_list_id, const IndexFilter &filter,
                             uint32_t *scan_count) const {
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = this->inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = this->inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
   const size_t block_size = header_.block_size;
@@ -900,7 +905,8 @@ int IVFEntity::search_batch(size_t inverted_list_id, BatchQueryItem *items,
                             size_t query_count, uint32_t *scan_count) const {
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
   const size_t block_size = header_.block_size;
@@ -1016,48 +1022,53 @@ int IVFEntity::search(const void *query, IndexDocumentHeap *heap,
 
 const void *IVFEntity::get_vector(size_t id) const {
   if (features_) {
-    const void *data = nullptr;
     size_t element_size = features_->data_size() / vector_count();
     size_t off = id * element_size;
-    if (features_->read(off, &data, element_size) != element_size) {
+    IndexStorage::MemoryBlock block;
+    if (features_->read(off, block, element_size) != element_size) {
       LOG_ERROR("Failed to read segment, off=%zu size=%zu", off, element_size);
       return nullptr;
     }
-    return data;
+    vector_.assign(static_cast<const char *>(block.data()), element_size);
+    return vector_.data();
   }
 
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock off_block;
   size_t size = sizeof(InvertedVecLocation);
-  if (offsets_->read(id * size, &data, size) != size) {
+  if (offsets_->read(id * size, off_block, size) != size) {
     LOG_ERROR("Failed to read offsets segment, id=%zu", id);
     return nullptr;
   }
-  auto &loc = *reinterpret_cast<const InvertedVecLocation *>(data);
+  InvertedVecLocation loc =
+      *reinterpret_cast<const InvertedVecLocation *>(off_block.data());
   if (loc.column_major) {
     vector_.resize(meta_.element_size());
     auto unit_size = IndexMeta::AlignSizeof(meta_.data_type());
     size_t cols = meta_.element_size() / unit_size;
     size_t step = block_vector_count() * unit_size;
     size_t rd_size = step * (cols - 1) + unit_size;
-    if (inverted_->read(loc.offset, &data, rd_size) != rd_size) {
+    IndexStorage::MemoryBlock block;
+    if (inverted_->read(loc.offset, block, rd_size) != rd_size) {
       LOG_ERROR("Failed to read data, off=%zu size=%zu",
                 static_cast<size_t>(loc.offset), rd_size);
       return nullptr;
     }
+    const char *data = static_cast<const char *>(block.data());
     for (size_t c = 0; c < cols; ++c) {
-      vector_.replace(c * unit_size, unit_size,
-                      reinterpret_cast<const char *>(data) + c * step,
-                      unit_size);
+      vector_.replace(c * unit_size, unit_size, data + c * step, unit_size);
     }
     return vector_.data();
   } else {
-    if (inverted_->read(loc.offset, &data, meta_.element_size()) !=
+    IndexStorage::MemoryBlock block;
+    if (inverted_->read(loc.offset, block, meta_.element_size()) !=
         meta_.element_size()) {
       LOG_ERROR("Failed to read data, off=%zu size=%u",
                 static_cast<size_t>(loc.offset), meta_.element_size());
       return nullptr;
     }
-    return data;
+    vector_.assign(static_cast<const char *>(block.data()),
+                   meta_.element_size());
+    return vector_.data();
   }
 }
 
@@ -1079,23 +1090,23 @@ int IVFEntity::get_vector(size_t id, IndexStorage::MemoryBlock &block) const {
     LOG_ERROR("Failed to read offsets segment, id=%zu", id);
     return IndexError_Runtime;
   }
-  const void *data = data_block.data();
-  auto &loc = *reinterpret_cast<const InvertedVecLocation *>(data);
+  InvertedVecLocation loc =
+      *reinterpret_cast<const InvertedVecLocation *>(data_block.data());
   if (loc.column_major) {
     vector_.resize(meta_.element_size());
     auto unit_size = IndexMeta::AlignSizeof(meta_.data_type());
     size_t cols = meta_.element_size() / unit_size;
     size_t step = block_vector_count() * unit_size;
     size_t rd_size = step * (cols - 1) + unit_size;
-    if (inverted_->read(loc.offset, &data, rd_size) != rd_size) {
+    IndexStorage::MemoryBlock vec_block;
+    if (inverted_->read(loc.offset, vec_block, rd_size) != rd_size) {
       LOG_ERROR("Failed to read data, off=%zu size=%zu",
                 static_cast<size_t>(loc.offset), rd_size);
       return IndexError_Runtime;
     }
+    const char *data = static_cast<const char *>(vec_block.data());
     for (size_t c = 0; c < cols; ++c) {
-      vector_.replace(c * unit_size, unit_size,
-                      reinterpret_cast<const char *>(data) + c * step,
-                      unit_size);
+      vector_.replace(c * unit_size, unit_size, data + c * step, unit_size);
     }
     block.reset(vector_.data());
     return 0;
@@ -1114,23 +1125,23 @@ uint32_t IVFEntity::key_to_id(uint64_t key) const {
   //! Do binary search
   uint32_t start = 0UL;
   uint32_t end = vector_count();
-  const void *data = nullptr;
   uint32_t idx = 0u;
   while (start < end) {
     idx = start + (end - start) / 2;
-    if (ailego_unlikely(mapping_->read(idx * sizeof(uint32_t), &data,
+    IndexStorage::MemoryBlock map_block;
+    if (ailego_unlikely(mapping_->read(idx * sizeof(uint32_t), map_block,
                                        sizeof(uint32_t)) != sizeof(uint32_t))) {
       LOG_ERROR("Failed to read mapping segment, idx=%u", idx);
       return std::numeric_limits<uint32_t>::max();
     }
-    const uint64_t *mkey;
-    uint32_t local_id = *reinterpret_cast<const uint32_t *>(data);
-    if (ailego_unlikely(keys_->read(local_id * sizeof(uint64_t),
-                                    (const void **)(&mkey),
+    uint32_t local_id = *reinterpret_cast<const uint32_t *>(map_block.data());
+    IndexStorage::MemoryBlock key_block;
+    if (ailego_unlikely(keys_->read(local_id * sizeof(uint64_t), key_block,
                                     sizeof(uint64_t)) != sizeof(uint64_t))) {
       LOG_ERROR("Read key from segment failed");
       return std::numeric_limits<uint32_t>::max();
     }
+    const uint64_t *mkey = static_cast<const uint64_t *>(key_block.data());
     if (*mkey < key) {
       start = idx + 1;
     } else if (*mkey > key) {

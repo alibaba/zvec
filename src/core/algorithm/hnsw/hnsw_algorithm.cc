@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "hnsw_algorithm.h"
 #include <cfloat>
+#include <cstdint>
 #include <cstdlib>
 #include <type_traits>
 
@@ -84,6 +85,13 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
   const auto &upper_entity = static_cast<const EntityType &>(ctx->get_entity());
+  // Upper-level entry-point descent must never skip a cache-miss page:
+  // a missed vector makes select_entry_point pick a worse entry point into
+  // level 0, which drops recall (buffer vs mmap parity). Block-load on miss
+  // by granting an effectively unbounded I/O budget for the upper levels.
+  // (Restored: originally added in 3e0c044, dropped by the cb27887 AIO
+  // refactor, and only the level-0 budget was reinstated in 96722dc.)
+  upper_entity.reset_io_budget(INT32_MAX);
   for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
     upper_entity.release_vectors();
