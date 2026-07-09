@@ -160,8 +160,10 @@ class CollectionImpl : public Collection {
   Status switch_to_new_segment_for_writing(
       const CollectionSchema::Ptr &schema = nullptr);
 
-  Result<Segment::Ptr> create_empty_writing_segment_for_schema(
-      const CollectionSchema::Ptr &schema, uint64_t min_doc_id);
+  Status commit_schema_change_with_new_writing_segment(
+      const CollectionSchema::Ptr &new_schema,
+      const Segment::Ptr &old_writing_segment, const Version &old_version,
+      Version *new_version, uint64_t writing_min_doc_id);
 
   Result<WriteResults> write_impl(std::vector<Doc> &docs, WriteMode mode);
 
@@ -555,33 +557,9 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
     CHECK_RETURN_STATUS(s);
   }
 
-  auto new_writing_segment =
-      create_empty_writing_segment_for_schema(new_schema, writing_min_doc_id);
-  if (!new_writing_segment) {
-    return new_writing_segment.error();
-  }
-  new_version.reset_writing_segment_meta(new_writing_segment.value()->meta());
-  new_version.set_next_segment_id(segment_id_allocator_.load());
-
-  // 2. update version
-  s = version_manager_->apply(new_version);
-  if (!s.ok()) {
-    new_writing_segment.value()->destroy();
-    return s;
-  }
-
-  // 3. persist version
-  s = version_manager_->flush();
-  if (!s.ok()) {
-    new_writing_segment.value()->destroy();
-    auto rollback_status = version_manager_->apply(old_version);
-    CHECK_RETURN_STATUS(rollback_status);
-    return s;
-  }
-
-  schema_ = new_schema;
-  writing_segment_ = new_writing_segment.value();
-  s = old_writing_segment->destroy();
+  s = commit_schema_change_with_new_writing_segment(
+      new_schema, old_writing_segment, old_version, &new_version,
+      writing_min_doc_id);
   CHECK_RETURN_STATUS(s);
 
   // 4. remove old segments or block
@@ -747,32 +725,9 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
     CHECK_RETURN_STATUS(s);
   }
 
-  auto new_writing_segment =
-      create_empty_writing_segment_for_schema(new_schema, writing_min_doc_id);
-  if (!new_writing_segment) {
-    return new_writing_segment.error();
-  }
-  new_version.reset_writing_segment_meta(new_writing_segment.value()->meta());
-  new_version.set_next_segment_id(segment_id_allocator_.load());
-
-  s = version_manager_->apply(new_version);
-  if (!s.ok()) {
-    new_writing_segment.value()->destroy();
-    return s;
-  }
-
-  // persist manifest
-  s = version_manager_->flush();
-  if (!s.ok()) {
-    new_writing_segment.value()->destroy();
-    auto rollback_status = version_manager_->apply(old_version);
-    CHECK_RETURN_STATUS(rollback_status);
-    return s;
-  }
-
-  schema_ = new_schema;
-  writing_segment_ = new_writing_segment.value();
-  s = old_writing_segment->destroy();
+  s = commit_schema_change_with_new_writing_segment(
+      new_schema, old_writing_segment, old_version, &new_version,
+      writing_min_doc_id);
   CHECK_RETURN_STATUS(s);
 
   // 4. remove old segments or block
@@ -1518,13 +1473,45 @@ bool CollectionImpl::need_switch_to_new_segment() const {
   return writing_segment_->doc_count() >= schema_->max_doc_count_per_segment();
 }
 
-Result<Segment::Ptr> CollectionImpl::create_empty_writing_segment_for_schema(
-    const CollectionSchema::Ptr &schema, uint64_t min_doc_id) {
+Status CollectionImpl::commit_schema_change_with_new_writing_segment(
+    const CollectionSchema::Ptr &new_schema,
+    const Segment::Ptr &old_writing_segment, const Version &old_version,
+    Version *new_version, uint64_t writing_min_doc_id) {
+  if (new_version == nullptr) {
+    return Status::InvalidArgument("new_version is null");
+  }
+
   auto seg_options =
       SegmentOptions{false, options_.enable_mmap_, options_.max_buffer_size_};
-  return Segment::CreateAndOpen(path_, *schema, allocate_segment_id(),
-                                min_doc_id, id_map_, delete_store_,
-                                version_manager_, seg_options);
+  auto new_writing_segment = Segment::CreateAndOpen(
+      path_, *new_schema, allocate_segment_id(), writing_min_doc_id, id_map_,
+      delete_store_, version_manager_, seg_options);
+  if (!new_writing_segment) {
+    return new_writing_segment.error();
+  }
+  new_version->reset_writing_segment_meta(new_writing_segment.value()->meta());
+  new_version->set_next_segment_id(segment_id_allocator_.load());
+
+  auto s = version_manager_->apply(*new_version);
+  if (!s.ok()) {
+    new_writing_segment.value()->destroy();
+    return s;
+  }
+
+  s = version_manager_->flush();
+  if (!s.ok()) {
+    new_writing_segment.value()->destroy();
+    auto rollback_status = version_manager_->apply(old_version);
+    CHECK_RETURN_STATUS(rollback_status);
+    return s;
+  }
+
+  schema_ = new_schema;
+  writing_segment_ = new_writing_segment.value();
+  s = old_writing_segment->destroy();
+  CHECK_RETURN_STATUS(s);
+
+  return Status::OK();
 }
 
 Status CollectionImpl::switch_to_new_segment_for_writing(

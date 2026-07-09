@@ -151,6 +151,97 @@ class TestIndexDDL:
             assert index_states[drop_field] is False
         reopened.destroy()
 
+    @pytest.mark.parametrize("ddl_op", ["create", "drop"])
+    def test_index_ddl_without_persisted_tasks_reopens(self, tmp_path_factory, ddl_op):
+        collection_path = (
+            tmp_path_factory.mktemp(f"zvec_{ddl_op}_index_empty") / "collection"
+        )
+        option = CollectionOption(read_only=False, enable_mmap=True)
+        if ddl_op == "drop":
+            field = FieldSchema(
+                "name",
+                DataType.STRING,
+                nullable=False,
+                index_param=InvertIndexParam(),
+            )
+        else:
+            field = FieldSchema("name", DataType.STRING, nullable=False)
+        schema = zvec.CollectionSchema(
+            name=f"{ddl_op}_index_empty",
+            fields=[field],
+        )
+
+        coll = zvec.create_and_open(
+            path=str(collection_path),
+            schema=schema,
+            option=option,
+        )
+        if ddl_op == "create":
+            coll.create_index(
+                field_name="name",
+                index_param=InvertIndexParam(),
+                option=IndexOption(),
+            )
+        else:
+            coll.drop_index(field_name="name")
+        del coll
+        gc.collect()
+
+        reopened = zvec.open(path=str(collection_path), option=option)
+        has_index = reopened.schema.fields[0].index_param is not None
+        assert has_index == (ddl_op == "create")
+        assert reopened.stats.doc_count == 0
+        reopened.destroy()
+
+    @pytest.mark.parametrize("ddl_op", ["create", "drop"])
+    def test_index_ddl_switches_non_empty_writing_segment_before_commit(
+        self, tmp_path_factory, ddl_op
+    ):
+        collection_path = (
+            tmp_path_factory.mktemp(f"zvec_{ddl_op}_index_non_empty") / "collection"
+        )
+        option = CollectionOption(read_only=False, enable_mmap=True)
+        if ddl_op == "drop":
+            field = FieldSchema(
+                "name",
+                DataType.STRING,
+                nullable=False,
+                index_param=InvertIndexParam(),
+            )
+        else:
+            field = FieldSchema("name", DataType.STRING, nullable=False)
+        schema = zvec.CollectionSchema(
+            name=f"{ddl_op}_index_non_empty",
+            fields=[field],
+        )
+
+        coll = zvec.create_and_open(
+            path=str(collection_path),
+            schema=schema,
+            option=option,
+        )
+        result = coll.insert(Doc(id="pk0", fields={"name": "hello world"}))
+        assert result.ok()
+
+        if ddl_op == "create":
+            coll.create_index(
+                field_name="name",
+                index_param=InvertIndexParam(),
+                option=IndexOption(),
+            )
+        else:
+            coll.drop_index(field_name="name")
+        del coll
+        gc.collect()
+
+        reopened = zvec.open(path=str(collection_path), option=option)
+        has_index = reopened.schema.fields[0].index_param is not None
+        assert has_index == (ddl_op == "create")
+        assert reopened.stats.doc_count == 1
+        fetched_docs = reopened.fetch(["pk0"])
+        assert fetched_docs["pk0"].field("name") == "hello world"
+        reopened.destroy()
+
     @pytest.mark.parametrize("field_name", DEFAULT_SCALAR_FIELD_NAME.values())
     @pytest.mark.parametrize("index_type", SUPPORT_SCALAR_INDEX_TYPES)
     def test_scalar_index_operation(
