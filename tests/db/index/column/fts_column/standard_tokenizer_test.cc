@@ -20,6 +20,15 @@
 
 using namespace zvec::fts;
 
+static std::vector<std::string> token_texts(const std::vector<Token> &tokens) {
+  std::vector<std::string> texts;
+  texts.reserve(tokens.size());
+  for (const auto &token : tokens) {
+    texts.push_back(token.text);
+  }
+  return texts;
+}
+
 class StandardTokenizerTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -47,7 +56,7 @@ TEST_F(StandardTokenizerTest, SimpleAsciiWords) {
 }
 
 TEST_F(StandardTokenizerTest, PunctuationAsDelimiter) {
-  auto tokens = tokenize("hello,world.test");
+  auto tokens = tokenize("hello,world!test");
   ASSERT_EQ(tokens.size(), 3u);
   EXPECT_EQ(tokens[0].text, "hello");
   EXPECT_EQ(tokens[1].text, "world");
@@ -71,6 +80,19 @@ TEST_F(StandardTokenizerTest, OnlyDelimiters) {
   EXPECT_TRUE(tokens.empty());
 }
 
+TEST_F(StandardTokenizerTest, MalformedUtf8BreaksTokens) {
+  std::string text = "ab";
+  text.push_back(static_cast<char>(0xFF));
+  text += "cd";
+
+  auto tokens = tokenize(text);
+  ASSERT_EQ(tokens.size(), 2u);
+  EXPECT_EQ(tokens[0].text, "ab");
+  EXPECT_EQ(tokens[0].offset, 0u);
+  EXPECT_EQ(tokens[1].text, "cd");
+  EXPECT_EQ(tokens[1].offset, 3u);
+}
+
 TEST_F(StandardTokenizerTest, OffsetAndPosition) {
   auto tokens = tokenize("  hello world");
   ASSERT_EQ(tokens.size(), 2u);
@@ -92,11 +114,11 @@ TEST_F(StandardTokenizerTest, AccentedLatin) {
 
 TEST_F(StandardTokenizerTest, MarksContinueButDoNotStartTokens) {
   // e + U+0301 keeps the combining mark with the base letter.
-  // Standalone U+0301 and the heart variation selector are not indexed.
+  // Standalone U+0301 and U+FE0F are not indexed.
   auto tokens = tokenize(
       "e\xCC\x81 "
       "\xCC\x81 "
-      "\xE2\x9D\xA4\xEF\xB8\x8F");
+      "\xEF\xB8\x8F");
   ASSERT_EQ(tokens.size(), 1u);
   EXPECT_EQ(tokens[0].text, "e\xCC\x81");
 }
@@ -180,6 +202,13 @@ TEST_F(StandardTokenizerTest, CJKCompatibilitySupplement) {
   auto tokens = tokenize("\xF0\xAF\xA0\x80");
   ASSERT_EQ(tokens.size(), 1u);
   EXPECT_EQ(tokens[0].text, "\xF0\xAF\xA0\x80");
+}
+
+TEST_F(StandardTokenizerTest, CJKSingleCharKeepsTrailingMarks) {
+  auto tokens = tokenize("\xE4\xB8\xAD\xEF\xB8\x80\xE6\x96\x87");
+  ASSERT_EQ(tokens.size(), 2u);
+  EXPECT_EQ(tokens[0].text, "\xE4\xB8\xAD\xEF\xB8\x80");
+  EXPECT_EQ(tokens[1].text, "\xE6\x96\x87");
 }
 
 // --- Mixed scripts ---
@@ -278,4 +307,179 @@ TEST_F(StandardTokenizerTest, MaxTokenLengthCountsCodepointsNotBytes) {
   ASSERT_EQ(tokens3.size(), 2u);
   EXPECT_EQ(tokens3[0].text, "caf");
   EXPECT_EQ(tokens3[1].text, "\xC3\xA9");
+}
+
+TEST_F(StandardTokenizerTest, MaxTokenLengthDropsConnectorOnlySplitSegments) {
+  FtsIndexParams params3;
+  params3.tokenizer_name = "standard";
+  params3.filters.clear();
+  params3.extra_params = R"({"max_token_length":3})";
+  auto pipeline3 = TokenizerFactory::create(params3);
+  ASSERT_NE(pipeline3, nullptr);
+  auto tokens3 = pipeline3->process("dog's");
+  ASSERT_EQ(tokens3.size(), 2u);
+  EXPECT_EQ(tokens3[0].text, "dog");
+  EXPECT_EQ(tokens3[1].text, "s");
+
+  FtsIndexParams params1;
+  params1.tokenizer_name = "standard";
+  params1.filters.clear();
+  params1.extra_params = R"({"max_token_length":1})";
+  auto pipeline1 = TokenizerFactory::create(params1);
+  ASSERT_NE(pipeline1, nullptr);
+  auto leading = pipeline1->process("_lead");
+  std::vector<std::string> expected_leading = {"l", "e", "a", "d"};
+  EXPECT_EQ(token_texts(leading), expected_leading);
+
+  auto internal = pipeline1->process("abc__def");
+  std::vector<std::string> expected_internal = {"a", "b", "c", "d", "e", "f"};
+  EXPECT_EQ(token_texts(internal), expected_internal);
+}
+
+TEST_F(StandardTokenizerTest, IntraWordPunctuation) {
+  auto tokens = tokenize(
+      "dog's 3.14 1,000 example.com hello,world host:port a:b "
+      "host:9200");
+  std::vector<std::string> expected = {
+      "dog's", "3.14",      "1,000", "example.com", "hello",
+      "world", "host:port", "a:b",   "host",        "9200"};
+  EXPECT_EQ(token_texts(tokens), expected);
+}
+
+TEST_F(StandardTokenizerTest, ExtendNumLetConnectsWordsAndNumbers) {
+  auto tokens = tokenize("foo_bar v1_2 _lead __123 _");
+  std::vector<std::string> expected = {"foo_bar", "v1_2", "_lead", "__123"};
+  EXPECT_EQ(token_texts(tokens), expected);
+}
+
+TEST_F(StandardTokenizerTest, EmojiZwjSequence) {
+  auto tokens = tokenize(
+      "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x92\xBB "
+      "\xE2\x9D\xA4\xEF\xB8\x8F");
+  ASSERT_EQ(tokens.size(), 2u);
+  EXPECT_EQ(tokens[0].text, "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x92\xBB");
+  EXPECT_EQ(tokens[1].text, "\xE2\x9D\xA4\xEF\xB8\x8F");
+}
+
+TEST_F(StandardTokenizerTest, EmojiKeycapSequences) {
+  auto tokens = tokenize(
+      "1\xEF\xB8\x8F\xE2\x83\xA3 "
+      "#\xE2\x83\xA3 "
+      "*\xEF\xB8\x8F\xE2\x83\xA3");
+  ASSERT_EQ(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].text, "1\xEF\xB8\x8F\xE2\x83\xA3");
+  EXPECT_EQ(tokens[1].text, "#\xE2\x83\xA3");
+  EXPECT_EQ(tokens[2].text, "*\xEF\xB8\x8F\xE2\x83\xA3");
+}
+
+TEST_F(StandardTokenizerTest, EmojiModifierSequences) {
+  auto tokens = tokenize(
+      "\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD "
+      "\xE2\x98\x9D\xEF\xB8\x8F\xF0\x9F\x8F\xBB "
+      "\xF0\x9F\x8F\xBD");
+  ASSERT_EQ(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].text, "\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD");
+  EXPECT_EQ(tokens[1].text, "\xE2\x98\x9D\xEF\xB8\x8F\xF0\x9F\x8F\xBB");
+  EXPECT_EQ(tokens[2].text, "\xF0\x9F\x8F\xBD");
+}
+
+TEST_F(StandardTokenizerTest, EmojiModifierInsideZwjSequence) {
+  auto tokens =
+      tokenize("\xF0\x9F\x91\xA9\xF0\x9F\x8F\xBD\xE2\x80\x8D\xF0\x9F\x92\xBB");
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].text,
+            "\xF0\x9F\x91\xA9\xF0\x9F\x8F\xBD\xE2\x80\x8D\xF0\x9F\x92\xBB");
+}
+
+TEST_F(StandardTokenizerTest, RegionalIndicatorPairs) {
+  auto tokens = tokenize(
+      "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
+      "\xF0\x9F\x87\xA8\xF0\x9F\x87\xA6"
+      "\xF0\x9F\x87\xAF");
+  ASSERT_EQ(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].text, "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8");
+  EXPECT_EQ(tokens[1].text, "\xF0\x9F\x87\xA8\xF0\x9F\x87\xA6");
+  EXPECT_EQ(tokens[2].text, "\xF0\x9F\x87\xAF");
+}
+
+TEST_F(StandardTokenizerTest, RegionalIndicatorPairsIgnoreExtendAndZwj) {
+  auto tokens = tokenize(
+      "\xF0\x9F\x87\xA6\xCC\x88\xF0\x9F\x87\xA7 "
+      "\xF0\x9F\x87\xA6\xE2\x80\x8D\xF0\x9F\x87\xA7\xF0\x9F\x87\xA8");
+  ASSERT_EQ(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].text, "\xF0\x9F\x87\xA6\xCC\x88\xF0\x9F\x87\xA7");
+  EXPECT_EQ(tokens[1].text, "\xF0\x9F\x87\xA6\xE2\x80\x8D\xF0\x9F\x87\xA7");
+  EXPECT_EQ(tokens[2].text, "\xF0\x9F\x87\xA8");
+}
+
+TEST_F(StandardTokenizerTest, MinimalWb3cZwjExtendedPictographic) {
+  auto tokens = tokenize(
+      "\xE2\x80\x8D\xF0\x9F\x9B\x91 "
+      "a\xE2\x80\x8D\xF0\x9F\x9B\x91 "
+      "\xE2\x80\x8D\xE2\x93\x82");
+  ASSERT_EQ(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].text, "\xE2\x80\x8D\xF0\x9F\x9B\x91");
+  EXPECT_EQ(tokens[1].text, "a\xE2\x80\x8D\xF0\x9F\x9B\x91");
+  EXPECT_EQ(tokens[2].text, "\xE2\x80\x8D\xE2\x93\x82");
+}
+
+TEST_F(StandardTokenizerTest, HiraganaTokensAreSingleCharacters) {
+  auto tokens = tokenize("\xE3\x81\x8B\xE3\x82\x99\xE3\x81\xAA");
+  ASSERT_EQ(tokens.size(), 2u);
+  EXPECT_EQ(tokens[0].text, "\xE3\x81\x8B\xE3\x82\x99");
+  EXPECT_EQ(tokens[1].text, "\xE3\x81\xAA");
+}
+
+TEST_F(StandardTokenizerTest, JapaneseKoreanAndSoutheastAsianScripts) {
+  auto tokens = tokenize(
+      "\xE3\x81\xB2\xE3\x82\x89\xE3\x81\x8C\xE3\x81\xAA "
+      "\xE3\x82\xAB\xE3\x82\xBF\xE3\x82\xAB\xE3\x83\x8A "
+      "\xED\x95\x9C\xEA\xB5\xAD "
+      "\xE0\xB9\x84\xE0\xB8\x97\xE0\xB8\xA2 "
+      "\xE1\x80\x99\xE1\x80\x94");
+  ASSERT_EQ(tokens.size(), 8u);
+  EXPECT_EQ(tokens[0].text, "\xE3\x81\xB2");
+  EXPECT_EQ(tokens[1].text, "\xE3\x82\x89");
+  EXPECT_EQ(tokens[2].text, "\xE3\x81\x8C");
+  EXPECT_EQ(tokens[3].text, "\xE3\x81\xAA");
+  EXPECT_EQ(tokens[4].text, "\xE3\x82\xAB\xE3\x82\xBF\xE3\x82\xAB\xE3\x83\x8A");
+  EXPECT_EQ(tokens[5].text, "\xED\x95\x9C\xEA\xB5\xAD");
+  EXPECT_EQ(tokens[6].text, "\xE0\xB9\x84\xE0\xB8\x97\xE0\xB8\xA2");
+  EXPECT_EQ(tokens[7].text, "\xE1\x80\x99\xE1\x80\x94");
+}
+
+TEST_F(StandardTokenizerTest, SoutheastAsianMarksContinueButDoNotStartTokens) {
+  auto tokens = tokenize(
+      "\xE0\xB8\x81\xE0\xB8\xB1 "
+      "\xE0\xB8\xB1");
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].text, "\xE0\xB8\x81\xE0\xB8\xB1");
+}
+
+TEST_F(StandardTokenizerTest, HangulSymbolsOutsideWordClassAreIgnored) {
+  auto tokens = tokenize("\xE3\x89\xA0 \xED\x95\x9C\xEA\xB5\xAD");
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].text, "\xED\x95\x9C\xEA\xB5\xAD");
+}
+
+TEST_F(StandardTokenizerTest, HebrewSingleQuoteStaysWithLetter) {
+  auto tokens = tokenize("\xD7\x90' \xD7\x90\"\xD7\x91");
+  ASSERT_EQ(tokens.size(), 2u);
+  EXPECT_EQ(tokens[0].text, "\xD7\x90'");
+  EXPECT_EQ(tokens[1].text, "\xD7\x90\"\xD7\x91");
+}
+
+TEST(StandardTokenizerConfigTest, MaxTokenLengthValidation) {
+  FtsIndexParams params;
+  params.tokenizer_name = "standard";
+  params.filters.clear();
+
+  params.extra_params = R"({"max_token_length":0})";
+  EXPECT_EQ(TokenizerFactory::create(params), nullptr);
+
+  params.extra_params = R"({"max_token_length":1048577})";
+  EXPECT_EQ(TokenizerFactory::create(params), nullptr);
+
+  params.extra_params = R"({"max_token_length":1})";
+  EXPECT_NE(TokenizerFactory::create(params), nullptr);
 }
