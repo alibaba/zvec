@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
+
 from distance_helper import *
 from fixture_helper import *
 from doc_helper import *
 from params_helper import *
+from zvec import FtsIndexParam
 
 
 class TestDDL:
@@ -65,6 +68,89 @@ class TestDDL:
 
 
 class TestIndexDDL:
+    @pytest.mark.parametrize("index_kind", ["fts", "invert"])
+    def test_drop_index_reopen_after_persisted_task_result(
+        self, tmp_path_factory, index_kind
+    ):
+        collection_path = (
+            tmp_path_factory.mktemp(f"zvec_drop_index_reopen_{index_kind}")
+            / "collection"
+        )
+        option = CollectionOption(read_only=False, enable_mmap=True)
+
+        if index_kind == "fts":
+            drop_field = "text"
+            kept_field = "other_text"
+
+            def make_index_param():
+                return FtsIndexParam(tokenizer_name="standard")
+
+        else:
+            drop_field = "name"
+            kept_field = "other_name"
+
+            def make_index_param():
+                return InvertIndexParam()
+
+        schema = zvec.CollectionSchema(
+            name=f"drop_index_reopen_{index_kind}",
+            fields=[
+                FieldSchema(
+                    drop_field,
+                    DataType.STRING,
+                    nullable=False,
+                    index_param=make_index_param(),
+                ),
+                FieldSchema(
+                    kept_field,
+                    DataType.STRING,
+                    nullable=False,
+                    index_param=make_index_param(),
+                ),
+            ],
+        )
+
+        coll = zvec.create_and_open(
+            path=str(collection_path),
+            schema=schema,
+            option=option,
+        )
+        result = coll.insert(
+            Doc(
+                id="pk0",
+                fields={
+                    drop_field: "hello world",
+                    kept_field: "hello other",
+                },
+            )
+        )
+        assert result.ok()
+        coll.optimize(option=OptimizeOption())
+        del coll
+        gc.collect()
+
+        coll = zvec.open(path=str(collection_path), option=option)
+        drop_failed = False
+        try:
+            coll.drop_index(field_name=drop_field)
+        except RuntimeError:
+            drop_failed = True
+        del coll
+        gc.collect()
+
+        reopened = zvec.open(path=str(collection_path), option=option)
+        index_states = {
+            field.name: field.index_param is not None
+            for field in reopened.schema.fields
+        }
+        assert index_states[kept_field] is True
+        assert reopened.stats.doc_count == 1
+        if drop_failed:
+            assert index_states[drop_field] is True
+        else:
+            assert index_states[drop_field] is False
+        reopened.destroy()
+
     @pytest.mark.parametrize("field_name", DEFAULT_SCALAR_FIELD_NAME.values())
     @pytest.mark.parametrize("index_type", SUPPORT_SCALAR_INDEX_TYPES)
     def test_scalar_index_operation(
