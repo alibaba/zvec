@@ -211,10 +211,10 @@ TEST_F(CollectionTest, Feature_OpenReadOnly_WithReadOnlyLockFile) {
 
   // Use std::filesystem to set read-only permissions (cross-platform)
   std::error_code ec;
-  fs::permissions(lock_path,
-                  fs::perms::owner_read | fs::perms::group_read |
-                      fs::perms::others_read,
-                  fs::perm_options::replace, ec);
+  fs::permissions(
+      lock_path,
+      fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read,
+      fs::perm_options::replace, ec);
   ASSERT_FALSE(ec) << "Failed to set read-only permissions: " << ec.message();
 
   // Open with read_only=true should succeed even with read-only LOCK file
@@ -5840,6 +5840,145 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
 
   ASSERT_EQ(fts_search_ro("hello").size(), 3u);
   ASSERT_EQ(fts_search_ro("nothing").size(), 0u);
+
+  col.reset();
+  FileHelper::RemoveDirectory(col_path);
+}
+
+TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenWithoutOptimize) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = std::make_shared<CollectionSchema>("fts_reopen");
+  schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+  schema->add_field(std::make_shared<FieldSchema>(
+      "content", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+
+  auto make_doc = [](uint64_t id, const std::string &title,
+                     const std::string &content) {
+    Doc d;
+    d.set_pk("pk_" + std::to_string(id));
+    d.set<std::string>("title", title);
+    d.set<std::string>("content", content);
+    return d;
+  };
+  auto sorted_pks = [](const DocPtrList &docs) {
+    std::vector<std::string> pks;
+    for (const auto &doc : docs) {
+      pks.push_back(doc->pk());
+    }
+    std::sort(pks.begin(), pks.end());
+    return pks;
+  };
+
+  auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                              CollectionOptions{false, true});
+  ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+  auto col = std::move(create_res.value());
+
+  std::vector<Doc> docs;
+  docs.push_back(make_doc(0, "intro", "hello world"));
+  docs.push_back(make_doc(1, "guide", "hello foo bar"));
+  docs.push_back(make_doc(2, "tips", "hello baz"));
+  docs.push_back(make_doc(3, "more", "hello hello"));
+  docs.push_back(make_doc(4, "other", "nothing relevant"));
+  ASSERT_TRUE(col->Insert(docs).has_value());
+
+  auto fts_search = [&](const std::string &term) {
+    SearchQuery vq;
+    vq.target_.field_name_ = "content";
+    vq.topk_ = 10;
+    FtsClause fts_q;
+    fts_q.query_string_ = term;
+    vq.target_.clause_ = fts_q;
+    return col->Query(vq);
+  };
+
+  auto before = fts_search("hello");
+  ASSERT_TRUE(before.has_value()) << before.error().message();
+  ASSERT_EQ(sorted_pks(before.value()),
+            (std::vector<std::string>{"pk_0", "pk_1", "pk_2", "pk_3"}));
+
+  ASSERT_TRUE(col->Flush().ok());
+  col.reset();
+
+  CollectionOptions ro_options{true, true};
+  auto reopen_res = Collection::Open(col_path, ro_options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  auto after = fts_search("hello");
+  ASSERT_TRUE(after.has_value()) << after.error().message();
+  ASSERT_EQ(sorted_pks(after.value()),
+            (std::vector<std::string>{"pk_0", "pk_1", "pk_2", "pk_3"}));
+
+  col.reset();
+  FileHelper::RemoveDirectory(col_path);
+}
+
+TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenThenInsert) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = std::make_shared<CollectionSchema>("fts_reopen_insert");
+  schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+  schema->add_field(std::make_shared<FieldSchema>(
+      "content", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+
+  auto make_doc = [](const std::string &pk, const std::string &title,
+                     const std::string &content) {
+    Doc d;
+    d.set_pk(pk);
+    d.set<std::string>("title", title);
+    d.set<std::string>("content", content);
+    return d;
+  };
+  auto sorted_pks = [](const DocPtrList &docs) {
+    std::vector<std::string> pks;
+    for (const auto &doc : docs) {
+      pks.push_back(doc->pk());
+    }
+    std::sort(pks.begin(), pks.end());
+    return pks;
+  };
+
+  auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                              CollectionOptions{false, true});
+  ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+  auto col = std::move(create_res.value());
+
+  std::vector<Doc> docs;
+  docs.push_back(make_doc("pk_0", "intro", "hello world"));
+  docs.push_back(make_doc("pk_1", "guide", "hello foo bar"));
+  ASSERT_TRUE(col->Insert(docs).has_value());
+  ASSERT_TRUE(col->Flush().ok());
+  col.reset();
+
+  CollectionOptions rw_options{false, true};
+  auto reopen_res = Collection::Open(col_path, rw_options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  std::vector<Doc> new_docs;
+  new_docs.push_back(make_doc("pk_new", "new", "hello after reopen"));
+  auto insert_result = col->Insert(new_docs);
+  ASSERT_TRUE(insert_result.has_value()) << insert_result.error().message();
+  ASSERT_TRUE(col->Flush().ok());
+  col.reset();
+
+  CollectionOptions ro_options{true, true};
+  reopen_res = Collection::Open(col_path, ro_options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  SearchQuery vq;
+  vq.target_.field_name_ = "content";
+  vq.topk_ = 10;
+  FtsClause fts_q;
+  fts_q.query_string_ = "hello";
+  vq.target_.clause_ = fts_q;
+  auto after = col->Query(vq);
+  ASSERT_TRUE(after.has_value()) << after.error().message();
+  ASSERT_EQ(sorted_pks(after.value()),
+            (std::vector<std::string>{"pk_0", "pk_1", "pk_new"}));
 
   col.reset();
   FileHelper::RemoveDirectory(col_path);

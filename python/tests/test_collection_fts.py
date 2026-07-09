@@ -20,8 +20,6 @@ optimize all work on a vector-less collection.
 
 from __future__ import annotations
 
-import gc
-
 import pytest
 import zvec
 from zvec import (
@@ -169,107 +167,6 @@ class TestFtsOnlyCollectionLifecycle:
         after = {doc.id for doc in _fts_query(fts_collection, "hello")}
         assert after == before
         assert _fts_query(fts_collection, "nothing") == []
-
-    def test_reopen_preserves_fts_without_optimize(self, tmp_path):
-        """Plain flush/close must persist BM25 stats for FTS reopen."""
-        collection_path = tmp_path / "fts_reopen"
-        schema = zvec.CollectionSchema(
-            name="fts_reopen",
-            fields=[
-                FieldSchema("title", DataType.STRING, nullable=False),
-                FieldSchema(
-                    "content",
-                    DataType.STRING,
-                    nullable=False,
-                    index_param=FtsIndexParam(),
-                ),
-            ],
-        )
-
-        coll = zvec.create_and_open(
-            path=str(collection_path),
-            schema=schema,
-            option=CollectionOption(read_only=False, enable_mmap=True),
-        )
-        assert all(r.ok() for r in coll.insert(_make_docs()))
-        assert {doc.id for doc in _fts_query(coll, "hello")} == {
-            "pk_0",
-            "pk_1",
-            "pk_2",
-            "pk_3",
-        }
-        coll.flush()
-        del coll
-        gc.collect()
-
-        reopened = zvec.open(
-            path=str(collection_path),
-            option=CollectionOption(read_only=True, enable_mmap=True),
-        )
-        assert {doc.id for doc in _fts_query(reopened, "hello")} == {
-            "pk_0",
-            "pk_1",
-            "pk_2",
-            "pk_3",
-        }
-
-    def test_reopen_then_insert_keeps_existing_fts_stats(self, tmp_path):
-        """Read-write reopen must continue FTS stats from persisted values."""
-        collection_path = tmp_path / "fts_reopen_insert"
-        schema = zvec.CollectionSchema(
-            name="fts_reopen_insert",
-            fields=[
-                FieldSchema("title", DataType.STRING, nullable=False),
-                FieldSchema(
-                    "content",
-                    DataType.STRING,
-                    nullable=False,
-                    index_param=FtsIndexParam(),
-                ),
-            ],
-        )
-
-        coll = zvec.create_and_open(
-            path=str(collection_path),
-            schema=schema,
-            option=CollectionOption(read_only=False, enable_mmap=True),
-        )
-        assert all(r.ok() for r in coll.insert(_make_docs()[:2]))
-        coll.flush()
-        del coll
-        gc.collect()
-
-        reopened = zvec.open(
-            path=str(collection_path),
-            option=CollectionOption(read_only=False, enable_mmap=True),
-        )
-        assert all(
-            r.ok()
-            for r in reopened.insert(
-                [
-                    Doc(
-                        id="pk_new",
-                        fields={
-                            "title": "new",
-                            "content": "hello after reopen",
-                        },
-                    )
-                ]
-            )
-        )
-        reopened.flush()
-        del reopened
-        gc.collect()
-
-        read_only = zvec.open(
-            path=str(collection_path),
-            option=CollectionOption(read_only=True, enable_mmap=True),
-        )
-        assert {doc.id for doc in _fts_query(read_only, "hello")} == {
-            "pk_0",
-            "pk_1",
-            "pk_new",
-        }
 
 
 class TestFtsOnlyCollectionQueryValidation:
