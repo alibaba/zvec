@@ -24,7 +24,7 @@
 //
 // Usage:
 //   auto& backend = ailego::IOBackend::Instance();
-//   if (backend.available() != ailego::IOBackendType::kSyncPread) { ... }
+//   if (backend.available() != ailego::IOBackendType::kPread) { ... }
 //   LOG_INFO("I/O backend: %s", backend.name());
 
 #pragma once
@@ -36,8 +36,8 @@ namespace ailego {
 
 // Supported I/O backend types.
 enum class IOBackendType {
-  kSyncPread,  // Synchronous pread() — no async I/O
-  kLibAio,     // libaio loaded at runtime via dlopen()
+  kPread,   // Synchronous pread() — no async I/O
+  kLibAio,  // libaio loaded at runtime via dlopen()
 };
 
 // Returns a human-readable name for the given backend type.
@@ -45,7 +45,7 @@ inline const char *IOBackendTypeName(IOBackendType type) {
   switch (type) {
     case IOBackendType::kLibAio:
       return "libaio";
-    case IOBackendType::kSyncPread:
+    case IOBackendType::kPread:
       return "sync_pread";
   }
   return "unknown";
@@ -68,17 +68,17 @@ class IOBackend {
   // Returns the loaded backend type.
   // Idempotent — if already loaded, returns immediately.
   IOBackendType available() {
-    if (type_ != IOBackendType::kSyncPread) {
+    if (type_ != IOBackendType::kPread) {
       return type_;
     }
     return available(IOBackendType::kLibAio);
   }
 
   // Try to load the requested backend.  Returns the loaded backend type
-  // (may differ from requested if the load failed — falls back to kSyncPread).
+  // (may differ from requested if the load failed — falls back to kPread).
   // Idempotent — if the same backend is already loaded, returns immediately.
   IOBackendType available(IOBackendType requested) {
-    if (type_ == requested && type_ != IOBackendType::kSyncPread) {
+    if (type_ == requested && type_ != IOBackendType::kPread) {
       return type_;
     }
 #if defined(__linux) || defined(__linux__)
@@ -90,7 +90,7 @@ class IOBackend {
       }
     }
 #endif
-    type_ = IOBackendType::kSyncPread;
+    type_ = IOBackendType::kPread;
     return type_;
   }
 
@@ -107,7 +107,7 @@ class IOBackend {
  private:
   IOBackend() = default;
 
-  IOBackendType type_{IOBackendType::kSyncPread};
+  IOBackendType type_{IOBackendType::kPread};
 };
 
 }  // namespace ailego

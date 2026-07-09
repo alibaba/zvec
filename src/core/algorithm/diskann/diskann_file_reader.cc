@@ -40,14 +40,14 @@ int setup_io_ctx(IOContext &ctx) {
 #if (defined(__linux) || defined(__linux__))
   auto &backend = ailego::IOBackend::Instance();
   std::call_once(g_io_backend_log_once, [&backend] {
-    if (backend.available() != ailego::IOBackendType::kSyncPread) {
+    if (backend.available() != ailego::IOBackendType::kPread) {
       LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
     } else {
       LOG_WARN(
           "DiskAnn I/O backend: synchronous pread (no async I/O available)");
     }
   });
-  if (backend.available() == ailego::IOBackendType::kSyncPread) {
+  if (backend.available() == ailego::IOBackendType::kPread) {
     return 0;
   }
   int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx);
@@ -61,7 +61,7 @@ int setup_io_ctx(IOContext &ctx) {
 int destroy_io_ctx(IOContext &ctx) {
 #if (defined(__linux) || defined(__linux__))
   if (ailego::IOBackend::Instance().available() ==
-      ailego::IOBackendType::kSyncPread) {
+      ailego::IOBackendType::kPread) {
     return 0;
   }
   int ret = LibAioLoader::Instance().io_destroy(ctx);
@@ -94,7 +94,7 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
                uint64_t n_retries = 0) {
 #if (defined(__linux) || defined(__linux__))
   if (ailego::IOBackend::Instance().available() ==
-      ailego::IOBackendType::kSyncPread) {
+      ailego::IOBackendType::kPread) {
     return execute_io_pread(fd, read_reqs);
   }
   uint64_t iters = DiskAnnUtil::div_round_up(read_reqs.size(), MAX_EVENTS);
@@ -217,14 +217,14 @@ void LinuxAlignedFileReader::register_thread() {
 
   auto &backend = ailego::IOBackend::Instance();
   std::call_once(g_io_backend_log_once, [&backend] {
-    if (backend.available() != ailego::IOBackendType::kSyncPread) {
+    if (backend.available() != ailego::IOBackendType::kPread) {
       LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
     } else {
       LOG_WARN(
           "DiskAnn I/O backend: synchronous pread (no async I/O available)");
     }
   });
-  if (backend.available() == ailego::IOBackendType::kSyncPread) {
+  if (backend.available() == ailego::IOBackendType::kPread) {
     lk.unlock();
     return;
   }
@@ -265,7 +265,7 @@ void LinuxAlignedFileReader::deregister_thread() {
 
   // io_destroy is a syscall; keep it outside the lock to avoid blocking others
   if (ailego::IOBackend::Instance().available() !=
-      ailego::IOBackendType::kSyncPread) {
+      ailego::IOBackendType::kPread) {
     LibAioLoader::Instance().io_destroy(ctx);
   }
   LOG_INFO("returned ctx from thread");
@@ -276,7 +276,7 @@ void LinuxAlignedFileReader::deregister_all_threads() {
 #if (defined(__linux) || defined(__linux__))
   std::unique_lock<std::mutex> lk(ctx_mut);
   bool aio_available = ailego::IOBackend::Instance().available() !=
-                       ailego::IOBackendType::kSyncPread;
+                       ailego::IOBackendType::kPread;
   for (auto x = ctx_map.begin(); x != ctx_map.end(); x++) {
     IOContext ctx = x->second;
     if (aio_available) {

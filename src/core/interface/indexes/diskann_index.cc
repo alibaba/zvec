@@ -275,7 +275,7 @@ int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
 ailego::IOBackendType DiskAnnIndex::io_backend_type() const {
   auto &backend = ailego::IOBackend::Instance();
   ailego::IOBackendType type = backend.type();
-  if (type == ailego::IOBackendType::kSyncPread) {
+  if (type == ailego::IOBackendType::kPread) {
     LOG_WARN(
         "Only synchronous pread() is available. Install libaio "
         "(e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "

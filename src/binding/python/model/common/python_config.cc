@@ -226,7 +226,7 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       []() -> std::string {
         auto type = ailego::IOBackend::Instance().available();
         std::string name = ailego::IOBackendTypeName(type);
-        if (type == ailego::IOBackendType::kSyncPread) {
+        if (type == ailego::IOBackendType::kPread) {
           py::print(
               "No async I/O backend available. Install libaio (e.g. "
               "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "

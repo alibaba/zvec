@@ -35,7 +35,7 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
   // feedback about whether async I/O is available. IOBackend auto-probes on
   // first Instance() access.
   auto &backend = ailego::IOBackend::Instance();
-  if (backend.available() == ailego::IOBackendType::kSyncPread) {
+  if (backend.available() == ailego::IOBackendType::kPread) {
     LOG_WARN(
         "DiskAnn: no async I/O backend available. Install libaio (e.g. "
         "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
