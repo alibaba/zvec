@@ -73,12 +73,6 @@ struct FhtKernels {
   FhtVecRescaleFunc rescale;
 };
 
-// Aggregate of all PQ-specific kernels needed by PqInt8Quantizer /
-// PqInt4Quantizer, dispatched by ISA and data_type.  LUT computation
-// (compute_distance_table) is NOT included here — it reuses the existing
-// fp32 BatchDistanceFunc from get_batch_distance_func() which is metric-
-// aware and already SIMD-optimized.
-//
 // data_type selects the code packing layout:
 //   kInt8: one uint8 per sub-quantizer (256 centroids, stride=256)
 //   kInt4: two sub-quantizers packed into one uint8 (16 centroids, stride=16)
