@@ -160,7 +160,9 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
   return nullptr;
 }
 
-FhtKernels get_fht_kernels() {
+FhtKernels get_fht_kernels(CpuArchType cpu_arch_type) {
+  // Suppress unused-parameter warning when no SIMD #if blocks are compiled in.
+  (void)cpu_arch_type;
   FhtKernels k;
   // Default: scalar fallback for all
   k.flip_sign = scalar::fht_flip_sign;
@@ -171,7 +173,9 @@ FhtKernels get_fht_kernels() {
 
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
-      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ) {
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
+      (cpu_arch_type == CpuArchType::kAuto ||
+       cpu_arch_type == CpuArchType::kAVX512)) {
     k.flip_sign = avx512::fht_flip_sign_avx512;
     k.kacs_walk = avx512::fht_kacs_walk_avx512;
     k.inv_kacs_walk = avx512::fht_inv_kacs_walk_avx512;
@@ -181,7 +185,9 @@ FhtKernels get_fht_kernels() {
   }
 #endif
 #if defined(__AVX2__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
+      (cpu_arch_type == CpuArchType::kAuto ||
+       cpu_arch_type == CpuArchType::kAVX2)) {
     k.flip_sign = avx2::fht_flip_sign_avx2;
     k.kacs_walk = avx2::fht_kacs_walk_avx2;
     k.inv_kacs_walk = avx2::fht_inv_kacs_walk_avx2;
@@ -191,7 +197,9 @@ FhtKernels get_fht_kernels() {
   }
 #endif
 #if defined(__SSE2__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE2) {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE2 &&
+      (cpu_arch_type == CpuArchType::kAuto ||
+       cpu_arch_type == CpuArchType::kSSE)) {
     k.flip_sign = sse::fht_flip_sign_sse;
     k.kacs_walk = sse::fht_kacs_walk_sse;
     k.inv_kacs_walk = sse::fht_inv_kacs_walk_sse;
@@ -205,7 +213,8 @@ FhtKernels get_fht_kernels() {
 
 PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
                          CpuArchType cpu_arch_type) {
-  (void)cpu_arch_type;  // currently unused, reserved for future use
+  // Suppress unused-parameter warning when no SIMD #if blocks are compiled in.
+  (void)cpu_arch_type;
   PqKernels k{};
   if (quantize_type == QuantizeType::kPQ) {
     if (data_type == DataType::kInt4) {
@@ -215,7 +224,9 @@ PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
       k.batch_adc_distance = scalar::pq_adc_int4_batch_distance;
 
 #if defined(__AVX512F__)
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX512)) {
         k.adc_distance = avx512::pq_adc_int4_distance_avx512;
         k.sdc_distance = avx512::pq_sdc_int4_distance_avx512;
         k.batch_adc_distance = avx512::pq_adc_int4_batch_distance_avx512;
@@ -223,7 +234,9 @@ PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
       }
 #endif
 #if defined(__AVX2__)
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX2)) {
         k.adc_distance = avx2::pq_adc_int4_distance_avx2;
         k.sdc_distance = avx2::pq_sdc_int4_distance_avx2;
         k.batch_adc_distance = avx2::pq_adc_int4_batch_distance_avx2;
@@ -237,7 +250,9 @@ PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
     k.batch_adc_distance = scalar::pq_adc_int8_batch_distance;
 
 #if defined(__AVX512F__)
-    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+        (cpu_arch_type == CpuArchType::kAuto ||
+         cpu_arch_type == CpuArchType::kAVX512)) {
       k.adc_distance = avx512::pq_adc_int8_distance_avx512;
       k.sdc_distance = avx512::pq_sdc_int8_distance_avx512;
       k.batch_adc_distance = avx512::pq_adc_int8_batch_distance_avx512;
@@ -245,7 +260,9 @@ PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
     }
 #endif
 #if defined(__AVX2__)
-    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
+        (cpu_arch_type == CpuArchType::kAuto ||
+         cpu_arch_type == CpuArchType::kAVX2)) {
       k.adc_distance = avx2::pq_adc_int8_distance_avx2;
       k.sdc_distance = avx2::pq_sdc_int8_distance_avx2;
       k.batch_adc_distance = avx2::pq_adc_int8_batch_distance_avx2;
