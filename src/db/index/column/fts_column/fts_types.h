@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 #include "db/index/common/index_filter.h"
@@ -28,11 +29,11 @@ struct FtsQueryParams {
   // Wraps zvec::IndexFilter for push-down filtering inside the search loop.
   IndexFilter::Ptr filter{nullptr};
   // Candidate-driven (brute-force) mode: ascending segment-local doc_ids;
-  // when non-empty, FtsColumnIndexer restricts evaluation to this set by
-  // AND-ing it with the root iterator. Filled by the planner via
+  // nullopt means no candidate restriction, while a present empty vector
+  // means no document can match. Filled by the planner via
   // DocFilter::get_bf_by_keys_and_update when an invert result is highly
   // selective.
-  std::vector<uint64_t> candidate_ids;
+  std::optional<std::vector<uint64_t>> candidate_ids;
 };
 
 /*! Per-segment statistics needed by the FTS reducer for doc_id remapping.
