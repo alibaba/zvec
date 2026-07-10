@@ -30,6 +30,7 @@ try:
 
     from zvec._zvec import (
         get_default_jieba_dict_dir,
+        io_backend_description,
         io_backend_type,
         set_default_jieba_dict_dir,
     )
@@ -108,6 +109,7 @@ from .tool import require_module
 from .typing import (
     DataType,
     IndexType,
+    IOBackendType,
     MetricType,
     QuantizeType,
     Status,
@@ -129,6 +131,7 @@ __all__ = [
     "set_default_jieba_dict_dir",
     "get_default_jieba_dict_dir",
     "io_backend_type",
+    "io_backend_description",
     # Core classes
     "Collection",
     "Doc",
@@ -181,6 +184,7 @@ __all__ = [
     "QwenReRanker",
     # Typing
     "DataType",
+    "IOBackendType",
     "MetricType",
     "QuantizeType",
     "IndexType",

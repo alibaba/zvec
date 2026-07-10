@@ -317,9 +317,20 @@ void ZVecPyCollection::bind_dql_methods(
             const auto result = self.DebugGetIoBackendType();
             return unwrap_expected(result);
           },
-          "Debug-only: returns the I/O backend type used by DiskAnn. "
-          "One of 'libaio', 'pread'. Intended for introspection and "
-          "testing only; not part of the stable API.");
+          "Debug-only: returns the I/O backend type used by DiskAnn "
+          "as an IOBackendType enum (zvec.typing.IOBackendType). "
+          "Intended for introspection and testing only; not part of the "
+          "stable API.")
+      .def(
+          "_debug_io_backend_description",
+          [](const Collection &self) {
+            const auto result = self.DebugGetIoBackendDescription();
+            return unwrap_expected(result);
+          },
+          "Debug-only: returns a human-readable description of the I/O "
+          "backend used by DiskAnn, including libaio install guidance when "
+          "only pread is available. Intended for introspection and testing "
+          "only; not part of the stable API.");
 }
 
 }  // namespace zvec

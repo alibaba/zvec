@@ -51,6 +51,21 @@ inline const char *IOBackendTypeName(IOBackendType type) {
   return "unknown";
 }
 
+// Returns a human-readable description for the given backend type.
+// When the backend is kPread, includes installation guidance for libaio.
+inline const char *IOBackendDescription(IOBackendType type) {
+  switch (type) {
+    case IOBackendType::kLibAio:
+      return "libaio async I/O backend loaded at runtime via dlopen().";
+    case IOBackendType::kPread:
+      return "No async I/O backend available. Install libaio (e.g. "
+             "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
+             "and retry. DiskAnn will fall back to synchronous pread() \u2014 "
+             "performance will be degraded.";
+  }
+  return "Unknown I/O backend.";
+}
+
 // Singleton that loads and queries an I/O backend on demand.
 //
 // available() (no arg) tries the best backend with priority (libaio > pread)
@@ -102,6 +117,11 @@ class IOBackend {
   // Human-readable name for the selected backend.
   const char *name() const {
     return IOBackendTypeName(type_);
+  }
+
+  // Human-readable description for the selected backend.
+  const char *description() const {
+    return IOBackendDescription(type_);
   }
 
  private:

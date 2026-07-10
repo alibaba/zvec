@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <ailego/io/io_backend.h>
 #include <zvec/db/options.h>
 #include <zvec/db/query.h>
 #include <zvec/db/stats.h>
@@ -119,9 +120,15 @@ class Collection {
       const std::string &column_name) const = 0;
 
   //! Debug-only: retrieve the I/O backend type used by DiskAnn. Returns
-  //! "libaio" or "pread". Intended for introspection and testing; not
-  //! part of the stable public API.
-  virtual Result<std::string> DebugGetIoBackendType() const = 0;
+  //! an IOBackendType enum (kLibAio or kPread). Intended for introspection
+  //! and testing; not part of the stable public API.
+  virtual Result<ailego::IOBackendType> DebugGetIoBackendType() const = 0;
+
+  //! Debug-only: retrieve a human-readable description of the I/O backend,
+  //! including installation guidance for libaio when only pread is available.
+  //! Intended for introspection and testing; not part of the stable public
+  //! API.
+  virtual Result<std::string> DebugGetIoBackendDescription() const = 0;
 };
 
 }  // namespace zvec
