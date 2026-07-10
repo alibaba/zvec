@@ -32,6 +32,9 @@
 #if defined(__AVX512F__)
 #include "avx512/fht/fht.h"
 #endif
+#if defined(__ARM_NEON) && defined(__aarch64__)
+#include "neon/fht/fht.h"
+#endif
 
 namespace zvec::turbo {
 
@@ -199,6 +202,17 @@ FhtKernels get_fht_kernels(CpuArchType cpu_arch_type) {
     k.inv_kacs_walk = sse::fht_inv_kacs_walk_sse;
     k.rescale = sse::fht_vec_rescale_sse;
     // inplace fallback to scalar (SSE has no fht_inplace)
+    return k;
+  }
+#endif
+#if defined(__ARM_NEON) && defined(__aarch64__)
+  if (cpu_arch_type == CpuArchType::kAuto ||
+      cpu_arch_type == CpuArchType::kNEON) {
+    k.flip_sign = neon::fht_flip_sign_neon;
+    k.kacs_walk = neon::fht_kacs_walk_neon;
+    k.inv_kacs_walk = neon::fht_inv_kacs_walk_neon;
+    k.rescale = neon::fht_vec_rescale_neon;
+    // inplace fallback to scalar (NEON has no fht_inplace)
     return k;
   }
 #endif
