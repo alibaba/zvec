@@ -206,11 +206,14 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
   // Candidate-driven mode: AND a CandidateDocIterator into the root so the
   // small candidate set leads (Conjunction sorts by cost asc), turning the
   // posting walk into per-candidate advance()+matches()+score().
-  if (!query_params.candidate_ids.empty()) {
+  if (query_params.candidate_ids) {
+    if (query_params.candidate_ids->empty()) {
+      return std::vector<FtsResult>{};
+    }
     std::vector<DocIteratorPtr> musts;
     musts.reserve(2);
     musts.push_back(
-        std::make_unique<CandidateDocIterator>(query_params.candidate_ids));
+        std::make_unique<CandidateDocIterator>(*query_params.candidate_ids));
     musts.push_back(std::move(root_iter));
     root_iter = std::make_unique<ConjunctionIterator>(
         std::move(musts), std::vector<DocIteratorPtr>{});
