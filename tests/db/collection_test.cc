@@ -211,10 +211,10 @@ TEST_F(CollectionTest, Feature_OpenReadOnly_WithReadOnlyLockFile) {
 
   // Use std::filesystem to set read-only permissions (cross-platform)
   std::error_code ec;
-  fs::permissions(lock_path,
-                  fs::perms::owner_read | fs::perms::group_read |
-                      fs::perms::others_read,
-                  fs::perm_options::replace, ec);
+  fs::permissions(
+      lock_path,
+      fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read,
+      fs::perm_options::replace, ec);
   ASSERT_FALSE(ec) << "Failed to set read-only permissions: " << ec.message();
 
   // Open with read_only=true should succeed even with read-only LOCK file
@@ -2544,6 +2544,60 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
 
   func("int32", true);
   func("int32", false);
+
+  {
+    FileHelper::RemoveDirectory(col_path);
+
+    int doc_count = 100;
+    auto schema = TestHelper::CreateSchemaWithScalarIndex(false, true);
+    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto collection = TestHelper::CreateCollectionWithDoc(
+        col_path, *schema, options, 0, doc_count, false);
+
+    ASSERT_TRUE(collection->Optimize().ok());
+
+    collection.reset();
+    auto reopen_result = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
+    collection = std::move(reopen_result.value());
+
+    auto s = collection->DropIndex("int32");
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    auto expected_schema = std::make_shared<CollectionSchema>(*schema);
+    s = expected_schema->drop_index("int32");
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    auto schema_after_drop = collection->Schema();
+    ASSERT_TRUE(schema_after_drop.has_value())
+        << schema_after_drop.error().message();
+    ASSERT_EQ(*expected_schema, schema_after_drop.value());
+
+    collection.reset();
+    reopen_result = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
+    collection = std::move(reopen_result.value());
+
+    schema_after_drop = collection->Schema();
+    ASSERT_TRUE(schema_after_drop.has_value())
+        << schema_after_drop.error().message();
+    ASSERT_EQ(*expected_schema, schema_after_drop.value());
+    ASSERT_EQ(collection->Stats().value().doc_count, doc_count);
+
+    for (int i = 0; i < doc_count; i++) {
+      auto expect_doc = TestHelper::CreateDoc(i, *schema);
+      auto result = collection->Fetch({expect_doc.pk()});
+      ASSERT_TRUE(result.has_value());
+      ASSERT_EQ(result.value().size(), 1);
+      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+      auto doc = result.value()[expect_doc.pk()];
+      ASSERT_NE(doc, nullptr);
+      ASSERT_EQ(*doc, expect_doc);
+    }
+
+    collection.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
 }
 
 TEST_F(CollectionTest, Feature_DropIndex_AfterCreate) {
@@ -5845,6 +5899,145 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
   FileHelper::RemoveDirectory(col_path);
 }
 
+TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenWithoutOptimize) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = std::make_shared<CollectionSchema>("fts_reopen");
+  schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+  schema->add_field(std::make_shared<FieldSchema>(
+      "content", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+
+  auto make_doc = [](uint64_t id, const std::string &title,
+                     const std::string &content) {
+    Doc d;
+    d.set_pk("pk_" + std::to_string(id));
+    d.set<std::string>("title", title);
+    d.set<std::string>("content", content);
+    return d;
+  };
+  auto sorted_pks = [](const DocPtrList &docs) {
+    std::vector<std::string> pks;
+    for (const auto &doc : docs) {
+      pks.push_back(doc->pk());
+    }
+    std::sort(pks.begin(), pks.end());
+    return pks;
+  };
+
+  auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                              CollectionOptions{false, true});
+  ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+  auto col = std::move(create_res.value());
+
+  std::vector<Doc> docs;
+  docs.push_back(make_doc(0, "intro", "hello world"));
+  docs.push_back(make_doc(1, "guide", "hello foo bar"));
+  docs.push_back(make_doc(2, "tips", "hello baz"));
+  docs.push_back(make_doc(3, "more", "hello hello"));
+  docs.push_back(make_doc(4, "other", "nothing relevant"));
+  ASSERT_TRUE(col->Insert(docs).has_value());
+
+  auto fts_search = [&](const std::string &term) {
+    SearchQuery vq;
+    vq.target_.field_name_ = "content";
+    vq.topk_ = 10;
+    FtsClause fts_q;
+    fts_q.query_string_ = term;
+    vq.target_.clause_ = fts_q;
+    return col->Query(vq);
+  };
+
+  auto before = fts_search("hello");
+  ASSERT_TRUE(before.has_value()) << before.error().message();
+  ASSERT_EQ(sorted_pks(before.value()),
+            (std::vector<std::string>{"pk_0", "pk_1", "pk_2", "pk_3"}));
+
+  ASSERT_TRUE(col->Flush().ok());
+  col.reset();
+
+  CollectionOptions ro_options{true, true};
+  auto reopen_res = Collection::Open(col_path, ro_options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  auto after = fts_search("hello");
+  ASSERT_TRUE(after.has_value()) << after.error().message();
+  ASSERT_EQ(sorted_pks(after.value()),
+            (std::vector<std::string>{"pk_0", "pk_1", "pk_2", "pk_3"}));
+
+  col.reset();
+  FileHelper::RemoveDirectory(col_path);
+}
+
+TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenThenInsert) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = std::make_shared<CollectionSchema>("fts_reopen_insert");
+  schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+  schema->add_field(std::make_shared<FieldSchema>(
+      "content", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+
+  auto make_doc = [](const std::string &pk, const std::string &title,
+                     const std::string &content) {
+    Doc d;
+    d.set_pk(pk);
+    d.set<std::string>("title", title);
+    d.set<std::string>("content", content);
+    return d;
+  };
+  auto sorted_pks = [](const DocPtrList &docs) {
+    std::vector<std::string> pks;
+    for (const auto &doc : docs) {
+      pks.push_back(doc->pk());
+    }
+    std::sort(pks.begin(), pks.end());
+    return pks;
+  };
+
+  auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                              CollectionOptions{false, true});
+  ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+  auto col = std::move(create_res.value());
+
+  std::vector<Doc> docs;
+  docs.push_back(make_doc("pk_0", "intro", "hello world"));
+  docs.push_back(make_doc("pk_1", "guide", "hello foo bar"));
+  ASSERT_TRUE(col->Insert(docs).has_value());
+  ASSERT_TRUE(col->Flush().ok());
+  col.reset();
+
+  CollectionOptions rw_options{false, true};
+  auto reopen_res = Collection::Open(col_path, rw_options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  std::vector<Doc> new_docs;
+  new_docs.push_back(make_doc("pk_new", "new", "hello after reopen"));
+  auto insert_result = col->Insert(new_docs);
+  ASSERT_TRUE(insert_result.has_value()) << insert_result.error().message();
+  ASSERT_TRUE(col->Flush().ok());
+  col.reset();
+
+  CollectionOptions ro_options{true, true};
+  reopen_res = Collection::Open(col_path, ro_options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  SearchQuery vq;
+  vq.target_.field_name_ = "content";
+  vq.topk_ = 10;
+  FtsClause fts_q;
+  fts_q.query_string_ = "hello";
+  vq.target_.clause_ = fts_q;
+  auto after = col->Query(vq);
+  ASSERT_TRUE(after.has_value()) << after.error().message();
+  ASSERT_EQ(sorted_pks(after.value()),
+            (std::vector<std::string>{"pk_0", "pk_1", "pk_new"}));
+
+  col.reset();
+  FileHelper::RemoveDirectory(col_path);
+}
+
 // Dynamic CreateIndex/DropIndex for FTS: create an FTS index on a STRING column
 // that already has data, verify queries hit, then drop the index and verify FTS
 // is no longer available. Also covers reopen persistence.
@@ -5939,7 +6132,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     col.reset();
     auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
-    col = reopen_res.value();
+    col = std::move(reopen_res.value());
 
     auto q_reopen = fts_search(col, "hello");
     ASSERT_TRUE(q_reopen.has_value()) << q_reopen.error().message();
@@ -5981,7 +6174,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     col.reset();
     auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
-    col = reopen_res.value();
+    col = std::move(reopen_res.value());
 
     auto q_reopen = fts_search(col, "hello");
     ASSERT_FALSE(q_reopen.has_value());
@@ -5990,7 +6183,80 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     FileHelper::RemoveDirectory(col_path);
   }
 
-  // Case 3: Create → Drop → Create → Drop cycle on the same column.
+  // Case 3: Drop one FTS index from a reopened optimized collection while
+  // another FTS index remains.
+  {
+    FileHelper::RemoveDirectory(col_path);
+    auto schema = std::make_shared<CollectionSchema>("fts_drop_reopen");
+    schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+    schema->add_field(
+        std::make_shared<FieldSchema>("content", DataType::STRING, false,
+                                      std::make_shared<FtsIndexParams>()));
+    schema->add_field(
+        std::make_shared<FieldSchema>("other_content", DataType::STRING, false,
+                                      std::make_shared<FtsIndexParams>()));
+    schema->add_field(std::make_shared<FieldSchema>(
+        "vec", DataType::VECTOR_FP32, 4, false,
+        std::make_shared<FlatIndexParams>(MetricType::IP)));
+    CollectionOptions options{false, true};
+    auto col_res = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
+
+    std::vector<Doc> docs;
+    for (uint64_t i = 0; i < 20; i++) {
+      Doc d;
+      d.set_pk("pk_" + std::to_string(i));
+      d.set<std::string>("title", "title_" + std::to_string(i));
+      d.set<std::string>("content", "hello content " + std::to_string(i));
+      d.set<std::string>("other_content", "hello other " + std::to_string(i));
+      d.set<std::vector<float>>("vec", std::vector<float>(4, float(i) + 0.1f));
+      docs.push_back(d);
+    }
+    ASSERT_TRUE(col->Insert(docs).has_value());
+    ASSERT_TRUE(col->Optimize().ok());
+
+    col.reset();
+    auto reopen_res = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    col = std::move(reopen_res.value());
+
+    auto s = col->DropIndex("content");
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    auto schema_after_drop = col->Schema();
+    ASSERT_TRUE(schema_after_drop.has_value())
+        << schema_after_drop.error().message();
+    ASSERT_EQ(schema_after_drop.value().get_field("content")->index_params(),
+              nullptr);
+    ASSERT_NE(
+        schema_after_drop.value().get_field("other_content")->index_params(),
+        nullptr);
+
+    col.reset();
+    reopen_res = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    col = std::move(reopen_res.value());
+
+    schema_after_drop = col->Schema();
+    ASSERT_TRUE(schema_after_drop.has_value())
+        << schema_after_drop.error().message();
+    ASSERT_EQ(schema_after_drop.value().get_field("content")->index_params(),
+              nullptr);
+    ASSERT_NE(
+        schema_after_drop.value().get_field("other_content")->index_params(),
+        nullptr);
+    ASSERT_EQ(col->Stats().value().doc_count, 20u);
+
+    auto fetched = col->Fetch({"pk_0", "pk_19"});
+    ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
+    ASSERT_EQ(fetched.value().size(), 2u);
+
+    col.reset();
+    FileHelper::RemoveDirectory(col_path);
+  }
+
+  // Case 4: Create → Drop → Create → Drop cycle on the same column.
   {
     FileHelper::RemoveDirectory(col_path);
     auto schema = build_schema(false);
@@ -6036,7 +6302,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     col.reset();
     auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
-    col = reopen_res.value();
+    col = std::move(reopen_res.value());
 
     q = fts_search(col, "hello");
     ASSERT_FALSE(q.has_value());
@@ -6045,7 +6311,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     FileHelper::RemoveDirectory(col_path);
   }
 
-  // Case 4: CreateIndex with different FtsIndexParams on a column that already
+  // Case 5: CreateIndex with different FtsIndexParams on a column that already
   // has an FTS index — should remove the old index and rebuild with new params.
   {
     FileHelper::RemoveDirectory(col_path);
@@ -6092,7 +6358,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     col.reset();
     auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
-    col = reopen_res.value();
+    col = std::move(reopen_res.value());
 
     q = fts_search(col, "hello");
     ASSERT_TRUE(q.has_value()) << q.error().message();

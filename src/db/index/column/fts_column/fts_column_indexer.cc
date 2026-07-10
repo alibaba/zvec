@@ -75,13 +75,21 @@ Result<void> FtsColumnIndexer::open_reader(
 
   // doc_len_cf == nullptr → immutable path, load persisted stats.
   // doc_len_cf != nullptr → mutable path, stats maintained in-memory.
-  if (doc_len_cf == nullptr) {
-    int ret = scorer_->load_segment_stats(field_name, ctx, stat_cf);
-    if (ret != 0) {
+  // Mutable reopen also tries persisted stats first: an existing writing
+  // segment may already have flushed stats, while a brand-new mutable segment
+  // legitimately has no stats yet and falls back to zero below.
+  auto load_stats_ret = scorer_->load_segment_stats(field_name, ctx, stat_cf);
+  if (load_stats_ret != 0) {
+    if (doc_len_cf == nullptr) {
       return tl::make_unexpected(Status::InternalError(
           "FtsColumnIndexer failed to load segment stats. field=", field_name));
     }
+    scorer_->update_stats(0, 0);
   }
+
+  const auto stats = scorer_->stats();
+  total_docs_.store(stats.total_docs, std::memory_order_release);
+  total_tokens_.store(stats.total_tokens, std::memory_order_release);
 
   opened_.store(true);
   return {};
@@ -695,11 +703,22 @@ Result<void> FtsColumnIndexer::flush() {
   const uint64_t snapshot_total_tokens =
       total_tokens_.load(std::memory_order_acquire);
 
-  ctx_->db_->Put(ctx_->write_opts_, stat_cf_, make_total_docs_key(field_name_),
-                 encode_uint64_value(snapshot_total_docs));
-  ctx_->db_->Put(ctx_->write_opts_, stat_cf_,
-                 make_total_tokens_key(field_name_),
-                 encode_uint64_value(snapshot_total_tokens));
+  auto s = ctx_->db_->Put(ctx_->write_opts_, stat_cf_,
+                          make_total_docs_key(field_name_),
+                          encode_uint64_value(snapshot_total_docs));
+  if (!s.ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer::flush: failed to write total_docs. field=",
+        field_name_, " status=", s.ToString()));
+  }
+  s = ctx_->db_->Put(ctx_->write_opts_, stat_cf_,
+                     make_total_tokens_key(field_name_),
+                     encode_uint64_value(snapshot_total_tokens));
+  if (!s.ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer::flush: failed to write total_tokens. field=",
+        field_name_, " status=", s.ToString()));
+  }
 
   return {};
 }
