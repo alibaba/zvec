@@ -119,7 +119,7 @@ class Collection {
       const std::string &column_name) const = 0;
 
   //! Debug-only: retrieve the I/O backend type used by DiskAnn. Returns
-  //! "libaio" or "sync_pread". Intended for introspection and testing; not
+  //! "libaio" or "pread". Intended for introspection and testing; not
   //! part of the stable public API.
   virtual Result<std::string> DebugGetIoBackendType() const = 0;
 };

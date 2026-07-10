@@ -318,7 +318,7 @@ void ZVecPyCollection::bind_dql_methods(
             return unwrap_expected(result);
           },
           "Debug-only: returns the I/O backend type used by DiskAnn. "
-          "One of 'libaio', 'sync_pread'. Intended for introspection and "
+          "One of 'libaio', 'pread'. Intended for introspection and "
           "testing only; not part of the stable API.");
 }
 

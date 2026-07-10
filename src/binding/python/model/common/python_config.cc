@@ -220,7 +220,7 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       "Read the currently registered default jieba dict directory.");
 
   // Returns the current I/O backend type for DiskAnn async disk reads.
-  // When only sync_pread is available, prints the install hint to stdout.
+  // When only pread is available, prints the install hint to stdout.
   m.def(
       "io_backend_type",
       []() -> std::string {
@@ -236,8 +236,8 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
         return name;
       },
       "Returns the current I/O backend type for DiskAnn async disk reads. "
-      "\"libaio\" if libaio is available, \"sync_pread\" otherwise. "
-      "When \"sync_pread\", prints the install hint to stdout.");
+      "\"libaio\" if libaio is available, \"pread\" otherwise. "
+      "When \"pread\", prints the install hint to stdout.");
 }
 
 

@@ -46,7 +46,7 @@ inline const char *IOBackendTypeName(IOBackendType type) {
     case IOBackendType::kLibAio:
       return "libaio";
     case IOBackendType::kPread:
-      return "sync_pread";
+      return "pread";
   }
   return "unknown";
 }
@@ -64,7 +64,7 @@ class IOBackend {
     return instance;
   }
 
-  // Try to load the best available backend (libaio > sync_pread).
+  // Try to load the best available backend (libaio > pread).
   // Returns the loaded backend type.
   // Idempotent — if already loaded, returns immediately.
   IOBackendType available() {
