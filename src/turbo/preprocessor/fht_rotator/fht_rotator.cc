@@ -16,7 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <random>
-#include "../quantizer.h"
+#include "quantizer/quantizer.h"
 namespace zvec {
 namespace turbo {
 
