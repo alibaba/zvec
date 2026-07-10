@@ -871,24 +871,20 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_HNSW 1
 #define ZVEC_INDEX_TYPE_IVF 2
 #define ZVEC_INDEX_TYPE_FLAT 3
-<<<<<<< HEAD
 #define ZVEC_INDEX_TYPE_HNSW_RABITQ 4
-    == == ==
-    =
->>>>>>> 845bb383fb6c1a7a4223f4a65135c29b82ca51e6
 #define ZVEC_INDEX_TYPE_DISKANN 5
 #define ZVEC_INDEX_TYPE_VAMANA 6
 #define ZVEC_INDEX_TYPE_INVERT 10
 #define ZVEC_INDEX_TYPE_FTS 11
 
-        /**
-         * @brief Distance metric type codes (must match zvec::MetricType in
-         * zvec/db/type.h)
-         *
-         * These are defined as uint32_t constants instead of C enums to ensure
-         * consistent binary representation across C and C++ boundaries.
-         */
-    typedef uint32_t zvec_metric_type_t;
+/**
+ * @brief Distance metric type codes (must match zvec::MetricType in
+ * zvec/db/type.h)
+ *
+ * These are defined as uint32_t constants instead of C enums to ensure
+ * consistent binary representation across C and C++ boundaries.
+ */
+typedef uint32_t zvec_metric_type_t;
 #define ZVEC_METRIC_TYPE_UNDEFINED 0
 #define ZVEC_METRIC_TYPE_L2 1
 #define ZVEC_METRIC_TYPE_IP 2

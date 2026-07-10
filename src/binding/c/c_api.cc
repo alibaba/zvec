@@ -2849,8 +2849,6 @@ const char *zvec_index_type_to_string(zvec_index_type_t index_type) {
       return "INVERT";
     case ZVEC_INDEX_TYPE_FTS:
       return "FTS";
-    case ZVEC_INDEX_TYPE_DISKANN:
-      return "DiskANN";
     default:
       return "UNKNOWN_INDEX_TYPE";
   }
