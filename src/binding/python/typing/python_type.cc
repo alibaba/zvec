@@ -97,11 +97,13 @@ Examples:
 )pbdoc")
       .value("UNDEFINED", IndexType::UNDEFINED)
       .value("HNSW", IndexType::HNSW)
-      .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
       .value("IVF", IndexType::IVF)
       .value("FLAT", IndexType::FLAT)
+      .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
+      .value("DISKANN", IndexType::DISKANN)
       .value("VAMANA", IndexType::VAMANA)
-      .value("INVERT", IndexType::INVERT);
+      .value("INVERT", IndexType::INVERT)
+      .value("FTS", IndexType::FTS);
 }
 
 void ZVecPyTyping::bind_metric_types(pybind11::module_ &m) {

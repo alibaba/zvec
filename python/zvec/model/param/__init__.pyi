@@ -13,6 +13,8 @@ __all__: list[str] = [
     "AddColumnOption",
     "AlterColumnOption",
     "CollectionOption",
+    "DiskAnnIndexParam",
+    "DiskAnnQueryParam",
     "FlatIndexParam",
     "FtsIndexParam",
     "FtsQueryParam",
@@ -132,6 +134,124 @@ class CollectionOption:
     def enable_mmap(self) -> bool: ...
     @property
     def read_only(self) -> bool: ...
+
+class DiskAnnIndexParam(VectorIndexParam):
+    """
+
+    Parameters for configuring a DiskAnn index.
+
+    DiskAnn stores compressed vector in memory and high-definition vector on disk. At query time,
+    only compressed vector will be loaded into memory. By this way, search memory at runtime is diminished.
+
+    Attributes:
+        metric_type (MetricType): Distance metric used for similarity computation.
+            Default is ``MetricType.IP`` (inner product).
+        max_degree (int): Maximum out-degree of each node in the Vamana graph.
+            Larger values improve recall at the cost of build time and index size.
+            Clamped to the range [1, 100]. Default is 100.
+        list_size (int): Candidate list size used during graph construction.
+            Larger values improve graph quality and recall at the cost of build time.
+            Clamped to the range [10, 100]. Default is 50.
+        pq_chunk_num (int): Number of PQ chunks used for product-quantizing the
+            in-memory compressed vectors. ``0`` means auto-pick based on dimension.
+            Clamped to the range [1, 1024]. Default is 0.
+        quantize_type (QuantizeType): Optional quantization type for vector
+            compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``.
+
+    Examples:
+        >>> from zvec.typing import MetricType, QuantizeType
+        >>> params = DiskAnnIndexParam(
+        ...     metric_type=MetricType.COSINE,
+        ...     max_degree=100,
+        ...     list_size=50,
+        ...     pq_chunk_num=8,
+        ...     quantize_type=QuantizeType.FP16
+        ... )
+        >>> print(params.max_degree)
+        100
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(
+        self,
+        metric_type: zvec._zvec.typing.MetricType = ...,
+        max_degree: typing.SupportsInt = 100,
+        list_size: typing.SupportsInt = 50,
+        pq_chunk_num: typing.SupportsInt = 0,
+        quantize_type: zvec._zvec.typing.QuantizeType = ...,
+        quantizer_param: QuantizerParam = ...,
+    ) -> None:
+        """
+
+        Constructs a DiskAnnIndexParam instance.
+
+        Args:
+            metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
+            max_degree (int, optional): Maximum out-degree of each node in the Vamana
+                graph. Clamped to [1, 100]. Defaults to 100.
+            list_size (int, optional): Candidate list size used during graph
+                construction. Clamped to [10, 100]. Defaults to 50.
+            pq_chunk_num (int, optional): Number of PQ chunks for product
+                quantization. ``0`` means auto-pick based on dimension.
+                Clamped to [1, 1024]. Defaults to 0.
+            quantize_type (QuantizeType, optional): Vector quantization type.
+                Defaults to QuantizeType.UNDEFINED.
+            quantizer_param (QuantizerParam, optional): Quantizer configuration.
+                Defaults to QuantizerParam().
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    def to_dict(self) -> dict:
+        """
+        Convert to dictionary with all fields
+        """
+
+    @property
+    def max_degree(self) -> int:
+        """int: Maximum out-degree of each node in the Vamana graph."""
+
+    @property
+    def list_size(self) -> int:
+        """int: Candidate list size used during graph construction."""
+
+    @property
+    def pq_chunk_num(self) -> int:
+        """int: Number of PQ chunks for product quantization."""
+
+class DiskAnnQueryParam(QueryParam):
+    """
+
+    Query parameters for DiskAnn index.
+
+    Attributes:
+        type (IndexType): Always ``IndexType.DISKANN``.
+        list_size (int): Beam-search candidate list size used at query time.
+            Higher values improve recall but increase latency. Default is 300.
+
+    Examples:
+        >>> params = DiskAnnQueryParam(list_size=20)
+        >>> print(params.list_size)
+        20
+    """
+
+    def __getstate__(self) -> tuple: ...
+    def __init__(self, list_size: typing.SupportsInt = 300) -> None:
+        """
+
+        Constructs a DiskAnnQueryParam instance.
+
+        Args:
+            list_size (int, optional): Beam-search candidate list size during
+                graph search. Higher values improve recall at the cost of latency.
+                Defaults to 300.
+        """
+
+    def __repr__(self) -> str: ...
+    def __setstate__(self, arg0: tuple) -> None: ...
+    @property
+    def list_size(self) -> int:
+        """int: Beam-search candidate list size during DiskAnn query."""
 
 class FlatIndexParam(VectorIndexParam):
     """

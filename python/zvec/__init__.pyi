@@ -40,6 +40,7 @@ from .tool import require_module
 from .typing import (
     DataType,
     IndexType,
+    IOBackendType,
     MetricType,
     QuantizeType,
     Status,
@@ -47,6 +48,22 @@ from .typing import (
 )
 from .typing.enum import LogLevel, LogType
 from .zvec import create_and_open, init, open
+
+def io_backend_type() -> IOBackendType:
+    """Returns the current I/O backend type for DiskAnn async disk reads
+    as an IOBackendType enum (zvec.typing.IOBackendType).
+    IOBackendType.LIBAIO if libaio is available, IOBackendType.PREAD otherwise."""
+
+def io_backend_description() -> str:
+    """Returns a human-readable description of the current I/O backend.
+    When only pread is available, includes instructions for installing
+    libaio to enable async I/O."""
+
+def set_default_jieba_dict_dir(dir: str) -> None:
+    """Register the process-wide default jieba dict directory."""
+
+def get_default_jieba_dict_dir() -> str:
+    """Read the currently registered default jieba dict directory."""
 
 __all__: list = [
     "AddColumnOption",
@@ -70,6 +87,7 @@ __all__: list = [
     "HnswQueryParam",
     "HnswRabitqIndexParam",
     "HnswRabitqQueryParam",
+    "IOBackendType",
     "IVFIndexParam",
     "IVFQueryParam",
     "IndexOption",
@@ -92,9 +110,13 @@ __all__: list = [
     "VectorSchema",
     "WeightedReRanker",
     "create_and_open",
+    "get_default_jieba_dict_dir",
     "init",
+    "io_backend_description",
+    "io_backend_type",
     "open",
     "require_module",
+    "set_default_jieba_dict_dir",
 ]
 
 class _Collection:
@@ -148,6 +170,15 @@ class _Collection:
         Raises KeyError if no HNSW index exists on the column, or
         ValueError if the column's index is not an HNSW index. Intended
         for introspection and testing only; not part of the stable API."""
+    def _debug_io_backend_type(self) -> IOBackendType:
+        """Debug-only: returns the I/O backend type used by DiskAnn as an
+        IOBackendType enum (zvec.typing.IOBackendType). Intended for
+        introspection and testing only; not part of the stable API."""
+    def _debug_io_backend_description(self) -> str:
+        """Debug-only: returns a human-readable description of the I/O backend
+        used by DiskAnn, including libaio install guidance when only pread is
+        available. Intended for introspection and testing only; not part of the
+        stable API."""
 
     def __getstate__(self) -> tuple: ...
     def __setstate__(self, arg0: tuple) -> None: ...

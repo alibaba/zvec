@@ -2732,6 +2732,12 @@ const char *zvec_index_type_to_string(zvec_index_type_t index_type) {
       return "IVF";
     case ZVEC_INDEX_TYPE_FLAT:
       return "FLAT";
+    case ZVEC_INDEX_TYPE_HNSW_RABITQ:
+      return "HNSW_RABITQ";
+    case ZVEC_INDEX_TYPE_DISKANN:
+      return "DISKANN";
+    case ZVEC_INDEX_TYPE_VAMANA:
+      return "VAMANA";
     case ZVEC_INDEX_TYPE_INVERT:
       return "INVERT";
     case ZVEC_INDEX_TYPE_FTS:

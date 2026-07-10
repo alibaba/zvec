@@ -17,6 +17,7 @@ import pytest
 from zvec import (
     DataType,
     IndexType,
+    IOBackendType,
     MetricType,
     QuantizeType,
     Status,
@@ -32,6 +33,7 @@ from zvec import (
     [
         (DataType.FLOAT, "FLOAT"),
         (IndexType.HNSW, "HNSW"),
+        (IOBackendType.PREAD, "PREAD"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
         (StatusCode.OK, "OK"),
@@ -46,6 +48,7 @@ def test_enum_names(member, name):
     [
         (DataType.FLOAT, 8),
         (IndexType.HNSW, 1),
+        (IOBackendType.PREAD, 0),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
         (StatusCode.OK, 0),
@@ -91,9 +94,27 @@ def test_data_type_has_member(member):
     assert member in DataType.__members__
 
 
-@pytest.mark.parametrize("member", ["HNSW", "IVF", "FLAT", "INVERT"])
+@pytest.mark.parametrize(
+    "member",
+    [
+        "UNDEFINED",
+        "HNSW",
+        "IVF",
+        "FLAT",
+        "HNSW_RABITQ",
+        "DISKANN",
+        "VAMANA",
+        "INVERT",
+        "FTS",
+    ],
+)
 def test_index_type_has_member(member):
     assert member in IndexType.__members__
+
+
+@pytest.mark.parametrize("member", ["PREAD", "LIBAIO"])
+def test_io_backend_type_has_member(member):
+    assert member in IOBackendType.__members__
 
 
 @pytest.mark.parametrize("member", ["FP16", "INT8", "INT4", "UNDEFINED"])
