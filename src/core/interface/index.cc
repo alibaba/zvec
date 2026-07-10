@@ -1017,7 +1017,7 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     reducer->set_thread_pool(options.pool);
   } else {
     local_thread_pool =
-        std::make_unique<ailego::ThreadPool>(options.write_concurrency);
+        std::make_unique<ailego::ThreadPool>(options.write_concurrency, false);
     reducer->set_thread_pool(local_thread_pool.get());
   }
 
