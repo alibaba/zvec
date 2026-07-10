@@ -59,8 +59,7 @@
 
 Zvec offers official SDKs across multiple languages:
 
-- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.10–3.14; 32-bit
-  interpreters are not supported)
+- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.9–3.14)
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
 - **[Go](https://github.com/zvec-ai/zvec-go)**: High-performance Go bindings.
 - **[Rust](https://github.com/zvec-ai/zvec-rust)**: High-performance Rust bindings.
@@ -73,8 +72,6 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 - Linux (x86_64, ARM64)
 - macOS (ARM64)
 - Windows (x86_64)
-
-> **Note:** Only 64-bit Python interpreters are supported.
 
 ### 🛠️ Building from Source
 

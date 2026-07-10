@@ -59,7 +59,7 @@
 
 Zvec 提供多语言官方 SDK：
 
-- **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 64 位 Python 3.10–3.14，不支持 32 位解释器）
+- **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 64 位 Python 3.9–3.14）
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
 - **[Go](https://github.com/zvec-ai/zvec-go)**：高性能的 Go 绑定。
 - **[Rust](https://github.com/zvec-ai/zvec-rust)**：高性能的 Rust 绑定。
@@ -72,8 +72,6 @@ Zvec 提供多语言官方 SDK：
 - Linux (x86_64, ARM64)
 - macOS (ARM64)
 - Windows (x86_64)
-
-> **注意：** 仅支持 64 位 Python 解释器。
 
 ### 🛠️ 源码构建
 
