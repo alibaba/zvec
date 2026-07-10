@@ -16,7 +16,7 @@ By participating, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md
 
 ### Prerequisites
 
-- Python 3.10 - 3.14 (64-bit only; 32-bit interpreters are not supported)
+- Python 3.10 - 3.14 (64-bit only)
 - CMake ≥ 3.26, < 4.0 (`cmake --version`)
 - A C++17-compatible compiler (e.g., `g++-11+`, `clang++`, Apple Clang on macOS)
 
