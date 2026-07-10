@@ -4116,6 +4116,17 @@ VectorColumnIndexer::Ptr SegmentImpl::create_vector_indexer(
 }
 
 Status SegmentImpl::init_memory_components() {
+  // Roll back any partially-created components on failure so a failed init
+  // leaves memory_store_ null (the caller's `if (!memory_store_)` retry guard
+  // depends on it) and never gets flushed on close.
+  bool committed = false;
+  AILEGO_DEFER([&]() {
+    if (!committed) {
+      memory_store_.reset();
+      memory_vector_indexers_.clear();
+      quant_memory_vector_indexers_.clear();
+    }
+  });
   // init memory block id
   auto &mem_block = segment_meta_->writing_forward_block().value();
 
@@ -4186,6 +4197,7 @@ Status SegmentImpl::init_memory_components() {
     }
   }
 
+  committed = true;
   return Status::OK();
 }
 
