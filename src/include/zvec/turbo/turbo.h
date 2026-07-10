@@ -108,6 +108,6 @@ QueryPreprocessFunc get_query_preprocess_func(
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 
 // Returns all FHT kernels dispatched for the current CPU.
-FhtKernels get_fht_kernels();
+FhtKernels get_fht_kernels(CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo
