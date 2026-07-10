@@ -226,6 +226,7 @@ class QueryExecutor:
     def _build_search_query(
         self, ctx: QueryContext, query: Query, collection: _Collection
     ) -> _SearchQuery:
+        query._validate()
         search_query = self._build_base_search_query(ctx)
         search_query.field_name = query.field_name
         if query.param:

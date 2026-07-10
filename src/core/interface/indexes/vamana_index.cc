@@ -72,6 +72,11 @@ int VamanaIndex::_prepare_for_search(
     return core::IndexError_Runtime;
   }
 
+  if (search_param->group_by_param && search_param->group_by_param->group_by) {
+    LOG_ERROR("group_by search is not supported for Vamana index");
+    return core::IndexError_Unsupported;
+  }
+
   if (vamana_search_param->ef_search == 0 ||
       vamana_search_param->ef_search > 2048) {
     LOG_ERROR(

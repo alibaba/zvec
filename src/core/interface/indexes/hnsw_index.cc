@@ -168,6 +168,7 @@ int HNSWIndex::_prepare_for_search(
       std::min(256u, hnsw_search_param->prefetch_lines);
   params.set(core::PARAM_HNSW_STREAMER_PL, real_search_pl);
   context->update(params);
+  _set_group_by_on_context(search_param, context);
   return 0;
 }
 

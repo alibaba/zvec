@@ -2133,9 +2133,10 @@ Status SegmentImpl::drop_scalar_index(const std::vector<std::string> &columns,
   auto s = invert_indexers_->create_snapshot(new_invert_index_path);
   CHECK_RETURN_STATUS(s);
 
+  // The snapshot copy is mutated below to remove dropped columns and seal.
   auto new_scalar_indexer = InvertedIndexer::CreateAndOpen(
       collection_schema_->name(), new_invert_index_path, false, invert_fields,
-      options_.read_only_);
+      false);
   if (!new_scalar_indexer) {
     LOG_ERROR("Failed to create scalar indexer");
     return Status::InternalError("Failed to create scalar indexer");

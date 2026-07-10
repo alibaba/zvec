@@ -88,14 +88,6 @@ T checked_cast(const py::handle &h, const std::string &vector_field,
   }
 }
 
-template <typename T>
-std::string serialize_vector(const T *data, size_t n) {
-  std::string buf;
-  buf.resize(n * sizeof(T));
-  std::memcpy(buf.data(), data, n * sizeof(T));
-  return buf;
-}
-
 template <typename ValueType, typename ValueCastFn>
 std::pair<std::string, std::string> serialize_sparse_vector(
     const py::dict &sparse_dict, ValueCastFn &&value_caster) {
@@ -265,17 +257,47 @@ Controls the tokenizer pipeline used during indexing and querying.
 
 Attributes:
     type (IndexType): Always ``IndexType.FTS``.
-    tokenizer_name (str): Name of the tokenizer (e.g., "standard", "jieba").
+    tokenizer_name (str): Name of the tokenizer (one of "standard", "jieba",
+        "whitespace").
         Default is "standard".
     filters (list[str]): List of token filter names applied after tokenization.
+        Supported values include "lowercase", "ascii_folding", and "stemmer".
         Default is ["lowercase"].
-    extra_params (str): Additional parameters passed to the tokenizer.
+    extra_params (str): Additional tokenizer/filter parameters as an empty
+        string or JSON object string. Supported keys are grouped by component:
+        Tokenizers:
+            standard:
+                - "max_token_length" (positive integer).
+            jieba:
+                - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+                  hmm_model.utf8).
+                - "user_dict_path" (user dictionary path).
+                - "cut_mode" ("search", "mix", "full", or "hmm"; default
+                  "search").
+            whitespace:
+                - no extra_params.
+        Filters:
+            lowercase:
+                - no extra_params.
+            ascii_folding:
+                - no extra_params.
+            stemmer:
+                - "stemmer_lang" (Snowball language/algorithm; default
+                  "english"), for example {"stemmer_lang":"porter"} for ES
+                  behaviour.
         Default is "".
 
 Examples:
-    >>> params = FtsIndexParam(tokenizer_name="jieba", filters=["lowercase"])
+    >>> params = FtsIndexParam(
+    ...     tokenizer_name="jieba", filters=["lowercase", "ascii_folding"]
+    ... )
     >>> print(params.tokenizer_name)
     jieba
+    >>> params = FtsIndexParam(
+    ...     tokenizer_name="standard",
+    ...     filters=["lowercase", "stemmer"],
+    ...     extra_params='{"stemmer_lang":"porter"}',
+    ... )
 )pbdoc");
   fts_index_params
       .def(py::init<std::string, std::vector<std::string>, std::string>(),
@@ -287,8 +309,29 @@ Constructs an FtsIndexParam instance.
 
 Args:
     tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
-    filters (list[str], optional): Token filter names. Defaults to ["lowercase"].
-    extra_params (str, optional): Extra tokenizer parameters. Defaults to "".
+    filters (list[str], optional): Token filter names. Supports "lowercase",
+        "ascii_folding", and "stemmer". Defaults to ["lowercase"].
+    extra_params (str, optional): Extra tokenizer/filter parameters as an empty
+        string or JSON object string. Supported keys:
+        Tokenizers:
+            standard:
+                - "max_token_length" (positive integer).
+            jieba:
+                - "jieba_dict_dir".
+                - "user_dict_path".
+                - "cut_mode" ("search", "mix", "full", or "hmm"; default
+                  "search").
+            whitespace:
+                - no extra_params.
+        Filters:
+            lowercase:
+                - no extra_params.
+            ascii_folding:
+                - no extra_params.
+            stemmer:
+                - "stemmer_lang" (Snowball language/algorithm; default
+                  "english").
+        Defaults to "".
 )pbdoc")
       .def_property_readonly("tokenizer_name", &FtsIndexParams::tokenizer_name,
                              "str: Name of the tokenizer.")
@@ -1938,6 +1981,15 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
             SubQuery sub;
             sub.num_candidates_ = sq.topk_;
             sub.target_ = sq.target_;
+            // SubQuery is copied by value into MultiQuery.  Materialize
+            // non-owning vector views so the copied SubQuery does not depend on
+            // the original _SearchQuery keep-alive relationship.
+            if (auto *vvc = sub.target_.get_vector_view_clause()) {
+              VectorClause vc{std::string(vvc->query_vector_),
+                              std::string(vvc->sparse_indices_),
+                              std::string(vvc->sparse_values_)};
+              sub.target_.clause_ = std::move(vc);
+            }
             return sub;
           },
           py::arg("search_query"),
@@ -1982,109 +2034,97 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
             }
           })
       // vector
-      .def("set_vector",
-           [](SearchQuery &self, const FieldSchema &field_schema,
-              const py::object &obj) {
-             const DataType data_type = field_schema.data_type();
+      .def(
+          "set_vector",
+          [](SearchQuery &self, const FieldSchema &field_schema,
+             const py::object &obj) {
+            const DataType data_type = field_schema.data_type();
 
-             // dense vector
-             if (FieldSchema::is_dense_vector_field(data_type)) {
-               if (!py::isinstance<py::array>(obj)) {
-                 throw py::type_error("Dense vector[" + field_schema.name() +
-                                      "] expects a ndarray, got " +
-                                      std::string(py::str(py::type::of(obj))));
-               }
-               const auto arr = obj.cast<py::array>();
-               if (arr.ndim() != 1) {
-                 throw py::type_error("Dense vector expects 1D array, got " +
-                                      std::to_string(arr.ndim()) + "D");
-               }
-               const auto buf = arr.request();
-               switch (data_type) {
-                 case DataType::VECTOR_FP32: {
-                   self.target_.set_vector(serialize_vector<float>(
-                       static_cast<const float *>(buf.ptr), buf.size));
-                   return;
-                 }
-                 case DataType::VECTOR_FP64: {
-                   self.target_.set_vector(serialize_vector<double>(
-                       static_cast<const double *>(buf.ptr), buf.size));
-                   return;
-                 }
-                 case DataType::VECTOR_INT8: {
-                   self.target_.set_vector(serialize_vector<int8_t>(
-                       static_cast<const int8_t *>(buf.ptr), buf.size));
-                   return;
-                 }
-                 case DataType::VECTOR_FP16: {
-                   self.target_.set_vector(serialize_vector<uint16_t>(
-                       static_cast<const uint16_t *>(buf.ptr), buf.size));
-                   return;
-                 }
-                 default:
-                   throw py::type_error(
-                       "Unsupported dense vector type for ndarray input: " +
-                       std::to_string(static_cast<int>(data_type)));
-               }
-             }
-             // sparse vector
-             if (FieldSchema::is_sparse_vector_field(data_type)) {
-               if (!py::isinstance<py::dict>(obj)) {
-                 throw py::type_error("Sparse vector[" + field_schema.name() +
-                                      "] expects a Python dict, got " +
-                                      std::string(py::str(py::type::of(obj))));
-               }
-               const auto sparse = obj.cast<py::dict>();
+            // Dense vector data is referenced by the query object. Callers
+            // must not modify the source data until the query returns.
+            if (FieldSchema::is_dense_vector_field(data_type)) {
+              if (!py::isinstance<py::array>(obj)) {
+                throw py::type_error("Dense vector[" + field_schema.name() +
+                                     "] expects a ndarray, got " +
+                                     std::string(py::str(py::type::of(obj))));
+              }
+              const auto arr = obj.cast<py::array>();
+              if (arr.ndim() != 1) {
+                throw py::type_error("Dense vector expects 1D array, got " +
+                                     std::to_string(arr.ndim()) + "D");
+              }
+              const auto buf = arr.request();
+              self.target_.clause_ = VectorViewClause{
+                  std::string_view(
+                      static_cast<const char *>(buf.ptr),
+                      static_cast<size_t>(buf.size) * buf.itemsize),
+                  {},
+                  {}};
+              return;
+            }
+            // sparse vector
+            if (FieldSchema::is_sparse_vector_field(data_type)) {
+              if (!py::isinstance<py::dict>(obj)) {
+                throw py::type_error("Sparse vector[" + field_schema.name() +
+                                     "] expects a Python dict, got " +
+                                     std::string(py::str(py::type::of(obj))));
+              }
+              const auto sparse = obj.cast<py::dict>();
 
-               switch (data_type) {
-                 case DataType::SPARSE_VECTOR_FP16: {
-                   auto [indices, values] =
-                       serialize_sparse_vector<ailego::Float16>(
-                           sparse, [](const py::handle &h, size_t idx) {
-                             float f = checked_cast<float>(
-                                 h, "Sparse value[" + std::to_string(idx) + "]",
-                                 "FLOAT");
-                             return ailego::Float16(f);
-                           });
-                   self.target_.set_sparse_vector(std::move(indices),
-                                                  std::move(values));
-                   break;
-                 }
-                 case DataType::SPARSE_VECTOR_FP32: {
-                   auto [indices, values] = serialize_sparse_vector<float>(
-                       sparse, [](const py::handle &h, size_t idx) {
-                         return checked_cast<float>(
-                             h, "Sparse value[" + std::to_string(idx) + "]",
-                             "FLOAT");
-                       });
-                   self.target_.set_sparse_vector(std::move(indices),
-                                                  std::move(values));
-                   break;
-                 }
-                 default:
-                   throw py::type_error(
-                       "Unsupported sparse vector type: " +
-                       std::to_string(static_cast<int>(data_type)));
-               }
-               return;
-             }
+              switch (data_type) {
+                case DataType::SPARSE_VECTOR_FP16: {
+                  auto [indices, values] =
+                      serialize_sparse_vector<ailego::Float16>(
+                          sparse, [](const py::handle &h, size_t idx) {
+                            float f = checked_cast<float>(
+                                h, "Sparse value[" + std::to_string(idx) + "]",
+                                "FLOAT");
+                            return ailego::Float16(f);
+                          });
+                  self.target_.set_sparse_vector(std::move(indices),
+                                                 std::move(values));
+                  break;
+                }
+                case DataType::SPARSE_VECTOR_FP32: {
+                  auto [indices, values] = serialize_sparse_vector<float>(
+                      sparse, [](const py::handle &h, size_t idx) {
+                        return checked_cast<float>(
+                            h, "Sparse value[" + std::to_string(idx) + "]",
+                            "FLOAT");
+                      });
+                  self.target_.set_sparse_vector(std::move(indices),
+                                                 std::move(values));
+                  break;
+                }
+                default:
+                  throw py::type_error(
+                      "Unsupported sparse vector type: " +
+                      std::to_string(static_cast<int>(data_type)));
+              }
+              return;
+            }
 
-             throw py::type_error("Unsupported vector field type for field: " +
-                                  field_schema.name());
-           })
+            throw py::type_error("Unsupported vector field type for field: " +
+                                 field_schema.name());
+          },
+          py::arg("field_schema"), py::arg("obj"), py::keep_alive<1, 3>(),
+          "Set query vector. Dense vector source data must not be modified "
+          "until the query finishes.")
       .def(
           "get_vector",
           [](const SearchQuery &self,
              const FieldSchema &field_schema) -> py::object {
             DataType data_type = field_schema.data_type();
-            const VectorClause *vc = self.target_.get_vector_clause();
+            // get_vector_view() works for both VectorClause and
+            // VectorViewClause.
+            auto vv = self.target_.get_vector_view();
             if (FieldSchema::is_dense_vector_field(data_type)) {
-              if (vc == nullptr || vc->query_vector_.empty()) {
+              if (!vv || vv->query_vector_.empty()) {
                 throw std::runtime_error("No dense vector has been set");
               }
 
-              size_t byte_size = vc->query_vector_.size();
-              const void *data = vc->query_vector_.data();
+              size_t byte_size = vv->query_vector_.size();
+              const void *data = vv->query_vector_.data();
 
               switch (data_type) {
                 case DataType::VECTOR_FP32: {
@@ -2130,29 +2170,29 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
               }
             }
             if (FieldSchema::is_sparse_vector_field(data_type)) {
-              if (vc == nullptr || vc->sparse_indices_.empty()) {
+              if (!vv || vv->sparse_indices_.empty()) {
                 return py::dict();
               }
 
               // Deserialize indices: stored as uint32_t[]
-              size_t indices_byte_size = vc->sparse_indices_.size();
+              size_t indices_byte_size = vv->sparse_indices_.size();
               if (indices_byte_size % sizeof(uint32_t) != 0) {
                 throw std::runtime_error(
                     "Sparse indices buffer size not aligned to uint32_t");
               }
               size_t n = indices_byte_size / sizeof(uint32_t);
               const uint32_t *indices = reinterpret_cast<const uint32_t *>(
-                  vc->sparse_indices_.data());
+                  vv->sparse_indices_.data());
 
               // Deserialize values
               switch (data_type) {
                 case DataType::SPARSE_VECTOR_FP32: {
-                  if (vc->sparse_values_.size() != n * sizeof(float)) {
+                  if (vv->sparse_values_.size() != n * sizeof(float)) {
                     throw std::runtime_error(
                         "Sparse FP32 values buffer size mismatch");
                   }
                   const float *values = reinterpret_cast<const float *>(
-                      vc->sparse_values_.data());
+                      vv->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     result[py::int_(indices[i])] = py::float_(values[i]);
@@ -2160,12 +2200,12 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
                   return result;
                 }
                 case DataType::SPARSE_VECTOR_FP16: {
-                  if (vc->sparse_values_.size() != n * sizeof(uint16_t)) {
+                  if (vv->sparse_values_.size() != n * sizeof(uint16_t)) {
                     throw std::runtime_error(
                         "Sparse FP16 values buffer size mismatch");
                   }
                   const uint16_t *raw_bits = reinterpret_cast<const uint16_t *>(
-                      vc->sparse_values_.data());
+                      vv->sparse_values_.data());
                   py::dict result;
                   for (size_t i = 0; i < n; ++i) {
                     float f = ailego::FloatHelper::ToFP32(raw_bits[i]);
@@ -2185,18 +2225,18 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
           py::arg("field_schema"))
       .def(py::pickle(
           [](const SearchQuery &self) {
-            const VectorClause *vc = self.target_.get_vector_clause();
+            auto vv = self.target_.get_vector_view();
             const auto *fc = self.target_.get_fts_clause();
-            return py::make_tuple(self.topk_, self.target_.field_name_,
-                                  vc ? vc->query_vector_ : std::string(),
-                                  vc ? vc->sparse_indices_ : std::string(),
-                                  vc ? vc->sparse_values_ : std::string(),
-                                  self.filter_, self.include_vector_,
-                                  self.output_fields_,
-                                  self.target_.query_params_
-                                      ? py::cast(self.target_.query_params_)
-                                      : py::none(),
-                                  fc ? py::cast(*fc) : py::none());
+            return py::make_tuple(
+                self.topk_, self.target_.field_name_,
+                vv ? std::string(vv->query_vector_) : std::string(),
+                vv ? std::string(vv->sparse_indices_) : std::string(),
+                vv ? std::string(vv->sparse_values_) : std::string(),
+                self.filter_, self.include_vector_, self.output_fields_,
+                self.target_.query_params_
+                    ? py::cast(self.target_.query_params_)
+                    : py::none(),
+                fc ? py::cast(*fc) : py::none());
           },
           [](py::tuple t) {
             if (t.size() != 10)

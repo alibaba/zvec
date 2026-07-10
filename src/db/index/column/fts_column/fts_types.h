@@ -50,7 +50,9 @@ struct FtsSegmentStats {
 };
 
 struct FtsIndexParams {
+  // Supported tokenizers: standard, jieba, whitespace.
   std::string tokenizer_name{"standard"};
+  // Supported filters: lowercase, ascii_folding.
   std::vector<std::string> filters{"lowercase"};
   std::string extra_params;
 };

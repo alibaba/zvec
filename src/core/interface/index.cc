@@ -21,6 +21,14 @@
 
 namespace zvec::core_interface {
 
+namespace {
+
+bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
+  return search_param->group_by_param && search_param->group_by_param->group_by;
+}
+
+}  // namespace
+
 // eliminate the pre-alloc of the context pool
 thread_local static std::array<core::IndexContext::Pointer,
                                (magic_enum::enum_count<IndexType>() - 1) * 2>
@@ -496,6 +504,17 @@ int Index::Search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
+  const bool has_group_by = has_group_by_search(search_param);
+  if (has_group_by && is_group_by_unsupported_index(param_.index_type)) {
+    LOG_ERROR("group_by search is not supported for this index type");
+    return core::IndexError_Unsupported;
+  }
+
+  if (search_param->refiner_param != nullptr && has_group_by) {
+    LOG_ERROR("group_by search is not supported with refiner");
+    return core::IndexError_Unsupported;
+  }
+
   if (!is_trained_ && this->Train() != 0) {
     LOG_ERROR("Failed to train index");
     return core::IndexError_Runtime;
@@ -519,7 +538,7 @@ int Index::Search(const VectorData &vector_data,
     return ret;
   }
 
-  // dense support refiner, but sparse doesn't
+  // dense supports refiner, but sparse doesn't
   int ret = 0;
   if (search_param->refiner_param == nullptr) {
     ret = _dense_search(vector_data, search_param, result, context);
@@ -561,8 +580,8 @@ int Index::Search(const VectorData &vector_data,
     flat_search_param->bf_pks = std::make_shared<std::vector<uint64_t>>(keys);
 
     ret = reference_index->Search(vector_data, flat_search_param, result);
+    context->reset();
   }
-  context->reset();
   return ret;
 }
 
@@ -720,7 +739,6 @@ int Index::_dense_search(const VectorData &vector_data,
     }
     vector = new_vector.data();
   }
-  // TODO: group by
   if (search_param->bf_pks != nullptr) {
     // should we eliminate the copy of bf_pks?
     if (streamer_->search_bf_by_p_keys_impl(
@@ -740,32 +758,84 @@ int Index::_dense_search(const VectorData &vector_data,
       return core::IndexError_Runtime;
     }
   }
-  result->doc_list_ = std::move(context->result());
+
+  // Retrieve group_by results if applicable
+  bool has_group_by =
+      (search_param->group_by_param && search_param->group_by_param->group_by);
+  if (has_group_by) {
+    auto *group_result = context->mutable_group_result();
+    if (group_result == nullptr) {
+      LOG_ERROR("Failed to retrieve group_by result");
+      return core::IndexError_Runtime;
+    }
+    result->group_doc_list_ = std::move(*group_result);
+  } else {
+    result->doc_list_ = std::move(context->result());
+  }
 
   if (metric_->support_normalize()) {
-    for (uint32_t i = 0; i < result->doc_list_.size(); ++i) {
-      metric_->normalize(result->doc_list_[i].mutable_score());
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          metric_->normalize(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        metric_->normalize(doc.mutable_score());
+      }
     }
   }
   if (reformer_) {
-    if (reformer_->normalize(dense_vector.data, input_vector_meta_,
-                             result->doc_list_) != 0) {
-      LOG_ERROR("Failed to normalize vector");
-      return core::IndexError_Runtime;
-    }
-    if (context->fetch_vector() && reformer_->need_revert()) {
-      // TODO: use std::pmr to optimize memory allocation
-      result->reverted_vector_list_.resize(context->result().size());
-      for (uint32_t i = 0; i < context->result().size(); ++i) {
-        std::string &reverted_vector = result->reverted_vector_list_[i];
-        reverted_vector.resize(input_vector_meta_.dimension() *
-                               input_vector_meta_.unit_size());
-        if (reformer_->revert(context->result()[i].vector(), new_meta,
-                              &reverted_vector) != 0) {
-          LOG_ERROR("Failed to revert vector");
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        auto *docs = group.mutable_docs();
+        if (reformer_->normalize(dense_vector.data, input_vector_meta_,
+                                 *docs) != 0) {
+          LOG_ERROR("Failed to normalize vector");
           return core::IndexError_Runtime;
         }
       }
+    } else {
+      if (reformer_->normalize(dense_vector.data, input_vector_meta_,
+                               result->doc_list_) != 0) {
+        LOG_ERROR("Failed to normalize vector");
+        return core::IndexError_Runtime;
+      }
+    }
+    if (context->fetch_vector() && reformer_->need_revert()) {
+      int revert_err = 0;
+      auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
+        if (revert_err) return;
+        std::string reverted_vector;
+        reverted_vector.resize(input_vector_meta_.dimension() *
+                               input_vector_meta_.unit_size());
+        if (reformer_->revert(vec, new_meta, &reverted_vector) != 0) {
+          LOG_ERROR("Failed to revert vector");
+          revert_err = core::IndexError_Runtime;
+          return;
+        }
+        out->push_back(std::move(reverted_vector));
+      };
+      auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
+        out.reserve(docs.size());
+        for (auto &doc : docs) {
+          revert_one(doc.vector(), &out);
+        }
+      };
+      if (has_group_by) {
+        result->group_reverted_vector_list_.reserve(
+            result->group_doc_list_.size());
+        for (auto &group : result->group_doc_list_) {
+          std::vector<std::string> group_vectors;
+          revert_docs(*group.mutable_docs(), group_vectors);
+          result->group_reverted_vector_list_.push_back(
+              std::move(group_vectors));
+        }
+      } else {
+        revert_docs(result->doc_list_, result->reverted_vector_list_);
+      }
+      if (revert_err) return revert_err;
     }
   }
 
@@ -819,23 +889,41 @@ int Index::_sparse_search(const VectorData &vector_data,
       return core::IndexError_Runtime;
     }
   }
-  result->doc_list_ = std::move(context->result());
+  // Retrieve group_by results if applicable
+  const bool has_group_by = has_group_by_search(search_param);
+  if (has_group_by) {
+    auto *group_result = context->mutable_group_result();
+    if (group_result == nullptr) {
+      LOG_ERROR("Failed to retrieve group_by result");
+      return core::IndexError_Runtime;
+    }
+    result->group_doc_list_ = std::move(*group_result);
+  } else {
+    result->doc_list_ = std::move(context->result());
+  }
 
   if (metric_->support_normalize()) {
-    for (uint32_t i = 0; i < result->doc_list_.size(); ++i) {
-      metric_->normalize(result->doc_list_[i].mutable_score());
+    if (has_group_by) {
+      for (auto &group : result->group_doc_list_) {
+        for (auto &doc : *group.mutable_docs()) {
+          metric_->normalize(doc.mutable_score());
+        }
+      }
+    } else {
+      for (auto &doc : result->doc_list_) {
+        metric_->normalize(doc.mutable_score());
+      }
     }
   }
   if (reformer_) {
     // TODO: no need to call reformer_->normalize() when sparse?
     if (context->fetch_vector() && reformer_->need_revert()) {
-      // TODO: use std::pmr to optimize memory allocation
-      auto &result_doc_list = context->result();
-      result->reverted_sparse_values_list_.resize(result_doc_list.size());
-      for (uint32_t i = 0; i < result_doc_list.size(); ++i) {
-        auto &result_doc = result_doc_list[i].sparse_doc();
-        std::string &reverted_sparse_values =
-            result->reverted_sparse_values_list_[i];
+      int revert_err = 0;
+      auto revert_one = [&](const core::IndexDocument &doc,
+                            std::vector<std::string> *out) {
+        if (revert_err) return;
+        auto &result_doc = doc.sparse_doc();
+        std::string reverted_sparse_values;
         reverted_sparse_values.resize(result_doc.sparse_count() *
                                       input_vector_meta_.unit_size());
         if (reformer_->revert(result_doc.sparse_count(),
@@ -845,9 +933,30 @@ int Index::_sparse_search(const VectorData &vector_data,
                                   result_doc.sparse_values().data()),
                               new_meta, &reverted_sparse_values) != 0) {
           LOG_ERROR("Failed to revert sparse vector");
-          return core::IndexError_Runtime;
+          revert_err = core::IndexError_Runtime;
+          return;
         }
+        out->push_back(std::move(reverted_sparse_values));
+      };
+      auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
+        out.reserve(docs.size());
+        for (auto &doc : docs) {
+          revert_one(doc, &out);
+        }
+      };
+      if (has_group_by) {
+        result->group_reverted_sparse_values_list_.reserve(
+            result->group_doc_list_.size());
+        for (auto &group : result->group_doc_list_) {
+          std::vector<std::string> group_sparse_values;
+          revert_docs(*group.mutable_docs(), group_sparse_values);
+          result->group_reverted_sparse_values_list_.push_back(
+              std::move(group_sparse_values));
+        }
+      } else {
+        revert_docs(result->doc_list_, result->reverted_sparse_values_list_);
       }
+      if (revert_err) return revert_err;
     }
   }
   return 0;
@@ -919,6 +1028,16 @@ int Index::_get_coarse_search_topk(
     scale_factor = 1;
   }
   return floor(search_param->topk * scale_factor);
+}
+
+void Index::_set_group_by_on_context(
+    const BaseIndexQueryParam::Pointer &search_param,
+    core::IndexContext::Pointer &context) {
+  if (search_param->group_by_param && search_param->group_by_param->group_by) {
+    context->set_group_by(search_param->group_by_param->group_by);
+    context->set_group_params(search_param->group_by_param->group_count,
+                              search_param->group_by_param->group_topk);
+  }
 }
 
 std::string Index::get_metric_name(MetricType metric_type, bool is_sparse) {

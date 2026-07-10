@@ -161,6 +161,16 @@ class IndexContext {
     return this->group_result();
   }
 
+  //! Retrieve mutable search group result
+  virtual IndexGroupDocumentList *mutable_group_result(void) {
+    return nullptr;
+  }
+
+  //! Retrieve mutable search group result with index
+  virtual IndexGroupDocumentList *mutable_group_result(size_t /*idx*/) {
+    return this->mutable_group_result();
+  }
+
   //! Update the parameters of context
   virtual int update(const ailego::Params & /*params*/) {
     return IndexError_NotImplemented;
