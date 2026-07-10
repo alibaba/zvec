@@ -191,11 +191,29 @@ class MemoryLimitPool {
   void start_background_evictor();
   void stop_background_evictor();
   void background_evict_loop();
+  // Proactive reclaim keeps a small free margin so the foreground path finds
+  // ready buffers without paying inline eviction cost.  These used to be 90% /
+  // 75% of pool_size, but a percentage margin makes the background evictor
+  // discard live pages whenever used exceeds 75% -- even when the entire
+  // working set would fit in the pool.  For read-mostly page caches that is
+  // self-inflicted thrashing: a pool larger than the index still perpetually
+  // evicts and re-reads its hottest pages (e.g. a 1.4 GB pool caps at ~1.05 GB
+  // and thrashes a 1.17 GB index).  Reserve a small absolute margin instead so
+  // the pool fills to near capacity before anything is evicted.
+  size_t reserve_margin() const {
+    size_t m = pool_size_ / 64;   // ~1.5% of the pool
+    const size_t lo = 8UL << 20;  // but at least 8 MB
+    const size_t hi = 64UL << 20;  // and at most 64 MB
+    if (m < lo) m = lo;
+    if (m > hi) m = hi;
+    if (m * 2 >= pool_size_) m = pool_size_ / 8;  // tiny pools: fall back
+    return m;
+  }
   size_t high_watermark() const {
-    return pool_size_ / 10 * 9;  // 90%
+    return pool_size_ - reserve_margin();
   }
   size_t low_watermark() const {
-    return pool_size_ / 4 * 3;  // 75%
+    return pool_size_ - reserve_margin() * 2;
   }
 
  private:

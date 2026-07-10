@@ -883,6 +883,7 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   ailego_force_inline void release_vectors() const {}
   void submit_prefetch(const node_id_t *, uint32_t) const {}  // no-op
   void harvest_prefetch() const {}  // no-op
+  void wait_prefetch() const {}  // no-op for mmap
   void reset_io_budget(int32_t) const {}  // no-op for mmap
 
  protected:
@@ -1042,6 +1043,15 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
   void harvest_prefetch() const {
     auto *pool = vec_buffer_pool();
     if (pool) pool->harvest_aio();
+  }
+
+  //! Block until every page submitted via submit_prefetch() is resident.
+  //! After this a hop can resolve all its neighbour pages as cache hits, so
+  //! the read cost of a whole hop collapses to a single concurrent burst
+  //! instead of a chain of per-neighbour synchronous preads.
+  void wait_prefetch() const {
+    auto *pool = vec_buffer_pool();
+    if (pool) pool->wait_aio();
   }
 
   void mark_upper_level_pages() {

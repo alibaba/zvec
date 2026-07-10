@@ -375,6 +375,14 @@ class VecBufferPool {
   //! Installs completed pages into page_table. Safe to call when no pending.
   void harvest_aio();
 
+  //! Blocking counterpart of harvest_aio(): waits (io_getevents with a NULL
+  //! timeout) until every in-flight request submitted via submit_aio_async()
+  //! has completed and been installed into page_table.  Lets a search hop
+  //! issue one concurrent read burst and block once for the whole batch,
+  //! instead of rationing per-neighbour synchronous preads.  Safe to call
+  //! when nothing is pending.
+  void wait_aio();
+
   bool aio_enabled() const {
 #if defined(__linux) || defined(__linux__)
     return aio_enabled_;

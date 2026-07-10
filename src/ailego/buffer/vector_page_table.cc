@@ -1352,6 +1352,53 @@ void VecBufferPool::harvest_aio() {
 #endif
 }
 
+void VecBufferPool::wait_aio() {
+#if defined(__linux) || defined(__linux__)
+  if (!tl_aio.ok || tl_aio.pending_count == 0) return;
+
+  VecBufferPool *pool = tl_aio.pending_pool;
+  struct io_event events[128];
+  // Block (NULL timeout) until every in-flight request has completed.  Unlike
+  // harvest_aio() this never returns early, so after it the whole submitted
+  // batch is guaranteed resident -- the caller can resolve every page as a hit
+  // without a per-neighbour synchronous fallback.
+  while (tl_aio.harvested_count < tl_aio.pending_count) {
+    size_t in_flight = tl_aio.pending_count - tl_aio.harvested_count;
+    int ret = LibAioLoader::Instance().io_getevents(
+        tl_aio.ctx, static_cast<long>(in_flight),
+        static_cast<long>(in_flight), events, nullptr);
+    if (ret <= 0) break;
+    size_t completed = static_cast<size_t>(ret);
+    for (size_t i = 0; i < completed; ++i) {
+      size_t idx = reinterpret_cast<size_t>(events[i].data);
+      if (static_cast<ssize_t>(events[i].res) !=
+          static_cast<ssize_t>(kVectorPageSize)) {
+        MemoryLimitPool::get_instance().release_buffer(tl_aio.pending_bufs[idx],
+                                                      kVectorPageSize);
+      } else {
+        block_id_t pid = tl_aio.pending_pids[idx];
+        std::lock_guard<std::mutex> lock(
+            pool->block_mutexes_[pid % VecBufferPool::kMutexBucketCount]);
+        if (pool->page_table_.is_loaded(pid)) {
+          MemoryLimitPool::get_instance().release_buffer(
+              tl_aio.pending_bufs[idx], kVectorPageSize);
+        } else {
+          pool->page_table_.set_block_acquired(pid, tl_aio.pending_bufs[idx],
+                                               pid * kVectorPageSize);
+          pool->page_table_.release_block(pid);
+        }
+      }
+      tl_aio.pending_bufs[idx] = nullptr;
+    }
+    tl_aio.harvested_count += completed;
+  }
+
+  tl_aio.pending_count = 0;
+  tl_aio.harvested_count = 0;
+  tl_aio.pending_pool = nullptr;
+#endif
+}
+
 void VecBufferPool::log_stats() const {
   Stats s = stats();
   LOG_INFO(
