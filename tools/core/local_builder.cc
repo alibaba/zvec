@@ -290,6 +290,7 @@ int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
                                 uint32_t thread_count) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
@@ -478,6 +479,7 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
                          const IndexStorage::Pointer &storage = nullptr) {
   int ret;
   ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
   std::atomic<size_t> finished{0};
   int errcode = 0;
   std::mutex mutex;
