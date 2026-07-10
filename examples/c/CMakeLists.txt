@@ -93,6 +93,12 @@ target_link_libraries(c_api_optimized_example PRIVATE
     zvec-c-api
 )
 
+# DiskANN example
+add_executable(c_api_diskann_example diskann_example.c)
+target_link_libraries(c_api_diskann_example PRIVATE
+    zvec-c-api
+)
+
 # Strip symbols to reduce executable size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND (ANDROID OR (CMAKE_SYSTEM_NAME STREQUAL "Linux")))
     add_custom_command(TARGET c_api_basic_example POST_BUILD
@@ -113,14 +119,19 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND (ANDROID OR (CMAKE_SYSTEM_NAME STREQU
     add_custom_command(TARGET c_api_optimized_example POST_BUILD
         COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:c_api_optimized_example>"
         COMMENT "Stripping symbols from c_api_optimized_example")
+    add_custom_command(TARGET c_api_diskann_example POST_BUILD
+        COMMAND ${CMAKE_STRIP} "$<TARGET_FILE:c_api_diskann_example>"
+        COMMENT "Stripping symbols from c_api_diskann_example")
 endif()
 
 # Optimize for size
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID)
     set_property(TARGET c_api_basic_example c_api_collection_schema_example c_api_doc_example
                  c_api_index_example c_api_field_schema_example c_api_optimized_example
+                 c_api_diskann_example
                  PROPERTY COMPILE_FLAGS "-Os")
     set_property(TARGET c_api_basic_example c_api_collection_schema_example c_api_doc_example
                  c_api_index_example c_api_field_schema_example c_api_optimized_example
+                 c_api_diskann_example
                  PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
