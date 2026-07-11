@@ -42,7 +42,7 @@ _PYI_TOP = _REPO_ROOT / "zvec" / "__init__.pyi"
 _PYI_TYPING = _REPO_ROOT / "zvec" / "typing" / "__init__.pyi"
 
 
-def _ast_names_in_all(node: ast.Assign) -> list[str]:
+def _ast_names_in_all(node: ast.Assign | ast.AnnAssign) -> list[str]:
     """Extract string names from an ``__all__ = [...]`` assignment node."""
     if not isinstance(node.value, ast.List):
         raise TypeError(f"__all__ is not a list literal (got {type(node.value)})")
@@ -89,6 +89,9 @@ def _stub_all_names(module: ast.Module) -> list[str]:
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "__all__":
                     return _ast_names_in_all(node)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id == "__all__" and node.value is not None:
+                return _ast_names_in_all(node)
     raise AssertionError("__all__ not found in stub")
 
 
