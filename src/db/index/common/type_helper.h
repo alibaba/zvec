@@ -22,6 +22,16 @@
 
 namespace zvec {
 
+enum class SparseIndicesStatus {
+  kOk,
+  kNeedSort,
+  kHasDuplicate,
+};
+
+//! Read-only check of sparse indices: sorted-unique, unsorted, or has
+//! duplicates.  Uses adjacent_find so it is O(n) and non-mutating.
+SparseIndicesStatus need_sanitize_sparse(const uint32_t *indices, size_t n);
+
 //! Sort sparse (indices, values) pairs in place by index ascending and report
 //! whether any duplicate index exists. value_byte_size is the per-value stride.
 bool sort_and_find_duplicates(uint32_t *indices, char *values, size_t n,

@@ -20,6 +20,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from importlib.metadata import PackageNotFoundError
 
+# zvec ships a native C++ extension that is only built and tested for 64-bit
+# CPython. A 32-bit interpreter would fail to load the extension with an
+# obscure error, so fail fast here with an actionable message.
+if sys.maxsize <= 2**32:
+    raise ImportError(
+        "zvec requires a 64-bit Python interpreter; "
+        "the current interpreter is 32-bit and is not supported."
+    )
+
 
 # Register the wheel-bundled jieba dict dir so `import zvec` alone makes
 # the jieba FTS tokenizer usable. Users can still override via
@@ -28,7 +37,7 @@ if TYPE_CHECKING:
 try:
     from importlib.resources import files as _resource_files
 
-    from _zvec import (
+    from zvec._zvec import (
         get_default_jieba_dict_dir,
         set_default_jieba_dict_dir,
     )
@@ -48,7 +57,7 @@ except Exception:
 # DiskAnn normally auto-loads on first use; these APIs let tests and
 # diagnostic tools preload the plugin and get a clear error if libaio is
 # missing or the plugin shared object cannot be located.
-from _zvec import (
+from zvec._zvec import (
     DISKANN_PLUGIN_DLOPEN_FAILED,
     DISKANN_PLUGIN_LIBAIO_MISSING,
     DISKANN_PLUGIN_OK,
@@ -86,7 +95,7 @@ from .model import schema as schema
 
 # —— Core data structures ——
 from .model.collection import Collection
-from .model.doc import Doc, DocList
+from .model.doc import Doc, DocList, GroupResult
 
 # —— Query & index parameters ——
 # —— FTS params (C++ binding) ——
@@ -108,6 +117,7 @@ from .model.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    QuantizerParam,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -151,6 +161,7 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
+    "GroupResult",
     "Query",
     "VectorQuery",
     "Fts",
@@ -171,6 +182,7 @@ __all__ = [
     "HnswQueryParam",
     "HnswRabitqQueryParam",
     "IVFQueryParam",
+    "QuantizerParam",
     "VamanaIndexParam",
     "VamanaQueryParam",
     # Extensions

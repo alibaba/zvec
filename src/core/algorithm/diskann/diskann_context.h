@@ -94,6 +94,14 @@ class DiskAnnContext : public IndexContext,
     return group_results_[idx];
   }
 
+  virtual IndexGroupDocumentList *mutable_group_result(void) override {
+    return &group_results_[0];
+  }
+
+  virtual IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return &group_results_[idx];
+  }
+
   virtual uint32_t magic(void) const override {
     return magic_;
   }

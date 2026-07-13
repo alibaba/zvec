@@ -24,7 +24,7 @@ jobs:
     if: false
     runs-on: vdbbench
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Run VectorDBBench
         env:

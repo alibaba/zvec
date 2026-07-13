@@ -39,6 +39,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     LIBS zvec
     zvec_ailego
     zvec_proto
+          core_knn_diskann
     core_metric_static
     core_utility_static
     core_quantizer_static

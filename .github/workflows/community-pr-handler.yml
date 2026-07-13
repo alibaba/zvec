@@ -47,7 +47,7 @@ jobs:
 
       - name: Checkout base branch for CODEOWNERS
         if: steps.check.outputs.is_community == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           sparse-checkout: .github/CODEOWNERS

@@ -37,7 +37,7 @@ class BaseIndexParamBuilder {  //  : public
   virtual ~BaseIndexParamBuilder() = default;
 
   ActualIndexParamBuilderType &WithVersion(int version) {
-    param.version = version;
+    param->version = version;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   ActualIndexParamBuilderType &WithIndexType(IndexType index_type) {
@@ -54,8 +54,7 @@ class BaseIndexParamBuilder {  //  : public
   }
   ActualIndexParamBuilderType &WithPreprocessParam(
       const PreprocessorParam &preprocess_param) {
-    param->preprocess_param =
-        std::make_shared<PreprocessorParam>(preprocess_param);
+    param->preprocess_param = preprocess_param;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   ActualIndexParamBuilderType &WithQuantizerParam(
@@ -85,6 +84,16 @@ class BaseIndexParamBuilder {  //  : public
 
   ActualIndexParamBuilderType &WithUseIDMap(bool use_id_map) {
     param->use_id_map = use_id_map;
+    return static_cast<ActualIndexParamBuilderType &>(*this);
+  }
+
+  ActualIndexParamBuilderType &WithEnableRotate(bool enable_rotate) {
+    param->quantizer_param.enable_rotate = enable_rotate;
+    return static_cast<ActualIndexParamBuilderType &>(*this);
+  }
+
+  ActualIndexParamBuilderType &WithUseExternalVector(bool use_external_vector) {
+    param->use_external_vector = use_external_vector;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 

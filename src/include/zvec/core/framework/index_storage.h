@@ -386,6 +386,11 @@ class IndexStorage : public IndexModule {
     return MemoryBlock::MBT_MMAP;
   }
 
+  //! Test if the storage has unflushed data
+  virtual bool is_dirty(void) const {
+    return false;
+  }
+
   //! Retrieve file ptr if has
   virtual std::shared_ptr<ailego::File> file(void) const {
     return nullptr;

@@ -71,9 +71,25 @@ class IVFSearcherContext : public IndexSearcher::Context {
         std::max(static_cast<uint32_t>(
                      std::round(entity_->inverted_list_count() * scan_ratio_)),
                  1u);
+
+    uint32_t nprobe = 0;
+    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe);
+    if (nprobe > 0) {
+      nprobe = std::min(nprobe,
+                        static_cast<uint32_t>(entity_->inverted_list_count()));
+      topk_val = nprobe;
+    }
+
     centroid_searcher_ctx_->set_topk(topk_val);
-    max_scan_count_ =
-        static_cast<uint32_t>(std::ceil(entity_->vector_count() * scan_ratio_));
+
+    // When nprobe is explicitly set, lift max_scan_count to the total vector
+    // count to ensure all selected clusters can be fully scanned.
+    if (nprobe > 0 && entity_->inverted_list_count() > 0) {
+      max_scan_count_ = static_cast<uint32_t>(entity_->vector_count());
+    } else {
+      max_scan_count_ = static_cast<uint32_t>(
+          std::ceil(entity_->vector_count() * scan_ratio_));
+    }
     max_scan_count_ = std::max(bruteforce_threshold_, max_scan_count_);
     return 0;
   }

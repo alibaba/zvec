@@ -90,6 +90,7 @@ TEST_F(SqlEngineTest, Vector) {
   query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
   query.target_.query_params_->set_radius(0.8F);
 
+
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(schema_, query, segments);
   if (!ret) {
@@ -131,6 +132,7 @@ TEST_F(SqlEngineTest, MultiSegments) {
     query.filter_ = env_var;
   }
 
+
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute(schema_, query, segments);
   if (!ret) {
@@ -144,7 +146,7 @@ TEST_F(SqlEngineTest, GroupBy) {
   GroupByVectorQuery query;
   query.group_by_field_name_ = "name";
   query.group_count_ = 3;
-  query.group_topk_ = 2;
+  query.topk_per_group_ = 2;
   query.output_fields_ = {"id", "name", "score"};
   query.filter_ = "id > 3 and score < 0.1";
   if (const char *env_var = std::getenv("FILTER"); env_var != nullptr) {
@@ -156,6 +158,7 @@ TEST_F(SqlEngineTest, GroupBy) {
   query.include_vector_ = true;
   query.target_.query_params_ = std::make_shared<QueryParams>(IndexType::FLAT);
   query.target_.query_params_->set_radius(0.8F);
+
 
   auto engine = SQLEngine::create(std::make_shared<Profiler>());
   auto ret = engine->execute_group_by(schema_, query, segments);

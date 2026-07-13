@@ -231,6 +231,10 @@ void MultiChunkNumericalAlgorithm<T>::do_cluster(
              chunk, algorithm.centroids().count(), features_->count(), cost);
 
     (*finished)++;
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      cond_.notify_one();
+    }
   }
 
   return;
@@ -267,6 +271,10 @@ void MultiChunkNumericalAlgorithm<T>::do_label(
     }
 
     (*finished)++;
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      cond_.notify_one();
+    }
   }
 }
 
@@ -372,6 +380,10 @@ void MultiChunkNumericalInnerProductAlgorithm<T>::do_cluster(
              chunk, algorithm.centroids().count(), features_->count(), cost);
 
     (*finished)++;
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      cond_.notify_one();
+    }
   }
 }
 
@@ -406,6 +418,10 @@ void MultiChunkNumericalInnerProductAlgorithm<T>::do_label(
     }
 
     (*finished)++;
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      cond_.notify_one();
+    }
   }
 }
 

@@ -19,7 +19,7 @@
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_filter.h>
-#include <zvec/core/framework/index_groupby.h>
+#include <zvec/core/framework/index_group_by.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_stats.h>
 
@@ -159,6 +159,16 @@ class IndexContext {
   //! Retrieve search group result with index
   virtual const IndexGroupDocumentList &group_result(size_t /*idx*/) const {
     return this->group_result();
+  }
+
+  //! Retrieve mutable search group result
+  virtual IndexGroupDocumentList *mutable_group_result(void) {
+    return nullptr;
+  }
+
+  //! Retrieve mutable search group result with index
+  virtual IndexGroupDocumentList *mutable_group_result(size_t /*idx*/) {
+    return this->mutable_group_result();
   }
 
   //! Update the parameters of context

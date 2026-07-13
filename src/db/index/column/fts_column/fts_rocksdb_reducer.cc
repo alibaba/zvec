@@ -132,12 +132,14 @@ Result<void> FtsRocksdbReducer::feed(
     return {};
   }
 
-  // Require consecutive global doc_id ranges between non-empty segments so
-  // the shared delete_row_id_bitmap stays aligned with input scan order.
+  // Global doc_id gaps are valid after deleted documents have been removed
+  // during compaction.  Only require ordered, non-overlapping ranges; the
+  // shared delete bitmap is aligned by feed-order scan position and doc_count.
   if (!segment_stats_.empty() &&
-      segment_stats.min_doc_id != segment_stats_.back().max_doc_id + 1) {
+      segment_stats.min_doc_id <= segment_stats_.back().max_doc_id) {
     return tl::make_unexpected(Status::InternalError(
-        "FtsRocksdbReducer: segments not in consecutive doc_id order. field=",
+        "FtsRocksdbReducer: segments have overlapping or unordered doc_id "
+        "ranges. field=",
         field_name_));
   }
 

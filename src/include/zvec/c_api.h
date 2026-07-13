@@ -826,6 +826,7 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_HNSW 1
 #define ZVEC_INDEX_TYPE_IVF 2
 #define ZVEC_INDEX_TYPE_FLAT 3
+#define ZVEC_INDEX_TYPE_DISKANN 5
 #define ZVEC_INDEX_TYPE_VAMANA 6
 #define ZVEC_INDEX_TYPE_INVERT 10
 #define ZVEC_INDEX_TYPE_FTS 11
@@ -962,6 +963,30 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
+ * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
+ * quantize type)
+ *
+ * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
+ * reduce quantization error. The rotation matrix is stored with the index
+ * and automatically applied to query vectors at search time.
+ *
+ * @param params Index parameters (must be vector index type)
+ * @param enable_rotate Whether to enable random rotation before quantization
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
+                                              bool enable_rotate);
+
+/**
+ * @brief Get enable_rotate setting from quantizer parameters
+ * @param params Index parameters (must not be NULL)
+ * @return true if rotation is enabled, false otherwise (default)
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
+    const zvec_index_params_t *params);
+
+/**
  * @brief Set HNSW specific parameters
  * @param params Index parameters (must be HNSW type)
  * @param m Graph connectivity parameter
@@ -1019,6 +1044,42 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_vamana_params(
     bool *out_use_contiguous_memory);
 
 /**
+ * @brief Set DiskANN specific parameters
+ * @param params Index parameters (must be DiskANN type)
+ * @param max_degree Graph connectivity (max degree of Vamana graph)
+ * @param list_size Build-time list size (candidate list during construction)
+ * @param pq_chunk_num PQ chunk count (0 disables PQ)
+ * @return ZVEC_OK on success, error code on failure
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_diskann_params(
+    zvec_index_params_t *params, int max_degree, int list_size,
+    int pq_chunk_num);
+
+/**
+ * @brief Get DiskANN max_degree parameter
+ * @param params Index parameters (must not be NULL)
+ * @return max_degree parameter
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_index_params_get_diskann_max_degree(const zvec_index_params_t *params);
+
+/**
+ * @brief Get DiskANN list_size parameter
+ * @param params Index parameters (must not be NULL)
+ * @return list_size parameter
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_index_params_get_diskann_list_size(const zvec_index_params_t *params);
+
+/**
+ * @brief Get DiskANN pq_chunk_num parameter
+ * @param params Index parameters (must not be NULL)
+ * @return pq_chunk_num parameter
+ */
+ZVEC_EXPORT int ZVEC_CALL
+zvec_index_params_get_diskann_pq_chunk_num(const zvec_index_params_t *params);
+
+/**
  * @brief Set IVF specific parameters
  * @param params Index parameters (must be IVF type)
  * @param n_list Number of cluster centers
@@ -1065,10 +1126,31 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
 /**
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)
- * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value)
- * @param filters Token filter names (NULL keeps current value)
- * @param extra_params Additional tokenizer parameters (NULL keeps current
- * value)
+ * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value).
+ * Supported values are "standard", "jieba", and "whitespace".
+ * @param filters Token filter names (NULL keeps current value). Supported
+ * values are "lowercase", "ascii_folding", and "stemmer".
+ * @param extra_params Additional tokenizer/filter parameters (NULL keeps
+ * current value). Must be empty or a JSON object string. Supported keys by
+ * tokenizer/filter:
+ * Tokenizers:
+ *   standard:
+ *     - "max_token_length" (positive integer).
+ *   jieba:
+ *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
+ *       hmm_model.utf8).
+ *     - "user_dict_path" (user dictionary path).
+ *     - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
+ *   whitespace:
+ *     - no extra_params.
+ * Filters:
+ *   lowercase:
+ *     - no extra_params.
+ *   ascii_folding:
+ *     - no extra_params.
+ *   stemmer:
+ *     - "stemmer_lang" (Snowball language/algorithm; default "english"),
+ *       for example {"stemmer_lang":"porter"} for ES behaviour.
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_fts_params(
@@ -1143,6 +1225,16 @@ typedef struct zvec_fts_query_params_t zvec_fts_query_params_t;
  * explicitly destroy it.
  */
 typedef struct zvec_vamana_query_params_t zvec_vamana_query_params_t;
+
+/**
+ * @brief DiskANN query parameters handle (opaque pointer)
+ *
+ * Internally maps to zvec::DiskAnnQueryParams* (raw pointer).
+ * Created by zvec_query_params_diskann_create() and destroyed by
+ * zvec_query_params_diskann_destroy(). Caller owns the pointer and must
+ * explicitly destroy it.
+ */
+typedef struct zvec_diskann_query_params_t zvec_diskann_query_params_t;
 
 
 // =============================================================================
@@ -1626,6 +1718,95 @@ ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_vamana_get_is_using_refiner(
     const zvec_vamana_query_params_t *params);
 
 // -----------------------------------------------------------------------------
+// zvec_diskann_query_params_t (DiskANN Query Parameters)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Create DiskANN query parameters
+ * @param list_size Search frontier size (default: 300)
+ * @return zvec_diskann_query_params_t* Pointer to the newly created DiskANN
+ * query parameters
+ */
+ZVEC_EXPORT zvec_diskann_query_params_t *ZVEC_CALL
+zvec_query_params_diskann_create(int list_size);
+
+/**
+ * @brief Destroy DiskANN query parameters
+ * @param params DiskANN query parameters pointer
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_query_params_diskann_destroy(zvec_diskann_query_params_t *params);
+
+/**
+ * @brief Set search frontier size
+ * @param params DiskANN query parameters pointer
+ * @param list_size Search frontier size
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_diskann_set_list_size(
+    zvec_diskann_query_params_t *params, int list_size);
+
+/**
+ * @brief Get search frontier size
+ * @param params DiskANN query parameters pointer
+ * @return int Search frontier size
+ */
+ZVEC_EXPORT int ZVEC_CALL zvec_query_params_diskann_get_list_size(
+    const zvec_diskann_query_params_t *params);
+
+/**
+ * @brief Set search radius (common parameter from QueryParams base)
+ * @param params DiskANN query parameters pointer
+ * @param radius Search radius
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_diskann_set_radius(
+    zvec_diskann_query_params_t *params, float radius);
+
+/**
+ * @brief Get search radius (common parameter from QueryParams base)
+ * @param params DiskANN query parameters pointer
+ * @return float Search radius
+ */
+ZVEC_EXPORT float ZVEC_CALL
+zvec_query_params_diskann_get_radius(const zvec_diskann_query_params_t *params);
+
+/**
+ * @brief Set linear search mode (common parameter from QueryParams base)
+ * @param params DiskANN query parameters pointer
+ * @param is_linear Whether linear search
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_diskann_set_is_linear(
+    zvec_diskann_query_params_t *params, bool is_linear);
+
+/**
+ * @brief Get linear search mode (common parameter from QueryParams base)
+ * @param params DiskANN query parameters pointer
+ * @return bool Whether linear search
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_diskann_get_is_linear(
+    const zvec_diskann_query_params_t *params);
+
+/**
+ * @brief Set whether to use refiner (common parameter from QueryParams base)
+ * @param params DiskANN query parameters pointer
+ * @param is_using_refiner Whether to use refiner
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_diskann_set_is_using_refiner(
+    zvec_diskann_query_params_t *params, bool is_using_refiner);
+
+/**
+ * @brief Get whether to use refiner (common parameter from QueryParams base)
+ * @param params DiskANN query parameters pointer
+ * @return bool Whether to use refiner
+ */
+ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_diskann_get_is_using_refiner(
+    const zvec_diskann_query_params_t *params);
+
+// -----------------------------------------------------------------------------
 // zvec_vector_query_t (Vector Query)
 // -----------------------------------------------------------------------------
 
@@ -1816,6 +1997,15 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_fts_params(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_vamana_params(
     zvec_vector_query_t *query, zvec_vamana_query_params_t *vamana_params);
 
+/**
+ * @brief Set DiskANN query parameters (takes ownership)
+ * @param query Vector query pointer
+ * @param diskann_params DiskANN query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_diskann_params(
+    zvec_vector_query_t *query, zvec_diskann_query_params_t *diskann_params);
+
 // -----------------------------------------------------------------------------
 // zvec_fts_t (FTS query payload)
 // -----------------------------------------------------------------------------
@@ -1959,21 +2149,21 @@ ZVEC_EXPORT uint32_t ZVEC_CALL zvec_group_by_vector_query_get_group_count(
     const zvec_group_by_vector_query_t *query);
 
 /**
- * @brief Set group topk
+ * @brief Set the maximum number of results per group
  * @param query Group by vector query pointer
- * @param topk Number of results per group
+ * @param topk_per_group Number of results per group
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_group_by_vector_query_set_group_topk(zvec_group_by_vector_query_t *query,
-                                          uint32_t topk);
+zvec_group_by_vector_query_set_topk_per_group(
+    zvec_group_by_vector_query_t *query, uint32_t topk_per_group);
 
 /**
- * @brief Get group topk
+ * @brief Get the maximum number of results per group
  * @param query Group by vector query pointer
  * @return uint32_t Number of results per group
  */
-ZVEC_EXPORT uint32_t ZVEC_CALL zvec_group_by_vector_query_get_group_topk(
+ZVEC_EXPORT uint32_t ZVEC_CALL zvec_group_by_vector_query_get_topk_per_group(
     const zvec_group_by_vector_query_t *query);
 
 /**
@@ -2098,6 +2288,17 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_group_by_vector_query_set_vamana_params(
     zvec_group_by_vector_query_t *query,
     zvec_vamana_query_params_t *vamana_params);
+
+/**
+ * @brief Set DiskANN query parameters (takes ownership)
+ * @param query Group by vector query pointer
+ * @param diskann_params DiskANN query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_group_by_vector_query_set_diskann_params(
+    zvec_group_by_vector_query_t *query,
+    zvec_diskann_query_params_t *diskann_params);
 
 // -----------------------------------------------------------------------------
 // Rerank Strategy (set on MultiQuery)
@@ -2419,6 +2620,33 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_flat_params(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_vamana_params(
     zvec_sub_query_t *query, zvec_vamana_query_params_t *vamana_params);
+
+/**
+ * @brief Set FTS query parameters on a sub-query (takes ownership)
+ * @param query Sub-query pointer
+ * @param fts_params FTS query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_fts_params(
+    zvec_sub_query_t *query, zvec_fts_query_params_t *fts_params);
+
+/**
+ * @brief Set FTS clause on a sub-query (copies the FTS clause)
+ * @param query Sub-query pointer
+ * @param fts FTS clause pointer, or NULL to clear
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_sub_query_set_fts(zvec_sub_query_t *query, const zvec_fts_t *fts);
+
+/**
+ * @brief Set DiskANN query parameters (takes ownership)
+ * @param query Sub-query pointer
+ * @param diskann_params DiskANN query parameters pointer
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_sub_query_set_diskann_params(
+    zvec_sub_query_t *query, zvec_diskann_query_params_t *diskann_params);
 
 // =============================================================================
 // Collection Options and Statistics (Opaque Pointer Pattern)
@@ -3790,13 +4018,6 @@ ZVEC_EXPORT size_t ZVEC_CALL zvec_doc_memory_usage(const zvec_doc_t *doc);
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_doc_to_detail_string(const zvec_doc_t *doc, char **detail_str);
 
-/**
- * @brief Free docs array memory
- * @param docs Document array pointer
- * @param count Document count
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_docs_free(zvec_doc_t **docs, size_t count);
-
 // =============================================================================
 // Utility Functions
 // =============================================================================
@@ -3830,7 +4051,8 @@ zvec_index_type_to_string(zvec_index_type_t index_type);
  * @param metric_type Metric type
  * @return const char* Metric type string
  */
-const char *zvec_metric_type_to_string(zvec_metric_type_t metric_type);
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_metric_type_to_string(zvec_metric_type_t metric_type);
 
 // =============================================================================
 // Helper Functions
@@ -3909,6 +4131,31 @@ const char *zvec_metric_type_to_string(zvec_metric_type_t metric_type);
     .ivf.n_iters = (_niters),                                              \
     .ivf.use_soar = (_soar),                                               \
     .ivf.n_probe = (_nprobe) })
+// clang-format on
+
+/**
+ * @brief Simplified DiskANN index parameters initialization macro
+ * @param _metric Distance metric type
+ * @param _max_degree Graph connectivity (max degree)
+ * @param _list_size Build-time list size
+ * @param _pq_chunk_num PQ chunk count
+ * @param _quant Quantization type
+ *
+ * Usage example:
+ * @code
+ * zvec_index_params_t params = ZVEC_DISKANN_PARAMS(
+ *     ZVEC_METRIC_TYPE_L2, 100, 50, 16, ZVEC_QUANTIZE_TYPE_UNDEFINED);
+ * @endcode
+ */
+// clang-format off
+#define ZVEC_DISKANN_PARAMS(_metric, _max_degree, _list_size, _pq_chunk_num, _quant) \
+  ((zvec_index_params_t){                                                               \
+    .index_type = ZVEC_INDEX_TYPE_DISKANN,                                          \
+    .metric_type = (_metric),                                                       \
+    .quantize_type = (_quant),                                                      \
+    .diskann.max_degree = (_max_degree),                                            \
+    .diskann.list_size = (_list_size),                                              \
+    .diskann.pq_chunk_num = (_pq_chunk_num) })
 // clang-format on
 
 /**

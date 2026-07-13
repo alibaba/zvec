@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <chrono>
 #include <future>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
@@ -97,6 +98,49 @@ TEST_F(DiskAnnBuilderTest, TestGeneral) {
   ASSERT_EQ(0UL, stats.discarded_count());
   ASSERT_GT(stats.trained_costtime(), 0UL);
   ASSERT_GT(stats.built_costtime(), 0UL);
+}
+
+// Regression test: building a small DiskAnn index must complete quickly.
+// A lost-wakeup bug in the condition-variable progress loops previously caused
+// 15–30 second stalls during train/build on small datasets because
+// notify_one() was either missing or racing against a wrong predicate.
+TEST_F(DiskAnnBuilderTest, SmallDatasetBuildTime) {
+  constexpr size_t kSmallDim = 4;
+  constexpr size_t kSmallDocCnt = 12;
+
+  auto meta = make_shared<IndexMeta>(IndexMeta::DataType::DT_FP32, kSmallDim);
+  meta->set_metric("SquaredEuclidean", 0, Params());
+
+  IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+
+  auto holder = make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
+      kSmallDim);
+  for (size_t i = 0; i < kSmallDocCnt; ++i) {
+    NumericalVector<float> vec(kSmallDim, static_cast<float>(i));
+    ASSERT_TRUE(holder->emplace(i, vec));
+  }
+
+  Params params;
+  params.set("zvec.diskann.builder.max_degree", 32);
+  params.set("zvec.diskann.builder.list_size", 50);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 2);
+  params.set("zvec.diskann.builder.threads", 4);
+
+  ASSERT_EQ(0, builder->init(*meta, params));
+
+  auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->build(holder));
+  auto t1 = std::chrono::steady_clock::now();
+
+  auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+  // Before the fix, this took 15–30 seconds. After the fix, it should
+  // complete in well under 5 seconds even on slow CI machines.
+  EXPECT_LT(elapsed_ms, 5000)
+      << "DiskAnn build with " << kSmallDocCnt << " vectors took " << elapsed_ms
+      << " ms — likely a lost-wakeup regression in progress loops.";
 }
 
 // DiskAnn is now exposed implicitly: no caller ever invokes a

@@ -36,7 +36,7 @@ class SQLEngineImpl : public SQLEngine {
 
   //! Build analyzed query info from a structured search query.
   Result<QueryInfo::Ptr> build_query_info(CollectionSchema::Ptr collection,
-                                          SearchQuery request,
+                                          const SearchQuery &request,
                                           std::shared_ptr<GroupBy> group_by);
 
   //! Perform search with given query_info, segments and index filter

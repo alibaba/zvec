@@ -16,7 +16,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from _zvec import _CallbackParams, _Doc, _reranker_rerank, _RrfParams, _WeightedParams
+from zvec._zvec import (
+    _CallbackParams,
+    _Doc,
+    _reranker_rerank,
+    _RrfParams,
+    _WeightedParams,
+)
 
 from ..model.doc import Doc, DocList
 from .rerank_function import RerankFunction

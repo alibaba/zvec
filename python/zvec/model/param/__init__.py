@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from _zvec.param import (
+from zvec._zvec.param import (
     AddColumnOption,
     AlterColumnOption,
     CollectionOption,
@@ -31,6 +31,7 @@ from _zvec.param import (
     IVFIndexParam,
     IVFQueryParam,
     OptimizeOption,
+    QuantizerParam,
     VamanaIndexParam,
     VamanaQueryParam,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "IndexOption",
     "InvertIndexParam",
     "OptimizeOption",
+    "QuantizerParam",
     "VamanaIndexParam",
     "VamanaQueryParam",
 ]

@@ -269,6 +269,11 @@ int DiskAnnIndex::_prepare_for_search(
     return core::IndexError_Runtime;
   }
 
+  if (search_param->group_by_param && search_param->group_by_param->group_by) {
+    LOG_ERROR("group_by search is not supported for DiskAnn index");
+    return core::IndexError_Unsupported;
+  }
+
   context->set_topk(diskann_search_param->topk);
 
   // Propagate the query-time beam-search list size into the context. Must be

@@ -198,6 +198,15 @@ Result<IndexResults::Ptr> VectorColumnIndexer::Search(
         Status::InternalError("Failed to search vector"));
   }
 
+  // Return grouped results when group_by is active
+  if (!search_result.group_doc_list_.empty()) {
+    auto result = std::make_shared<GroupVectorIndexResults>(
+        std::move(search_result.group_doc_list_),
+        std::move(search_result.group_reverted_vector_list_),
+        std::move(search_result.group_reverted_sparse_values_list_));
+    return result;
+  }
+
   auto result = std::make_shared<VectorIndexResults>(
       is_sparse_, std::move(search_result.doc_list_),
       std::move(search_result.reverted_vector_list_),

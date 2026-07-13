@@ -3482,11 +3482,195 @@ void test_index_params_functions(void) {
   TEST_ASSERT(n_iters == 10);
   TEST_ASSERT(use_soar == false);  // Default is false
 
+  // Test DiskANN index params
+  zvec_index_params_t *diskann_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(diskann_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(diskann_params) ==
+              ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(diskann_params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(diskann_params) == 50);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(diskann_params) == 0);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(ivf_params);
+  zvec_index_params_destroy(diskann_params);
+
+  TEST_END();
+}
+
+void test_quantizer_enable_rotate(void) {
+  TEST_START();
+
+  // Test 1: set enable_rotate=true on HNSW params and verify
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  TEST_ASSERT(hnsw_params != NULL);
+
+  // Default should be false
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(hnsw_params) ==
+              false);
+
+  // Set to true and verify
+  zvec_error_code_t err =
+      zvec_index_params_set_quantizer_enable_rotate(hnsw_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(hnsw_params) ==
+              true);
+
+  // Set back to false and verify
+  err = zvec_index_params_set_quantizer_enable_rotate(hnsw_params, false);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(hnsw_params) ==
+              false);
+
+  zvec_index_params_destroy(hnsw_params);
+
+  // Test 2: set enable_rotate on FLAT index params (also a vector index)
+  zvec_index_params_t *flat_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
+  TEST_ASSERT(flat_params != NULL);
+  err = zvec_index_params_set_quantizer_enable_rotate(flat_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(flat_params) ==
+              true);
+  zvec_index_params_destroy(flat_params);
+
+  // Test 3: set enable_rotate on non-vector index (INVERT) should fail
+  zvec_index_params_t *invert_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+  TEST_ASSERT(invert_params != NULL);
+  err = zvec_index_params_set_quantizer_enable_rotate(invert_params, true);
+  TEST_ASSERT(err != ZVEC_OK);
+  zvec_index_params_destroy(invert_params);
+
+  // Test 4: NULL params should return false for getter
+  TEST_ASSERT(zvec_index_params_get_quantizer_enable_rotate(NULL) == false);
+
+  // Test 5: NULL params should return error for setter
+  err = zvec_index_params_set_quantizer_enable_rotate(NULL, true);
+  TEST_ASSERT(err != ZVEC_OK);
+
+  TEST_END();
+}
+
+void test_int8_rotate_e2e(void) {
+  TEST_START();
+
+  char temp_dir[] = "./zvec_test_int8_rotate_e2e";
+  const size_t dim = 128;
+  const size_t cnt = 2000;
+  const size_t topk = 10;
+
+  // Create schema with HNSW + INT8 + enable_rotate
+  zvec_collection_schema_t *schema =
+      zvec_collection_schema_create("int8_rotate_test");
+  TEST_ASSERT(schema != NULL);
+
+  // Add ID field
+  zvec_field_schema_t *id_field =
+      zvec_field_schema_create("id", ZVEC_DATA_TYPE_INT64, false, 0);
+  zvec_collection_schema_add_field(schema, id_field);
+
+  // Add vector field with HNSW + INT8 + rotate
+  zvec_index_params_t *hnsw_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  TEST_ASSERT(hnsw_params != NULL);
+  zvec_index_params_set_metric_type(hnsw_params, ZVEC_METRIC_TYPE_L2);
+  zvec_index_params_set_hnsw_params(hnsw_params, 16, 100);
+  zvec_index_params_set_quantize_type(hnsw_params, ZVEC_QUANTIZE_TYPE_INT8);
+  zvec_index_params_set_quantizer_enable_rotate(hnsw_params, true);
+
+  zvec_field_schema_t *vec_field = zvec_field_schema_create(
+      "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, dim);
+  zvec_field_schema_set_index_params(vec_field, hnsw_params);
+  zvec_collection_schema_add_field(schema, vec_field);
+  zvec_index_params_destroy(hnsw_params);
+
+  // Create and open collection
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(temp_dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+
+  // Insert 2000 random vectors
+  srand(42);
+  for (size_t i = 0; i < cnt; i++) {
+    float *vec = (float *)malloc(dim * sizeof(float));
+    TEST_ASSERT(vec != NULL);
+    for (size_t j = 0; j < dim; j++) {
+      vec[j] = (float)rand() / (float)RAND_MAX * 2.0f - 1.0f;
+    }
+
+    zvec_doc_t *doc = zvec_doc_create();
+    zvec_doc_set_pk(doc, zvec_test_make_pk(i + 1));
+    zvec_doc_add_field_by_value(doc, "id", ZVEC_DATA_TYPE_INT64,
+                                &(int64_t){(int64_t)(i + 1)}, sizeof(int64_t));
+    zvec_doc_add_field_by_value(doc, "embedding", ZVEC_DATA_TYPE_VECTOR_FP32,
+                                vec, dim * sizeof(float));
+
+    size_t success_count, error_count;
+    const zvec_doc_t *docs[] = {doc};
+    err = zvec_collection_insert(collection, docs, 1, &success_count,
+                                 &error_count);
+    TEST_ASSERT(err == ZVEC_OK);
+    zvec_doc_destroy(doc);
+    free(vec);
+  }
+
+  // Flush to build index
+  zvec_collection_flush(collection);
+
+  // Search
+  float *query = (float *)malloc(dim * sizeof(float));
+  TEST_ASSERT(query != NULL);
+  for (size_t j = 0; j < dim; j++) {
+    query[j] = (float)rand() / (float)RAND_MAX * 2.0f - 1.0f;
+  }
+
+  zvec_vector_query_t *vq = zvec_vector_query_create();
+  TEST_ASSERT(vq != NULL);
+  zvec_vector_query_set_field_name(vq, "embedding");
+  zvec_vector_query_set_query_vector(vq, query, dim * sizeof(float));
+  zvec_vector_query_set_topk(vq, topk);
+
+  zvec_doc_t **results = NULL;
+  size_t result_count = 0;
+  err = zvec_collection_query(collection, vq, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(result_count > 0);
+  printf("  [int8_rotate_e2e] first search returned %zu results\n",
+         result_count);
+  zvec_docs_free(results, result_count);
+
+  // Close and reopen
+  zvec_collection_close(collection);
+  collection = NULL;
+
+  err = zvec_collection_open(temp_dir, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+
+  // Search again after reopen (rotator should auto-load from storage)
+  results = NULL;
+  result_count = 0;
+  err = zvec_collection_query(collection, vq, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(result_count > 0);
+  printf("  [int8_rotate_e2e] reopen search returned %zu results\n",
+         result_count);
+  zvec_docs_free(results, result_count);
+
+  // Cleanup
+  zvec_vector_query_destroy(vq);
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  free(query);
+  cleanup_temp_directory(temp_dir);
 
   TEST_END();
 }
@@ -3556,11 +3740,27 @@ void test_index_params_api_functions(void) {
   TEST_ASSERT(zvec_index_params_get_metric_type(flat_params) ==
               ZVEC_METRIC_TYPE_IP);
 
+  // Test zvec_index_params_create for DiskANN
+  zvec_index_params_t *diskann_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(diskann_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(diskann_params) ==
+              ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(zvec_index_params_get_metric_type(diskann_params) ==
+              ZVEC_METRIC_TYPE_L2);
+
+  // Test zvec_index_params_set_diskann_params
+  zvec_index_params_set_diskann_params(diskann_params, 200, 100, 8);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(diskann_params) == 200);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(diskann_params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(diskann_params) == 8);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(ivf_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(flat_params);
+  zvec_index_params_destroy(diskann_params);
 
   TEST_END();
 }
@@ -3627,6 +3827,11 @@ void test_query_params_functions(void) {
   zvec_flat_query_params_t *flat_params =
       zvec_query_params_flat_create(false, 2.0f);
   TEST_ASSERT(flat_params != NULL);
+
+  // Test DiskANN query parameters
+  zvec_diskann_query_params_t *diskann_params =
+      zvec_query_params_diskann_create(500);
+  TEST_ASSERT(diskann_params != NULL);
 
   zvec_error_code_t err;
 
@@ -3724,17 +3929,43 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
               false);
 
+  // Test DiskANN-specific parameters
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(diskann_params) == 500);
+  err = zvec_query_params_diskann_set_list_size(diskann_params, 800);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(diskann_params) == 800);
+
+  // Test DiskANN common parameters (radius, is_linear, is_using_refiner)
+  err = zvec_query_params_diskann_set_radius(diskann_params, 1.2f);
+  TEST_ASSERT(err == ZVEC_OK);
+  radius = zvec_query_params_diskann_get_radius(diskann_params);
+  TEST_ASSERT(radius == 1.2f);
+
+  err = zvec_query_params_diskann_set_is_linear(diskann_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_linear = zvec_query_params_diskann_get_is_linear(diskann_params);
+  TEST_ASSERT(is_linear == true);
+
+  err = zvec_query_params_diskann_set_is_using_refiner(diskann_params, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  is_using_refiner =
+      zvec_query_params_diskann_get_is_using_refiner(diskann_params);
+  TEST_ASSERT(is_using_refiner == true);
+
   // Test destruction of valid parameters
   zvec_query_params_hnsw_destroy(hnsw_params);
   zvec_query_params_ivf_destroy(ivf_params);
   zvec_query_params_flat_destroy(flat_params);
   zvec_query_params_vamana_destroy(vamana_params);
+  zvec_query_params_diskann_destroy(diskann_params);
+
 
   // Test boundary cases - null pointer handling
   zvec_query_params_hnsw_destroy(NULL);
   zvec_query_params_ivf_destroy(NULL);
   zvec_query_params_flat_destroy(NULL);
   zvec_query_params_vamana_destroy(NULL);
+  zvec_query_params_diskann_destroy(NULL);
 
   // Test null pointer handling for setters
   err = zvec_query_params_hnsw_set_radius(NULL, 0.5f);
@@ -3745,14 +3976,20 @@ void test_query_params_functions(void) {
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_vamana_set_ef_search(NULL, 100);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_list_size(NULL, 100);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
   // Test default values for getters with NULL
   TEST_ASSERT(zvec_query_params_hnsw_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_ivf_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_flat_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_diskann_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_hnsw_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_hnsw_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_using_refiner(NULL) == false);
@@ -3760,6 +3997,8 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_vamana_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_vamana_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_using_refiner(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(NULL) == 300);
 
   TEST_END();
 }
@@ -4303,6 +4542,45 @@ void test_fts_wiring_on_vector_query(void) {
   // Ownership transferred — do NOT call zvec_query_params_fts_destroy on it.
 
   zvec_vector_query_destroy(query);
+  zvec_fts_destroy(fts);
+  TEST_END();
+}
+
+void test_fts_wiring_on_sub_query(void) {
+  TEST_START();
+
+  zvec_fts_t *fts = zvec_fts_create();
+  TEST_ASSERT(fts != NULL);
+
+  zvec_error_code_t err =
+      zvec_fts_set_query_string(fts, "+hello -world \"phrase\"");
+  TEST_ASSERT(err == ZVEC_OK);
+  err = zvec_fts_set_match_string(fts, "machine learning");
+  TEST_ASSERT(err == ZVEC_OK);
+
+  zvec_sub_query_t *sq = zvec_sub_query_create();
+  TEST_ASSERT(sq != NULL);
+
+  // Set FTS clause.
+  err = zvec_sub_query_set_fts(sq, fts);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // Clearing.
+  err = zvec_sub_query_set_fts(sq, NULL);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // Attach FtsQueryParams (transfers ownership).
+  zvec_fts_query_params_t *fts_params = zvec_query_params_fts_create("AND");
+  TEST_ASSERT(fts_params != NULL);
+  err = zvec_sub_query_set_fts_params(sq, fts_params);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // NULL argument checks.
+  TEST_ASSERT(zvec_sub_query_set_fts(NULL, fts) == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_sub_query_set_fts_params(NULL, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_sub_query_destroy(sq);
   zvec_fts_destroy(fts);
   TEST_END();
 }
@@ -5046,12 +5324,25 @@ void test_index_params_creation_functions(void) {
                                              false);
   TEST_ASSERT(verr == ZVEC_ERROR_INVALID_ARGUMENT);
 
+  // Test DiskANN parameters using new API
+  zvec_index_params_t *diskann_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(diskann_params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(diskann_params) ==
+              ZVEC_INDEX_TYPE_DISKANN);
+  zvec_index_params_set_metric_type(diskann_params, ZVEC_METRIC_TYPE_COSINE);
+  zvec_index_params_set_diskann_params(diskann_params, 64, 25, 4);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(diskann_params) == 64);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(diskann_params) == 25);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(diskann_params) == 4);
+
   // Cleanup
   zvec_index_params_destroy(hnsw_params);
   zvec_index_params_destroy(ivf_params);
   zvec_index_params_destroy(flat_params);
   zvec_index_params_destroy(invert_params);
   zvec_index_params_destroy(vamana_params);
+  zvec_index_params_destroy(diskann_params);
 
   TEST_END();
 }
@@ -5881,6 +6172,184 @@ void test_collection_schema_getters(void) {
 }
 
 // =============================================================================
+// DiskANN Tests
+// =============================================================================
+
+void test_diskann_index_params_functions(void) {
+  TEST_START();
+
+  // Create DiskANN index params with defaults
+  zvec_index_params_t *params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(params != NULL);
+  TEST_ASSERT(zvec_index_params_get_type(params) == ZVEC_INDEX_TYPE_DISKANN);
+
+  // Check defaults: max_degree=100, list_size=50, pq_chunk_num=0
+  // (aligned with DiskAnnIndexParams constructor defaults)
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(params) == 50);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(params) == 0);
+
+  // Default metric type is L2
+  TEST_ASSERT(zvec_index_params_get_metric_type(params) == ZVEC_METRIC_TYPE_L2);
+
+  // Set and verify custom values
+  zvec_index_params_set_metric_type(params, ZVEC_METRIC_TYPE_COSINE);
+  TEST_ASSERT(zvec_index_params_get_metric_type(params) ==
+              ZVEC_METRIC_TYPE_COSINE);
+
+  zvec_error_code_t err =
+      zvec_index_params_set_diskann_params(params, 200, 100, 8);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(params) == 200);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(params) == 100);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(params) == 8);
+
+  // Type-mismatch error path: HNSW params must not accept DiskANN setter
+  zvec_index_params_t *hnsw = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  TEST_ASSERT(hnsw != NULL);
+  err = zvec_index_params_set_diskann_params(hnsw, 100, 50, 0);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_index_params_destroy(hnsw);
+
+  // NULL pointer handling
+  err = zvec_index_params_set_diskann_params(NULL, 100, 50, 0);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_diskann_max_degree(NULL) == 0);
+  TEST_ASSERT(zvec_index_params_get_diskann_list_size(NULL) == 0);
+  TEST_ASSERT(zvec_index_params_get_diskann_pq_chunk_num(NULL) == 0);
+
+  // to_string should report DiskANN
+  const char *type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_DISKANN);
+  TEST_ASSERT(type_str != NULL && strcmp(type_str, "DiskANN") == 0);
+
+  zvec_index_params_destroy(params);
+  TEST_END();
+}
+
+void test_diskann_query_params_functions(void) {
+  TEST_START();
+
+  // Create with default list_size
+  zvec_diskann_query_params_t *p_default =
+      zvec_query_params_diskann_create(300);
+  TEST_ASSERT(p_default != NULL);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(p_default) == 300);
+  zvec_query_params_diskann_destroy(p_default);
+
+  // Create with custom list_size
+  zvec_diskann_query_params_t *p = zvec_query_params_diskann_create(500);
+  TEST_ASSERT(p != NULL);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(p) == 500);
+
+  // Set/get list_size
+  zvec_error_code_t err = zvec_query_params_diskann_set_list_size(p, 1000);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(p) == 1000);
+
+  // Common params: radius
+  err = zvec_query_params_diskann_set_radius(p, 1.5f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_radius(p) == 1.5f);
+
+  // Common params: is_linear
+  err = zvec_query_params_diskann_set_is_linear(p, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_linear(p) == true);
+
+  // Common params: is_using_refiner
+  err = zvec_query_params_diskann_set_is_using_refiner(p, true);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_using_refiner(p) == true);
+
+  zvec_query_params_diskann_destroy(p);
+
+  // NULL pointer handling: destroy
+  zvec_query_params_diskann_destroy(NULL);
+
+  // NULL pointer handling: setters return error
+  err = zvec_query_params_diskann_set_list_size(NULL, 100);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_radius(NULL, 0.5f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_is_linear(NULL, false);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_diskann_set_is_using_refiner(NULL, false);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  // NULL pointer handling: getters return safe defaults
+  TEST_ASSERT(zvec_query_params_diskann_get_list_size(NULL) == 300);
+  TEST_ASSERT(zvec_query_params_diskann_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_linear(NULL) == false);
+  TEST_ASSERT(zvec_query_params_diskann_get_is_using_refiner(NULL) == false);
+
+  TEST_END();
+}
+
+void test_diskann_wiring_on_vector_query(void) {
+  TEST_START();
+
+  zvec_error_code_t err;
+
+  // Test wiring on zvec_vector_query_t
+  zvec_vector_query_t *vq = zvec_vector_query_create();
+  TEST_ASSERT(vq != NULL);
+
+  zvec_diskann_query_params_t *dp1 = zvec_query_params_diskann_create(400);
+  TEST_ASSERT(dp1 != NULL);
+  err = zvec_vector_query_set_diskann_params(vq, dp1);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // NULL handling
+  zvec_diskann_query_params_t *dp_null = zvec_query_params_diskann_create(100);
+  err = zvec_vector_query_set_diskann_params(NULL, dp_null);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_query_params_diskann_destroy(dp_null);
+
+  err = zvec_vector_query_set_diskann_params(vq, NULL);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_vector_query_destroy(vq);
+
+  // Test wiring on zvec_group_by_vector_query_t
+  zvec_group_by_vector_query_t *gbq = zvec_group_by_vector_query_create();
+  TEST_ASSERT(gbq != NULL);
+
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(gbq) == 3);
+  err = zvec_group_by_vector_query_set_topk_per_group(gbq, 7);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(gbq) == 7);
+  err = zvec_group_by_vector_query_set_topk_per_group(NULL, 7);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_diskann_query_params_t *dp2 = zvec_query_params_diskann_create(200);
+  TEST_ASSERT(dp2 != NULL);
+  err = zvec_group_by_vector_query_set_diskann_params(gbq, dp2);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  err = zvec_group_by_vector_query_set_diskann_params(NULL, dp2);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_group_by_vector_query_destroy(gbq);
+
+  // Test wiring on zvec_sub_query_t
+  zvec_sub_query_t *sq = zvec_sub_query_create();
+  TEST_ASSERT(sq != NULL);
+
+  zvec_diskann_query_params_t *dp3 = zvec_query_params_diskann_create(150);
+  TEST_ASSERT(dp3 != NULL);
+  err = zvec_sub_query_set_diskann_params(sq, dp3);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  err = zvec_sub_query_set_diskann_params(NULL, dp3);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
+  zvec_sub_query_destroy(sq);
+
+  TEST_END();
+}
+
+// =============================================================================
 // Main function
 // =============================================================================
 
@@ -5953,6 +6422,8 @@ int main(void) {
   // Index tests
   test_index_params();
   test_index_params_functions();
+  test_quantizer_enable_rotate();
+  test_int8_rotate_e2e();
   test_index_params_api_functions();
   test_index_creation_and_management();
 
@@ -5964,7 +6435,13 @@ int main(void) {
   test_fts_index_params_functions();
   test_fts_query_params_functions();
   test_fts_wiring_on_vector_query();
+  test_fts_wiring_on_sub_query();
   test_fts_end_to_end();
+
+  // DiskANN tests
+  test_diskann_index_params_functions();
+  test_diskann_query_params_functions();
+  test_diskann_wiring_on_vector_query();
 
   test_multi_vector_query_with_rrf_reranker();
   test_multi_vector_query_with_weighted_reranker();

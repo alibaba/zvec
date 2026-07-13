@@ -31,6 +31,7 @@
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/vector_source.h>
 #include "zvec/core/framework/index_provider.h"
 
 namespace zvec::core_interface {
@@ -94,9 +95,13 @@ struct VectorDataBuffer {
 
 struct SearchResult {
   core::IndexDocumentList doc_list_;
+  core::IndexGroupDocumentList group_doc_list_;
   // use string to manage memory
   std::vector<std::string> reverted_vector_list_{};
   std::vector<std::string> reverted_sparse_values_list_{};
+  // Grouped reverted values, aligned with group_doc_list_.
+  std::vector<std::vector<std::string>> group_reverted_vector_list_{};
+  std::vector<std::vector<std::string>> group_reverted_sparse_values_list_{};
 };
 
 class Index {
@@ -126,11 +131,19 @@ class Index {
   // TODO: static reduce
 
   virtual int Add(const VectorData &vector, uint32_t doc_id);
+
   virtual int Fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
   virtual int Search(const VectorData &query,
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
+
+  virtual int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                            const core::VectorSource &src);
+  virtual int SearchWithSource(const VectorData &query,
+                               const BaseIndexQueryParam::Pointer &search_param,
+                               const core::VectorSource &src,
+                               SearchResult *result);
 
   virtual BaseIndexParam::Pointer GetParam() const {
     return std::make_shared<BaseIndexParam>(param_);
@@ -139,6 +152,8 @@ class Index {
   virtual bool IsTrained() const {
     return is_trained_;
   }
+
+  bool IsDirty() const;
 
   uint32_t GetDocCount() const {
     if (streamer_ == nullptr) {
@@ -160,6 +175,11 @@ class Index {
   }
 
   static std::string get_metric_name(MetricType metric_type, bool is_sparse);
+
+  static bool is_group_by_unsupported_index(IndexType index_type) {
+    return index_type == IndexType::kIVF || index_type == IndexType::kDiskAnn ||
+           index_type == IndexType::kVamana;
+  }
 
  protected:
   int _sparse_fetch(const uint32_t doc_id,
@@ -183,6 +203,13 @@ class Index {
       core::IndexContext::Pointer &context) = 0;
   virtual int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param);
+
+  //! Helper: set group_by on context from the query param (common for all
+  //! index types). Call this before set_topk() when topk depends on group
+  //! state.
+  static void _set_group_by_on_context(
+      const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context);
 
  protected:
   friend class IndexFactory;
@@ -285,11 +312,18 @@ class HNSWIndex : public Index {
   HNSWIndex() = default;
 
   //! Retrieve the storage mode of the underlying HNSW streamer entity.
-  //! Returns a string among {"mmap", "buffer_pool", "contiguous"}.
+  //! Returns a string among {"mmap", "buffer_pool", "contiguous", "external"}.
   //! Intended for introspection and debug/testing usage. Returns empty
   //! string when the streamer has not been initialized or is of an
   //! unexpected type (e.g. the sparse branch).
   std::string storage_mode() const;
+
+  int AddWithSource(const VectorData &vector, uint32_t doc_id,
+                    const core::VectorSource &src) override;
+  int SearchWithSource(const VectorData &query,
+                       const BaseIndexQueryParam::Pointer &search_param,
+                       const core::VectorSource &src,
+                       SearchResult *result) override;
 
  protected:
   int CreateAndInitStreamer(const BaseIndexParam &param) override;

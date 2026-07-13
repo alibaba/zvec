@@ -2137,9 +2137,10 @@ Status SegmentImpl::drop_scalar_index(const std::vector<std::string> &columns,
   auto s = invert_indexers_->create_snapshot(new_invert_index_path);
   CHECK_RETURN_STATUS(s);
 
+  // The snapshot copy is mutated below to remove dropped columns and seal.
   auto new_scalar_indexer = InvertedIndexer::CreateAndOpen(
       collection_schema_->name(), new_invert_index_path, false, invert_fields,
-      options_.read_only_);
+      false);
   if (!new_scalar_indexer) {
     LOG_ERROR("Failed to create scalar indexer");
     return Status::InternalError("Failed to create scalar indexer");
@@ -2171,6 +2172,10 @@ Status SegmentImpl::reload_scalar_index(
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = segment_meta;
 
+  if (invert_indexers_ == scalar_indexer) {
+    return Status::OK();
+  }
+
   if (!scalar_indexer) {
     // Fix: clean up the old inverted indexer directory so that a subsequent
     // create_index() can create a fresh one without "Column family already
@@ -2195,7 +2200,6 @@ Status SegmentImpl::reload_scalar_index(
   if (invert_indexers_) {
     auto old_dir = invert_indexers_->working_dir();
     invert_indexers_ = scalar_indexer;
-
     FileHelper::RemoveDirectory(old_dir);
   } else {
     invert_indexers_ = scalar_indexer;
@@ -4047,7 +4051,8 @@ Status SegmentImpl::load_vector_index_blocks() {
         if (!segment_meta_->vector_indexed(column)) {
           new_field_params.set_index_params(MakeDefaultQuantVectorIndexParams(
               vector_index_params->metric_type(),
-              vector_index_params->quantize_type()));
+              vector_index_params->quantize_type(),
+              vector_index_params->quantizer_param()));
         }
       }
 
@@ -4182,7 +4187,8 @@ Status SegmentImpl::init_memory_components() {
       block_id = allocate_block_id();
       FieldSchema normal_quant_field(*field);
       normal_quant_field.set_index_params(MakeDefaultQuantVectorIndexParams(
-          index_params->metric_type(), index_params->quantize_type()));
+          index_params->metric_type(), index_params->quantize_type(),
+          index_params->quantizer_param()));
       auto quant_vector_indexer = create_vector_indexer(
           field->name(), normal_quant_field, block_id, true);
 

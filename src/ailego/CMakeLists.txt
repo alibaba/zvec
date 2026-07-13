@@ -13,19 +13,9 @@ git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 
 set(EXTRA_LIBS ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
-set(EXTRA_DEFS)
 
 if(UNIX AND NOT APPLE)
     list(APPEND EXTRA_LIBS ${LIB_RT})
-endif()
-
-if(BUILD_ZVEC_CORE_ONLY)
-    list(FILTER ALL_SRCS EXCLUDE REGEX ".*/buffer/parquet_hash_table\\.cc$")
-    list(APPEND EXTRA_DEFS ZVEC_CORE_ONLY=1)
-else()
-    list(APPEND EXTRA_LIBS
-            Arrow::arrow_static
-            Arrow::parquet_static)
 endif()
 
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
@@ -131,6 +121,5 @@ cc_library(
     NAME zvec_ailego STATIC STRICT PACKED
     SRCS    ${ALL_SRCS}
     LIBS    ${EXTRA_LIBS}
-    DEFS    ${EXTRA_DEFS}
     VERSION "${GIT_SRCS_VER}"
 )
