@@ -470,12 +470,9 @@ class HnswRabitqContext : public IndexContext {
   void set_group_params(uint32_t group_num, uint32_t group_topk) override {
     group_num_ = group_num;
     group_topk_ = group_topk;
-
-    topk_ = group_topk_ * group_num_;
-
-    topk_heap_.limit(std::max(topk_, ef_));
-
     group_topk_heaps_.clear();
+
+    set_topk(group_topk_ * group_num_);
   }
 
   void set_provider(IndexProvider::Pointer provider) {
