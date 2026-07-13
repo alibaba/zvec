@@ -515,8 +515,8 @@ class Collection:
 
         return [
             GroupResult(
-                group_by_value=group["group_by_value"],
-                docs=[convert_to_py_doc(doc, self.schema) for doc in group["docs"]],
+                group_by_value=group.group_by_value,
+                docs=[convert_to_py_doc(doc, self.schema) for doc in group.docs],
             )
             for group in raw_results
         ]

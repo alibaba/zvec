@@ -48,6 +48,10 @@ T unwrap_expected(const tl::expected<T, Status> &exp) {
 }
 
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
+  py::class_<GroupResult>(m, "_GroupResult")
+      .def_readonly("group_by_value", &GroupResult::group_by_value_)
+      .def_readonly("docs", &GroupResult::docs_);
+
   py::class_<Collection, Collection::Ptr> collection(m, "_Collection");
   bind_db_methods(collection);
   bind_ddl_methods(collection);
@@ -281,21 +285,7 @@ void ZVecPyCollection::bind_dql_methods(
                py::gil_scoped_release release;
                result = self.GroupByQuery(query);
              }
-             auto group_results = unwrap_expected(result);
-             // Convert to list of dicts: [{"group_by_value": str, "docs":
-             // [_Doc]}]
-             py::list py_results;
-             for (auto &gr : group_results) {
-               py::dict group_dict;
-               group_dict["group_by_value"] = gr.group_by_value_;
-               py::list py_docs;
-               for (auto &doc : gr.docs_) {
-                 py_docs.append(std::make_shared<Doc>(std::move(doc)));
-               }
-               group_dict["docs"] = py_docs;
-               py_results.append(group_dict);
-             }
-             return py_results;
+             return unwrap_expected(result);
            })
       .def(
           "Fetch",

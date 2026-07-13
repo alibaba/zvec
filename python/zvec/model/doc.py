@@ -182,7 +182,12 @@ DocList = list[Doc]
 
 @dataclass(frozen=True)
 class GroupResult:
-    """A group value and its matching documents."""
+    """A group value and its matching documents.
+
+    Attributes:
+        group_by_value (str): String representation of the grouped scalar field value.
+        docs (list[Doc]): Matching documents in similarity order.
+    """
 
     group_by_value: str
     docs: list[Doc]
