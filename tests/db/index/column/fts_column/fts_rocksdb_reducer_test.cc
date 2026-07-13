@@ -333,22 +333,35 @@ TEST_F(FtsRocksdbReducerTest, FeedFailsBeforeInit) {
                    .has_value());
 }
 
-TEST_F(FtsRocksdbReducerTest, FeedFailsWithNonConsecutiveDocIds) {
+TEST_F(FtsRocksdbReducerTest, FeedAcceptsGapBetweenGlobalDocIdRanges) {
   FtsRocksdbReducer reducer = MakeReducer();
 
   FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
   EXPECT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
 
-  // Gap: src1 starts at 4 instead of 3
+  // Deletes may leave a gap between persisted segments.  The reducer remaps
+  // segment-local doc_ids by feed-order scan position, not by global doc_id.
   FtsSegmentStats stats1 = MakeSegmentStats(4, 6);
+  EXPECT_TRUE(reducer.feed(stats1, &src1_db_, src1_postings_, src1_positions_)
+                  .has_value());
+}
+
+TEST_F(FtsRocksdbReducerTest, FeedFailsWithOverlappingGlobalDocIdRanges) {
+  FtsRocksdbReducer reducer = MakeReducer();
+
+  FtsSegmentStats stats0 = MakeSegmentStats(0, 2);
+  EXPECT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
+                  .has_value());
+
+  FtsSegmentStats stats1 = MakeSegmentStats(2, 4);
   EXPECT_FALSE(reducer.feed(stats1, &src1_db_, src1_postings_, src1_positions_)
                    .has_value());
 }
 
 TEST_F(FtsRocksdbReducerTest, FeedAcceptsEmptySegmentAsNoop) {
   // Empty segments (doc_count == 0) silently contribute nothing — the
-  // surrounding non-empty segments still get their contiguity validated
+  // surrounding non-empty segments still get their ordering validated
   // against each other, as if the empty one wasn't there.
   auto indexer0 = MakeSrc0Indexer();
   InsertDocs(indexer0.get(), {{0, "hello world"}, {1, "foo"}, {2, "bar"}});
@@ -361,7 +374,7 @@ TEST_F(FtsRocksdbReducerTest, FeedAcceptsEmptySegmentAsNoop) {
   ASSERT_TRUE(reducer.feed(stats0, &src0_db_, src0_postings_, src0_positions_)
                   .has_value());
 
-  // Empty middle segment — accepted, doesn't break contiguity.
+  // Empty middle segment — accepted, doesn't affect ordering.
   FtsSegmentStats empty_stats;
   empty_stats.min_doc_id = 0;
   empty_stats.max_doc_id = 0;
@@ -370,8 +383,8 @@ TEST_F(FtsRocksdbReducerTest, FeedAcceptsEmptySegmentAsNoop) {
       reducer.feed(empty_stats, &src1_db_, src1_postings_, src1_positions_)
           .has_value());
 
-  // src1 must still start at stats0.max_doc_id + 1 = 3, not be shifted by
-  // the (skipped) empty segment.
+  // The next non-empty segment is checked against stats0, not against the
+  // skipped empty segment.
   FtsSegmentStats stats1 = MakeSegmentStats(3, 3);
   ASSERT_TRUE(reducer.feed(stats1, &src1_db_, src1_postings_, src1_positions_)
                   .has_value());
