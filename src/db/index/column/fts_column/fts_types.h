@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 #include "db/index/common/index_filter.h"
@@ -28,16 +29,16 @@ struct FtsQueryParams {
   // Wraps zvec::IndexFilter for push-down filtering inside the search loop.
   IndexFilter::Ptr filter{nullptr};
   // Candidate-driven (brute-force) mode: ascending segment-local doc_ids;
-  // when non-empty, FtsColumnIndexer restricts evaluation to this set by
-  // AND-ing it with the root iterator. Filled by the planner via
+  // nullopt means no candidate restriction, while a present empty vector
+  // means no document can match. Filled by the planner via
   // DocFilter::get_bf_by_keys_and_update when an invert result is highly
   // selective.
-  std::vector<uint64_t> candidate_ids;
+  std::optional<std::vector<uint64_t>> candidate_ids;
 };
 
 /*! Per-segment statistics needed by the FTS reducer for doc_id remapping.
- *  - min_doc_id / max_doc_id: GLOBAL doc_id range used by the delete filter
- *    (filter.is_filtered() takes a global doc_id).
+ *  - min_doc_id / max_doc_id: GLOBAL doc_id range used to order segments and
+ *    reject overlapping inputs.  Gaps are valid after compaction deletes.
  *  - doc_count: number of FTS LOCAL doc_ids in the source segment; the posting
  *    list domain is [0, doc_count).  For fresh (non-merged) segments this
  *    equals max_doc_id - min_doc_id + 1, and the local-to-global mapping is
