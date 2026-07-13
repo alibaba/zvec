@@ -38,7 +38,7 @@
 > 🚀  **v0.5.0（2026 年 6 月 12 日）**
 >
 > - **全文检索（FTS）**：原生全文检索能力——可为任意字符串字段挂载 FTS 索引，使用自然语言或结构化表达式检索，无需外接搜索引擎。
-> - **混合检索**：在单次 `MultiQuery` 中融合全文与向量检索，跨稠密向量、稀疏向量、标量过滤与文本。
+> - **混合检索**：在单次查询调用中融合全文、稠密向量和稀疏向量检索，并支持标量过滤与重排。
 > - **DiskANN 索引**：全新磁盘索引，将索引主体存于磁盘，大幅降低大规模数据集的内存占用。
 > - **生态与平台**：全新官方 [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDK、可视化工具 [Zvec Studio](https://github.com/zvec-ai/zvec-studio)，以及 RISC-V 架构支持。
 >
