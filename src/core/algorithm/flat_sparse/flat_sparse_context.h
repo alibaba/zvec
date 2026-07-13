@@ -110,9 +110,9 @@ class FlatSparseContext : public IndexContext {
   }
 
   //! Set group params
-  void set_group_params(uint32_t group_num, uint32_t group_topk) override {
+  void set_group_params(uint32_t group_num, uint32_t topk_per_group) override {
     group_num_ = group_num;
-    group_topk_ = group_topk;
+    topk_per_group_ = topk_per_group;
     result_group_heap_.clear();
   }
 
@@ -121,8 +121,8 @@ class FlatSparseContext : public IndexContext {
     return group_num_ > 0;
   }
 
-  inline uint32_t group_topk() const {
-    return group_topk_;
+  inline uint32_t topk_per_group() const {
+    return topk_per_group_;
   }
 
   inline uint32_t group_num() const {
@@ -215,7 +215,7 @@ class FlatSparseContext : public IndexContext {
 
   // group
   uint32_t group_num_{0};
-  uint32_t group_topk_{0};
+  uint32_t topk_per_group_{0};
   std::map<std::string, IndexDocumentHeap> result_group_heap_{};
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};

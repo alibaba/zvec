@@ -255,13 +255,13 @@ class DiskAnnContext : public IndexContext,
     reset_group_by();
   }
 
-  inline std::map<std::string, TopkHeap> &group_topk_heaps() {
-    return group_topk_heaps_;
+  inline std::map<std::string, TopkHeap> &topk_per_group_heaps() {
+    return topk_per_group_heaps_;
   }
 
-  //! Get group topk
-  inline uint32_t group_topk() const {
-    return group_topk_;
+  //! Get the maximum number of results per group
+  inline uint32_t topk_per_group() const {
+    return topk_per_group_;
   }
 
   //! Get group num
@@ -275,15 +275,15 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Set group params
-  void set_group_params(uint32_t group_num, uint32_t group_topk) override {
+  void set_group_params(uint32_t group_num, uint32_t topk_per_group) override {
     group_num_ = group_num;
-    group_topk_ = group_topk;
+    topk_per_group_ = topk_per_group;
 
-    topk_ = group_topk_ * group_num_;
+    topk_ = topk_per_group_ * group_num_;
 
     topk_heap_.limit(topk_);
 
-    group_topk_heaps_.clear();
+    topk_per_group_heaps_.clear();
   }
 
   // topk_to_result / topk_to_single_result / topk_to_group_result are provided
@@ -345,9 +345,9 @@ class DiskAnnContext : public IndexContext,
 
   TopkHeap topk_heap_{};
 
-  uint32_t group_topk_{0};
+  uint32_t topk_per_group_{0};
   uint32_t group_num_{0};
-  std::map<std::string, TopkHeap> group_topk_heaps_{};
+  std::map<std::string, TopkHeap> topk_per_group_heaps_{};
 
   IOContext io_ctx_{0};
   SearchStats query_stats_;

@@ -1508,9 +1508,9 @@ TEST_F(FlatSparseStreamerTest, TestGroupBy) {
     return std::string("g_") + std::to_string(group_id);
   };
 
-  size_t group_topk = 200;
+  size_t topk_per_group = 200;
   size_t group_num = 5;
-  ctx->set_group_params(group_num, group_topk);
+  ctx->set_group_params(group_num, topk_per_group);
   ctx->set_group_by(groupbyFunc);
 
   std::vector<std::string> expect_group_ids = {
@@ -1536,7 +1536,7 @@ TEST_F(FlatSparseStreamerTest, TestGroupBy) {
 
     ASSERT_EQ(group_id, expect_group_ids[i]);
 
-    ASSERT_GE(result.size(), group_topk);
+    ASSERT_GE(result.size(), topk_per_group);
 
     for (uint32_t j = 0; j < result.size(); ++j) {
       ASSERT_EQ(result[j].key() / 10 % 10, i);
@@ -1583,9 +1583,9 @@ TEST_F(FlatSparseStreamerTest, TestGroupByNotEnoughNum) {
     return std::string("g_") + std::to_string(group_id);
   };
 
-  size_t group_topk = 200;
+  size_t topk_per_group = 200;
   size_t group_num = 12;
-  ctx->set_group_params(group_num, group_topk);
+  ctx->set_group_params(group_num, topk_per_group);
   ctx->set_group_by(groupbyFunc);
 
   std::vector<std::string> expect_group_ids = {
@@ -1611,7 +1611,7 @@ TEST_F(FlatSparseStreamerTest, TestGroupByNotEnoughNum) {
 
     ASSERT_EQ(group_id, expect_group_ids[i]);
 
-    ASSERT_GE(result.size(), group_topk);
+    ASSERT_GE(result.size(), topk_per_group);
 
     for (uint32_t j = 0; j < result.size(); ++j) {
       ASSERT_EQ(result[j].key() / 10 % 10, i);

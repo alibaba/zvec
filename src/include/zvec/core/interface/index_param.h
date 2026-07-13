@@ -169,7 +169,7 @@ struct RefinerParam {
 
 // --- GroupBy Parameters ---
 struct GroupByParam {
-  uint32_t group_topk{0};
+  uint32_t topk_per_group{0};
   uint32_t group_count{0};
   std::function<std::string(uint64_t key)> group_by{};
 };

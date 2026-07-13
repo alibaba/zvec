@@ -20,11 +20,10 @@ from zvec._zvec import _Collection
 from zvec._zvec.param import _GroupByVectorQuery
 
 from ..executor import QueryContext, QueryExecutor
-from ..executor.query_executor import DTYPE_MAP, convert_to_numpy
 from ..extension import ReRanker
 from ..typing import Status
 from .convert import convert_to_cpp_doc, convert_to_py_doc
-from .doc import Doc, DocList
+from .doc import Doc, DocList, GroupResult
 from .param import (
     AddColumnOption,
     AlterColumnOption,
@@ -38,10 +37,15 @@ from .param import (
     IVFIndexParam,
     OptimizeOption,
 )
-from .param.query import GroupByQuery, Query
+from .param.query import Query
 from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
+
+
+def _require_positive_integer(value, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
 
 
 class Collection:
@@ -440,92 +444,79 @@ class Collection:
         )
         return self._querier.execute(ctx, self._obj)
 
-    def groupby_query(self, query: GroupByQuery) -> list[dict]:
+    def group_by_query(
+        self,
+        query: Query,
+        group_by_field_name: str,
+        group_count=2,
+        topk_per_group=3,
+        *,
+        filter: Optional[str] = None,
+        include_vector: bool = False,
+        output_fields: Optional[list[str]] = None,
+    ) -> list[GroupResult]:
         """Perform group-by vector search.
 
         Groups results by a scalar field value, returning the top-k documents
         within each group, ordered by similarity score.
 
+        Accepts a single vector Query. Full-text search is not supported.
+
         Args:
-            query (GroupByQuery): Group-by query configuration including the
-                vector field to search, the scalar field to group by, and
-                grouping parameters.
+            query (Query): Vector query.
+            group_by_field_name (str): Scalar field used to group results.
+            group_count (int): Maximum number of groups to return.
+            topk_per_group (int): Maximum number of documents in each group.
+            filter (Optional[str]): Boolean expression used to filter candidates.
+            include_vector (bool): Whether returned documents include vectors.
+            output_fields (Optional[list[str]]): Scalar fields to return.
 
         Returns:
-            list[dict]: A list of group dictionaries, each containing:
-                - ``group_by_value`` (str): The value of the group-by field.
-                - ``docs`` (list[Doc]): Documents in this group, sorted by score.
+            list[GroupResult]: Grouped documents sorted by score.
 
         Examples:
-            >>> from zvec import GroupByQuery, HnswQueryParam
-            >>> results = collection.groupby_query(
-            ...     GroupByQuery(
+            >>> results = collection.group_by_query(
+            ...     zvec.Query(
             ...         field_name="embedding",
-            ...         group_by_field_name="category",
             ...         vector=[0.1, 0.2, 0.3],
-            ...         param=HnswQueryParam(ef=300),
-            ...         group_count=5,
-            ...         group_topk=3,
-            ...     )
+            ...         param=zvec.HnswQueryParam(ef=300),
+            ...     ),
+            ...     group_by_field_name="category",
+            ...     group_count=5,
+            ...     topk_per_group=3,
             ... )
             >>> for group in results:
-            ...     print(group["group_by_value"], len(group["docs"]))
+            ...     print(group.group_by_value, len(group.docs))
         """
-
-        cpp_query = self._build_groupby_query(query)
-        raw_results = self._obj.GroupByQuery(cpp_query)
-
-        # Convert _Doc objects to Python Doc objects
-        return [
-            {
-                "group_by_value": group["group_by_value"],
-                "docs": [convert_to_py_doc(doc, self.schema) for doc in group["docs"]],
-            }
-            for group in raw_results
-        ]
-
-    def _build_groupby_query(self, query: GroupByQuery):
-        """Convert a Python GroupByQuery to a C++ _GroupByVectorQuery."""
+        query._validate()
+        if query.has_fts():
+            raise ValueError("Group by query does not support FTS")
+        if not query.has_vector() and not query.has_id():
+            raise ValueError("Group by query requires a vector or document id")
+        if not group_by_field_name:
+            raise ValueError("group_by_field_name cannot be empty")
+        _require_positive_integer(group_count, "group_count")
+        _require_positive_integer(topk_per_group, "topk_per_group")
         cpp_query = _GroupByVectorQuery()
         cpp_query.field_name = query.field_name
-        cpp_query.group_by_field_name = query.group_by_field_name
-        cpp_query.group_count = query.group_count
-        cpp_query.group_topk = query.group_topk
-        cpp_query.include_vector = query.include_vector
-
-        if query.filter:
-            cpp_query.filter = query.filter
-        if query.output_fields is not None:
-            cpp_query.output_fields = query.output_fields
+        cpp_query.group_by_field_name = group_by_field_name
+        cpp_query.group_count = group_count
+        cpp_query.topk_per_group = topk_per_group
+        cpp_query.include_vector = include_vector
+        if filter:
+            cpp_query.filter = filter
+        if output_fields is not None:
+            cpp_query.output_fields = output_fields
         if query.param:
             cpp_query.query_params = query.param
+        self._querier.set_query_vector(query, cpp_query, self._obj)
 
-        # Resolve vector
-        vec_data = None
-        if query.vector is not None and len(query.vector) > 0:
-            vec_data = query.vector
-        elif query.id is not None:
-            fetched = self._obj.Fetch([query.id])
-            doc = next(iter(fetched.values()), None)
-            if not doc:
-                raise ValueError(f"Document with id '{query.id}' not found")
-            vector_schema = self._schema.vector(query.field_name)
-            if not vector_schema:
-                raise ValueError(
-                    f"Vector field '{query.field_name}' not found in schema"
-                )
-            vec_data = doc.get_any(vector_schema.name, vector_schema.data_type)
+        raw_results = self._obj.GroupByQuery(cpp_query)
 
-        if vec_data is not None:
-            vector_schema = self._schema.vector(query.field_name)
-            if not vector_schema:
-                raise ValueError(
-                    f"Vector field '{query.field_name}' not found in schema"
-                )
-            target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
-            cpp_query.set_vector(
-                vector_schema._get_object(),
-                convert_to_numpy(vec_data, target_dtype) if target_dtype else vec_data,
+        return [
+            GroupResult(
+                group_by_value=group["group_by_value"],
+                docs=[convert_to_py_doc(doc, self.schema) for doc in group["docs"]],
             )
-
-        return cpp_query
+            for group in raw_results
+        ]

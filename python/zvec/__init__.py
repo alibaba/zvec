@@ -86,7 +86,7 @@ from .model import schema as schema
 
 # —— Core data structures ——
 from .model.collection import Collection
-from .model.doc import Doc, DocList
+from .model.doc import Doc, DocList, GroupResult
 
 # —— Query & index parameters ——
 # —— FTS params (C++ binding) ——
@@ -112,7 +112,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Fts, GroupByQuery, Query, VectorQuery
+from .model.param.query import Fts, Query, VectorQuery
 
 # —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
@@ -152,7 +152,7 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
-    "GroupByQuery",
+    "GroupResult",
     "Query",
     "VectorQuery",
     "Fts",

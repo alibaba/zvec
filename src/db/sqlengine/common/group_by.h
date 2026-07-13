@@ -26,19 +26,20 @@ struct GroupBy {
 
   GroupBy() = default;
 
-  GroupBy(std::string group_by_field, uint32_t group_topk, uint32_t group_count)
+  GroupBy(std::string group_by_field, uint32_t topk_per_group,
+          uint32_t group_count)
       : group_by_field(std::move(group_by_field)),
-        group_topk(group_topk),
+        topk_per_group(topk_per_group),
         group_count(group_count) {}
 
   std::string to_string() {
     return ailego::StringHelper::Concat("field[", group_by_field, "] topk[",
-                                        group_topk, "] count[", group_count,
+                                        topk_per_group, "] count[", group_count,
                                         "]");
   }
 
   std::string group_by_field;
-  uint32_t group_topk{0};
+  uint32_t topk_per_group{0};
   uint32_t group_count{0};
 };
 

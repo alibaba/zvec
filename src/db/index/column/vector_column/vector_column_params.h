@@ -75,13 +75,13 @@ struct MergeOptions {
 };
 
 struct GroupByParams {
-  GroupByParams(uint32_t group_topk, uint32_t group_count,
+  GroupByParams(uint32_t topk_per_group, uint32_t group_count,
                 std::function<std::string(uint64_t key)> group_by)
-      : group_topk(group_topk),
+      : topk_per_group(topk_per_group),
         group_count(group_count),
         group_by(std::move(group_by)) {}
 
-  uint32_t group_topk{0};
+  uint32_t topk_per_group{0};
   uint32_t group_count{0};
   std::function<std::string(uint64_t key)> group_by{};
 };

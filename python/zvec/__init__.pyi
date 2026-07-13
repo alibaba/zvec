@@ -11,7 +11,7 @@ from .extension import ReRanker, RrfReRanker, WeightedReRanker
 from .extension.embedding import DenseEmbeddingFunction
 from .model import param, schema
 from .model.collection import Collection
-from .model.doc import Doc, DocList
+from .model.doc import Doc, DocList, GroupResult
 from .model.param import (
     AddColumnOption,
     AlterColumnOption,
@@ -34,7 +34,7 @@ from .model.param import (
     VamanaIndexParam,
     VamanaQueryParam,
 )
-from .model.param.query import Fts, GroupByQuery, Query, VectorQuery
+from .model.param.query import Fts, Query, VectorQuery
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
 from .tool import require_module
 from .typing import (
@@ -66,7 +66,7 @@ __all__: list = [
     "Fts",
     "FtsIndexParam",
     "FtsQueryParam",
-    "GroupByQuery",
+    "GroupResult",
     "HnswIndexParam",
     "HnswQueryParam",
     "HnswRabitqIndexParam",

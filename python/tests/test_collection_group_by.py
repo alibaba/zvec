@@ -22,10 +22,12 @@ from zvec import (
     Doc,
     FieldSchema,
     FlatIndexParam,
-    GroupByQuery,
+    Fts,
+    GroupResult,
     HnswIndexParam,
     HnswQueryParam,
     InvertIndexParam,
+    Query,
     VectorSchema,
 )
 
@@ -34,14 +36,14 @@ from zvec import (
 GB_DIMENSION = 4
 GB_NUM_DOCS = 12
 GB_NUM_GROUPS = 3
-GB_GROUP_TOPK = 2
+GB_TOPK_PER_GROUP = 2
 
 
 # ==================== Fixtures ====================
 
 
 @pytest.fixture(scope="session")
-def groupby_collection_schema():
+def group_by_collection_schema():
     """Collection schema for group-by end-to-end tests.
 
     Mirrors the data layout in ``vector_column_indexer_test.cc``:
@@ -49,7 +51,7 @@ def groupby_collection_schema():
     for grouping.
     """
     return zvec.CollectionSchema(
-        name="test_groupby_collection",
+        name="test_group_by_collection",
         fields=[
             FieldSchema(
                 "id",
@@ -87,7 +89,7 @@ def collection_option():
 
 
 @pytest.fixture
-def groupby_docs():
+def group_by_docs():
     """Generate docs matching the C++ GroupByIndexerTest fixture.
 
     Doc ``i`` has vector ``[i, i, i, i]`` and ``group_id = i % 3``.
@@ -106,22 +108,22 @@ def groupby_docs():
 
 
 @pytest.fixture(scope="function")
-def groupby_collection(
-    tmp_path_factory, groupby_collection_schema, collection_option
+def group_by_collection(
+    tmp_path_factory, group_by_collection_schema, collection_option
 ) -> Collection:
     """Function-scoped fixture: creates and opens a collection for group-by tests."""
-    temp_dir = tmp_path_factory.mktemp("zvec_groupby")
-    collection_path = temp_dir / "test_groupby_collection"
+    temp_dir = tmp_path_factory.mktemp("zvec_group_by")
+    collection_path = temp_dir / "test_group_by_collection"
 
     coll = zvec.create_and_open(
         path=str(collection_path),
-        schema=groupby_collection_schema,
+        schema=group_by_collection_schema,
         option=collection_option,
     )
 
     assert coll is not None, "Failed to create and open group-by collection"
     assert coll.path == str(collection_path)
-    assert coll.schema.name == groupby_collection_schema.name
+    assert coll.schema.name == group_by_collection_schema.name
 
     try:
         yield coll
@@ -134,32 +136,32 @@ def groupby_collection(
 
 
 @pytest.fixture
-def groupby_collection_with_docs(
-    groupby_collection: Collection, groupby_docs
+def group_by_collection_with_docs(
+    group_by_collection: Collection, group_by_docs
 ) -> Collection:
     """Setup: insert group-by fixture docs."""
-    assert groupby_collection.stats.doc_count == 0
-    result = groupby_collection.insert(groupby_docs)
-    assert len(result) == len(groupby_docs)
+    assert group_by_collection.stats.doc_count == 0
+    result = group_by_collection.insert(group_by_docs)
+    assert len(result) == len(group_by_docs)
     for item in result:
         assert item.ok()
-    assert groupby_collection.stats.doc_count == len(groupby_docs)
+    assert group_by_collection.stats.doc_count == len(group_by_docs)
 
-    yield groupby_collection
+    yield group_by_collection
 
     # Teardown
-    groupby_collection.delete([doc.id for doc in groupby_docs])
+    group_by_collection.delete([doc.id for doc in group_by_docs])
 
 
 # ==================== Helpers ====================
 
 
-def _assert_grouped_results(results, num_groups, group_topk, query_value):
+def _assert_grouped_results(results, num_groups, topk_per_group, query_value):
     """Validate group-by result structure and ordering.
 
     Each returned group must:
       - contain only docs whose ``group_id`` matches ``group_by_value``
-      - have at most ``group_topk`` docs
+      - have at most ``topk_per_group`` docs
       - have docs sorted by descending score
     """
     assert len(results) == num_groups, (
@@ -168,10 +170,11 @@ def _assert_grouped_results(results, num_groups, group_topk, query_value):
 
     group_values = set()
     for group in results:
-        group_value = int(group["group_by_value"])
+        assert isinstance(group, GroupResult)
+        group_value = int(group.group_by_value)
         group_values.add(group_value)
-        docs = group["docs"]
-        assert 1 <= len(docs) <= group_topk
+        docs = group.docs
+        assert 1 <= len(docs) <= topk_per_group
 
         for doc in docs:
             assert int(doc.field("group_id")) == group_value
@@ -194,116 +197,152 @@ def _assert_grouped_results(results, num_groups, group_topk, query_value):
 # ==================== Tests ====================
 
 
-@pytest.mark.usefixtures("groupby_collection_with_docs")
+@pytest.mark.usefixtures("group_by_collection_with_docs")
 class TestGroupBySearch:
-    def test_groupby_hnsw(self, groupby_collection: Collection):
+    def test_group_by_defaults(self, group_by_collection: Collection):
+        results = group_by_collection.group_by_query(
+            Query(field_name="dense_flat", vector=[1.0] * GB_DIMENSION),
+            group_by_field_name="group_id",
+        )
+        assert len(results) == 2
+        assert all(1 <= len(group.docs) <= 3 for group in results)
+
+    def test_group_by_hnsw(self, group_by_collection: Collection):
         """Group-by search over an HNSW index."""
         query_vector = [1.0] * GB_DIMENSION
-        results = groupby_collection.groupby_query(
-            GroupByQuery(
-                field_name="dense",
-                group_by_field_name="group_id",
-                vector=query_vector,
-                param=HnswQueryParam(ef=300),
-                group_count=GB_NUM_GROUPS,
-                group_topk=GB_GROUP_TOPK,
-            )
+        results = group_by_collection.group_by_query(
+            Query(
+                field_name="dense", vector=query_vector, param=HnswQueryParam(ef=300)
+            ),
+            group_by_field_name="group_id",
+            group_count=GB_NUM_GROUPS,
+            topk_per_group=GB_TOPK_PER_GROUP,
         )
-        _assert_grouped_results(results, GB_NUM_GROUPS, GB_GROUP_TOPK, query_vector)
+        _assert_grouped_results(results, GB_NUM_GROUPS, GB_TOPK_PER_GROUP, query_vector)
 
-    def test_groupby_flat(self, groupby_collection: Collection):
+    def test_group_by_flat(self, group_by_collection: Collection):
         """Group-by search over a FLAT index."""
         query_vector = [1.0] * GB_DIMENSION
-        results = groupby_collection.groupby_query(
-            GroupByQuery(
-                field_name="dense_flat",
-                group_by_field_name="group_id",
-                vector=query_vector,
-                group_count=GB_NUM_GROUPS,
-                group_topk=GB_GROUP_TOPK,
-            )
+        results = group_by_collection.group_by_query(
+            Query(field_name="dense_flat", vector=query_vector),
+            group_by_field_name="group_id",
+            group_count=GB_NUM_GROUPS,
+            topk_per_group=GB_TOPK_PER_GROUP,
         )
-        _assert_grouped_results(results, GB_NUM_GROUPS, GB_GROUP_TOPK, query_vector)
+        _assert_grouped_results(results, GB_NUM_GROUPS, GB_TOPK_PER_GROUP, query_vector)
 
-    def test_groupby_with_filter(self, groupby_collection: Collection):
+    def test_group_by_with_filter(self, group_by_collection: Collection):
         """Group-by search with a scalar filter."""
         query_vector = [1.0] * GB_DIMENSION
-        results = groupby_collection.groupby_query(
-            GroupByQuery(
-                field_name="dense_flat",
-                group_by_field_name="group_id",
-                vector=query_vector,
-                filter="id < 6",
-                group_count=GB_NUM_GROUPS,
-                group_topk=GB_GROUP_TOPK,
-            )
+        results = group_by_collection.group_by_query(
+            Query(field_name="dense_flat", vector=query_vector),
+            group_by_field_name="group_id",
+            group_count=GB_NUM_GROUPS,
+            topk_per_group=GB_TOPK_PER_GROUP,
+            filter="id < 6",
         )
         # Only docs 0..5 are visible; every group still has at least one doc.
         assert len(results) == GB_NUM_GROUPS
         for group in results:
-            for doc in group["docs"]:
+            for doc in group.docs:
                 assert int(doc.field("id")) < 6
 
-    def test_groupby_include_vector(self, groupby_collection: Collection):
+    def test_group_by_include_vector(self, group_by_collection: Collection):
         """Group-by search returns original vectors when requested."""
         query_vector = [1.0] * GB_DIMENSION
-        results = groupby_collection.groupby_query(
-            GroupByQuery(
-                field_name="dense_flat",
-                group_by_field_name="group_id",
-                vector=query_vector,
-                include_vector=True,
-                group_count=GB_NUM_GROUPS,
-                group_topk=GB_GROUP_TOPK,
-            )
+        results = group_by_collection.group_by_query(
+            Query(field_name="dense_flat", vector=query_vector),
+            group_by_field_name="group_id",
+            group_count=GB_NUM_GROUPS,
+            topk_per_group=GB_TOPK_PER_GROUP,
+            include_vector=True,
         )
         assert len(results) == GB_NUM_GROUPS
         for group in results:
-            for doc in group["docs"]:
+            for doc in group.docs:
                 vec = doc.vector("dense_flat")
                 doc_id = int(doc.field("id"))
                 assert vec == pytest.approx([float(doc_id)] * GB_DIMENSION, abs=1e-5)
 
-    def test_groupby_output_fields(self, groupby_collection: Collection):
+    def test_group_by_output_fields(self, group_by_collection: Collection):
         """Group-by search honors scalar output field selection."""
         query_vector = [1.0] * GB_DIMENSION
-        results = groupby_collection.groupby_query(
-            GroupByQuery(
-                field_name="dense_flat",
-                group_by_field_name="group_id",
-                vector=query_vector,
-                output_fields=["group_id"],
-                group_count=GB_NUM_GROUPS,
-                group_topk=GB_GROUP_TOPK,
-            )
+        results = group_by_collection.group_by_query(
+            Query(field_name="dense_flat", vector=query_vector),
+            group_by_field_name="group_id",
+            group_count=GB_NUM_GROUPS,
+            topk_per_group=GB_TOPK_PER_GROUP,
+            output_fields=["group_id"],
         )
         assert len(results) == GB_NUM_GROUPS
         for group in results:
-            for doc in group["docs"]:
+            for doc in group.docs:
                 assert doc.has_field("group_id")
 
-    def test_groupby_invalid_field(self, groupby_collection: Collection):
+    def test_group_by_invalid_field(self, group_by_collection: Collection):
         """Group-by with a non-existent vector field raises an error."""
         with pytest.raises(ValueError):
-            groupby_collection.groupby_query(
-                GroupByQuery(
-                    field_name="nonexistent",
-                    group_by_field_name="group_id",
-                    vector=[1.0] * GB_DIMENSION,
-                )
+            group_by_collection.group_by_query(
+                Query(field_name="nonexistent", vector=[1.0] * GB_DIMENSION),
+                group_by_field_name="group_id",
+            )
+
+    def test_group_by_query_by_id(self, group_by_collection: Collection):
+        results = group_by_collection.group_by_query(
+            Query(field_name="dense_flat", id="11"),
+            group_by_field_name="group_id",
+            group_count=GB_NUM_GROUPS,
+            topk_per_group=GB_TOPK_PER_GROUP,
+        )
+        assert len(results) == GB_NUM_GROUPS
+
+    @pytest.mark.parametrize(
+        ("query", "error"),
+        [
+            (Query(field_name="content", fts=Fts(match_string="text")), "FTS"),
+            (Query(field_name="dense_flat"), "vector or document id"),
+        ],
+    )
+    def test_group_by_rejects_unsupported_query(
+        self, group_by_collection: Collection, query: Query, error: str
+    ):
+        with pytest.raises(ValueError, match=error):
+            group_by_collection.group_by_query(query, "group_id")
+
+    @pytest.mark.parametrize(
+        ("kwargs", "error"),
+        [
+            ({"group_by_field_name": ""}, "group_by_field_name"),
+            ({"group_by_field_name": "group_id", "group_count": 0}, "group_count"),
+            (
+                {"group_by_field_name": "group_id", "topk_per_group": 0},
+                "topk_per_group",
+            ),
+        ],
+    )
+    def test_group_by_rejects_invalid_group_params(
+        self, group_by_collection: Collection, kwargs: dict, error: str
+    ):
+        with pytest.raises(ValueError, match=error):
+            group_by_collection.group_by_query(
+                Query(field_name="dense_flat", vector=[1.0] * GB_DIMENSION),
+                **kwargs,
             )
 
 
 class TestGroupByEmptyCollection:
-    def test_groupby_empty_collection(self, groupby_collection: Collection):
+    def test_group_by_empty_collection(self, group_by_collection: Collection):
         """Group-by on an empty collection returns an empty list."""
-        results = groupby_collection.groupby_query(
-            GroupByQuery(
-                field_name="dense_flat",
-                group_by_field_name="group_id",
-                vector=[1.0] * GB_DIMENSION,
-                group_count=GB_NUM_GROUPS,
-                group_topk=GB_GROUP_TOPK,
-            )
+        results = group_by_collection.group_by_query(
+            Query(field_name="dense_flat", vector=[1.0] * GB_DIMENSION),
+            group_by_field_name="group_id",
+            group_count=GB_NUM_GROUPS,
+            topk_per_group=GB_TOPK_PER_GROUP,
         )
         assert results == []
+
+
+def test_group_by_public_api_exports():
+    assert zvec.GroupResult is GroupResult
+    assert not hasattr(zvec, "GroupByQuery")
+    assert not hasattr(Collection, "groupby_query")

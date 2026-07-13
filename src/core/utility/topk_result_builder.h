@@ -32,11 +32,11 @@ namespace core {
 //! contexts inherit from this base and supply the small set of accessors and
 //! hooks listed below (make this base a `friend` if any of them are private):
 //!   - HeapT &topk_heap();
-//!   - std::map<std::string, HeapT> &group_topk_heaps();
+//!   - std::map<std::string, HeapT> &topk_per_group_heaps();
 //!   - ResultList &mutable_results();        // std::vector<IndexDocumentList>
 //!   - GroupList &mutable_group_results();   // std::vector<IndexGroupDocList>
 //!   - uint32_t topk() const;
-//!   - uint32_t group_topk() const;
+//!   - uint32_t topk_per_group() const;
 //!   - uint32_t group_num() const;
 //!   - float threshold() const;
 //!   - bool group_by_search();
@@ -88,10 +88,10 @@ class TopkResultBuilder {
     auto &group_results = derived().mutable_group_results();
     ailego_assert_with(idx < group_results.size(), "invalid idx");
 
-    auto &group_heaps = derived().group_topk_heaps();
+    auto &group_heaps = derived().topk_per_group_heaps();
     group_results[idx].clear();
 
-    std::vector<std::pair<std::string, HeapT>> group_topk_list;
+    std::vector<std::pair<std::string, HeapT>> topk_per_group_list;
     std::vector<std::pair<std::string, float>> best_score_in_groups;
     for (auto &entry : group_heaps) {
       HeapT &heap = entry.second;
@@ -112,17 +112,17 @@ class TopkResultBuilder {
     for (uint32_t i = 0;
          i < derived().group_num() && i < best_score_in_groups.size(); ++i) {
       const std::string &group_id = best_score_in_groups[i].first;
-      group_topk_list.emplace_back(group_id, group_heaps[group_id]);
+      topk_per_group_list.emplace_back(group_id, group_heaps[group_id]);
     }
 
-    group_results[idx].resize(group_topk_list.size());
-    for (uint32_t i = 0; i < group_topk_list.size(); ++i) {
-      const std::string &group_id = group_topk_list[i].first;
+    group_results[idx].resize(topk_per_group_list.size());
+    for (uint32_t i = 0; i < topk_per_group_list.size(); ++i) {
+      const std::string &group_id = topk_per_group_list[i].first;
       group_results[idx][i].set_group_id(group_id);
 
-      HeapT &heap = group_topk_list[i].second;
-      uint32_t size =
-          std::min(derived().group_topk(), static_cast<uint32_t>(heap.size()));
+      HeapT &heap = topk_per_group_list[i].second;
+      uint32_t size = std::min(derived().topk_per_group(),
+                               static_cast<uint32_t>(heap.size()));
       for (uint32_t j = 0; j < size; ++j) {
         float score = derived().result_score(heap[j].second);
         if (score > derived().threshold()) {

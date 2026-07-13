@@ -166,11 +166,12 @@ class GroupResultAccumulator {
     return docs_by_group_.empty();
   }
 
-  IndexResults::Ptr Finish(MetricType metric_type, uint32_t group_topk,
+  IndexResults::Ptr Finish(MetricType metric_type, uint32_t topk_per_group,
                            uint32_t group_count) {
-    // Finish first ranks docs inside each merged group and trims group_topk.
-    // It then ranks groups by their best remaining doc, trims group_count, and
-    // finally expands ResultDoc back into GroupVectorIndexResults payloads.
+    // Finish first ranks docs inside each merged group and trims
+    // topk_per_group. It then ranks groups by their best remaining doc, trims
+    // group_count, and finally expands ResultDoc back into
+    // GroupVectorIndexResults payloads.
     std::vector<GroupResult> groups;
     groups.reserve(docs_by_group_.size());
 
@@ -183,8 +184,8 @@ class GroupResultAccumulator {
                   return IsBetterScore(metric_type, lhs.doc.score(),
                                        rhs.doc.score());
                 });
-      if (group_topk > 0 && docs.size() > group_topk) {
-        docs.resize(group_topk);
+      if (topk_per_group > 0 && docs.size() > topk_per_group) {
+        docs.resize(topk_per_group);
       }
       groups.emplace_back(GroupResult{group_id, std::move(docs)});
     }
@@ -362,7 +363,8 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
       auto group_by_func = query_params.group_by->group_by;
       auto block_offset = block_offsets_[i];
       group_by = std::make_unique<vector_column_params::GroupByParams>(
-          query_params.group_by->group_topk, query_params.group_by->group_count,
+          query_params.group_by->topk_per_group,
+          query_params.group_by->group_count,
           [group_by_func = std::move(group_by_func),
            block_offset](uint64_t block_doc_id) {
             return group_by_func(block_doc_id + block_offset);
@@ -410,11 +412,11 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
   }
 
   if (!group_results.empty()) {
-    const uint32_t group_topk =
-        query_params.group_by ? query_params.group_by->group_topk : 0;
+    const uint32_t topk_per_group =
+        query_params.group_by ? query_params.group_by->topk_per_group : 0;
     const uint32_t group_count =
         query_params.group_by ? query_params.group_by->group_count : 0;
-    return group_results.Finish(metric_type_, group_topk, group_count);
+    return group_results.Finish(metric_type_, topk_per_group, group_count);
   }
   return vector_results.Finish(field_schema_.is_sparse_vector(), metric_type_,
                                query_params.topk);

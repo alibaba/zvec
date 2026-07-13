@@ -3223,7 +3223,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
     streamer->add_impl(i, vec.data(), qmeta, ctx);
   }
 
-  size_t group_topk = 20;
+  size_t topk_per_group = 20;
   uint64_t total_time = 0;
 
   auto groupbyFunc = [](uint64_t key) {
@@ -3234,7 +3234,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
 
   size_t group_num = 5;
 
-  ctx->set_group_params(group_num, group_topk);
+  ctx->set_group_params(group_num, topk_per_group);
   ctx->set_group_by(groupbyFunc);
 
   size_t query_value = cnt / 2;
@@ -3276,7 +3276,7 @@ TEST_F(HnswStreamerTest, TestGroup) {
 
   auto linear_pk_ctx = streamer->create_context();
 
-  linear_pk_ctx->set_group_params(group_num, group_topk);
+  linear_pk_ctx->set_group_params(group_num, topk_per_group);
   linear_pk_ctx->set_group_by(groupbyFuncLinear);
 
   std::vector<std::vector<uint64_t>> p_keys;
@@ -3338,7 +3338,7 @@ TEST_F(HnswStreamerTest, TestGroupNotEnoughNum) {
     streamer->add_impl(i, vec.data(), qmeta, ctx);
   }
 
-  size_t group_topk = 20;
+  size_t topk_per_group = 20;
   uint64_t total_time = 0;
 
   auto groupbyFunc = [](uint64_t key) {
@@ -3348,7 +3348,7 @@ TEST_F(HnswStreamerTest, TestGroupNotEnoughNum) {
   };
 
   size_t group_num = 12;
-  ctx->set_group_params(group_num, group_topk);
+  ctx->set_group_params(group_num, topk_per_group);
   ctx->set_group_by(groupbyFunc);
 
   size_t query_value = cnt / 2;
@@ -3415,7 +3415,7 @@ TEST_F(HnswStreamerTest, TestGroupInBruteforceSearch) {
     streamer->add_impl(i, vec.data(), qmeta, ctx);
   }
 
-  size_t group_topk = 20;
+  size_t topk_per_group = 20;
   uint64_t total_time = 0;
 
   auto groupbyFunc = [](uint64_t key) {
@@ -3425,7 +3425,7 @@ TEST_F(HnswStreamerTest, TestGroupInBruteforceSearch) {
   };
 
   size_t group_num = 5;
-  ctx->set_group_params(group_num, group_topk);
+  ctx->set_group_params(group_num, topk_per_group);
   ctx->set_group_by(groupbyFunc);
 
   size_t query_value = cnt / 2;

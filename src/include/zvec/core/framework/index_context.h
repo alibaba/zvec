@@ -19,7 +19,7 @@
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_filter.h>
-#include <zvec/core/framework/index_groupby.h>
+#include <zvec/core/framework/index_group_by.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_stats.h>
 
@@ -127,7 +127,7 @@ class IndexContext {
   }
 
   virtual void set_group_params(uint32_t /*group_mum*/,
-                                uint32_t /*group_topk*/){};
+                                uint32_t /*topk_per_group*/){};
 
   //! Set brute force threshold
   virtual void set_bruteforce_threshold(uint32_t /*bruteforce_threshold*/) {}

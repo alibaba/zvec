@@ -202,10 +202,10 @@ class HnswSparseContext : public IndexContext {
 
     group_results_[idx].clear();
 
-    std::vector<std::pair<std::string, TopkHeap>> group_topk_list;
+    std::vector<std::pair<std::string, TopkHeap>> topk_per_group_list;
     std::vector<std::pair<std::string, float>> best_score_in_groups;
-    for (auto itr = group_topk_heaps_.begin(); itr != group_topk_heaps_.end();
-         itr++) {
+    for (auto itr = topk_per_group_heaps_.begin();
+         itr != topk_per_group_heaps_.end(); itr++) {
       const std::string &group_id = (*itr).first;
       auto &heap = (*itr).second;
       heap.sort();
@@ -227,26 +227,27 @@ class HnswSparseContext : public IndexContext {
          ++i) {
       const std::string &group_id = best_score_in_groups[i].first;
 
-      group_topk_list.emplace_back(
-          std::make_pair(group_id, group_topk_heaps_[group_id]));
+      topk_per_group_list.emplace_back(
+          std::make_pair(group_id, topk_per_group_heaps_[group_id]));
     }
 
-    group_results_[idx].resize(group_topk_list.size());
+    group_results_[idx].resize(topk_per_group_list.size());
 
-    for (uint32_t i = 0; i < group_topk_list.size(); ++i) {
-      const std::string &group_id = group_topk_list[i].first;
+    for (uint32_t i = 0; i < topk_per_group_list.size(); ++i) {
+      const std::string &group_id = topk_per_group_list[i].first;
       group_results_[idx][i].set_group_id(group_id);
 
-      uint32_t size = std::min(
-          group_topk_, static_cast<uint32_t>(group_topk_list[i].second.size()));
+      uint32_t size =
+          std::min(topk_per_group_,
+                   static_cast<uint32_t>(topk_per_group_list[i].second.size()));
 
       for (uint32_t j = 0; j < size; ++j) {
-        auto score = group_topk_list[i].second[j].second;
+        auto score = topk_per_group_list[i].second[j].second;
         if (score > this->threshold()) {
           break;
         }
 
-        node_id_t id = group_topk_list[i].second[j].first;
+        node_id_t id = topk_per_group_list[i].second[j].first;
 
         if (fetch_vector_) {
           IndexSparseDocument sparse_doc;
@@ -354,8 +355,8 @@ class HnswSparseContext : public IndexContext {
     reset_group_by();
   }
 
-  inline std::map<std::string, TopkHeap> &group_topk_heaps() {
-    return group_topk_heaps_;
+  inline std::map<std::string, TopkHeap> &topk_per_group_heaps() {
+    return topk_per_group_heaps_;
   }
 
   inline TopkHeap &level_topk(int level) {
@@ -462,9 +463,9 @@ class HnswSparseContext : public IndexContext {
     return topk_;
   }
 
-  //! Get group topk
-  inline uint32_t group_topk() const {
-    return group_topk_;
+  //! Get the maximum number of results per group
+  inline uint32_t topk_per_group() const {
+    return topk_per_group_;
   }
 
   //! Get group num
@@ -478,15 +479,15 @@ class HnswSparseContext : public IndexContext {
   }
 
   //! Set group params
-  void set_group_params(uint32_t group_num, uint32_t group_topk) override {
+  void set_group_params(uint32_t group_num, uint32_t topk_per_group) override {
     group_num_ = group_num;
-    group_topk_ = group_topk;
+    topk_per_group_ = topk_per_group;
 
-    topk_ = group_topk_ * group_num_;
+    topk_ = topk_per_group_ * group_num_;
 
     topk_heap_.limit(std::max(topk_, ef_));
 
-    group_topk_heaps_.clear();
+    topk_per_group_heaps_.clear();
   }
 
  private:
@@ -508,7 +509,7 @@ class HnswSparseContext : public IndexContext {
   uint32_t min_scan_limit_{0};
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
-  uint32_t group_topk_{0};
+  uint32_t topk_per_group_{0};
   uint32_t filter_mode_{VisitFilter::ByteMap};
   float negative_probability_{HnswSparseEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswSparseEntity::kDefaultEf};
@@ -525,7 +526,7 @@ class HnswSparseContext : public IndexContext {
   bool fetch_vector_{false};
 
   uint32_t group_num_{0};
-  std::map<std::string, TopkHeap> group_topk_heaps_{};
+  std::map<std::string, TopkHeap> topk_per_group_heaps_{};
 
   uint32_t type_{kUnknownContext};
   //! debug stats info
