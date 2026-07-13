@@ -49,8 +49,8 @@ class HnswRabitqContext : public IndexContext {
  public:
   //! Set topk of search result
   void set_topk(uint32_t val) override {
-    topk_ = val;
-    topk_heap_.limit(std::max(val, ef_));
+    topk_ = group_by_search() ? group_topk_ * group_num_ : val;
+    topk_heap_.limit(std::max(topk_, ef_));
   }
 
   //! Retrieve search result

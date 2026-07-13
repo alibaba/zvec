@@ -149,7 +149,7 @@ int HNSWIndex::_prepare_for_search(
     return core::IndexError_Runtime;
   }
 
-  // this may reset topk for hnsw, so it should be executed before set_topk()
+  // Set group state first so set_topk() derives the effective candidate count.
   _set_group_by_on_context(search_param, context);
 
   context->set_topk(hnsw_search_param->topk);

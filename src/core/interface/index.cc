@@ -1032,10 +1032,9 @@ int Index::_get_coarse_search_topk(
 
 // Set or clear group-by state on a pooled context before each search.
 //
-// Side effect: set_group_params() may override the context's topk_ (e.g. in
-// HNSW/HNSW-RaBitQ).  Therefore _set_group_by_on_context() MUST be called
-// BEFORE set_topk() in _prepare_for_search() so that the subsequent set_topk()
-// restores the correct topk value.
+// Set group-by state before topk so contexts can derive the effective candidate
+// count from the active group parameters. This order also ensures pooled
+// contexts restore the ordinary topk after stale group-by state is cleared.
 void Index::_set_group_by_on_context(
     const BaseIndexQueryParam::Pointer &search_param,
     core::IndexContext::Pointer &context) {
