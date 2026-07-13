@@ -15,11 +15,11 @@
 #if defined(__ARM_NEON) && defined(__aarch64__)
 
 #include "fht.h"
-#include <arm_neon.h>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <arm_neon.h>
 
 namespace zvec::turbo::neon {
 
