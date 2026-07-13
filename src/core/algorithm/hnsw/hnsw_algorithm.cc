@@ -185,20 +185,20 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 // ============================================================================
 
 // mmap/contiguous variant: resolve vectors via get_vector_ptr and use
-// LinearPool or BlockHeap for visited tracking + top-k maintenance.
-// HeapType must expose reset/set_visited/check_visited/push_block/has_next/pop.
-template <typename EntityType, typename HeapType>
+// LinearPool or BlockHeap for top-k maintenance.
+// VisitImpl supplies inlined visited tracking (VisitBitMap/VisitByteMap/...).
+template <typename EntityType, typename HeapType, typename VisitImpl>
 void fast_search_neighbors(const EntityType &entity, HeapType &pool,
-                           VisitFilter &visit, HnswDistCalculator &dc,
-                           uint32_t topk, uint32_t ef, node_id_t entry_point,
-                           dist_t entry_dist, uint32_t prefetch_lines,
-                           uint32_t prefetch_offset) {
+                           HnswDistCalculator &dc, uint32_t topk, uint32_t ef,
+                           node_id_t entry_point, dist_t entry_dist,
+                           uint32_t prefetch_lines, uint32_t prefetch_offset,
+                           typename VisitImpl::Context *visit_ctx) {
   const uint32_t max_deg = entity.max_degree(0);  // level 0 only
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
-  visit.clear();
 
-  visit.set_visited(entry_point);
+  VisitImpl::clear(visit_ctx);
+  VisitImpl::set_visited(visit_ctx, entry_point);
   pool.push_block(&entry_dist, &entry_point, 1);
 
   uint32_t buf_capacity = max_deg;
@@ -227,8 +227,8 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
     // Phase 1: scan first `po` neighbors with prefetch.
     for (; i < po; ++i) {
       node_id_t node = neighbors[i];
-      if (visit.visited(node)) continue;
-      visit.set_visited(node);
+      if (VisitImpl::visited(visit_ctx, node)) continue;
+      VisitImpl::set_visited(visit_ctx, node);
       const void *vec_ptr = entity.get_vector_ptr(node);
       const char *p = reinterpret_cast<const char *>(vec_ptr);
       for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
@@ -242,8 +242,8 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
     // Phase 2: scan remaining neighbors.
     for (; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
-      if (visit.visited(node)) continue;
-      visit.set_visited(node);
+      if (VisitImpl::visited(visit_ctx, node)) continue;
+      VisitImpl::set_visited(visit_ctx, node);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
       unvisited_count++;
@@ -256,6 +256,51 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
                     static_cast<int32_t>(unvisited_count));
   }
 }
+
+template <typename EntityType>
+struct HnswFastSearchRunner {
+  const EntityType &entity;
+  HnswDistCalculator &dc;
+  HnswContext *ctx;
+  node_id_t entry_point;
+  dist_t entry_dist;
+  uint32_t topk_v;
+  uint32_t ef_v;
+  uint32_t prefetch_lines;
+  bool avx2_ok;
+  TopkHeap &topk;
+
+  void run(const VisitFilter &visit_filter) const {
+    dispatch_visit_filter(visit_filter, *this);
+  }
+
+  template <typename VisitImpl>
+  void operator()(typename VisitImpl::Context *visit_ctx) const {
+    if (avx2_ok) {
+      run_with_heap<BlockHeap, VisitImpl>(visit_ctx);
+    } else {
+      run_with_heap<LinearPool<float>, VisitImpl>(visit_ctx);
+    }
+  }
+
+ private:
+  template <typename HeapType, typename VisitImpl>
+  void run_with_heap(typename VisitImpl::Context *visit_ctx) const {
+    if constexpr (std::is_same_v<HeapType, BlockHeap>) {
+      auto &pool = ctx->block_pool();
+      fast_search_neighbors<EntityType, BlockHeap, VisitImpl>(
+          entity, pool, dc, topk_v, ef_v, entry_point, entry_dist,
+          prefetch_lines, ctx->po(), visit_ctx);
+      copy_pool_to_topk(pool, topk);
+    } else {
+      auto &pool = ctx->pool();
+      fast_search_neighbors<EntityType, LinearPool<float>, VisitImpl>(
+          entity, pool, dc, topk_v, ef_v, entry_point, entry_dist,
+          prefetch_lines, ctx->po(), visit_ctx);
+      copy_pool_to_topk(pool, topk);
+    }
+  }
+};
 
 // ============================================================================
 // dual_heap_search_neighbors: shared core for the fallback dual-heap path.
@@ -393,7 +438,6 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   HnswDistCalculator &dc = ctx->dist_calculator();
 
   if (!use_pool || ctx->filter().is_valid() || level != 0) {
-    // Dual-heap path: add_node, filtered search, or upper-level scan.
     auto run_with_filter = [&](auto &&filter) {
       dual_heap_search_neighbors<EntityType, MemBlockType>(
           entity, level, entry_point, dist, topk, ctx, dc,
@@ -409,38 +453,22 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
       auto filter = [](node_id_t) { return false; };
       run_with_filter(filter);
     }
+  } else if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+    const uint32_t prefetch_lines =
+        ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+    const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
+    const uint32_t ef_v = ctx->ef();
+    const bool avx2_ok =
+        zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+
+    HnswFastSearchRunner<EntityType>{entity,  dc,     ctx,  *entry_point,
+                                     *dist,   topk_v, ef_v, prefetch_lines,
+                                     avx2_ok, topk}
+        .run(ctx->visit_filter());
   } else {
-    // Pool-based path for level-0 unfiltered search.
-    if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
-      const uint32_t prefetch_lines =
-          ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
-
-      // Fast path: direct pointer access via get_vector_ptr.
-      // BlockHeap (AVX2) or LinearPool (scalar) for top-k tracking.
-      const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
-      const uint32_t ef_v = ctx->ef();
-      const bool avx2_ok =
-          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-
-      auto &visit = ctx->visit_filter();
-
-      if (avx2_ok) {
-        auto &bpool = ctx->block_pool();
-        fast_search_neighbors(entity, bpool, visit, dc, topk_v, ef_v,
-                              *entry_point, *dist, prefetch_lines, ctx->po());
-        copy_pool_to_topk(bpool, topk);
-      } else {
-        auto &lpool = ctx->pool();
-        fast_search_neighbors(entity, lpool, visit, dc, topk_v, ef_v,
-                              *entry_point, *dist, prefetch_lines, ctx->po());
-        copy_pool_to_topk(lpool, topk);
-      }
-    } else {
-      // BufferPool entities: fallback to dual-heap path.
-      auto filter = [](node_id_t) { return false; };
-      dual_heap_search_neighbors<EntityType, MemBlockType>(
-          entity, level, entry_point, dist, topk, ctx, dc, filter);
-    }
+    auto filter = [](node_id_t) { return false; };
+    dual_heap_search_neighbors<EntityType, MemBlockType>(
+        entity, level, entry_point, dist, topk, ctx, dc, filter);
   }
 }
 

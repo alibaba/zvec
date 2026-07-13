@@ -288,7 +288,7 @@ static ailego_force_inline void ip_int8_batch_avx512_vnni(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances) {
   static constexpr size_t batch_size = 2;
-  static constexpr size_t prefetch_step = 2;
+  const size_t prefetch_step = dim > 256 ? 2 : 4;
   size_t i = 0;
   for (; i + batch_size <= n; i += batch_size) {
     std::array<const void *, batch_size> prefetch_ptrs;
