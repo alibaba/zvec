@@ -1409,7 +1409,7 @@ TEST(FlatSearcher, TestGroup) {
 
   NumericalVector<float> vec(dim);
   IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
-  size_t topk_per_group = 20;
+  size_t group_topk = 20;
   uint64_t total_time = 0;
 
   auto groupbyFunc = [](uint64_t key) {
@@ -1422,7 +1422,7 @@ TEST(FlatSearcher, TestGroup) {
 
   size_t group_num = 5;
 
-  ctx->set_group_params(group_num, topk_per_group);
+  ctx->set_group_params(group_num, group_topk);
   ctx->set_group_by(groupbyFunc);
 
   size_t query_value = doc_cnt / 2;
@@ -1462,7 +1462,7 @@ TEST(FlatSearcher, TestGroup) {
 
   auto linear_pk_ctx = searcher->create_context();
 
-  linear_pk_ctx->set_group_params(group_num, topk_per_group);
+  linear_pk_ctx->set_group_params(group_num, group_topk);
   linear_pk_ctx->set_group_by(groupbyFuncLinear);
 
   std::vector<std::vector<uint64_t>> p_keys;

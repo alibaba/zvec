@@ -95,10 +95,10 @@ static inline int FlatSearch(const uint32_t *sparse_count,
       if (with_p_keys) {
         ret = entity->search_group_p_keys(sparse_query_buffer, p_keys[q],
                                           ctx->filter(), group_by,
-                                          ctx->topk_per_group(), &group_heap);
+                                          ctx->group_topk(), &group_heap);
       } else {
         ret = entity->search_group(sparse_query_buffer, ctx->filter(), group_by,
-                                   ctx->topk_per_group(), &group_heap);
+                                   ctx->group_topk(), &group_heap);
       }
 
       if (ailego_unlikely(ret != 0)) {

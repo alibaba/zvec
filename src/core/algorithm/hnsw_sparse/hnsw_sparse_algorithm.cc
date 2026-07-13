@@ -292,23 +292,22 @@ void HnswSparseAlgorithm::expand_neighbors_by_group(
   };
 
   // devide into groups
-  std::map<std::string, TopkHeap> &topk_per_group_heaps =
-      ctx->topk_per_group_heaps();
+  std::map<std::string, TopkHeap> &group_topk_heaps = ctx->group_topk_heaps();
   for (uint32_t i = 0; i < topk.size(); ++i) {
     node_id_t id = topk[i].first;
     auto score = topk[i].second;
 
     std::string group_id = group_by(id);
 
-    auto &topk_heap = topk_per_group_heaps[group_id];
+    auto &topk_heap = group_topk_heaps[group_id];
     if (topk_heap.empty()) {
-      topk_heap.limit(ctx->topk_per_group());
+      topk_heap.limit(ctx->group_topk());
     }
     topk_heap.emplace_back(id, score);
   }
 
   // stage 2, expand to reach group num as possible
-  if (topk_per_group_heaps.size() < ctx->group_num()) {
+  if (group_topk_heaps.size() < ctx->group_num()) {
     VisitFilter &visit = ctx->visit_filter();
     CandidateHeap &candidates = ctx->candidates();
     HnswSparseDistCalculator &dc = ctx->dist_calculator();
@@ -379,13 +378,13 @@ void HnswSparseAlgorithm::expand_neighbors_by_group(
         if (!filter(node)) {
           std::string group_id = group_by(node);
 
-          auto &topk_heap = topk_per_group_heaps[group_id];
+          auto &topk_heap = group_topk_heaps[group_id];
           if (topk_heap.empty()) {
-            topk_heap.limit(ctx->topk_per_group());
+            topk_heap.limit(ctx->group_topk());
           }
           topk_heap.emplace_back(node, cur_dist);
 
-          if (topk_per_group_heaps.size() >= ctx->group_num()) {
+          if (group_topk_heaps.size() >= ctx->group_num()) {
             break;
           }
         }

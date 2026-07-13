@@ -1042,7 +1042,7 @@ void Index::_set_group_by_on_context(
   if (search_param->group_by_param && search_param->group_by_param->group_by) {
     context->set_group_by(search_param->group_by_param->group_by);
     context->set_group_params(search_param->group_by_param->group_count,
-                              search_param->group_by_param->topk_per_group);
+                              search_param->group_by_param->group_topk);
   } else {
     context->set_group_params(0, 0);
     context->reset_group_by();

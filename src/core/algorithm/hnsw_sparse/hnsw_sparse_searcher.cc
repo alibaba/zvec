@@ -332,7 +332,7 @@ int HnswSparseSearcher::search_bf_impl(
 
       ctx->reset_query(sparse_query_buffer.data());
 
-      ctx->topk_per_group_heaps().clear();
+      ctx->group_topk_heaps().clear();
 
       for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
         if (entity_.get_key(id) == kInvalidKey) {
@@ -344,9 +344,9 @@ int HnswSparseSearcher::search_bf_impl(
 
           std::string group_id = group_by(id);
 
-          auto &topk_heap = ctx->topk_per_group_heaps()[group_id];
+          auto &topk_heap = ctx->group_topk_heaps()[group_id];
           if (topk_heap.empty()) {
-            topk_heap.limit(ctx->topk_per_group());
+            topk_heap.limit(ctx->group_topk());
           }
           topk_heap.emplace_back(id, dist);
         }
@@ -444,7 +444,7 @@ int HnswSparseSearcher::search_bf_by_p_keys_impl(
           entity_.sparse_unit_size(), sparse_query_buffer);
 
       ctx->reset_query(sparse_query_buffer.data());
-      ctx->topk_per_group_heaps().clear();
+      ctx->group_topk_heaps().clear();
 
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         uint64_t pk = p_keys[q][idx];
@@ -455,9 +455,9 @@ int HnswSparseSearcher::search_bf_by_p_keys_impl(
 
             std::string group_id = group_by(id);
 
-            auto &topk_heap = ctx->topk_per_group_heaps()[group_id];
+            auto &topk_heap = ctx->group_topk_heaps()[group_id];
             if (topk_heap.empty()) {
-              topk_heap.limit(ctx->topk_per_group());
+              topk_heap.limit(ctx->group_topk());
             }
             topk_heap.emplace_back(id, dist);
           }

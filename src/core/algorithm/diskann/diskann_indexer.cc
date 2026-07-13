@@ -969,8 +969,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
   auto &topk_heap = ctx->topk_heap();
   auto &visit_filter = ctx->visit_filter();
 
-  std::map<std::string, TopkHeap> &topk_per_group_heaps =
-      ctx->topk_per_group_heaps();
+  std::map<std::string, TopkHeap> &group_topk_heaps = ctx->group_topk_heaps();
 
   for (uint32_t i = 0; i < topk_heap.size(); ++i) {
     diskann_id_t id = topk_heap[i].first;
@@ -978,16 +977,16 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
     std::string group_id = group_by(id);
 
-    auto &topk_per_group_heap = topk_per_group_heaps[group_id];
-    if (topk_per_group_heap.empty()) {
-      topk_per_group_heap.limit(ctx->topk_per_group());
+    auto &group_topk_heap = group_topk_heaps[group_id];
+    if (group_topk_heap.empty()) {
+      group_topk_heap.limit(ctx->group_topk());
     }
 
     topk_heap.emplace(id, info);
   }
 
   // stage 2, expand to reach group num as possible
-  if (topk_per_group_heaps.size() < ctx->group_num()) {
+  if (group_topk_heaps.size() < ctx->group_num()) {
     NeighborPriorityQueue candidates;
 
     candidates.reserve(ctx->list_size());
@@ -1102,17 +1101,17 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
             !ctx->filter()(get_key(std::get<0>(cached_neighbor)))) {
           std::string group_id = group_by(std::get<0>(cached_neighbor));
 
-          auto &topk_per_group_heap = topk_per_group_heaps[group_id];
-          if (topk_per_group_heap.empty()) {
-            topk_per_group_heap.limit(ctx->topk_per_group());
+          auto &group_topk_heap = group_topk_heaps[group_id];
+          if (group_topk_heap.empty()) {
+            group_topk_heap.limit(ctx->group_topk());
           }
 
-          topk_per_group_heap.emplace_back(
+          group_topk_heap.emplace_back(
               std::get<0>(cached_neighbor),
               VectorInfo(cur_expanded_dist,
                          make_vector_copy(node_fp_coords_copy)));
 
-          if (topk_per_group_heaps.size() >= ctx->group_num()) {
+          if (group_topk_heaps.size() >= ctx->group_num()) {
             break;
           }
         }
@@ -1156,16 +1155,16 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
             !ctx->filter()(get_key(frontier_neighbor.first))) {
           std::string group_id = group_by(frontier_neighbor.first);
 
-          auto &topk_per_group_heap = topk_per_group_heaps[group_id];
-          if (topk_per_group_heap.empty()) {
-            topk_per_group_heap.limit(ctx->topk_per_group());
+          auto &group_topk_heap = group_topk_heaps[group_id];
+          if (group_topk_heap.empty()) {
+            group_topk_heap.limit(ctx->group_topk());
           }
 
-          topk_per_group_heap.emplace_back(
+          group_topk_heap.emplace_back(
               frontier_neighbor.first,
               VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
 
-          if (topk_per_group_heaps.size() >= ctx->group_num()) {
+          if (group_topk_heaps.size() >= ctx->group_num()) {
             break;
           }
         }

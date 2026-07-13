@@ -34,7 +34,7 @@ namespace {
 constexpr uint32_t kDimension = 4;
 constexpr uint32_t kNumDocs = 12;
 constexpr uint32_t kNumGroups = 3;
-constexpr uint32_t kTopkPerGroup = 2;
+constexpr uint32_t kGroupTopk = 2;
 constexpr uint32_t kSearchTopk = 100;
 
 struct GroupByCase {
@@ -58,7 +58,7 @@ std::shared_ptr<std::vector<uint64_t>> AllPks() {
 void AttachGroupBy(const BaseIndexQueryParam::Pointer &query_param) {
   query_param->group_by_param = std::make_shared<GroupByParam>();
   query_param->group_by_param->group_count = kNumGroups;
-  query_param->group_by_param->topk_per_group = kTopkPerGroup;
+  query_param->group_by_param->group_topk = kGroupTopk;
   query_param->group_by_param->group_by = [](uint64_t key) {
     return std::to_string(key % kNumGroups);
   };
@@ -321,7 +321,7 @@ class GroupByInterfaceTest : public ::testing::Test {
     std::set<std::string> group_ids;
     for (const auto &group : result.group_doc_list_) {
       group_ids.insert(group.group_id());
-      ASSERT_LE(group.docs().size(), kTopkPerGroup);
+      ASSERT_LE(group.docs().size(), kGroupTopk);
       ASSERT_GE(group.docs().size(), 1u);
 
       const uint32_t expected_mod = std::stoul(group.group_id());

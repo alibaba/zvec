@@ -412,7 +412,7 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
   auto iterator = entity_.creater_iterator();
 
   for (size_t q = 0; q < count; ++q) {
-    bf_context->topk_per_group_heaps().clear();
+    bf_context->group_topk_heaps().clear();
     for (node_id_t id = 0; id < entity_.vector_count(); ++id) {
       uint64_t key = entity_.key(id);
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
@@ -422,9 +422,9 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
         entity_.row_major_distance(query, block.data(), 1, &dist);
 
         std::string group_id = group_by(key);
-        auto &topk_heap = bf_context->topk_per_group_heaps()[group_id];
+        auto &topk_heap = bf_context->group_topk_heaps()[group_id];
         if (topk_heap.empty()) {
-          topk_heap.limit(bf_context->topk_per_group());
+          topk_heap.limit(bf_context->group_topk());
         }
         topk_heap.emplace(key, dist);
       }
@@ -460,7 +460,7 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
   auto iterator = entity_.creater_iterator();
 
   for (size_t q = 0; q < count; ++q) {
-    bf_context->topk_per_group_heaps().clear();
+    bf_context->group_topk_heaps().clear();
     for (node_id_t idx = 0; idx < p_keys[q].size(); ++idx) {
       uint64_t key = p_keys[q][idx];
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
@@ -470,9 +470,9 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
         entity_.row_major_distance(query, block.data(), 1, &dist);
 
         std::string group_id = group_by(key);
-        auto &topk_heap = bf_context->topk_per_group_heaps()[group_id];
+        auto &topk_heap = bf_context->group_topk_heaps()[group_id];
         if (topk_heap.empty()) {
-          topk_heap.limit(bf_context->topk_per_group());
+          topk_heap.limit(bf_context->group_topk());
         }
         topk_heap.emplace(key, dist);
       }

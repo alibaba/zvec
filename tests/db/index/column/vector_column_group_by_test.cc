@@ -36,7 +36,7 @@ namespace {
 constexpr uint32_t kGbDimension = 4;
 constexpr uint32_t kGbNumDocs = 12;
 constexpr uint32_t kGbNumGroups = 3;
-constexpr uint32_t kGbTopkPerGroup = 2;
+constexpr uint32_t kGbGroupTopk = 2;
 constexpr uint32_t kGbSearchTopk = 100;
 constexpr uint32_t kGbSparseCount = 5;
 
@@ -54,15 +54,15 @@ struct GroupByCase {
 std::unique_ptr<vector_column_params::GroupByParams> MakeGroupByParams(
     uint32_t group_count = kGbNumGroups) {
   return std::make_unique<vector_column_params::GroupByParams>(
-      kGbTopkPerGroup, group_count, [](uint64_t key) -> std::string {
+      kGbGroupTopk, group_count, [](uint64_t key) -> std::string {
         return std::to_string(key % kGbNumGroups);
       });
 }
 
 std::unique_ptr<vector_column_params::GroupByParams> MakeSegmentGroupByParams(
-    uint32_t topk_per_group, uint32_t group_count) {
+    uint32_t group_topk, uint32_t group_count) {
   return std::make_unique<vector_column_params::GroupByParams>(
-      topk_per_group, group_count,
+      group_topk, group_count,
       [](uint64_t key) -> std::string { return key < 2 ? "low" : "high"; });
 }
 
@@ -200,7 +200,7 @@ class GroupByIndexerTest : public ::testing::Test {
     std::set<std::string> group_ids;
     for (const auto &group : group_results->groups()) {
       group_ids.insert(group.group_id());
-      ASSERT_LE(group.docs().size(), kGbTopkPerGroup) << tc.name;
+      ASSERT_LE(group.docs().size(), kGbGroupTopk) << tc.name;
       ASSERT_GE(group.docs().size(), 1u) << tc.name;
 
       const uint32_t expected_mod = std::stoul(group.group_id());
@@ -320,7 +320,7 @@ TEST_F(GroupByIndexerTest, CombinedSortsGroupsBeforeTruncating) {
   vector_column_params::QueryParams query_params;
   query_params.topk = kGbSearchTopk;
   query_params.query_params = std::make_shared<QueryParams>(IndexType::FLAT);
-  query_params.group_by = MakeSegmentGroupByParams(/*topk_per_group=*/1,
+  query_params.group_by = MakeSegmentGroupByParams(/*group_topk=*/1,
                                                    /*group_count=*/1);
 
   auto results = combined.Search(vector_column_params::VectorData{dense_query},

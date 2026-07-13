@@ -123,8 +123,8 @@ class ProximaEngineHelper {
     if (db_query_params.group_by) {
       engine_query_param->group_by_param =
           std::make_shared<core_interface::GroupByParam>();
-      engine_query_param->group_by_param->topk_per_group =
-          db_query_params.group_by->topk_per_group;
+      engine_query_param->group_by_param->group_topk =
+          db_query_params.group_by->group_topk;
       engine_query_param->group_by_param->group_count =
           db_query_params.group_by->group_count;
       engine_query_param->group_by_param->group_by =

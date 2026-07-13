@@ -85,9 +85,9 @@ class FlatSearcherContext : public IndexSearcher::Context {
     return magic_;
   }
 
-  //! Get the maximum number of results per group
-  inline uint32_t topk_per_group() const {
-    return topk_per_group_;
+  //! Get group topk
+  inline uint32_t group_topk() const {
+    return group_topk_;
   }
 
   //! Get group num
@@ -95,8 +95,8 @@ class FlatSearcherContext : public IndexSearcher::Context {
     return group_num_;
   }
 
-  inline std::map<std::string, TopkHeap> &topk_per_group_heaps() {
-    return topk_per_group_heaps_;
+  inline std::map<std::string, TopkHeap> &group_topk_heaps() {
+    return group_topk_heaps_;
   }
 
   void set_fetch_vector(bool v) override {
@@ -118,10 +118,10 @@ class FlatSearcherContext : public IndexSearcher::Context {
 
     group_results_[idx].clear();
 
-    std::vector<std::pair<std::string, TopkHeap>> topk_per_group_list;
+    std::vector<std::pair<std::string, TopkHeap>> group_topk_list;
     std::vector<std::pair<std::string, float>> best_score_in_groups;
-    for (auto itr = topk_per_group_heaps_.begin();
-         itr != topk_per_group_heaps_.end(); itr++) {
+    for (auto itr = group_topk_heaps_.begin(); itr != group_topk_heaps_.end();
+         itr++) {
       const std::string &group_id = (*itr).first;
       auto &heap = (*itr).second;
       heap.sort();
@@ -143,27 +143,26 @@ class FlatSearcherContext : public IndexSearcher::Context {
          ++i) {
       const std::string &group_id = best_score_in_groups[i].first;
 
-      topk_per_group_list.emplace_back(
-          std::make_pair(group_id, topk_per_group_heaps_[group_id]));
+      group_topk_list.emplace_back(
+          std::make_pair(group_id, group_topk_heaps_[group_id]));
     }
 
-    group_results_[idx].resize(topk_per_group_list.size());
+    group_results_[idx].resize(group_topk_list.size());
 
-    for (uint32_t i = 0; i < topk_per_group_list.size(); ++i) {
-      const std::string &group_id = topk_per_group_list[i].first;
+    for (uint32_t i = 0; i < group_topk_list.size(); ++i) {
+      const std::string &group_id = group_topk_list[i].first;
       group_results_[idx][i].set_group_id(group_id);
 
-      uint32_t size =
-          std::min(topk_per_group_,
-                   static_cast<uint32_t>(topk_per_group_list[i].second.size()));
+      uint32_t size = std::min(
+          group_topk_, static_cast<uint32_t>(group_topk_list[i].second.size()));
 
       for (uint32_t j = 0; j < size; ++j) {
-        auto score = topk_per_group_list[i].second[j].second;
+        auto score = group_topk_list[i].second[j].second;
         if (score > this->threshold()) {
           break;
         }
 
-        node_id_t id = topk_per_group_list[i].second[j].first;
+        node_id_t id = group_topk_list[i].second[j].first;
 
         auto provider = owner_->create_provider();
 
@@ -183,10 +182,10 @@ class FlatSearcherContext : public IndexSearcher::Context {
   }
 
   //! Set group params
-  void set_group_params(uint32_t group_num, uint32_t topk_per_group) override {
+  void set_group_params(uint32_t group_num, uint32_t group_topk) override {
     group_num_ = group_num;
-    topk_per_group_ = topk_per_group;
-    topk_per_group_heaps_.clear();
+    group_topk_ = group_topk;
+    group_topk_heaps_.clear();
   }
 
   void reset() override {}
@@ -420,8 +419,8 @@ class FlatSearcherContext : public IndexSearcher::Context {
   bool fetch_vector_{false};
 
   // group
-  uint32_t group_num_{0}, topk_per_group_{0};
-  std::map<std::string, TopkHeap> topk_per_group_heaps_{};
+  uint32_t group_num_{0}, group_topk_{0};
+  std::map<std::string, TopkHeap> group_topk_heaps_{};
   std::vector<IndexGroupDocumentList> group_results_{};
 };
 
@@ -1026,7 +1025,7 @@ int FlatSearcherContext<BATCH_SIZE>::group_by_search_impl(
   auto provider = owner_->create_provider();
 
   for (size_t q = 0; q < count; ++q) {
-    this->topk_per_group_heaps().clear();
+    this->group_topk_heaps().clear();
 
     for (node_id_t id = 0; id < provider->count(); ++id) {
       if (!this->filter().is_valid() || !this->filter()(owner_->key(id))) {
@@ -1036,9 +1035,9 @@ int FlatSearcherContext<BATCH_SIZE>::group_by_search_impl(
             &dist);
 
         std::string group_id = group_by(owner_->key(id));
-        auto &topk_heap = this->topk_per_group_heaps()[group_id];
+        auto &topk_heap = this->group_topk_heaps()[group_id];
         if (topk_heap.empty()) {
-          topk_heap.limit(this->topk_per_group());
+          topk_heap.limit(this->group_topk());
         }
         topk_heap.emplace(id, dist);
       }
@@ -1066,7 +1065,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
     };
 
     for (size_t q = 0; q < count; ++q) {
-      this->topk_per_group_heaps().clear();
+      this->group_topk_heaps().clear();
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         uint64_t pk = p_keys[q][idx];
         if (!this->filter().is_valid() || !this->filter()(pk)) {
@@ -1075,9 +1074,9 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
               query, provider->get_vector(pk), provider->dimension(), &dist);
 
           std::string group_id = group_by(pk);
-          auto &topk_heap = this->topk_per_group_heaps()[group_id];
+          auto &topk_heap = this->group_topk_heaps()[group_id];
           if (topk_heap.empty()) {
-            topk_heap.limit(this->topk_per_group());
+            topk_heap.limit(this->group_topk());
           }
           topk_heap.emplace(owner_->get_id(pk), dist);
         }

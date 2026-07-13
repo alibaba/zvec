@@ -192,8 +192,7 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
     };
     query_params.group_by =
         std::make_unique<vector_column_params::GroupByParams>(
-            group_by->topk_per_group, group_by->group_count,
-            std::move(group_fun));
+            group_by->group_topk, group_by->group_count, std::move(group_fun));
   }
 
   vector_column_params::VectorData vector_data;

@@ -188,10 +188,10 @@ class HnswRabitqContext : public IndexContext {
 
     group_results_[idx].clear();
 
-    std::vector<std::pair<std::string, TopkHeap>> topk_per_group_list;
+    std::vector<std::pair<std::string, TopkHeap>> group_topk_list;
     std::vector<std::pair<std::string, ResultRecord>> best_score_in_groups;
-    for (auto itr = topk_per_group_heaps_.begin();
-         itr != topk_per_group_heaps_.end(); itr++) {
+    for (auto itr = group_topk_heaps_.begin(); itr != group_topk_heaps_.end();
+         itr++) {
       const std::string &group_id = (*itr).first;
       auto &heap = (*itr).second;
       heap.sort();
@@ -213,27 +213,26 @@ class HnswRabitqContext : public IndexContext {
          ++i) {
       const std::string &group_id = best_score_in_groups[i].first;
 
-      topk_per_group_list.emplace_back(
-          std::make_pair(group_id, topk_per_group_heaps_[group_id]));
+      group_topk_list.emplace_back(
+          std::make_pair(group_id, group_topk_heaps_[group_id]));
     }
 
-    group_results_[idx].resize(topk_per_group_list.size());
+    group_results_[idx].resize(group_topk_list.size());
 
-    for (uint32_t i = 0; i < topk_per_group_list.size(); ++i) {
-      const std::string &group_id = topk_per_group_list[i].first;
+    for (uint32_t i = 0; i < group_topk_list.size(); ++i) {
+      const std::string &group_id = group_topk_list[i].first;
       group_results_[idx][i].set_group_id(group_id);
 
-      uint32_t size =
-          std::min(topk_per_group_,
-                   static_cast<uint32_t>(topk_per_group_list[i].second.size()));
+      uint32_t size = std::min(
+          group_topk_, static_cast<uint32_t>(group_topk_list[i].second.size()));
 
       for (uint32_t j = 0; j < size; ++j) {
-        auto score = topk_per_group_list[i].second[j].second;
+        auto score = group_topk_list[i].second[j].second;
         if (score > this->threshold()) {
           break;
         }
 
-        node_id_t id = topk_per_group_list[i].second[j].first;
+        node_id_t id = group_topk_list[i].second[j].first;
 
         if (fetch_vector_) {
           group_results_[idx][i].mutable_docs()->emplace_back(
@@ -343,8 +342,8 @@ class HnswRabitqContext : public IndexContext {
     reset_group_by();
   }
 
-  inline std::map<std::string, TopkHeap> &topk_per_group_heaps() {
-    return topk_per_group_heaps_;
+  inline std::map<std::string, TopkHeap> &group_topk_heaps() {
+    return group_topk_heaps_;
   }
 
   inline TopkHeap &level_topk(int level) {
@@ -452,9 +451,9 @@ class HnswRabitqContext : public IndexContext {
     return topk_;
   }
 
-  //! Get the maximum number of results per group
-  inline uint32_t topk_per_group() const {
-    return topk_per_group_;
+  //! Get group topk
+  inline uint32_t group_topk() const {
+    return group_topk_;
   }
 
   //! Get group num
@@ -468,15 +467,15 @@ class HnswRabitqContext : public IndexContext {
   }
 
   //! Set group params
-  void set_group_params(uint32_t group_num, uint32_t topk_per_group) override {
+  void set_group_params(uint32_t group_num, uint32_t group_topk) override {
     group_num_ = group_num;
-    topk_per_group_ = topk_per_group;
+    group_topk_ = group_topk;
 
-    topk_ = topk_per_group_ * group_num_;
+    topk_ = group_topk_ * group_num_;
 
     topk_heap_.limit(std::max(topk_, ef_));
 
-    topk_per_group_heaps_.clear();
+    group_topk_heaps_.clear();
   }
 
   void set_provider(IndexProvider::Pointer provider) {
@@ -517,7 +516,7 @@ class HnswRabitqContext : public IndexContext {
   uint32_t min_scan_limit_{0};
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
-  uint32_t topk_per_group_{0};
+  uint32_t group_topk_{0};
   uint32_t filter_mode_{VisitFilter::ByteMap};
   float negative_probability_{HnswRabitqEntity::kDefaultBFNegativeProbability};
   uint32_t ef_{HnswRabitqEntity::kDefaultEf};
@@ -534,7 +533,7 @@ class HnswRabitqContext : public IndexContext {
   bool fetch_vector_{false};
 
   uint32_t group_num_{0};
-  std::map<std::string, TopkHeap> topk_per_group_heaps_{};
+  std::map<std::string, TopkHeap> group_topk_heaps_{};
 
   uint32_t type_{kUnknownContext};
   //! debug stats info

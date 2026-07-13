@@ -302,11 +302,11 @@ Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
   if (group_by) {
     auto &group = *group_by;
     if (group.group_by_field.empty() || group.group_count == 0 ||
-        group.topk_per_group == 0) {
+        group.group_topk == 0) {
       return tl::make_unexpected(Status::InvalidArgument(
           "Invalid group_by request: group_by_field='", group.group_by_field,
           "', group_count=", group.group_count,
-          ", topk_per_group=", group.topk_per_group));
+          ", group_topk=", group.group_topk));
     }
   }
 
@@ -682,7 +682,7 @@ Result<GroupResults> SQLEngineImpl::fill_group_by_result(
   const std::vector<FieldAndSchema> &output_fields =
       query_info.select_item_schema_ptrs();
   uint32_t group_count = query_info.group_by()->group_count;
-  uint32_t topk_per_group = query_info.group_by()->topk_per_group;
+  uint32_t group_topk = query_info.group_by()->group_topk;
   std::shared_ptr<RecordBatch> record_batch;
   std::unordered_map<std::string, std::vector<Doc>> group_to_docs;
   while (true) {
@@ -714,7 +714,7 @@ Result<GroupResults> SQLEngineImpl::fill_group_by_result(
       if (!typed_arr->IsNull(i)) {
         // docs already order by score
         auto &group_docs = group_to_docs[typed_arr->GetString(i)];
-        if (group_docs.size() < topk_per_group) {
+        if (group_docs.size() < group_topk) {
           group_docs.push_back(std::move(*docs[i]));
         }
       }
