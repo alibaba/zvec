@@ -6,6 +6,7 @@ bin/*
 lib/*
 var/*
 venv*
+.venv*
 tests/integration/conf/*
 tests/de_integration/conf/*
 **/__pycache__/*
@@ -25,6 +26,31 @@ compile_commands.json
 dist
 html
 *.lcov.info
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+.project
+.classpath
+.settings/
+
+# ccache / sccache
+.ccache/
+.sccache/
+
+# Python
+*.egg-info/
+*.egg
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyc
+*.pyc
 
 # Compiled extension modules must never live in the source package: they are
 # built by CMake and installed into the wheel. A stray copy left here gets
