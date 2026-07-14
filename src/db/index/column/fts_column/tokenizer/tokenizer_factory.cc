@@ -82,6 +82,8 @@ TokenizerPtr TokenizerFactory::create_tokenizer(
   TokenizerPtr tokenizer;
   if (tokenizer_name.empty() || tokenizer_name == "standard") {
     tokenizer = std::make_shared<StandardTokenizer>();
+  } else if (tokenizer_name == "ngram") {
+    tokenizer = std::make_shared<NGramTokenizer>();
   } else if (tokenizer_name == "jieba") {
     tokenizer = std::make_shared<JiebaTokenizer>();
   } else if (tokenizer_name == "whitespace") {

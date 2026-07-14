@@ -48,4 +48,36 @@ class StandardTokenizer : public Tokenizer {
   uint32_t max_token_length_{255};
 };
 
+/*! NGram tokenizer
+ *  Unicode-aware tokenizer that uses the standard tokenizer's UTF-8 decoding,
+ *  Unicode classification and delimiter rules to find base text spans, then
+ *  emits UTF-8 codepoint ngrams from each span. Consecutive CJK text remains in
+ *  the same base span so CJK ngrams can be generated.
+ */
+class NGramTokenizer : public Tokenizer {
+ public:
+  /*! Initialise from JSON config.
+   *  Supported keys:
+   *    "ngram_min" (positive integer, default 2): minimum ngram length.
+   *    "ngram_max" (positive integer, default 2): maximum ngram length.
+   *    "token_chars" (array of strings, default []): character classes included
+   *      in tokens. Supported classes are "letter", "digit", "whitespace",
+   *      "punctuation" and "symbol". Empty array keeps all valid UTF-8
+   *      characters.
+   *  Returns false when the configuration is invalid.
+   */
+  bool init(const ailego::JsonObject &config) override;
+
+  std::vector<Token> tokenize(const std::string &text) const override;
+
+  const char *name() const override {
+    return "ngram";
+  }
+
+ private:
+  uint32_t ngram_min_{2};
+  uint32_t ngram_max_{2};
+  uint32_t token_char_mask_{0};
+};
+
 }  // namespace zvec::fts

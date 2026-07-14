@@ -14,7 +14,9 @@
 
 #include "standard_tokenizer.h"
 #include <utf8proc.h>
+#include <algorithm>
 #include <array>
+#include <limits>
 #include <zvec/ailego/logger/logger.h>
 
 namespace zvec::fts {
@@ -24,6 +26,7 @@ namespace {
 constexpr uint32_t kDefaultMaxTokenLength = 255;
 constexpr uint32_t kMinMaxTokenLength = 1;
 constexpr uint32_t kMaxMaxTokenLength = 1048576;
+constexpr uint32_t kDefaultNGramLength = 2;
 constexpr uint32_t kVariationSelector16 = 0xFE0F;
 constexpr uint32_t kKeycap = 0x20E3;
 constexpr uint32_t kUnicodeMaxCodepoint = 0x10FFFF;
@@ -32,6 +35,11 @@ constexpr size_t kUnicodePageCount =
     (kUnicodeMaxCodepoint >> kUnicodePageShift) + 1;
 constexpr size_t kCodepointCacheSize = 1024;
 constexpr size_t kMaxInitialTokenCapacity = 4096;
+constexpr uint32_t kNGramTokenCharLetter = 1u << 0;
+constexpr uint32_t kNGramTokenCharDigit = 1u << 1;
+constexpr uint32_t kNGramTokenCharWhitespace = 1u << 2;
+constexpr uint32_t kNGramTokenCharPunctuation = 1u << 3;
+constexpr uint32_t kNGramTokenCharSymbol = 1u << 4;
 
 enum class WordBreakClass : uint8_t {
   Other,
@@ -65,6 +73,7 @@ struct Codepoint {
   uint32_t start{0};
   uint32_t end{0};
   WordBreakClass cls{WordBreakClass::Other};
+  bool valid{false};
   bool extended_pictographic{false};
   bool emoji_modifier_base{false};
   bool emoji_modifier{false};
@@ -97,6 +106,11 @@ struct UnicodeRange {
 struct UnicodeRangeIndex {
   uint32_t first{0};
   uint32_t last{0};
+};
+
+struct CodepointSpan {
+  uint32_t start{0};
+  uint32_t end{0};
 };
 
 template <size_t RangeCount>
@@ -492,6 +506,7 @@ std::vector<Codepoint> decode_utf8(const std::string &text) {
     item.cp = cp;
     item.start = static_cast<uint32_t>(index);
     item.end = static_cast<uint32_t>(index + bytes);
+    item.valid = true;
     uint32_t codepoint = static_cast<uint32_t>(cp);
     CodepointProperties props = get_codepoint_properties(codepoint, cache);
     item.cls = props.cls;
@@ -987,6 +1002,174 @@ std::vector<Token> tokenize_ascii(const std::string &text,
   return tokens;
 }
 
+bool parse_positive_uint32_param(const ailego::JsonObject &config,
+                                 const char *key, uint32_t default_value,
+                                 uint32_t *value) {
+  *value = default_value;
+  auto json_value = config[key];
+  if (json_value.is_null()) {
+    return true;
+  }
+  if (!json_value.is_integer()) {
+    LOG_ERROR("NGramTokenizer: %s must be integer", key);
+    return false;
+  }
+  int64_t configured_value = json_value.as_integer();
+  if (configured_value <= 0 ||
+      configured_value >
+          static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+    LOG_ERROR("NGramTokenizer: %s must be positive uint32", key);
+    return false;
+  }
+  *value = static_cast<uint32_t>(configured_value);
+  return true;
+}
+
+bool parse_ngram_token_char(const std::string &token_char, uint32_t *mask) {
+  if (token_char == "letter") {
+    *mask |= kNGramTokenCharLetter;
+    return true;
+  }
+  if (token_char == "digit") {
+    *mask |= kNGramTokenCharDigit;
+    return true;
+  }
+  if (token_char == "whitespace") {
+    *mask |= kNGramTokenCharWhitespace;
+    return true;
+  }
+  if (token_char == "punctuation") {
+    *mask |= kNGramTokenCharPunctuation;
+    return true;
+  }
+  if (token_char == "symbol") {
+    *mask |= kNGramTokenCharSymbol;
+    return true;
+  }
+  LOG_ERROR("NGramTokenizer: unsupported token_chars value: %s",
+            token_char.c_str());
+  return false;
+}
+
+bool parse_ngram_token_chars(const ailego::JsonObject &config, uint32_t *mask) {
+  *mask = 0;
+  auto token_chars_val = config["token_chars"];
+  if (token_chars_val.is_null()) {
+    return true;
+  }
+  if (!token_chars_val.is_array()) {
+    LOG_ERROR("NGramTokenizer: token_chars must be an array");
+    return false;
+  }
+
+  const auto &token_chars = token_chars_val.as_array();
+  for (const auto &token_char_val : token_chars) {
+    if (!token_char_val.is_string()) {
+      LOG_ERROR("NGramTokenizer: token_chars entries must be strings");
+      return false;
+    }
+    if (!parse_ngram_token_char(token_char_val.as_stl_string(), mask)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool is_ngram_whitespace(uint32_t codepoint, utf8proc_category_t category) {
+  if ((codepoint >= 0x0009 && codepoint <= 0x000D) ||
+      (codepoint >= 0x001C && codepoint <= 0x001F)) {
+    return true;
+  }
+  if (category == UTF8PROC_CATEGORY_ZL || category == UTF8PROC_CATEGORY_ZP) {
+    return true;
+  }
+  return category == UTF8PROC_CATEGORY_ZS && codepoint != 0x00A0 &&
+         codepoint != 0x2007 && codepoint != 0x202F;
+}
+
+uint32_t ngram_token_char_bit(const Codepoint &codepoint) {
+  auto category = utf8proc_category(codepoint.cp);
+  if (is_ngram_whitespace(static_cast<uint32_t>(codepoint.cp), category)) {
+    return kNGramTokenCharWhitespace;
+  }
+  if (category == UTF8PROC_CATEGORY_ND) {
+    return kNGramTokenCharDigit;
+  }
+  if (category == UTF8PROC_CATEGORY_LU || category == UTF8PROC_CATEGORY_LL ||
+      category == UTF8PROC_CATEGORY_LT || category == UTF8PROC_CATEGORY_LM ||
+      category == UTF8PROC_CATEGORY_LO) {
+    return kNGramTokenCharLetter;
+  }
+  if (category == UTF8PROC_CATEGORY_PC || category == UTF8PROC_CATEGORY_PD ||
+      category == UTF8PROC_CATEGORY_PS || category == UTF8PROC_CATEGORY_PE ||
+      category == UTF8PROC_CATEGORY_PI || category == UTF8PROC_CATEGORY_PF ||
+      category == UTF8PROC_CATEGORY_PO) {
+    return kNGramTokenCharPunctuation;
+  }
+  if (category == UTF8PROC_CATEGORY_SM || category == UTF8PROC_CATEGORY_SC ||
+      category == UTF8PROC_CATEGORY_SK || category == UTF8PROC_CATEGORY_SO) {
+    return kNGramTokenCharSymbol;
+  }
+  return 0;
+}
+
+bool is_ngram_token_char(const Codepoint &codepoint, uint32_t token_char_mask) {
+  if (!codepoint.valid) {
+    return false;
+  }
+  if (token_char_mask == 0) {
+    return true;
+  }
+  return (ngram_token_char_bit(codepoint) & token_char_mask) != 0;
+}
+
+std::vector<std::vector<CodepointSpan>> collect_ngram_segments(
+    const std::string &text, uint32_t token_char_mask) {
+  std::vector<std::vector<CodepointSpan>> spans;
+  spans.reserve(estimate_token_capacity(text.size()));
+  std::vector<Codepoint> codepoints = decode_utf8(text);
+  std::vector<CodepointSpan> span;
+
+  for (const auto &codepoint : codepoints) {
+    if (is_ngram_token_char(codepoint, token_char_mask)) {
+      span.push_back({codepoint.start, codepoint.end});
+      continue;
+    }
+    if (!span.empty()) {
+      spans.push_back(std::move(span));
+      span.clear();
+    }
+  }
+  if (!span.empty()) {
+    spans.push_back(std::move(span));
+  }
+
+  return spans;
+}
+
+void emit_ngram_tokens(const std::string &text,
+                       const std::vector<CodepointSpan> &span,
+                       uint32_t ngram_min, uint32_t ngram_max,
+                       uint32_t *position, std::vector<Token> *tokens) {
+  if (span.size() < ngram_min) {
+    return;
+  }
+
+  for (size_t start = 0; start < span.size(); ++start) {
+    size_t remaining = span.size() - start;
+    size_t upper = std::min<size_t>(ngram_max, remaining);
+    for (size_t length = ngram_min; length <= upper; ++length) {
+      const CodepointSpan &first = span[start];
+      const CodepointSpan &last = span[start + length - 1];
+      Token token;
+      token.text = text.substr(first.start, last.end - first.start);
+      token.offset = first.start;
+      token.position = (*position)++;
+      tokens->push_back(std::move(token));
+    }
+  }
+}
+
 }  // namespace
 
 bool StandardTokenizer::init(const ailego::JsonObject &config) {
@@ -1094,6 +1277,36 @@ std::vector<Token> StandardTokenizer::tokenize(const std::string &text) const {
     index = end;
   }
 
+  return tokens;
+}
+
+bool NGramTokenizer::init(const ailego::JsonObject &config) {
+  if (!parse_positive_uint32_param(config, "ngram_min", kDefaultNGramLength,
+                                   &ngram_min_)) {
+    return false;
+  }
+  if (!parse_positive_uint32_param(config, "ngram_max", kDefaultNGramLength,
+                                   &ngram_max_)) {
+    return false;
+  }
+  if (ngram_min_ > ngram_max_) {
+    LOG_ERROR("NGramTokenizer: ngram_min must be <= ngram_max");
+    return false;
+  }
+  if (!parse_ngram_token_chars(config, &token_char_mask_)) {
+    return false;
+  }
+  return true;
+}
+
+std::vector<Token> NGramTokenizer::tokenize(const std::string &text) const {
+  std::vector<Token> tokens;
+  tokens.reserve(estimate_token_capacity(text.size()));
+  uint32_t position = 0;
+  auto spans = collect_ngram_segments(text, token_char_mask_);
+  for (const auto &span : spans) {
+    emit_ngram_tokens(text, span, ngram_min_, ngram_max_, &position, &tokens);
+  }
   return tokens;
 }
 
