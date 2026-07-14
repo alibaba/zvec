@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
-#include "quantizer/preprocessor/fht_rotator.h"
+#include "preprocessor/fht_rotator/fht_rotator.h"
 
 using namespace zvec::turbo;
 

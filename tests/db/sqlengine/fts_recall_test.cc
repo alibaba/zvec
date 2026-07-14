@@ -528,6 +528,13 @@ TEST_F(FtsRecallTest, FtsSearchWithFilter_TopkRespected) {
   EXPECT_LE(result->size(), 1u);
 }
 
+// "apple" matches docs 0,3,5, but no doc has tag=999.
+TEST_F(FtsRecallTest, FtsSearchWithFilter_ZeroMatchesReturnsEmpty) {
+  auto result = fts_search_with_filter("apple", "tag = 999");
+  ASSERT_TRUE(result.has_value()) << result.error().c_str();
+  EXPECT_TRUE(result->empty());
+}
+
 // An FTS field can only be used as a query target, not as a filter condition.
 // Putting the FTS field ("content") in the WHERE filter must be rejected.
 TEST_F(FtsRecallTest, FtsFieldNotAllowedInFilter) {

@@ -111,12 +111,17 @@ enum class QuantizeType {
 enum class CpuArchType {
   kAuto,
   kScalar,
+  // x86 SIMD
   kSSE,
   kAVX,
   kAVX2,
   kAVX512,
   kAVX512VNNI,
-  kAVX512FP16
+  kAVX512FP16,
+  // ARM SIMD
+  kNEON,
+  kSVE,
+  kSVE2
 };
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
