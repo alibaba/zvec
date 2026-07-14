@@ -138,8 +138,14 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   const size_t d = sub_dim_;
   float *centroids_m = centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
 
-  // Create KMeans algorithm (L2 distance via NumericalKmeansContext)
-  ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(k, d);
+  // Create KMeans algorithm (L2 distance via NumericalKmeansContext).
+  // Enable spherical mode for IP / Cosine so that centroids are updated
+  // on the unit sphere, improving convergence for angular objectives.
+  const bool spherical =
+      (meta_.metric_name() == "InnerProduct" ||
+       meta_.metric_name() == "Cosine");
+  ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(
+      k, d, spherical);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
