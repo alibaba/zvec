@@ -105,6 +105,9 @@ class PqInt8Quantizer : public Quantizer {
   DistanceImpl distance(const void *query,
                         const IndexQueryMeta &qmeta) const override;
 
+  DistanceImpl sym_distance(const void *query,
+                            const IndexQueryMeta &qmeta) const override;
+
   int serialize(std::string *out) const override;
 
   int deserialize(std::string &in) override;

@@ -526,13 +526,6 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
   // (both use void*), so we can assign without a lambda wrapper.
   DistanceFunc adc_func = adc_fn_;
 
-  // SDC: still needs a lambda because the kernel has 5 parameters
-  // (extra dist_table pointer), vs DistanceFunc's 4.
-  auto sdc = sdc_fn_;
-  const void *dt = dist_table_.data();
-  DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b, size_t dim,
-                                    float *out) { sdc(a, b, dt, dim, out); };
-
   // Batch ADC: ISA-dispatched batch4 kernel, no lambda needed.
   BatchDistanceFunc batch_func = batch_adc_fn_;
 
@@ -541,8 +534,30 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
   size_t lut_bytes = quantized_query_vector_length();
   std::string lut_storage(static_cast<const char *>(query), lut_bytes);
 
-  return DistanceImpl(std::move(adc_func), std::move(sdc_func),
-                      std::move(batch_func), std::move(lut_storage),
+  return DistanceImpl(std::move(adc_func), std::move(batch_func),
+                      std::move(lut_storage),
+                      static_cast<size_t>(num_subquantizers_));
+}
+
+DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
+                                           const IndexQueryMeta &qmeta) const {
+  (void)qmeta;
+
+  // SDC kernel needs a lambda: 5 parameters (extra dist_table pointer)
+  // vs DistanceFunc's 4.
+  auto sdc = sdc_fn_;
+  const void *dt = dist_table_.data();
+  DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b, size_t dim,
+                                    float *out) { sdc(a, b, dt, dim, out); };
+
+  // The query is a PQ code (uint8_t[num_subquantizers]), NOT a LUT.
+  // SDC computes distance between two PQ codes via the centroid-to-centroid
+  // dist_table_, so both sides must be PQ codes.
+  size_t code_bytes = quantized_datapoint_vector_length();
+  std::string code_storage(static_cast<const char *>(query), code_bytes);
+
+  // SDC has no batch kernel — use the 3-arg constructor.
+  return DistanceImpl(std::move(sdc_func), std::move(code_storage),
                       static_cast<size_t>(num_subquantizers_));
 }
 

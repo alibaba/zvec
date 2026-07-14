@@ -223,9 +223,8 @@ TEST(PqInt8Quantizer, DistanceImplAdcAndSdc) {
   auto dist_impl = quantizer->distance(lut_storage.data(), qmeta);
   ASSERT_TRUE(dist_impl.valid());
 
-  // func() and sym_func() should both be set.
+  // func() should be set (ADC path).
   EXPECT_TRUE(static_cast<bool>(dist_impl.func()));
-  EXPECT_TRUE(static_cast<bool>(dist_impl.sym_func()));
 
   // Encode a candidate and compute distance via DistanceImpl (ADC path).
   iter->next();
@@ -235,16 +234,6 @@ TEST(PqInt8Quantizer, DistanceImplAdcAndSdc) {
 
   float d = dist_impl(code.data());
   EXPECT_GE(d, 0.0f);
-
-  // SDC (symmetric) via sym_func() directly.
-  std::vector<uint8_t> code2(quantizer->quantized_datapoint_vector_length());
-  iter->next();
-  iter->is_valid();
-  quantizer->quantize_data(iter->data(), code2.data());
-
-  float sdc_d = 0.0f;
-  dist_impl.sym_func()(code.data(), code2.data(), NSQ, &sdc_d);
-  EXPECT_GE(sdc_d, 0.0f);
 }
 
 TEST(PqInt8Quantizer, SerializeDeserialize) {

@@ -34,26 +34,12 @@ class DistanceImpl {
 
   DistanceImpl(DistanceFunc func, std::string quantized_query, size_t dim)
       : func_(std::move(func)),
-        sym_func_(func_),
         query_storage_(std::move(quantized_query)),
         dim_(dim) {}
 
   DistanceImpl(DistanceFunc func, BatchDistanceFunc batch_func,
                std::string quantized_query, size_t dim)
       : func_(std::move(func)),
-        sym_func_(func_),
-        batch_func_(std::move(batch_func)),
-        query_storage_(std::move(quantized_query)),
-        dim_(dim) {}
-
-  //! PQ-specific constructor: sym_func_ is the SDC kernel (distinct
-  //! from func_ which is the ADC kernel).  Non-PQ quantizers should use
-  //! the constructors above where sym_func_ defaults to func_.
-  DistanceImpl(DistanceFunc func, DistanceFunc sym_func,
-               BatchDistanceFunc batch_func, std::string quantized_query,
-               size_t dim)
-      : func_(std::move(func)),
-        sym_func_(std::move(sym_func)),
         batch_func_(std::move(batch_func)),
         query_storage_(std::move(quantized_query)),
         dim_(dim) {}
@@ -104,13 +90,6 @@ class DistanceImpl {
     return func_;
   }
 
-  //! Symmetric (SDC) distance function.  For non-PQ quantizers this
-  //! defaults to func(); for PQ quantizers it points to the SDC kernel
-  //! that operates on two PQ codes via a centroid-to-centroid table.
-  const DistanceFunc &sym_func() const {
-    return sym_func_;
-  }
-
   //! Raw batch distance function.
   const BatchDistanceFunc &batch_func() const {
     return batch_func_;
@@ -118,7 +97,6 @@ class DistanceImpl {
 
  private:
   DistanceFunc func_{};
-  DistanceFunc sym_func_{};  // defaults to func_; PQ sets SDC kernel
   BatchDistanceFunc batch_func_{};
   std::string query_storage_{};
   size_t dim_{0};

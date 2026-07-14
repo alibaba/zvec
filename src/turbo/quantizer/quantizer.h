@@ -159,6 +159,11 @@ class Quantizer {
     return DistanceImpl{};
   }
 
+  virtual DistanceImpl sym_distance(const void *query,
+                                    const IndexQueryMeta &qmeta) const {
+    return distance(query, qmeta);
+  }
+
   //! Serialize quantizer parameters
   virtual int serialize(std::string * /*out*/) const {
     return 0;
