@@ -170,15 +170,6 @@ class _Collection:
         Raises KeyError if no HNSW index exists on the column, or
         ValueError if the column's index is not an HNSW index. Intended
         for introspection and testing only; not part of the stable API."""
-    def _debug_io_backend_type(self) -> IOBackendType:
-        """Debug-only: returns the I/O backend type used by DiskAnn as an
-        IOBackendType enum (zvec.typing.IOBackendType). Intended for
-        introspection and testing only; not part of the stable API."""
-    def _debug_io_backend_description(self) -> str:
-        """Debug-only: returns a human-readable description of the I/O backend
-        used by DiskAnn, including libaio install guidance when only pread is
-        available. Intended for introspection and testing only; not part of the
-        stable API."""
 
     def __getstate__(self) -> tuple: ...
     def __setstate__(self, arg0: tuple) -> None: ...

@@ -766,36 +766,17 @@ const char *zvec_get_default_jieba_dict_dir(void) {
 
 zvec_io_backend_type_t zvec_get_io_backend_type(void) {
   auto type = zvec::ailego::IOBackend::Instance().available();
-  switch (type) {
-    case zvec::ailego::IOBackendType::kLibAio:
-      return ZVEC_IO_BACKEND_TYPE_LIBAIO;
-    case zvec::ailego::IOBackendType::kPread:
-    default:
-      return ZVEC_IO_BACKEND_TYPE_PREAD;
-  }
+  return static_cast<zvec_io_backend_type_t>(static_cast<uint32_t>(type));
 }
 
 const char *zvec_get_io_backend_type_name(zvec_io_backend_type_t type) {
-  thread_local std::string cached;
-  zvec::ailego::IOBackendType cpp_type;
-  switch (type) {
-    case ZVEC_IO_BACKEND_TYPE_LIBAIO:
-      cpp_type = zvec::ailego::IOBackendType::kLibAio;
-      break;
-    case ZVEC_IO_BACKEND_TYPE_PREAD:
-    default:
-      cpp_type = zvec::ailego::IOBackendType::kPread;
-      break;
-  }
-  cached = zvec::ailego::IOBackendTypeName(cpp_type);
-  return cached.c_str();
+  auto cpp_type = static_cast<zvec::ailego::IOBackendType>(type);
+  return zvec::ailego::IOBackendTypeName(cpp_type);
 }
 
 const char *zvec_get_io_backend_description(void) {
-  thread_local std::string cached;
   auto type = zvec::ailego::IOBackend::Instance().available();
-  cached = zvec::ailego::IOBackendDescription(type);
-  return cached.c_str();
+  return zvec::ailego::IOBackendDescription(type);
 }
 
 // =============================================================================
