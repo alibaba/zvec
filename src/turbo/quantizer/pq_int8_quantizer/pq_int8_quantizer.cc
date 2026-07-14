@@ -14,15 +14,17 @@
 
 #include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <random>
-#include <thread>
 #include <vector>
+#include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_logger.h>
+#include <zvec/core/framework/index_threads.h>
 
 namespace zvec {
 namespace turbo {
@@ -102,6 +104,11 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
     meta_.set_extra_meta_size(extra_meta_size_);
   }
 
+  // Read optional training params (aligned with multi_chunk_cluster)
+  params.get("thread_count", &thread_count_);
+  params.get("markov_chain_length", &markov_chain_length_);
+  params.get("epsilon", &epsilon_);
+
   meta_.set_meta(IndexMeta::DataType::DT_FP32, d);
   return 0;
 }
@@ -131,106 +138,55 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   const size_t d = sub_dim_;
   float *centroids_m = centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
 
-  // -- Initialization: pick k distinct random data points -----------------
-  std::mt19937 rng(42 + static_cast<uint32_t>(sub_idx));
-  std::vector<size_t> perm(num);
-  for (size_t i = 0; i < num; ++i) perm[i] = i;
-  std::shuffle(perm.begin(), perm.end(), rng);
+  // Create KMeans algorithm (L2 distance via NumericalKmeansContext)
+  ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(k, d);
 
-  size_t n_init = std::min(static_cast<size_t>(k), num);
-  for (size_t i = 0; i < n_init; ++i) {
-    const float *src =
+  // Append sub-vectors (NumericalKmeans handles transpose internally)
+  for (size_t i = 0; i < num; ++i) {
+    const float *sub_vec =
         reinterpret_cast<const float *>(
-            reinterpret_cast<const uint8_t *>(data) + perm[i] * stride) +
+            reinterpret_cast<const uint8_t *>(data) + i * stride) +
         sub_idx * d;
-    std::memcpy(centroids_m + i * d, src, d * sizeof(float));
-  }
-  // Duplicate if num < k (rare edge case).
-  for (size_t i = n_init; i < k; ++i) {
-    std::memcpy(centroids_m + i * d, centroids_m + (i % n_init) * d,
-                d * sizeof(float));
+    algorithm.append(sub_vec, d);
   }
 
-  // -- Lloyd iterations ---------------------------------------------------
-  std::vector<uint32_t> assignments(num);
-  std::vector<float> new_centroids(k * d);
-  std::vector<uint32_t> counts(k);
+  // Single-threaded pool — parallelism is at sub-quantizer level
+  // (aligned with multi_chunk_cluster.h L184-185)
+  auto local_threads = std::make_shared<SingleQueueIndexThreads>(1, false);
 
-  // Pre-build centroid pointer array for SIMD batch distance.
-  std::vector<const void *> centroid_ptrs(k);
-  for (size_t c = 0; c < k; ++c) {
-    centroid_ptrs[c] = centroids_m + c * d;
-  }
-  std::vector<float> dists(k);
+  // KMC2 centroid initialization (aligned with multi_chunk_cluster.h L191-196)
+  ailego::Kmc2CentroidsGenerator<
+      ailego::NumericalKmeans<float, SingleQueueIndexThreads>,
+      SingleQueueIndexThreads>
+      gen;
+  gen.set_chain_length(markov_chain_length_);
+  gen.set_assumption_free(false);
+  algorithm.init_centroids(*local_threads, gen);
 
+  // Lloyd iterations (aligned with multi_chunk_cluster.h L200-216)
+  double cost = 0.0;
   for (uint32_t iter = 0; iter < kMaxKmeansIters; ++iter) {
-    bool changed = false;
-
-    // Assignment step — always use L2 distance (fp32_l2_batch_fn_) to
-    // minimize L2 quantization error, regardless of the search metric.
-    // KMeans operates in L2 space; the search metric only affects LUT
-    // construction in quantize_query.
-    for (size_t i = 0; i < num; ++i) {
-      const float *sub_vec =
-          reinterpret_cast<const float *>(
-              reinterpret_cast<const uint8_t *>(data) + i * stride) +
-          sub_idx * d;
-
-      fp32_l2_batch_fn_(centroid_ptrs.data(),
-                        reinterpret_cast<const void *>(sub_vec), k, d,
-                        dists.data());
-      uint32_t best_idx = static_cast<uint32_t>(
-          std::min_element(dists.begin(), dists.end()) - dists.begin());
-
-      if (assignments[i] != best_idx) {
-        changed = true;
-        assignments[i] = best_idx;
-      }
-    }
-
-    if (!changed) {
-      LOG_INFO("  sub[%zu] converged at iter %u", sub_idx, iter + 1);
+    double old_cost = cost;
+    bool result = algorithm.cluster_once(*local_threads, &cost);
+    if (!result) {
+      LOG_ERROR("sub[%zu] cluster_once failed at iter %u", sub_idx, iter);
       break;
     }
-
-    // Update step.
-    std::fill(new_centroids.begin(), new_centroids.end(), 0.0f);
-    std::fill(counts.begin(), counts.end(), 0);
-
-    for (size_t i = 0; i < num; ++i) {
-      const float *sub_vec =
-          reinterpret_cast<const float *>(
-              reinterpret_cast<const uint8_t *>(data) + i * stride) +
-          sub_idx * d;
-      uint32_t c = assignments[i];
-      counts[c]++;
-      float *cent = new_centroids.data() + c * d;
-      for (size_t j = 0; j < d; ++j) {
-        cent[j] += sub_vec[j];
-      }
+    double new_epsilon = std::abs(cost - old_cost);
+    if (new_epsilon < epsilon_) {
+      break;
     }
+  }
 
-    for (size_t c = 0; c < k; ++c) {
-      if (counts[c] == 0) continue;
-      float inv = 1.0f / static_cast<float>(counts[c]);
-      float *cent = new_centroids.data() + c * d;
-      for (size_t j = 0; j < d; ++j) {
-        cent[j] *= inv;
-      }
-    }
-
-    // Copy back; keep old centroid for empty clusters.
-    for (size_t c = 0; c < k; ++c) {
-      if (counts[c] > 0) {
-        std::memcpy(centroids_m + c * d, new_centroids.data() + c * d,
-                    d * sizeof(float));
-      }
-    }
+  // Extract centroids into the flat centroids_ buffer
+  const auto &cents = algorithm.centroids();
+  for (size_t c = 0; c < cents.count(); ++c) {
+    std::memcpy(centroids_m + c * d, cents[c], d * sizeof(float));
   }
 }
 
 int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
-  return train(holder, 1);
+  return train(holder, static_cast<int>(thread_count_));
 }
 
 int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
@@ -287,50 +243,35 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
-  // Clamp thread count to [1, num_subquantizers_].
-  thread_count =
-      std::max(1, std::min(thread_count, static_cast<int>(num_subquantizers_)));
-
   LOG_INFO(
       "PQ training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
       "max_iters=%u, threads=%d",
       num, original_dim_, num_subquantizers_, sub_dim_, kMaxKmeansIters,
       thread_count);
 
-  if (thread_count == 1) {
-    // Single-threaded path.
-    for (uint32_t m = 0; m < num_subquantizers_; ++m) {
-      train_subquantizer(all_data.data(), num, data_stride, m);
-      LOG_INFO("  sub-quantizer [%u/%u] done", m + 1, num_subquantizers_);
-    }
-  } else {
-    // Multi-threaded path: each thread handles a contiguous range of
-    // sub-quantizers.  Sub-quantizers are fully independent — no
-    // synchronization needed.
-    std::vector<std::thread> threads;
-    threads.reserve(thread_count);
+  // Create thread pool (aligned with multi_chunk_cluster L183-185)
+  auto threads = std::make_shared<SingleQueueIndexThreads>(
+      static_cast<uint32_t>(thread_count), false);
+  auto task_group = threads->make_group();
 
-    for (int t = 0; t < thread_count; ++t) {
-      uint32_t m_begin = static_cast<uint32_t>(
-          (static_cast<size_t>(t) * num_subquantizers_) / thread_count);
-      uint32_t m_end = static_cast<uint32_t>(
-          (static_cast<size_t>(t + 1) * num_subquantizers_) / thread_count);
-
-      threads.emplace_back(
-          [this, &all_data, num, data_stride, m_begin, m_end]() {
-            for (uint32_t m = m_begin; m < m_end; ++m) {
-              train_subquantizer(all_data.data(), num, data_stride, m);
-            }
-          });
-    }
-
-    for (auto &th : threads) {
-      th.join();
-    }
-
-    LOG_INFO("  all %u sub-quantizers trained (%d threads)", num_subquantizers_,
-             thread_count);
+  // Distribute sub-quantizers across threads (aligned with L198-201)
+  std::atomic<size_t> finished{0};
+  size_t pool_count = threads->count();
+  for (size_t i = 0; i < pool_count; ++i) {
+    task_group->submit(ailego::Closure::New(
+        [this, &all_data, num, data_stride, i, pool_count, &finished]() {
+          for (uint32_t m = static_cast<uint32_t>(i);
+               m < num_subquantizers_;
+               m += static_cast<uint32_t>(pool_count)) {
+            train_subquantizer(all_data.data(), num, data_stride, m);
+            finished++;
+          }
+        }));
   }
+  task_group->wait_finish();
+
+  LOG_INFO("  all %u sub-quantizers trained (%zu threads)",
+           num_subquantizers_, pool_count);
 
   // Pre-build centroid pointer cache (needed by compute_dist_table).
   build_centroid_ptrs_cache();

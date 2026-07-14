@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
@@ -127,6 +128,16 @@ class PqInt8Quantizer : public Quantizer {
   static constexpr uint32_t kMaxKmeansIters = 25;
   static constexpr size_t kMaxTrainVectors = 65536;
   static constexpr uint32_t kExtraMetaSizeCosine = sizeof(float);
+
+  //! Thread count for KMeans training (0 = hardware_concurrency).
+  //! Read from params in init(), aligned with multi_chunk_cluster.
+  uint32_t thread_count_{0};
+
+  //! KMC2 Markov chain length (aligned with multi_chunk_cluster default 32).
+  uint32_t markov_chain_length_{32};
+
+  //! Cost-based convergence threshold (aligned with multi_chunk_cluster).
+  double epsilon_{std::numeric_limits<float>::epsilon()};
 
   IndexMeta meta_{};
   uint32_t original_dim_{0};

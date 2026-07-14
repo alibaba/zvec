@@ -22,7 +22,6 @@
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
-#include "scalar/pq_quantizer_int4/pq_distance.h"
 #include "scalar/pq_quantizer_int8/pq_distance.h"
 
 #if defined(__SSE2__)
@@ -30,12 +29,10 @@
 #endif
 #if defined(__AVX2__)
 #include "avx2/fht/fht.h"
-#include "avx2/pq_quantizer_int4/pq_distance.h"
 #include "avx2/pq_quantizer_int8/pq_distance.h"
 #endif
 #if defined(__AVX512F__)
 #include "avx512/fht/fht.h"
-#include "avx512/pq_quantizer_int4/pq_distance.h"
 #include "avx512/pq_quantizer_int8/pq_distance.h"
 #endif
 #if defined(__ARM_NEON) && defined(__aarch64__)
@@ -231,34 +228,7 @@ PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
   (void)cpu_arch_type;
   PqKernels k{};
   if (quantize_type == QuantizeType::kPQ) {
-    if (data_type == DataType::kInt4) {
-      // int4 packed nibble path — scalar by default.
-      k.adc_distance = scalar::pq_adc_int4_distance;
-      k.sdc_distance = scalar::pq_sdc_int4_distance;
-      k.batch_adc_distance = scalar::pq_adc_int4_batch_distance;
-
-#if defined(__AVX512F__)
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
-          (cpu_arch_type == CpuArchType::kAuto ||
-           cpu_arch_type == CpuArchType::kAVX512)) {
-        k.adc_distance = avx512::pq_adc_int4_distance_avx512;
-        k.sdc_distance = avx512::pq_sdc_int4_distance_avx512;
-        k.batch_adc_distance = avx512::pq_adc_int4_batch_distance_avx512;
-        return k;
-      }
-#endif
-#if defined(__AVX2__)
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
-          (cpu_arch_type == CpuArchType::kAuto ||
-           cpu_arch_type == CpuArchType::kAVX2)) {
-        k.adc_distance = avx2::pq_adc_int4_distance_avx2;
-        k.sdc_distance = avx2::pq_sdc_int4_distance_avx2;
-        k.batch_adc_distance = avx2::pq_adc_int4_batch_distance_avx2;
-      }
-#endif
-      return k;
-    }
-    // Default (kInt8 / fallback): scalar int8 kernels.
+    // Default (kInt8): scalar int8 kernels.
     k.adc_distance = scalar::pq_adc_int8_distance;
     k.sdc_distance = scalar::pq_sdc_int8_distance;
     k.batch_adc_distance = scalar::pq_adc_int8_batch_distance;

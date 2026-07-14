@@ -75,7 +75,6 @@ struct FhtKernels {
 
 // data_type selects the code packing layout:
 //   kInt8: one uint8 per sub-quantizer (256 centroids, stride=256)
-//   kInt4: two sub-quantizers packed into one uint8 (16 centroids, stride=16)
 struct PqKernels {
   PqAdcDistanceFunc adc_distance;
   PqSdcKernelFunc sdc_distance;
@@ -148,7 +147,7 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 FhtKernels get_fht_kernels(CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 // Returns all PQ kernels dispatched for the given data_type, quantize_type
-// and CPU arch.  data_type selects the code packing layout (kInt8 vs kInt4).
+// and CPU arch.
 PqKernels get_pq_kernels(DataType data_type,
                          QuantizeType quantize_type = QuantizeType::kPQ,
                          CpuArchType cpu_arch_type = CpuArchType::kAuto);
