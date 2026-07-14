@@ -56,6 +56,10 @@ class PhraseDocIterator : public DocIterator {
   uint64_t cost() const override;
   float max_score() const override;
 
+  void set_min_competitive_score(float min_score) override {
+    conjunction_->set_min_competitive_score(min_score);
+  }
+
  private:
   // Verify that terms appear at consecutive positions in the document.
   // Issues a single MultiGet across the unique terms in the phrase, decodes

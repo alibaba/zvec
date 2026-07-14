@@ -50,8 +50,8 @@ class HnswContext : public IndexContext {
  public:
   //! Set topk of search result
   void set_topk(uint32_t val) override {
-    topk_ = val;
-    topk_heap_.limit(std::max(val, ef_));
+    topk_ = group_by_search() ? group_topk_ * group_num_ : val;
+    topk_heap_.limit(std::max(topk_, ef_));
   }
 
   //! Retrieve search result
@@ -530,12 +530,9 @@ class HnswContext : public IndexContext {
   void set_group_params(uint32_t group_num, uint32_t group_topk) override {
     group_num_ = group_num;
     group_topk_ = group_topk;
-
-    topk_ = group_topk_ * group_num_;
-
-    topk_heap_.limit(std::max(topk_, ef_));
-
     group_topk_heaps_.clear();
+
+    set_topk(group_topk_ * group_num_);
   }
 
  private:

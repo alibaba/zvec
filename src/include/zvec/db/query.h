@@ -171,7 +171,7 @@ struct GroupByVectorQuery {
   std::optional<std::vector<std::string>> output_fields_;
   std::string group_by_field_name_;
   uint32_t group_count_{2};
-  uint32_t group_topk_{3};
+  uint32_t topk_per_group_{3};
 };
 
 struct GroupResult {
