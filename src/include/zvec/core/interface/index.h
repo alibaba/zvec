@@ -206,7 +206,8 @@ class Index {
       const BaseIndexQueryParam::Pointer &search_param);
 
   //! Helper: set group_by on context from the query param (common for all
-  //! index types). Call this at the end of _prepare_for_search.
+  //! index types). Call this before set_topk() when topk depends on group
+  //! state.
   static void _set_group_by_on_context(
       const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context);

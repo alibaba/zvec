@@ -5899,6 +5899,69 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
   FileHelper::RemoveDirectory(col_path);
 }
 
+TEST_F(CollectionTest, Feature_FtsOptimizeAcceptsGlobalDocIdGaps) {
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = std::make_shared<CollectionSchema>("fts_optimize_gaps");
+  schema->set_max_doc_count_per_segment(1000);
+  schema->add_field(std::make_shared<FieldSchema>(
+      "content", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+
+  auto create_res = Collection::CreateAndOpen(col_path, *schema,
+                                              CollectionOptions{false, true});
+  ASSERT_TRUE(create_res.has_value()) << create_res.error().message();
+  auto col = std::move(create_res.value());
+
+  for (uint64_t batch = 0; batch < 3; ++batch) {
+    std::vector<Doc> docs;
+    docs.reserve(1000);
+    for (uint64_t i = 0; i < 1000; ++i) {
+      uint64_t id = batch * 1000 + i;
+      Doc doc;
+      doc.set_pk("pk_" + std::to_string(id));
+      doc.set<std::string>("content", "hello boundary");
+      docs.emplace_back(std::move(doc));
+    }
+    ASSERT_TRUE(col->Insert(docs).has_value());
+  }
+
+  auto delete_ranges = [&](uint64_t offset, uint64_t count) {
+    std::vector<std::string> pks;
+    pks.reserve(count * 3);
+    for (uint64_t base : {0, 1000, 2000}) {
+      for (uint64_t i = 0; i < count; ++i) {
+        pks.emplace_back("pk_" + std::to_string(base + offset + i));
+      }
+    }
+    auto result = col->Delete(pks);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+  };
+
+  // The first rebuild removes the head of each source segment, producing
+  // persisted global ranges [400, 999], [1400, 1999], [2400, 2999].
+  delete_ranges(0, 400);
+  ASSERT_TRUE(col->Optimize().ok());
+  ASSERT_EQ(col->Stats().value().doc_count, 1800u);
+
+  // A second round raises the delete ratio above the rebuild threshold and
+  // merges segments whose global ranges contain legitimate delete gaps.
+  delete_ranges(400, 200);
+  ASSERT_TRUE(col->Optimize().ok());
+  ASSERT_EQ(col->Stats().value().doc_count, 1200u);
+
+  SearchQuery query;
+  query.target_.field_name_ = "content";
+  query.topk_ = 10;
+  FtsClause fts;
+  fts.query_string_ = "hello";
+  query.target_.clause_ = fts;
+  auto result = col->Query(query);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(result.value().size(), 10u);
+
+  ASSERT_TRUE(col->Destroy().ok());
+}
+
 TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenWithoutOptimize) {
   FileHelper::RemoveDirectory(col_path);
 
