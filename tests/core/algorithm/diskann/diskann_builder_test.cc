@@ -16,12 +16,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <chrono>
-#include <cstring>
 #include <future>
 #include <gtest/gtest.h>
-#include <ailego/io/io_backend.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_holder.h"
@@ -157,36 +154,4 @@ TEST_F(DiskAnnBuilderTest, TestImplicitFactoryRegistration) {
   ASSERT_NE(streamer, nullptr)
       << "DiskAnnStreamer factory entry missing: DiskAnn must be available "
          "without any manual plugin load step.";
-}
-
-TEST(DiskAnnIOBackend, LibaioActivationDoesNotAffectSyncIO) {
-  auto &backend = IOBackend::Instance();
-  IOBackendType type = backend.available();
-
-  ASSERT_TRUE(type == IOBackendType::kLibAio || type == IOBackendType::kPread);
-  ASSERT_EQ(type, backend.type());
-  ASSERT_STREQ(backend.name(), IOBackendTypeName(type));
-  ASSERT_NE(backend.description(), nullptr);
-  ASSERT_GT(std::strlen(backend.description()), 0U);
-
-  const std::string path = "DiskAnnIOBackend_sync_io.tmp";
-  const std::string payload = "zvec-io-backend-isolation-check";
-
-  int wfd = ::open(path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0644);
-  ASSERT_GE(wfd, 0);
-  ASSERT_EQ(static_cast<ssize_t>(payload.size()),
-            ::write(wfd, payload.data(), payload.size()));
-  ::close(wfd);
-
-  char buf[64] = {0};
-  int rfd = ::open(path.c_str(), O_RDONLY);
-  ASSERT_GE(rfd, 0);
-  ssize_t n = ::pread(rfd, buf, sizeof(buf), 0);
-  ::close(rfd);
-  ::unlink(path.c_str());
-
-  ASSERT_EQ(static_cast<ssize_t>(payload.size()), n);
-  EXPECT_EQ(payload, std::string(buf, static_cast<size_t>(n)));
-
-  EXPECT_EQ(type, backend.available());
 }

@@ -203,3 +203,13 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/test_collection_diskann.py -v
         shell: bash
+
+      # Verify installing libaio does not affect existing non-DiskAnn tests.
+      - name: Run HNSW Tests (w/ libaio)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          ctest -R hnsw --output-on-failure --parallel $NPROC
+          cd "$GITHUB_WORKSPACE"
+          python -m pytest python/tests/test_hnsw_contiguous_memory.py -v
+        shell: bash
