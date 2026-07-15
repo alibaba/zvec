@@ -17,6 +17,7 @@
 #include <cstring>
 #include <random>
 #include "quantizer/quantizer.h"
+
 namespace zvec {
 namespace turbo {
 
@@ -150,54 +151,50 @@ void FhtRotator::apply(const float *in, float *out) const {
 
 void FhtRotator::apply_inverse(const float *in, float *out) const {
   const size_t dim = static_cast<size_t>(in_dim_);
-  // Copy input into working buffer
-  std::vector<float> data(in, in + dim);
+  std::memcpy(out, in, sizeof(float) * dim);
 
   if (trunc_dim_ == dim) {
     // Exact power-of-2: reverse 4 rounds in reverse order.
     const float inv_fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim_));
     for (int round = 3; round >= 0; --round) {
-      inplace_fn_(data.data(), trunc_dim_);
-      rescale_fn_(data.data(), trunc_dim_, inv_fac);
+      inplace_fn_(out, trunc_dim_);
+      rescale_fn_(out, trunc_dim_, inv_fac);
       flip_sign_fn_(flip_.data() + static_cast<size_t>(round) * flip_offset_,
-                    data.data(), dim);
+                    out, dim);
     }
-    std::memcpy(out, data.data(), dim * sizeof(float));
     return;
   }
 
   // Non-power-of-2: undo final rescale(0.25) first
-  rescale_fn_(data.data(), dim, 4.0f);
+  rescale_fn_(out, dim, 4.0f);
 
   const float inv_fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim_));
   size_t start = dim - trunc_dim_;
-  float *trunc_ptr = data.data() + start;
+  float *trunc_ptr = out + start;
 
   // Undo Round 4 (FHT on [start, start+trunc_dim))
-  inv_kacs_walk_fn_(data.data(), dim);
+  inv_kacs_walk_fn_(out, dim);
   inplace_fn_(trunc_ptr, trunc_dim_);
   rescale_fn_(trunc_ptr, trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data() + 3 * flip_offset_, data.data(), dim);
+  flip_sign_fn_(flip_.data() + 3 * flip_offset_, out, dim);
 
   // Undo Round 3 (FHT on [0, trunc_dim))
-  inv_kacs_walk_fn_(data.data(), dim);
-  inplace_fn_(data.data(), trunc_dim_);
-  rescale_fn_(data.data(), trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data() + 2 * flip_offset_, data.data(), dim);
+  inv_kacs_walk_fn_(out, dim);
+  inplace_fn_(out, trunc_dim_);
+  rescale_fn_(out, trunc_dim_, inv_fac);
+  flip_sign_fn_(flip_.data() + 2 * flip_offset_, out, dim);
 
   // Undo Round 2 (FHT on [start, start+trunc_dim))
-  inv_kacs_walk_fn_(data.data(), dim);
+  inv_kacs_walk_fn_(out, dim);
   inplace_fn_(trunc_ptr, trunc_dim_);
   rescale_fn_(trunc_ptr, trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data() + flip_offset_, data.data(), dim);
+  flip_sign_fn_(flip_.data() + flip_offset_, out, dim);
 
   // Undo Round 1 (FHT on [0, trunc_dim))
-  inv_kacs_walk_fn_(data.data(), dim);
-  inplace_fn_(data.data(), trunc_dim_);
-  rescale_fn_(data.data(), trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data(), data.data(), dim);
-
-  std::memcpy(out, data.data(), dim * sizeof(float));
+  inv_kacs_walk_fn_(out, dim);
+  inplace_fn_(out, trunc_dim_);
+  rescale_fn_(out, trunc_dim_, inv_fac);
+  flip_sign_fn_(flip_.data(), out, dim);
 }
 
 // ---------------------------------------------------------------------------

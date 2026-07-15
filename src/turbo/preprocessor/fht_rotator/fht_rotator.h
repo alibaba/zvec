@@ -14,8 +14,6 @@
 
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <vector>
 #include <zvec/turbo/turbo.h>
@@ -64,7 +62,7 @@ class FhtRotator : public Preprocessor {
   int serialize(std::string *out) const override;
   int deserialize(const void *data, size_t len) override;
 
-  //! Rotator type tag (kFht = 1).
+  //! Rotator type tag (kFht = 0).
   RotatorType rotator_type() const {
     return RotatorType::kFht;
   }
