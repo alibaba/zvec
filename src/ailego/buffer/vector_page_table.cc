@@ -174,6 +174,9 @@ void VectorPageTable::release_block(block_id_t block_id) {
   Entry &e = entry_at(block_id);
 
   if (e.ref_count.fetch_sub(1, std::memory_order_release) == 1) {
+    if (e.in_evict_queue.load(std::memory_order_relaxed)) {
+      return;
+    }
     std::atomic_thread_fence(std::memory_order_acquire);
     bool expected = false;
     if (e.in_evict_queue.compare_exchange_strong(expected, true,
