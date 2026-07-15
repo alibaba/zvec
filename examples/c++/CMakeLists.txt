@@ -19,8 +19,7 @@ set(ZVEC_LIB_DIR ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/lib)
 
 # Add include and library search paths
 # src/include  → public headers (<zvec/...>)
-# src          → internal headers (<ailego/...>) referenced by public headers
-include_directories(${ZVEC_INCLUDE_DIR} ${ZVEC_ROOT_DIR}/src)
+include_directories(${ZVEC_INCLUDE_DIR})
 set(ZVEC_LIB_SEARCH_DIRS ${ZVEC_LIB_DIR})
 
 # Support multi-config builds (MSVC puts libs in Debug/Release subdirectories)
