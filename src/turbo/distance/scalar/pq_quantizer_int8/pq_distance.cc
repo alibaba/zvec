@@ -17,19 +17,19 @@
 namespace zvec::turbo::scalar {
 
 void pq_adc_int8_distance(const void *pq_code_v, const void *lut_v,
-                          size_t num_subquantizers, float *out) {
+                          size_t num_chunk, float *out) {
   constexpr size_t kNumCentroids = 256;
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
   const auto *lut = reinterpret_cast<const float *>(lut_v);
   float sum = 0.0f;
-  for (size_t m = 0; m < num_subquantizers; ++m) {
+  for (size_t m = 0; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
   *out = sum;
 }
 
 void pq_sdc_int8_distance(const void *a_v, const void *b_v,
-                          const void *dist_table_v, size_t num_subquantizers,
+                          const void *dist_table_v, size_t num_chunk,
                           float *out) {
   constexpr size_t kNumCentroids = 256;
   constexpr size_t kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
@@ -37,7 +37,7 @@ void pq_sdc_int8_distance(const void *a_v, const void *b_v,
   const auto *b = reinterpret_cast<const uint8_t *>(b_v);
   const auto *dist_table = reinterpret_cast<const float *>(dist_table_v);
   float sum = 0.0f;
-  for (size_t m = 0; m < num_subquantizers; ++m) {
+  for (size_t m = 0; m < num_chunk; ++m) {
     size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
@@ -46,7 +46,7 @@ void pq_sdc_int8_distance(const void *a_v, const void *b_v,
 }
 
 void pq_adc_int8_batch_distance(const void **candidates_v, const void *lut_v,
-                                size_t num, size_t num_subquantizers,
+                                size_t num, size_t num_chunk,
                                 float *out) {
   constexpr size_t kNumCentroids = 256;
   const auto *lut = reinterpret_cast<const float *>(lut_v);
@@ -64,7 +64,7 @@ void pq_adc_int8_batch_distance(const void **candidates_v, const void *lut_v,
     const uint8_t *c2 = candidates[i + 2];
     const uint8_t *c3 = candidates[i + 3];
     float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
-    for (size_t m = 0; m < num_subquantizers; ++m) {
+    for (size_t m = 0; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       d0 += tab[c0[m]];
       d1 += tab[c1[m]];
@@ -80,7 +80,7 @@ void pq_adc_int8_batch_distance(const void **candidates_v, const void *lut_v,
   for (; i < num; ++i) {
     const uint8_t *code = candidates[i];
     float d = 0.0f;
-    for (size_t m = 0; m < num_subquantizers; ++m) {
+    for (size_t m = 0; m < num_chunk; ++m) {
       d += lut[m * kNumCentroids + code[m]];
     }
     out[i] = d;

@@ -44,24 +44,24 @@ using FhtVecRescaleFunc = void (*)(float *data, size_t n, float factor);
 // PQ kernel function pointer types.
 //
 // ADC: LUT look-up distance between a PQ code and a query (via LUT).
-//   pq_code:           [num_subquantizers] uint8_t
-//   lut:               [num_subquantizers * 256] float
+//   pq_code:           [num_chunk] uint8_t
+//   lut:               [num_chunk * 256] float
 // Uses void* to match DistanceFunc signature for direct assignment.
 using PqAdcDistanceFunc = void (*)(const void *pq_code, const void *lut,
-                                   size_t num_subquantizers, float *out);
+                                   size_t num_chunk, float *out);
 
 // SDC kernel: centroid-to-centroid distance between two PQ codes.
-//   a, b:              [num_subquantizers] uint8_t
-//   dist_table:        [num_subquantizers * 256 * 256] float
+//   a, b:              [num_chunk] uint8_t
+//   dist_table:        [num_chunk * 256 * 256] float
 // Uses void* for consistency with DistanceFunc / PqAdcDistanceFunc.
 using PqSdcKernelFunc = void (*)(const void *a, const void *b,
                                  const void *dist_table,
-                                 size_t num_subquantizers, float *out);
+                                 size_t num_chunk, float *out);
 
 // Batch ADC: compute distances for multiple PQ codes against a shared LUT.
 // Signature matches BatchDistanceFunc for direct assignment (no lambda).
 using PqBatchAdcFunc = void (*)(const void **candidates, const void *lut,
-                                size_t num, size_t num_subquantizers,
+                                size_t num, size_t num_chunk,
                                 float *out);
 
 // Aggregate of all FHT kernels needed by FhtRotator, dispatched by ISA.

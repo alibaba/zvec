@@ -48,7 +48,7 @@ static float reference_sq_euclidean(const float *a, const float *b,
 
 // Helper to create a PqInt8Quantizer via the factory.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_quantizer(
-    size_t dim, size_t num_subquantizers) {
+    size_t dim, size_t num_chunk) {
   auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
   if (!q) return nullptr;
 
@@ -57,7 +57,7 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq_quantizer(
   meta.set_metric("SquaredEuclidean", 0, Params());
 
   Params params;
-  params.set("num_subquantizers", static_cast<uint32_t>(num_subquantizers));
+  params.set("num_chunk", static_cast<uint32_t>(num_chunk));
   if (q->init(meta, params) != 0) return nullptr;
   return q;
 }
@@ -82,18 +82,18 @@ make_random_holder(size_t count, size_t dim, uint32_t seed = 42) {
 // ---------------------------------------------------------------------------
 
 TEST(PqInt8Quantizer, InitInvalidParams) {
-  // dim not divisible by num_subquantizers
+  // dim not divisible by num_chunk
   auto q = make_pq_quantizer(10, 3);
   EXPECT_EQ(q, nullptr);
 
-  // num_subquantizers = 0
+  // num_chunk = 0
   auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
   ASSERT_TRUE(q2);
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, 16);
   meta.set_metric("SquaredEuclidean", 0, Params());
   Params params;
-  params.set("num_subquantizers", static_cast<uint32_t>(0));
+  params.set("num_chunk", static_cast<uint32_t>(0));
   EXPECT_NE(0, q2->init(meta, params));
 }
 
@@ -300,10 +300,10 @@ void fill_random_codes(uint8_t *codes, size_t len, std::mt19937 &gen) {
 }
 
 // Helper to generate random LUT (ADC)
-void fill_random_lut(float *lut, size_t num_subquantizers, std::mt19937 &gen) {
+void fill_random_lut(float *lut, size_t num_chunk, std::mt19937 &gen) {
   constexpr size_t kNumCentroids = 256;
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-  for (size_t m = 0; m < num_subquantizers; ++m) {
+  for (size_t m = 0; m < num_chunk; ++m) {
     for (size_t c = 0; c < kNumCentroids; ++c) {
       lut[m * kNumCentroids + c] = dist(gen);
     }
@@ -311,11 +311,11 @@ void fill_random_lut(float *lut, size_t num_subquantizers, std::mt19937 &gen) {
 }
 
 // Helper to generate random dist_table (SDC)
-void fill_random_sdc_table(float *table, size_t num_subquantizers,
+void fill_random_sdc_table(float *table, size_t num_chunk,
                            std::mt19937 &gen) {
   constexpr size_t kTablePerSub = 256 * 256;
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-  for (size_t m = 0; m < num_subquantizers; ++m) {
+  for (size_t m = 0; m < num_chunk; ++m) {
     for (size_t i = 0; i < kTablePerSub; ++i) {
       table[m * kTablePerSub + i] = dist(gen);
     }
@@ -452,7 +452,7 @@ TEST(PqInt8SimdConsistency, AdcDistanceM1) {
 
 // Helper to create a PqInt8Quantizer with Cosine metric.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_cosine_quantizer(
-    size_t dim, size_t num_subquantizers) {
+    size_t dim, size_t num_chunk) {
   auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
   if (!q) return nullptr;
 
@@ -461,7 +461,7 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq_cosine_quantizer(
   meta.set_metric("Cosine", 0, Params());
 
   Params params;
-  params.set("num_subquantizers", static_cast<uint32_t>(num_subquantizers));
+  params.set("num_chunk", static_cast<uint32_t>(num_chunk));
   if (q->init(meta, params) != 0) return nullptr;
   return q;
 }
@@ -694,7 +694,7 @@ TEST(PqInt8Quantizer, L2Dequantize) {
 
 // Helper to create a PqInt8Quantizer with InnerProduct metric.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_ip_quantizer(
-    size_t dim, size_t num_subquantizers) {
+    size_t dim, size_t num_chunk) {
   auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
   if (!q) return nullptr;
 
@@ -703,7 +703,7 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq_ip_quantizer(
   meta.set_metric("InnerProduct", 0, Params());
 
   Params params;
-  params.set("num_subquantizers", static_cast<uint32_t>(num_subquantizers));
+  params.set("num_chunk", static_cast<uint32_t>(num_chunk));
   if (q->init(meta, params) != 0) return nullptr;
   return q;
 }

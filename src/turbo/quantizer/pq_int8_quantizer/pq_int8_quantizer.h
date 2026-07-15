@@ -28,8 +28,8 @@ using namespace zvec::core;
 
 //! Product Quantizer with 8-bit sub-codes (num_bits=8, 256 centroids).
 //!
-//! Datapoints are encoded as uint8_t[num_subquantizers] codes.
-//! Queries are encoded as a float LUT of size [num_subquantizers * 256]
+//! Datapoints are encoded as uint8_t[num_chunk] codes.
+//! Queries are encoded as a float LUT of size [num_chunk * 256]
 //! via compute_distance_table().  Distance between a PQ code and a
 //! query uses ADC (LUT look-up); distance between two PQ codes uses
 //! SDC (centroid-to-centroid distance table).
@@ -68,11 +68,11 @@ class PqInt8Quantizer : public Quantizer {
   int train(IndexHolder::Pointer holder, int thread_count) override;
 
   size_t quantized_datapoint_vector_length() const override {
-    return num_subquantizers_ + extra_meta_size_;
+    return num_chunk_ + extra_meta_size_;
   }
 
   size_t quantized_query_vector_length() const override {
-    return static_cast<size_t>(num_subquantizers_) * kNumCentroids *
+    return static_cast<size_t>(num_chunk_) * kNumCentroids *
            sizeof(float);
   }
 
@@ -144,14 +144,14 @@ class PqInt8Quantizer : public Quantizer {
 
   IndexMeta meta_{};
   uint32_t original_dim_{0};
-  uint32_t num_subquantizers_{0};
+  uint32_t num_chunk_{0};
   uint32_t sub_dim_{0};
 
-  //! Centroids: [num_subquantizers * kNumCentroids * sub_dim]
+  //! Centroids: [num_chunk * kNumCentroids * sub_dim]
   std::vector<float> centroids_;
 
   //! Centroid-to-centroid distance table for SDC:
-  //! [num_subquantizers * kNumCentroids * kNumCentroids]
+  //! [num_chunk * kNumCentroids * kNumCentroids]
   std::vector<float> dist_table_;
 
   //! Pre-built centroid pointer arrays for each sub-quantizer.

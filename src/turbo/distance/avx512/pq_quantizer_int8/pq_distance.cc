@@ -28,7 +28,7 @@ inline float horizontal_sum_avx512(__m512 v) {
 }  // namespace
 
 void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
-                                 size_t num_subquantizers, float *out) {
+                                 size_t num_chunk, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 16;  // AVX512 processes 16 floats at once
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
@@ -48,7 +48,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
   size_t m = 0;
 
   // Main loop: process 16 subquantizers per iteration
-  for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
+  for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load 16 uint8 codes and zero-extend to int32
     // Use unaligned load of 16 bytes
     __m128i codes_16x8 =
@@ -67,7 +67,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
   float sum = horizontal_sum_avx512(acc);
 
   // Scalar leftover: process remaining subquantizers
-  for (; m < num_subquantizers; ++m) {
+  for (; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
 
@@ -76,7 +76,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
 
 void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
                                  const void *dist_table_v,
-                                 size_t num_subquantizers, float *out) {
+                                 size_t num_chunk, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 16;
@@ -100,7 +100,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
   size_t m = 0;
 
   // Main loop: process 16 subquantizers per iteration
-  for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
+  for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load a[m..m+15] and b[m..m+15], zero-extend to int32
     __m128i a_16x8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + m));
     __m128i b_16x8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + m));
@@ -121,7 +121,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
   float sum = horizontal_sum_avx512(acc);
 
   // Scalar leftover
-  for (; m < num_subquantizers; ++m) {
+  for (; m < num_chunk; ++m) {
     size_t idx = m * kTablePerSub + static_cast<size_t>(a[m]) * kNumCentroids +
                  static_cast<size_t>(b[m]);
     sum += dist_table[idx];
@@ -132,7 +132,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
 
 void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
                                        const void *lut_v, size_t num,
-                                       size_t num_subquantizers, float *out) {
+                                       size_t num_chunk, float *out) {
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 16;
   constexpr int kBatch = 4;
@@ -161,7 +161,7 @@ void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
     __m512 acc3 = _mm512_setzero_ps();
 
     size_t m = 0;
-    for (; m + kChunkSize <= num_subquantizers; m += kChunkSize) {
+    for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
       const float *lut_base = lut + m * kNumCentroids;
 
       __m128i codes0 =
@@ -194,7 +194,7 @@ void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
     float s3 = _mm512_reduce_add_ps(acc3);
 
     // Scalar leftover for remaining subquantizers.
-    for (; m < num_subquantizers; ++m) {
+    for (; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       s0 += tab[c0[m]];
       s1 += tab[c1[m]];
@@ -208,7 +208,7 @@ void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
   }
   // Remaining candidates: use single ADC kernel.
   for (; i < num; ++i) {
-    pq_adc_int8_distance_avx512(candidates[i], lut, num_subquantizers, out + i);
+    pq_adc_int8_distance_avx512(candidates[i], lut, num_chunk, out + i);
   }
 }
 
