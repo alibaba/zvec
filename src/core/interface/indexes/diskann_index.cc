@@ -273,11 +273,11 @@ int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
 }
 
 ailego::IOBackendType DiskAnnIndex::io_backend_type() const {
-  return ailego::IOBackend::Instance().type();
+  return ailego::current_io_backend_type();
 }
 
 std::string DiskAnnIndex::io_backend_description() const {
-  return ailego::IOBackend::Instance().description();
+  return ailego::current_io_backend_description();
 }
 
 }  // namespace zvec::core_interface

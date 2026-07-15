@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_logger.h>
 

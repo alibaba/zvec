@@ -765,7 +765,7 @@ const char *zvec_get_default_jieba_dict_dir(void) {
 // =============================================================================
 
 zvec_io_backend_type_t zvec_get_io_backend_type(void) {
-  auto type = zvec::ailego::IOBackend::Instance().available();
+  auto type = zvec::ailego::current_io_backend_type();
   return static_cast<zvec_io_backend_type_t>(static_cast<uint32_t>(type));
 }
 
@@ -775,7 +775,7 @@ const char *zvec_get_io_backend_type_name(zvec_io_backend_type_t type) {
 }
 
 const char *zvec_get_io_backend_description(void) {
-  auto type = zvec::ailego::IOBackend::Instance().available();
+  auto type = zvec::ailego::current_io_backend_type();
   return zvec::ailego::IOBackendDescription(type);
 }
 
