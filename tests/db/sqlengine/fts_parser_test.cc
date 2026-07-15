@@ -27,10 +27,9 @@ namespace zvec::fts {
 class FtsParserTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Standard tokenizer + lowercase filter: ASCII tests behave the same as
-    // the previous whitespace split (alnum runs become tokens, delimiters
-    // get dropped) while CJK tests can exercise the per-character tokens
-    // standard produces from non-alnum bytes.
+    // Standard tokenizer + lowercase filter. These parser tests cover
+    // punctuation that standard still treats as delimiters, while CJK tests
+    // exercise the per-character tokens standard produces for ideographs.
     FtsIndexParams params;
     params.tokenizer_name = "standard";
     params.filters = {"lowercase"};
@@ -100,8 +99,8 @@ TEST_F(FtsParserTest, SingleTermNumeric) {
 
 TEST_F(FtsParserTest, SingleTermWithHyphen) {
   // The lexer's REGULAR_ID rule keeps hyphenated text as one token, but the
-  // standard tokenizer on the parser side splits non-alphanumerics. With the
-  // default OR operator the term decomposes into Or[full, text] so query
+  // standard tokenizer on the parser side splits this hyphen delimiter. With
+  // the default OR operator the term decomposes into Or[full, text] so query
   // segmentation matches the index segmentation.
   auto ast = parse("full-text");
   ASSERT_NE(ast, nullptr);
@@ -110,6 +109,12 @@ TEST_F(FtsParserTest, SingleTermWithHyphen) {
   ASSERT_EQ(or_node.children.size(), 2u);
   EXPECT_EQ(as_term(*or_node.children[0]).term, "full");
   EXPECT_EQ(as_term(*or_node.children[1]).term, "text");
+}
+
+TEST_F(FtsParserTest, BareColonQueryIsFieldPrefixSyntax) {
+  auto ast = parse("host:port");
+  EXPECT_EQ(ast, nullptr);
+  EXPECT_EQ(err_msg(), "field-prefixed queries are not supported");
 }
 
 // ============================================================
@@ -754,7 +759,7 @@ TEST_F(FtsParserTest, MultiTokenBareTermPreservesMustModifier) {
 
 TEST_F(FtsParserTest, PhraseTokensRunThroughPipeline) {
   // The phrase body is tokenized exactly like document text. With the
-  // standard tokenizer, mixed delimiters between alnum runs collapse so
+  // standard tokenizer, comma and exclamation delimiters collapse so
   // "machine, learning!" becomes ["machine", "learning"].
   auto ast = parse("\"machine, learning!\"");
   ASSERT_NE(ast, nullptr);
@@ -763,6 +768,15 @@ TEST_F(FtsParserTest, PhraseTokensRunThroughPipeline) {
   ASSERT_EQ(phrase.terms.size(), 2u);
   EXPECT_EQ(phrase.terms[0], "machine");
   EXPECT_EQ(phrase.terms[1], "learning");
+}
+
+TEST_F(FtsParserTest, PhraseCanSearchLiteralColonToken) {
+  auto ast = parse("\"host:port\"");
+  ASSERT_NE(ast, nullptr);
+  ASSERT_EQ(ast->type(), FtsNodeType::PHRASE);
+  const auto &phrase = as_phrase(*ast);
+  ASSERT_EQ(phrase.terms.size(), 1u);
+  EXPECT_EQ(phrase.terms[0], "host:port");
 }
 
 TEST_F(FtsParserTest, PhraseLowercaseFilterApplies) {

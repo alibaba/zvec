@@ -107,9 +107,11 @@ Status InvertedIndexer::flush() {
 
 Status InvertedIndexer::create_snapshot(const std::string &snapshot_dir) {
   Status s;
-  if (s = flush(); !s.ok()) {
-    LOG_ERROR("Failed to flush %s during creating a snapshot", ID().c_str());
-    return s;
+  if (!rocksdb_context_.read_only()) {
+    if (s = flush(); !s.ok()) {
+      LOG_ERROR("Failed to flush %s during creating a snapshot", ID().c_str());
+      return s;
+    }
   }
 
   if (s = rocksdb_context_.create_checkpoint(snapshot_dir); s.ok()) {

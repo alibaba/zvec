@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from ..common import VectorType
@@ -21,6 +22,7 @@ from ..common import VectorType
 __all__ = [
     "Doc",
     "DocList",
+    "GroupResult",
 ]
 
 
@@ -176,3 +178,16 @@ class Doc:
 
 #: Type alias for query results: a list of documents returned by a single query route.
 DocList = list[Doc]
+
+
+@dataclass(frozen=True)
+class GroupResult:
+    """A group value and its matching documents.
+
+    Attributes:
+        group_by_value (str): String representation of the grouped scalar field value.
+        docs (list[Doc]): Matching documents in similarity order.
+    """
+
+    group_by_value: str
+    docs: list[Doc]

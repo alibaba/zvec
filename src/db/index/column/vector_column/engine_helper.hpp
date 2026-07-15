@@ -120,6 +120,16 @@ class ProximaEngineHelper {
             std::make_shared<core_interface::RefinerParam>(rp);
       }
     }
+    if (db_query_params.group_by) {
+      engine_query_param->group_by_param =
+          std::make_shared<core_interface::GroupByParam>();
+      engine_query_param->group_by_param->group_topk =
+          db_query_params.group_by->group_topk;
+      engine_query_param->group_by_param->group_count =
+          db_query_params.group_by->group_count;
+      engine_query_param->group_by_param->group_by =
+          db_query_params.group_by->group_by;
+    }
 
     return engine_query_param;
   }

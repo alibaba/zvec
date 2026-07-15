@@ -344,6 +344,27 @@ TEST(FieldSchemaTest, Validate) {
   }
 
   {
+    auto fts_params = std::make_shared<FtsIndexParams>(
+        "standard", std::vector<std::string>{"lowercase", "stemmer"},
+        R"({"stemmer_lang":"english"})");
+    FieldSchema field("fts_field", DataType::STRING, false, fts_params);
+    auto status = field.validate();
+    EXPECT_TRUE(status.ok());
+  }
+
+  {
+    auto fts_params = std::make_shared<FtsIndexParams>(
+        "standard", std::vector<std::string>{"lowercase", "stemmer"},
+        R"({"stemmer_lang":"nonexistent_lang"})");
+    FieldSchema field("fts_field", DataType::STRING, false, fts_params);
+    auto status = field.validate();
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+    EXPECT_NE(status.message().find("invalid FTS index params"),
+              std::string::npos);
+  }
+
+  {
     FieldSchema field("simple_field", DataType::STRING);
     auto status = field.validate();
     EXPECT_TRUE(status.ok());  // Scalar fields without index params are valid

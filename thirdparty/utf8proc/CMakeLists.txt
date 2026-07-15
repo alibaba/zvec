@@ -1,0 +1,4 @@
+set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(utf8proc-2.11.3 utf8proc EXCLUDE_FROM_ALL)
+
+set(utf8proc_FOUND TRUE PARENT_SCOPE)

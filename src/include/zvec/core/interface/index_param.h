@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -166,6 +167,13 @@ struct RefinerParam {
   std::shared_ptr<Index> reference_index = nullptr;
 };
 
+// --- GroupBy Parameters ---
+struct GroupByParam {
+  uint32_t group_topk{0};
+  uint32_t group_count{0};
+  std::function<std::string(uint64_t key)> group_by{};
+};
+
 // --- Query Parameters (can be passed to search methods) ---
 class BaseIndexQueryParam {
  public:
@@ -180,6 +188,7 @@ class BaseIndexQueryParam {
   float radius = 0.0f;
   bool is_linear = false;
   RefinerParam::Pointer refiner_param = nullptr;
+  std::shared_ptr<GroupByParam> group_by_param = nullptr;
 
   virtual Pointer Clone() const = 0;
 };

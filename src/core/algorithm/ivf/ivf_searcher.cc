@@ -229,7 +229,7 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
     auto &context_stats = ctx->mutable_stats(0);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
-    uint32_t total_scan_count = 0;
+    size_t total_scan_count = 0;
     for (size_t i = 0;
          i < centroids.size() && total_scan_count < ctx->max_scan_count();
          ++i) {

@@ -223,29 +223,14 @@ class QueryExecutor:
             fts.match_string = query.fts.match_string or ""
             search_query.fts = fts
 
-    def _build_search_query(
-        self, ctx: QueryContext, query: Query, collection: _Collection
-    ) -> _SearchQuery:
-        search_query = self._build_base_search_query(ctx)
-        search_query.field_name = query.field_name
-        if query.param:
-            search_query.query_params = query.param
+    def set_query_vector(
+        self, query: Query, search_query, collection: _Collection
+    ) -> None:
+        """Resolve a Query vector and set it on a native query object."""
+        vector_schema = self._schema.vector(query.field_name)
+        if vector_schema is None:
+            raise ValueError(f"Vector field '{query.field_name}' not found in schema")
 
-        # set FTS query if provided
-        self._apply_fts(query, search_query)
-
-        vector_schema = None
-        if query.has_vector() or query.has_id():
-            vector_schema = (
-                self._schema.vector(query.field_name)
-                if query
-                else self._schema.vectors[0]
-            )
-
-            if vector_schema is None:
-                raise ValueError("No vector field found")
-
-        # set vector
         if query.has_vector():
             vec_data = query.vector
         elif query.has_id():
@@ -255,11 +240,26 @@ class QueryExecutor:
                 raise ValueError(f"Document with id '{query.id}' not found")
             vec_data = doc.get_any(vector_schema.name, vector_schema.data_type)
         else:
-            return search_query
+            raise ValueError("Group by query requires a vector or document id")
 
         target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
         search_query.set_vector(
             vector_schema._get_object(),
             convert_to_numpy(vec_data, target_dtype) if target_dtype else vec_data,
         )
+
+    def _build_search_query(
+        self, ctx: QueryContext, query: Query, collection: _Collection
+    ) -> _SearchQuery:
+        query._validate()
+        search_query = self._build_base_search_query(ctx)
+        search_query.field_name = query.field_name
+        if query.param:
+            search_query.query_params = query.param
+
+        # set FTS query if provided
+        self._apply_fts(query, search_query)
+
+        if query.has_vector() or query.has_id():
+            self.set_query_vector(query, search_query, collection)
         return search_query

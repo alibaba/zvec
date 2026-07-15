@@ -40,6 +40,7 @@ class IndexMeta {
     DT_BINARY64 = 8,
   };
 
+
   /*! Major Orders
    */
   enum MajorOrder {
@@ -77,6 +78,7 @@ class IndexMeta {
         dimension_(rhs.dimension_),
         unit_size_(rhs.unit_size_),
         element_size_(rhs.element_size_),
+        extra_meta_size_(rhs.extra_meta_size_),
         space_id_(rhs.space_id_),
         metric_revision_(rhs.metric_revision_),
         converter_revision_(rhs.converter_revision_),
@@ -112,6 +114,7 @@ class IndexMeta {
         dimension_(rhs.dimension_),
         unit_size_(rhs.unit_size_),
         element_size_(rhs.element_size_),
+        extra_meta_size_(rhs.extra_meta_size_),
         space_id_(rhs.space_id_),
         metric_revision_(rhs.metric_revision_),
         converter_revision_(rhs.converter_revision_),
@@ -173,6 +176,7 @@ class IndexMeta {
     searcher_params_ = std::move(rhs.searcher_params_);
     streamer_params_ = std::move(rhs.streamer_params_);
     attributes_ = std::move(rhs.attributes_);
+    extra_meta_size_ = rhs.extra_meta_size_;
 
     return *this;
   }
@@ -211,6 +215,7 @@ class IndexMeta {
     searcher_params_ = std::move(rhs.searcher_params_);
     streamer_params_ = std::move(rhs.streamer_params_);
     attributes_ = std::move(rhs.attributes_);
+    extra_meta_size_ = rhs.extra_meta_size_;
 
     return *this;
   }
@@ -249,6 +254,7 @@ class IndexMeta {
     searcher_params_.clear();
     streamer_params_.clear();
     attributes_.clear();
+    extra_meta_size_ = 0;
   }
 
   //! Retrieve major order information
@@ -279,6 +285,11 @@ class IndexMeta {
   //! Retrieve element size in bytes
   uint32_t element_size(void) const {
     return element_size_;
+  }
+
+  //! Retrieve extra meta size in bytes
+  uint32_t extra_meta_size(void) const {
+    return extra_meta_size_;
   }
 
   //! Retrieve space id
@@ -429,7 +440,8 @@ class IndexMeta {
   //! Set dimension of feature
   void set_dimension(uint32_t dim) {
     dimension_ = dim;
-    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim);
+    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim) +
+                    extra_meta_size_;
   }
 
   //! Set meta information of feature
@@ -443,12 +455,19 @@ class IndexMeta {
     data_type_ = data_type;
     dimension_ = dim;
     unit_size_ = unit;
-    element_size_ = ElementSizeof(data_type, unit, dim);
+    element_size_ = ElementSizeof(data_type, unit, dim) + extra_meta_size_;
   }
 
   //! Set meta information of feature
   void set_meta(DataType data_type, uint32_t dim) {
     this->set_meta(data_type, UnitSizeof(data_type), dim);
+  }
+
+  //! Set extra meta size
+  void set_extra_meta_size(uint32_t size) {
+    extra_meta_size_ = size;
+    element_size_ =
+        ElementSizeof(data_type_, unit_size_, dimension_) + extra_meta_size_;
   }
 
   //! Set information of metric
@@ -586,6 +605,7 @@ class IndexMeta {
   uint32_t dimension_{0};
   uint32_t unit_size_{0};
   uint32_t element_size_{0};
+  uint32_t extra_meta_size_{0};
   uint64_t space_id_{0};
   uint32_t metric_revision_{0};
   uint32_t converter_revision_{0};
@@ -633,6 +653,19 @@ class IndexQueryMeta {
         element_size_(IndexMeta::ElementSizeof(data_type, unit, dim)) {}
 
   //! Constructor
+  IndexQueryMeta(IndexMeta::MetaType meta_type, IndexMeta::DataType data_type,
+                 uint32_t unit, uint32_t dim, uint32_t quantize_type,
+                 uint32_t extra_meta_size)
+      : meta_type_(meta_type),
+        data_type_(data_type),
+        dimension_(dim),
+        unit_size_(unit),
+        quantize_type_(quantize_type),
+        extra_meta_size_(extra_meta_size),
+        element_size_(IndexMeta::ElementSizeof(data_type, unit, dim) +
+                      extra_meta_size_) {}
+
+  //! Constructor
   IndexQueryMeta(IndexMeta::DataType data_type, uint32_t dim)
       : IndexQueryMeta{IndexMeta::MetaType::MT_DENSE, data_type,
                        IndexMeta::UnitSizeof(data_type), dim} {}
@@ -673,10 +706,21 @@ class IndexQueryMeta {
     return element_size_;
   }
 
+  //! Retrieve quantize type
+  uint32_t quantize_type(void) const {
+    return quantize_type_;
+  }
+
+  //! Retrieve extra meta size in bytes
+  uint32_t extra_meta_size(void) const {
+    return extra_meta_size_;
+  }
+
   //! Set dimension of feature
   void set_dimension(uint32_t dim) {
     dimension_ = dim;
-    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim);
+    element_size_ = IndexMeta::ElementSizeof(data_type_, unit_size_, dim) +
+                    extra_meta_size_;
   }
 
   //! Set meta type
@@ -689,12 +733,21 @@ class IndexQueryMeta {
     data_type_ = data_type;
   }
 
+  //! Set extra meta size
+  void set_extra_meta_size(uint32_t size) {
+    extra_meta_size_ = size;
+    element_size_ =
+        IndexMeta::ElementSizeof(data_type_, unit_size_, dimension_) +
+        extra_meta_size_;
+  }
+
   //! Set meta information of feature
   void set_meta(IndexMeta::DataType data_type, uint32_t unit, uint32_t dim) {
     data_type_ = data_type;
     dimension_ = dim;
     unit_size_ = unit;
-    element_size_ = IndexMeta::ElementSizeof(data_type, unit, dim);
+    element_size_ =
+        IndexMeta::ElementSizeof(data_type, unit, dim) + extra_meta_size_;
   }
 
   //! Set meta information of feature
@@ -702,11 +755,25 @@ class IndexQueryMeta {
     this->set_meta(data_type, IndexMeta::UnitSizeof(data_type), dim);
   }
 
+  //! Set meta information of feature with quantize type and extra meta size
+  void set_meta(IndexMeta::DataType data_type, uint32_t dim,
+                uint32_t quantize_type, uint32_t extra_meta_size) {
+    data_type_ = data_type;
+    dimension_ = dim;
+    unit_size_ = IndexMeta::UnitSizeof(data_type);
+    quantize_type_ = quantize_type;
+    extra_meta_size_ = extra_meta_size;
+    element_size_ =
+        IndexMeta::ElementSizeof(data_type, unit_size_, dim) + extra_meta_size_;
+  }
+
  private:
   IndexMeta::MetaType meta_type_{IndexMeta::MetaType::MT_DENSE};
   IndexMeta::DataType data_type_{IndexMeta::DataType::DT_UNDEFINED};
   uint32_t dimension_{0};
   uint32_t unit_size_{0};
+  uint32_t quantize_type_{0};
+  uint32_t extra_meta_size_{0};
   uint32_t element_size_{0};
 };
 

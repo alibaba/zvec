@@ -1778,7 +1778,8 @@ TEST_F(FtsColumnIndexerTest, BruteForceCoexistsWithFilterPushdown) {
 
   zvec::fts::FtsQueryParams qp;
   qp.topk = 10;
-  qp.candidate_ids = {0, 1, 2};          // candidates restrict to {0,1,2}
+  qp.candidate_ids =
+      std::vector<uint64_t>{0, 1, 2};    // candidates restrict to {0,1,2}
   qp.filter = make_blocked_filter({1});  // further drop doc 1
   auto ret = indexer->search(*ast, qp);
   ASSERT_TRUE(ret.has_value());
@@ -1792,9 +1793,8 @@ TEST_F(FtsColumnIndexerTest, BruteForceCoexistsWithFilterPushdown) {
   EXPECT_EQ(ids[1], 2ull);
 }
 
-// Empty candidate_ids takes the regular posting-driven path (the wrap guard
-// requires non-empty), so search still finds all matching docs.
-TEST_F(FtsColumnIndexerTest, BruteForceEmptyCandidatesFallsBack) {
+// A present empty candidate_ids means the upstream filter matched no docs.
+TEST_F(FtsColumnIndexerTest, BruteForceEmptyCandidatesReturnsEmpty) {
   auto indexer = make_indexer("content");
   EXPECT_TRUE(indexer->insert(0, "alpha beta").has_value());
   EXPECT_TRUE(indexer->insert(1, "alpha gamma").has_value());
@@ -1802,7 +1802,7 @@ TEST_F(FtsColumnIndexerTest, BruteForceEmptyCandidatesFallsBack) {
 
   std::vector<FtsResult> r;
   EXPECT_TRUE(search_ok_with_candidates(*indexer, "alpha", 10, {}, &r));
-  EXPECT_EQ(r.size(), 2u);
+  EXPECT_TRUE(r.empty());
 }
 
 // Regression guard: a null filter yields the same doc_ids and scores as the
@@ -1831,4 +1831,90 @@ TEST_F(FtsColumnIndexerTest, FilterPushdownNullFilterUnchanged) {
     EXPECT_EQ(baseline[i].doc_id, with_null[i].doc_id);
     EXPECT_FLOAT_EQ(baseline[i].score, with_null[i].score);
   }
+}
+
+// ============================================================
+// Stemmer token filter end-to-end tests
+// ============================================================
+
+static zvec::fts::TokenizerPipelinePtr make_stemmer_pipeline() {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "standard";
+  params.filters = {"lowercase", "stemmer"};
+  return zvec::fts::TokenizerFactory::create(params);
+}
+
+class FtsStemmerIndexerTest : public FtsColumnIndexerTest {
+ protected:
+  std::unique_ptr<FtsColumnIndexer> make_stemmer_indexer(
+      const std::string &field_name = "content") {
+    auto fts_params = std::make_shared<zvec::FtsIndexParams>(
+        "standard", std::vector<std::string>{"lowercase", "stemmer"}, "");
+    auto field_meta = make_test_field_meta(field_name, fts_params);
+    auto indexer = std::make_unique<FtsColumnIndexer>();
+    auto ret = indexer->open(field_meta, &db_, postings_cf_, positions_cf_,
+                             term_freq_cf_, max_tf_cf_, doc_len_cf_, stat_cf_);
+    EXPECT_TRUE(ret.has_value());
+    return indexer;
+  }
+};
+
+TEST_F(FtsStemmerIndexerTest, StemmedTermMatchesMorphologicalVariants) {
+  auto indexer = make_stemmer_indexer();
+  EXPECT_TRUE(indexer->insert(0, "the cats are running quickly").has_value());
+  EXPECT_TRUE(indexer->insert(1, "a dog runs slowly").has_value());
+  EXPECT_TRUE(indexer->insert(2, "birds fly high").has_value());
+
+  auto pipeline = make_stemmer_pipeline();
+
+  // "running" stems to "run", matches doc 0 ("running") and doc 1 ("runs")
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "running", 10, &results, pipeline));
+  EXPECT_EQ(results.size(), 2u);
+
+  // "cats" stems to "cat", matches only doc 0
+  results.clear();
+  EXPECT_TRUE(search_ok(*indexer, "cats", 10, &results, pipeline));
+  EXPECT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
+}
+
+TEST_F(FtsStemmerIndexerTest, QueryWithBaseFormMatchesVariants) {
+  auto indexer = make_stemmer_indexer();
+  EXPECT_TRUE(indexer->insert(0, "connected connections").has_value());
+  EXPECT_TRUE(indexer->insert(1, "connecting wires").has_value());
+  EXPECT_TRUE(indexer->insert(2, "unrelated text").has_value());
+
+  auto pipeline = make_stemmer_pipeline();
+
+  // "connect" is already a stem, should match doc 0 and doc 1
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "connect", 10, &results, pipeline));
+  EXPECT_EQ(results.size(), 2u);
+}
+
+TEST_F(FtsStemmerIndexerTest, StemmerWithAndQuery) {
+  auto indexer = make_stemmer_indexer();
+  EXPECT_TRUE(indexer->insert(0, "dogs running fast").has_value());
+  EXPECT_TRUE(indexer->insert(1, "cats running slow").has_value());
+  EXPECT_TRUE(indexer->insert(2, "dogs sleeping").has_value());
+
+  auto pipeline = make_stemmer_pipeline();
+
+  // "dogs AND running" -> stems to "dog AND run" -> doc 0 only
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "dogs AND running", 10, &results, pipeline));
+  EXPECT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
+}
+
+TEST_F(FtsStemmerIndexerTest, StemmerNoMatchAfterStemming) {
+  auto indexer = make_stemmer_indexer();
+  EXPECT_TRUE(indexer->insert(0, "hello world").has_value());
+
+  auto pipeline = make_stemmer_pipeline();
+
+  std::vector<FtsResult> results;
+  EXPECT_TRUE(search_ok(*indexer, "nonexistent", 10, &results, pipeline));
+  EXPECT_TRUE(results.empty());
 }
