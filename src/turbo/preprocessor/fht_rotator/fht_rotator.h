@@ -16,7 +16,6 @@
 
 #include <memory>
 #include <vector>
-#include <zvec/turbo/turbo.h>
 #include "preprocessor/preprocessor.h"
 
 namespace zvec {
@@ -63,8 +62,8 @@ class FhtRotator : public Preprocessor {
   int deserialize(const void *data, size_t len) override;
 
   //! Rotator type tag (kFht = 0).
-  RotatorType rotator_type() const {
-    return RotatorType::kFht;
+  RotateType rotate_type() const {
+    return RotateType::kFht;
   }
 
  private:

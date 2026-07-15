@@ -14,10 +14,9 @@
 
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <string>
+#include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace turbo {
@@ -27,18 +26,13 @@ constexpr uint32_t kRotatorMagic = 0x52544F52u;
 //! Current rotator serialization format version.
 constexpr uint16_t kRotatorSerVersion = 1;
 
-//! Kind of rotator (stored in RotatorSerHeader::rotator_type).
-enum class RotatorType : uint16_t {
-  kFht = 0,  //!< O(d log d) FHT-based Kac random rotation
-};
-
 //! Self-describing, fixed-size header that prefixes every serialized rotator.
 //! The type-specific payload (flip signs, rotation matrix, ...) follows
 //! immediately after this header.
 struct RotatorSerHeader {
   uint32_t magic;         // kRotatorMagic
   uint16_t version;       // kRotatorSerVersion
-  uint16_t rotator_type;  // RotatorType
+  uint16_t rotator_type;  // RotateType
   uint32_t in_dim;        // input dimensionality
   uint32_t out_dim;       // output dimensionality
   uint32_t payload_size;  // bytes following the header

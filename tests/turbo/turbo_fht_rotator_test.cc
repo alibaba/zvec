@@ -152,7 +152,7 @@ TEST(FhtRotator, CreateGeneratesFlip) {
     const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(blob.data());
     EXPECT_EQ(hdr->magic, kRotatorMagic);
     EXPECT_EQ(hdr->version, kRotatorSerVersion);
-    EXPECT_EQ(static_cast<RotatorType>(hdr->rotator_type), RotatorType::kFht);
+    EXPECT_EQ(static_cast<RotateType>(hdr->rotator_type), RotateType::kFht);
     EXPECT_EQ(static_cast<int>(hdr->in_dim), dim);
     EXPECT_EQ(static_cast<int>(hdr->out_dim), dim);
     EXPECT_GT(hdr->payload_size, 0u);
@@ -195,7 +195,7 @@ TEST(FhtRotator, FromBlobMalformed) {
   RotatorSerHeader hdr{};
   hdr.magic = 0xDEADBEEF;
   hdr.version = kRotatorSerVersion;
-  hdr.rotator_type = static_cast<uint16_t>(RotatorType::kFht);
+  hdr.rotator_type = static_cast<uint16_t>(RotateType::kFht);
   hdr.payload_size = 0;
   EXPECT_EQ(FhtRotator::from_blob(&hdr, sizeof(hdr)), nullptr);
 }

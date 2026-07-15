@@ -157,66 +157,80 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
   return nullptr;
 }
 
-FhtKernels get_fht_kernels(CpuArchType cpu_arch_type) {
-  // Suppress unused-parameter warning when no SIMD #if blocks are compiled in.
+RotatorKernels get_rotator_kernels(RotateType rotate_type,
+                                   CpuArchType cpu_arch_type) {
   (void)cpu_arch_type;
+
+  switch (rotate_type) {
+    case RotateType::kFht: {
+      FhtKernels k;
+      // Default: scalar fallback for all
+      k.flip_sign = scalar::fht_flip_sign;
+      k.kacs_walk = scalar::fht_kacs_walk;
+      k.inv_kacs_walk = scalar::fht_inv_kacs_walk;
+      k.inplace = scalar::fht_inplace;
+      k.rescale = scalar::fht_vec_rescale;
+
+#if defined(__AVX512F__)
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+          zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX512)) {
+        k.flip_sign = avx512::fht_flip_sign_avx512;
+        k.kacs_walk = avx512::fht_kacs_walk_avx512;
+        k.inv_kacs_walk = avx512::fht_inv_kacs_walk_avx512;
+        k.inplace = avx512::fht_inplace_avx512;
+        k.rescale = avx512::fht_vec_rescale_avx512;
+        return k;
+      }
+#endif
+#if defined(__AVX2__)
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX2)) {
+        k.flip_sign = avx2::fht_flip_sign_avx2;
+        k.kacs_walk = avx2::fht_kacs_walk_avx2;
+        k.inv_kacs_walk = avx2::fht_inv_kacs_walk_avx2;
+        k.inplace = avx2::fht_inplace_avx2;
+        k.rescale = avx2::fht_vec_rescale_avx2;
+        return k;
+      }
+#endif
+#if defined(__SSE2__)
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE2 &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kSSE)) {
+        k.flip_sign = sse::fht_flip_sign_sse;
+        k.kacs_walk = sse::fht_kacs_walk_sse;
+        k.inv_kacs_walk = sse::fht_inv_kacs_walk_sse;
+        k.rescale = sse::fht_vec_rescale_sse;
+        // inplace fallback to scalar (SSE has no fht_inplace)
+        return k;
+      }
+#endif
+#if defined(__ARM_NEON) && defined(__aarch64__)
+      if (cpu_arch_type == CpuArchType::kAuto ||
+          cpu_arch_type == CpuArchType::kNEON) {
+        k.flip_sign = neon::fht_flip_sign_neon;
+        k.kacs_walk = neon::fht_kacs_walk_neon;
+        k.inv_kacs_walk = neon::fht_inv_kacs_walk_neon;
+        k.rescale = neon::fht_vec_rescale_neon;
+        // inplace fallback to scalar (NEON has no fht_inplace)
+        return k;
+      }
+#endif
+      return k;  // scalar
+    }
+  }
+
+  // Fallback (unreachable for valid RotateType values).
   FhtKernels k;
-  // Default: scalar fallback for all
   k.flip_sign = scalar::fht_flip_sign;
   k.kacs_walk = scalar::fht_kacs_walk;
   k.inv_kacs_walk = scalar::fht_inv_kacs_walk;
   k.inplace = scalar::fht_inplace;
   k.rescale = scalar::fht_vec_rescale;
-
-#if defined(__AVX512F__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
-      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
-      (cpu_arch_type == CpuArchType::kAuto ||
-       cpu_arch_type == CpuArchType::kAVX512)) {
-    k.flip_sign = avx512::fht_flip_sign_avx512;
-    k.kacs_walk = avx512::fht_kacs_walk_avx512;
-    k.inv_kacs_walk = avx512::fht_inv_kacs_walk_avx512;
-    k.inplace = avx512::fht_inplace_avx512;
-    k.rescale = avx512::fht_vec_rescale_avx512;
-    return k;
-  }
-#endif
-#if defined(__AVX2__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
-      (cpu_arch_type == CpuArchType::kAuto ||
-       cpu_arch_type == CpuArchType::kAVX2)) {
-    k.flip_sign = avx2::fht_flip_sign_avx2;
-    k.kacs_walk = avx2::fht_kacs_walk_avx2;
-    k.inv_kacs_walk = avx2::fht_inv_kacs_walk_avx2;
-    k.inplace = avx2::fht_inplace_avx2;
-    k.rescale = avx2::fht_vec_rescale_avx2;
-    return k;
-  }
-#endif
-#if defined(__SSE2__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE2 &&
-      (cpu_arch_type == CpuArchType::kAuto ||
-       cpu_arch_type == CpuArchType::kSSE)) {
-    k.flip_sign = sse::fht_flip_sign_sse;
-    k.kacs_walk = sse::fht_kacs_walk_sse;
-    k.inv_kacs_walk = sse::fht_inv_kacs_walk_sse;
-    k.rescale = sse::fht_vec_rescale_sse;
-    // inplace fallback to scalar (SSE has no fht_inplace)
-    return k;
-  }
-#endif
-#if defined(__ARM_NEON) && defined(__aarch64__)
-  if (cpu_arch_type == CpuArchType::kAuto ||
-      cpu_arch_type == CpuArchType::kNEON) {
-    k.flip_sign = neon::fht_flip_sign_neon;
-    k.kacs_walk = neon::fht_kacs_walk_neon;
-    k.inv_kacs_walk = neon::fht_inv_kacs_walk_neon;
-    k.rescale = neon::fht_vec_rescale_neon;
-    // inplace fallback to scalar (NEON has no fht_inplace)
-    return k;
-  }
-#endif
-  return k;  // scalar
+  return k;
 }
 
 }  // namespace zvec::turbo

@@ -41,7 +41,7 @@ FhtRotator::Pointer FhtRotator::create(int dim) {
   r->trunc_dim_ = floor_pow2(static_cast<size_t>(dim));
   r->fac_ = 1.0f / std::sqrt(static_cast<float>(r->trunc_dim_));
   r->flip_offset_ = (static_cast<size_t>(dim) + kByteLen - 1) / kByteLen;
-  auto k = get_fht_kernels();
+  auto k = std::get<FhtKernels>(get_rotator_kernels(RotateType::kFht));
   r->flip_sign_fn_ = k.flip_sign;
   r->kacs_walk_fn_ = k.kacs_walk;
   r->inv_kacs_walk_fn_ = k.inv_kacs_walk;
@@ -65,7 +65,7 @@ FhtRotator::Pointer FhtRotator::from_blob(const void *data, size_t len) {
   const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(data);
   if (hdr->magic != kRotatorMagic) return nullptr;
   if (hdr->version != kRotatorSerVersion) return nullptr;
-  if (static_cast<RotatorType>(hdr->rotator_type) != RotatorType::kFht) {
+  if (static_cast<RotateType>(hdr->rotator_type) != RotateType::kFht) {
     return nullptr;
   }
 
@@ -208,7 +208,7 @@ int FhtRotator::serialize(std::string *out) const {
   RotatorSerHeader hdr{};
   hdr.magic = kRotatorMagic;
   hdr.version = kRotatorSerVersion;
-  hdr.rotator_type = static_cast<uint16_t>(RotatorType::kFht);
+  hdr.rotator_type = static_cast<uint16_t>(RotateType::kFht);
   hdr.in_dim = static_cast<uint32_t>(in_dim_);
   hdr.out_dim = static_cast<uint32_t>(out_dim_);
   hdr.payload_size = static_cast<uint32_t>(flip_.size());
@@ -226,7 +226,7 @@ int FhtRotator::deserialize(const void *data, size_t len) {
   const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(data);
   if (hdr->magic != kRotatorMagic) return kErrUnsupported;
   if (hdr->version != kRotatorSerVersion) return kErrUnsupported;
-  if (static_cast<RotatorType>(hdr->rotator_type) != RotatorType::kFht) {
+  if (static_cast<RotateType>(hdr->rotator_type) != RotateType::kFht) {
     return kErrUnsupported;
   }
 
@@ -238,7 +238,7 @@ int FhtRotator::deserialize(const void *data, size_t len) {
   trunc_dim_ = floor_pow2(static_cast<size_t>(in_dim_));
   fac_ = 1.0f / std::sqrt(static_cast<float>(trunc_dim_));
   flip_offset_ = (static_cast<size_t>(in_dim_) + kByteLen - 1) / kByteLen;
-  auto k = get_fht_kernels();
+  auto k = std::get<FhtKernels>(get_rotator_kernels(RotateType::kFht));
   flip_sign_fn_ = k.flip_sign;
   kacs_walk_fn_ = k.kacs_walk;
   inv_kacs_walk_fn_ = k.inv_kacs_walk;

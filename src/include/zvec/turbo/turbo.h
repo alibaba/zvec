@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <variant>
 #include <zvec/ailego/math_batch/utils.h>
 
 namespace zvec::turbo {
@@ -50,6 +51,10 @@ struct FhtKernels {
   FhtVecRescaleFunc rescale;
 };
 
+// Variant over all rotator kernel structs.  Add new types here as they are
+// introduced (e.g. MatrixKernels).
+using RotatorKernels = std::variant<FhtKernels>;
+
 enum class MetricType {
   kSquaredEuclidean,
   kCosine,
@@ -74,6 +79,10 @@ enum class QuantizeType {
   kFp32,
   kPQ,
   kRabit
+};
+
+enum class RotateType : uint16_t {
+  kFht = 0,  //!< O(d log d) FHT-based Kac random rotation
 };
 
 enum class CpuArchType {
@@ -112,7 +121,8 @@ QueryPreprocessFunc get_query_preprocess_func(
 // interface can grow to cover other output types (e.g. fp16) in the future.
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 
-// Returns all FHT kernels dispatched for the current CPU.
-FhtKernels get_fht_kernels(CpuArchType cpu_arch_type = CpuArchType::kAuto);
+// Returns rotator kernels dispatched for the current CPU.
+RotatorKernels get_rotator_kernels(
+    RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo
