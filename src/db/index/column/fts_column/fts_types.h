@@ -37,8 +37,8 @@ struct FtsQueryParams {
 };
 
 /*! Per-segment statistics needed by the FTS reducer for doc_id remapping.
- *  - min_doc_id / max_doc_id: GLOBAL doc_id range used by the delete filter
- *    (filter.is_filtered() takes a global doc_id).
+ *  - min_doc_id / max_doc_id: GLOBAL doc_id range used to order segments and
+ *    reject overlapping inputs.  Gaps are valid after compaction deletes.
  *  - doc_count: number of FTS LOCAL doc_ids in the source segment; the posting
  *    list domain is [0, doc_count).  For fresh (non-merged) segments this
  *    equals max_doc_id - min_doc_id + 1, and the local-to-global mapping is

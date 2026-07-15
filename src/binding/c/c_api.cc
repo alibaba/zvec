@@ -5771,7 +5771,7 @@ zvec_group_by_vector_query_t *zvec_group_by_vector_query_create(void) {
   ZVEC_TRY_RETURN_NULL(
       "Failed to create GroupByVectorQuery",
       auto *query = new zvec::GroupByVectorQuery();
-      query->group_count_ = 2; query->group_topk_ = 3;
+      query->group_count_ = 2; query->topk_per_group_ = 3;
       return reinterpret_cast<zvec_group_by_vector_query_t *>(query);)
   return nullptr;
 }
@@ -5841,23 +5841,23 @@ uint32_t zvec_group_by_vector_query_get_group_count(
   return ptr->group_count_;
 }
 
-zvec_error_code_t zvec_group_by_vector_query_set_group_topk(
-    zvec_group_by_vector_query_t *query, uint32_t topk) {
+zvec_error_code_t zvec_group_by_vector_query_set_topk_per_group(
+    zvec_group_by_vector_query_t *query, uint32_t topk_per_group) {
   if (!query) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "GroupByVectorQuery pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
-  ptr->group_topk_ = topk;
+  ptr->topk_per_group_ = topk_per_group;
   return ZVEC_OK;
 }
 
-uint32_t zvec_group_by_vector_query_get_group_topk(
+uint32_t zvec_group_by_vector_query_get_topk_per_group(
     const zvec_group_by_vector_query_t *query) {
   if (!query) return 3;
   auto *ptr = reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
-  return ptr->group_topk_;
+  return ptr->topk_per_group_;
 }
 
 zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
