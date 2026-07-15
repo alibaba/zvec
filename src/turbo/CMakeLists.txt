@@ -19,7 +19,7 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 # subdirectory).
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
     if (HOST_ARCH MATCHES "^(x86|x64)$")
-        file(GLOB_RECURSE AVX512_VNNI_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/avx512_vnni/*.cc)
+        file(GLOB_RECURSE AVX512_VNNI_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc)
         set_source_files_properties(
             ${AVX512_VNNI_SRCS}
             PROPERTIES
@@ -29,8 +29,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
 endif()
 
 cc_library(
-    NAME zvec_turbo STATIC STRICT PACKED
+    NAME zvec_turbo STATIC STRICT ALWAYS_LINK PACKED
     SRCS ${ALL_SRCS}
     LIBS zvec_ailego
-    INCS ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_ROOT_DIR}/src/include
+    INCS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/distance ${PROJECT_ROOT_DIR}/src/include
 )
