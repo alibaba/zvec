@@ -22,7 +22,6 @@
 #pragma once
 
 #include <string>
-
 #include <zvec/ailego/internal/platform.h>
 
 namespace zvec {

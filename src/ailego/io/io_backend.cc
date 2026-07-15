@@ -20,9 +20,8 @@
 // can expose current_io_backend_type() / current_io_backend_description()
 // without pulling in libaio_loader or io_backend_def.h.
 
-#include <zvec/ailego/io/io_backend.h>
-
 #include <ailego/io/io_backend_def.h>
+#include <zvec/ailego/io/io_backend.h>
 
 namespace zvec {
 namespace ailego {
