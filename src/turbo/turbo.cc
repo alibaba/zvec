@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cassert>
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
 #include "avx512_vnni/record_quantized_int8/cosine.h"
@@ -224,13 +225,8 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
   }
 
   // Fallback (unreachable for valid RotateType values).
-  FhtKernels k;
-  k.flip_sign = scalar::fht_flip_sign;
-  k.kacs_walk = scalar::fht_kacs_walk;
-  k.inv_kacs_walk = scalar::fht_inv_kacs_walk;
-  k.inplace = scalar::fht_inplace;
-  k.rescale = scalar::fht_vec_rescale;
-  return k;
+  assert(false && "unsupported RotateType");
+  return FhtKernels{};
 }
 
 }  // namespace zvec::turbo
