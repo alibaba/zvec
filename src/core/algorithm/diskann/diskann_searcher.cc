@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "diskann_searcher.h"
-#include <ailego/io/io_backend.h>
+#include <zvec/ailego/io/io_backend.h>
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 #include "diskann_params.h"
