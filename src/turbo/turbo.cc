@@ -18,14 +18,35 @@
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_int8/quantize.h"
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
+#include "scalar/fp32/cosine.h"
+#include "scalar/fp32/inner_product.h"
+#include "scalar/fp32/squared_euclidean.h"
 
 namespace zvec::turbo {
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
-                               QuantizeType quantize_type) {
+                               QuantizeType quantize_type,
+                               CpuArchType cpu_arch_type) {
+  if (data_type == DataType::kFp32) {
+    if (quantize_type == QuantizeType::kDefault ||
+        quantize_type == QuantizeType::kFp32) {
+      if (metric_type == MetricType::kCosine) {
+        return scalar::cosine_fp32_distance;
+      }
+      if (metric_type == MetricType::kSquaredEuclidean) {
+        return scalar::squared_euclidean_fp32_distance;
+      }
+      if (metric_type == MetricType::kInnerProduct) {
+        return scalar::inner_product_fp32_distance;
+      }
+    }
+    return nullptr;
+  }
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::squared_euclidean_int8_distance;
         }
@@ -35,7 +56,9 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
       }
     }
     if (quantize_type == QuantizeType::kUniform) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::uniform_squared_euclidean_int8_distance;
         }
@@ -47,10 +70,28 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
 
 BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
                                           DataType data_type,
-                                          QuantizeType quantize_type) {
+                                          QuantizeType quantize_type,
+                                          CpuArchType cpu_arch_type) {
+  if (data_type == DataType::kFp32) {
+    if (quantize_type == QuantizeType::kDefault ||
+        quantize_type == QuantizeType::kFp32) {
+      if (metric_type == MetricType::kCosine) {
+        return scalar::cosine_fp32_batch_distance;
+      }
+      if (metric_type == MetricType::kSquaredEuclidean) {
+        return scalar::squared_euclidean_fp32_batch_distance;
+      }
+      if (metric_type == MetricType::kInnerProduct) {
+        return scalar::inner_product_fp32_batch_distance;
+      }
+    }
+    return nullptr;
+  }
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::squared_euclidean_int8_batch_distance;
         }
@@ -60,22 +101,28 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
       }
     }
     if (quantize_type == QuantizeType::kUniform) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::uniform_squared_euclidean_int8_batch_distance;
         }
       }
     }
   }
+
   return nullptr;
 }
 
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
                                               DataType data_type,
-                                              QuantizeType quantize_type) {
+                                              QuantizeType quantize_type,
+                                              CpuArchType cpu_arch_type) {
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
+          (cpu_arch_type == CpuArchType::kAuto ||
+           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::squared_euclidean_int8_query_preprocess;
         }
