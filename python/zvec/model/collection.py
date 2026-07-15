@@ -17,12 +17,13 @@ import warnings
 from typing import Optional, Union, overload
 
 from zvec._zvec import _Collection
+from zvec._zvec.param import _GroupByVectorQuery
 
 from ..executor import QueryContext, QueryExecutor
 from ..extension import ReRanker
 from ..typing import Status
 from .convert import convert_to_cpp_doc, convert_to_py_doc
-from .doc import Doc, DocList
+from .doc import Doc, DocList, GroupResult
 from .param import (
     AddColumnOption,
     AlterColumnOption,
@@ -40,6 +41,11 @@ from .param.query import Query
 from .schema import CollectionSchema, CollectionStats, FieldSchema
 
 __all__ = ["Collection"]
+
+
+def _require_positive_integer(value, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
 
 
 class Collection:
@@ -437,3 +443,80 @@ class Collection:
             reranker=reranker,
         )
         return self._querier.execute(ctx, self._obj)
+
+    def group_by_query(
+        self,
+        query: Query,
+        group_by_field_name: str,
+        group_count=2,
+        topk_per_group=3,
+        *,
+        filter: Optional[str] = None,
+        include_vector: bool = False,
+        output_fields: Optional[list[str]] = None,
+    ) -> list[GroupResult]:
+        """Perform group-by vector search.
+
+        Groups results by a scalar field value, returning the top-k documents
+        within each group, ordered by similarity score.
+
+        Accepts a single vector Query. Full-text search is not supported.
+
+        Args:
+            query (Query): Vector query.
+            group_by_field_name (str): Scalar field used to group results.
+            group_count (int): Maximum number of groups to return.
+            topk_per_group (int): Maximum number of documents in each group.
+            filter (Optional[str]): Boolean expression used to filter candidates.
+            include_vector (bool): Whether returned documents include vectors.
+            output_fields (Optional[list[str]]): Scalar fields to return.
+
+        Returns:
+            list[GroupResult]: Grouped documents sorted by score.
+
+        Examples:
+            >>> results = collection.group_by_query(
+            ...     zvec.Query(
+            ...         field_name="embedding",
+            ...         vector=[0.1, 0.2, 0.3],
+            ...         param=zvec.HnswQueryParam(ef=300),
+            ...     ),
+            ...     group_by_field_name="category",
+            ...     group_count=5,
+            ...     topk_per_group=3,
+            ... )
+            >>> for group in results:
+            ...     print(group.group_by_value, len(group.docs))
+        """
+        query._validate()
+        if query.has_fts():
+            raise ValueError("Group by query does not support FTS")
+        if not query.has_vector() and not query.has_id():
+            raise ValueError("Group by query requires a vector or document id")
+        if not group_by_field_name:
+            raise ValueError("group_by_field_name cannot be empty")
+        _require_positive_integer(group_count, "group_count")
+        _require_positive_integer(topk_per_group, "topk_per_group")
+        cpp_query = _GroupByVectorQuery()
+        cpp_query.field_name = query.field_name
+        cpp_query.group_by_field_name = group_by_field_name
+        cpp_query.group_count = group_count
+        cpp_query.topk_per_group = topk_per_group
+        cpp_query.include_vector = include_vector
+        if filter:
+            cpp_query.filter = filter
+        if output_fields is not None:
+            cpp_query.output_fields = output_fields
+        if query.param:
+            cpp_query.query_params = query.param
+        self._querier.set_query_vector(query, cpp_query, self._obj)
+
+        raw_results = self._obj.GroupByQuery(cpp_query)
+
+        return [
+            GroupResult(
+                group_by_value=group.group_by_value,
+                docs=[convert_to_py_doc(doc, self.schema) for doc in group.docs],
+            )
+            for group in raw_results
+        ]

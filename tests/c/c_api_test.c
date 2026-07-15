@@ -6315,6 +6315,13 @@ void test_diskann_wiring_on_vector_query(void) {
   zvec_group_by_vector_query_t *gbq = zvec_group_by_vector_query_create();
   TEST_ASSERT(gbq != NULL);
 
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(gbq) == 3);
+  err = zvec_group_by_vector_query_set_topk_per_group(gbq, 7);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(gbq) == 7);
+  err = zvec_group_by_vector_query_set_topk_per_group(NULL, 7);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+
   zvec_diskann_query_params_t *dp2 = zvec_query_params_diskann_create(200);
   TEST_ASSERT(dp2 != NULL);
   err = zvec_group_by_vector_query_set_diskann_params(gbq, dp2);

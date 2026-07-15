@@ -766,36 +766,17 @@ const char *zvec_get_default_jieba_dict_dir(void) {
 
 zvec_io_backend_type_t zvec_get_io_backend_type(void) {
   auto type = zvec::ailego::IOBackend::Instance().available();
-  switch (type) {
-    case zvec::ailego::IOBackendType::kLibAio:
-      return ZVEC_IO_BACKEND_TYPE_LIBAIO;
-    case zvec::ailego::IOBackendType::kPread:
-    default:
-      return ZVEC_IO_BACKEND_TYPE_PREAD;
-  }
+  return static_cast<zvec_io_backend_type_t>(static_cast<uint32_t>(type));
 }
 
 const char *zvec_get_io_backend_type_name(zvec_io_backend_type_t type) {
-  thread_local std::string cached;
-  zvec::ailego::IOBackendType cpp_type;
-  switch (type) {
-    case ZVEC_IO_BACKEND_TYPE_LIBAIO:
-      cpp_type = zvec::ailego::IOBackendType::kLibAio;
-      break;
-    case ZVEC_IO_BACKEND_TYPE_PREAD:
-    default:
-      cpp_type = zvec::ailego::IOBackendType::kPread;
-      break;
-  }
-  cached = zvec::ailego::IOBackendTypeName(cpp_type);
-  return cached.c_str();
+  auto cpp_type = static_cast<zvec::ailego::IOBackendType>(type);
+  return zvec::ailego::IOBackendTypeName(cpp_type);
 }
 
 const char *zvec_get_io_backend_description(void) {
-  thread_local std::string cached;
   auto type = zvec::ailego::IOBackend::Instance().available();
-  cached = zvec::ailego::IOBackendDescription(type);
-  return cached.c_str();
+  return zvec::ailego::IOBackendDescription(type);
 }
 
 // =============================================================================
@@ -5814,7 +5795,7 @@ zvec_group_by_vector_query_t *zvec_group_by_vector_query_create(void) {
   ZVEC_TRY_RETURN_NULL(
       "Failed to create GroupByVectorQuery",
       auto *query = new zvec::GroupByVectorQuery();
-      query->group_count_ = 2; query->group_topk_ = 3;
+      query->group_count_ = 2; query->topk_per_group_ = 3;
       return reinterpret_cast<zvec_group_by_vector_query_t *>(query);)
   return nullptr;
 }
@@ -5884,23 +5865,23 @@ uint32_t zvec_group_by_vector_query_get_group_count(
   return ptr->group_count_;
 }
 
-zvec_error_code_t zvec_group_by_vector_query_set_group_topk(
-    zvec_group_by_vector_query_t *query, uint32_t topk) {
+zvec_error_code_t zvec_group_by_vector_query_set_topk_per_group(
+    zvec_group_by_vector_query_t *query, uint32_t topk_per_group) {
   if (!query) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "GroupByVectorQuery pointer is null");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
-  ptr->group_topk_ = topk;
+  ptr->topk_per_group_ = topk_per_group;
   return ZVEC_OK;
 }
 
-uint32_t zvec_group_by_vector_query_get_group_topk(
+uint32_t zvec_group_by_vector_query_get_topk_per_group(
     const zvec_group_by_vector_query_t *query) {
   if (!query) return 3;
   auto *ptr = reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
-  return ptr->group_topk_;
+  return ptr->topk_per_group_;
 }
 
 zvec_error_code_t zvec_group_by_vector_query_set_query_vector(

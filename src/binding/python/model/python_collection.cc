@@ -48,6 +48,10 @@ T unwrap_expected(const tl::expected<T, Status> &exp) {
 }
 
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
+  py::class_<GroupResult>(m, "_GroupResult")
+      .def_readonly("group_by_value", &GroupResult::group_by_value_)
+      .def_readonly("docs", &GroupResult::docs_);
+
   py::class_<Collection, Collection::Ptr> collection(m, "_Collection");
   bind_db_methods(collection);
   bind_ddl_methods(collection);
@@ -281,7 +285,6 @@ void ZVecPyCollection::bind_dql_methods(
                py::gil_scoped_release release;
                result = self.GroupByQuery(query);
              }
-             // return GroupResults
              return unwrap_expected(result);
            })
       .def(
@@ -310,27 +313,7 @@ void ZVecPyCollection::bind_dql_methods(
           "given vector column. One of 'mmap', 'buffer_pool', 'contiguous'. "
           "Raises KeyError if no HNSW index exists on the column, or "
           "ValueError if the column's index is not an HNSW index. Intended "
-          "for introspection and testing only; not part of the stable API.")
-      .def(
-          "_debug_io_backend_type",
-          [](const Collection &self) {
-            const auto result = self.DebugGetIoBackendType();
-            return unwrap_expected(result);
-          },
-          "Debug-only: returns the I/O backend type used by DiskAnn "
-          "as an IOBackendType enum (zvec.typing.IOBackendType). "
-          "Intended for introspection and testing only; not part of the "
-          "stable API.")
-      .def(
-          "_debug_io_backend_description",
-          [](const Collection &self) {
-            const auto result = self.DebugGetIoBackendDescription();
-            return unwrap_expected(result);
-          },
-          "Debug-only: returns a human-readable description of the I/O "
-          "backend used by DiskAnn, including libaio install guidance when "
-          "only pread is available. Intended for introspection and testing "
-          "only; not part of the stable API.");
+          "for introspection and testing only; not part of the stable API.");
 }
 
 }  // namespace zvec

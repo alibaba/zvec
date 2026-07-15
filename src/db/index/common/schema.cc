@@ -153,7 +153,8 @@ Status FieldSchema::validate() const {
             support_dense_vector_index.end()) {
           return Status::InvalidArgument(
               "schema validate failed: dense_vector's index_params only "
-              "support FLAT|HNSW|IVF index, but field[",
+              "support FLAT|HNSW|HNSW_RABITQ|IVF|DISKANN|VAMANA index, but "
+              "field[",
               name_, "]'s index_type is ",
               IndexTypeCodeBook::AsString(index_params_->type()));
         }

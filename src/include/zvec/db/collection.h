@@ -118,17 +118,6 @@ class Collection {
   //! introspection and testing; not part of the stable public API.
   virtual Result<std::string> DebugGetHnswStorageMode(
       const std::string &column_name) const = 0;
-
-  //! Debug-only: retrieve the I/O backend type used by DiskAnn. Returns
-  //! an IOBackendType enum (kLibAio or kPread). Intended for introspection
-  //! and testing; not part of the stable public API.
-  virtual Result<ailego::IOBackendType> DebugGetIoBackendType() const = 0;
-
-  //! Debug-only: retrieve a human-readable description of the I/O backend,
-  //! including installation guidance for libaio when only pread is available.
-  //! Intended for introspection and testing; not part of the stable public
-  //! API.
-  virtual Result<std::string> DebugGetIoBackendDescription() const = 0;
 };
 
 }  // namespace zvec

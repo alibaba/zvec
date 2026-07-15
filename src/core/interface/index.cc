@@ -1030,6 +1030,11 @@ int Index::_get_coarse_search_topk(
   return floor(search_param->topk * scale_factor);
 }
 
+// Set or clear group-by state on a pooled context before each search.
+//
+// Set group-by state before topk so contexts can derive the effective candidate
+// count from the active group parameters. This order also ensures pooled
+// contexts restore the ordinary topk after stale group-by state is cleared.
 void Index::_set_group_by_on_context(
     const BaseIndexQueryParam::Pointer &search_param,
     core::IndexContext::Pointer &context) {
@@ -1037,6 +1042,9 @@ void Index::_set_group_by_on_context(
     context->set_group_by(search_param->group_by_param->group_by);
     context->set_group_params(search_param->group_by_param->group_count,
                               search_param->group_by_param->group_topk);
+  } else {
+    context->set_group_params(0, 0);
+    context->reset_group_by();
   }
 }
 

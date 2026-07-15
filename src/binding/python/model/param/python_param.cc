@@ -1952,6 +1952,71 @@ Args:
           }));
 }
 
+void set_query_vector(QueryTarget &target, const FieldSchema &field_schema,
+                      const py::object &obj) {
+  const DataType data_type = field_schema.data_type();
+
+  // Dense vector data is referenced by the query object. Callers
+  // must not modify the source data until the query returns.
+  if (FieldSchema::is_dense_vector_field(data_type)) {
+    if (!py::isinstance<py::array>(obj)) {
+      throw py::type_error("Dense vector[" + field_schema.name() +
+                           "] expects a ndarray, got " +
+                           std::string(py::str(py::type::of(obj))));
+    }
+    const auto arr = obj.cast<py::array>();
+    if (arr.ndim() != 1) {
+      throw py::type_error("Dense vector expects 1D array, got " +
+                           std::to_string(arr.ndim()) + "D");
+    }
+    const auto buf = arr.request();
+    target.clause_ = VectorViewClause{
+        std::string_view(static_cast<const char *>(buf.ptr),
+                         static_cast<size_t>(buf.size) * buf.itemsize),
+        {},
+        {}};
+    return;
+  }
+  // sparse vector
+  if (FieldSchema::is_sparse_vector_field(data_type)) {
+    if (!py::isinstance<py::dict>(obj)) {
+      throw py::type_error("Sparse vector[" + field_schema.name() +
+                           "] expects a Python dict, got " +
+                           std::string(py::str(py::type::of(obj))));
+    }
+    const auto sparse = obj.cast<py::dict>();
+
+    switch (data_type) {
+      case DataType::SPARSE_VECTOR_FP16: {
+        auto [indices, values] = serialize_sparse_vector<ailego::Float16>(
+            sparse, [](const py::handle &h, size_t idx) {
+              float f = checked_cast<float>(
+                  h, "Sparse value[" + std::to_string(idx) + "]", "FLOAT");
+              return ailego::Float16(f);
+            });
+        target.set_sparse_vector(std::move(indices), std::move(values));
+        break;
+      }
+      case DataType::SPARSE_VECTOR_FP32: {
+        auto [indices, values] = serialize_sparse_vector<float>(
+            sparse, [](const py::handle &h, size_t idx) {
+              return checked_cast<float>(
+                  h, "Sparse value[" + std::to_string(idx) + "]", "FLOAT");
+            });
+        target.set_sparse_vector(std::move(indices), std::move(values));
+        break;
+      }
+      default:
+        throw py::type_error("Unsupported sparse vector type: " +
+                             std::to_string(static_cast<int>(data_type)));
+    }
+    return;
+  }
+
+  throw py::type_error("Unsupported vector field type for field: " +
+                       field_schema.name());
+}
+
 void ZVecPyParams::bind_vector_query(py::module_ &m) {
   // bind Fts
   py::class_<FtsClause>(m, "_Fts")
@@ -2038,74 +2103,7 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
           "set_vector",
           [](SearchQuery &self, const FieldSchema &field_schema,
              const py::object &obj) {
-            const DataType data_type = field_schema.data_type();
-
-            // Dense vector data is referenced by the query object. Callers
-            // must not modify the source data until the query returns.
-            if (FieldSchema::is_dense_vector_field(data_type)) {
-              if (!py::isinstance<py::array>(obj)) {
-                throw py::type_error("Dense vector[" + field_schema.name() +
-                                     "] expects a ndarray, got " +
-                                     std::string(py::str(py::type::of(obj))));
-              }
-              const auto arr = obj.cast<py::array>();
-              if (arr.ndim() != 1) {
-                throw py::type_error("Dense vector expects 1D array, got " +
-                                     std::to_string(arr.ndim()) + "D");
-              }
-              const auto buf = arr.request();
-              self.target_.clause_ = VectorViewClause{
-                  std::string_view(
-                      static_cast<const char *>(buf.ptr),
-                      static_cast<size_t>(buf.size) * buf.itemsize),
-                  {},
-                  {}};
-              return;
-            }
-            // sparse vector
-            if (FieldSchema::is_sparse_vector_field(data_type)) {
-              if (!py::isinstance<py::dict>(obj)) {
-                throw py::type_error("Sparse vector[" + field_schema.name() +
-                                     "] expects a Python dict, got " +
-                                     std::string(py::str(py::type::of(obj))));
-              }
-              const auto sparse = obj.cast<py::dict>();
-
-              switch (data_type) {
-                case DataType::SPARSE_VECTOR_FP16: {
-                  auto [indices, values] =
-                      serialize_sparse_vector<ailego::Float16>(
-                          sparse, [](const py::handle &h, size_t idx) {
-                            float f = checked_cast<float>(
-                                h, "Sparse value[" + std::to_string(idx) + "]",
-                                "FLOAT");
-                            return ailego::Float16(f);
-                          });
-                  self.target_.set_sparse_vector(std::move(indices),
-                                                 std::move(values));
-                  break;
-                }
-                case DataType::SPARSE_VECTOR_FP32: {
-                  auto [indices, values] = serialize_sparse_vector<float>(
-                      sparse, [](const py::handle &h, size_t idx) {
-                        return checked_cast<float>(
-                            h, "Sparse value[" + std::to_string(idx) + "]",
-                            "FLOAT");
-                      });
-                  self.target_.set_sparse_vector(std::move(indices),
-                                                 std::move(values));
-                  break;
-                }
-                default:
-                  throw py::type_error(
-                      "Unsupported sparse vector type: " +
-                      std::to_string(static_cast<int>(data_type)));
-              }
-              return;
-            }
-
-            throw py::type_error("Unsupported vector field type for field: " +
-                                 field_schema.name());
+            set_query_vector(self.target_, field_schema, obj);
           },
           py::arg("field_schema"), py::arg("obj"), py::keep_alive<1, 3>(),
           "Set query vector. Dense vector source data must not be modified "
@@ -2265,5 +2263,37 @@ void ZVecPyParams::bind_vector_query(py::module_ &m) {
             }
             return obj;
           }));
+
+  // _GroupByVectorQuery
+  py::class_<GroupByVectorQuery>(m, "_GroupByVectorQuery")
+      .def(py::init<>())
+      .def_property(
+          "field_name",
+          [](const GroupByVectorQuery &q) { return q.target_.field_name_; },
+          [](GroupByVectorQuery &q, std::string v) {
+            q.target_.field_name_ = std::move(v);
+          })
+      .def_readwrite("filter", &GroupByVectorQuery::filter_)
+      .def_readwrite("include_vector", &GroupByVectorQuery::include_vector_)
+      .def_readwrite("output_fields", &GroupByVectorQuery::output_fields_)
+      .def_readwrite("group_by_field_name",
+                     &GroupByVectorQuery::group_by_field_name_)
+      .def_readwrite("group_count", &GroupByVectorQuery::group_count_)
+      .def_readwrite("topk_per_group", &GroupByVectorQuery::topk_per_group_)
+      .def_property(
+          "query_params",
+          [](const GroupByVectorQuery &q) { return q.target_.query_params_; },
+          [](GroupByVectorQuery &q, QueryParams::Ptr p) {
+            q.target_.query_params_ = std::move(p);
+          })
+      .def(
+          "set_vector",
+          [](GroupByVectorQuery &self, const FieldSchema &field_schema,
+             const py::object &obj) {
+            set_query_vector(self.target_, field_schema, obj);
+          },
+          py::arg("field_schema"), py::arg("obj"), py::keep_alive<1, 3>(),
+          "Set query vector. Dense vector source data must not be modified "
+          "until the query finishes.");
 }
 }  // namespace zvec
