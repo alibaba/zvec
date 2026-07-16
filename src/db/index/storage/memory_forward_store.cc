@@ -55,8 +55,8 @@ Status MemForwardStore::Open() {
   // Initialize file writer
   writer_ = ChunkedFileWriter::Open(path_, physic_schema_, format_);
   if (!writer_) {
-    return Status::InternalError(
-        "failed to open forward store writer at [", path_, "]");
+    return Status::InternalError("failed to open forward store writer at [",
+                                 path_, "]");
   }
   return Status::OK();
 }
