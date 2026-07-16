@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include "scalar/fht/fht.h"
 
 namespace zvec::turbo::sse {
 
@@ -111,6 +112,105 @@ void fht_vec_rescale_sse(float *data, size_t n, float factor) {
   for (size_t i = simd_end; i < n; ++i) {
     data[i] *= factor;
   }
+}
+
+void fht_rotate_sse(const float * /*in*/, float *out, size_t in_dim,
+                    size_t /*out_dim*/, void *ctx) {
+  auto *base = reinterpret_cast<const uint8_t *>(ctx);
+  const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
+  const size_t trunc_dim = *reinterpret_cast<const size_t *>(base + 8);
+  const float fac = *reinterpret_cast<const float *>(base + 16);
+  const uint8_t *flip = base + 24;
+  const size_t dim = in_dim;
+
+  if (trunc_dim == dim) {
+    fht_flip_sign_sse(flip, out, dim);
+    scalar::fht_inplace(out, trunc_dim);
+    fht_vec_rescale_sse(out, trunc_dim, fac);
+
+    fht_flip_sign_sse(flip + flip_offset, out, dim);
+    scalar::fht_inplace(out, trunc_dim);
+    fht_vec_rescale_sse(out, trunc_dim, fac);
+
+    fht_flip_sign_sse(flip + 2 * flip_offset, out, dim);
+    scalar::fht_inplace(out, trunc_dim);
+    fht_vec_rescale_sse(out, trunc_dim, fac);
+
+    fht_flip_sign_sse(flip + 3 * flip_offset, out, dim);
+    scalar::fht_inplace(out, trunc_dim);
+    fht_vec_rescale_sse(out, trunc_dim, fac);
+    return;
+  }
+
+  size_t start = dim - trunc_dim;
+  float *trunc_ptr = out + start;
+
+  fht_flip_sign_sse(flip, out, dim);
+  scalar::fht_inplace(out, trunc_dim);
+  fht_vec_rescale_sse(out, trunc_dim, fac);
+  fht_kacs_walk_sse(out, dim);
+
+  fht_flip_sign_sse(flip + flip_offset, out, dim);
+  scalar::fht_inplace(trunc_ptr, trunc_dim);
+  fht_vec_rescale_sse(trunc_ptr, trunc_dim, fac);
+  fht_kacs_walk_sse(out, dim);
+
+  fht_flip_sign_sse(flip + 2 * flip_offset, out, dim);
+  scalar::fht_inplace(out, trunc_dim);
+  fht_vec_rescale_sse(out, trunc_dim, fac);
+  fht_kacs_walk_sse(out, dim);
+
+  fht_flip_sign_sse(flip + 3 * flip_offset, out, dim);
+  scalar::fht_inplace(trunc_ptr, trunc_dim);
+  fht_vec_rescale_sse(trunc_ptr, trunc_dim, fac);
+  fht_kacs_walk_sse(out, dim);
+
+  fht_vec_rescale_sse(out, dim, 0.25f);
+}
+
+void fht_unrotate_sse(const float * /*in*/, float *out, size_t in_dim,
+                      size_t /*out_dim*/, void *ctx) {
+  auto *base = reinterpret_cast<const uint8_t *>(ctx);
+  const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
+  const size_t trunc_dim = *reinterpret_cast<const size_t *>(base + 8);
+  const float fac = *reinterpret_cast<const float *>(base + 16);
+  const uint8_t *flip = base + 24;
+  const size_t dim = in_dim;
+
+  if (trunc_dim == dim) {
+    for (int round = 3; round >= 0; --round) {
+      scalar::fht_inplace(out, trunc_dim);
+      fht_vec_rescale_sse(out, trunc_dim, fac);
+      fht_flip_sign_sse(flip + static_cast<size_t>(round) * flip_offset, out,
+                        dim);
+    }
+    return;
+  }
+
+  fht_vec_rescale_sse(out, dim, 4.0f);
+
+  size_t start = dim - trunc_dim;
+  float *trunc_ptr = out + start;
+
+  fht_inv_kacs_walk_sse(out, dim);
+  scalar::fht_inplace(trunc_ptr, trunc_dim);
+  fht_vec_rescale_sse(trunc_ptr, trunc_dim, fac);
+  fht_flip_sign_sse(flip + 3 * flip_offset, out, dim);
+
+  fht_inv_kacs_walk_sse(out, dim);
+  scalar::fht_inplace(out, trunc_dim);
+  fht_vec_rescale_sse(out, trunc_dim, fac);
+  fht_flip_sign_sse(flip + 2 * flip_offset, out, dim);
+
+  fht_inv_kacs_walk_sse(out, dim);
+  scalar::fht_inplace(trunc_ptr, trunc_dim);
+  fht_vec_rescale_sse(trunc_ptr, trunc_dim, fac);
+  fht_flip_sign_sse(flip + flip_offset, out, dim);
+
+  fht_inv_kacs_walk_sse(out, dim);
+  scalar::fht_inplace(out, trunc_dim);
+  fht_vec_rescale_sse(out, trunc_dim, fac);
+  fht_flip_sign_sse(flip, out, dim);
 }
 
 }  // namespace zvec::turbo::sse

@@ -132,6 +132,105 @@ void fht_vec_rescale_avx2(float *data, size_t n, float factor) {
   }
 }
 
+void fht_rotate_avx2(const float * /*in*/, float *out, size_t in_dim,
+                     size_t /*out_dim*/, void *ctx) {
+  auto *base = reinterpret_cast<const uint8_t *>(ctx);
+  const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
+  const size_t trunc_dim = *reinterpret_cast<const size_t *>(base + 8);
+  const float fac = *reinterpret_cast<const float *>(base + 16);
+  const uint8_t *flip = base + 24;
+  const size_t dim = in_dim;
+
+  if (trunc_dim == dim) {
+    fht_flip_sign_avx2(flip, out, dim);
+    fht_inplace_avx2(out, trunc_dim);
+    fht_vec_rescale_avx2(out, trunc_dim, fac);
+
+    fht_flip_sign_avx2(flip + flip_offset, out, dim);
+    fht_inplace_avx2(out, trunc_dim);
+    fht_vec_rescale_avx2(out, trunc_dim, fac);
+
+    fht_flip_sign_avx2(flip + 2 * flip_offset, out, dim);
+    fht_inplace_avx2(out, trunc_dim);
+    fht_vec_rescale_avx2(out, trunc_dim, fac);
+
+    fht_flip_sign_avx2(flip + 3 * flip_offset, out, dim);
+    fht_inplace_avx2(out, trunc_dim);
+    fht_vec_rescale_avx2(out, trunc_dim, fac);
+    return;
+  }
+
+  size_t start = dim - trunc_dim;
+  float *trunc_ptr = out + start;
+
+  fht_flip_sign_avx2(flip, out, dim);
+  fht_inplace_avx2(out, trunc_dim);
+  fht_vec_rescale_avx2(out, trunc_dim, fac);
+  fht_kacs_walk_avx2(out, dim);
+
+  fht_flip_sign_avx2(flip + flip_offset, out, dim);
+  fht_inplace_avx2(trunc_ptr, trunc_dim);
+  fht_vec_rescale_avx2(trunc_ptr, trunc_dim, fac);
+  fht_kacs_walk_avx2(out, dim);
+
+  fht_flip_sign_avx2(flip + 2 * flip_offset, out, dim);
+  fht_inplace_avx2(out, trunc_dim);
+  fht_vec_rescale_avx2(out, trunc_dim, fac);
+  fht_kacs_walk_avx2(out, dim);
+
+  fht_flip_sign_avx2(flip + 3 * flip_offset, out, dim);
+  fht_inplace_avx2(trunc_ptr, trunc_dim);
+  fht_vec_rescale_avx2(trunc_ptr, trunc_dim, fac);
+  fht_kacs_walk_avx2(out, dim);
+
+  fht_vec_rescale_avx2(out, dim, 0.25f);
+}
+
+void fht_unrotate_avx2(const float * /*in*/, float *out, size_t in_dim,
+                       size_t /*out_dim*/, void *ctx) {
+  auto *base = reinterpret_cast<const uint8_t *>(ctx);
+  const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
+  const size_t trunc_dim = *reinterpret_cast<const size_t *>(base + 8);
+  const float fac = *reinterpret_cast<const float *>(base + 16);
+  const uint8_t *flip = base + 24;
+  const size_t dim = in_dim;
+
+  if (trunc_dim == dim) {
+    for (int round = 3; round >= 0; --round) {
+      fht_inplace_avx2(out, trunc_dim);
+      fht_vec_rescale_avx2(out, trunc_dim, fac);
+      fht_flip_sign_avx2(flip + static_cast<size_t>(round) * flip_offset, out,
+                         dim);
+    }
+    return;
+  }
+
+  fht_vec_rescale_avx2(out, dim, 4.0f);
+
+  size_t start = dim - trunc_dim;
+  float *trunc_ptr = out + start;
+
+  fht_inv_kacs_walk_avx2(out, dim);
+  fht_inplace_avx2(trunc_ptr, trunc_dim);
+  fht_vec_rescale_avx2(trunc_ptr, trunc_dim, fac);
+  fht_flip_sign_avx2(flip + 3 * flip_offset, out, dim);
+
+  fht_inv_kacs_walk_avx2(out, dim);
+  fht_inplace_avx2(out, trunc_dim);
+  fht_vec_rescale_avx2(out, trunc_dim, fac);
+  fht_flip_sign_avx2(flip + 2 * flip_offset, out, dim);
+
+  fht_inv_kacs_walk_avx2(out, dim);
+  fht_inplace_avx2(trunc_ptr, trunc_dim);
+  fht_vec_rescale_avx2(trunc_ptr, trunc_dim, fac);
+  fht_flip_sign_avx2(flip + flip_offset, out, dim);
+
+  fht_inv_kacs_walk_avx2(out, dim);
+  fht_inplace_avx2(out, trunc_dim);
+  fht_vec_rescale_avx2(out, trunc_dim, fac);
+  fht_flip_sign_avx2(flip, out, dim);
+}
+
 }  // namespace zvec::turbo::avx2
 
 #endif  // __AVX2__

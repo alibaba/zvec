@@ -34,4 +34,12 @@ void fht_inplace_avx512(float *data, size_t n);
 //! Element-wise rescale: data[i] *= factor (AVX512).
 void fht_vec_rescale_avx512(float *data, size_t n, float factor);
 
+//! Forward FHT rotation (AVX512).
+void fht_rotate_avx512(const float *in, float *out, size_t in_dim,
+                       size_t out_dim, void *ctx);
+
+//! Inverse FHT rotation (AVX512).
+void fht_unrotate_avx512(const float *in, float *out, size_t in_dim,
+                         size_t out_dim, void *ctx);
+
 }  // namespace zvec::turbo::avx512

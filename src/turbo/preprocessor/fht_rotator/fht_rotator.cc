@@ -14,6 +14,7 @@
 
 #include "fht_rotator.h"
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include "quantizer/quantizer.h"
@@ -32,29 +33,35 @@ size_t FhtRotator::floor_pow2(size_t n) {
   return p;
 }
 
+FhtRotator::~FhtRotator() {
+  std::free(fht_ctx_);
+}
+
 FhtRotator::Pointer FhtRotator::create(int dim) {
   if (dim <= 0) return nullptr;
 
   Pointer r(new FhtRotator());
   r->in_dim_ = dim;
   r->out_dim_ = dim;
-  r->trunc_dim_ = floor_pow2(static_cast<size_t>(dim));
-  r->fac_ = 1.0f / std::sqrt(static_cast<float>(r->trunc_dim_));
   r->flip_offset_ = (static_cast<size_t>(dim) + kByteLen - 1) / kByteLen;
-  auto k = std::get<FhtKernels>(get_rotator_kernels(RotateType::kFht));
-  r->flip_sign_fn_ = k.flip_sign;
-  r->kacs_walk_fn_ = k.kacs_walk;
-  r->inv_kacs_walk_fn_ = k.inv_kacs_walk;
-  r->inplace_fn_ = k.inplace;
-  r->rescale_fn_ = k.rescale;
+  r->kernels_ = get_rotator_kernels(RotateType::kFht);
 
-  // Generate 4 rounds of random flip-sign arrays so the rotator is
-  // immediately usable after create().
-  r->flip_.resize(4 * r->flip_offset_);
+  const size_t trunc_dim = floor_pow2(static_cast<size_t>(dim));
+  const float fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
+  const size_t flip_size = 4 * r->flip_offset_;
+
+  // Single allocation: FhtCtx header + trailing flip data.
+  r->fht_ctx_ = static_cast<FhtCtx *>(std::malloc(sizeof(FhtCtx) + flip_size));
+  r->fht_ctx_->flip_offset = r->flip_offset_;
+  r->fht_ctx_->trunc_dim = trunc_dim;
+  r->fht_ctx_->fac = fac;
+
+  // Generate 4 rounds of random flip-sign arrays.
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_int_distribution<int> dist(0, 255);
-  for (auto &b : r->flip_) b = static_cast<uint8_t>(dist(gen));
+  for (size_t i = 0; i < flip_size; ++i)
+    r->fht_ctx_->flip[i] = static_cast<uint8_t>(dist(gen));
 
   return r;
 }
@@ -89,60 +96,9 @@ void FhtRotator::train(const void * /*data*/, size_t /*num*/,
 // ---------------------------------------------------------------------------
 
 void FhtRotator::apply(const float *in, float *out) const {
-  const size_t dim = static_cast<size_t>(in_dim_);
-  std::memcpy(out, in, sizeof(float) * dim);
-
-  if (trunc_dim_ == dim) {
-    // Exact power-of-2: 4 rounds of (flip -> FHT -> rescale)
-    flip_sign_fn_(flip_.data(), out, dim);
-    inplace_fn_(out, trunc_dim_);
-    rescale_fn_(out, trunc_dim_, fac_);
-
-    flip_sign_fn_(flip_.data() + flip_offset_, out, dim);
-    inplace_fn_(out, trunc_dim_);
-    rescale_fn_(out, trunc_dim_, fac_);
-
-    flip_sign_fn_(flip_.data() + 2 * flip_offset_, out, dim);
-    inplace_fn_(out, trunc_dim_);
-    rescale_fn_(out, trunc_dim_, fac_);
-
-    flip_sign_fn_(flip_.data() + 3 * flip_offset_, out, dim);
-    inplace_fn_(out, trunc_dim_);
-    rescale_fn_(out, trunc_dim_, fac_);
-
-    return;
-  }
-
-  // Non-power-of-2: 4 rounds with kacs_walk
-  size_t start = dim - trunc_dim_;
-  float *trunc_ptr = out + start;
-
-  // Round 1: FHT on [0, trunc_dim)
-  flip_sign_fn_(flip_.data(), out, dim);
-  inplace_fn_(out, trunc_dim_);
-  rescale_fn_(out, trunc_dim_, fac_);
-  kacs_walk_fn_(out, dim);
-
-  // Round 2: FHT on [start, start + trunc_dim)
-  flip_sign_fn_(flip_.data() + flip_offset_, out, dim);
-  inplace_fn_(trunc_ptr, trunc_dim_);
-  rescale_fn_(trunc_ptr, trunc_dim_, fac_);
-  kacs_walk_fn_(out, dim);
-
-  // Round 3: FHT on [0, trunc_dim)
-  flip_sign_fn_(flip_.data() + 2 * flip_offset_, out, dim);
-  inplace_fn_(out, trunc_dim_);
-  rescale_fn_(out, trunc_dim_, fac_);
-  kacs_walk_fn_(out, dim);
-
-  // Round 4: FHT on [start, start + trunc_dim)
-  flip_sign_fn_(flip_.data() + 3 * flip_offset_, out, dim);
-  inplace_fn_(trunc_ptr, trunc_dim_);
-  rescale_fn_(trunc_ptr, trunc_dim_, fac_);
-  kacs_walk_fn_(out, dim);
-
-  // Final rescale: combine the 4 kacs_walk reductions
-  rescale_fn_(out, dim, 0.25f);
+  std::memcpy(out, in, sizeof(float) * static_cast<size_t>(in_dim_));
+  kernels_.rotate(in, out, static_cast<size_t>(in_dim_),
+                  static_cast<size_t>(out_dim_), static_cast<void *>(fht_ctx_));
 }
 
 // ---------------------------------------------------------------------------
@@ -150,51 +106,10 @@ void FhtRotator::apply(const float *in, float *out) const {
 // ---------------------------------------------------------------------------
 
 void FhtRotator::apply_inverse(const float *in, float *out) const {
-  const size_t dim = static_cast<size_t>(in_dim_);
-  std::memcpy(out, in, sizeof(float) * dim);
-
-  if (trunc_dim_ == dim) {
-    // Exact power-of-2: reverse 4 rounds in reverse order.
-    const float inv_fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim_));
-    for (int round = 3; round >= 0; --round) {
-      inplace_fn_(out, trunc_dim_);
-      rescale_fn_(out, trunc_dim_, inv_fac);
-      flip_sign_fn_(flip_.data() + static_cast<size_t>(round) * flip_offset_,
-                    out, dim);
-    }
-    return;
-  }
-
-  // Non-power-of-2: undo final rescale(0.25) first
-  rescale_fn_(out, dim, 4.0f);
-
-  const float inv_fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim_));
-  size_t start = dim - trunc_dim_;
-  float *trunc_ptr = out + start;
-
-  // Undo Round 4 (FHT on [start, start+trunc_dim))
-  inv_kacs_walk_fn_(out, dim);
-  inplace_fn_(trunc_ptr, trunc_dim_);
-  rescale_fn_(trunc_ptr, trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data() + 3 * flip_offset_, out, dim);
-
-  // Undo Round 3 (FHT on [0, trunc_dim))
-  inv_kacs_walk_fn_(out, dim);
-  inplace_fn_(out, trunc_dim_);
-  rescale_fn_(out, trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data() + 2 * flip_offset_, out, dim);
-
-  // Undo Round 2 (FHT on [start, start+trunc_dim))
-  inv_kacs_walk_fn_(out, dim);
-  inplace_fn_(trunc_ptr, trunc_dim_);
-  rescale_fn_(trunc_ptr, trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data() + flip_offset_, out, dim);
-
-  // Undo Round 1 (FHT on [0, trunc_dim))
-  inv_kacs_walk_fn_(out, dim);
-  inplace_fn_(out, trunc_dim_);
-  rescale_fn_(out, trunc_dim_, inv_fac);
-  flip_sign_fn_(flip_.data(), out, dim);
+  std::memcpy(out, in, sizeof(float) * static_cast<size_t>(in_dim_));
+  kernels_.unrotate(in, out, static_cast<size_t>(in_dim_),
+                    static_cast<size_t>(out_dim_),
+                    static_cast<void *>(fht_ctx_));
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +118,9 @@ void FhtRotator::apply_inverse(const float *in, float *out) const {
 
 int FhtRotator::serialize(std::string *out) const {
   if (!out) return kErrInvalidArgument;
-  if (flip_.empty()) return kErrRuntime;
+  if (!fht_ctx_) return kErrRuntime;
+
+  const size_t flip_size = 4 * flip_offset_;
 
   RotatorSerHeader hdr{};
   hdr.magic = kRotatorMagic;
@@ -211,12 +128,12 @@ int FhtRotator::serialize(std::string *out) const {
   hdr.rotator_type = static_cast<uint16_t>(RotateType::kFht);
   hdr.in_dim = static_cast<uint32_t>(in_dim_);
   hdr.out_dim = static_cast<uint32_t>(out_dim_);
-  hdr.payload_size = static_cast<uint32_t>(flip_.size());
+  hdr.payload_size = static_cast<uint32_t>(flip_size);
   hdr.reserved = 0;
 
-  out->resize(sizeof(hdr) + flip_.size());
+  out->resize(sizeof(hdr) + flip_size);
   std::memcpy(&(*out)[0], &hdr, sizeof(hdr));
-  std::memcpy(&(*out)[sizeof(hdr)], flip_.data(), flip_.size());
+  std::memcpy(&(*out)[sizeof(hdr)], fht_ctx_->flip, flip_size);
   return 0;
 }
 
@@ -235,18 +152,20 @@ int FhtRotator::deserialize(const void *data, size_t len) {
 
   in_dim_ = static_cast<int>(hdr->in_dim);
   out_dim_ = static_cast<int>(hdr->out_dim);
-  trunc_dim_ = floor_pow2(static_cast<size_t>(in_dim_));
-  fac_ = 1.0f / std::sqrt(static_cast<float>(trunc_dim_));
   flip_offset_ = (static_cast<size_t>(in_dim_) + kByteLen - 1) / kByteLen;
-  auto k = std::get<FhtKernels>(get_rotator_kernels(RotateType::kFht));
-  flip_sign_fn_ = k.flip_sign;
-  kacs_walk_fn_ = k.kacs_walk;
-  inv_kacs_walk_fn_ = k.inv_kacs_walk;
-  inplace_fn_ = k.inplace;
-  rescale_fn_ = k.rescale;
+  kernels_ = get_rotator_kernels(RotateType::kFht);
 
-  flip_.resize(hdr->payload_size);
-  std::memcpy(flip_.data(),
+  const size_t trunc_dim = floor_pow2(static_cast<size_t>(in_dim_));
+  const float fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
+
+  // Free old ctx, allocate new one with trailing flip data.
+  std::free(fht_ctx_);
+  fht_ctx_ =
+      static_cast<FhtCtx *>(std::malloc(sizeof(FhtCtx) + hdr->payload_size));
+  fht_ctx_->flip_offset = flip_offset_;
+  fht_ctx_->trunc_dim = trunc_dim;
+  fht_ctx_->fac = fac;
+  std::memcpy(fht_ctx_->flip,
               reinterpret_cast<const char *>(data) + sizeof(RotatorSerHeader),
               hdr->payload_size);
 

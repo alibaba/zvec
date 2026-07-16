@@ -31,4 +31,12 @@ void fht_inv_kacs_walk_sse(float *data, size_t len);
 //! Element-wise rescale: data[i] *= factor (SSE).
 void fht_vec_rescale_sse(float *data, size_t n, float factor);
 
+//! Forward FHT rotation (SSE). Inplace falls back to scalar.
+void fht_rotate_sse(const float *in, float *out, size_t in_dim, size_t out_dim,
+                    void *ctx);
+
+//! Inverse FHT rotation (SSE). Inplace falls back to scalar.
+void fht_unrotate_sse(const float *in, float *out, size_t in_dim,
+                      size_t out_dim, void *ctx);
+
 }  // namespace zvec::turbo::sse

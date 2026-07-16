@@ -16,7 +16,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <variant>
 #include <zvec/ailego/math_batch/utils.h>
 
 namespace zvec::turbo {
@@ -36,24 +35,18 @@ using QueryPreprocessFunc =
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
 
-// FHT primitive function pointer types.
-using FhtFlipSignFunc = void (*)(const uint8_t *flip, float *data, size_t dim);
-using FhtKacsWalkFunc = void (*)(float *data, size_t len);
-using FhtInplaceFunc = void (*)(float *data, size_t n);
-using FhtVecRescaleFunc = void (*)(float *data, size_t n, float factor);
+// Generic rotate / unrotate function pointer types.
+// ctx is an opaque context (e.g. FhtCtx*) managed by the caller.
+using RotateFunc = void (*)(const float *in, float *out, size_t in_dim,
+                            size_t out_dim, void *ctx);
+using UnrotateFunc = void (*)(const float *in, float *out, size_t in_dim,
+                              size_t out_dim, void *ctx);
 
-// Aggregate of all FHT kernels needed by FhtRotator, dispatched by ISA.
-struct FhtKernels {
-  FhtFlipSignFunc flip_sign;
-  FhtKacsWalkFunc kacs_walk;
-  FhtKacsWalkFunc inv_kacs_walk;
-  FhtInplaceFunc inplace;
-  FhtVecRescaleFunc rescale;
+// ISA-dispatched rotate/unrotate kernels.
+struct RotatorKernels {
+  RotateFunc rotate = nullptr;
+  UnrotateFunc unrotate = nullptr;
 };
-
-// Variant over all rotator kernel structs.  Add new types here as they are
-// introduced (e.g. MatrixKernels).
-using RotatorKernels = std::variant<FhtKernels>;
 
 enum class MetricType {
   kSquaredEuclidean,
