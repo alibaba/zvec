@@ -19,22 +19,22 @@
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_int8/quantize.h"
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
-#include "scalar/fht/fht.h"
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
+#include "scalar/rotate/fht/fht.h"
 
 #if defined(__SSE2__)
-#include "sse/fht/fht.h"
+#include "sse/rotate/fht/fht.h"
 #endif
 #if defined(__AVX2__)
-#include "avx2/fht/fht.h"
+#include "avx2/rotate/fht/fht.h"
 #endif
 #if defined(__AVX512F__)
-#include "avx512/fht/fht.h"
+#include "avx512/rotate/fht/fht.h"
 #endif
 #if defined(__ARM_NEON) && defined(__aarch64__)
-#include "neon/fht/fht.h"
+#include "neon/rotate/fht/fht.h"
 #endif
 
 namespace zvec::turbo {
