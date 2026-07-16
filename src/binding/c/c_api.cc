@@ -32,6 +32,7 @@
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
+#include <zvec/db/doc_iterator.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/options.h>
 #include <zvec/db/reranker.h>
@@ -6882,4 +6883,134 @@ zvec_error_code_t zvec_collection_fetch(zvec_collection_t *collection,
         normalize_nullable_fields_for_fetch(schema_result.value(), doc_map);
       } 
       return convert_fetched_document_results(doc_map, results, doc_count);)
+}
+
+// =============================================================================
+// Document Iterator Interface implementation
+// =============================================================================
+
+zvec_iterator_options_t *zvec_iterator_options_create(void) {
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create zvec_iterator_options_t",
+      auto *options = new zvec::IteratorOptions();
+      return reinterpret_cast<zvec_iterator_options_t *>(options);)
+  return nullptr;
+}
+
+void zvec_iterator_options_destroy(zvec_iterator_options_t *options) {
+  if (options) {
+    delete reinterpret_cast<zvec::IteratorOptions *>(options);
+  }
+}
+
+zvec_error_code_t zvec_iterator_options_set_output_fields(
+    zvec_iterator_options_t *options, const char *const *output_fields,
+    size_t count) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(options, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Iterator options pointer is null");
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to set output_fields",
+      auto *ptr = reinterpret_cast<zvec::IteratorOptions *>(options);
+      // NULL output_fields means "return all fields" (nullopt).
+      if (output_fields == nullptr || count == 0) {
+        ptr->output_fields_ = std::nullopt;
+        return ZVEC_OK;
+      }
+      std::vector<std::string> fields;
+      fields.reserve(count);
+      for (size_t i = 0; i < count; ++i) {
+        if (output_fields[i]) {
+          fields.emplace_back(output_fields[i]);
+        } else {
+          SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                         "Null output_field at index " + std::to_string(i));
+          return ZVEC_ERROR_INVALID_ARGUMENT;
+        }
+      }
+      ptr->output_fields_ = std::move(fields);
+      return ZVEC_OK;)
+}
+
+zvec_error_code_t zvec_iterator_options_set_include_vector(
+    zvec_iterator_options_t *options, bool include) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(options, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Iterator options pointer is null");
+  auto *ptr = reinterpret_cast<zvec::IteratorOptions *>(options);
+  ptr->include_vector_ = include;
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_collection_create_iterator(
+    zvec_collection_t *collection, const zvec_iterator_options_t *options,
+    zvec_doc_iterator_t **out_iter) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(collection, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Collection handle is null");
+  ZVEC_CHECK_NOTNULL_ERRCODE(out_iter, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "out_iter pointer is null");
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_collection_create_iterator",
+      // CreateIterator is non-const (it flushes), so use a non-const handle.
+      auto coll_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::Collection> *>(collection);
+
+      zvec::IteratorOptions iter_options;
+      if (options) {
+        iter_options =
+            *reinterpret_cast<const zvec::IteratorOptions *>(options);
+      }
+
+      auto result = (*coll_ptr)->CreateIterator(iter_options);
+      if (!result.has_value()) {
+        SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR,
+                       "Failed to create iterator: " +
+                           result.error().message());
+        return ZVEC_ERROR_INTERNAL_ERROR;
+      }
+
+      // Wrap the shared_ptr<DocIterator> like other handles.
+      *out_iter = reinterpret_cast<zvec_doc_iterator_t *>(
+          new std::shared_ptr<zvec::DocIterator>(std::move(result.value())));
+      return ZVEC_OK;)
+}
+
+zvec_error_code_t zvec_doc_iterator_next(zvec_doc_iterator_t *iter,
+                                         zvec_doc_t **out_doc) {
+  ZVEC_CHECK_NOTNULL_ERRCODE(iter, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "Iterator handle is null");
+  ZVEC_CHECK_NOTNULL_ERRCODE(out_doc, ZVEC_ERROR_INVALID_ARGUMENT,
+                             "out_doc pointer is null");
+
+  *out_doc = nullptr;
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Exception in zvec_doc_iterator_next",
+      auto iter_ptr =
+          reinterpret_cast<std::shared_ptr<zvec::DocIterator> *>(iter);
+
+      auto result = (*iter_ptr)->Next();
+      if (!result.has_value()) {
+        SET_LAST_ERROR(ZVEC_ERROR_INTERNAL_ERROR,
+                       "Iterator next failed: " + result.error().message());
+        return ZVEC_ERROR_INTERNAL_ERROR;
+      }
+
+      // EOF: value() is nullptr → leave *out_doc = NULL, return OK.
+      auto doc = result.value();
+      if (doc == nullptr) {
+        return ZVEC_OK;
+      }
+
+      // Copy into a heap Doc owned by the caller (freed via zvec_doc_destroy).
+      *out_doc = reinterpret_cast<zvec_doc_t *>(new zvec::Doc(*doc));
+      return ZVEC_OK;)
+}
+
+void zvec_doc_iterator_close(zvec_doc_iterator_t *iter) {
+  if (iter) {
+    // Deleting the shared_ptr wrapper releases the DocIterator (whose
+    // destructor calls Close() and releases segments/delete_store).
+    delete reinterpret_cast<std::shared_ptr<zvec::DocIterator> *>(iter);
+  }
 }

@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <zvec/db/doc_iterator.h>
 #include <zvec/db/options.h>
 #include <zvec/db/query.h>
 #include <zvec/db/stats.h>
@@ -108,6 +109,9 @@ class Collection {
                                   const std::optional<std::vector<std::string>>
                                       &output_fields = std::nullopt,
                                   bool include_vector = true) const = 0;
+
+  virtual Result<DocIterator::Ptr> CreateIterator(
+      const IteratorOptions &options = {}) = 0;
 
  public:
   //! Debug-only: retrieve the storage mode string of an HNSW index on the

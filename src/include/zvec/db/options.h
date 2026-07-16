@@ -14,6 +14,9 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace zvec {
 
@@ -64,6 +67,11 @@ struct AddColumnOptions {
 
 struct AlterColumnOptions {
   int concurrency_{0};
+};
+
+struct IteratorOptions {
+  std::optional<std::vector<std::string>> output_fields_;
+  bool include_vector_{true};
 };
 
 }  // namespace zvec
