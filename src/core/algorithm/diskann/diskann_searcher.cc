@@ -13,8 +13,6 @@
 // limitations under the License.
 
 #include "diskann_searcher.h"
-#include <ailego/io/io_backend_def.h>
-#include <zvec/ailego/io/io_backend.h>
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 #include "diskann_params.h"
@@ -27,22 +25,7 @@ DiskAnnSearcher::DiskAnnSearcher() {}
 DiskAnnSearcher::~DiskAnnSearcher() {}
 
 int DiskAnnSearcher::init(const ailego::Params &search_params) {
-#if defined(__linux__) || defined(__linux)
-  // Eagerly probe the I/O backend at init time so the user gets immediate
-  // feedback about whether async I/O is available. IOBackend auto-probes on
-  // first Instance() access.
-  auto &backend = ailego::IOBackend::Instance();
-  if (backend.is_pread()) {
-    LOG_WARN(
-        "DiskAnn: no async I/O backend available. Install libaio (e.g. "
-        "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
-        "retry. DiskAnn will fall back to synchronous pread() — performance "
-        "will be degraded.");
-  } else {
-    LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
-             backend.name());
-  }
-#endif
+  log_diskann_io_backend();
 
   search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
   search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, &cache_nodes_num_);

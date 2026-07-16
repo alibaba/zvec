@@ -17,7 +17,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <zvec/ailego/io/io_backend.h>
 #include <zvec/db/options.h>
 #include <zvec/db/query.h>
 #include <zvec/db/stats.h>

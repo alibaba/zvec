@@ -37,18 +37,26 @@ typedef struct iocb iocb_t;
 static std::once_flag g_io_backend_log_once;
 #endif
 
-int setup_io_ctx(IOContext &ctx) {
+void log_diskann_io_backend() {
 #if (defined(__linux) || defined(__linux__))
   auto &backend = ailego::IOBackend::Instance();
-  std::call_once(g_io_backend_log_once, [&backend] {
-    if (!backend.is_pread()) {
-      LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
-    } else {
-      LOG_WARN(
-          "DiskAnn I/O backend: synchronous pread (no async I/O available)");
-    }
-  });
   if (backend.is_pread()) {
+    LOG_WARN(
+        "DiskAnn: no async I/O backend available. Install libaio (e.g. "
+        "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
+        "retry. DiskAnn will fall back to synchronous pread() — performance "
+        "will be degraded.");
+  } else {
+    LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
+             backend.name());
+  }
+#endif
+}
+
+int setup_io_ctx(IOContext &ctx) {
+#if (defined(__linux) || defined(__linux__))
+  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
+  if (ailego::IOBackend::Instance().is_pread()) {
     return 0;
   }
   int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx);
@@ -61,8 +69,7 @@ int setup_io_ctx(IOContext &ctx) {
 
 int destroy_io_ctx(IOContext &ctx) {
 #if (defined(__linux) || defined(__linux__))
-  if (ailego::IOBackend::Instance().available() ==
-      ailego::IOBackendType::kPread) {
+  if (ailego::IOBackend::Instance().is_pread()) {
     return 0;
   }
   int ret = LibAioLoader::Instance().io_destroy(ctx);
@@ -94,8 +101,7 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
 int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
                uint64_t n_retries = 0) {
 #if (defined(__linux) || defined(__linux__))
-  if (ailego::IOBackend::Instance().available() ==
-      ailego::IOBackendType::kPread) {
+  if (ailego::IOBackend::Instance().is_pread()) {
     return execute_io_pread(fd, read_reqs);
   }
   uint64_t iters = DiskAnnUtil::div_round_up(read_reqs.size(), MAX_EVENTS);
@@ -216,16 +222,8 @@ void LinuxAlignedFileReader::register_thread() {
 
   IOContext ctx = nullptr;
 
-  auto &backend = ailego::IOBackend::Instance();
-  std::call_once(g_io_backend_log_once, [&backend] {
-    if (!backend.is_pread()) {
-      LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
-    } else {
-      LOG_WARN(
-          "DiskAnn I/O backend: synchronous pread (no async I/O available)");
-    }
-  });
-  if (backend.is_pread()) {
+  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
+  if (ailego::IOBackend::Instance().is_pread()) {
     lk.unlock();
     return;
   }
