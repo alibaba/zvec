@@ -29,6 +29,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>

@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// I/O backend type enum and helpers.
+// I/O backend type enum.
 //
 // This is the public, dependency-free part of the I/O backend abstraction.
-// It defines the IOBackendType enum and human-readable name/description
-// helpers so that public headers can reference IOBackendType without pulling
-// in the internal IOBackend singleton or libaio_loader.
+// It defines the IOBackendType enum and the convenience helpers
+// current_io_backend_type() / current_io_backend_description() so that
+// public headers can reference IOBackendType without pulling in the
+// internal IOBackend singleton or libaio_loader.
 
 #pragma once
 
@@ -32,32 +33,6 @@ enum class IOBackendType {
   kPread,   // Synchronous pread() — no async I/O
   kLibAio,  // libaio loaded at runtime via dlopen()
 };
-
-// Returns a human-readable name for the given backend type.
-inline const char *IOBackendTypeName(IOBackendType type) {
-  switch (type) {
-    case IOBackendType::kLibAio:
-      return "libaio";
-    case IOBackendType::kPread:
-      return "pread";
-  }
-  return "unknown";
-}
-
-// Returns a human-readable description for the given backend type.
-// When the backend is kPread, includes installation guidance for libaio.
-inline const char *IOBackendDescription(IOBackendType type) {
-  switch (type) {
-    case IOBackendType::kLibAio:
-      return "libaio async I/O backend loaded at runtime via dlopen().";
-    case IOBackendType::kPread:
-      return "No async I/O backend available. Install libaio (e.g. "
-             "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
-             "and retry. DiskAnn will fall back to synchronous pread() \u2014 "
-             "performance will be degraded.";
-  }
-  return "Unknown I/O backend.";
-}
 
 // Returns the currently active I/O backend type.
 // Triggers backend initialization on first call (libaio > pread).
