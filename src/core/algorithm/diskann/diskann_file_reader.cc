@@ -41,14 +41,14 @@ int setup_io_ctx(IOContext &ctx) {
 #if (defined(__linux) || defined(__linux__))
   auto &backend = ailego::IOBackend::Instance();
   std::call_once(g_io_backend_log_once, [&backend] {
-    if (backend.available() != ailego::IOBackendType::kPread) {
+    if (!backend.is_pread()) {
       LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
     } else {
       LOG_WARN(
           "DiskAnn I/O backend: synchronous pread (no async I/O available)");
     }
   });
-  if (backend.available() == ailego::IOBackendType::kPread) {
+  if (backend.is_pread()) {
     return 0;
   }
   int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx);
@@ -218,14 +218,14 @@ void LinuxAlignedFileReader::register_thread() {
 
   auto &backend = ailego::IOBackend::Instance();
   std::call_once(g_io_backend_log_once, [&backend] {
-    if (backend.available() != ailego::IOBackendType::kPread) {
+    if (!backend.is_pread()) {
       LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
     } else {
       LOG_WARN(
           "DiskAnn I/O backend: synchronous pread (no async I/O available)");
     }
   });
-  if (backend.available() == ailego::IOBackendType::kPread) {
+  if (backend.is_pread()) {
     lk.unlock();
     return;
   }

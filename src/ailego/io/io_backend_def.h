@@ -24,7 +24,7 @@
 //
 // Usage:
 //   auto& backend = ailego::IOBackend::Instance();
-//   if (backend.available() != ailego::IOBackendType::kPread) { ... }
+//   if (!backend.is_pread()) { ... }
 //   LOG_INFO("I/O backend: %s", backend.name());
 
 #pragma once
@@ -102,6 +102,14 @@ class IOBackend {
 #endif
     type_ = IOBackendType::kPread;
     return type_;
+  }
+
+  bool is_pread() {
+    return available() == IOBackendType::kPread;
+  }
+
+  bool is_libaio() {
+    return available() == IOBackendType::kLibAio;
   }
 
   // Returns the loaded backend type.
