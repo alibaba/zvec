@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -58,6 +59,73 @@ class CollectionTest : public ::testing::Test {
     FileHelper::RemoveDirectory(col_path);
     ailego::FileHelper::RemoveDirectory("demo");
   }
+};
+
+class DirectoryWriteBlockerForTest {
+ public:
+  explicit DirectoryWriteBlockerForTest(const std::string &dir_path)
+      : dir_path_(dir_path) {
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    auto status = fs::status(dir_path_, ec);
+    if (ec) {
+      skip_reason_ = "Failed to stat directory: " + ec.message();
+      return;
+    }
+    original_perms_ = status.permissions();
+
+    fs::permissions(dir_path_,
+                    fs::perms::owner_read | fs::perms::owner_exec |
+                        fs::perms::group_read | fs::perms::group_exec |
+                        fs::perms::others_read | fs::perms::others_exec,
+                    fs::perm_options::replace, ec);
+    if (ec) {
+      skip_reason_ = "Failed to make directory read-only: " + ec.message();
+      return;
+    }
+    enabled_ = true;
+
+    auto probe_path = (fs::path(dir_path_) / ".zvec_permission_probe").string();
+    {
+      std::ofstream probe_file(probe_path, std::ios::out | std::ios::trunc);
+      if (probe_file.is_open()) {
+        probe_file << "probe";
+        probe_file.close();
+        fs::remove(probe_path, ec);
+        Restore();
+        skip_reason_ = "Directory permissions do not block writes";
+        return;
+      }
+    }
+  }
+
+  ~DirectoryWriteBlockerForTest() {
+    Restore();
+  }
+
+  bool enabled() const {
+    return enabled_;
+  }
+
+  const std::string &skip_reason() const {
+    return skip_reason_;
+  }
+
+  void Restore() {
+    if (enabled_) {
+      std::error_code ec;
+      std::filesystem::permissions(dir_path_, original_perms_,
+                                   std::filesystem::perm_options::replace, ec);
+      enabled_ = false;
+    }
+  }
+
+ private:
+  std::string dir_path_;
+  std::filesystem::perms original_perms_{std::filesystem::perms::unknown};
+  bool enabled_{false};
+  std::string skip_reason_;
 };
 
 TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
@@ -2598,6 +2666,123 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
     collection.reset();
     FileHelper::RemoveDirectory(col_path);
   }
+}
+
+TEST_F(CollectionTest,
+       Feature_DropIndex_Scalar_FailureKeepsPersistedOldSchema) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
+  FileHelper::RemoveDirectory(col_path);
+
+  int doc_count = 1;
+  auto schema = TestHelper::CreateSchemaWithScalarIndex(false, true);
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+
+  ASSERT_TRUE(collection->Optimize().ok());
+
+  collection.reset();
+  auto reopen_result = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
+  collection = std::move(reopen_result.value());
+
+  auto segment_path = FileHelper::MakeSegmentPath(col_path, 0);
+  DirectoryWriteBlockerForTest write_blocker(segment_path);
+  if (!write_blocker.enabled()) {
+    GTEST_SKIP() << write_blocker.skip_reason();
+  }
+
+  auto s = collection->DropIndex("int32");
+  write_blocker.Restore();
+  ASSERT_FALSE(s.ok());
+
+  collection.reset();
+  reopen_result = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
+  collection = std::move(reopen_result.value());
+
+  auto schema_after_drop = collection->Schema();
+  ASSERT_TRUE(schema_after_drop.has_value())
+      << schema_after_drop.error().message();
+  ASSERT_NE(schema_after_drop.value().get_field("string")->index_params(),
+            nullptr);
+  ASSERT_NE(schema_after_drop.value().get_field("int32")->index_params(),
+            nullptr);
+  ASSERT_EQ(collection->Stats().value().doc_count, doc_count);
+
+  auto expect_doc = TestHelper::CreateDoc(0, *schema);
+  auto result = collection->Fetch({expect_doc.pk()});
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result.value().size(), 1);
+  ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
+  auto doc = result.value()[expect_doc.pk()];
+  ASSERT_NE(doc, nullptr);
+  ASSERT_EQ(*doc, expect_doc);
+
+  collection.reset();
+  FileHelper::RemoveDirectory(col_path);
+}
+
+TEST_F(CollectionTest, Feature_IndexDDL_WritingSegmentReopen) {
+  auto run = [&](bool create_index, bool insert_before_ddl) {
+    FileHelper::RemoveDirectory(col_path);
+
+    auto index_params = std::make_shared<InvertIndexParams>();
+    auto schema = std::make_shared<CollectionSchema>(
+        create_index ? "create_index_writing" : "drop_index_writing");
+    schema->add_field(
+        std::make_shared<FieldSchema>("name", DataType::STRING, false,
+                                      create_index ? nullptr : index_params));
+    auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+    auto collection_res = Collection::CreateAndOpen(col_path, *schema, options);
+    ASSERT_TRUE(collection_res.has_value()) << collection_res.error().message();
+    auto collection = std::move(collection_res.value());
+
+    if (insert_before_ddl) {
+      Doc doc;
+      doc.set_pk("pk0");
+      doc.set<std::string>("name", "hello world");
+      std::vector<Doc> docs{doc};
+      ASSERT_TRUE(collection->Insert(docs).has_value());
+    }
+
+    auto s = create_index ? collection->CreateIndex("name", index_params)
+                          : collection->DropIndex("name");
+    ASSERT_TRUE(s.ok()) << s.message();
+
+    collection.reset();
+    auto reopen_result = Collection::Open(col_path, options);
+    ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
+    collection = std::move(reopen_result.value());
+
+    auto schema_after_ddl = collection->Schema();
+    ASSERT_TRUE(schema_after_ddl.has_value())
+        << schema_after_ddl.error().message();
+    bool has_index =
+        schema_after_ddl.value().get_field("name")->index_params() != nullptr;
+    ASSERT_EQ(has_index, create_index);
+
+    ASSERT_EQ(collection->Stats().value().doc_count,
+              insert_before_ddl ? 1u : 0u);
+    if (insert_before_ddl) {
+      auto result = collection->Fetch({"pk0"});
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(result.value().size(), 1u);
+      ASSERT_EQ(result.value()["pk0"]->get<std::string>("name").value(),
+                "hello world");
+    }
+
+    collection.reset();
+    FileHelper::RemoveDirectory(col_path);
+  };
+
+  run(true, false);
+  run(false, false);
+  run(true, true);
+  run(false, true);
 }
 
 TEST_F(CollectionTest, Feature_DropIndex_AfterCreate) {
@@ -6096,6 +6281,74 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenThenInsert) {
   ASSERT_TRUE(after.has_value()) << after.error().message();
   ASSERT_EQ(sorted_pks(after.value()),
             (std::vector<std::string>{"pk_0", "pk_1", "pk_new"}));
+
+  col.reset();
+  FileHelper::RemoveDirectory(col_path);
+}
+
+// Force the persisted segment FTS snapshot task to fail before schema commit,
+// then verify reopen still sees the old schema and data.
+TEST_F(CollectionTest, Feature_DropFtsIndex_FailureKeepsPersistedOldSchema) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
+  FileHelper::RemoveDirectory(col_path);
+
+  auto schema = std::make_shared<CollectionSchema>("fts_drop_reopen");
+  schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+  schema->add_field(std::make_shared<FieldSchema>(
+      "content", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+  schema->add_field(
+      std::make_shared<FieldSchema>("other_content", DataType::STRING, false,
+                                    std::make_shared<FtsIndexParams>()));
+  CollectionOptions options{false, true};
+  auto col_res = Collection::CreateAndOpen(col_path, *schema, options);
+  ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+  auto col = std::move(col_res.value());
+
+  Doc doc;
+  doc.set_pk("pk0");
+  doc.set<std::string>("title", "title");
+  doc.set<std::string>("content", "hello world");
+  doc.set<std::string>("other_content", "hello other");
+  std::vector<Doc> docs{doc};
+  ASSERT_TRUE(col->Insert(docs).has_value());
+  ASSERT_TRUE(col->Optimize().ok());
+
+  col.reset();
+  auto reopen_res = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  auto segment_path = FileHelper::MakeSegmentPath(col_path, 0);
+  DirectoryWriteBlockerForTest write_blocker(segment_path);
+  if (!write_blocker.enabled()) {
+    GTEST_SKIP() << write_blocker.skip_reason();
+  }
+
+  auto s = col->DropIndex("content");
+  write_blocker.Restore();
+  ASSERT_FALSE(s.ok());
+
+  col.reset();
+  reopen_res = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+  col = std::move(reopen_res.value());
+
+  auto schema_after_drop = col->Schema();
+  ASSERT_TRUE(schema_after_drop.has_value())
+      << schema_after_drop.error().message();
+  ASSERT_NE(schema_after_drop.value().get_field("content")->index_params(),
+            nullptr);
+  ASSERT_NE(
+      schema_after_drop.value().get_field("other_content")->index_params(),
+      nullptr);
+  ASSERT_EQ(col->Stats().value().doc_count, 1u);
+
+  auto fetched = col->Fetch({"pk0"});
+  ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
+  ASSERT_EQ(fetched.value().size(), 1u);
 
   col.reset();
   FileHelper::RemoveDirectory(col_path);
