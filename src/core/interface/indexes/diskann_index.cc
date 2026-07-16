@@ -15,7 +15,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/diskann/diskann_params.h"
 #include "holder_builder.h"
@@ -270,14 +269,6 @@ int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
   }
   is_trained_ = true;
   return 0;
-}
-
-ailego::IOBackendType DiskAnnIndex::io_backend_type() const {
-  return ailego::current_io_backend_type();
-}
-
-std::string DiskAnnIndex::io_backend_description() const {
-  return ailego::current_io_backend_description();
 }
 
 }  // namespace zvec::core_interface
