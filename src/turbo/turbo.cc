@@ -157,30 +157,22 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
                                    CpuArchType cpu_arch_type) {
   switch (rotate_type) {
     case RotateType::kFht: {
-#if defined(__AVX512F__)
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
           zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
         return {avx512::fht_rotate_avx512, avx512::fht_unrotate_avx512};
       }
-#endif
-#if defined(__AVX2__)
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
         return {avx2::fht_rotate_avx2, avx2::fht_unrotate_avx2};
       }
-#endif
-#if defined(__SSE2__)
       if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE2 &&
           IsArchMatch(cpu_arch_type, CpuArchType::kSSE)) {
         return {sse::fht_rotate_sse, sse::fht_unrotate_sse};
       }
-#endif
-#if defined(__ARM_NEON) && defined(__aarch64__)
       if (IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
         return {neon::fht_rotate_neon, neon::fht_unrotate_neon};
       }
-#endif
       return {scalar::fht_rotate, scalar::fht_unrotate};
     }
   }

@@ -14,8 +14,6 @@
 
 #pragma once
 
-#if defined(__SSE2__)
-
 #include <cstddef>
 #include <cstdint>
 
@@ -42,5 +40,3 @@ void fht_unrotate_sse(const float *in, float *out, size_t in_dim,
                       size_t out_dim, void *ctx);
 
 }  // namespace zvec::turbo::sse
-
-#endif  // __SSE2__

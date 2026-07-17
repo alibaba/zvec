@@ -14,8 +14,6 @@
 
 #pragma once
 
-#if defined(__ARM_NEON) && defined(__aarch64__)
-
 #include <cstddef>
 #include <cstdint>
 
@@ -42,5 +40,3 @@ void fht_unrotate_neon(const float *in, float *out, size_t in_dim,
                        size_t out_dim, void *ctx);
 
 }  // namespace zvec::turbo::neon
-
-#endif  // __ARM_NEON && __aarch64__

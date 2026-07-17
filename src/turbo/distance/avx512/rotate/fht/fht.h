@@ -14,8 +14,6 @@
 
 #pragma once
 
-#if defined(__AVX512F__)
-
 #include <cstddef>
 #include <cstdint>
 
@@ -45,5 +43,3 @@ void fht_unrotate_avx512(const float *in, float *out, size_t in_dim,
                          size_t out_dim, void *ctx);
 
 }  // namespace zvec::turbo::avx512
-
-#endif  // __AVX512F__
