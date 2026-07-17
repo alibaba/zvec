@@ -132,6 +132,11 @@ BUILD_TOOLS = "OFF"
 BUILD_PYTHON_BINDINGS = "ON"
 #CMAKE_VERBOSE_MAKEFILE = "ON"
 
+# Enable ccache if available (speeds up rebuilds)
+[tool.scikit-build.cmake.env]
+# CMake will auto-detect ccache/sccache via the CMAKE_CXX_COMPILER_LAUNCHER
+# set in the top-level CMakeLists.txt.
+
 # Setuptools config for test pypi
 [tool.setuptools_scm]
 local_scheme = "no-local-version"

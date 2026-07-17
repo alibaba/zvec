@@ -3685,6 +3685,45 @@ zvec_error_code_t zvec_doc_add_field_by_struct(zvec_doc_t *doc,
       return ZVEC_OK;)
 }
 
+// ---------------------------------------------------------------------------
+// Sparse Vector Document Field Helper (Issue #443)
+// ---------------------------------------------------------------------------
+
+zvec_error_code_t zvec_doc_set_sparse_vector(
+    zvec_doc_t *doc,
+    const char *field_name,
+    const uint32_t *indices,
+    const float *values,
+    size_t count) {
+  if (!doc || !field_name) {
+    set_last_error("Invalid arguments: null pointer");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if ((!indices || !values) && count > 0) {
+    set_last_error("Indices or values pointer is null while count > 0");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to set sparse vector field",
+      auto *doc_ptr = reinterpret_cast<zvec::Doc *>(doc);
+      std::string name(field_name);
+
+      if (count == 0) {
+        // Set empty sparse vector (pair of empty vectors)
+        doc_ptr->set(name,
+                     std::pair<std::vector<uint32_t>, std::vector<float>>{});
+        return ZVEC_OK;
+      }
+
+      std::vector<uint32_t> idx_vec(indices, indices + count);
+      std::vector<float> val_vec(values, values + count);
+      doc_ptr->set(name,
+                   std::pair<std::vector<uint32_t>, std::vector<float>>{
+                       std::move(idx_vec), std::move(val_vec)});
+      return ZVEC_OK;)
+}
+
 const char *zvec_doc_get_pk_pointer(const zvec_doc_t *doc) {
   if (!doc) return nullptr;
   auto doc_ptr = reinterpret_cast<const zvec::Doc *>(doc);
@@ -6114,6 +6153,61 @@ zvec_error_code_t zvec_multi_query_set_rerank_weighted(
   auto *mq = reinterpret_cast<zvec::MultiQuery *>(query);
   mq->rerank = zvec::reranker::WeightedParams{
       std::vector<double>(weights, weights + weight_count)};
+  return ZVEC_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Standalone Reranker API (Issue #443)
+// ---------------------------------------------------------------------------
+// Internal wrapper: holds a copy of RerankParams.
+struct RerankerWrapper {
+  zvec::reranker::RerankParams params;
+};
+
+zvec_reranker_t *zvec_reranker_create_rrf(int rank_constant) {
+  ZVEC_TRY_RETURN_NULL("Failed to create RRF reranker",
+                        auto *wrapper = new RerankerWrapper();
+                        wrapper->params = zvec::reranker::RrfParams{rank_constant};
+                        return reinterpret_cast<zvec_reranker_t *>(wrapper);)
+  return nullptr;
+}
+
+zvec_reranker_t *zvec_reranker_create_weighted(const double *weights,
+                                                size_t weight_count) {
+  if (!weights && weight_count > 0) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Weights pointer is null");
+    return nullptr;
+  }
+  ZVEC_TRY_RETURN_NULL(
+      "Failed to create Weighted reranker",
+      auto *wrapper = new RerankerWrapper();
+      wrapper->params = zvec::reranker::WeightedParams{
+          std::vector<double>(weights, weights + weight_count)};
+      return reinterpret_cast<zvec_reranker_t *>(wrapper);)
+  return nullptr;
+}
+
+void zvec_reranker_destroy(zvec_reranker_t *reranker) {
+  if (reranker) {
+    delete reinterpret_cast<RerankerWrapper *>(reranker);
+  }
+}
+
+zvec_error_code_t zvec_multi_query_set_reranker(
+    zvec_multi_query_t *query, const zvec_reranker_t *reranker) {
+  if (!query) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Query pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *mq = reinterpret_cast<zvec::MultiQuery *>(query);
+  if (!reranker) {
+    // Clear reranking by setting default RRF with default constant
+    mq->rerank = zvec::reranker::RrfParams{60};
+    return ZVEC_OK;
+  }
+  auto *wrapper = reinterpret_cast<const RerankerWrapper *>(reranker);
+  mq->rerank = wrapper->params;
   return ZVEC_OK;
 }
 

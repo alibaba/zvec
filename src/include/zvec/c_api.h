@@ -2370,6 +2370,67 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_multi_query_set_rerank_weighted(
     zvec_multi_query_t *query, const double *weights, size_t weight_count);
 
 // -----------------------------------------------------------------------------
+// zvec_reranker_t (Standalone Reranker Handle)
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Reranker handle (opaque pointer).
+ * Use zvec_reranker_create_rrf() or zvec_reranker_create_weighted()
+ * to create, and zvec_reranker_destroy() to free.
+ */
+typedef struct zvec_reranker_t zvec_reranker_t;
+
+/**
+ * @brief Create RRF (Reciprocal Rank Fusion) reranker.
+ *
+ * Score formula: 1 / (rank_constant + rank + 1)
+ *
+ * @param rank_constant RRF rank constant (typical range: 1–100, default 60)
+ * @return zvec_reranker_t* Pointer to newly created reranker;
+ *         returns NULL on failure.
+ */
+ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
+zvec_reranker_create_rrf(int rank_constant);
+
+/**
+ * @brief Create Weighted Score Fusion reranker.
+ *
+ * Each sub-query's score is normalized, then multiplied by the
+ * corresponding weight.
+ *
+ * @param weights Array of per-sub-query weights (must not be NULL if
+ *               weight_count > 0)
+ * @param weight_count Number of weights
+ * @return zvec_reranker_t* Pointer to newly created reranker;
+ *         returns NULL on failure.
+ */
+ZVEC_EXPORT zvec_reranker_t *ZVEC_CALL
+zvec_reranker_create_weighted(const double *weights, size_t weight_count);
+
+/**
+ * @brief Destroy a reranker and release all resources.
+ *
+ * @param reranker Reranker pointer (may be NULL, in which case this
+ *        function is a no-op).
+ */
+ZVEC_EXPORT void ZVEC_CALL
+zvec_reranker_destroy(zvec_reranker_t *reranker);
+
+/**
+ * @brief Attach a reranker to a multi-query.
+ *
+ * The multi-query takes a copy of the rerank parameters; the reranker
+ * object can be destroyed after this call if no longer needed.
+ *
+ * @param query Multi-query pointer
+ * @param reranker Reranker pointer (may be NULL to clear reranking)
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_multi_query_set_reranker(zvec_multi_query_t *query,
+                              const zvec_reranker_t *reranker);
+
+// -----------------------------------------------------------------------------
 // zvec_multi_query_t (Multi Query)
 // -----------------------------------------------------------------------------
 
@@ -3678,6 +3739,32 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_doc_add_field_by_value(
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_doc_add_field_by_struct(zvec_doc_t *doc, const zvec_doc_field_t *field);
+
+/**
+ * @brief Set a sparse vector field on a document.
+ *
+ * Sparse vector fields are defined with data type
+ * ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 or
+ * ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16.
+ *
+ * This function allocates and copies the supplied @p indices
+ * and @p values arrays into the document; the caller retains
+ * ownership of the original buffers.
+ *
+ * @param doc        Document pointer (must not be NULL)
+ * @param field_name Field name (must match a SPARSE_VECTOR field
+ *                   in the schema)
+ * @param indices    Array of vector indices  (uint32_t)
+ * @param values     Array of non-zero values  (float)
+ * @param count      Number of non-zero entries
+ * @return           Error code (ZVEC_OK on success)
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_doc_set_sparse_vector(zvec_doc_t *doc,
+                            const char *field_name,
+                            const uint32_t *indices,
+                            const float *values,
+                            size_t count);
 
 /**
  * @brief Remove field from document

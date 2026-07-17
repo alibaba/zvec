@@ -138,6 +138,7 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     endif()
 
     install(TARGETS ${TARGET_NAME}
+        EXPORT ${TARGET_NAME}Targets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -167,5 +168,60 @@ if(BUILD_ZVEC_SHARED)
             zvec_core
             zvec_ailego
             zvec_turbo
+    )
+endif()
+
+# =============================================================================
+# CMake Package Configuration (for find_package(zvec))
+# =============================================================================
+
+# Only install package config if shared libraries are built
+if(BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED)
+    include(CMakePackageConfigHelpers)
+    
+    # Generate package version file
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/zvecConfigVersion.cmake"
+        VERSION "${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH}"
+        COMPATIBILITY SameMajorVersion
+    )
+    
+    # Generate package config from template
+    configure_package_config_file(
+        "${PROJECT_SOURCE_DIR}/cmake/zvecConfig.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/zvecConfig.cmake"
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zvec
+    )
+    
+    # Install package config files
+    install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/zvecConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/zvecConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zvec
+    )
+endif()
+
+# Export targets from build tree (for find_package(zvec) without install)
+if(BUILD_ZVEC_CORE_SHARED)
+    export(EXPORT zvec_core_sharedTargets
+        FILE "${CMAKE_CURRENT_BINARY_DIR}/zvec_core_sharedTargets.cmake"
+        NAMESPACE zvec::
+    )
+    install(EXPORT zvec_core_sharedTargets
+        FILE zvec_core_sharedTargets.cmake
+        NAMESPACE zvec::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zvec
+    )
+endif()
+
+if(BUILD_ZVEC_SHARED)
+    export(EXPORT zvec_sharedTargets
+        FILE "${CMAKE_CURRENT_BINARY_DIR}/zvec_sharedTargets.cmake"
+        NAMESPACE zvec::
+    )
+    install(EXPORT zvec_sharedTargets
+        FILE zvec_sharedTargets.cmake
+        NAMESPACE zvec::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zvec
     )
 endif()

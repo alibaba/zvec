@@ -3,6 +3,35 @@ cmake_policy(SET CMP0077 NEW)
 project(zvec)
 set(CC_CXX_STANDARD 17)
 
+# Compiler cache setup (ccache / sccache) — speeds up incremental builds
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    message(STATUS "Using ccache: ${CCACHE_PROGRAM}")
+else()
+    find_program(SCCACHE_PROGRAM sccache)
+    if(SCCACHE_PROGRAM)
+        set(CMAKE_C_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+        message(STATUS "Using sccache: ${SCCACHE_PROGRAM}")
+    endif()
+endif()
+
+# Link-Time Optimization (LTO) for Release builds
+option(ENABLE_LTO "Enable Link-Time Optimization in Release builds" OFF)
+if(ENABLE_LTO AND NOT MSVC AND NOT IOS AND NOT ANDROID)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT LTO_SUPPORTED OUTPUT LTO_ERROR)
+    if(LTO_SUPPORTED)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+        message(STATUS "LTO enabled for Release/RelWithDebInfo builds")
+    else()
+        message(WARNING "LTO not supported: ${LTO_ERROR}")
+    endif()
+endif()
+
 if(MSVC)
     set(INTTYPES_FORMAT VC7)
     # Use /Z7 (embed debug info in .obj) instead of /Zi (separate .pdb) to enable sccache/ccache.
@@ -38,6 +67,24 @@ if(MSVC)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror=return-type")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror=return-type")
+
+    # Release build optimizations
+    if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        # -O3 is generally safe and provides better performance than -O2
+        # for numerically intensive code like vector search
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+            set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+            set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG")
+            set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG")
+
+            # Function sections + data sections + gc-sections reduces binary size
+            add_compile_options(-ffunction-sections -fdata-sections)
+            if(NOT APPLE AND NOT IOS AND NOT ANDROID)
+                add_link_options(-Wl,--gc-sections)
+            endif()
+        endif()
+    endif()
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)

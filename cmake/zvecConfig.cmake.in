@@ -1,0 +1,39 @@
+# zvecConfig.cmake.in - CMake package configuration template
+# This file is processed by configure_package_config_file() to generate
+# the final zvecConfig.cmake installed with the library.
+
+@PACKAGE_INIT@
+
+# Require CMake 3.13 or newer
+cmake_minimum_required(VERSION 3.13)
+
+# Set zvec root directory
+set(ZVEC_ROOT_DIR "@PACKAGE_CMAKE_INSTALL_PREFIX@")
+
+# Include imported targets (shared libraries)
+include("@PACKAGE_CMAKE_INSTALL_LIBDIR@/cmake/zvec/zvec_c_apiTargets.cmake" OPTIONAL RESULT_VARIABLE _zvec_c_api_targets)
+if(_zvec_c_api_targets)
+    message(STATUS "Loaded zvec_c_api targets from ${_zvec_c_api_targets}")
+endif()
+
+# Alias for convenience (zvec::zvec -> zvec::zvec_c_api)
+if(TARGET zvec::zvec_c_api AND NOT TARGET zvec::zvec)
+    add_library(zvec::zvec ALIAS zvec::zvec_c_api)
+    message(STATUS "Created alias zvec::zvec -> zvec::zvec_c_api")
+endif()
+
+# Helper function to print zvec info
+function(zvec_info)
+    message(STATUS "zvec version: @ZVEC_VERSION_MAJOR@.@ZVEC_VERSION_MINOR@.@ZVEC_VERSION_PATCH@")
+    message(STATUS "zvec include dir: ${ZVEC_ROOT_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+    message(STATUS "zvec library dir: ${ZVEC_ROOT_DIR}/@CMAKE_INSTALL_LIBDIR@")
+endfunction()
+
+# Mark package as found
+set(zvec_FOUND TRUE)
+set(ZVEC_FOUND TRUE)
+
+# Provide legacy variables for backwards compatibility
+set(ZVEC_INCLUDE_DIRS "${ZVEC_ROOT_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+set(ZVEC_LIBRARY_DIRS "${ZVEC_ROOT_DIR}/@CMAKE_INSTALL_LIBDIR@")
+set(ZVEC_LIBRARIES zvec::zvec_c_api)

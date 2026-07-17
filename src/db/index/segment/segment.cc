@@ -1992,6 +1992,8 @@ Status SegmentImpl::create_scalar_index(const std::vector<std::string> &columns,
   auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
   if (fields.empty()) {
     *segment_meta = new_segment_meta;
+    // Fix: return current indexer pointer so the caller does not
+    // pass nullptr to reload_scalar_index (Issue #427).
     *scalar_indexer = invert_indexers_;
     return Status::OK();
   }
@@ -2122,7 +2124,9 @@ Status SegmentImpl::drop_scalar_index(const std::vector<std::string> &columns,
 
   if (fields.empty()) {
     *segment_meta = new_segment_meta;
-    *scalar_indexer = nullptr;
+    // Fix: return current indexer pointer so the caller does not
+    // pass nullptr to reload_scalar_index (Issue #427).
+    *scalar_indexer = invert_indexers_;
     return Status::OK();
   }
 
@@ -2173,11 +2177,21 @@ Status SegmentImpl::reload_scalar_index(
   }
 
   if (!scalar_indexer) {
+    // Fix: clean up the old inverted indexer directory so that a subsequent
+    // create_index() can create a fresh one without "Column family already
+    // exists" errors (Issue #427).
     if (invert_indexers_) {
       auto old_dir = invert_indexers_->working_dir();
       invert_indexers_ = nullptr;
       FileHelper::RemoveDirectory(old_dir);
     }
+    return Status::OK();
+  }
+
+  // Identity-pointer guard: avoid accidentally deleting an indexer's own
+  // directory during reload (e.g. if scalar_indexer == invert_indexers_).
+  if (invert_indexers_ && invert_indexers_ == scalar_indexer) {
+    LOG_WARN("reload_scalar_index: identity-pointer guard triggered, skipping");
     return Status::OK();
   }
 

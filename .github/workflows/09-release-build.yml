@@ -1,0 +1,653 @@
+name: Build & Release Pre-compiled Libraries
+
+# Trigger on pushes to main with tags, and on manual dispatch
+on:
+  push:
+    tags:
+      - 'v*'  # Push with v* tags triggers release build
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version (e.g., v0.6.0). Leave empty for snapshot build.'
+        required: false
+        type: string
+      publish_release:
+        description: 'Whether to publish GitHub Release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write  # Needed for creating releases
+  actions: read
+
+env:
+  # Build type
+  BUILD_TYPE: Release
+  # Use ccache / sccache for faster builds
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  # =========================================================================
+  # Job 1: Build on Ubuntu (multiple versions)
+  # =========================================================================
+  build-ubuntu:
+    name: Build (Ubuntu ${{ matrix.version }}, ${{ matrix.arch }})
+    runs-on: ubuntu-24.04${{ matrix.arch == 'arm64' && '-arm' || '' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '20.04'
+            arch: x64
+            glibc: '2.31'
+          - version: '22.04'
+            arch: x64
+            glibc: '2.35'
+          - version: '24.04'
+            arch: x64
+            glibc: '2.39'
+          - version: '22.04'
+            arch: arm64
+            glibc: '2.35'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: release-ubuntu-${{ matrix.version }}-${{ matrix.arch }}
+          max-size: 200M
+
+      - name: Install system dependencies (x64)
+        if: matrix.arch == 'x64'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            libaio-dev \
+            libomp-dev
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            scikit-build-core \
+            setuptools_scm
+        shell: bash
+
+      - name: Configure CMake (Shared Library)
+        run: |
+          cmake -S . -B build-shared -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install-shared
+        shell: bash
+
+      - name: Configure CMake (Static Library)
+        run: |
+          cmake -S . -B build-static -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_ZVEC_SHARED=OFF \
+            -DBUILD_ZVEC_CORE_SHARED=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install-static
+        shell: bash
+
+      - name: Build (Shared Library)
+        run: |
+          cmake --build build-shared --target all --parallel $(nproc)
+        shell: bash
+
+      - name: Build (Static Library)
+        run: |
+          cmake --build build-static --target all --parallel $(nproc)
+        shell: bash
+
+      - name: Install (Shared Library)
+        run: |
+          cmake --install build-shared --prefix ${{ github.workspace }}/install-shared
+        shell: bash
+
+      - name: Install (Static Library)
+        run: |
+          cmake --install build-static --prefix ${{ github.workspace }}/install-static
+        shell: bash
+
+      - name: Merge Shared and Static Libraries
+        run: |
+          # Create merged install directory
+          mkdir -p ${GITHUB_WORKSPACE}/install-merged
+          
+          # Copy shared library installation
+          cp -r ${{ github.workspace }}/install-shared/* ${GITHUB_WORKSPACE}/install-merged/ 2>/dev/null || true
+          
+          # Copy static libraries (.a) to merged lib directory
+          mkdir -p ${GITHUB_WORKSPACE}/install-merged/lib
+          find ${{ github.workspace }}/install-static -name "*.a" -exec cp {} ${GITHUB_WORKSPACE}/install-merged/lib/ \;
+          
+          # Show merged directory structure
+          echo "=== Merged install directory ==="
+          ls -la ${GITHUB_WORKSPACE}/install-merged/lib/
+          echo "================================="
+        shell: bash
+
+      - name: Package (tar.gz)
+        id: package
+        run: |
+          VERSION=$(cd "$GITHUB_WORKSPACE" && git describe --tags --always)
+          ARCHIVE_NAME="zvec-${VERSION}-ubuntu-${{ matrix.version }}-${{ matrix.arch }}.tar.gz"
+          
+          # Create archive from merged directory
+          tar -czf "${ARCHIVE_NAME}" \
+            -C "${GITHUB_WORKSPACE}/install-merged" \
+            .
+          
+          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          echo "Built archive: ${ARCHIVE_NAME}"
+          
+          # Show archive contents
+          echo "=== Archive contents ==="
+          tar -tzf "${ARCHIVE_NAME}" | head -30
+          echo "========================="
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zvec-ubuntu-${{ matrix.version }}-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.archive_name }}
+          retention-days: 7
+
+  # =========================================================================
+  # Job 2: Build on macOS (Intel + Apple Silicon)
+  # =========================================================================
+  build-macos:
+    name: Build (macOS ${{ matrix.version }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '13'
+            arch: x86_64
+            runner: macos-13
+          - version: '14'
+            arch: arm64
+            runner: macos-14
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: release-macos-${{ matrix.version }}-${{ matrix.arch }}
+          max-size: 200M
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            scikit-build-core \
+            setuptools_scm
+        shell: bash
+
+      - name: Configure CMake (Shared Library)
+        run: |
+          cmake -S . -B build-shared -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install-shared \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+        shell: bash
+
+      - name: Configure CMake (Static Library)
+        run: |
+          cmake -S . -B build-static -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_ZVEC_SHARED=OFF \
+            -DBUILD_ZVEC_CORE_SHARED=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install-static \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+        shell: bash
+
+      - name: Build (Shared Library)
+        run: |
+          cmake --build build-shared --target all --parallel $(sysctl -n hw.ncpu)
+        shell: bash
+
+      - name: Build (Static Library)
+        run: |
+          cmake --build build-static --target all --parallel $(sysctl -n hw.ncpu)
+        shell: bash
+
+      - name: Install (Shared Library)
+        run: |
+          cmake --install build-shared --prefix ${{ github.workspace }}/install-shared
+        shell: bash
+
+      - name: Install (Static Library)
+        run: |
+          cmake --install build-static --prefix ${{ github.workspace }}/install-static
+        shell: bash
+
+      - name: Merge Shared and Static Libraries
+        run: |
+          # Create merged install directory
+          mkdir -p ${GITHUB_WORKSPACE}/install-merged
+          
+          # Copy shared library installation
+          cp -r ${{ github.workspace }}/install-shared/* ${GITHUB_WORKSPACE}/install-merged/ 2>/dev/null || true
+          
+          # Copy static libraries (.a) to merged lib directory
+          mkdir -p ${GITHUB_WORKSPACE}/install-merged/lib
+          find ${{ github.workspace }}/install-static -name "*.a" -exec cp {} ${GITHUB_WORKSPACE}/install-merged/lib/ \;
+          
+          # Show merged directory structure
+          echo "=== Merged install directory ==="
+          ls -la ${GITHUB_WORKSPACE}/install-merged/lib/
+          echo "================================="
+        shell: bash
+
+      - name: Package (tar.gz)
+        id: package
+        run: |
+          VERSION=$(cd "$GITHUB_WORKSPACE" && git describe --tags --always)
+          ARCHIVE_NAME="zvec-${VERSION}-macos-${{ matrix.version }}-${{ matrix.arch }}.tar.gz"
+          
+          # Create archive from merged directory
+          tar -czf "${ARCHIVE_NAME}" \
+            -C "${GITHUB_WORKSPACE}/install-merged" \
+            .
+          
+          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          echo "Built archive: ${ARCHIVE_NAME}"
+          
+          # Show archive contents
+          echo "=== Archive contents ==="
+          tar -tzf "${ARCHIVE_NAME}" | head -30
+          echo "========================="
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zvec-macos-${{ matrix.version }}-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.archive_name }}
+          retention-days: 7
+
+  # =========================================================================
+  # Job 3: Build on Windows (x64)
+  # =========================================================================
+  build-windows:
+    name: Build (Windows ${{ matrix.version }}, x64)
+    runs-on: ${{ matrix.version }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: windows-2022
+          - version: windows-2025
+
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install `
+            pybind11==3.0 `
+            cmake==3.30.0 `
+            ninja==1.11.1 `
+            scikit-build-core `
+            setuptools_scm
+        shell: powershell
+
+      - name: Configure CMake (Shared Library)
+        run: |
+          cmake -S . -B build-shared -G Ninja `
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DBUILD_PYTHON_BINDINGS=OFF `
+            -DBUILD_C_BINDINGS=ON `
+            -DBUILD_TOOLS=OFF `
+            -DBUILD_ZVEC_SHARED=ON `
+            -DBUILD_ZVEC_CORE_SHARED=ON `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}\install-shared
+        shell: powershell
+
+      - name: Configure CMake (Static Library)
+        run: |
+          cmake -S . -B build-static -G Ninja `
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DBUILD_PYTHON_BINDINGS=OFF `
+            -DBUILD_C_BINDINGS=ON `
+            -DBUILD_TOOLS=OFF `
+            -DBUILD_ZVEC_SHARED=OFF `
+            -DBUILD_ZVEC_CORE_SHARED=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}\install-static
+        shell: powershell
+
+      - name: Build (Shared Library)
+        run: |
+          cmake --build build-shared --target all --parallel $env:NUMBER_OF_PROCESSORS
+        shell: powershell
+
+      - name: Build (Static Library)
+        run: |
+          cmake --build build-static --target all --parallel $env:NUMBER_OF_PROCESSORS
+        shell: powershell
+
+      - name: Install (Shared Library)
+        run: |
+          cmake --install build-shared --prefix "${{ github.workspace }}\install-shared"
+        shell: powershell
+
+      - name: Install (Static Library)
+        run: |
+          cmake --install build-static --prefix "${{ github.workspace }}\install-static"
+        shell: powershell
+
+      - name: Merge Shared and Static Libraries
+        run: |
+          # Create merged install directory
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\install-merged"
+          
+          # Copy shared library installation
+          Copy-Item -Path "${{ github.workspace }}\install-shared\*" -Destination "${{ github.workspace }}\install-merged\" -Recurse -Force
+          
+          # Copy static libraries (.lib) to merged lib directory
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\install-merged\lib"
+          Copy-Item -Path "${{ github.workspace }}\install-static\lib\*.lib" -Destination "${{ github.workspace }}\install-merged\lib\" -Force
+          
+          # Show merged directory structure
+          Write-Host "=== Merged install directory ==="
+          Get-ChildItem -Path "${{ github.workspace }}\install-merged\lib\"
+          Write-Host "================================="
+        shell: powershell
+
+      - name: Package (zip)
+        id: package
+        run: |
+          $VERSION = (git describe --tags --always) 2>&1
+          $ARCHIVE_NAME = "zvec-${VERSION}-windows-${{ matrix.version }}-x64.zip"
+          
+          Compress-Archive -Path "${{ github.workspace }}\install-merged\*" -DestinationPath "${ARCHIVE_NAME}"
+          
+          echo "archive_name=${ARCHIVE_NAME}" >> $env:GITHUB_OUTPUT
+          Write-Host "Built archive: ${ARCHIVE_NAME}"
+          
+          # Show archive contents
+          Write-Host "=== Archive contents ==="
+          Get-ChildItem -Path "${ARCHIVE_NAME}"
+          Write-Host "========================="
+        shell: powershell
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zvec-windows-${{ matrix.version }}-x64
+          path: ${{ steps.package.outputs.archive_name }}
+          retention-days: 7
+
+  # =========================================================================
+  # Job 4: Build on Fedora (39, 40, 41) via Docker container
+  # =========================================================================
+  build-fedora:
+    name: Build (Fedora ${{ matrix.version }}, x64)
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '39'
+            glibc: '2.38'
+          - version: '40'
+            glibc: '2.39'
+          - version: '41'
+            glibc: '2.40'
+
+    container:
+      image: fedora:${{ matrix.version }}
+      options: --privileged
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git \
+            cmake \
+            ninja-build \
+            gcc-c++ \
+            python3 \
+            python3-pip \
+            python3-devel \
+            libaio-devel \
+            libomp-devel \
+            ccache \
+            tar \
+            gzip
+        shell: bash
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            scikit-build-core \
+            setuptools_scm
+        shell: bash
+
+      - name: Configure CMake (Shared Library)
+        run: |
+          cmake -S . -B build-shared -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_ZVEC_SHARED=ON \
+            -DBUILD_ZVEC_CORE_SHARED=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX=/tmp/install-shared
+        shell: bash
+
+      - name: Configure CMake (Static Library)
+        run: |
+          cmake -S . -B build-static -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_C_BINDINGS=ON \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_ZVEC_SHARED=OFF \
+            -DBUILD_ZVEC_CORE_SHARED=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX=/tmp/install-static
+        shell: bash
+
+      - name: Build (Shared Library)
+        run: |
+          cmake --build build-shared --target all --parallel $(nproc)
+        shell: bash
+
+      - name: Build (Static Library)
+        run: |
+          cmake --build build-static --target all --parallel $(nproc)
+        shell: bash
+
+      - name: Install (Shared Library)
+        run: |
+          cmake --install build-shared --prefix /tmp/install-shared
+        shell: bash
+
+      - name: Install (Static Library)
+        run: |
+          cmake --install build-static --prefix /tmp/install-static
+        shell: bash
+
+      - name: Merge Shared and Static Libraries
+        run: |
+          mkdir -p /tmp/install-merged/lib
+          cp -r /tmp/install-shared/* /tmp/install-merged/ 2>/dev/null || true
+          find /tmp/install-static -name "*.a" -exec cp {} /tmp/install-merged/lib/ \;
+          echo "=== Merged install directory ==="
+          ls -la /tmp/install-merged/lib/
+          echo "================================="
+        shell: bash
+
+      - name: Package (tar.gz)
+        id: package
+        run: |
+          VERSION=$(cd "$GITHUB_WORKSPACE" && git describe --tags --always)
+          ARCHIVE_NAME="zvec-${VERSION}-fedora-${{ matrix.version }}-x64.tar.gz"
+          tar -czf "${ARCHIVE_NAME}" -C /tmp/install-merged .
+          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          echo "Built archive: ${ARCHIVE_NAME}"
+          echo "=== Archive contents ==="
+          tar -tzf "${ARCHIVE_NAME}" | head -30
+          echo "========================="
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zvec-fedora-${{ matrix.version }}-x64
+          path: ${{ steps.package.outputs.archive_name }}
+          retention-days: 7
+
+  # =========================================================================
+  # Job 5: Publish to GitHub Release (optional)
+  # =========================================================================
+  publish-release:
+    name: Publish to GitHub Release
+    needs: [build-ubuntu, build-macos, build-windows, build-fedora]
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.inputs.publish_release == 'true' || startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: |
+          ls -R artifacts/
+        shell: bash
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.release_version }}" ]; then
+            VERSION="${{ github.event.inputs.release_version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="snapshot-$(date +'%Y%m%d-%H%M%S')"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+        shell: bash
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: zvec ${{ steps.version.outputs.version }}
+          draft: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          prerelease: ${{ contains(steps.version.outputs.version, 'rc') || contains(steps.version.outputs.version, 'beta') }}
+          files: artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

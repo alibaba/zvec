@@ -244,6 +244,7 @@ endif()
 
 # Install shared library
 install(TARGETS zvec_c_api
+    EXPORT zvec_c_apiTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -253,4 +254,43 @@ install(TARGETS zvec_c_api
 # Install headers
 install(FILES ${PROJECT_SOURCE_DIR}/src/include/zvec/c_api.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/zvec
+)
+
+# =============================================================================
+# CMake Package Configuration (for find_package(zvec))
+# =============================================================================
+
+# Export targets for use from build tree
+export(EXPORT zvec_c_apiTargets
+    FILE "${CMAKE_CURRENT_BINARY_DIR}/zvec_c_apiTargets.cmake"
+    NAMESPACE zvec::
+)
+
+# Install targets for use from install tree
+install(EXPORT zvec_c_apiTargets
+    FILE zvec_c_apiTargets.cmake
+    NAMESPACE zvec::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zvec
+)
+
+# Generate & install package version file
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/zvecConfigVersion.cmake"
+    VERSION "${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH}"
+    COMPATIBILITY SameMajorVersion
+)
+
+# Generate package config from template
+configure_package_config_file(
+    "${PROJECT_SOURCE_DIR}/cmake/zvecConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/zvecConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zvec
+)
+
+# Install package config files
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/zvecConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/zvecConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zvec
 )
