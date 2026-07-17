@@ -15,16 +15,20 @@
 #include <cassert>
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
+#include "avx2/pq_quantizer_int8/pq_distance.h"
 #include "avx2/rotate/fht/fht.h"
+#include "avx512/pq_quantizer_int8/pq_distance.h"
 #include "avx512/rotate/fht/fht.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_int8/quantize.h"
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
+#include "neon/pq_quantizer_int8/pq_distance.h"
 #include "neon/rotate/fht/fht.h"
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
+#include "scalar/pq_quantizer_int8/pq_distance.h"
 #include "scalar/rotate/fht/fht.h"
 #include "sse/rotate/fht/fht.h"
 
@@ -184,36 +188,30 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
 
 PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
                          CpuArchType cpu_arch_type) {
-  // Suppress unused-parameter warning when no SIMD #if blocks are compiled in.
-  (void)cpu_arch_type;
-  PqKernels k{};
+  (void)data_type;
   if (quantize_type == QuantizeType::kPQ) {
-    // Default (kInt8): scalar int8 kernels.
-    k.adc_distance = scalar::pq_adc_int8_distance;
-    k.sdc_distance = scalar::pq_sdc_int8_distance;
-    k.batch_adc_distance = scalar::pq_adc_int8_batch_distance;
-
-#if defined(__AVX512F__)
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
-        (cpu_arch_type == CpuArchType::kAuto ||
-         cpu_arch_type == CpuArchType::kAVX512)) {
-      k.adc_distance = avx512::pq_adc_int8_distance_avx512;
-      k.sdc_distance = avx512::pq_sdc_int8_distance_avx512;
-      k.batch_adc_distance = avx512::pq_adc_int8_batch_distance_avx512;
-      return k;
+        IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+      return {avx512::pq_adc_int8_distance_avx512,
+              avx512::pq_sdc_int8_distance_avx512,
+              avx512::pq_adc_int8_batch_distance_avx512};
     }
-#endif
-#if defined(__AVX2__)
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
-        (cpu_arch_type == CpuArchType::kAuto ||
-         cpu_arch_type == CpuArchType::kAVX2)) {
-      k.adc_distance = avx2::pq_adc_int8_distance_avx2;
-      k.sdc_distance = avx2::pq_sdc_int8_distance_avx2;
-      k.batch_adc_distance = avx2::pq_adc_int8_batch_distance_avx2;
+        IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+      return {avx2::pq_adc_int8_distance_avx2,
+              avx2::pq_sdc_int8_distance_avx2,
+              avx2::pq_adc_int8_batch_distance_avx2};
     }
-#endif
+    if (IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
+      return {neon::pq_adc_int8_distance_neon,
+              neon::pq_sdc_int8_distance_neon,
+              neon::pq_adc_int8_batch_distance_neon};
+    }
+    return {scalar::pq_adc_int8_distance,
+            scalar::pq_sdc_int8_distance,
+            scalar::pq_adc_int8_batch_distance};
   }
-  return k;
+  return {};
 }
 
 }  // namespace zvec::turbo

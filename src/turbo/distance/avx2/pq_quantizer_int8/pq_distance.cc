@@ -12,11 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// This file is compiled with per-file -march=core-avx2 (set in CMakeLists.txt)
+// so that AVX2 intrinsics are available. When the build toolchain cannot emit
+// AVX2 code, each function falls back to a no-op stub guarded by
+// #if defined(__AVX2__).
+
 #include "avx2/pq_quantizer_int8/pq_distance.h"
+#if defined(__AVX2__)
 #include <immintrin.h>
+#endif
+#include <cstddef>
+#include <cstdint>
 
 namespace zvec::turbo::avx2 {
 
+#if defined(__AVX2__)
 namespace {
 
 // Horizontal sum of 8 floats in a __m256 register.
@@ -35,9 +45,11 @@ inline float horizontal_sum_avx2(__m256 v) {
 }
 
 }  // namespace
+#endif
 
 void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
                                size_t num_chunk, float *out) {
+#if defined(__AVX2__)
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 8;  // AVX2 processes 8 floats at once
   const auto *pq_code = reinterpret_cast<const uint8_t *>(pq_code_v);
@@ -79,11 +91,18 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
   }
 
   *out = sum;
+#else
+  (void)pq_code_v;
+  (void)lut_v;
+  (void)num_chunk;
+  (void)out;
+#endif
 }
 
 void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
                                const void *dist_table_v,
                                size_t num_chunk, float *out) {
+#if defined(__AVX2__)
   constexpr int kNumCentroids = 256;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
   constexpr int kChunkSize = 8;
@@ -132,11 +151,19 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
   }
 
   *out = sum;
+#else
+  (void)a_v;
+  (void)b_v;
+  (void)dist_table_v;
+  (void)num_chunk;
+  (void)out;
+#endif
 }
 
 void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
                                      const void *lut_v, size_t num,
                                      size_t num_chunk, float *out) {
+#if defined(__AVX2__)
   constexpr int kNumCentroids = 256;
   constexpr int kChunkSize = 8;
   constexpr int kBatch = 4;
@@ -210,6 +237,13 @@ void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
   for (; i < num; ++i) {
     pq_adc_int8_distance_avx2(candidates[i], lut, num_chunk, out + i);
   }
+#else
+  (void)candidates_v;
+  (void)lut_v;
+  (void)num;
+  (void)num_chunk;
+  (void)out;
+#endif
 }
 
 }  // namespace zvec::turbo::avx2
