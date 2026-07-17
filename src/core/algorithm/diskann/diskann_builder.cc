@@ -17,6 +17,7 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <ailego/io/io_backend_def.h>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
@@ -32,7 +33,22 @@ namespace core {
 int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin DiskAnnBuilder::init");
 
-  log_diskann_io_backend();
+#if defined(__linux__) || defined(__linux)
+  // Eagerly probe the I/O backend at init time so the user gets immediate
+  // feedback about whether async I/O is available. IOBackend auto-probes on
+  // first Instance() access.
+  auto &backend = ailego::IOBackend::Instance();
+  if (backend.available() == ailego::IOBackendType::kPread) {
+    LOG_WARN(
+        "DiskAnn: no async I/O backend available. Install libaio (e.g. "
+        "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
+        "retry. DiskAnn will fall back to synchronous pread() — performance "
+        "will be degraded.");
+  } else {
+    LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
+             backend.name());
+  }
+#endif
 
   params.get(PARAM_DISKANN_BUILDER_MAX_DEGREE, &max_degree_);
   params.get(PARAM_DISKANN_BUILDER_LIST_SIZE, &list_size_);

@@ -91,7 +91,13 @@ class DiskAnnIndexer {
 
   PQTable::Pointer pq_table_;
 
-  IOContext init_ctx_{0};
+  IOContext init_ctx_{
+#if defined(__APPLE__) || defined(__MACH__)
+      -1
+#else
+      0
+#endif
+  };
 
   std::vector<diskann_id_t> neighbor_cache_buffer_;
   void *coord_cache_buf_{nullptr};

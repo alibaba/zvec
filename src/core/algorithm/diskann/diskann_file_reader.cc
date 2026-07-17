@@ -19,8 +19,11 @@
 #include <cstring>
 #include <iostream>
 #include <ailego/io/io_backend_def.h>
-#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_logger.h>
+#if defined(__APPLE__) || defined(__MACH__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #define MAX_EVENTS 1024
 
@@ -37,31 +40,33 @@ typedef struct iocb iocb_t;
 static std::once_flag g_io_backend_log_once;
 #endif
 
-void log_diskann_io_backend() {
-#if (defined(__linux) || defined(__linux__))
-  auto &backend = ailego::IOBackend::Instance();
-  if (backend.is_pread()) {
-    LOG_WARN(
-        "DiskAnn: no async I/O backend available. Install libaio (e.g. "
-        "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and "
-        "retry. DiskAnn will fall back to synchronous pread() — performance "
-        "will be degraded.");
-  } else {
-    LOG_INFO("DiskAnn: I/O backend '%s' loaded — async I/O enabled.",
-             backend.name());
-  }
-#endif
-}
-
 int setup_io_ctx(IOContext &ctx) {
 #if (defined(__linux) || defined(__linux__))
-  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
-  if (ailego::IOBackend::Instance().is_pread()) {
+  auto &backend = ailego::IOBackend::Instance();
+  std::call_once(g_io_backend_log_once, [&backend] {
+    if (backend.available() != ailego::IOBackendType::kPread) {
+      LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
+    } else {
+      LOG_WARN(
+          "DiskAnn I/O backend: synchronous pread (no async I/O available)");
+    }
+  });
+  if (backend.available() == ailego::IOBackendType::kPread) {
     return 0;
   }
   int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx);
-
   return ret;
+#elif defined(__APPLE__) || defined(__MACH__)
+  // Create a kqueue for this context. On macOS the kqueue is used to
+  // monitor file descriptor readiness for async-style I/O.
+  int kq = ::kqueue();
+  if (kq == -1) {
+    LOG_ERROR("kqueue() failed in setup_io_ctx; errno=%d, %s", errno,
+              ::strerror(errno));
+    return IndexError_Runtime;
+  }
+  ctx = kq;
+  return 0;
 #else
   return 0;
 #endif
@@ -69,12 +74,18 @@ int setup_io_ctx(IOContext &ctx) {
 
 int destroy_io_ctx(IOContext &ctx) {
 #if (defined(__linux) || defined(__linux__))
-  if (ailego::IOBackend::Instance().is_pread()) {
+  if (ailego::IOBackend::Instance().available() ==
+      ailego::IOBackendType::kPread) {
     return 0;
   }
   int ret = LibAioLoader::Instance().io_destroy(ctx);
-
   return ret;
+#elif defined(__APPLE__) || defined(__MACH__)
+  if (ctx >= 0) {
+    ::close(ctx);
+    ctx = -1;
+  }
+  return 0;
 #else
   return 0;
 #endif
@@ -98,10 +109,115 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
   return 0;
 }
 
+#if defined(__APPLE__) || defined(__MACH__)
+// Execute batch I/O on macOS using kqueue to monitor file descriptor
+// readiness and pread for actual data transfer.
+//
+// On macOS, regular file descriptors are almost always "readable", so
+// kqueue's primary value here is providing the same async I/O interface
+// as Linux's libaio. For each read request we:
+//   1. Attempt a non-blocking pread (via O_NONBLOCK on the fd).
+//   2. If EAGAIN, wait on kqueue for EVFILT_READ readiness, then retry.
+//   3. Fall back to blocking pread if kqueue encounters an error.
+//
+// The kqueue fd is passed in as the IOContext. If no valid kqueue is
+// available, we fall back to plain blocking pread.
+static int execute_io_kqueue(int kq, int fd,
+                             std::vector<AlignedRead> &read_reqs) {
+  // If no kqueue available, fall back to blocking pread.
+  if (kq < 0) {
+    return execute_io_pread(fd, read_reqs);
+  }
+
+  // Register the file descriptor with the kqueue for read events.
+  // EV_CLEAR gives edge-triggered semantics so we only get notified
+  // when new data becomes available.
+  struct kevent ke;
+  EV_SET(&ke, fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, nullptr);
+
+  for (auto &req : read_reqs) {
+    while (true) {
+      ssize_t bytes_read = ::pread(fd, req.buf, req.len, req.offset);
+
+      if (bytes_read > 0) {
+        // Successfully read data; verify full read.
+        if ((size_t)bytes_read != req.len) {
+          // Partial read — retry for the remaining bytes.
+          // Update offset and buffer to read the rest.
+          char *buf_ptr = static_cast<char *>(req.buf) + bytes_read;
+          uint64_t new_offset = req.offset + bytes_read;
+          size_t remaining = req.len - bytes_read;
+          while (remaining > 0) {
+            ssize_t n = ::pread(fd, buf_ptr, remaining, new_offset);
+            if (n < 0) {
+              if (errno == EINTR) continue;
+              LOG_ERROR("pread retry failed; errno=%d, %s", errno,
+                        ::strerror(errno));
+              return IndexError_Runtime;
+            }
+            if (n == 0) break;
+            buf_ptr += n;
+            new_offset += n;
+            remaining -= n;
+          }
+          if (remaining > 0) {
+            LOG_ERROR("pread short read after retry; remaining=%zu", remaining);
+            return IndexError_Runtime;
+          }
+        }
+        break;  // Success, move to next request.
+      }
+
+      if (bytes_read == 0) {
+        // EOF — should not happen for a valid index file.
+        LOG_ERROR("pread returned 0 (EOF); offset=%lu, len=%lu",
+                  (unsigned long)req.offset, (unsigned long)req.len);
+        return IndexError_Runtime;
+      }
+
+      // bytes_read == -1, error
+      if (errno == EINTR) {
+        continue;  // Retry on signal.
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // Data not ready — wait on kqueue for readability.
+        struct kevent events[1];
+        struct timespec ts;
+        ts.tv_sec = 5;  // 5 second timeout as a safety net.
+        ts.tv_nsec = 0;
+        int n_ev = ::kevent(kq, &ke, 1, events, 1, &ts);
+        if (n_ev < 0) {
+          if (errno == EINTR) continue;
+          // kqueue error — fall back to blocking pread for this request.
+          LOG_WARN("kevent failed; errno=%d, %s, falling back to pread", errno,
+                   ::strerror(errno));
+          return execute_io_pread(fd, read_reqs);
+        }
+        if (n_ev == 0) {
+          // Timeout — fall back to blocking pread.
+          LOG_WARN("kqueue timeout, falling back to pread");
+          return execute_io_pread(fd, read_reqs);
+        }
+        // Event triggered — retry pread.
+        continue;
+      }
+
+      // Other error — fall back to blocking pread.
+      LOG_ERROR("pread failed; errno=%d, %s, falling back to pread", errno,
+                ::strerror(errno));
+      return execute_io_pread(fd, read_reqs);
+    }
+  }
+
+  return 0;
+}
+#endif  // __APPLE__
+
 int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
                uint64_t n_retries = 0) {
 #if (defined(__linux) || defined(__linux__))
-  if (ailego::IOBackend::Instance().is_pread()) {
+  if (ailego::IOBackend::Instance().available() ==
+      ailego::IOBackendType::kPread) {
     return execute_io_pread(fd, read_reqs);
   }
   uint64_t iters = DiskAnnUtil::div_round_up(read_reqs.size(), MAX_EVENTS);
@@ -178,7 +294,13 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
   }
 
   return 0;
+#elif defined(__APPLE__) || defined(__MACH__)
+  // On macOS, use kqueue-based I/O. The IOContext (ctx) is a kqueue fd.
+  (void)n_retries;
+  return execute_io_kqueue(ctx, fd, read_reqs);
 #else
+  (void)ctx;
+  (void)n_retries;
   return execute_io_pread(fd, read_reqs);
 #endif
 }
@@ -216,14 +338,21 @@ void LinuxAlignedFileReader::register_thread() {
   std::unique_lock<std::mutex> lk(ctx_mut);
   if (ctx_map.find(thread_id) != ctx_map.end()) {
     LOG_ERROR("multiple calls to register_thread from the same thread");
-
     return;
   }
 
   IOContext ctx = nullptr;
 
-  std::call_once(g_io_backend_log_once, log_diskann_io_backend);
-  if (ailego::IOBackend::Instance().is_pread()) {
+  auto &backend = ailego::IOBackend::Instance();
+  std::call_once(g_io_backend_log_once, [&backend] {
+    if (backend.available() != ailego::IOBackendType::kPread) {
+      LOG_INFO("DiskAnn I/O backend: %s (async I/O enabled)", backend.name());
+    } else {
+      LOG_WARN(
+          "DiskAnn I/O backend: synchronous pread (no async I/O available)");
+    }
+  });
+  if (backend.available() == ailego::IOBackendType::kPread) {
     lk.unlock();
     return;
   }
@@ -238,10 +367,27 @@ void LinuxAlignedFileReader::register_thread() {
     }
   } else {
     LOG_INFO("allocating ctx: %lu", (uint64_t)ctx);
-
     ctx_map[thread_id] = ctx;
   }
+  lk.unlock();
+#elif defined(__APPLE__) || defined(__MACH__)
+  auto thread_id = std::this_thread::get_id();
+  std::unique_lock<std::mutex> lk(ctx_mut);
+  if (ctx_map.find(thread_id) != ctx_map.end()) {
+    LOG_ERROR("multiple calls to register_thread from the same thread");
+    return;
+  }
 
+  IOContext ctx = -1;
+  int kq = ::kqueue();
+  if (kq == -1) {
+    LOG_ERROR("kqueue() failed in register_thread; errno=%d, %s", errno,
+              ::strerror(errno));
+  } else {
+    LOG_INFO("allocating kqueue ctx: %d", kq);
+    ctx = kq;
+    ctx_map[thread_id] = ctx;
+  }
   lk.unlock();
 #endif
 }
@@ -268,6 +414,25 @@ void LinuxAlignedFileReader::deregister_thread() {
     LibAioLoader::Instance().io_destroy(ctx);
   }
   LOG_INFO("returned ctx from thread");
+#elif defined(__APPLE__) || defined(__MACH__)
+  auto thread_id = std::this_thread::get_id();
+  IOContext ctx;
+
+  {
+    std::lock_guard<std::mutex> lk(ctx_mut);
+    auto it = ctx_map.find(thread_id);
+    if (it == ctx_map.end()) {
+      LOG_ERROR("deregister_thread: thread not registered");
+      return;
+    }
+    ctx = it->second;
+    ctx_map.erase(it);
+  }
+
+  if (ctx >= 0) {
+    ::close(ctx);
+  }
+  LOG_INFO("returned kqueue ctx from thread");
 #endif
 }
 
@@ -280,6 +445,15 @@ void LinuxAlignedFileReader::deregister_all_threads() {
     IOContext ctx = x->second;
     if (aio_available) {
       LibAioLoader::Instance().io_destroy(ctx);
+    }
+  }
+  ctx_map.clear();
+#elif defined(__APPLE__) || defined(__MACH__)
+  std::unique_lock<std::mutex> lk(ctx_mut);
+  for (auto x = ctx_map.begin(); x != ctx_map.end(); x++) {
+    IOContext ctx = x->second;
+    if (ctx >= 0) {
+      ::close(ctx);
     }
   }
   ctx_map.clear();
@@ -312,6 +486,32 @@ void LinuxAlignedFileReader::open(const std::string &fname) {
               ::strerror(errno));
   }
 
+#if defined(__APPLE__) || defined(__MACH__)
+  // macOS has no O_DIRECT. F_NOCACHE is its closest per-file equivalent: it
+  // asks the kernel to minimize caching for I/O through this descriptor. This
+  // is advisory rather than a guarantee that every read reaches the device.
+  // Disable read-ahead as well because DiskAnn performs random reads.
+  //
+  // Do not mmap the entire index and call msync(MS_INVALIDATE) here. That does
+  // not provide a reliable global cache eviction guarantee and makes open time
+  // and virtual-address usage scale with the size of the index.
+  if (this->file_desc != -1) {
+    if (::fcntl(this->file_desc, F_NOCACHE, 1) == -1) {
+      LOG_WARN("fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
+               "the page cache",
+               fname.c_str(), errno, ::strerror(errno));
+    } else {
+      LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s",
+               fname.c_str());
+    }
+
+    if (::fcntl(this->file_desc, F_RDAHEAD, 0) == -1) {
+      LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)", fname.c_str(),
+               errno, ::strerror(errno));
+    }
+  }
+#endif
+
   LOG_INFO("Opened file : %s", fname.c_str());
 }
 
@@ -337,7 +537,6 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
 
   return ret;
 }
-
 
 }  // namespace core
 }  // namespace zvec

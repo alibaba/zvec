@@ -122,14 +122,17 @@ else()
 endif()
 message(STATUS "RABITQ_ARCH_FLAG: ${RABITQ_ARCH_FLAG}")
 
-# DiskAnn support (Linux x86_64 only; libaio loaded at runtime via dlopen)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386" AND NOT ANDROID AND NOT IOS)
+# DiskAnn support:
+#   - Linux (x86_64, i686, i386, aarch64, arm64) with libaio (loaded via dlopen)
+#   - macOS (x86_64, ARM64/Apple Silicon) with kqueue
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|aarch64|arm64" AND NOT ANDROID AND NOT IOS)
+    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT IOS))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
   set(DISKANN_SUPPORTED OFF)
   add_definitions(-DDISKANN_SUPPORTED=0)
-  message(STATUS "DiskAnn support disabled - only supported on Linux x86_64")
+  message(STATUS "DiskAnn support disabled - supported on Linux (x86_64/ARM64 with libaio) and macOS (with kqueue)")
 endif()
 message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
 

@@ -349,7 +349,13 @@ class DiskAnnContext : public IndexContext,
   uint32_t group_num_{0};
   std::map<std::string, TopkHeap> group_topk_heaps_{};
 
-  IOContext io_ctx_{0};
+  IOContext io_ctx_{
+#if defined(__APPLE__) || defined(__MACH__)
+      -1
+#else
+      0
+#endif
+  };
   SearchStats query_stats_;
 
   float *pq_table_dist_buffer_{nullptr};

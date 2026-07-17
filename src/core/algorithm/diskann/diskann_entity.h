@@ -72,17 +72,6 @@ struct DiskAnnMetaHeader {
     clear();
   }
 
-  DiskAnnMetaHeader(const DiskAnnMetaHeader &header) {
-    memcpy(this, &header, sizeof(header));
-  }
-
-  DiskAnnMetaHeader &operator=(const DiskAnnMetaHeader &header) {
-    if (this != &header) {
-      memcpy(this, &header, sizeof(header));
-    }
-    return *this;
-  }
-
   void reset() {
     doc_cnt = 0U;
   }
@@ -102,15 +91,6 @@ struct DiskAnnPqMeta {
 
   DiskAnnPqMeta() {
     clear();
-  }
-
-  DiskAnnPqMeta(const DiskAnnPqMeta &meta) {
-    memcpy(this, &meta, sizeof(meta));
-  }
-
-  DiskAnnPqMeta &operator=(const DiskAnnPqMeta &meta) {
-    memcpy(this, &meta, sizeof(meta));
-    return *this;
   }
 
   void clear() {

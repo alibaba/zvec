@@ -398,8 +398,8 @@ const void *DiskAnnSearcherEntity::get_vector(diskann_id_t id) const {
   const void *vec;
   if (ailego_unlikely(vector_segment_->read(total_offset, &vec, read_size) !=
                       read_size)) {
-    LOG_ERROR("Read vector from segment failed, id: %u, offset: %lu", id,
-              total_offset);
+    LOG_ERROR("Read vector from segment failed, id: %u, offset: %llu", id,
+              (unsigned long long)total_offset);
     return nullptr;
   }
 

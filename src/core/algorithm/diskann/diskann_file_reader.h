@@ -21,8 +21,17 @@
 #include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #endif
 
+#if defined(__APPLE__) || defined(__MACH__)
+#include <sys/event.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#endif
+
 #include <unistd.h>
 #include <atomic>
+#include <map>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
@@ -30,18 +39,19 @@
 namespace zvec {
 namespace core {
 
+// On Linux, IOContext is the libaio io_context_t.
+// On macOS, IOContext is an int holding a kqueue file descriptor.
+// On other platforms, IOContext is a uint32_t placeholder.
 #if (defined(__linux) || defined(__linux__))
 typedef io_context_t IOContext;
+#elif defined(__APPLE__) || defined(__MACH__)
+typedef int IOContext;
 #else
 typedef uint32_t IOContext;
 #endif
 
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
-
-// Log the current DiskAnn I/O backend status (async vs. synchronous pread).
-// Probes the backend on first call.  No-op on non-Linux platforms.
-void log_diskann_io_backend();
 
 struct AlignedRead {
   uint64_t offset;
@@ -52,9 +62,12 @@ struct AlignedRead {
 
   AlignedRead(uint64_t offset, uint64_t len, void *buf)
       : offset(offset), len(len), buf(buf) {
+#if defined(__linux__) || defined(__linux)
+    // O_DIRECT requires 512-byte alignment on Linux.
     ailego_assert(static_cast<size_t>(offset) % 512 == 0);
     ailego_assert(static_cast<size_t>(len) % 512 == 0);
     ailego_assert(reinterpret_cast<size_t>(buf) % 512 == 0);
+#endif
   }
 };
 
@@ -79,6 +92,10 @@ class AlignedFileReader {
                    bool async = false) = 0;
 };
 
+// Reader implementation used on all supported platforms.
+// On Linux (x86_64 and ARM64) it uses libaio for asynchronous batch I/O.
+// On macOS (including ARM/Apple Silicon) it uses kqueue to monitor file
+// descriptor readiness and pread for actual data transfer.
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
