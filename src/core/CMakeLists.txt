@@ -49,7 +49,6 @@ cc_directory(quantizer)
 cc_directory(utility)
 cc_directory(interface)
 cc_directory(mixed_reducer)
-cc_directory(plugin)
 
 git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
@@ -63,17 +62,17 @@ endif()
 
 # Always exclude algorithm/diskann implementation files from zvec_core.
 # The DiskAnn algorithm is provided by the separate core_knn_diskann library
-# (real on Linux x86_64, stub on other platforms). Including them here causes
-# duplicate symbols and missing -laio when test binaries link both zvec_core
-# (via zvec) and core_knn_diskann.
-
+# (STATIC+SHARED, real on Linux x86_64, stub on other platforms). The static
+# variant is whole-archived into _zvec.so for the Python wheel; the shared
+# variant is used by C++ tools and tests. Including the sources here would
+# cause duplicate symbols.
 list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/diskann/.*")
 if(NOT DISKANN_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/diskann_index\\.cc")
 endif()
 
 set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
-# The plugin loader uses dlopen/dlsym, so link libdl on Linux.
+# The DiskAnn runtime loader uses dlopen/dlsym, so link libdl on Linux.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
 endif()

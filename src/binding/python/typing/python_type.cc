@@ -24,6 +24,7 @@ void ZVecPyTyping::Initialize(pybind11::module_ &parent) {
   bind_index_types(m);
   bind_metric_types(m);
   bind_quantize_types(m);
+  bind_io_backend_types(m);
   bind_status(m);
 }
 
@@ -96,11 +97,13 @@ Examples:
 )pbdoc")
       .value("UNDEFINED", IndexType::UNDEFINED)
       .value("HNSW", IndexType::HNSW)
-      .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
       .value("IVF", IndexType::IVF)
       .value("FLAT", IndexType::FLAT)
+      .value("HNSW_RABITQ", IndexType::HNSW_RABITQ)
+      .value("DISKANN", IndexType::DISKANN)
       .value("VAMANA", IndexType::VAMANA)
-      .value("INVERT", IndexType::INVERT);
+      .value("INVERT", IndexType::INVERT)
+      .value("FTS", IndexType::FTS);
 }
 
 void ZVecPyTyping::bind_metric_types(pybind11::module_ &m) {
@@ -135,6 +138,22 @@ Examples:
       .value("INT8", QuantizeType::INT8)
       .value("INT4", QuantizeType::INT4)
       .value("RABITQ", QuantizeType::RABITQ);
+}
+
+void ZVecPyTyping::bind_io_backend_types(py::module_ &m) {
+  py::enum_<ailego::IOBackendType>(m, "IOBackendType", R"pbdoc(
+Enumeration of supported I/O backend types for DiskAnn async disk reads.
+
+- PREAD: Synchronous pread() \u2014 no async I/O.
+- LIBAIO: libaio loaded at runtime via dlopen().
+
+Examples:
+    >>> from zvec.typing import IOBackendType
+    >>> print(IOBackendType.LIBAIO)
+    IOBackendType.LIBAIO
+)pbdoc")
+      .value("PREAD", ailego::IOBackendType::kPread)
+      .value("LIBAIO", ailego::IOBackendType::kLibAio);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {
