@@ -35,92 +35,90 @@ struct FhtPrimitives {
 ///   offset 16: float  fac
 ///   offset 20: uint8_t pad[4]
 ///   offset 24: uint8_t flip[]
-inline void fht_rotate_impl(float *out, size_t in_dim, void *ctx,
+inline void fht_rotate_impl(float *data, size_t dim, void *ctx,
                             const FhtPrimitives &p) {
   auto *base = reinterpret_cast<const uint8_t *>(ctx);
   const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
   const size_t trunc_dim = *reinterpret_cast<const size_t *>(base + 8);
   const float fac = *reinterpret_cast<const float *>(base + 16);
   const uint8_t *flip = base + 24;
-  const size_t dim = in_dim;
 
   if (trunc_dim == dim) {
     for (size_t r = 0; r < 4; ++r) {
-      p.flip_sign(flip + r * flip_offset, out, dim);
-      p.inplace(out, trunc_dim);
-      p.rescale(out, trunc_dim, fac);
+      p.flip_sign(flip + r * flip_offset, data, dim);
+      p.inplace(data, trunc_dim);
+      p.rescale(data, trunc_dim, fac);
     }
     return;
   }
 
   size_t start = dim - trunc_dim;
-  float *trunc_ptr = out + start;
+  float *trunc_ptr = data + start;
 
-  p.flip_sign(flip, out, dim);
-  p.inplace(out, trunc_dim);
-  p.rescale(out, trunc_dim, fac);
-  p.kacs_walk(out, dim);
+  p.flip_sign(flip, data, dim);
+  p.inplace(data, trunc_dim);
+  p.rescale(data, trunc_dim, fac);
+  p.kacs_walk(data, dim);
 
-  p.flip_sign(flip + flip_offset, out, dim);
+  p.flip_sign(flip + flip_offset, data, dim);
   p.inplace(trunc_ptr, trunc_dim);
   p.rescale(trunc_ptr, trunc_dim, fac);
-  p.kacs_walk(out, dim);
+  p.kacs_walk(data, dim);
 
-  p.flip_sign(flip + 2 * flip_offset, out, dim);
-  p.inplace(out, trunc_dim);
-  p.rescale(out, trunc_dim, fac);
-  p.kacs_walk(out, dim);
+  p.flip_sign(flip + 2 * flip_offset, data, dim);
+  p.inplace(data, trunc_dim);
+  p.rescale(data, trunc_dim, fac);
+  p.kacs_walk(data, dim);
 
-  p.flip_sign(flip + 3 * flip_offset, out, dim);
+  p.flip_sign(flip + 3 * flip_offset, data, dim);
   p.inplace(trunc_ptr, trunc_dim);
   p.rescale(trunc_ptr, trunc_dim, fac);
-  p.kacs_walk(out, dim);
+  p.kacs_walk(data, dim);
 
-  p.rescale(out, dim, 0.25f);
+  p.rescale(data, dim, 0.25f);
 }
 
-inline void fht_unrotate_impl(float *out, size_t in_dim, void *ctx,
+inline void fht_unrotate_impl(float *data, size_t dim, void *ctx,
                               const FhtPrimitives &p) {
   auto *base = reinterpret_cast<const uint8_t *>(ctx);
   const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
   const size_t trunc_dim = *reinterpret_cast<const size_t *>(base + 8);
   const float fac = *reinterpret_cast<const float *>(base + 16);
   const uint8_t *flip = base + 24;
-  const size_t dim = in_dim;
 
   if (trunc_dim == dim) {
     for (int round = 3; round >= 0; --round) {
-      p.inplace(out, trunc_dim);
-      p.rescale(out, trunc_dim, fac);
-      p.flip_sign(flip + static_cast<size_t>(round) * flip_offset, out, dim);
+      p.inplace(data, trunc_dim);
+      p.rescale(data, trunc_dim, fac);
+      p.flip_sign(flip + static_cast<size_t>(round) * flip_offset, data, dim);
     }
     return;
   }
 
-  p.rescale(out, dim, 4.0f);
+  p.rescale(data, dim, 4.0f);
 
   size_t start = dim - trunc_dim;
-  float *trunc_ptr = out + start;
+  float *trunc_ptr = data + start;
 
-  p.inv_kacs_walk(out, dim);
+  p.inv_kacs_walk(data, dim);
   p.inplace(trunc_ptr, trunc_dim);
   p.rescale(trunc_ptr, trunc_dim, fac);
-  p.flip_sign(flip + 3 * flip_offset, out, dim);
+  p.flip_sign(flip + 3 * flip_offset, data, dim);
 
-  p.inv_kacs_walk(out, dim);
-  p.inplace(out, trunc_dim);
-  p.rescale(out, trunc_dim, fac);
-  p.flip_sign(flip + 2 * flip_offset, out, dim);
+  p.inv_kacs_walk(data, dim);
+  p.inplace(data, trunc_dim);
+  p.rescale(data, trunc_dim, fac);
+  p.flip_sign(flip + 2 * flip_offset, data, dim);
 
-  p.inv_kacs_walk(out, dim);
+  p.inv_kacs_walk(data, dim);
   p.inplace(trunc_ptr, trunc_dim);
   p.rescale(trunc_ptr, trunc_dim, fac);
-  p.flip_sign(flip + flip_offset, out, dim);
+  p.flip_sign(flip + flip_offset, data, dim);
 
-  p.inv_kacs_walk(out, dim);
-  p.inplace(out, trunc_dim);
-  p.rescale(out, trunc_dim, fac);
-  p.flip_sign(flip, out, dim);
+  p.inv_kacs_walk(data, dim);
+  p.inplace(data, trunc_dim);
+  p.rescale(data, trunc_dim, fac);
+  p.flip_sign(flip, data, dim);
 }
 
 }  // namespace zvec::turbo

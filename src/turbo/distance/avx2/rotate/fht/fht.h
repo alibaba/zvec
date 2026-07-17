@@ -14,6 +14,8 @@
 
 #pragma once
 
+#if defined(__AVX2__)
+
 #include <cstddef>
 #include <cstdint>
 
@@ -43,3 +45,5 @@ void fht_unrotate_avx2(const float *in, float *out, size_t in_dim,
                        size_t out_dim, void *ctx);
 
 }  // namespace zvec::turbo::avx2
+
+#endif  // __AVX2__
