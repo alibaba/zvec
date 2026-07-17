@@ -82,7 +82,7 @@ class FhtRotator : public Preprocessor {
   int serialize(std::string *out) const override;
   int deserialize(const void *data, size_t len) override;
 
-  //! Rotator type tag (kFht = 0).
+  //! Rotator type tag (kFht = 1).
   RotateType rotate_type() const {
     return RotateType::kFht;
   }

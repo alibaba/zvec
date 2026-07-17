@@ -75,7 +75,7 @@ enum class QuantizeType {
 };
 
 enum class RotateType : uint16_t {
-  kFht = 0,  //!< O(d log d) FHT-based Kac random rotation
+  kFht = 1,  //!< O(d log d) FHT-based Kac random rotation
 };
 
 enum class CpuArchType {
