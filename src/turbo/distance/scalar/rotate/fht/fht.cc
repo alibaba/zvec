@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include "common/fht_common.h"
 
 namespace zvec::turbo::scalar {
 
@@ -74,6 +75,22 @@ void fht_vec_rescale(float *data, size_t n, float factor) {
   for (size_t i = 0; i < n; ++i) {
     data[i] *= factor;
   }
+}
+
+void fht_rotate(const float * /*in*/, float *out, size_t in_dim,
+                size_t /*out_dim*/, void *ctx) {
+  static constexpr FhtPrimitives kPrim = {fht_flip_sign, fht_inplace,
+                                          fht_kacs_walk, fht_inv_kacs_walk,
+                                          fht_vec_rescale};
+  fht_rotate_impl(out, in_dim, ctx, kPrim);
+}
+
+void fht_unrotate(const float * /*in*/, float *out, size_t in_dim,
+                  size_t /*out_dim*/, void *ctx) {
+  static constexpr FhtPrimitives kPrim = {fht_flip_sign, fht_inplace,
+                                          fht_kacs_walk, fht_inv_kacs_walk,
+                                          fht_vec_rescale};
+  fht_unrotate_impl(out, in_dim, ctx, kPrim);
 }
 
 }  // namespace zvec::turbo::scalar

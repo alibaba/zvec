@@ -48,6 +48,10 @@ T unwrap_expected(const tl::expected<T, Status> &exp) {
 }
 
 void ZVecPyCollection::Initialize(pybind11::module_ &m) {
+  py::class_<GroupResult>(m, "_GroupResult")
+      .def_readonly("group_by_value", &GroupResult::group_by_value_)
+      .def_readonly("docs", &GroupResult::docs_);
+
   py::class_<Collection, Collection::Ptr> collection(m, "_Collection");
   bind_db_methods(collection);
   bind_ddl_methods(collection);
@@ -281,7 +285,6 @@ void ZVecPyCollection::bind_dql_methods(
                py::gil_scoped_release release;
                result = self.GroupByQuery(query);
              }
-             // return GroupResults
              return unwrap_expected(result);
            })
       .def(

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_factory.h>
 
 namespace zvec {

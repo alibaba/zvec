@@ -20,6 +20,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from importlib.metadata import PackageNotFoundError
 
+# zvec ships a native C++ extension that is only built and tested for 64-bit
+# CPython. A 32-bit interpreter would fail to load the extension with an
+# obscure error, so fail fast here with an actionable message.
+if sys.maxsize <= 2**32:
+    raise ImportError(
+        "zvec requires a 64-bit Python interpreter; "
+        "the current interpreter is 32-bit and is not supported."
+    )
+
 
 # Register the wheel-bundled jieba dict dir so `import zvec` alone makes
 # the jieba FTS tokenizer usable. Users can still override via
@@ -86,7 +95,7 @@ from .model import schema as schema
 
 # —— Core data structures ——
 from .model.collection import Collection
-from .model.doc import Doc, DocList
+from .model.doc import Doc, DocList, GroupResult
 
 # —— Query & index parameters ——
 # —— FTS params (C++ binding) ——
@@ -152,6 +161,7 @@ __all__ = [
     "VectorSchema",
     "CollectionStats",
     # Parameters
+    "GroupResult",
     "Query",
     "VectorQuery",
     "Fts",

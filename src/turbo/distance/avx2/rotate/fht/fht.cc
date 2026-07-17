@@ -12,18 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#if defined(__AVX2__)
+// This file is compiled with per-file -march=core-avx2 (set in CMakeLists.txt)
+// so that AVX2 intrinsics are available. When the build toolchain cannot emit
+// AVX2 code, each function falls back to a no-op stub guarded by
+// #if defined(__AVX2__).
 
 #include "fht.h"
+#if defined(__AVX2__)
 #include <immintrin.h>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include "common/fht_common.h"
 
 namespace zvec::turbo::avx2 {
 
 void fht_flip_sign_avx2(const uint8_t *flip, float *data, size_t dim) {
+#if defined(__AVX2__)
   size_t simd_end = dim & ~31u;
   constexpr size_t kChunk = 32;
   const __m256i bit_select =
@@ -48,9 +55,15 @@ void fht_flip_sign_avx2(const uint8_t *flip, float *data, size_t dim) {
       data[i] = -data[i];
     }
   }
+#else
+  (void)flip;
+  (void)data;
+  (void)dim;
+#endif
 }
 
 void fht_kacs_walk_avx2(float *data, size_t len) {
+#if defined(__AVX2__)
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -71,9 +84,14 @@ void fht_kacs_walk_avx2(float *data, size_t len) {
   if (base != 0) {
     data[half] *= std::sqrt(2.0f);
   }
+#else
+  (void)data;
+  (void)len;
+#endif
 }
 
 void fht_inv_kacs_walk_avx2(float *data, size_t len) {
+#if defined(__AVX2__)
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -96,9 +114,14 @@ void fht_inv_kacs_walk_avx2(float *data, size_t len) {
     data[i] = (a + b) * 0.5f;
     data[i + offset] = (a - b) * 0.5f;
   }
+#else
+  (void)data;
+  (void)len;
+#endif
 }
 
 void fht_inplace_avx2(float *data, size_t n) {
+#if defined(__AVX2__)
   for (size_t len = 1; len < n; len <<= 1) {
     size_t step = len << 1;
     size_t simd_end = len & ~7u;
@@ -117,9 +140,14 @@ void fht_inplace_avx2(float *data, size_t n) {
       }
     }
   }
+#else
+  (void)data;
+  (void)n;
+#endif
 }
 
 void fht_vec_rescale_avx2(float *data, size_t n, float factor) {
+#if defined(__AVX2__)
   const __m256 fac = _mm256_set1_ps(factor);
   size_t simd_end = n & ~7u;
   for (size_t i = 0; i < simd_end; i += 8) {
@@ -130,8 +158,39 @@ void fht_vec_rescale_avx2(float *data, size_t n, float factor) {
   for (size_t i = simd_end; i < n; ++i) {
     data[i] *= factor;
   }
+#else
+  (void)data;
+  (void)n;
+  (void)factor;
+#endif
+}
+
+void fht_rotate_avx2(const float * /*in*/, float *out, size_t in_dim,
+                     size_t /*out_dim*/, void *ctx) {
+#if defined(__AVX2__)
+  static constexpr FhtPrimitives kPrim = {
+      fht_flip_sign_avx2, fht_inplace_avx2, fht_kacs_walk_avx2,
+      fht_inv_kacs_walk_avx2, fht_vec_rescale_avx2};
+  fht_rotate_impl(out, in_dim, ctx, kPrim);
+#else
+  (void)out;
+  (void)in_dim;
+  (void)ctx;
+#endif
+}
+
+void fht_unrotate_avx2(const float * /*in*/, float *out, size_t in_dim,
+                       size_t /*out_dim*/, void *ctx) {
+#if defined(__AVX2__)
+  static constexpr FhtPrimitives kPrim = {
+      fht_flip_sign_avx2, fht_inplace_avx2, fht_kacs_walk_avx2,
+      fht_inv_kacs_walk_avx2, fht_vec_rescale_avx2};
+  fht_unrotate_impl(out, in_dim, ctx, kPrim);
+#else
+  (void)out;
+  (void)in_dim;
+  (void)ctx;
+#endif
 }
 
 }  // namespace zvec::turbo::avx2
-
-#endif  // __AVX2__

@@ -17,12 +17,30 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <vector>
-#include <zvec/turbo/turbo.h>
+#include <string>
 #include "preprocessor/preprocessor.h"
 
 namespace zvec {
 namespace turbo {
+
+// FHT context passed to ISA-level rotate/unrotate via void*.
+// Layout (ISA code accesses by address, NOT by type):
+//   offset  0: size_t flip_offset   (bytes per round)
+//   offset  8: size_t trunc_dim     (largest power-of-2 <= in_dim)
+//   offset 16: float  fac           (1 / sqrt(trunc_dim))
+//   offset 20: uint8_t pad[4]       (explicit padding)
+//   offset 24: uint8_t flip[]       (4 * flip_offset bytes, trailing data)
+//
+// Allocated as a single block: malloc(sizeof(FhtCtx) + 4 * flip_offset).
+struct FhtCtx {
+  size_t flip_offset;
+  size_t trunc_dim;
+  float fac;
+  uint8_t pad_[4];
+  uint8_t flip[];  // trailing flexible array (C++ extension)
+};
+static_assert(offsetof(FhtCtx, flip) == 24, "FhtCtx flip offset must be 24");
+static_assert(sizeof(FhtCtx) == 24, "FhtCtx sizeof must be 24");
 
 // ============================================================================
 // FhtRotator - O(d log d) FHT-based Kac random rotation
@@ -65,9 +83,11 @@ class FhtRotator : public Preprocessor {
   int deserialize(const void *data, size_t len) override;
 
   //! Rotator type tag (kFht = 1).
-  RotatorType rotator_type() const {
-    return RotatorType::kFht;
+  RotateType rotate_type() const {
+    return RotateType::kFht;
   }
+
+  ~FhtRotator() override;
 
  private:
   FhtRotator() = default;
@@ -78,24 +98,14 @@ class FhtRotator : public Preprocessor {
   int in_dim_{0};
   int out_dim_{0};
 
-  //! Packed flip-sign bits: 4 rounds, each ceil(in_dim / 8) bytes.
-  std::vector<uint8_t> flip_;
-
-  //! Bytes per round: ceil(in_dim / 8).
+  //! Bytes per round: ceil(in_dim / 8). Kept for serialization.
   size_t flip_offset_{0};
 
-  //! Largest power of 2 <= in_dim (used for FHT length).
-  size_t trunc_dim_{0};
+  //! ISA-dispatched rotate/unrotate kernels.
+  RotatorKernels kernels_{};
 
-  //! Rescale factor: 1 / sqrt(trunc_dim).
-  float fac_{0};
-
-  //! ISA-dispatched FHT kernels (cached at construction time).
-  FhtFlipSignFunc flip_sign_fn_{nullptr};
-  FhtKacsWalkFunc kacs_walk_fn_{nullptr};
-  FhtKacsWalkFunc inv_kacs_walk_fn_{nullptr};
-  FhtInplaceFunc inplace_fn_{nullptr};
-  FhtVecRescaleFunc rescale_fn_{nullptr};
+  //! FHT state (flip_offset, trunc_dim, fac, flip[]) -- single allocation.
+  FhtCtx *fht_ctx_{nullptr};
 
   static constexpr size_t kByteLen = 8;
 };

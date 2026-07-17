@@ -16,6 +16,7 @@
 #include <iostream>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
 #include "zvec/core/framework/index_factory.h"

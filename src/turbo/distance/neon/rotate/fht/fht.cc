@@ -12,18 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#if defined(__ARM_NEON) && defined(__aarch64__)
-
 #include "fht.h"
+#if defined(__ARM_NEON) && defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <arm_neon.h>
+#include "common/fht_common.h"
+#include "scalar/rotate/fht/fht.h"
 
 namespace zvec::turbo::neon {
 
 void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
+#if defined(__ARM_NEON) && defined(__aarch64__)
   const uint32x4_t sign_bit = vdupq_n_u32(0x80000000u);
   size_t simd_end = dim & ~3u;
   size_t flip_bytes = (dim + 7) / 8;
@@ -52,9 +55,15 @@ void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
       data[i] = -data[i];
     }
   }
+#else
+  (void)flip;
+  (void)data;
+  (void)dim;
+#endif
 }
 
 void fht_kacs_walk_neon(float *data, size_t len) {
+#if defined(__ARM_NEON) && defined(__aarch64__)
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -75,9 +84,14 @@ void fht_kacs_walk_neon(float *data, size_t len) {
   if (base != 0) {
     data[half] *= std::sqrt(2.0f);
   }
+#else
+  (void)data;
+  (void)len;
+#endif
 }
 
 void fht_inv_kacs_walk_neon(float *data, size_t len) {
+#if defined(__ARM_NEON) && defined(__aarch64__)
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -99,9 +113,14 @@ void fht_inv_kacs_walk_neon(float *data, size_t len) {
     data[i] = (a + b) * 0.5f;
     data[i + offset] = (a - b) * 0.5f;
   }
+#else
+  (void)data;
+  (void)len;
+#endif
 }
 
 void fht_vec_rescale_neon(float *data, size_t n, float factor) {
+#if defined(__ARM_NEON) && defined(__aarch64__)
   const float32x4_t fac = vdupq_n_f32(factor);
   size_t simd_end = n & ~3u;
   for (size_t i = 0; i < simd_end; i += 4) {
@@ -112,8 +131,39 @@ void fht_vec_rescale_neon(float *data, size_t n, float factor) {
   for (size_t i = simd_end; i < n; ++i) {
     data[i] *= factor;
   }
+#else
+  (void)data;
+  (void)n;
+  (void)factor;
+#endif
+}
+
+void fht_rotate_neon(const float * /*in*/, float *out, size_t in_dim,
+                     size_t /*out_dim*/, void *ctx) {
+#if defined(__ARM_NEON) && defined(__aarch64__)
+  static constexpr FhtPrimitives kPrim = {
+      fht_flip_sign_neon, scalar::fht_inplace, fht_kacs_walk_neon,
+      fht_inv_kacs_walk_neon, fht_vec_rescale_neon};
+  fht_rotate_impl(out, in_dim, ctx, kPrim);
+#else
+  (void)out;
+  (void)in_dim;
+  (void)ctx;
+#endif
+}
+
+void fht_unrotate_neon(const float * /*in*/, float *out, size_t in_dim,
+                       size_t /*out_dim*/, void *ctx) {
+#if defined(__ARM_NEON) && defined(__aarch64__)
+  static constexpr FhtPrimitives kPrim = {
+      fht_flip_sign_neon, scalar::fht_inplace, fht_kacs_walk_neon,
+      fht_inv_kacs_walk_neon, fht_vec_rescale_neon};
+  fht_unrotate_impl(out, in_dim, ctx, kPrim);
+#else
+  (void)out;
+  (void)in_dim;
+  (void)ctx;
+#endif
 }
 
 }  // namespace zvec::turbo::neon
-
-#endif  // __ARM_NEON && __aarch64__

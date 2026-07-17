@@ -35,4 +35,13 @@ void fht_inplace(float *data, size_t n);
 //! Element-wise rescale: data[i] *= factor.
 void fht_vec_rescale(float *data, size_t n, float factor);
 
+//! Forward FHT rotation (compose flip -> FHT -> rescale, 4 rounds).
+//! ctx is a FhtCtx* defined in preprocessor/fht_rotator/fht_rotator.h.
+void fht_rotate(const float *in, float *out, size_t in_dim, size_t out_dim,
+                void *ctx);
+
+//! Inverse FHT rotation (undo 4 rounds in reverse order).
+void fht_unrotate(const float *in, float *out, size_t in_dim, size_t out_dim,
+                  void *ctx);
+
 }  // namespace zvec::turbo::scalar

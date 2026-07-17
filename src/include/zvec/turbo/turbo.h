@@ -35,11 +35,12 @@ using QueryPreprocessFunc =
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
 
-// FHT primitive function pointer types.
-using FhtFlipSignFunc = void (*)(const uint8_t *flip, float *data, size_t dim);
-using FhtKacsWalkFunc = void (*)(float *data, size_t len);
-using FhtInplaceFunc = void (*)(float *data, size_t n);
-using FhtVecRescaleFunc = void (*)(float *data, size_t n, float factor);
+// Generic rotate / unrotate function pointer types.
+// ctx is an opaque context (e.g. FhtCtx*) managed by the caller.
+using RotateFunc = void (*)(const float *in, float *out, size_t in_dim,
+                            size_t out_dim, void *ctx);
+using UnrotateFunc = void (*)(const float *in, float *out, size_t in_dim,
+                              size_t out_dim, void *ctx);
 
 // PQ kernel function pointer types.
 //
@@ -64,13 +65,10 @@ using PqBatchAdcFunc = void (*)(const void **candidates, const void *lut,
                                 size_t num, size_t num_chunk,
                                 float *out);
 
-// Aggregate of all FHT kernels needed by FhtRotator, dispatched by ISA.
-struct FhtKernels {
-  FhtFlipSignFunc flip_sign;
-  FhtKacsWalkFunc kacs_walk;
-  FhtKacsWalkFunc inv_kacs_walk;
-  FhtInplaceFunc inplace;
-  FhtVecRescaleFunc rescale;
+// ISA-dispatched rotate/unrotate kernels.
+struct RotatorKernels {
+  RotateFunc rotate = nullptr;
+  UnrotateFunc unrotate = nullptr;
 };
 
 // data_type selects the code packing layout:
@@ -105,6 +103,10 @@ enum class QuantizeType {
   kFp32,
   kPQ,
   kRabit
+};
+
+enum class RotateType : uint16_t {
+  kFht = 1,  //!< O(d log d) FHT-based Kac random rotation
 };
 
 enum class CpuArchType {
@@ -143,8 +145,9 @@ QueryPreprocessFunc get_query_preprocess_func(
 // interface can grow to cover other output types (e.g. fp16) in the future.
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 
-// Returns all FHT kernels dispatched for the current CPU.
-FhtKernels get_fht_kernels(CpuArchType cpu_arch_type = CpuArchType::kAuto);
+// Returns rotator kernels dispatched for the current CPU.
+RotatorKernels get_rotator_kernels(
+    RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 // Returns all PQ kernels dispatched for the given data_type, quantize_type
 // and CPU arch.

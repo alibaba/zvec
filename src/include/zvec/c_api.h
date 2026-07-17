@@ -2149,21 +2149,21 @@ ZVEC_EXPORT uint32_t ZVEC_CALL zvec_group_by_vector_query_get_group_count(
     const zvec_group_by_vector_query_t *query);
 
 /**
- * @brief Set group topk
+ * @brief Set the maximum number of results per group
  * @param query Group by vector query pointer
- * @param topk Number of results per group
+ * @param topk_per_group Number of results per group
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_group_by_vector_query_set_group_topk(zvec_group_by_vector_query_t *query,
-                                          uint32_t topk);
+zvec_group_by_vector_query_set_topk_per_group(
+    zvec_group_by_vector_query_t *query, uint32_t topk_per_group);
 
 /**
- * @brief Get group topk
+ * @brief Get the maximum number of results per group
  * @param query Group by vector query pointer
  * @return uint32_t Number of results per group
  */
-ZVEC_EXPORT uint32_t ZVEC_CALL zvec_group_by_vector_query_get_group_topk(
+ZVEC_EXPORT uint32_t ZVEC_CALL zvec_group_by_vector_query_get_topk_per_group(
     const zvec_group_by_vector_query_t *query);
 
 /**

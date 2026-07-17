@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/pattern/factory.h>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_cluster.h>
@@ -29,6 +28,12 @@
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/framework/index_streamer.h>
 #include <zvec/core/framework/index_trainer.h>
+
+namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
+}  // namespace zvec
 
 namespace zvec {
 namespace core {
