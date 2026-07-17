@@ -35,9 +35,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX2}"
         )
 
-        # AVX512 (avx512_vnni, avx512/fht, and turbo.cc dispatch all use AVX512 march)
+        # AVX512 (avx512_vnni and avx512/fht both use AVX512 march)
         file(GLOB_RECURSE AVX512_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/*.cc)
-        list(APPEND AVX512_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/turbo.cc)
         set_source_files_properties(
             ${AVX512_SRCS}
             PROPERTIES
