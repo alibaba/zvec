@@ -497,17 +497,17 @@ void LinuxAlignedFileReader::open(const std::string &fname) {
   // and virtual-address usage scale with the size of the index.
   if (this->file_desc != -1) {
     if (::fcntl(this->file_desc, F_NOCACHE, 1) == -1) {
-      LOG_WARN("fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
-               "the page cache",
-               fname.c_str(), errno, ::strerror(errno));
+      LOG_WARN(
+          "fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
+          "the page cache",
+          fname.c_str(), errno, ::strerror(errno));
     } else {
-      LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s",
-               fname.c_str());
+      LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s", fname.c_str());
     }
 
     if (::fcntl(this->file_desc, F_RDAHEAD, 0) == -1) {
-      LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)", fname.c_str(),
-               errno, ::strerror(errno));
+      LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)",
+               fname.c_str(), errno, ::strerror(errno));
     }
   }
 #endif
