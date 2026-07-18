@@ -21,6 +21,7 @@
 #include <ailego/io/io_backend_def.h>
 #include <zvec/core/framework/index_logger.h>
 #if defined(__APPLE__) || defined(__MACH__)
+#include <aio.h>
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -37,6 +38,8 @@ typedef struct iocb iocb_t;
 // Ensures the I/O backend selection is logged exactly once per process,
 // regardless of which entry point (setup_io_ctx or register_thread)
 // triggers it first.
+static std::once_flag g_io_backend_log_once;
+#elif defined(__APPLE__) || defined(__MACH__)
 static std::once_flag g_io_backend_log_once;
 #endif
 
@@ -57,8 +60,12 @@ int setup_io_ctx(IOContext &ctx) {
   int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx);
   return ret;
 #elif defined(__APPLE__) || defined(__MACH__)
-  // Create a kqueue for this context. On macOS the kqueue is used to
-  // monitor file descriptor readiness for async-style I/O.
+  std::call_once(g_io_backend_log_once, [] {
+    LOG_INFO(
+        "DiskAnn I/O backend: macOS POSIX AIO with kqueue completion");
+  });
+  // Each macOS I/O context owns a kqueue which receives EVFILT_AIO
+  // completion notifications for POSIX AIO requests.
   int kq = ::kqueue();
   if (kq == -1) {
     LOG_ERROR("kqueue() failed in setup_io_ctx; errno=%d, %s", errno,
@@ -110,101 +117,207 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
 }
 
 #if defined(__APPLE__) || defined(__MACH__)
-// Execute batch I/O on macOS using kqueue to monitor file descriptor
-// readiness and pread for actual data transfer.
+// POSIX AIO on Darwin accepts a maximum of AIO_LISTIO_MAX requests in the
+// interfaces used to wait for a batch. Keeping the same bound here also avoids
+// exhausting the process-wide AIO request limit when several search threads
+// run concurrently.
+static constexpr size_t kMacAioBatchSize = AIO_LISTIO_MAX;
+
+static bool validate_aio_result(int aio_err, int64_t result,
+                                const AlignedRead &req) {
+  if (aio_err == 0 && result == static_cast<int64_t>(req.len)) {
+    return true;
+  }
+
+  LOG_WARN(
+      "macOS aio request failed; aio_error=%d, %s, result=%ld, "
+      "expected=%lu, offset=%lu",
+      aio_err, aio_err == 0 ? "success" : ::strerror(aio_err), (long)result,
+      (unsigned long)req.len, (unsigned long)req.offset);
+  return false;
+}
+
+// Once the kqueue has been closed, its AIO knotes are detached and the normal
+// POSIX aio_error()/aio_return() cleanup path is safe again. This keeps live
+// requests and destination buffers from escaping the call if kevent64 fails.
+static bool drain_aio_after_kqueue_failure(
+    std::vector<struct aiocb> &cbs, const std::vector<AlignedRead> &read_reqs,
+    size_t req_begin, const std::vector<uint8_t> &submitted,
+    std::vector<uint8_t> &completed, size_t submitted_count) {
+  size_t completed_count = 0;
+  bool all_ok = true;
+  for (size_t i = 0; i < cbs.size(); ++i) {
+    if (submitted[i] != 0 && completed[i] != 0) {
+      ++completed_count;
+    }
+  }
+
+  while (completed_count < submitted_count) {
+    bool made_progress = false;
+    std::vector<const struct aiocb *> pending;
+    pending.reserve(submitted_count - completed_count);
+
+    for (size_t i = 0; i < cbs.size(); ++i) {
+      if (submitted[i] == 0 || completed[i] != 0) {
+        continue;
+      }
+
+      int aio_err = ::aio_error(&cbs[i]);
+      if (aio_err == EINPROGRESS) {
+        pending.push_back(&cbs[i]);
+        continue;
+      }
+
+      ssize_t result = ::aio_return(&cbs[i]);
+      all_ok = validate_aio_result(aio_err, result,
+                                   read_reqs[req_begin + i]) &&
+               all_ok;
+      completed[i] = 1;
+      ++completed_count;
+      made_progress = true;
+    }
+
+    if (completed_count == submitted_count || made_progress) {
+      continue;
+    }
+
+    int ret;
+    do {
+      ret = ::aio_suspend(pending.data(), static_cast<int>(pending.size()),
+                          nullptr);
+    } while (ret == -1 && errno == EINTR);
+    if (ret == -1) {
+      LOG_ERROR("aio_suspend failed while draining requests; errno=%d, %s",
+                errno, ::strerror(errno));
+      struct timespec pause = {0, 1000000};  // 1 ms
+      ::nanosleep(&pause, nullptr);
+      all_ok = false;
+    }
+  }
+
+  return all_ok;
+}
+
+// Submit a batch through POSIX aio_read(). SIGEV_KEVENT makes XNU attach an
+// EVFILT_AIO one-shot event to the supplied kqueue for each request. kqueue is
+// therefore used for completion notification, not regular-file readiness.
 //
-// On macOS, regular file descriptors are almost always "readable", so
-// kqueue's primary value here is providing the same async I/O interface
-// as Linux's libaio. For each read request we:
-//   1. Attempt a non-blocking pread (via O_NONBLOCK on the fd).
-//   2. If EAGAIN, wait on kqueue for EVFILT_READ readiness, then retry.
-//   3. Fall back to blocking pread if kqueue encounters an error.
-//
-// The kqueue fd is passed in as the IOContext. If no valid kqueue is
-// available, we fall back to plain blocking pread.
-static int execute_io_kqueue(int kq, int fd,
-                             std::vector<AlignedRead> &read_reqs) {
-  // If no kqueue available, fall back to blocking pread.
+// Darwin's EVFILT_AIO filter is also the completion reaper: fetching the event
+// removes the request from the process AIO done queue. The error and return
+// values are carried in kevent64_s::ext[0] and ext[1], respectively. Calling
+// aio_error()/aio_return() after fetching the event would incorrectly report
+// EINVAL because the kernel has already released that request.
+static int execute_io_aio_kqueue(int &kq, int fd,
+                                 std::vector<AlignedRead> &read_reqs,
+                                 uint64_t n_retries) {
   if (kq < 0) {
     return execute_io_pread(fd, read_reqs);
   }
 
-  // Register the file descriptor with the kqueue for read events.
-  // EV_CLEAR gives edge-triggered semantics so we only get notified
-  // when new data becomes available.
-  struct kevent ke;
-  EV_SET(&ke, fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, nullptr);
+  for (size_t req_begin = 0; req_begin < read_reqs.size();
+       req_begin += kMacAioBatchSize) {
+    size_t n_ops =
+        std::min(kMacAioBatchSize, read_reqs.size() - req_begin);
+    std::vector<struct aiocb> cbs(n_ops);
+    std::vector<uint8_t> submitted(n_ops, 0);
+    std::vector<uint8_t> completed(n_ops, 0);
+    size_t submitted_count = 0;
+    bool submission_ok = true;
 
-  for (auto &req : read_reqs) {
-    while (true) {
-      ssize_t bytes_read = ::pread(fd, req.buf, req.len, req.offset);
+    for (size_t i = 0; i < n_ops; ++i) {
+      std::memset(&cbs[i], 0, sizeof(cbs[i]));
+      cbs[i].aio_fildes = fd;
+      cbs[i].aio_offset = static_cast<off_t>(read_reqs[req_begin + i].offset);
+      cbs[i].aio_buf = read_reqs[req_begin + i].buf;
+      cbs[i].aio_nbytes = read_reqs[req_begin + i].len;
+      cbs[i].aio_reqprio = 0;
+      cbs[i].aio_lio_opcode = LIO_READ;
+      cbs[i].aio_sigevent.sigev_notify = SIGEV_KEVENT;
+      cbs[i].aio_sigevent.sigev_signo = kq;
+      cbs[i].aio_sigevent.sigev_value.sival_ptr = &cbs[i];
 
-      if (bytes_read > 0) {
-        // Successfully read data; verify full read.
-        if ((size_t)bytes_read != req.len) {
-          // Partial read — retry for the remaining bytes.
-          // Update offset and buffer to read the rest.
-          char *buf_ptr = static_cast<char *>(req.buf) + bytes_read;
-          uint64_t new_offset = req.offset + bytes_read;
-          size_t remaining = req.len - bytes_read;
-          while (remaining > 0) {
-            ssize_t n = ::pread(fd, buf_ptr, remaining, new_offset);
-            if (n < 0) {
-              if (errno == EINTR) continue;
-              LOG_ERROR("pread retry failed; errno=%d, %s", errno,
-                        ::strerror(errno));
-              return IndexError_Runtime;
-            }
-            if (n == 0) break;
-            buf_ptr += n;
-            new_offset += n;
-            remaining -= n;
+      uint64_t tries = 0;
+      while (::aio_read(&cbs[i]) == -1) {
+        int submit_errno = errno;
+        if ((submit_errno == EINTR || submit_errno == EAGAIN) &&
+            tries < n_retries) {
+          ++tries;
+          continue;
+        }
+        LOG_WARN(
+            "aio_read submission failed; errno=%d, %s, offset=%lu, "
+            "len=%lu; falling back to pread after draining submitted I/O",
+            submit_errno, ::strerror(submit_errno),
+            (unsigned long)read_reqs[req_begin + i].offset,
+            (unsigned long)read_reqs[req_begin + i].len);
+        submission_ok = false;
+        break;
+      }
+      if (!submission_ok) {
+        break;
+      }
+      submitted[i] = 1;
+      ++submitted_count;
+    }
+
+    size_t completed_count = 0;
+    bool all_ok = true;
+    bool kqueue_ok = true;
+    while (completed_count < submitted_count) {
+      struct kevent64_s events[AIO_LISTIO_MAX];
+      int n_events = ::kevent64(kq, nullptr, 0, events,
+                                static_cast<int>(n_ops), 0, nullptr);
+      if (n_events == -1) {
+        if (errno == EINTR) {
+          continue;
+        }
+        LOG_ERROR("kevent failed while waiting for AIO; errno=%d, %s", errno,
+                  ::strerror(errno));
+        kqueue_ok = false;
+        break;
+      }
+
+      for (int event_index = 0; event_index < n_events; ++event_index) {
+        size_t request_index = n_ops;
+        for (size_t i = 0; i < n_ops; ++i) {
+          if (events[event_index].ident ==
+              reinterpret_cast<uintptr_t>(&cbs[i])) {
+            request_index = i;
+            break;
           }
-          if (remaining > 0) {
-            LOG_ERROR("pread short read after retry; remaining=%zu", remaining);
-            return IndexError_Runtime;
-          }
         }
-        break;  // Success, move to next request.
-      }
 
-      if (bytes_read == 0) {
-        // EOF — should not happen for a valid index file.
-        LOG_ERROR("pread returned 0 (EOF); offset=%lu, len=%lu",
-                  (unsigned long)req.offset, (unsigned long)req.len);
-        return IndexError_Runtime;
-      }
-
-      // bytes_read == -1, error
-      if (errno == EINTR) {
-        continue;  // Retry on signal.
-      }
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        // Data not ready — wait on kqueue for readability.
-        struct kevent events[1];
-        struct timespec ts;
-        ts.tv_sec = 5;  // 5 second timeout as a safety net.
-        ts.tv_nsec = 0;
-        int n_ev = ::kevent(kq, &ke, 1, events, 1, &ts);
-        if (n_ev < 0) {
-          if (errno == EINTR) continue;
-          // kqueue error — fall back to blocking pread for this request.
-          LOG_WARN("kevent failed; errno=%d, %s, falling back to pread", errno,
-                   ::strerror(errno));
-          return execute_io_pread(fd, read_reqs);
+        if (request_index == n_ops || submitted[request_index] == 0 ||
+            completed[request_index] != 0 ||
+            events[event_index].filter != EVFILT_AIO) {
+          LOG_WARN("ignoring an unknown or duplicate macOS AIO event");
+          continue;
         }
-        if (n_ev == 0) {
-          // Timeout — fall back to blocking pread.
-          LOG_WARN("kqueue timeout, falling back to pread");
-          return execute_io_pread(fd, read_reqs);
-        }
-        // Event triggered — retry pread.
-        continue;
-      }
 
-      // Other error — fall back to blocking pread.
-      LOG_ERROR("pread failed; errno=%d, %s, falling back to pread", errno,
-                ::strerror(errno));
+        int aio_err = static_cast<int>(events[event_index].ext[0]);
+        int64_t result = static_cast<int64_t>(events[event_index].ext[1]);
+        const AlignedRead &req = read_reqs[req_begin + request_index];
+        all_ok = validate_aio_result(aio_err, result, req) && all_ok;
+        completed[request_index] = 1;
+        ++completed_count;
+      }
+      if (!kqueue_ok) {
+        break;
+      }
+    }
+
+    if (!kqueue_ok) {
+      // Detach the EVFILT_AIO knotes before using aio_return() to reap the
+      // requests through the POSIX API, and disable AIO for this context.
+      ::close(kq);
+      kq = -1;
+      all_ok = drain_aio_after_kqueue_failure(
+                   cbs, read_reqs, req_begin, submitted, completed,
+                   submitted_count) &&
+               all_ok;
+    }
+
+    if (!submission_ok || !kqueue_ok || !all_ok) {
       return execute_io_pread(fd, read_reqs);
     }
   }
@@ -213,7 +326,7 @@ static int execute_io_kqueue(int kq, int fd,
 }
 #endif  // __APPLE__
 
-int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
+int execute_io(IOContext &ctx, int fd, std::vector<AlignedRead> &read_reqs,
                uint64_t n_retries = 0) {
 #if (defined(__linux) || defined(__linux__))
   if (ailego::IOBackend::Instance().available() ==
@@ -295,9 +408,9 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
 
   return 0;
 #elif defined(__APPLE__) || defined(__MACH__)
-  // On macOS, use kqueue-based I/O. The IOContext (ctx) is a kqueue fd.
-  (void)n_retries;
-  return execute_io_kqueue(ctx, fd, read_reqs);
+  // On macOS, submit POSIX AIO and use the IOContext kqueue for EVFILT_AIO
+  // completion notifications.
+  return execute_io_aio_kqueue(ctx, fd, read_reqs, n_retries);
 #else
   (void)ctx;
   (void)n_retries;
@@ -384,7 +497,11 @@ void LinuxAlignedFileReader::register_thread() {
     LOG_ERROR("kqueue() failed in register_thread; errno=%d, %s", errno,
               ::strerror(errno));
   } else {
-    LOG_INFO("allocating kqueue ctx: %d", kq);
+    std::call_once(g_io_backend_log_once, [] {
+      LOG_INFO(
+          "DiskAnn I/O backend: macOS POSIX AIO with kqueue completion");
+    });
+    LOG_INFO("allocating POSIX AIO kqueue ctx: %d", kq);
     ctx = kq;
     ctx_map[thread_id] = ctx;
   }
