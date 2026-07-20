@@ -83,12 +83,6 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
       get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
                               QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // Metric-aware batch distance: used for search-side LUT computation
-  // (quantize_query) and SDC dist_table.  For IP/Cosine this computes
-  // inner-product-based distances instead of L2.
-  fp32_batch_fn_ = get_batch_distance_func(
-      mt, DataType::kFp32, QuantizeType::kDefault, CpuArchType::kAuto);
-
   // For Cosine: fall back to IP for the metric-aware batch function,
   // because cosine = normalize + IP.  The normalization is applied
   // explicitly in quantize_query.
@@ -96,13 +90,11 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
     fp32_batch_fn_ =
         get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
                                 QuantizeType::kDefault, CpuArchType::kAuto);
-  }
-
-  // For Cosine: reserve extra space to store the L2 norm (one float)
-  // alongside each PQ code, enabling dequantize() to rescale.
-  if (meta_.metric_name() == "Cosine") {
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
+  } else {
+    fp32_batch_fn_ = get_batch_distance_func(
+        mt, DataType::kFp32, QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
   // Read optional training params (aligned with multi_chunk_cluster)
