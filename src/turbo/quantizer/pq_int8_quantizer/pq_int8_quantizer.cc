@@ -699,15 +699,17 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
       get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
                               QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // Metric-aware batch distance for search LUT.  For Cosine, use IP
-  // (normalization is applied explicitly in quantize_query).
-  fp32_batch_fn_ = get_batch_distance_func(
-      metric_from_name(meta_.metric_name()), DataType::kFp32,
-      QuantizeType::kDefault, CpuArchType::kAuto);
+  // Metric-aware batch distance for search LUT.
   if (meta_.metric_name() == "Cosine") {
     fp32_batch_fn_ =
         get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
                                 QuantizeType::kDefault, CpuArchType::kAuto);
+    extra_meta_size_ = kExtraMetaSizeCosine;
+    meta_.set_extra_meta_size(extra_meta_size_);
+  } else {
+    fp32_batch_fn_ = get_batch_distance_func(
+        metric_from_name(meta_.metric_name()), DataType::kFp32,
+        QuantizeType::kDefault, CpuArchType::kAuto);
   }
 
   // Pre-build centroid pointer cache for fast encode/search.
