@@ -103,6 +103,15 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
+  // Zero-mean centering is only mathematically valid for SquaredEuclidean
+  // (translation-invariant).  IP, Cosine, MipsSquaredEuclidean all break.
+  if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean") {
+    LOG_WARN("PqInt8Quantizer: use_zero_mean is incompatible with metric '%s', "
+             "disabling centering",
+             meta_.metric_name().c_str());
+    use_zero_mean_ = false;
+  }
+
   meta_.set_meta(IndexMeta::DataType::DT_FP32, d);
   return 0;
 }
