@@ -134,8 +134,6 @@ class CollectionImpl : public Collection {
   Result<std::string> DebugGetHnswStorageMode(
       const std::string &column_name) const override;
 
-  Result<std::string> DebugGetIoBackendType() const override;
-
  private:
   void prepare_schema();
 
@@ -1833,19 +1831,6 @@ Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
 
   return tl::make_unexpected(
       Status::NotFound("No HNSW index found for column '", column_name, "'"));
-}
-
-Result<std::string> CollectionImpl::DebugGetIoBackendType() const {
-  const auto type = ailego::current_io_backend_type();
-  switch (type) {
-    case ailego::IOBackendType::kLibAio:
-      return "libaio";
-    case ailego::IOBackendType::kPosixAio:
-      return "posix_aio";
-    case ailego::IOBackendType::kPread:
-      return "sync_pread";
-  }
-  return "unknown";
 }
 
 Status CollectionImpl::recovery() {

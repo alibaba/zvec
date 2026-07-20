@@ -20,6 +20,10 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 // Platform-specific headers
 #ifdef _WIN32
 #include <windows.h>
@@ -139,7 +143,7 @@ void test_io_backend_functions(void) {
 
   TEST_ASSERT(name != NULL);
   TEST_ASSERT(description != NULL);
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
   TEST_ASSERT(type == ZVEC_IO_BACKEND_TYPE_POSIX_AIO);
   TEST_ASSERT(strcmp(name, "posix_aio") == 0);
 #elif defined(__linux__) || defined(__linux)

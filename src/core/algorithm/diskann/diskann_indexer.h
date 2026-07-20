@@ -92,7 +92,7 @@ class DiskAnnIndexer {
   PQTable::Pointer pq_table_;
 
   IOContext init_ctx_{
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
       -1
 #else
       0

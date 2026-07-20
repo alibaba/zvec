@@ -20,7 +20,7 @@
 #include <iostream>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/core/framework/index_logger.h>
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
 #include <aio.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -39,7 +39,7 @@ typedef struct iocb iocb_t;
 // regardless of which entry point (setup_io_ctx or register_thread)
 // triggers it first.
 static std::once_flag g_io_backend_log_once;
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
 static std::once_flag g_io_backend_log_once;
 #endif
 
@@ -59,18 +59,20 @@ int setup_io_ctx(IOContext &ctx) {
   }
   int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx);
   return ret;
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
   std::call_once(g_io_backend_log_once, [] {
-    LOG_INFO(
-        "DiskAnn I/O backend: macOS POSIX AIO with kqueue completion");
+    LOG_INFO("DiskAnn I/O backend: macOS POSIX AIO with kqueue completion");
   });
   // Each macOS I/O context owns a kqueue which receives EVFILT_AIO
   // completion notifications for POSIX AIO requests.
+  ctx = -1;
   int kq = ::kqueue();
   if (kq == -1) {
-    LOG_ERROR("kqueue() failed in setup_io_ctx; errno=%d, %s", errno,
-              ::strerror(errno));
-    return IndexError_Runtime;
+    LOG_WARN(
+        "kqueue() failed in setup_io_ctx; errno=%d, %s; falling back to "
+        "synchronous pread",
+        errno, ::strerror(errno));
+    return 0;
   }
   ctx = kq;
   return 0;
@@ -87,7 +89,7 @@ int destroy_io_ctx(IOContext &ctx) {
   }
   int ret = LibAioLoader::Instance().io_destroy(ctx);
   return ret;
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
   if (ctx >= 0) {
     ::close(ctx);
     ctx = -1;
@@ -98,7 +100,11 @@ int destroy_io_ctx(IOContext &ctx) {
 #endif
 }
 
-static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
+static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs,
+                            ailego::IOBackendType *used_backend = nullptr) {
+  if (used_backend != nullptr) {
+    *used_backend = ailego::IOBackendType::kPread;
+  }
   for (auto &req : read_reqs) {
     ssize_t bytes_read = ::pread(fd, req.buf, req.len, req.offset);
     if (bytes_read < 0) {
@@ -116,7 +122,7 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
   return 0;
 }
 
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
 // POSIX AIO on Darwin accepts a maximum of AIO_LISTIO_MAX requests in the
 // interfaces used to wait for a batch. Keeping the same bound here also avoids
 // exhausting the process-wide AIO request limit when several search threads
@@ -169,8 +175,7 @@ static bool drain_aio_after_kqueue_failure(
       }
 
       ssize_t result = ::aio_return(&cbs[i]);
-      all_ok = validate_aio_result(aio_err, result,
-                                   read_reqs[req_begin + i]) &&
+      all_ok = validate_aio_result(aio_err, result, read_reqs[req_begin + i]) &&
                all_ok;
       completed[i] = 1;
       ++completed_count;
@@ -209,15 +214,15 @@ static bool drain_aio_after_kqueue_failure(
 // EINVAL because the kernel has already released that request.
 static int execute_io_aio_kqueue(int &kq, int fd,
                                  std::vector<AlignedRead> &read_reqs,
-                                 uint64_t n_retries) {
+                                 uint64_t n_retries,
+                                 ailego::IOBackendType *used_backend) {
   if (kq < 0) {
-    return execute_io_pread(fd, read_reqs);
+    return execute_io_pread(fd, read_reqs, used_backend);
   }
 
   for (size_t req_begin = 0; req_begin < read_reqs.size();
        req_begin += kMacAioBatchSize) {
-    size_t n_ops =
-        std::min(kMacAioBatchSize, read_reqs.size() - req_begin);
+    size_t n_ops = std::min(kMacAioBatchSize, read_reqs.size() - req_begin);
     std::vector<struct aiocb> cbs(n_ops);
     std::vector<uint8_t> submitted(n_ops, 0);
     std::vector<uint8_t> completed(n_ops, 0);
@@ -265,8 +270,8 @@ static int execute_io_aio_kqueue(int &kq, int fd,
     bool kqueue_ok = true;
     while (completed_count < submitted_count) {
       struct kevent64_s events[AIO_LISTIO_MAX];
-      int n_events = ::kevent64(kq, nullptr, 0, events,
-                                static_cast<int>(n_ops), 0, nullptr);
+      int n_events = ::kevent64(kq, nullptr, 0, events, static_cast<int>(n_ops),
+                                0, nullptr);
       if (n_events == -1) {
         if (errno == EINTR) {
           continue;
@@ -311,27 +316,31 @@ static int execute_io_aio_kqueue(int &kq, int fd,
       // requests through the POSIX API, and disable AIO for this context.
       ::close(kq);
       kq = -1;
-      all_ok = drain_aio_after_kqueue_failure(
-                   cbs, read_reqs, req_begin, submitted, completed,
-                   submitted_count) &&
-               all_ok;
+      all_ok =
+          drain_aio_after_kqueue_failure(cbs, read_reqs, req_begin, submitted,
+                                         completed, submitted_count) &&
+          all_ok;
     }
 
     if (!submission_ok || !kqueue_ok || !all_ok) {
-      return execute_io_pread(fd, read_reqs);
+      return execute_io_pread(fd, read_reqs, used_backend);
     }
   }
 
+  if (used_backend != nullptr) {
+    *used_backend = ailego::IOBackendType::kPosixAio;
+  }
   return 0;
 }
 #endif  // __APPLE__
 
 int execute_io(IOContext &ctx, int fd, std::vector<AlignedRead> &read_reqs,
-               uint64_t n_retries = 0) {
+               uint64_t n_retries = 0,
+               ailego::IOBackendType *used_backend = nullptr) {
 #if (defined(__linux) || defined(__linux__))
   if (ailego::IOBackend::Instance().available() ==
       ailego::IOBackendType::kPread) {
-    return execute_io_pread(fd, read_reqs);
+    return execute_io_pread(fd, read_reqs, used_backend);
   }
   uint64_t iters = DiskAnnUtil::div_round_up(read_reqs.size(), MAX_EVENTS);
 
@@ -368,7 +377,7 @@ int execute_io(IOContext &ctx, int fd, std::vector<AlignedRead> &read_reqs,
           "io_submit failed; returned: %d, expected=%lu. falling back to "
           "pread",
           ret, n_ops);
-      return execute_io_pread(fd, read_reqs);
+      return execute_io_pread(fd, read_reqs, used_backend);
     }
 
     // Phase 2: io_getevents with retry (never re-submits).
@@ -387,7 +396,7 @@ int execute_io(IOContext &ctx, int fd, std::vector<AlignedRead> &read_reqs,
           "io_getevents failed; returned: %d, expected=%lu, errno=%d, %s, "
           "falling back to pread",
           ret, n_ops, errno, ::strerror(-ret));
-      return execute_io_pread(fd, read_reqs);
+      return execute_io_pread(fd, read_reqs, used_backend);
     }
 
     // Phase 3: verify each completed read (res must equal requested length).
@@ -402,19 +411,22 @@ int execute_io(IOContext &ctx, int fd, std::vector<AlignedRead> &read_reqs,
       }
     }
     if (!all_ok) {
-      return execute_io_pread(fd, read_reqs);
+      return execute_io_pread(fd, read_reqs, used_backend);
     }
   }
 
+  if (used_backend != nullptr) {
+    *used_backend = ailego::IOBackendType::kLibAio;
+  }
   return 0;
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
   // On macOS, submit POSIX AIO and use the IOContext kqueue for EVFILT_AIO
   // completion notifications.
-  return execute_io_aio_kqueue(ctx, fd, read_reqs, n_retries);
+  return execute_io_aio_kqueue(ctx, fd, read_reqs, n_retries, used_backend);
 #else
   (void)ctx;
   (void)n_retries;
-  return execute_io_pread(fd, read_reqs);
+  return execute_io_pread(fd, read_reqs, used_backend);
 #endif
 }
 
@@ -483,7 +495,7 @@ void LinuxAlignedFileReader::register_thread() {
     ctx_map[thread_id] = ctx;
   }
   lk.unlock();
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
   auto thread_id = std::this_thread::get_id();
   std::unique_lock<std::mutex> lk(ctx_mut);
   if (ctx_map.find(thread_id) != ctx_map.end()) {
@@ -498,8 +510,7 @@ void LinuxAlignedFileReader::register_thread() {
               ::strerror(errno));
   } else {
     std::call_once(g_io_backend_log_once, [] {
-      LOG_INFO(
-          "DiskAnn I/O backend: macOS POSIX AIO with kqueue completion");
+      LOG_INFO("DiskAnn I/O backend: macOS POSIX AIO with kqueue completion");
     });
     LOG_INFO("allocating POSIX AIO kqueue ctx: %d", kq);
     ctx = kq;
@@ -531,7 +542,7 @@ void LinuxAlignedFileReader::deregister_thread() {
     LibAioLoader::Instance().io_destroy(ctx);
   }
   LOG_INFO("returned ctx from thread");
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
   auto thread_id = std::this_thread::get_id();
   IOContext ctx;
 
@@ -565,7 +576,7 @@ void LinuxAlignedFileReader::deregister_all_threads() {
     }
   }
   ctx_map.clear();
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
   std::unique_lock<std::mutex> lk(ctx_mut);
   for (auto x = ctx_map.begin(); x != ctx_map.end(); x++) {
     IOContext ctx = x->second;
@@ -603,7 +614,7 @@ void LinuxAlignedFileReader::open(const std::string &fname) {
               ::strerror(errno));
   }
 
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
   // macOS has no O_DIRECT. F_NOCACHE is its closest per-file equivalent: it
   // asks the kernel to minimize caching for I/O through this descriptor. This
   // is advisory rather than a guarantee that every read reaches the device.
@@ -640,7 +651,8 @@ void LinuxAlignedFileReader::close() {
 }
 
 int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
-                                 IOContext &ctx, bool async) {
+                                 IOContext &ctx, bool async,
+                                 ailego::IOBackendType *used_backend) {
   if (async == true) {
     LOG_WARN("Async currently not supported");
   }
@@ -650,7 +662,7 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     return IndexError_Runtime;
   }
 
-  int ret = execute_io(ctx, this->file_desc, read_reqs);
+  int ret = execute_io(ctx, this->file_desc, read_reqs, 0, used_backend);
 
   return ret;
 }

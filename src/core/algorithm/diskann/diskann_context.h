@@ -350,7 +350,7 @@ class DiskAnnContext : public IndexContext,
   std::map<std::string, TopkHeap> group_topk_heaps_{};
 
   IOContext io_ctx_{
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
       -1
 #else
       0

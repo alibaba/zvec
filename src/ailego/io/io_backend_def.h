@@ -32,6 +32,10 @@
 #include <ailego/io/libaio_loader.h>
 #include <zvec/ailego/io/io_backend.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 namespace zvec {
 namespace ailego {
 
@@ -49,7 +53,7 @@ inline const char *IOBackendTypeName(IOBackendType type) {
 }
 
 // Returns a human-readable description for the given backend type.
-// When the backend is kPread, includes installation guidance for libaio.
+// On Linux, the kPread description includes installation guidance for libaio.
 inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kLibAio:
@@ -57,10 +61,15 @@ inline const char *IOBackendDescription(IOBackendType type) {
     case IOBackendType::kPosixAio:
       return "macOS POSIX AIO backend with kqueue completion notifications.";
     case IOBackendType::kPread:
+#if defined(__linux) || defined(__linux__)
       return "No async I/O backend available. Install libaio (e.g. "
              "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
              "and retry. DiskAnn will fall back to synchronous pread() \u2014 "
              "performance will be degraded.";
+#else
+      return "Synchronous pread() backend; no async I/O backend is "
+             "available.";
+#endif
   }
   return "Unknown I/O backend.";
 }
@@ -95,10 +104,11 @@ class IOBackend {
     if (type_ == requested && type_ != IOBackendType::kPread) {
       return type_;
     }
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
     // POSIX AIO and EVFILT_AIO are provided by Darwin; no user-installed
     // runtime dependency needs to be probed. A failure to create a particular
-    // kqueue context is handled by the DiskAnn reader as an operational error.
+    // kqueue context is handled by the DiskAnn reader by falling back to
+    // synchronous pread().
     type_ = IOBackendType::kPosixAio;
     return type_;
 #endif
@@ -146,7 +156,7 @@ class IOBackend {
   IOBackend() = default;
 
   IOBackendType type_{
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
       IOBackendType::kPosixAio
 #else
       IOBackendType::kPread

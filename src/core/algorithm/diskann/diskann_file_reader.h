@@ -17,11 +17,15 @@
 
 #include <fcntl.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #if (defined(__linux) || defined(__linux__))
 #include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #endif
 
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
 #include <sys/event.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -33,6 +37,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
 
@@ -44,7 +49,7 @@ namespace core {
 // On other platforms, IOContext is a uint32_t placeholder.
 #if (defined(__linux) || defined(__linux__))
 typedef io_context_t IOContext;
-#elif defined(__APPLE__) || defined(__MACH__)
+#elif defined(__APPLE__) && TARGET_OS_OSX
 typedef int IOContext;
 #else
 typedef uint32_t IOContext;
@@ -88,8 +93,11 @@ class AlignedFileReader {
   virtual void open(const std::string &fname) = 0;
   virtual void close() = 0;
 
+  // used_backend, when provided, receives the backend that completed this
+  // call, including a synchronous fallback from an async backend.
   virtual int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-                   bool async = false) = 0;
+                   bool async = false,
+                   ailego::IOBackendType *used_backend = nullptr) = 0;
 };
 
 // Reader implementation used on all supported platforms.
@@ -117,7 +125,7 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   void close();
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
-           bool async = false);
+           bool async = false, ailego::IOBackendType *used_backend = nullptr);
 };
 
 }  // namespace core

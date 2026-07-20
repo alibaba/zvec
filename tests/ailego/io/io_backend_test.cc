@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <string>
 #include <ailego/io/io_backend_def.h>
 #include <gtest/gtest.h>
-#include <string>
 #include <zvec/ailego/io/io_backend.h>
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 namespace zvec {
 namespace ailego {
@@ -32,10 +36,14 @@ TEST(IOBackendTest, BackendNames) {
   EXPECT_STREQ(IOBackendTypeName(IOBackendType::kPosixAio), "posix_aio");
 }
 
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) && TARGET_OS_OSX
 TEST(IOBackendTest, MacOSUsesPosixAio) {
   EXPECT_EQ(current_io_backend_type(), IOBackendType::kPosixAio);
   EXPECT_NE(current_io_backend_description().find("kqueue"), std::string::npos);
+}
+#elif defined(__APPLE__)
+TEST(IOBackendTest, NonMacOSAppleUsesPread) {
+  EXPECT_EQ(current_io_backend_type(), IOBackendType::kPread);
 }
 #endif
 
