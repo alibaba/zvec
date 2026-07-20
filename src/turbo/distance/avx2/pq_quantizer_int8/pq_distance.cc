@@ -130,13 +130,19 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
     __m256i a_8x32 = _mm256_cvtepu8_epi32(a_8x8);
     __m256i b_8x32 = _mm256_cvtepu8_epi32(b_8x8);
 
-    // Compute index: a[m] * 256 + b[m] + m * 65536
+    // Compute in-lane index: a[m] * 256 + b[m] + k * 65536 (k = lane, 0..7).
+    // The m * 65536 offset is applied via the gather base pointer below.
     __m256i a_shifted = _mm256_mullo_epi32(a_8x32, a_multiplier);
     __m256i indices = _mm256_add_epi32(a_shifted, b_8x32);
     indices = _mm256_add_epi32(indices, base_offsets);
 
-    // Gather 8 floats from dist_table
-    __m256 gathered = _mm256_i32gather_ps(dist_table, indices, 4);
+    // Gather 8 floats from dist_table. The gather base must include the
+    // per-iteration m * kTablePerSub offset; base_offsets only carries the
+    // in-lane k * kTablePerSub component (k = 0..7), so gathering from a
+    // fixed dist_table base would read the wrong subquantizer tables once
+    // num_chunk > 8 (m >= 8).
+    __m256 gathered =
+        _mm256_i32gather_ps(dist_table + m * kTablePerSub, indices, 4);
 
     acc = _mm256_add_ps(acc, gathered);
   }
