@@ -815,7 +815,8 @@ zvec_get_io_backend_type_name(zvec_io_backend_type_t type);
 /**
  * @brief Get a human-readable description of the current I/O backend.
  *
- * When only pread is available, includes installation guidance for libaio.
+ * On Linux, the pread description includes installation guidance for libaio.
+ * Other platforms return a generic synchronous-backend description.
  *
  * @return Thread-local string valid until the next call on this thread.
  */

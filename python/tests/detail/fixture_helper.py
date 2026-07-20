@@ -2,11 +2,10 @@ import pytest
 import logging
 import platform
 
-DISKANN_SUPPORTED = platform.system() == "Linux" and platform.machine() in (
-    "x86_64",
-    "AMD64",
-    "i686",
-    "i386",
+_MACHINE = platform.machine().lower()
+DISKANN_SUPPORTED = platform.system() == "Darwin" or (
+    platform.system() == "Linux"
+    and _MACHINE in ("x86_64", "amd64", "i686", "i386", "aarch64", "arm64")
 )
 
 from typing import Any, Generator
@@ -27,7 +26,9 @@ def _ensure_diskann_runtime_or_reason() -> str | None:
     _DISKANN_PRELOAD_DONE = True
 
     if not DISKANN_SUPPORTED:
-        _DISKANN_PRELOAD_REASON = "DiskAnn only supported on Linux x86_64"
+        _DISKANN_PRELOAD_REASON = (
+            "DiskAnn is supported on Linux x86/x86_64/ARM64 and macOS"
+        )
         return _DISKANN_PRELOAD_REASON
 
     _DISKANN_PRELOAD_REASON = None

@@ -21,8 +21,9 @@
  * a Vamana graph structure combined with product quantization (PQ) to
  * achieve high recall with efficient disk I/O.
  *
- * NOTE: DiskANN requires Linux x86_64 with libaio. On other platforms the
- * example will compile but the runtime plugin will fail to load.
+ * NOTE: DiskANN supports Linux x86/x86_64/ARM64 (libaio when available,
+ * synchronous pread fallback otherwise) and macOS (POSIX AIO with kqueue).
+ * Schema validation rejects DiskANN on other platforms.
  *
  * Workflow demonstrated:
  *   1. Create collection schema with DiskANN-indexed vector field
@@ -265,9 +266,6 @@ int main(void) {
                                 &results, &result_count);
   if (error != ZVEC_OK) {
     handle_error(error, "executing DiskANN query");
-    printf(
-        "  (This is expected on non-Linux platforms — DiskANN requires "
-        "libaio)\n");
   } else {
     printf("  Query returned %zu results:\n", result_count);
     for (size_t r = 0; r < result_count && r < 5; r++) {
