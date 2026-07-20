@@ -40,6 +40,8 @@ inline const char *IOBackendTypeName(IOBackendType type) {
   switch (type) {
     case IOBackendType::kLibAio:
       return "libaio";
+    case IOBackendType::kPosixAio:
+      return "posix_aio";
     case IOBackendType::kPread:
       return "pread";
   }
@@ -52,6 +54,8 @@ inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
+    case IOBackendType::kPosixAio:
+      return "macOS POSIX AIO backend with kqueue completion notifications.";
     case IOBackendType::kPread:
       return "No async I/O backend available. Install libaio (e.g. "
              "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
@@ -63,8 +67,8 @@ inline const char *IOBackendDescription(IOBackendType type) {
 
 // Singleton that loads and queries an I/O backend on demand.
 //
-// available() (no arg) tries the best backend with priority (libaio > pread)
-// and returns the loaded backend type.
+// available() (no arg) returns the platform backend. On Linux it tries libaio
+// before falling back to pread; on macOS POSIX AIO is provided by the system.
 // available(IOBackendType) tries a specific backend.
 // Use type() / name() to query the loaded backend without triggering a load.
 class IOBackend {
@@ -74,8 +78,8 @@ class IOBackend {
     return instance;
   }
 
-  // Try to load the best available backend (libaio > pread).
-  // Returns the loaded backend type.
+  // Return the selected platform backend. Linux probes libaio before falling
+  // back to pread; macOS uses the system POSIX AIO backend.
   // Idempotent — if already loaded, returns immediately.
   IOBackendType available() {
     if (type_ != IOBackendType::kPread) {
@@ -84,13 +88,20 @@ class IOBackend {
     return available(IOBackendType::kLibAio);
   }
 
-  // Try to load the requested backend.  Returns the loaded backend type
-  // (may differ from requested if the load failed — falls back to kPread).
+  // Try to load the requested backend. Returns the selected backend type,
+  // which may differ from the request when it is unavailable on this platform.
   // Idempotent — if the same backend is already loaded, returns immediately.
   IOBackendType available(IOBackendType requested) {
     if (type_ == requested && type_ != IOBackendType::kPread) {
       return type_;
     }
+#if defined(__APPLE__) || defined(__MACH__)
+    // POSIX AIO and EVFILT_AIO are provided by Darwin; no user-installed
+    // runtime dependency needs to be probed. A failure to create a particular
+    // kqueue context is handled by the DiskAnn reader as an operational error.
+    type_ = IOBackendType::kPosixAio;
+    return type_;
+#endif
 #if defined(__linux) || defined(__linux__)
     if (requested == IOBackendType::kLibAio) {
       if (LibAioLoader::Instance().load() &&
@@ -112,6 +123,10 @@ class IOBackend {
     return available() == IOBackendType::kLibAio;
   }
 
+  bool is_posix_aio() {
+    return available() == IOBackendType::kPosixAio;
+  }
+
   // Returns the loaded backend type.
   IOBackendType type() const {
     return type_;
@@ -130,7 +145,13 @@ class IOBackend {
  private:
   IOBackend() = default;
 
-  IOBackendType type_{IOBackendType::kPread};
+  IOBackendType type_{
+#if defined(__APPLE__) || defined(__MACH__)
+      IOBackendType::kPosixAio
+#else
+      IOBackendType::kPread
+#endif
+  };
 };
 
 }  // namespace ailego

@@ -789,14 +789,16 @@ typedef uint32_t zvec_io_backend_type_t;
   0 /**< Synchronous pread() \u2014 no async I/O */
 #define ZVEC_IO_BACKEND_TYPE_LIBAIO \
   1 /**< libaio loaded at runtime via dlopen() */
+#define ZVEC_IO_BACKEND_TYPE_POSIX_AIO \
+  2 /**< macOS POSIX AIO with kqueue completion */
 
 /**
  * @brief Get the current I/O backend type for DiskAnn async disk reads.
  *
- * Pure introspection \u2014 no side effects, no install hints.
+ * On Linux, the first call may probe for libaio. No configuration is changed
+ * and no installation hints are emitted.
  *
- * @return zvec_io_backend_type_t The loaded backend type
- *         (ZVEC_IO_BACKEND_TYPE_LIBAIO or ZVEC_IO_BACKEND_TYPE_PREAD).
+ * @return zvec_io_backend_type_t The selected backend type.
  */
 ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
 
@@ -805,7 +807,7 @@ ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
  *
  * @param type The backend type code.
  * @return Thread-local string valid until the next call on this thread;
- *         "libaio", "pread", or "unknown".
+ *         "libaio", "posix_aio", "pread", or "unknown".
  */
 ZVEC_EXPORT const char *ZVEC_CALL
 zvec_get_io_backend_type_name(zvec_io_backend_type_t type);

@@ -1837,7 +1837,15 @@ Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
 
 Result<std::string> CollectionImpl::DebugGetIoBackendType() const {
   const auto type = ailego::current_io_backend_type();
-  return type == ailego::IOBackendType::kLibAio ? "libaio" : "sync_pread";
+  switch (type) {
+    case ailego::IOBackendType::kLibAio:
+      return "libaio";
+    case ailego::IOBackendType::kPosixAio:
+      return "posix_aio";
+    case ailego::IOBackendType::kPread:
+      return "sync_pread";
+  }
+  return "unknown";
 }
 
 Status CollectionImpl::recovery() {

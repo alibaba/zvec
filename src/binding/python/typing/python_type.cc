@@ -146,6 +146,7 @@ Enumeration of supported I/O backend types for DiskAnn async disk reads.
 
 - PREAD: Synchronous pread() \u2014 no async I/O.
 - LIBAIO: libaio loaded at runtime via dlopen().
+- POSIX_AIO: macOS POSIX AIO with kqueue completion notifications.
 
 Examples:
     >>> from zvec.typing import IOBackendType
@@ -153,7 +154,8 @@ Examples:
     IOBackendType.LIBAIO
 )pbdoc")
       .value("PREAD", ailego::IOBackendType::kPread)
-      .value("LIBAIO", ailego::IOBackendType::kLibAio);
+      .value("LIBAIO", ailego::IOBackendType::kLibAio)
+      .value("POSIX_AIO", ailego::IOBackendType::kPosixAio);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {

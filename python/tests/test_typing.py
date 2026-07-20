@@ -34,6 +34,7 @@ from zvec import (
         (DataType.FLOAT, "FLOAT"),
         (IndexType.HNSW, "HNSW"),
         (IOBackendType.PREAD, "PREAD"),
+        (IOBackendType.POSIX_AIO, "POSIX_AIO"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
         (StatusCode.OK, "OK"),
@@ -49,6 +50,7 @@ def test_enum_names(member, name):
         (DataType.FLOAT, 8),
         (IndexType.HNSW, 1),
         (IOBackendType.PREAD, 0),
+        (IOBackendType.POSIX_AIO, 2),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
         (StatusCode.OK, 0),
@@ -112,7 +114,7 @@ def test_index_type_has_member(member):
     assert member in IndexType.__members__
 
 
-@pytest.mark.parametrize("member", ["PREAD", "LIBAIO"])
+@pytest.mark.parametrize("member", ["PREAD", "LIBAIO", "POSIX_AIO"])
 def test_io_backend_type_has_member(member):
     assert member in IOBackendType.__members__
 

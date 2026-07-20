@@ -52,6 +52,7 @@ from .zvec import create_and_open, init, open
 def io_backend_type() -> IOBackendType:
     """Returns the current I/O backend type for DiskAnn async disk reads
     as an IOBackendType enum (zvec.typing.IOBackendType).
+    On macOS this is IOBackendType.POSIX_AIO. On Linux this is
     IOBackendType.LIBAIO if libaio is available, IOBackendType.PREAD otherwise."""
 
 def io_backend_description() -> str:

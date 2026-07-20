@@ -377,8 +377,7 @@ class DiskAnnIndex : public Index {
  public:
   DiskAnnIndex() = default;
 
-  // Returns the I/O backend type currently loaded for DiskAnn async disk reads.
-  // If only sync_pread is available, logs a hint to install libaio.
+  // Returns the I/O backend type selected for DiskAnn disk reads.
   ailego::IOBackendType io_backend_type() const;
 
  protected:
