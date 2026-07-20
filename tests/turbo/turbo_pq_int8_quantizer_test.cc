@@ -311,8 +311,7 @@ void fill_random_lut(float *lut, size_t num_chunk, std::mt19937 &gen) {
 }
 
 // Helper to generate random dist_table (SDC)
-void fill_random_sdc_table(float *table, size_t num_chunk,
-                           std::mt19937 &gen) {
+void fill_random_sdc_table(float *table, size_t num_chunk, std::mt19937 &gen) {
   constexpr size_t kTablePerSub = 256 * 256;
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
   for (size_t m = 0; m < num_chunk; ++m) {
@@ -803,4 +802,276 @@ TEST(PqInt8Quantizer, InnerProductDequantize) {
     EXPECT_LT(recon_err / orig_norm, 1.0f)
         << "recon_err=" << recon_err << " orig_norm=" << orig_norm;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Zero-Mean Centering Tests
+// ---------------------------------------------------------------------------
+
+// Helper to create a PqInt8Quantizer with zero-mean centering enabled.
+static std::shared_ptr<zvec::turbo::Quantizer> make_pq_zero_mean_quantizer(
+    size_t dim, size_t num_chunk) {
+  auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  if (!q) return nullptr;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+
+  Params params;
+  params.set("num_chunk", static_cast<uint32_t>(num_chunk));
+  params.set("use_zero_mean", true);
+  if (q->init(meta, params) != 0) return nullptr;
+  return q;
+}
+
+// Helper: build a holder with random fp32 vectors that have a large offset
+// (non-zero mean).  This simulates real-world data where centering helps.
+static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>
+make_offset_holder(size_t count, size_t dim, float offset = 10.0f,
+                   uint32_t seed = 42) {
+  auto holder =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  std::mt19937 gen(seed);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  for (size_t i = 0; i < count; ++i) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) vec[j] = dist(gen) + offset;
+    holder->emplace(i + 1, vec);
+  }
+  return holder;
+}
+
+// Verify basic functionality: train, encode, ADC distance with centering.
+TEST(PqInt8Quantizer, ZeroMeanTrainAndEncode) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+  const size_t COUNT = 1000;
+
+  auto quantizer = make_pq_zero_mean_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+  EXPECT_TRUE(quantizer->require_train());
+
+  // Use offset data to exercise the centering path meaningfully.
+  auto holder = make_offset_holder(COUNT, DIM, 10.0f);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  // Quantize a few vectors and check code length.
+  auto iter = holder->create_iterator();
+  size_t checked = 0;
+  std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
+  for (; iter->is_valid() && checked < 10; iter->next(), ++checked) {
+    quantizer->quantize_data(iter->data(), code.data());
+    for (size_t m = 0; m < NSQ; ++m) {
+      EXPECT_LE(code[m], 255u);
+    }
+  }
+  EXPECT_EQ(10u, checked);
+}
+
+// Verify ADC distance accuracy with centering on offset data.
+TEST(PqInt8Quantizer, ZeroMeanAdcDistance) {
+  const size_t DIM = 32;
+  const size_t NSQ = 8;
+  const size_t COUNT = 2000;
+
+  auto quantizer = make_pq_zero_mean_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+
+  // Offset data: centering should improve PQ accuracy for high-offset vectors.
+  auto holder = make_offset_holder(COUNT, DIM, 10.0f);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  // Collect raw vectors and PQ codes.
+  std::vector<std::vector<float>> raw_vecs(COUNT);
+  std::vector<std::vector<uint8_t>> pq_codes(COUNT);
+  size_t code_len = quantizer->quantized_datapoint_vector_length();
+  size_t lut_len = quantizer->quantized_query_vector_length();
+
+  auto iter = holder->create_iterator();
+  for (size_t i = 0; iter->is_valid(); iter->next(), ++i) {
+    const float *v = reinterpret_cast<const float *>(iter->data());
+    raw_vecs[i].assign(v, v + DIM);
+    pq_codes[i].resize(code_len);
+    quantizer->quantize_data(iter->data(), pq_codes[i].data());
+  }
+
+  // Build LUT for query = raw_vecs[0].
+  std::vector<float> lut(lut_len / sizeof(float));
+  quantizer->quantize_query(raw_vecs[0].data(), lut.data());
+
+  // ADC distances should approximate true L2 distances.
+  float max_rel_error = 0.0f;
+  for (size_t i = 1; i < COUNT; ++i) {
+    float adc_dist =
+        quantizer->calc_distance_dp_query(pq_codes[i].data(), lut.data());
+    float true_dist =
+        reference_sq_euclidean(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
+    if (true_dist > 1e-6f) {
+      float rel = std::fabs(adc_dist - true_dist) / true_dist;
+      max_rel_error = std::max(max_rel_error, rel);
+    }
+    EXPECT_GE(adc_dist, 0.0f) << "i=" << i;
+  }
+  EXPECT_LT(max_rel_error, 1.0f) << "max_rel_error=" << max_rel_error;
+}
+
+// Verify dequantize correctly adds centroid back.
+TEST(PqInt8Quantizer, ZeroMeanDequantize) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+  const size_t COUNT = 1000;
+  const float OFFSET = 10.0f;
+
+  auto quantizer = make_pq_zero_mean_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+
+  auto holder = make_offset_holder(COUNT, DIM, OFFSET);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  auto iter = holder->create_iterator();
+  iter->is_valid();
+
+  std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
+  quantizer->quantize_data(iter->data(), code.data());
+
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  std::string decoded;
+  ASSERT_EQ(0, quantizer->dequantize(code.data(), qmeta, &decoded));
+  ASSERT_EQ(decoded.size(), DIM * sizeof(float));
+
+  const float *recon = reinterpret_cast<const float *>(decoded.data());
+  const float *orig = reinterpret_cast<const float *>(iter->data());
+
+  // Reconstructed vector should be near the original (which has ~10 offset).
+  float recon_err = reference_sq_euclidean(orig, recon, DIM);
+  float orig_norm = reference_sq_euclidean(orig, orig, DIM);
+  if (orig_norm > 1e-6f) {
+    EXPECT_LT(recon_err / orig_norm, 1.0f)
+        << "recon_err=" << recon_err << " orig_norm=" << orig_norm;
+  }
+
+  // The reconstructed values should be around OFFSET (not near zero),
+  // confirming that the centroid was added back.
+  float recon_mean = 0.0f;
+  for (size_t j = 0; j < DIM; ++j) recon_mean += recon[j];
+  recon_mean /= DIM;
+  EXPECT_GT(recon_mean, OFFSET * 0.5f)
+      << "Reconstructed mean too low; centroid may not be added back";
+}
+
+// Verify serialize/deserialize preserves the zero-mean centroid.
+TEST(PqInt8Quantizer, ZeroMeanSerializeDeserialize) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+  const size_t COUNT = 500;
+
+  auto quantizer = make_pq_zero_mean_quantizer(DIM, NSQ);
+  ASSERT_TRUE(quantizer);
+
+  auto holder = make_offset_holder(COUNT, DIM, 5.0f);
+  ASSERT_EQ(0, quantizer->train(holder));
+
+  // Serialize.
+  std::string blob;
+  ASSERT_EQ(0, quantizer->serialize(&blob));
+  EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
+
+  // Deserialize into a fresh quantizer.
+  auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(q2);
+  ASSERT_EQ(0, q2->deserialize(blob));
+
+  // Encode the same vector with both and compare codes.
+  auto iter = holder->create_iterator();
+  iter->is_valid();
+  std::vector<uint8_t> code1(quantizer->quantized_datapoint_vector_length());
+  std::vector<uint8_t> code2(q2->quantized_datapoint_vector_length());
+  quantizer->quantize_data(iter->data(), code1.data());
+  q2->quantize_data(iter->data(), code2.data());
+
+  for (size_t m = 0; m < NSQ; ++m) {
+    EXPECT_EQ(code1[m], code2[m]) << "m=" << m;
+  }
+
+  // ADC distances should also match.
+  size_t lut_len = quantizer->quantized_query_vector_length();
+  std::vector<float> lut1(lut_len / sizeof(float));
+  std::vector<float> lut2(lut_len / sizeof(float));
+  quantizer->quantize_query(iter->data(), lut1.data());
+  q2->quantize_query(iter->data(), lut2.data());
+
+  float adc1 = quantizer->calc_distance_dp_query(code1.data(), lut1.data());
+  float adc2 = q2->calc_distance_dp_query(code2.data(), lut2.data());
+  EXPECT_NEAR(adc1, adc2, 1e-6f);
+
+  // Dequantize from q2 should also produce vectors in the offset range.
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+  std::string decoded;
+  ASSERT_EQ(0, q2->dequantize(code2.data(), qmeta, &decoded));
+  const float *recon = reinterpret_cast<const float *>(decoded.data());
+  float recon_mean = 0.0f;
+  for (size_t j = 0; j < DIM; ++j) recon_mean += recon[j];
+  recon_mean /= DIM;
+  EXPECT_GT(recon_mean, 2.5f)
+      << "Deserialized quantizer centroid not restored properly";
+}
+
+// Verify that centering does not significantly degrade PQ accuracy.
+// Centering benefits data with skewed distributions or high-mean non-uniform
+// spread; for uniform+offset data, the error should remain comparable.
+TEST(PqInt8Quantizer, ZeroMeanAccuracyComparable) {
+  const size_t DIM = 32;
+  const size_t NSQ = 8;
+  const size_t COUNT = 2000;
+  const float OFFSET = 50.0f;
+
+  // Train without centering.
+  auto q_no_center = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q_no_center);
+  auto holder = make_offset_holder(COUNT, DIM, OFFSET);
+  ASSERT_EQ(0, q_no_center->train(holder));
+
+  // Train with centering.
+  auto q_center = make_pq_zero_mean_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q_center);
+  ASSERT_EQ(0, q_center->train(holder));
+
+  // Compute average reconstruction error for both.
+  auto iter = holder->create_iterator();
+  float err_no_center_sum = 0.0f;
+  float err_center_sum = 0.0f;
+  size_t checked = 0;
+
+  size_t code_len_no = q_no_center->quantized_datapoint_vector_length();
+  size_t code_len_yes = q_center->quantized_datapoint_vector_length();
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, DIM);
+
+  for (; iter->is_valid() && checked < 100; iter->next(), ++checked) {
+    const float *orig = reinterpret_cast<const float *>(iter->data());
+
+    // Without centering.
+    std::vector<uint8_t> code1(code_len_no);
+    q_no_center->quantize_data(iter->data(), code1.data());
+    std::string decoded1;
+    q_no_center->dequantize(code1.data(), qmeta, &decoded1);
+    err_no_center_sum += reference_sq_euclidean(
+        orig, reinterpret_cast<const float *>(decoded1.data()), DIM);
+
+    // With centering.
+    std::vector<uint8_t> code2(code_len_yes);
+    q_center->quantize_data(iter->data(), code2.data());
+    std::string decoded2;
+    q_center->dequantize(code2.data(), qmeta, &decoded2);
+    err_center_sum += reference_sq_euclidean(
+        orig, reinterpret_cast<const float *>(decoded2.data()), DIM);
+  }
+
+  float avg_err_no_center = err_no_center_sum / checked;
+  float avg_err_center = err_center_sum / checked;
+
+  // Centering should not degrade accuracy by more than 2x.
+  EXPECT_LT(avg_err_center, avg_err_no_center * 2.0f)
+      << "Centering degraded accuracy too much: center_err=" << avg_err_center
+      << " no_center_err=" << avg_err_no_center;
 }

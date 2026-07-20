@@ -37,6 +37,8 @@ struct PqInt8SerPayload {
   uint32_t num_chunk;
   uint32_t sub_dim;
   uint32_t num_centroids;  // always 256 for int8
+  uint8_t use_zero_mean;
+  uint8_t reserved[3];
 };
 
 int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
@@ -52,9 +54,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
     return kErrUnsupported;
   }
   if (d % nsq != 0) {
-    LOG_ERROR(
-        "PqInt8Quantizer: dim (%u) is not divisible by num_chunk (%u)",
-        d, nsq);
+    LOG_ERROR("PqInt8Quantizer: dim (%u) is not divisible by num_chunk (%u)", d,
+              nsq);
     return kErrUnsupported;
   }
 
@@ -62,8 +63,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   sub_dim_ = d / nsq;
 
   // Pre-allocate centroids (filled by train()).
-  centroids_.resize(
-      static_cast<size_t>(num_chunk_) * kNumCentroids * sub_dim_, 0.0f);
+  centroids_.resize(static_cast<size_t>(num_chunk_) * kNumCentroids * sub_dim_,
+                    0.0f);
 
   // Dispatch ISA kernels (scalar only for now).
   auto pq_k = get_pq_kernels(DataType::kInt8);
@@ -108,6 +109,7 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("thread_count", &thread_count_);
   params.get("markov_chain_length", &markov_chain_length_);
   params.get("epsilon", &epsilon_);
+  params.get("use_zero_mean", &use_zero_mean_);
 
   meta_.set_meta(IndexMeta::DataType::DT_FP32, d);
   return 0;
@@ -145,8 +147,8 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   // normalized, so spherical would create a mismatch between assignment
   // (norm-dependent L2) and update (norm-discarding normalization).
   const bool spherical = (meta_.metric_name() == "Cosine");
-  ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(
-      k, d, spherical);
+  ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(k, d,
+                                                                    spherical);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
@@ -250,11 +252,35 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
+  // Zero-mean centering: compute per-dimension mean of training data and
+  // subtract it from all vectors.  The centroid is saved for later use
+  // in quantize_data / quantize_query / dequantize.
+  // Reference: DiskANN PQ trainer prepare_pq_train_data.
+  if (use_zero_mean_) {
+    centroid_.assign(original_dim_, 0.0f);
+    for (size_t i = 0; i < num; ++i) {
+      const float *v = all_data.data() + i * original_dim_;
+      for (uint32_t d = 0; d < original_dim_; ++d) {
+        centroid_[d] += v[d];
+      }
+    }
+    for (uint32_t d = 0; d < original_dim_; ++d) {
+      centroid_[d] /= static_cast<float>(num);
+    }
+    // Subtract centroid from all training vectors.
+    for (size_t i = 0; i < num; ++i) {
+      float *v = all_data.data() + i * original_dim_;
+      for (uint32_t d = 0; d < original_dim_; ++d) {
+        v[d] -= centroid_[d];
+      }
+    }
+    LOG_INFO("PQ centering: zero-mean centroid computed");
+  }
+
   LOG_INFO(
       "PQ training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
       "max_iters=%u, threads=%d",
-      num, original_dim_, num_chunk_, sub_dim_, kMaxKmeansIters,
-      thread_count);
+      num, original_dim_, num_chunk_, sub_dim_, kMaxKmeansIters, thread_count);
 
   // Create thread pool (aligned with multi_chunk_cluster L183-185)
   auto threads = std::make_shared<SingleQueueIndexThreads>(
@@ -267,8 +293,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   for (size_t i = 0; i < pool_count; ++i) {
     task_group->submit(ailego::Closure::New(
         [this, &all_data, num, data_stride, i, pool_count, &finished]() {
-          for (uint32_t m = static_cast<uint32_t>(i);
-               m < num_chunk_;
+          for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                m += static_cast<uint32_t>(pool_count)) {
             train_subquantizer(all_data.data(), num, data_stride, m);
             finished++;
@@ -277,8 +302,8 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   }
   task_group->wait_finish();
 
-  LOG_INFO("  all %u sub-quantizers trained (%zu threads)",
-           num_chunk_, pool_count);
+  LOG_INFO("  all %u sub-quantizers trained (%zu threads)", num_chunk_,
+           pool_count);
 
   // Pre-build centroid pointer cache (needed by compute_dist_table).
   build_centroid_ptrs_cache();
@@ -320,6 +345,16 @@ void PqInt8Quantizer::compute_dist_table() {
 void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   const float *vec = reinterpret_cast<const float *>(input);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
+
+  // Zero-mean centering: subtract centroid before encoding.
+  std::vector<float> centered_vec_storage;
+  if (use_zero_mean_) {
+    centered_vec_storage.assign(vec, vec + original_dim_);
+    for (uint32_t d = 0; d < original_dim_; ++d) {
+      centered_vec_storage[d] -= centroid_[d];
+    }
+    vec = centered_vec_storage.data();
+  }
 
   // For Cosine: normalize the vector to unit length before encoding,
   // because the codebook was trained on normalized data.  The original
@@ -370,6 +405,16 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
 void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   const float *query = reinterpret_cast<const float *>(input);
   float *lut = reinterpret_cast<float *>(output);
+
+  // Zero-mean centering: subtract centroid before LUT computation.
+  std::vector<float> centered_query_storage;
+  if (use_zero_mean_) {
+    centered_query_storage.assign(query, query + original_dim_);
+    for (uint32_t d = 0; d < original_dim_; ++d) {
+      centered_query_storage[d] -= centroid_[d];
+    }
+    query = centered_query_storage.data();
+  }
 
   // For Cosine: normalize the query to unit length first, then use IP
   // as the LUT metric.  After normalization, dot(q_norm, c) equals the
@@ -433,12 +478,10 @@ void PqInt8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
 float PqInt8Quantizer::calc_distance_dp_query_unquantized(
     const void *dp, const void *query) const {
   // Build LUT on the fly, then use ADC.
-  std::vector<float> lut(static_cast<size_t>(num_chunk_) *
-                         kNumCentroids);
+  std::vector<float> lut(static_cast<size_t>(num_chunk_) * kNumCentroids);
   quantize_query(query, lut.data());
   float d = 0.0f;
-  adc_fn_(reinterpret_cast<const uint8_t *>(dp), lut.data(), num_chunk_,
-          &d);
+  adc_fn_(reinterpret_cast<const uint8_t *>(dp), lut.data(), num_chunk_, &d);
   if (meta_.metric_name() == "Cosine") {
     d = 1.0f + d;
   }
@@ -448,8 +491,7 @@ float PqInt8Quantizer::calc_distance_dp_query_unquantized(
 void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
     const void *const *dp_list, int dp_num, const void *query,
     float *dist_list) const {
-  std::vector<float> lut(static_cast<size_t>(num_chunk_) *
-                         kNumCentroids);
+  std::vector<float> lut(static_cast<size_t>(num_chunk_) * kNumCentroids);
   quantize_query(query, lut.data());
   // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
   // const_cast: see calc_distance_dp_query_batch for rationale.
@@ -516,6 +558,13 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
       result[j] *= norm;
     }
   }
+
+  // Zero-mean centering: add centroid back to reconstruct original space.
+  if (use_zero_mean_) {
+    for (uint32_t j = 0; j < original_dim_; ++j) {
+      result[j] += centroid_[j];
+    }
+  }
   return 0;
 }
 
@@ -536,8 +585,7 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
   std::string lut_storage(static_cast<const char *>(query), lut_bytes);
 
   return DistanceImpl(std::move(adc_func), std::move(batch_func),
-                      std::move(lut_storage),
-                      static_cast<size_t>(num_chunk_));
+                      std::move(lut_storage), static_cast<size_t>(num_chunk_));
 }
 
 DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
@@ -580,15 +628,23 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   payload.num_chunk = num_chunk_;
   payload.sub_dim = sub_dim_;
   payload.num_centroids = kNumCentroids;
+  payload.use_zero_mean = use_zero_mean_ ? 1 : 0;
 
   size_t centroids_bytes = centroids_.size() * sizeof(float);
-  hdr.payload_size = static_cast<uint32_t>(sizeof(payload) + centroids_bytes);
+  size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
+  hdr.payload_size =
+      static_cast<uint32_t>(sizeof(payload) + centroids_bytes + centroid_bytes);
 
   out->clear();
   out->append(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
   out->append(reinterpret_cast<const char *>(&payload), sizeof(payload));
   out->append(reinterpret_cast<const char *>(centroids_.data()),
               centroids_bytes);
+  // Append zero-mean centroid for centering support.
+  if (use_zero_mean_) {
+    out->append(reinterpret_cast<const char *>(centroid_.data()),
+                centroid_bytes);
+  }
   // dist_table_ is NOT serialized: it is a build-phase-only derivative
   // of the codebook (used by SDC during graph construction).  Search
   // uses ADC exclusively, so the table can be recomputed on demand if
@@ -622,11 +678,21 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 
   meta_.set_meta(IndexMeta::DataType::DT_FP32, original_dim_);
 
-  size_t centroids_bytes = static_cast<size_t>(num_chunk_) *
-                           kNumCentroids * sub_dim_ * sizeof(float);
+  size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *
+                           sub_dim_ * sizeof(float);
 
   centroids_.resize(centroids_bytes / sizeof(float));
   std::memcpy(centroids_.data(), ptr, centroids_bytes);
+  ptr += centroids_bytes;
+
+  // Restore zero-mean centroid if centering was enabled.
+  if (payload.use_zero_mean) {
+    use_zero_mean_ = true;
+    size_t centroid_bytes = static_cast<size_t>(original_dim_) * sizeof(float);
+    centroid_.resize(original_dim_);
+    std::memcpy(centroid_.data(), ptr, centroid_bytes);
+    ptr += centroid_bytes;
+  }
   // dist_table_ is intentionally not restored: SDC is only needed during
   // offline build, not after deserialization (search uses ADC).
 

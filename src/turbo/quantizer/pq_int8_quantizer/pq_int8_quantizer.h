@@ -72,8 +72,7 @@ class PqInt8Quantizer : public Quantizer {
   }
 
   size_t quantized_query_vector_length() const override {
-    return static_cast<size_t>(num_chunk_) * kNumCentroids *
-           sizeof(float);
+    return static_cast<size_t>(num_chunk_) * kNumCentroids * sizeof(float);
   }
 
   void quantize_data(const void *input, void *output) const override;
@@ -142,6 +141,11 @@ class PqInt8Quantizer : public Quantizer {
   //! Cost-based convergence threshold (aligned with multi_chunk_cluster).
   double epsilon_{std::numeric_limits<float>::epsilon()};
 
+  //! Whether to apply zero-mean centering before training/encoding.
+  //! When enabled, the per-dimension mean of training data is subtracted
+  //! from all vectors (train, encode, query) and added back on dequantize.
+  bool use_zero_mean_{false};
+
   IndexMeta meta_{};
   uint32_t original_dim_{0};
   uint32_t num_chunk_{0};
@@ -149,6 +153,10 @@ class PqInt8Quantizer : public Quantizer {
 
   //! Centroids: [num_chunk * kNumCentroids * sub_dim]
   std::vector<float> centroids_;
+
+  //! Global centroid (per-dimension mean) for zero-mean centering.
+  //! Size: original_dim_ floats.  Only populated when use_centering_ = true.
+  std::vector<float> centroid_;
 
   //! Centroid-to-centroid distance table for SDC:
   //! [num_chunk * kNumCentroids * kNumCentroids]
