@@ -220,6 +220,27 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   EXPECT_GT(recall, 0.90f);
   EXPECT_GT(topk1Recall, 0.80f);
   EXPECT_GT(cost, 2.0f);
+
+  // A context created by the streamer must carry the streamer's magic so it
+  // can be reused instead of being recreated on every search.
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("DiskAnnStreamer");
+  ASSERT_NE(streamer, nullptr);
+  ASSERT_EQ(0, streamer->init(*_index_meta_ptr, search_params));
+
+  auto streamer_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, streamer_storage->open(path, false));
+  ASSERT_EQ(0, streamer->open(streamer_storage));
+
+  auto streamer_ctx = streamer->create_context();
+  ASSERT_NE(streamer_ctx, nullptr);
+  streamer_ctx->set_topk(topk);
+  auto *original_ctx = streamer_ctx.get();
+
+  ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
+  EXPECT_EQ(original_ctx, streamer_ctx.get());
+  ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
+  EXPECT_EQ(original_ctx, streamer_ctx.get());
 }
 
 TEST_F(DiskAnnSearcherTest, TestNodeCache) {
