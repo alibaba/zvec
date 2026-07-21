@@ -1089,9 +1089,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
         int read_ret = reader_->read(frontier_read_reqs, io_ctx);
         stats.io_us += io_timer.micro_seconds();
         if (read_ret != 0) {
-          LOG_ERROR(
-              "cached_beam_search_by_group: reader_->read failed, ret=%d",
-              read_ret);
+          LOG_ERROR("cached_beam_search_by_group: reader_->read failed, ret=%d",
+                    read_ret);
           ctx->set_error(true);
           return IndexError_Runtime;
         }
