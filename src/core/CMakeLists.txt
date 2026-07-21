@@ -75,7 +75,7 @@ endif()
 
 set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
 # The DiskAnn runtime loader (LibAioLoader) uses dlopen/dlsym, so link libdl
-# on Linux. On macOS, kqueue is part of the system and does not require dlopen.
+# on Linux. On macOS, POSIX AIO is provided by the system.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
 endif()

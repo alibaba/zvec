@@ -15,8 +15,6 @@
 
 #define MAX_IO_DEPTH 128
 
-#include <fcntl.h>
-
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -25,14 +23,7 @@
 #include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #endif
 
-#if defined(__APPLE__) && TARGET_OS_OSX
-#include <sys/event.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#endif
-
-#include <unistd.h>
-#include <atomic>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -45,7 +36,8 @@ namespace zvec {
 namespace core {
 
 // On Linux, IOContext is the libaio io_context_t.
-// On macOS, IOContext is an int holding a kqueue file descriptor.
+// On macOS, IOContext is an unused int placeholder because POSIX AIO does not
+// require a persistent per-context resource.
 // On other platforms, IOContext is a uint32_t placeholder.
 #if (defined(__linux) || defined(__linux__))
 typedef io_context_t IOContext;
@@ -103,7 +95,7 @@ class AlignedFileReader {
 // Reader implementation used on all supported platforms.
 // On Linux (x86_64 and ARM64) it uses libaio for asynchronous batch I/O.
 // On macOS (including ARM/Apple Silicon) it submits POSIX AIO requests and
-// uses kqueue EVFILT_AIO events for completion notification.
+// waits for completion with aio_suspend().
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;

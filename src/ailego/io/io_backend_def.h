@@ -59,7 +59,7 @@ inline const char *IOBackendDescription(IOBackendType type) {
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
     case IOBackendType::kPosixAio:
-      return "macOS POSIX AIO backend with kqueue completion notifications.";
+      return "macOS POSIX AIO backend with aio_suspend() completion waits.";
     case IOBackendType::kPread:
 #if defined(__linux) || defined(__linux__)
       return "No async I/O backend available. Install libaio (e.g. "
@@ -105,10 +105,8 @@ class IOBackend {
       return type_;
     }
 #if defined(__APPLE__) && TARGET_OS_OSX
-    // POSIX AIO and EVFILT_AIO are provided by Darwin; no user-installed
-    // runtime dependency needs to be probed. A failure to create a particular
-    // kqueue context is handled by the DiskAnn reader by falling back to
-    // synchronous pread().
+    // POSIX AIO is provided by Darwin; no user-installed runtime dependency
+    // needs to be probed.
     type_ = IOBackendType::kPosixAio;
     return type_;
 #endif

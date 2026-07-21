@@ -99,7 +99,7 @@ TEST(DiskAnnFileReaderTest, BatchAlignedReads) {
   reader.open(file.path());
   IOContext ctx{
 #if defined(__APPLE__) && TARGET_OS_OSX
-      -1
+      0
 #else
       nullptr
 #endif
@@ -126,7 +126,7 @@ TEST(DiskAnnFileReaderTest, BatchAlignedReads) {
 }
 
 #if defined(__APPLE__) && TARGET_OS_OSX
-TEST(DiskAnnFileReaderTest, InvalidKqueueFallsBackToPread) {
+TEST(DiskAnnFileReaderTest, ShortAioReadFallsBackToPread) {
   TemporaryFile file;
   ASSERT_GE(file.fd(), 0);
 
@@ -135,17 +135,16 @@ TEST(DiskAnnFileReaderTest, InvalidKqueueFallsBackToPread) {
             static_cast<ssize_t>(sizeof(kSource)));
   file.close();
 
-  char output[sizeof(kSource)] = {};
-  std::vector<AlignedRead> requests{{0, sizeof(kSource), output}};
+  char output[sizeof(kSource) * 2] = {};
+  std::vector<AlignedRead> requests{{0, sizeof(output), output}};
   LinuxAlignedFileReader reader;
   reader.open(file.path());
-  IOContext ctx = -1;
+  IOContext ctx = 0;
   zvec::ailego::IOBackendType used_backend =
       zvec::ailego::IOBackendType::kPosixAio;
 
-  ASSERT_EQ(reader.read(requests, ctx, false, &used_backend), 0);
+  EXPECT_NE(reader.read(requests, ctx, false, &used_backend), 0);
   EXPECT_EQ(used_backend, zvec::ailego::IOBackendType::kPread);
-  EXPECT_EQ(std::memcmp(output, kSource, sizeof(kSource)), 0);
   reader.close();
 }
 #endif

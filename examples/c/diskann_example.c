@@ -22,7 +22,8 @@
  * achieve high recall with efficient disk I/O.
  *
  * NOTE: DiskANN supports Linux x86/x86_64/ARM64 (libaio when available,
- * synchronous pread fallback otherwise) and macOS (POSIX AIO with kqueue).
+ * synchronous pread fallback otherwise) and macOS (POSIX AIO with
+ * aio_suspend()).
  * Schema validation rejects DiskANN on other platforms.
  *
  * Workflow demonstrated:

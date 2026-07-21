@@ -19,7 +19,7 @@ Platform behavior:
 
 1. Linux x86/x86_64/ARM64 probes libaio at runtime and falls back to
    synchronous pread() when libaio is unavailable.
-2. macOS uses the system POSIX AIO implementation with kqueue notifications.
+2. macOS uses the system POSIX AIO implementation with aio_suspend() waits.
 
 The module is skipped on platforms where DiskAnn is not built.
 """

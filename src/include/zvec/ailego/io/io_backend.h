@@ -32,7 +32,7 @@ namespace ailego {
 enum class IOBackendType {
   kPread = 0,    // Synchronous pread() — no async I/O
   kLibAio = 1,   // Linux libaio loaded at runtime via dlopen()
-  kPosixAio = 2  // macOS POSIX AIO with kqueue completion
+  kPosixAio = 2  // macOS POSIX AIO with aio_suspend() completion waits
 };
 
 // Returns the currently active I/O backend type.

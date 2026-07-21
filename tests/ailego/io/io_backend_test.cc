@@ -39,7 +39,8 @@ TEST(IOBackendTest, BackendNames) {
 #if defined(__APPLE__) && TARGET_OS_OSX
 TEST(IOBackendTest, MacOSUsesPosixAio) {
   EXPECT_EQ(current_io_backend_type(), IOBackendType::kPosixAio);
-  EXPECT_NE(current_io_backend_description().find("kqueue"), std::string::npos);
+  EXPECT_NE(current_io_backend_description().find("aio_suspend"),
+            std::string::npos);
 }
 #elif defined(__APPLE__)
 TEST(IOBackendTest, NonMacOSAppleUsesPread) {

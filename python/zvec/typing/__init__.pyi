@@ -130,7 +130,7 @@ class IOBackendType:
 
     - PREAD: Synchronous pread() — no async I/O.
     - LIBAIO: libaio loaded at runtime via dlopen().
-    - POSIX_AIO: macOS POSIX AIO with kqueue completion notifications.
+    - POSIX_AIO: macOS POSIX AIO with aio_suspend() completion waits.
 
     Examples:
         >>> from zvec.typing import IOBackendType

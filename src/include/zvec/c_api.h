@@ -790,7 +790,7 @@ typedef uint32_t zvec_io_backend_type_t;
 #define ZVEC_IO_BACKEND_TYPE_LIBAIO \
   1 /**< libaio loaded at runtime via dlopen() */
 #define ZVEC_IO_BACKEND_TYPE_POSIX_AIO \
-  2 /**< macOS POSIX AIO with kqueue completion */
+  2 /**< macOS POSIX AIO with aio_suspend() completion waits */
 
 /**
  * @brief Get the current I/O backend type for DiskAnn async disk reads.

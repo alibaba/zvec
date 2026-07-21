@@ -206,8 +206,8 @@ Status FieldSchema::validate() const {
         // validation and index registration agree on supported platforms.
         //
         // Linux probes libaio at runtime and falls back to synchronous pread()
-        // when it is unavailable. macOS uses system POSIX AIO with kqueue
-        // completion notifications.
+        // when it is unavailable. macOS uses system POSIX AIO with
+        // aio_suspend() completion waits.
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is supported only on Linux x86/x86_64/ARM64 and macOS");
