@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <ailego/math/distance.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
@@ -241,6 +242,11 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
   EXPECT_EQ(original_ctx, streamer_ctx.get());
   ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
   EXPECT_EQ(original_ctx, streamer_ctx.get());
+
+  // I/O failures from the indexer must be propagated by the streamer instead
+  // of being converted into a successful search with incomplete results.
+  ASSERT_EQ(0, ::truncate(path.c_str(), 0));
+  EXPECT_NE(0, streamer->search_impl(vec.data(), qmeta, streamer_ctx));
 }
 
 TEST_F(DiskAnnSearcherTest, TestNodeCache) {
