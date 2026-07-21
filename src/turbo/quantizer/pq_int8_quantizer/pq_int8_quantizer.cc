@@ -83,12 +83,14 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
       get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
                               QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // For Cosine: fall back to IP for the metric-aware batch function,
-  // because cosine = normalize + IP.  The normalization is applied
-  // explicitly in quantize_query.
+  // For Cosine: cosine = normalize + L2.  Vectors are L2-normalized in
+  // train() / quantize_data() / quantize_query(); after normalization
+  // cosine distance is monotonic with squared-Euclidean distance, so the
+  // search LUT uses the same SquaredEuclidean batch function as encoding
+  // and training — no IP anywhere.
   if (meta_.metric_name() == "Cosine") {
     fp32_batch_fn_ =
-        get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
+        get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
                                 QuantizeType::kDefault, CpuArchType::kAuto);
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
@@ -142,14 +144,12 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   float *centroids_m = centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
 
   // Create KMeans algorithm (L2 distance via NumericalKmeansContext).
-  // Enable spherical mode for Cosine only. Cosine training data is
-  // pre-normalized in train(), so spherical centroid constraint keeps
-  // L2 assignment equivalent to argmax dot(x,c). For IP, data is NOT
-  // normalized, so spherical would create a mismatch between assignment
-  // (norm-dependent L2) and update (norm-discarding normalization).
-  const bool spherical = (meta_.metric_name() == "Cosine");
-  ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(k, d,
-                                                                    spherical);
+  // Always non-spherical: the PQ codebook must minimize L2 reconstruction
+  // error, so centroids are the true (magnitude-preserving) means.  Cosine
+  // data is pre-normalized in train(), but a sub-vector of a unit vector is
+  // NOT itself unit norm, so forcing unit-norm centroids (spherical) would
+  // discard per-subspace magnitude and hurt reconstruction.
+  ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(k, d);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
@@ -326,7 +326,7 @@ void PqInt8Quantizer::compute_dist_table() {
   // the metric-aware fp32 batch distance function (fp32_batch_fn_).
   // L2:  dist_table[m][i][j] = ||c_m[i] - c_m[j]||^2
   // IP:  dist_table[m][i][j] = -dot(c_m[i], c_m[j])
-  // Cosine: centroids trained on normalized data, same as IP.
+  // Cosine: centroids trained on normalized data, uses L2 (same as L2).
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const float *centroids_m = centroids_.data() + m * k * d;
     float *table_m = dist_table_.data() + m * k * k;
@@ -417,10 +417,10 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
     query = centered_query_storage.data();
   }
 
-  // For Cosine: normalize the query to unit length first, then use IP
-  // as the LUT metric.  After normalization, dot(q_norm, c) equals the
-  // cosine similarity when centroids were trained on normalized data.
-  // IP is additive across subspaces, so sum of sub-IPs = full IP.
+  // For Cosine: normalize the query to unit length first.  Cosine now uses
+  // an L2 LUT (see init), so after normalization the per-subspace squared
+  // L2 distances are additive into the full squared L2 distance, which is
+  // monotonic with cosine distance.
   std::vector<float> norm_query_storage;
   if (meta_.metric_name() == "Cosine") {
     norm_query_storage.assign(query, query + original_dim_);
@@ -434,7 +434,7 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   // 256 centroids via the metric-aware fp32 batch distance function.
   // For L2: LUT[m][j] = ||q_m - c_m[j]||^2
   // For IP: LUT[m][j] = -dot(q_m, c_m[j])
-  // For Cosine: (query is normalized) LUT[m][j] = -dot(q_norm_m, c_m[j])
+  // For Cosine: (query is normalized) LUT[m][j] = ||q_norm_m - c_m[j]||^2
   // const_cast: see compute_dist_table for rationale.
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
@@ -451,10 +451,8 @@ float PqInt8Quantizer::calc_distance_dp_query(const void *dp,
   float d = 0.0f;
   adc_fn_(reinterpret_cast<const uint8_t *>(dp),
           reinterpret_cast<const float *>(query), num_chunk_, &d);
-  // For Cosine: ADC sum = -cos_sim; convert to cosine distance = 1 - cos_sim.
-  if (meta_.metric_name() == "Cosine") {
-    d = 1.0f + d;
-  }
+  // Cosine uses an L2 LUT on normalized vectors, so the ADC sum is already
+  // a valid (squared-Euclidean) distance — no conversion needed.
   return d;
 }
 
@@ -468,12 +466,8 @@ void PqInt8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
   // on the pointer array.
   batch_adc_fn_(const_cast<const void **>(dp_list), query,
                 static_cast<size_t>(dp_num), num_chunk_, dist_list);
-  // For Cosine: convert -cos_sim to cosine distance.
-  if (meta_.metric_name() == "Cosine") {
-    for (int i = 0; i < dp_num; ++i) {
-      dist_list[i] = 1.0f + dist_list[i];
-    }
-  }
+  // Cosine uses an L2 LUT on normalized vectors — the batch ADC sums are
+  // already valid distances, so no conversion is applied.
 }
 
 float PqInt8Quantizer::calc_distance_dp_query_unquantized(
@@ -483,9 +477,6 @@ float PqInt8Quantizer::calc_distance_dp_query_unquantized(
   quantize_query(query, lut.data());
   float d = 0.0f;
   adc_fn_(reinterpret_cast<const uint8_t *>(dp), lut.data(), num_chunk_, &d);
-  if (meta_.metric_name() == "Cosine") {
-    d = 1.0f + d;
-  }
   return d;
 }
 
@@ -498,11 +489,6 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
   // const_cast: see calc_distance_dp_query_batch for rationale.
   batch_adc_fn_(const_cast<const void **>(dp_list), lut.data(),
                 static_cast<size_t>(dp_num), num_chunk_, dist_list);
-  if (meta_.metric_name() == "Cosine") {
-    for (int i = 0; i < dp_num; ++i) {
-      dist_list[i] = 1.0f + dist_list[i];
-    }
-  }
 }
 
 float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
@@ -708,10 +694,11 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
       get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
                               QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // Metric-aware batch distance for search LUT.
+  // Metric-aware batch distance for search LUT.  Cosine = normalize + L2,
+  // so it uses SquaredEuclidean (same as encoding), not IP.
   if (meta_.metric_name() == "Cosine") {
     fp32_batch_fn_ =
-        get_batch_distance_func(MetricType::kInnerProduct, DataType::kFp32,
+        get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
                                 QuantizeType::kDefault, CpuArchType::kAuto);
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
