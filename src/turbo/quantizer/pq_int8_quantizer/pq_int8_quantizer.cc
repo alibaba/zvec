@@ -105,9 +105,14 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
-  // Zero-mean centering is only mathematically valid for SquaredEuclidean
-  // (translation-invariant).  IP, Cosine, MipsSquaredEuclidean all break.
-  if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean") {
+  // Zero-mean centering is valid only where the search metric is
+  // translation-invariant.  SquaredEuclidean qualifies directly.  Cosine now
+  // uses an L2 LUT on L2-normalized vectors, so centering the *normalized*
+  // data (train/quantize_data/quantize_query all normalize BEFORE centering)
+  // is also safe and can lower reconstruction error.  IP and
+  // MipsSquaredEuclidean are NOT translation-invariant and are rejected.
+  if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean" &&
+      meta_.metric_name() != "Cosine") {
     LOG_WARN("PqInt8Quantizer: use_zero_mean is incompatible with metric '%s', "
              "disabling centering",
              meta_.metric_name().c_str());
@@ -255,7 +260,10 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
 
   // Zero-mean centering: compute per-dimension mean of training data and
   // subtract it from all vectors.  The centroid is saved for later use
-  // in quantize_data / quantize_query / dequantize.
+  // in quantize_data / quantize_query / dequantize.  NOTE: for Cosine this
+  // runs AFTER the normalization above, so centering happens in normalized
+  // space; quantize_data / quantize_query / dequantize must keep the same
+  // order (normalize -> center; dequantize: un-center -> rescale).
   // Reference: DiskANN PQ trainer prepare_pq_train_data.
   if (use_zero_mean_) {
     centroid_.assign(original_dim_, 0.0f);
@@ -347,19 +355,10 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   const float *vec = reinterpret_cast<const float *>(input);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
 
-  // Zero-mean centering: subtract centroid before encoding.
-  std::vector<float> centered_vec_storage;
-  if (use_zero_mean_) {
-    centered_vec_storage.assign(vec, vec + original_dim_);
-    for (uint32_t d = 0; d < original_dim_; ++d) {
-      centered_vec_storage[d] -= centroid_[d];
-    }
-    vec = centered_vec_storage.data();
-  }
-
-  // For Cosine: normalize the vector to unit length before encoding,
-  // because the codebook was trained on normalized data.  The original
-  // norm is stored after the PQ code for later dequantize().
+  // For Cosine: normalize the vector to unit length FIRST, because the
+  // codebook is trained in normalized space.  The original norm is stored
+  // after the PQ code for later dequantize().  Centering (below) then
+  // operates on the normalized vector, consistent with train().
   std::vector<float> norm_vec_storage;
   float vec_norm = 0.0f;
   if (meta_.metric_name() == "Cosine") {
@@ -367,6 +366,17 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     ailego::Normalizer<float>::L2(norm_vec_storage.data(), original_dim_,
                                   &vec_norm);
     vec = norm_vec_storage.data();
+  }
+
+  // Zero-mean centering: subtract centroid (computed in the same normalized
+  // space during train) before encoding.
+  std::vector<float> centered_vec_storage;
+  if (use_zero_mean_) {
+    centered_vec_storage.assign(vec, vec + original_dim_);
+    for (uint32_t d = 0; d < original_dim_; ++d) {
+      centered_vec_storage[d] -= centroid_[d];
+    }
+    vec = centered_vec_storage.data();
   }
 
   // Encode with L2-only batch distance (search-metric independent).
@@ -407,6 +417,18 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   const float *query = reinterpret_cast<const float *>(input);
   float *lut = reinterpret_cast<float *>(output);
 
+  // For Cosine: normalize the query to unit length FIRST (see init: Cosine
+  // uses an L2 LUT on normalized data).  Centering (below) then operates on
+  // the normalized query, consistent with train() / quantize_data().
+  std::vector<float> norm_query_storage;
+  if (meta_.metric_name() == "Cosine") {
+    norm_query_storage.assign(query, query + original_dim_);
+    float norm = 0.0f;
+    ailego::Normalizer<float>::L2(norm_query_storage.data(), original_dim_,
+                                  &norm);
+    query = norm_query_storage.data();
+  }
+
   // Zero-mean centering: subtract centroid before LUT computation.
   std::vector<float> centered_query_storage;
   if (use_zero_mean_) {
@@ -415,19 +437,6 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
       centered_query_storage[d] -= centroid_[d];
     }
     query = centered_query_storage.data();
-  }
-
-  // For Cosine: normalize the query to unit length first.  Cosine now uses
-  // an L2 LUT (see init), so after normalization the per-subspace squared
-  // L2 distances are additive into the full squared L2 distance, which is
-  // monotonic with cosine distance.
-  std::vector<float> norm_query_storage;
-  if (meta_.metric_name() == "Cosine") {
-    norm_query_storage.assign(query, query + original_dim_);
-    float norm = 0.0f;
-    ailego::Normalizer<float>::L2(norm_query_storage.data(), original_dim_,
-                                  &norm);
-    query = norm_query_storage.data();
   }
 
   // For each sub-quantizer, compute distance from query sub-vector to all
@@ -536,20 +545,23 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
     std::memcpy(result + m * d, centroid, d * sizeof(float));
   }
 
-  // For Cosine: the codebook was trained on normalized data and the
-  // stored norm lets us rescale back to the original vector's magnitude.
+  // Zero-mean centering: add the centroid back FIRST to undo centering,
+  // which was applied in normalized space (after normalization) during
+  // encode.  This yields the (approximate) normalized vector.
+  if (use_zero_mean_) {
+    for (uint32_t j = 0; j < original_dim_; ++j) {
+      result[j] += centroid_[j];
+    }
+  }
+
+  // For Cosine: the codebook was trained on normalized data; the stored norm
+  // rescales the (now un-centered) unit-space vector back to the original
+  // vector's magnitude.
   if (meta_.metric_name() == "Cosine") {
     float norm = 0.0f;
     std::memcpy(&norm, code + num_chunk_, sizeof(float));
     for (uint32_t j = 0; j < original_dim_; ++j) {
       result[j] *= norm;
-    }
-  }
-
-  // Zero-mean centering: add centroid back to reconstruct original space.
-  if (use_zero_mean_) {
-    for (uint32_t j = 0; j < original_dim_; ++j) {
-      result[j] += centroid_[j];
     }
   }
   return 0;
