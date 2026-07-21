@@ -586,7 +586,7 @@ class TestCreateAndOpen:
                     path=str(collection_path), option=collection_option
                 )
                 with lock:
-                    results.append((thread_id, reopened_coll))
+                    results.append((thread_id, reopened_coll.path))
                 # Clean up the collection if opened successfully
                 if hasattr(reopened_coll, "close") and reopened_coll is not None:
                     reopened_coll.close()
@@ -616,11 +616,11 @@ class TestCreateAndOpen:
         )
 
         # Additional verification: check that the successful open has a valid collection
-        successful_thread_id, successful_collection = results[0]
-        assert successful_collection is not None, (
+        successful_thread_id, successful_collection_path = results[0]
+        assert successful_collection_path is not None, (
             "Successful open should return a valid collection"
         )
-        assert successful_collection.path == str(collection_path), (
+        assert successful_collection_path == str(collection_path), (
             "Collection path mismatch"
         )
 

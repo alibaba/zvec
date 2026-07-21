@@ -53,6 +53,8 @@ class Collection {
   virtual ~Collection();
 
  public:
+  virtual Status Close() = 0;
+
   virtual Status Destroy() = 0;
 
   virtual Status Flush() = 0;

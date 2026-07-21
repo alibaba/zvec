@@ -74,9 +74,9 @@ class CollectionImpl : public Collection {
  private:
   Status Open(const CollectionOptions &options);
 
-  Status Close();
-
  public:
+  Status Close() override;
+
   Status Destroy() override;
 
   Status Flush() override;
@@ -227,6 +227,8 @@ class CollectionImpl : public Collection {
 
   bool destroyed_{false};
 
+  bool closed_{false};
+
   CollectionSchema::Ptr schema_;
 
   CollectionOptions options_;
@@ -295,7 +297,7 @@ void CollectionImpl::prepare_schema() {
 CollectionImpl::CollectionImpl(const std::string &path) : path_(path) {}
 
 CollectionImpl::~CollectionImpl() {
-  if (!destroyed_) {
+  if (!destroyed_ && !closed_) {
     Close();
   }
 }
@@ -324,10 +326,15 @@ Status CollectionImpl::Open(const CollectionOptions &options) {
 }
 
 Status CollectionImpl::Close() {
-  // only called in deconstructor
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+
+  // closing twice is a no-op
+  if (closed_) {
+    return Status::OK();
+  }
+  closed_ = true;
 
   return close_unsafe();
 }
@@ -361,6 +368,7 @@ Status CollectionImpl::Destroy() {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   auto s = close_unsafe();
   CHECK_RETURN_STATUS(s);
@@ -377,6 +385,7 @@ Status CollectionImpl::Flush() {
 
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   return flush_unsafe();
 }
@@ -391,6 +400,7 @@ Status CollectionImpl::flush_unsafe() {
 
 Result<std::string> CollectionImpl::Path() const {
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   return path_;
 }
@@ -399,6 +409,7 @@ Result<CollectionStats> CollectionImpl::Stats() const {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   auto segments = get_all_segments();
 
@@ -440,6 +451,7 @@ Result<CollectionSchema> CollectionImpl::Schema() const {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   return *schema_;
 }
@@ -448,6 +460,7 @@ Result<CollectionOptions> CollectionImpl::Options() const {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   return options_;
 }
@@ -460,6 +473,7 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   if (index_params == nullptr) {
     return Status::InvalidArgument("CreateIndex: index_params is null");
@@ -701,6 +715,7 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
   auto s = new_schema->drop_index(column_name);
@@ -885,6 +900,7 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   // allowed
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   std::vector<Segment::Ptr> persist_segments;
 
@@ -1240,6 +1256,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   // validate
   auto s = validate("", column_schema, expression, "", ColumnOp::ADD);
@@ -1312,6 +1329,7 @@ Status CollectionImpl::DropColumn(const std::string &column_name) {
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   // validate
   auto s = validate(column_name, nullptr, "", "", ColumnOp::DROP);
@@ -1386,6 +1404,7 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
   std::lock_guard lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   // validate
   auto s =
@@ -1525,6 +1544,7 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   for (auto &&doc : docs) {
     auto s = doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
@@ -1618,6 +1638,7 @@ Result<WriteResults> CollectionImpl::Delete(
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
@@ -1636,6 +1657,7 @@ Status CollectionImpl::DeleteByFilter(const std::string &filter) {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS(closed_, false);
 
   SearchQuery query;
   query.filter_ = filter;
@@ -1666,6 +1688,7 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   // When field_name_ is set, use get_field to retrieve the schema uniformly.
   // validate checks that the field type matches the query type
@@ -1697,6 +1720,7 @@ Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   if (query.queries.size() < 2) {
     return tl::make_unexpected(Status::InvalidArgument(
@@ -1790,6 +1814,7 @@ Result<GroupResults> CollectionImpl::GroupByQuery(
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   auto segments = get_all_segments();
   if (segments.empty()) {
@@ -1821,6 +1846,7 @@ Result<DocPtrMap> CollectionImpl::Fetch(
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   auto segments = get_all_segments();
 
@@ -1854,6 +1880,7 @@ Result<std::string> CollectionImpl::DebugGetHnswStorageMode(
   std::shared_lock lock(schema_handle_mtx_);
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   // Try all segments (including the writing one). The first segment that has
   // a fully-built HNSW index wins; if only a building segment exists we still
