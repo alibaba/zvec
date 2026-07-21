@@ -287,24 +287,25 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
 
   {
     std::unique_lock<std::mutex> lk(mutex_);
-    while (finished.load() < entity_.doc_cnt()) {
+    while (finished.load() < entity_.doc_cnt() &&
+           !error_.load(std::memory_order_acquire)) {
       cond_.wait_until(lk, std::chrono::system_clock::now() +
                                std::chrono::seconds(check_interval_secs_));
-      if (error_.load(std::memory_order_acquire)) {
-        LOG_ERROR("Failed to build index while waiting finish");
-        return errcode_;
-      }
       LOG_INFO("Built cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
                finished.load() * 100.0f / entity_.doc_cnt());
     }
   }
 
+  // A worker may fail before processing its entire shard. Always wait for the
+  // remaining workers before returning so they cannot access this builder,
+  // its mutex, or the stack-owned finished counter after their lifetimes end.
+  task_group->wait_finish();
+
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to build index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
 
   return 0;
 }
@@ -324,24 +325,24 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
 
   {
     std::unique_lock<std::mutex> lk(mutex_);
-    while (finished.load() < entity_.doc_cnt()) {
+    while (finished.load() < entity_.doc_cnt() &&
+           !error_.load(std::memory_order_acquire)) {
       cond_.wait_until(lk, std::chrono::system_clock::now() +
                                std::chrono::seconds(check_interval_secs_));
-      if (error_.load(std::memory_order_acquire)) {
-        LOG_ERROR("Failed to prune index while waiting finish");
-        return errcode_;
-      }
       LOG_INFO("Prune cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
                finished.load() * 100.0f / entity_.doc_cnt());
     }
   }
 
+  // See build_internal(): error paths must not let worker closures outlive the
+  // builder or the stack-owned completion counter.
+  task_group->wait_finish();
+
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to prune index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
 
   return 0;
 }
