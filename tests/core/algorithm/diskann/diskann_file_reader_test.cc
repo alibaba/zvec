@@ -101,7 +101,7 @@ TEST(DiskAnnFileReaderTest, BatchAlignedReads) {
 #if defined(__APPLE__) && TARGET_OS_OSX
       -1
 #else
-      0
+      nullptr
 #endif
   };
   ASSERT_EQ(setup_io_ctx(ctx), 0);
