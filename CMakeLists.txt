@@ -125,7 +125,7 @@ message(STATUS "RABITQ_ARCH_FLAG: ${RABITQ_ARCH_FLAG}")
 # DiskAnn support:
 #   - Linux (x86_64, i686, i386, aarch64, arm64), using libaio when available
 #     and synchronous pread otherwise
-#   - macOS (x86_64, ARM64/Apple Silicon), using POSIX AIO with kqueue
+#   - macOS (x86_64, ARM64/Apple Silicon), using POSIX AIO with aio_suspend
 if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|aarch64|arm64" AND NOT ANDROID AND NOT IOS)
     OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT IOS))
   set(DISKANN_SUPPORTED ON)

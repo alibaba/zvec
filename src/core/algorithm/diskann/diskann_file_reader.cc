@@ -13,10 +13,10 @@
 // limitations under the License.
 
 #include "diskann_file_reader.h"
-#include <cerrno>
-#include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/core/framework/index_logger.h>
 #if defined(__APPLE__) && TARGET_OS_OSX
@@ -131,9 +131,9 @@ static bool validate_aio_result(int aio_err, int64_t result,
 // Wait for and reap every submitted request. Requests and their destination
 // buffers must remain alive until aio_error() no longer reports EINPROGRESS,
 // and each completed request must be reaped exactly once with aio_return().
-static bool drain_aio_requests(
-    std::vector<struct aiocb> &cbs, const std::vector<AlignedRead> &read_reqs,
-    size_t req_begin, size_t submitted_count) {
+static bool drain_aio_requests(std::vector<struct aiocb> &cbs,
+                               const std::vector<AlignedRead> &read_reqs,
+                               size_t req_begin, size_t submitted_count) {
   size_t completed_count = 0;
   bool all_ok = true;
   std::vector<uint8_t> completed(submitted_count, 0);
