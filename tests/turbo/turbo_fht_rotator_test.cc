@@ -206,7 +206,6 @@ TEST(FhtRotator, FromBlobMalformed) {
 
 TEST(FhtRotator, L2DistancePreserved) {
   std::mt19937 gen(2024);
-  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
   for (int dim : {32, 64, 97, 128}) {
     auto rot = FhtRotator::create(dim);
@@ -241,7 +240,6 @@ TEST(FhtRotator, L2DistancePreserved) {
 
 TEST(FhtRotator, CosineDistancePreserved) {
   std::mt19937 gen(777);
-  std::uniform_real_distribution<float> dist(0.1f, 1.0f);
 
   auto cosine_dist = [](const float *a, const float *b, int dim) {
     float dot = 0, na = 0, nb = 0;

@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <random>
 
 namespace zvec {
@@ -51,6 +52,12 @@ FhtRotator::Pointer FhtRotator::create(int dim) {
 
   // Single allocation: FhtCtx header + trailing flip data.
   r->fht_ctx_ = static_cast<FhtCtx *>(std::malloc(sizeof(FhtCtx) + flip_size));
+  if (r->fht_ctx_ == nullptr) {
+    // Allocation failed: bail out before dereferencing. Returning nullptr lets
+    // the smart Pointer clean up the partially-built object (~FhtRotator frees
+    // the null fht_ctx_ safely).
+    return nullptr;
+  }
   r->fht_ctx_->flip_offset = r->flip_offset_;
   r->fht_ctx_->trunc_dim = trunc_dim;
   r->fht_ctx_->fac = fac;
@@ -146,12 +153,32 @@ int FhtRotator::deserialize(const void *data, size_t len) {
     return kErrUnsupported;
   }
 
-  const size_t total = sizeof(RotatorSerHeader) + hdr->payload_size;
-  if (len < total) return kErrInvalidArgument;
+  // Validate dimensions before any cast to int: must be strictly positive and
+  // representable as int. FHT keeps dimensionality unchanged (in == out).
+  if (hdr->in_dim == 0 ||
+      hdr->in_dim > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+    return kErrInvalidArgument;
+  }
+  if (hdr->out_dim != hdr->in_dim) return kErrInvalidArgument;
 
+  // Length check via subtraction to avoid size_t overflow on 32-bit
+  // (len >= sizeof(header) was guaranteed above, so the subtraction is safe).
+  if (hdr->payload_size > len - sizeof(RotatorSerHeader)) {
+    return kErrInvalidArgument;
+  }
+
+  // Payload must hold exactly 4 rounds of ceil(in_dim/8) flip bytes. The
+  // rotation kernels read 4 * flip_offset bytes, so any smaller payload would
+  // read out of bounds; require an exact match.
+  const size_t new_flip_offset =
+      (static_cast<size_t>(hdr->in_dim) + kByteLen - 1) / kByteLen;
+  const size_t expected_flip_size = 4 * new_flip_offset;
+  if (hdr->payload_size != expected_flip_size) return kErrInvalidArgument;
+
+  // All fields validated: commit to member state.
   in_dim_ = static_cast<int>(hdr->in_dim);
   out_dim_ = static_cast<int>(hdr->out_dim);
-  flip_offset_ = (static_cast<size_t>(in_dim_) + kByteLen - 1) / kByteLen;
+  flip_offset_ = new_flip_offset;
   kernels_ = get_rotator_kernels(RotateType::kFht);
 
   const size_t trunc_dim = floor_pow2(static_cast<size_t>(in_dim_));
@@ -160,13 +187,14 @@ int FhtRotator::deserialize(const void *data, size_t len) {
   // Free old ctx, allocate new one with trailing flip data.
   std::free(fht_ctx_);
   fht_ctx_ =
-      static_cast<FhtCtx *>(std::malloc(sizeof(FhtCtx) + hdr->payload_size));
+      static_cast<FhtCtx *>(std::malloc(sizeof(FhtCtx) + expected_flip_size));
+  if (fht_ctx_ == nullptr) return kErrRuntime;
   fht_ctx_->flip_offset = flip_offset_;
   fht_ctx_->trunc_dim = trunc_dim;
   fht_ctx_->fac = fac;
   std::memcpy(fht_ctx_->flip,
               reinterpret_cast<const char *>(data) + sizeof(RotatorSerHeader),
-              hdr->payload_size);
+              expected_flip_size);
 
   return 0;
 }

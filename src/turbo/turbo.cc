@@ -158,7 +158,6 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
   switch (rotate_type) {
     case RotateType::kFht: {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
-          zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
           IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
         return {avx512::fht_rotate_avx512, avx512::fht_unrotate_avx512};
       }
@@ -170,16 +169,19 @@ RotatorKernels get_rotator_kernels(RotateType rotate_type,
           IsArchMatch(cpu_arch_type, CpuArchType::kSSE)) {
         return {sse::fht_rotate_sse, sse::fht_unrotate_sse};
       }
-      if (IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.NEON &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
         return {neon::fht_rotate_neon, neon::fht_unrotate_neon};
       }
       return {scalar::fht_rotate, scalar::fht_unrotate};
     }
   }
 
-  // Fallback (unreachable for valid RotateType values).
+  // Unsupported RotateType: assert in debug for early detection, but always
+  // return the scalar kernels so release builds never hand back null function
+  // pointers (which would crash on the first call).
   assert(false && "unsupported RotateType");
-  return {};
+  return {scalar::fht_rotate, scalar::fht_unrotate};
 }
 
 }  // namespace zvec::turbo
