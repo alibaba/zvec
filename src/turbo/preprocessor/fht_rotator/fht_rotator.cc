@@ -75,16 +75,21 @@ FhtRotator::Pointer FhtRotator::create(int dim) {
 FhtRotator::Pointer FhtRotator::from_blob(const void *data, size_t len) {
   if (!data || len < sizeof(RotatorSerHeader)) return nullptr;
 
-  const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(data);
-  if (hdr->magic != kRotatorMagic) return nullptr;
-  if (hdr->version != kRotatorSerVersion) return nullptr;
-  if (static_cast<RotateType>(hdr->rotator_type) != RotateType::kFht) {
+  // Copy the header into a properly aligned local before reading any field.
+  // `data` may point to an unaligned byte buffer (e.g. std::string::data()),
+  // so dereferencing a reinterpret_cast<const RotatorSerHeader *> directly
+  // would be undefined behavior on architectures that require alignment.
+  RotatorSerHeader hdr;
+  std::memcpy(&hdr, data, sizeof(RotatorSerHeader));
+  if (hdr.magic != kRotatorMagic) return nullptr;
+  if (hdr.version != kRotatorSerVersion) return nullptr;
+  if (static_cast<RotateType>(hdr.rotator_type) != RotateType::kFht) {
     return nullptr;
   }
 
   Pointer r(new FhtRotator());
   const size_t expected_total =
-      sizeof(RotatorSerHeader) + static_cast<size_t>(hdr->payload_size);
+      sizeof(RotatorSerHeader) + static_cast<size_t>(hdr.payload_size);
   if (len < expected_total) return nullptr;
 
   int rc = r->deserialize(data, len);
@@ -146,24 +151,29 @@ int FhtRotator::serialize(std::string *out) const {
 int FhtRotator::deserialize(const void *data, size_t len) {
   if (!data || len < sizeof(RotatorSerHeader)) return kErrInvalidArgument;
 
-  const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(data);
-  if (hdr->magic != kRotatorMagic) return kErrUnsupported;
-  if (hdr->version != kRotatorSerVersion) return kErrUnsupported;
-  if (static_cast<RotateType>(hdr->rotator_type) != RotateType::kFht) {
+  // Copy the header into a properly aligned local before reading any field.
+  // `data` may point to an unaligned byte buffer (e.g. std::string::data()),
+  // so dereferencing a reinterpret_cast<const RotatorSerHeader *> directly
+  // would be undefined behavior on architectures that require alignment.
+  RotatorSerHeader hdr;
+  std::memcpy(&hdr, data, sizeof(RotatorSerHeader));
+  if (hdr.magic != kRotatorMagic) return kErrUnsupported;
+  if (hdr.version != kRotatorSerVersion) return kErrUnsupported;
+  if (static_cast<RotateType>(hdr.rotator_type) != RotateType::kFht) {
     return kErrUnsupported;
   }
 
   // Validate dimensions before any cast to int: must be strictly positive and
   // representable as int. FHT keeps dimensionality unchanged (in == out).
-  if (hdr->in_dim == 0 ||
-      hdr->in_dim > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+  if (hdr.in_dim == 0 ||
+      hdr.in_dim > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
     return kErrInvalidArgument;
   }
-  if (hdr->out_dim != hdr->in_dim) return kErrInvalidArgument;
+  if (hdr.out_dim != hdr.in_dim) return kErrInvalidArgument;
 
   // Length check via subtraction to avoid size_t overflow on 32-bit
   // (len >= sizeof(header) was guaranteed above, so the subtraction is safe).
-  if (hdr->payload_size > len - sizeof(RotatorSerHeader)) {
+  if (hdr.payload_size > len - sizeof(RotatorSerHeader)) {
     return kErrInvalidArgument;
   }
 
@@ -171,30 +181,36 @@ int FhtRotator::deserialize(const void *data, size_t len) {
   // rotation kernels read 4 * flip_offset bytes, so any smaller payload would
   // read out of bounds; require an exact match.
   const size_t new_flip_offset =
-      (static_cast<size_t>(hdr->in_dim) + kByteLen - 1) / kByteLen;
+      (static_cast<size_t>(hdr.in_dim) + kByteLen - 1) / kByteLen;
   const size_t expected_flip_size = 4 * new_flip_offset;
-  if (hdr->payload_size != expected_flip_size) return kErrInvalidArgument;
+  if (hdr.payload_size != expected_flip_size) return kErrInvalidArgument;
 
-  // All fields validated: commit to member state.
-  in_dim_ = static_cast<int>(hdr->in_dim);
-  out_dim_ = static_cast<int>(hdr->out_dim);
-  flip_offset_ = new_flip_offset;
-  kernels_ = get_rotator_kernels(RotateType::kFht);
-
-  const size_t trunc_dim = floor_pow2(static_cast<size_t>(in_dim_));
+  // Build the new context into a temporary first, so a failed allocation
+  // leaves the existing object completely untouched (deserialize may target
+  // an already-initialized rotator). Only commit member state once the
+  // allocation and payload copy have both succeeded.
+  const int new_in_dim = static_cast<int>(hdr.in_dim);
+  const int new_out_dim = static_cast<int>(hdr.out_dim);
+  const size_t trunc_dim = floor_pow2(static_cast<size_t>(new_in_dim));
   const float fac = 1.0f / std::sqrt(static_cast<float>(trunc_dim));
 
-  // Free old ctx, allocate new one with trailing flip data.
-  std::free(fht_ctx_);
-  fht_ctx_ =
+  FhtCtx *new_ctx =
       static_cast<FhtCtx *>(std::malloc(sizeof(FhtCtx) + expected_flip_size));
-  if (fht_ctx_ == nullptr) return kErrRuntime;
-  fht_ctx_->flip_offset = flip_offset_;
-  fht_ctx_->trunc_dim = trunc_dim;
-  fht_ctx_->fac = fac;
-  std::memcpy(fht_ctx_->flip,
+  if (new_ctx == nullptr) return kErrRuntime;
+  new_ctx->flip_offset = new_flip_offset;
+  new_ctx->trunc_dim = trunc_dim;
+  new_ctx->fac = fac;
+  std::memcpy(new_ctx->flip,
               reinterpret_cast<const char *>(data) + sizeof(RotatorSerHeader),
               expected_flip_size);
+
+  // All allocations succeeded: commit new state and free the old context.
+  std::free(fht_ctx_);
+  fht_ctx_ = new_ctx;
+  in_dim_ = new_in_dim;
+  out_dim_ = new_out_dim;
+  flip_offset_ = new_flip_offset;
+  kernels_ = get_rotator_kernels(RotateType::kFht);
 
   return 0;
 }

@@ -55,9 +55,10 @@ class Preprocessor {
   //! Input dimensionality accepted by apply().
   virtual int in_dim() const = 0;
 
-  //! Output dimensionality produced by apply().  May differ from in_dim()
-  //! (e.g. FHT pads to the next power of two), but for FhtRotator they are
-  //! equal.
+  //! Output dimensionality produced by apply().  A future preprocessor may
+  //! change dimensionality (out_dim() != in_dim()), but FhtRotator keeps it
+  //! unchanged: it operates on floor_pow2(in_dim) via the Hadamard transform
+  //! plus a Kac's walk over the remainder, so out_dim() == in_dim().
   virtual int out_dim() const = 0;
 
   //! Forward transform: map an input vector to the preprocessed space.

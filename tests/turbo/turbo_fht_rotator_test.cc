@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <cmath>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -148,26 +149,26 @@ TEST(FhtRotator, CreateGeneratesFlip) {
     EXPECT_EQ(0, rot->serialize(&blob))
         << "serialize failed after create for dim=" << dim;
 
-    // Verify the payload is not all zeros (extremely unlikely for random bits).
-    const auto *hdr = reinterpret_cast<const RotatorSerHeader *>(blob.data());
-    EXPECT_EQ(hdr->magic, kRotatorMagic);
-    EXPECT_EQ(hdr->version, kRotatorSerVersion);
-    EXPECT_EQ(static_cast<RotateType>(hdr->rotator_type), RotateType::kFht);
-    EXPECT_EQ(static_cast<int>(hdr->in_dim), dim);
-    EXPECT_EQ(static_cast<int>(hdr->out_dim), dim);
-    EXPECT_GT(hdr->payload_size, 0u);
+    // Verify the serialized structure deterministically. Copy the header into
+    // an aligned local first: blob.data() may be unaligned and dereferencing a
+    // reinterpret_cast<const RotatorSerHeader *> would be undefined behavior on
+    // architectures that require alignment.
+    RotatorSerHeader hdr;
+    std::memcpy(&hdr, blob.data(), sizeof(RotatorSerHeader));
+    EXPECT_EQ(hdr.magic, kRotatorMagic);
+    EXPECT_EQ(hdr.version, kRotatorSerVersion);
+    EXPECT_EQ(static_cast<RotateType>(hdr.rotator_type), RotateType::kFht);
+    EXPECT_EQ(static_cast<int>(hdr.in_dim), dim);
+    EXPECT_EQ(static_cast<int>(hdr.out_dim), dim);
 
-    // Check that the flip payload is not all-zero.
-    const uint8_t *payload = reinterpret_cast<const uint8_t *>(blob.data()) +
-                             sizeof(RotatorSerHeader);
-    bool any_nonzero = false;
-    for (uint32_t i = 0; i < hdr->payload_size; ++i) {
-      if (payload[i] != 0) {
-        any_nonzero = true;
-        break;
-      }
-    }
-    EXPECT_TRUE(any_nonzero) << "flip payload is all-zero for dim=" << dim;
+    // Payload holds 4 rounds of ceil(dim/8) flip bytes. Checking the exact size
+    // (and total blob length) keeps the test deterministic: we avoid asserting
+    // on random bit values, which could theoretically be all-zero on a platform
+    // where std::random_device has low entropy.
+    const uint32_t expected_flip_size =
+        4u * ((static_cast<uint32_t>(dim) + 7u) / 8u);
+    EXPECT_EQ(hdr.payload_size, expected_flip_size);
+    EXPECT_EQ(blob.size(), sizeof(RotatorSerHeader) + expected_flip_size);
   }
 }
 
@@ -377,8 +378,12 @@ TEST(FhtRotator, DeserializeTruncatedPayload) {
   ASSERT_EQ(0, rot->serialize(&blob));
 
   // Truncate the blob: keep header but cut half the payload.
-  auto *hdr = reinterpret_cast<const RotatorSerHeader *>(blob.data());
-  size_t truncated_len = sizeof(RotatorSerHeader) + hdr->payload_size / 2;
+  // Copy the header into an aligned local before reading fields (blob.data()
+  // may be unaligned; a direct reinterpret_cast dereference is UB on
+  // alignment-sensitive architectures).
+  RotatorSerHeader hdr;
+  std::memcpy(&hdr, blob.data(), sizeof(RotatorSerHeader));
+  size_t truncated_len = sizeof(RotatorSerHeader) + hdr.payload_size / 2;
 
   auto rot2 = FhtRotator::create(64);
   ASSERT_TRUE(rot2);
