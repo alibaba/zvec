@@ -204,7 +204,8 @@ PqKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
               avx2::pq_sdc_int8_distance_avx2,
               avx2::pq_adc_int8_batch_distance_avx2};
     }
-    if (IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.NEON &&
+        IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
       return {neon::pq_adc_int8_distance_neon,
               neon::pq_sdc_int8_distance_neon,
               neon::pq_adc_int8_batch_distance_neon};
