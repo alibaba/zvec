@@ -75,19 +75,14 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   // Resolve the configured metric type (local only — not stored).
   auto mt = metric_from_name(meta_.metric_name());
 
-  // L2-only batch distance: always used for encoding (quantize_data) and
-  // KMeans training (train_subquantizer).  PQ codebook is trained in L2
-  // space, so encoding must minimize L2 quantization error regardless
-  // of the search metric.
+  // L2-only batch distance for encoding and KMeans training: the PQ codebook
+  // is trained in L2 space regardless of the search metric.
   fp32_l2_batch_fn_ =
       get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
                               QuantizeType::kDefault, CpuArchType::kAuto);
 
-  // For Cosine: cosine = normalize + L2.  Vectors are L2-normalized in
-  // train() / quantize_data() / quantize_query(); after normalization
-  // cosine distance is monotonic with squared-Euclidean distance, so the
-  // search LUT uses the same SquaredEuclidean batch function as encoding
-  // and training — no IP anywhere.
+  // Cosine = normalize + L2: after normalization cosine distance is monotonic
+  // with squared-Euclidean, so the search LUT reuses SquaredEuclidean.
   if (meta_.metric_name() == "Cosine") {
     fp32_batch_fn_ =
         get_batch_distance_func(MetricType::kSquaredEuclidean, DataType::kFp32,
@@ -142,12 +137,8 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   const size_t d = sub_dim_;
   float *centroids_m = centroids_.data() + static_cast<size_t>(sub_idx) * k * d;
 
-  // Create KMeans algorithm (L2 distance via NumericalKmeansContext).
-  // Always non-spherical: the PQ codebook must minimize L2 reconstruction
-  // error, so centroids are the true (magnitude-preserving) means.  Cosine
-  // data is pre-normalized in train(), but a sub-vector of a unit vector is
-  // NOT itself unit norm, so forcing unit-norm centroids (spherical) would
-  // discard per-subspace magnitude and hurt reconstruction.
+  // Non-spherical L2 KMeans: the PQ codebook must minimize L2 reconstruction
+  // error, so centroids are the true (magnitude-preserving) means.
   ailego::NumericalKmeans<float, SingleQueueIndexThreads> algorithm(k, d);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
@@ -159,11 +150,10 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
     algorithm.append(sub_vec, d);
   }
 
-  // Single-threaded pool — parallelism is at sub-quantizer level
-  // (aligned with multi_chunk_cluster.h L184-185)
+  // Single-threaded pool — parallelism is at the sub-quantizer level.
   auto local_threads = std::make_shared<SingleQueueIndexThreads>(1, false);
 
-  // KMC2 centroid initialization (aligned with multi_chunk_cluster.h L191-196)
+  // KMC2 centroid initialization.
   ailego::Kmc2CentroidsGenerator<
       ailego::NumericalKmeans<float, SingleQueueIndexThreads>,
       SingleQueueIndexThreads>
@@ -241,9 +231,8 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
 
   size_t data_stride = original_dim_ * sizeof(float);
 
-  // For Cosine: normalize training data to unit length so that KMeans
-  // centroids are learned in normalized space.  After normalization,
-  // L2 minimization is equivalent to maximizing cosine similarity.
+  // For Cosine: normalize training data so centroids are learned in
+  // normalized space (L2 minimization == maximizing cosine similarity).
   if (meta_.metric_name() == "Cosine") {
     for (size_t i = 0; i < num; ++i) {
       float *v = all_data.data() + i * original_dim_;
@@ -252,13 +241,10 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
-  // Zero-mean centering: compute per-dimension mean of training data and
-  // subtract it from all vectors.  The centroid is saved for later use
-  // in quantize_data / quantize_query / dequantize.  NOTE: for Cosine this
-  // runs AFTER the normalization above, so centering happens in normalized
-  // space; quantize_data / quantize_query / dequantize must keep the same
-  // order (normalize -> center; dequantize: un-center -> rescale).
-  // Reference: DiskANN PQ trainer prepare_pq_train_data.
+  // Zero-mean centering: subtract the per-dimension mean; the centroid is
+  // saved for quantize_data / quantize_query / dequantize.  For Cosine this
+  // runs AFTER normalization, so all paths keep the same order
+  // (normalize -> center; dequantize: un-center -> rescale).
   if (use_zero_mean_) {
     centroid_.assign(original_dim_, 0.0f);
     for (size_t i = 0; i < num; ++i) {
@@ -285,12 +271,12 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
       "max_iters=%u, threads=%d",
       num, original_dim_, num_chunk_, sub_dim_, kMaxKmeansIters, thread_count);
 
-  // Create thread pool (aligned with multi_chunk_cluster L183-185)
+  // Create thread pool.
   auto threads = std::make_shared<SingleQueueIndexThreads>(
       static_cast<uint32_t>(thread_count), false);
   auto task_group = threads->make_group();
 
-  // Distribute sub-quantizers across threads (aligned with L198-201)
+  // Distribute sub-quantizers across threads.
   std::atomic<size_t> finished{0};
   size_t pool_count = threads->count();
   for (size_t i = 0; i < pool_count; ++i) {
@@ -324,11 +310,10 @@ void PqInt8Quantizer::compute_dist_table() {
   const size_t d = sub_dim_;
   dist_table_.resize(static_cast<size_t>(num_chunk_) * k * k, 0.0f);
 
-  // For each sub-quantizer, compute centroid-to-centroid distances via
-  // the metric-aware fp32 batch distance function (fp32_batch_fn_).
+  // Centroid-to-centroid distances via the metric-aware fp32_batch_fn_:
   // L2:  dist_table[m][i][j] = ||c_m[i] - c_m[j]||^2
   // IP:  dist_table[m][i][j] = -dot(c_m[i], c_m[j])
-  // Cosine: centroids trained on normalized data, uses L2 (same as L2).
+  // Cosine: centroids trained on normalized data, uses L2.
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const float *centroids_m = centroids_.data() + m * k * d;
     float *table_m = dist_table_.data() + m * k * k;
@@ -349,10 +334,8 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   const float *vec = reinterpret_cast<const float *>(input);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
 
-  // For Cosine: normalize the vector to unit length FIRST, because the
-  // codebook is trained in normalized space.  The original norm is stored
-  // after the PQ code for later dequantize().  Centering (below) then
-  // operates on the normalized vector, consistent with train().
+  // For Cosine: normalize FIRST (codebook is trained in normalized space);
+  // the original norm is stored after the PQ code for dequantize().
   std::vector<float> norm_vec_storage;
   float vec_norm = 0.0f;
   if (meta_.metric_name() == "Cosine") {
@@ -373,10 +356,8 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     vec = centered_vec_storage.data();
   }
 
-  // Encode with L2-only batch distance (search-metric independent).
-  // Process one sub-quantizer at a time, reusing a single 256-float
-  // scratch buffer and fusing argmin into the distance loop to avoid
-  // a second pass over the data.
+  // Encode with L2-only batch distance (search-metric independent),
+  // fusing argmin into the distance loop.
   float dists[kNumCentroids];
 
   for (uint32_t m = 0; m < num_chunk_; ++m) {
@@ -411,9 +392,8 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   const float *query = reinterpret_cast<const float *>(input);
   float *lut = reinterpret_cast<float *>(output);
 
-  // For Cosine: normalize the query to unit length FIRST (see init: Cosine
-  // uses an L2 LUT on normalized data).  Centering (below) then operates on
-  // the normalized query, consistent with train() / quantize_data().
+  // For Cosine: normalize FIRST (Cosine uses an L2 LUT on normalized data),
+  // consistent with train() / quantize_data().
   std::vector<float> norm_query_storage;
   if (meta_.metric_name() == "Cosine") {
     norm_query_storage.assign(query, query + original_dim_);
@@ -433,11 +413,8 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
     query = centered_query_storage.data();
   }
 
-  // For each sub-quantizer, compute distance from query sub-vector to all
-  // 256 centroids via the metric-aware fp32 batch distance function.
-  // For L2: LUT[m][j] = ||q_m - c_m[j]||^2
-  // For IP: LUT[m][j] = -dot(q_m, c_m[j])
-  // For Cosine: (query is normalized) LUT[m][j] = ||q_norm_m - c_m[j]||^2
+  // LUT[m][j] = distance(q_m, c_m[j]) via the metric-aware fp32_batch_fn_:
+  // L2/Cosine: ||q_m - c_m[j]||^2   IP: -dot(q_m, c_m[j]).
   // const_cast: see compute_dist_table for rationale.
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
@@ -463,10 +440,8 @@ void PqInt8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
                                                    int dp_num,
                                                    const void *query,
                                                    float *dist_list) const {
-  // Use ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
-  // const_cast: dp_list is const void* const* (outer const from vtable
-  // signature), but batch_adc_fn_ expects const void**.  Kernel is read-only
-  // on the pointer array.
+  // ISA-dispatched batch4 ADC kernel (4-way ILP + SIMD gather).
+  // const_cast: batch_adc_fn_ expects const void**; kernel is read-only.
   batch_adc_fn_(const_cast<const void **>(dp_list), query,
                 static_cast<size_t>(dp_num), num_chunk_, dist_list);
   // Cosine uses an L2 LUT on normalized vectors — the batch ADC sums are
@@ -527,8 +502,7 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
   out->resize(byte_size);
   float *result = reinterpret_cast<float *>(&(*out)[0]);
 
-  // Reconstruct by concatenating the selected centroids from each
-  // sub-quantizer.  This yields the PQ approximation of the vector
+  // Reconstruct by concatenating the selected centroids per sub-quantizer,
   // in the space the codebook was trained in (normalized for Cosine).
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
@@ -539,18 +513,16 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
     std::memcpy(result + m * d, centroid, d * sizeof(float));
   }
 
-  // Zero-mean centering: add the centroid back FIRST to undo centering,
-  // which was applied in normalized space (after normalization) during
-  // encode.  This yields the (approximate) normalized vector.
+  // Undo zero-mean centering: add the centroid back FIRST (centering was
+  // applied in normalized space during encode).
   if (use_zero_mean_) {
     for (uint32_t j = 0; j < original_dim_; ++j) {
       result[j] += centroid_[j];
     }
   }
 
-  // For Cosine: the codebook was trained on normalized data; the stored norm
-  // rescales the (now un-centered) unit-space vector back to the original
-  // vector's magnitude.
+  // For Cosine: rescale the un-centered unit-space vector back to the
+  // original magnitude using the stored norm.
   if (meta_.metric_name() == "Cosine") {
     float norm = 0.0f;
     std::memcpy(&norm, code + num_chunk_, sizeof(float));
@@ -565,15 +537,13 @@ DistanceImpl PqInt8Quantizer::distance(const void *query,
                                        const IndexQueryMeta &qmeta) const {
   (void)qmeta;
 
-  // ADC: PqAdcDistanceFunc signature now matches DistanceFunc directly
-  // (both use void*), so we can assign without a lambda wrapper.
+  // ADC: PqAdcDistanceFunc matches DistanceFunc directly (no lambda needed).
   DistanceFunc adc_func = adc_fn_;
 
   // Batch ADC: ISA-dispatched batch4 kernel, no lambda needed.
   BatchDistanceFunc batch_func = batch_adc_fn_;
 
-  // The query is already quantized (LUT) by the caller (reset_query)
-  // — copy it directly into DistanceImpl storage.
+  // The query is already quantized (LUT) by the caller; copy it directly.
   size_t lut_bytes = quantized_query_vector_length();
   std::string lut_storage(static_cast<const char *>(query), lut_bytes);
 
@@ -592,9 +562,8 @@ DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
   DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b, size_t dim,
                                     float *out) { sdc(a, b, dt, dim, out); };
 
-  // The query is a PQ code (uint8_t[num_chunk]), NOT a LUT.
-  // SDC computes distance between two PQ codes via the centroid-to-centroid
-  // dist_table_, so both sides must be PQ codes.
+  // The query is a PQ code (uint8_t[num_chunk]), NOT a LUT: SDC compares two
+  // PQ codes via the centroid-to-centroid dist_table_.
   size_t code_bytes = quantized_datapoint_vector_length();
   std::string code_storage(static_cast<const char *>(query), code_bytes);
 
@@ -638,10 +607,9 @@ int PqInt8Quantizer::serialize(std::string *out) const {
     out->append(reinterpret_cast<const char *>(centroid_.data()),
                 centroid_bytes);
   }
-  // dist_table_ is NOT serialized: it is a build-phase-only derivative
-  // of the codebook (used by SDC during graph construction).  Search
-  // uses ADC exclusively, so the table can be recomputed on demand if
-  // ever needed, but is unnecessary after deserialization.
+  // dist_table_ is NOT serialized: it is a build-phase-only derivative of the
+  // codebook (used by SDC), recomputable on demand and unneeded after
+  // deserialization (search uses ADC).
   return 0;
 }
 
