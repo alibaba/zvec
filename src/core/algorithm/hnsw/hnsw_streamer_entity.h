@@ -1154,6 +1154,10 @@ class HnswExternalStreamerEntity : public HnswMmapStreamerEntity {
     return vec_src_ ? vec_src_->get_vector(id) : nullptr;
   }
 
+  ailego_force_inline const void *get_vector_ptr(node_id_t id) const {
+    return vec_src_ ? vec_src_->get_vector(id) : nullptr;
+  }
+
   int get_vector(const node_id_t *ids, uint32_t count,
                  const void **vecs) const override {
     if (ailego_unlikely(vec_src_ == nullptr)) {

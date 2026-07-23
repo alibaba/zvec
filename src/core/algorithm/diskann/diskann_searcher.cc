@@ -25,6 +25,8 @@ DiskAnnSearcher::DiskAnnSearcher() {}
 DiskAnnSearcher::~DiskAnnSearcher() {}
 
 int DiskAnnSearcher::init(const ailego::Params &search_params) {
+  log_diskann_io_backend();
+
   search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
   search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, &cache_nodes_num_);
   return 0;

@@ -8,6 +8,7 @@ import typing
 
 __all__: list[str] = [
     "DataType",
+    "IOBackendType",
     "IndexType",
     "MetricType",
     "QuantizeType",
@@ -122,6 +123,48 @@ class DataType:
     @property
     def value(self) -> int: ...
 
+class IOBackendType:
+    """
+
+    Enumeration of supported I/O backend types for DiskAnn async disk reads.
+
+    - PREAD: Synchronous pread() — no async I/O.
+    - LIBAIO: libaio loaded at runtime via dlopen().
+
+    Examples:
+        >>> from zvec.typing import IOBackendType
+        >>> print(IOBackendType.LIBAIO)
+        IOBackendType.LIBAIO
+
+
+    Members:
+
+      PREAD
+
+      LIBAIO
+    """
+
+    LIBAIO: typing.ClassVar[IOBackendType]  # value = <IOBackendType.LIBAIO: 1>
+    PREAD: typing.ClassVar[IOBackendType]  # value = <IOBackendType.PREAD: 0>
+    __members__: typing.ClassVar[
+        dict[str, IOBackendType]
+    ]  # value = {'PREAD': <IOBackendType.PREAD: 0>, 'LIBAIO': <IOBackendType.LIBAIO: 1>}
+
+    def __eq__(self, other: typing.Any) -> bool: ...
+    def __getstate__(self) -> int: ...
+    def __hash__(self) -> int: ...
+    def __index__(self) -> int: ...
+    def __init__(self, value: typing.SupportsInt) -> None: ...
+    def __int__(self) -> int: ...
+    def __ne__(self, other: typing.Any) -> bool: ...
+    def __repr__(self) -> str: ...
+    def __setstate__(self, state: typing.SupportsInt) -> None: ...
+    def __str__(self) -> str: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
+
 class IndexType:
     """
 
@@ -143,17 +186,29 @@ class IndexType:
 
       FLAT
 
+      HNSW_RABITQ
+
+      DISKANN
+
+      VAMANA
+
       INVERT
+
+      FTS
     """
 
-    FLAT: typing.ClassVar[IndexType]  # value = <IndexType.FLAT: 4>
+    DISKANN: typing.ClassVar[IndexType]  # value = <IndexType.DISKANN: 5>
+    FLAT: typing.ClassVar[IndexType]  # value = <IndexType.FLAT: 3>
+    FTS: typing.ClassVar[IndexType]  # value = <IndexType.FTS: 11>
     HNSW: typing.ClassVar[IndexType]  # value = <IndexType.HNSW: 1>
+    HNSW_RABITQ: typing.ClassVar[IndexType]  # value = <IndexType.HNSW_RABITQ: 4>
     INVERT: typing.ClassVar[IndexType]  # value = <IndexType.INVERT: 10>
-    IVF: typing.ClassVar[IndexType]  # value = <IndexType.IVF: 3>
+    IVF: typing.ClassVar[IndexType]  # value = <IndexType.IVF: 2>
     UNDEFINED: typing.ClassVar[IndexType]  # value = <IndexType.UNDEFINED: 0>
+    VAMANA: typing.ClassVar[IndexType]  # value = <IndexType.VAMANA: 6>
     __members__: typing.ClassVar[
         dict[str, IndexType]
-    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'IVF': <IndexType.IVF: 3>, 'FLAT': <IndexType.FLAT: 4>, 'INVERT': <IndexType.INVERT: 10>}
+    ]  # value = {'UNDEFINED': <IndexType.UNDEFINED: 0>, 'HNSW': <IndexType.HNSW: 1>, 'IVF': <IndexType.IVF: 2>, 'FLAT': <IndexType.FLAT: 3>, 'HNSW_RABITQ': <IndexType.HNSW_RABITQ: 4>, 'DISKANN': <IndexType.DISKANN: 5>, 'VAMANA': <IndexType.VAMANA: 6>, 'INVERT': <IndexType.INVERT: 10>, 'FTS': <IndexType.FTS: 11>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
@@ -236,15 +291,18 @@ class QuantizeType:
       INT8
 
       INT4
+
+      RABITQ
     """
 
     FP16: typing.ClassVar[QuantizeType]  # value = <QuantizeType.FP16: 1>
     INT4: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT4: 3>
     INT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.INT8: 2>
+    RABITQ: typing.ClassVar[QuantizeType]  # value = <QuantizeType.RABITQ: 4>
     UNDEFINED: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNDEFINED: 0>
     __members__: typing.ClassVar[
         dict[str, QuantizeType]
-    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>}
+    ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>, 'RABITQ': <QuantizeType.RABITQ: 4>}
 
     def __eq__(self, other: typing.Any) -> bool: ...
     def __getstate__(self) -> int: ...
