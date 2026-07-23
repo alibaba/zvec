@@ -35,14 +35,14 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.5.0 (June 12, 2026)**
+> 🚀 **v0.6.0 (July 20, 2026)**
 >
-> - **Full-Text Search (FTS)**: Native full-text search — attach an FTS index to any string field and query it with natural-language or structured expressions, no external search engine required.
-> - **Hybrid Retrieval**: Combine full-text, dense-vector, and sparse-vector retrieval in a single query call, with scalar filtering and reranking.
-> - **DiskANN Index**: New on-disk index that keeps the bulk of the index on disk, drastically cutting memory usage for large-scale datasets.
-> - **Ecosystem & Platforms**: New official [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDKs, the [Zvec Studio](https://github.com/zvec-ai/zvec-studio) visual tool, and RISC-V support.
+> - **Group-By Search**: Retrieve top-K results per group instead of globally (group-by deduplication) across Flat, HNSW, HNSW-RaBitQ, and sparse indexes.
+> - **Random Rotation Quantization**: Optional random rotation for INT8/INT4 quantization distributes variance evenly across dimensions, significantly boosting recall.
+> - **Enhanced Full-Text Search**: Upgraded FTS pipeline with a Unicode UAX #29 standard tokenizer, UTF-8 / ASCII folding, and a Snowball-based stemmer supporting 34+ languages.
+> - **Faster & More Robust**: Block-max skip speeds up FTS conjunction queries by 22–38%, plus a new DiskANN C API and numerous stability fixes.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.5.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.6.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 Features
 
@@ -62,7 +62,7 @@ Zvec offers official SDKs across multiple languages:
 - **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.10–3.14)
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
 - **[Go](https://github.com/zvec-ai/zvec-go)**: High-performance Go bindings.
-- **[Rust](https://github.com/zvec-ai/zvec-rust)**: High-performance Rust bindings.
+- **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust`
 - **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec`
 
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
@@ -123,7 +123,7 @@ For detailed benchmark methodology, configurations, and complete results, please
 
 | 💬 DingTalk | 📱 WeChat | 🎮 Discord | X (Twitter) |
 | :---: | :---: | :---: | :---: |
-| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="DingTalk QR Code"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png" width="150" alt="WeChat QR Code"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="DingTalk QR Code"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v1" width="150" alt="WeChat QR Code"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
 | Scan to join | Scan to join | Click to join | Click to follow |
 
 </div>

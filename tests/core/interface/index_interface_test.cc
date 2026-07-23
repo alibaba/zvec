@@ -11,10 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <numeric>
+#include <random>
 #include <unordered_map>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
@@ -2262,6 +2265,112 @@ TEST(IndexInterface, ExternalVectorInnerProduct) {
   index->Close();
   zvec::test_util::RemoveTestFiles(index_name + "*");
 }
+
+TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
+  constexpr uint32_t kDimension = 64;
+  constexpr uint32_t kNumVectors = 2000;
+  constexpr uint32_t kTopk = 20;
+  const std::string index_name{"test_external_fast_search.index"};
+
+  std::mt19937 generator(42);
+  std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
+  std::vector<float> all_vectors(kDimension * kNumVectors);
+  for (uint32_t i = 0; i < kNumVectors; ++i) {
+    float *vector = all_vectors.data() + i * kDimension;
+    float squared_norm = 0.0f;
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vector[d] = distribution(generator);
+      squared_norm += vector[d] * vector[d];
+    }
+    const float norm = std::sqrt(squared_norm);
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vector[d] /= norm;
+    }
+  }
+
+  std::vector<float> query_vector(kDimension);
+  float query_squared_norm = 0.0f;
+  for (float &value : query_vector) {
+    value = distribution(generator);
+    query_squared_norm += value * value;
+  }
+  const float query_norm = std::sqrt(query_squared_norm);
+  for (float &value : query_vector) {
+    value /= query_norm;
+  }
+
+  std::vector<std::pair<float, uint32_t>> exact_results;
+  exact_results.reserve(kNumVectors);
+  for (uint32_t i = 0; i < kNumVectors; ++i) {
+    const float *vector = all_vectors.data() + i * kDimension;
+    const float score = std::inner_product(
+        query_vector.begin(), query_vector.end(), vector, 0.0f);
+    exact_results.emplace_back(score, i);
+  }
+  std::sort(exact_results.begin(), exact_results.end(),
+            [](const auto &lhs, const auto &rhs) {
+              if (lhs.first != rhs.first) {
+                return lhs.first > rhs.first;
+              }
+              return lhs.second < rhs.second;
+            });
+
+  TestVectorSource source(all_vectors.data(), kDimension);
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+
+  auto param = HNSWIndexParamBuilder()
+                   .WithMetricType(MetricType::kInnerProduct)
+                   .WithDataType(DataType::DT_FP32)
+                   .WithDimension(kDimension)
+                   .WithIsSparse(false)
+                   .WithM(16)
+                   .WithEFConstruction(200)
+                   .WithUseExternalVector(true)
+                   .Build();
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0,
+            index->Open(index_name,
+                        {StorageOptions::StorageType::kMMAP, true}));
+
+  for (uint32_t i = 0; i < kNumVectors; ++i) {
+    VectorData vector_data{
+        DenseVector{all_vectors.data() + i * kDimension}};
+    ASSERT_EQ(0, index->AddWithSource(vector_data, i, source));
+  }
+
+  auto query_param = HNSWQueryParamBuilder()
+                         .with_topk(kTopk)
+                         .with_fetch_vector(true)
+                         .with_ef_search(500)
+                         .build();
+  VectorData query{DenseVector{query_vector.data()}};
+  SearchResult result;
+  ASSERT_EQ(0, index->SearchWithSource(query, query_param, source, &result));
+  ASSERT_EQ(kTopk, result.doc_list_.size());
+
+  uint32_t recall_count = 0;
+  for (const auto &doc : result.doc_list_) {
+    const uint32_t key = doc.key();
+    ASSERT_LT(key, kNumVectors);
+    const float *vector = all_vectors.data() + key * kDimension;
+    const float exact_score = std::inner_product(
+        query_vector.begin(), query_vector.end(), vector, 0.0f);
+    EXPECT_NEAR(exact_score, doc.score(), 1e-5f) << "key=" << key;
+
+    for (uint32_t i = 0; i < kTopk; ++i) {
+      if (exact_results[i].second == key) {
+        ++recall_count;
+        break;
+      }
+    }
+  }
+  EXPECT_GE(recall_count, 18u);
+
+  index->Close();
+  zvec::test_util::RemoveTestFiles(index_name + "*");
+}
+
 TEST(IndexInterface, IsDirty) {
   constexpr uint32_t kDimension = 16;
   const std::string index_name{"test_is_dirty.index"};
