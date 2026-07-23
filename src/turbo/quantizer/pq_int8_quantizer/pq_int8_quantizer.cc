@@ -105,12 +105,6 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
 
-  // Zero-mean centering is valid only where the search metric is
-  // translation-invariant.  SquaredEuclidean qualifies directly.  Cosine now
-  // uses an L2 LUT on L2-normalized vectors, so centering the *normalized*
-  // data (train/quantize_data/quantize_query all normalize BEFORE centering)
-  // is also safe and can lower reconstruction error.  IP and
-  // MipsSquaredEuclidean are NOT translation-invariant and are rejected.
   if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean" &&
       meta_.metric_name() != "Cosine") {
     LOG_WARN("PqInt8Quantizer: use_zero_mean is incompatible with metric '%s', "
@@ -178,7 +172,7 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
   gen.set_assumption_free(false);
   algorithm.init_centroids(*local_threads, gen);
 
-  // Lloyd iterations (aligned with multi_chunk_cluster.h L200-216)
+  // Lloyd iterations
   double cost = 0.0;
   for (uint32_t iter = 0; iter < kMaxKmeansIters; ++iter) {
     double old_cost = cost;
