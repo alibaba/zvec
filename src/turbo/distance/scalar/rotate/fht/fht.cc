@@ -77,20 +77,20 @@ void fht_vec_rescale(float *data, size_t n, float factor) {
   }
 }
 
-void fht_rotate(const float * /*in*/, float *out, size_t in_dim,
-                size_t /*out_dim*/, void *ctx) {
+void fht_rotate(const float *in, float *out, size_t in_dim, size_t /*out_dim*/,
+                void *ctx) {
   static constexpr FhtPrimitives kPrim = {fht_flip_sign, fht_inplace,
                                           fht_kacs_walk, fht_inv_kacs_walk,
                                           fht_vec_rescale};
-  fht_rotate_impl(out, in_dim, ctx, kPrim);
+  fht_rotate_impl(in, out, in_dim, ctx, kPrim);
 }
 
-void fht_unrotate(const float * /*in*/, float *out, size_t in_dim,
+void fht_unrotate(const float *in, float *out, size_t in_dim,
                   size_t /*out_dim*/, void *ctx) {
   static constexpr FhtPrimitives kPrim = {fht_flip_sign, fht_inplace,
                                           fht_kacs_walk, fht_inv_kacs_walk,
                                           fht_vec_rescale};
-  fht_unrotate_impl(out, in_dim, ctx, kPrim);
+  fht_unrotate_impl(in, out, in_dim, ctx, kPrim);
 }
 
 }  // namespace zvec::turbo::scalar

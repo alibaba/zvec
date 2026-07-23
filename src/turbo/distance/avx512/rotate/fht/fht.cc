@@ -33,7 +33,10 @@ void fht_flip_sign_avx512(const uint8_t *flip, float *data, size_t dim) {
 #if defined(__AVX512F__)
   size_t simd_end = dim & ~63u;
   constexpr size_t kChunk = 64;
-  const __m512 sign_flip = _mm512_castsi512_ps(_mm512_set1_epi32(0x80000000));
+  // Sign-flip is a pure bitwise op (x ^ 0x80000000), done in the integer
+  // domain so only AVX512F is required. The float-domain VXORPS (zmm) would
+  // pull in an AVX512DQ dependency, which we deliberately avoid here.
+  const __m512i sign_bit = _mm512_set1_epi32(0x80000000);
   for (size_t i = 0; i < simd_end; i += kChunk) {
     uint64_t mask_bits;
     std::memcpy(&mask_bits, &flip[i / 8], sizeof(mask_bits));
@@ -41,18 +44,18 @@ void fht_flip_sign_avx512(const uint8_t *flip, float *data, size_t dim) {
     const __mmask16 m1 = _cvtu32_mask16((mask_bits >> 16) & 0xFFFF);
     const __mmask16 m2 = _cvtu32_mask16((mask_bits >> 32) & 0xFFFF);
     const __mmask16 m3 = _cvtu32_mask16((mask_bits >> 48) & 0xFFFF);
-    __m512 v0 = _mm512_loadu_ps(&data[i]);
-    v0 = _mm512_mask_xor_ps(v0, m0, v0, sign_flip);
-    _mm512_storeu_ps(&data[i], v0);
-    __m512 v1 = _mm512_loadu_ps(&data[i + 16]);
-    v1 = _mm512_mask_xor_ps(v1, m1, v1, sign_flip);
-    _mm512_storeu_ps(&data[i + 16], v1);
-    __m512 v2 = _mm512_loadu_ps(&data[i + 32]);
-    v2 = _mm512_mask_xor_ps(v2, m2, v2, sign_flip);
-    _mm512_storeu_ps(&data[i + 32], v2);
-    __m512 v3 = _mm512_loadu_ps(&data[i + 48]);
-    v3 = _mm512_mask_xor_ps(v3, m3, v3, sign_flip);
-    _mm512_storeu_ps(&data[i + 48], v3);
+    __m512i v0 = _mm512_castps_si512(_mm512_loadu_ps(&data[i]));
+    v0 = _mm512_mask_xor_epi32(v0, m0, v0, sign_bit);
+    _mm512_storeu_ps(&data[i], _mm512_castsi512_ps(v0));
+    __m512i v1 = _mm512_castps_si512(_mm512_loadu_ps(&data[i + 16]));
+    v1 = _mm512_mask_xor_epi32(v1, m1, v1, sign_bit);
+    _mm512_storeu_ps(&data[i + 16], _mm512_castsi512_ps(v1));
+    __m512i v2 = _mm512_castps_si512(_mm512_loadu_ps(&data[i + 32]));
+    v2 = _mm512_mask_xor_epi32(v2, m2, v2, sign_bit);
+    _mm512_storeu_ps(&data[i + 32], _mm512_castsi512_ps(v2));
+    __m512i v3 = _mm512_castps_si512(_mm512_loadu_ps(&data[i + 48]));
+    v3 = _mm512_mask_xor_epi32(v3, m3, v3, sign_bit);
+    _mm512_storeu_ps(&data[i + 48], _mm512_castsi512_ps(v3));
   }
   // Scalar tail
   for (size_t i = simd_end; i < dim; ++i) {
@@ -170,28 +173,30 @@ void fht_vec_rescale_avx512(float *data, size_t n, float factor) {
 #endif
 }
 
-void fht_rotate_avx512(const float * /*in*/, float *out, size_t in_dim,
+void fht_rotate_avx512(const float *in, float *out, size_t in_dim,
                        size_t /*out_dim*/, void *ctx) {
 #if defined(__AVX512F__)
   static constexpr FhtPrimitives kPrim = {
       fht_flip_sign_avx512, fht_inplace_avx512, fht_kacs_walk_avx512,
       fht_inv_kacs_walk_avx512, fht_vec_rescale_avx512};
-  fht_rotate_impl(out, in_dim, ctx, kPrim);
+  fht_rotate_impl(in, out, in_dim, ctx, kPrim);
 #else
+  (void)in;
   (void)out;
   (void)in_dim;
   (void)ctx;
 #endif
 }
 
-void fht_unrotate_avx512(const float * /*in*/, float *out, size_t in_dim,
+void fht_unrotate_avx512(const float *in, float *out, size_t in_dim,
                          size_t /*out_dim*/, void *ctx) {
 #if defined(__AVX512F__)
   static constexpr FhtPrimitives kPrim = {
       fht_flip_sign_avx512, fht_inplace_avx512, fht_kacs_walk_avx512,
       fht_inv_kacs_walk_avx512, fht_vec_rescale_avx512};
-  fht_unrotate_impl(out, in_dim, ctx, kPrim);
+  fht_unrotate_impl(in, out, in_dim, ctx, kPrim);
 #else
+  (void)in;
   (void)out;
   (void)in_dim;
   (void)ctx;
