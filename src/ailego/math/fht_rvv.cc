@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#if defined(__riscv_vector)
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <zvec/ailego/internal/platform.h>
+#include <riscv_vector.h>
 
 namespace zvec {
 namespace ailego {
@@ -96,3 +98,5 @@ void fht_inplace_rvv(float *data, size_t n) {
 
 }  // namespace ailego
 }  // namespace zvec
+
+#endif  // __riscv_vector
