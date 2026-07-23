@@ -102,9 +102,10 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean" &&
       meta_.metric_name() != "Cosine") {
-    LOG_WARN("PqInt8Quantizer: use_zero_mean is incompatible with metric '%s', "
-             "disabling centering",
-             meta_.metric_name().c_str());
+    LOG_WARN(
+        "PqInt8Quantizer: use_zero_mean is incompatible with metric '%s', "
+        "disabling centering",
+        meta_.metric_name().c_str());
     use_zero_mean_ = false;
   }
 
