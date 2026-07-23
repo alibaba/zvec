@@ -138,28 +138,30 @@ void fht_vec_rescale_neon(float *data, size_t n, float factor) {
 #endif
 }
 
-void fht_rotate_neon(const float * /*in*/, float *out, size_t in_dim,
+void fht_rotate_neon(const float *in, float *out, size_t in_dim,
                      size_t /*out_dim*/, void *ctx) {
 #if defined(__ARM_NEON) && defined(__aarch64__)
   static constexpr FhtPrimitives kPrim = {
       fht_flip_sign_neon, scalar::fht_inplace, fht_kacs_walk_neon,
       fht_inv_kacs_walk_neon, fht_vec_rescale_neon};
-  fht_rotate_impl(out, in_dim, ctx, kPrim);
+  fht_rotate_impl(in, out, in_dim, ctx, kPrim);
 #else
+  (void)in;
   (void)out;
   (void)in_dim;
   (void)ctx;
 #endif
 }
 
-void fht_unrotate_neon(const float * /*in*/, float *out, size_t in_dim,
+void fht_unrotate_neon(const float *in, float *out, size_t in_dim,
                        size_t /*out_dim*/, void *ctx) {
 #if defined(__ARM_NEON) && defined(__aarch64__)
   static constexpr FhtPrimitives kPrim = {
       fht_flip_sign_neon, scalar::fht_inplace, fht_kacs_walk_neon,
       fht_inv_kacs_walk_neon, fht_vec_rescale_neon};
-  fht_unrotate_impl(out, in_dim, ctx, kPrim);
+  fht_unrotate_impl(in, out, in_dim, ctx, kPrim);
 #else
+  (void)in;
   (void)out;
   (void)in_dim;
   (void)ctx;

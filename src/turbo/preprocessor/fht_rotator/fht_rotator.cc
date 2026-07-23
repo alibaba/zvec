@@ -107,7 +107,6 @@ void FhtRotator::train(const void * /*data*/, size_t /*num*/,
 // ---------------------------------------------------------------------------
 
 void FhtRotator::apply(const float *in, float *out) const {
-  std::memcpy(out, in, sizeof(float) * static_cast<size_t>(in_dim_));
   kernels_.rotate(in, out, static_cast<size_t>(in_dim_),
                   static_cast<size_t>(out_dim_), static_cast<void *>(fht_ctx_));
 }
@@ -117,7 +116,6 @@ void FhtRotator::apply(const float *in, float *out) const {
 // ---------------------------------------------------------------------------
 
 void FhtRotator::apply_inverse(const float *in, float *out) const {
-  std::memcpy(out, in, sizeof(float) * static_cast<size_t>(in_dim_));
   kernels_.unrotate(in, out, static_cast<size_t>(in_dim_),
                     static_cast<size_t>(out_dim_),
                     static_cast<void *>(fht_ctx_));
