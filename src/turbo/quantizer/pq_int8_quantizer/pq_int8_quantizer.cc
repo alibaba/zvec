@@ -422,6 +422,16 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
                    reinterpret_cast<const void *>(query + m * sub_dim_),
                    kNumCentroids, sub_dim_, lut + m * kNumCentroids);
   }
+
+  // Cosine: the LUT holds ||q_m - c_m[j]||^2 on L2-normalized vectors, and
+  // ||q - c||^2 = 2 - 2*cos_sim = 2*(1 - cos_sim).  Scale by 0.5 so the ADC
+  // sum yields cosine distance (1 - cos_sim) directly on every ADC path.
+  if (meta_.metric_name() == "Cosine") {
+    const size_t lut_size = static_cast<size_t>(num_chunk_) * kNumCentroids;
+    for (size_t i = 0; i < lut_size; ++i) {
+      lut[i] *= 0.5f;
+    }
+  }
 }
 
 float PqInt8Quantizer::calc_distance_dp_query(const void *dp,
@@ -431,8 +441,8 @@ float PqInt8Quantizer::calc_distance_dp_query(const void *dp,
   float d = 0.0f;
   adc_fn_(reinterpret_cast<const uint8_t *>(dp),
           reinterpret_cast<const float *>(query), num_chunk_, &d);
-  // Cosine uses an L2 LUT on normalized vectors, so the ADC sum is already
-  // a valid (squared-Euclidean) distance — no conversion needed.
+  // Cosine LUT is pre-scaled by 0.5 in quantize_query, so the ADC sum is
+  // already the cosine distance — no conversion needed here.
   return d;
 }
 
@@ -444,8 +454,8 @@ void PqInt8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
   // const_cast: batch_adc_fn_ expects const void**; kernel is read-only.
   batch_adc_fn_(const_cast<const void **>(dp_list), query,
                 static_cast<size_t>(dp_num), num_chunk_, dist_list);
-  // Cosine uses an L2 LUT on normalized vectors — the batch ADC sums are
-  // already valid distances, so no conversion is applied.
+  // Cosine LUT is pre-scaled by 0.5 in quantize_query, so the batch ADC sums
+  // are already cosine distances — no conversion applied here.
 }
 
 float PqInt8Quantizer::calc_distance_dp_query_unquantized(
