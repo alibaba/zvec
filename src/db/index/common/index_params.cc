@@ -26,7 +26,8 @@ namespace zvec {
 
 std::string InvertIndexParams::to_string() const {
   std::ostringstream oss;
-  oss << "InvertIndexParams{" << "enable_range_optimization:"
+  oss << "InvertIndexParams{"
+      << "enable_range_optimization:"
       << (enable_range_optimization_ ? "true" : "false")
       << ", enable_extended_wildcard:"
       << (enable_extended_wildcard_ ? "true" : "false") << "}";
