@@ -95,9 +95,9 @@ struct RotatorKernels {
 // data_type selects the code packing layout:
 //   kInt8: one uint8 per sub-quantizer (256 centroids, stride=256)
 struct PqKernels {
-  PqAdcDistanceFunc adc_distance;
-  PqSdcKernelFunc sdc_distance;
-  PqBatchAdcFunc batch_adc_distance;
+  PqAdcDistanceFunc adc_distance = nullptr;
+  PqSdcKernelFunc sdc_distance = nullptr;
+  PqBatchAdcFunc batch_adc_distance = nullptr;
 };
 
 enum class MetricType {
