@@ -4,11 +4,20 @@ project(thirdparty)
 
 include(${PROJECT_ROOT_DIR}/cmake/utils.cmake)
 
-# Optimize third-party libraries for size (-Os) instead of speed (-O3)
-# to reduce the final binary size. zvec's own code remains at -O3.
+# Optimize third-party libraries for size instead of speed to reduce the final
+# binary size. zvec's own code (built under src/) keeps its default speed
+# optimization since these flags are directory-scoped to thirdparty/.
+# - GCC/Clang: use -Os in place of -O3
+# - MSVC: favor small code (/O1, /Ob1) in place of /O2, /Ob2, while preserving
+#   the runtime library and other default Release flags
 if(NOT MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
     set(CMAKE_C_FLAGS_RELEASE "-Os -DNDEBUG")
     set(CMAKE_CXX_FLAGS_RELEASE "-Os -DNDEBUG")
+elseif(MSVC)
+    string(REPLACE "/O2" "/O1" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+    string(REPLACE "/O2" "/O1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    string(REPLACE "/Ob2" "/Ob1" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+    string(REPLACE "/Ob2" "/Ob1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 endif()
 
 set(CMAKE_MACOSX_RPATH ON)

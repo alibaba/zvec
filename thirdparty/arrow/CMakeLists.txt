@@ -146,6 +146,10 @@ elseif (MSVC)
         "-DCMAKE_CXX_FLAGS=${_ARROW_CRT_FLAG}"
         -DARROW_USE_STATIC_CRT=${ZVEC_USE_STATIC_CRT}
         "-DCMAKE_MSVC_RUNTIME_LIBRARY=${_ARROW_MSVC_RUNTIME}"
+        # Favor small code (/O1, /Ob1) over speed (/O2) for the Release config
+        # to match the MinSizeRel size optimization used on other platforms.
+        "-DCMAKE_C_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG"
+        "-DCMAKE_CXX_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG"
     )
         ExternalProject_Add(
                 ARROW.BUILD PREFIX arrow
