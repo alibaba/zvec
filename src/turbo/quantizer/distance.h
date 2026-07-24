@@ -85,7 +85,8 @@ class DistanceImpl {
   }
 
   //! Raw scalar distance function (operates on already-quantized
-  //! candidates).  This is the ADC path for PQ.
+  //! candidates). Useful for pairwise node-vs-node distance where no
+  //! stored query is involved.
   const DistanceFunc &func() const {
     return func_;
   }
