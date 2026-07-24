@@ -78,14 +78,13 @@ using PqAdcDistanceFunc = void (*)(const void *pq_code, const void *lut,
 //   dist_table:        [num_chunk * 256 * 256] float
 // Uses void* for consistency with DistanceFunc / PqAdcDistanceFunc.
 using PqSdcKernelFunc = void (*)(const void *a, const void *b,
-                                 const void *dist_table,
-                                 size_t num_chunk, float *out);
+                                 const void *dist_table, size_t num_chunk,
+                                 float *out);
 
 // Batch ADC: compute distances for multiple PQ codes against a shared LUT.
 // Signature matches BatchDistanceFunc for direct assignment (no lambda).
 using PqBatchAdcFunc = void (*)(const void **candidates, const void *lut,
-                                size_t num, size_t num_chunk,
-                                float *out);
+                                size_t num, size_t num_chunk, float *out);
 
 // ISA-dispatched rotate/unrotate kernels.
 struct RotatorKernels {

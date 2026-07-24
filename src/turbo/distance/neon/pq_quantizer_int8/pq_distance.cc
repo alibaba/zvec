@@ -34,7 +34,7 @@ namespace {
 inline float horizontal_sum_neon(float32x4_t v) {
   float32x2_t lo = vget_low_f32(v);
   float32x2_t hi = vget_high_f32(v);
-  float32x2_t sum2 = vadd_f32(lo, hi);       // [a+b, c+d]
+  float32x2_t sum2 = vadd_f32(lo, hi);             // [a+b, c+d]
   return vget_lane_f32(vpadd_f32(sum2, sum2), 0);  // a+b+c+d
 }
 
@@ -81,8 +81,8 @@ void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
 }
 
 void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
-                               const void *dist_table_v,
-                               size_t num_chunk, float *out) {
+                               const void *dist_table_v, size_t num_chunk,
+                               float *out) {
 #if defined(__ARM_NEON) && defined(__aarch64__)
   constexpr int kNumCentroids = 256;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536
@@ -98,17 +98,17 @@ void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
   // Main loop: process 4 subquantizers per iteration.
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     float d0 = dist_table[(m + 0) * kTablePerSub +
-                           static_cast<size_t>(a[m + 0]) * kNumCentroids +
-                           static_cast<size_t>(b[m + 0])];
+                          static_cast<size_t>(a[m + 0]) * kNumCentroids +
+                          static_cast<size_t>(b[m + 0])];
     float d1 = dist_table[(m + 1) * kTablePerSub +
-                           static_cast<size_t>(a[m + 1]) * kNumCentroids +
-                           static_cast<size_t>(b[m + 1])];
+                          static_cast<size_t>(a[m + 1]) * kNumCentroids +
+                          static_cast<size_t>(b[m + 1])];
     float d2 = dist_table[(m + 2) * kTablePerSub +
-                           static_cast<size_t>(a[m + 2]) * kNumCentroids +
-                           static_cast<size_t>(b[m + 2])];
+                          static_cast<size_t>(a[m + 2]) * kNumCentroids +
+                          static_cast<size_t>(b[m + 2])];
     float d3 = dist_table[(m + 3) * kTablePerSub +
-                           static_cast<size_t>(a[m + 3]) * kNumCentroids +
-                           static_cast<size_t>(b[m + 3])];
+                          static_cast<size_t>(a[m + 3]) * kNumCentroids +
+                          static_cast<size_t>(b[m + 3])];
     float32x4_t d = {d0, d1, d2, d3};
     acc = vaddq_f32(acc, d);
   }
@@ -158,14 +158,14 @@ void pq_adc_int8_batch_distance_neon(const void **candidates_v,
     for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
       const float *tab = lut + m * kNumCentroids;
 
-      float32x4_t d0 = {tab[c0[m + 0]], tab[c0[m + 1]],
-                         tab[c0[m + 2]], tab[c0[m + 3]]};
-      float32x4_t d1 = {tab[c1[m + 0]], tab[c1[m + 1]],
-                         tab[c1[m + 2]], tab[c1[m + 3]]};
-      float32x4_t d2 = {tab[c2[m + 0]], tab[c2[m + 1]],
-                         tab[c2[m + 2]], tab[c2[m + 3]]};
-      float32x4_t d3 = {tab[c3[m + 0]], tab[c3[m + 1]],
-                         tab[c3[m + 2]], tab[c3[m + 3]]};
+      float32x4_t d0 = {tab[c0[m + 0]], tab[c0[m + 1]], tab[c0[m + 2]],
+                        tab[c0[m + 3]]};
+      float32x4_t d1 = {tab[c1[m + 0]], tab[c1[m + 1]], tab[c1[m + 2]],
+                        tab[c1[m + 3]]};
+      float32x4_t d2 = {tab[c2[m + 0]], tab[c2[m + 1]], tab[c2[m + 2]],
+                        tab[c2[m + 3]]};
+      float32x4_t d3 = {tab[c3[m + 0]], tab[c3[m + 1]], tab[c3[m + 2]],
+                        tab[c3[m + 3]]};
 
       acc0 = vaddq_f32(acc0, d0);
       acc1 = vaddq_f32(acc1, d1);

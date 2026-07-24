@@ -100,8 +100,8 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 }
 
 void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
-                               const void *dist_table_v,
-                               size_t num_chunk, float *out) {
+                               const void *dist_table_v, size_t num_chunk,
+                               float *out) {
 #if defined(__AVX2__)
   constexpr int kNumCentroids = 256;
   constexpr int kTablePerSub = kNumCentroids * kNumCentroids;  // 65536

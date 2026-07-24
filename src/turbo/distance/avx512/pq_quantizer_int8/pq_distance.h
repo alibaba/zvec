@@ -27,8 +27,8 @@ void pq_adc_int8_distance_avx512(const void *pq_code, const void *lut,
 // SDC (Symmetric Distance Computation) via AVX512 gather.
 // 16-wide index computation + gather.
 void pq_sdc_int8_distance_avx512(const void *a, const void *b,
-                                 const void *dist_table,
-                                 size_t num_chunk, float *out);
+                                 const void *dist_table, size_t num_chunk,
+                                 float *out);
 
 // Batch ADC via AVX512 gather: process 4 candidates per iteration,
 // each using 16-wide _mm512_i32gather_ps. 4 independent __m512
