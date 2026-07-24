@@ -30,7 +30,7 @@ using namespace zvec::core;
 //!
 //! Datapoints are encoded as uint8_t[num_chunk] codes.
 //! Queries are encoded as a float LUT of size [num_chunk * 256]
-//! via compute_distance_table().  Distance between a PQ code and a
+//! via quantize_query().  Distance between a PQ code and a
 //! query uses ADC (LUT look-up); distance between two PQ codes uses
 //! SDC (centroid-to-centroid distance table).
 class PqInt8Quantizer : public Quantizer {
@@ -155,7 +155,7 @@ class PqInt8Quantizer : public Quantizer {
   std::vector<float> centroids_;
 
   //! Global centroid (per-dimension mean) for zero-mean centering.
-  //! Size: original_dim_ floats.  Only populated when use_centering_ = true.
+  //! Size: original_dim_ floats.  Only populated when use_zero_mean_ = true.
   std::vector<float> centroid_;
 
   //! Centroid-to-centroid distance table for SDC:
