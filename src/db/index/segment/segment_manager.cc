@@ -44,17 +44,45 @@ Status SegmentManager::remove_segment(SegmentID segment_id) {
   return Status::OK();
 }
 
-Status SegmentManager::destroy_segment(SegmentID segment_id) {
+Status SegmentManager::replace_segments(
+    const std::vector<Segment::Ptr> &segments_to_add,
+    const std::vector<SegmentID> &segment_ids_to_destroy) {
   std::unique_lock<std::shared_mutex> lock(mutex_);
-  auto iter = segments_map_.find(segment_id);
-  if (iter == segments_map_.end()) {
-    return Status::NotFound("Segment not found");
+
+  // Phase 1: validate everything up front, so that a failure never leaves
+  // a partially committed segment set behind.
+  for (auto &segment : segments_to_add) {
+    if (!segment) {
+      return Status::InvalidArgument("Segment is null");
+    }
+  }
+  for (auto segment_id : segment_ids_to_destroy) {
+    auto iter = segments_map_.find(segment_id);
+    if (iter == segments_map_.end()) {
+      return Status::NotFound("Segment not found");
+    }
   }
 
-  auto s = iter->second->destroy();
-  CHECK_RETURN_STATUS(s);
+  // Phase 2: apply the whole swap under the single exclusive lock, so
+  // concurrent get_segments() observe either the complete old set or the
+  // complete new set, never a mix (e.g. merge inputs and their merged
+  // output visible at the same time). destroy() cannot fail here: a
+  // segment is marked and erased atomically under this lock, so a
+  // map-resident segment is never already marked.
+  for (auto segment_id : segment_ids_to_destroy) {
+    auto iter = segments_map_.find(segment_id);
+    auto s = iter->second->destroy();
+    CHECK_RETURN_STATUS(s);
+    segments_map_.erase(iter);
+  }
 
-  segments_map_.erase(segment_id);
+  for (auto &segment : segments_to_add) {
+    // overwrites any existing entry with the same id: the replaced
+    // instance is dropped without destroy() so its shared files stay on
+    // disk; in-flight readers keep it alive until they finish
+    segments_map_[segment->id()] = segment;
+  }
+
   return Status::OK();
 }
 

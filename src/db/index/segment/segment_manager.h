@@ -36,7 +36,13 @@ class SegmentManager {
 
   Status remove_segment(SegmentID segment_id);
 
-  Status destroy_segment(SegmentID segment_id);
+  //! Atomically add (or replace by id) segments and destroy others, so that
+  //! concurrent readers never observe a partially committed segment set.
+  //! Segments replaced by id are dropped without destroy(): their files are
+  //! shared with the replacing instance and in-flight readers keep the old
+  //! instance alive via shared_ptr until they finish.
+  Status replace_segments(const std::vector<Segment::Ptr> &segments_to_add,
+                          const std::vector<SegmentID> &segment_ids_to_destroy);
 
   std::vector<Segment::Ptr> get_segments() const;
 

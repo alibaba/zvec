@@ -883,7 +883,19 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     s = version_manager_->flush();
     CHECK_RETURN_STATUS(s);
 
-    // 4. remove old segments or block
+    // 4. commit the new segment set atomically
+    //
+    // Never mutate live segments in place here: Optimize holds the schema
+    // lock in shared mode, so concurrent readers may still be using them.
+    // New segment instances are opened from the new metas and swapped in
+    // with a single atomic replacement, so concurrent readers observe
+    // either the pre-optimize or the post-optimize segment set, never a
+    // mix (e.g. merge inputs alongside their merged output). Replaced
+    // instances are only marked need-destroyed: in-flight readers keep
+    // them (and their files) alive via shared_ptr, and the files are
+    // removed from disk only when the last reference is dropped.
+    std::vector<Segment::Ptr> segments_to_add;
+    std::vector<SegmentID> segment_ids_to_destroy;
     for (auto &task : tasks) {
       auto task_info = task->task_info();
 
@@ -898,24 +910,32 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
           if (!new_segment.has_value()) {
             return new_segment.error();
           }
-          s = segment_manager_->add_segment(new_segment.value());
-          CHECK_RETURN_STATUS(s);
+          segments_to_add.push_back(new_segment.value());
         }
 
         for (auto input_segment : compact_task.input_segments_) {
-          s = segment_manager_->destroy_segment(input_segment->id());
-          CHECK_RETURN_STATUS(s);
+          segment_ids_to_destroy.push_back(input_segment->id());
         }
       } else if (std::holds_alternative<CreateVectorIndexTask>(task_info)) {
         auto create_index_task = std::get<CreateVectorIndexTask>(task_info);
 
-        s = create_index_task.input_segment_->reload_vector_index(
-            *schema_, create_index_task.output_segment_meta_,
-            create_index_task.output_vector_indexers_,
-            create_index_task.output_quant_vector_indexers_);
-        CHECK_RETURN_STATUS(s);
+        // reopen the segment with the new vector index and replace the old
+        // instance by id, instead of reload_vector_index() which would
+        // destroy indexers still referenced by concurrent readers
+        auto new_segment = Segment::Open(
+            path_, *schema_, *create_index_task.output_segment_meta_, id_map_,
+            delete_store_, version_manager_,
+            SegmentOptions{true, options_.enable_mmap_});
+        if (!new_segment.has_value()) {
+          return new_segment.error();
+        }
+        segments_to_add.push_back(new_segment.value());
       }
     }
+
+    s = segment_manager_->replace_segments(segments_to_add,
+                                           segment_ids_to_destroy);
+    CHECK_RETURN_STATUS(s);
   }
 
   return Status::OK();
