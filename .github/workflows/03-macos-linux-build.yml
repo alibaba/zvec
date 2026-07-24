@@ -60,14 +60,6 @@ jobs:
           sudo apt-get install -y clang libomp-dev
         shell: bash
 
-      - name: Install AIO 
-        if: runner.os == 'Linux' && runner.arch == 'X64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libaio-dev
-        shell: bash
-
       - name: Print CPU info
         if: runner.os == 'Linux'
         run: lscpu
@@ -182,4 +174,42 @@ jobs:
           ./c_api_field_schema_example
           ./c_api_index_example
           ./c_api_optimized_example
+        shell: bash
+
+      # ------------------------------------------------------------------ #
+      # DiskAnn libaio round: install libaio and re-run tests 
+      # ------------------------------------------------------------------ #
+      - name: Install libaio runtime
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get update -y
+          # libaio1t64 on Ubuntu 24.04+ (t64 transition), libaio1 on older
+          sudo apt-get install -y libaio1t64 || sudo apt-get install -y libaio1
+          echo "=== libaio status (should be present) ==="
+          dpkg -l | grep -i libaio || true
+          ldconfig -p | grep libaio || true
+        shell: bash
+
+      - name: Run DiskAnn C++ Tests (w/ libaio)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          ctest -R diskann --output-on-failure --parallel $NPROC
+        shell: bash
+
+      - name: Run DiskAnn Python Tests (w/ libaio)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python -m pytest python/tests/test_collection_diskann.py -v
+        shell: bash
+
+      # Verify installing libaio does not affect existing non-DiskAnn tests.
+      - name: Run HNSW Tests (w/ libaio)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          ctest -R hnsw --output-on-failure --parallel $NPROC
+          cd "$GITHUB_WORKSPACE"
+          python -m pytest python/tests/test_hnsw_contiguous_memory.py -v
         shell: bash

@@ -1882,7 +1882,7 @@ int main(int argc, char *argv[]) {
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
   if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
   }
 
   // Calculate Recall

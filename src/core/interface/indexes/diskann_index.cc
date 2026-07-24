@@ -16,61 +16,12 @@
 #include <mutex>
 #include <string>
 #include <zvec/core/interface/index.h>
-#include <zvec/plugin/diskann_plugin.h>
 #include "algorithm/diskann/diskann_params.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
 
-namespace {
-
-// Implicitly bring the DiskAnn runtime online on first use. This keeps the
-// DiskAnn index an ordinary public API (users just instantiate a
-// DiskAnnIndexParam) while still letting the rest of the library — HNSW,
-// IVF, Flat, Vamana — run on hosts that happen to lack libaio. On such
-// hosts only DiskAnn fails, with a clear, actionable error message, and
-// every other index type stays fully functional.
-int EnsureDiskAnnRuntimeReady() {
-  static std::once_flag once;
-  static int cached_result = 0;
-  std::call_once(once, []() {
-    const int status = ::zvec::LoadDiskAnnPlugin();
-    if (status == kDiskAnnPluginOk) {
-      cached_result = 0;
-      return;
-    }
-    switch (status) {
-      case kDiskAnnPluginLibAioMissing:
-        LOG_ERROR(
-            "DiskAnn requires libaio at runtime, but it was not found on this "
-            "host. Install it (e.g. 'apt-get install libaio1' on "
-            "Debian/Ubuntu, "
-            "or 'libaio1t64' on Ubuntu 24.04+) and retry.");
-        break;
-      case kDiskAnnPluginUnsupportedPlatform:
-        LOG_ERROR("DiskAnn is only supported on Linux x86_64.");
-        break;
-      case kDiskAnnPluginDlopenFailed:
-      default:
-        LOG_ERROR("Failed to initialize the DiskAnn runtime (status=%d).",
-                  status);
-        break;
-    }
-    cached_result = core::IndexError_Runtime;
-  });
-  return cached_result;
-}
-
-}  // namespace
-
 int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
-  // Fail fast and cleanly if the DiskAnn runtime cannot be brought up on
-  // this host (most commonly: libaio is missing). The rest of zvec keeps
-  // running; only DiskAnn is unusable.
-  if (int rc = EnsureDiskAnnRuntimeReady(); rc != 0) {
-    return rc;
-  }
-
   if (is_sparse_) {
     LOG_ERROR("Failed to create streamer. Sparse is not Supported.");
     return core::IndexError_Unsupported;

@@ -218,6 +218,39 @@ TEST_F(CrashRecoveryTest, CrashRecoveryDuringInsertion) {
 }
 
 
+TEST_F(CrashRecoveryTest, OptimizeAfterCrashRecoveryPersistsReplayedData) {
+  {
+    auto schema = CreateTestSchema(collection_name_);
+    auto result = Collection::CreateAndOpen(dir_path_, *schema, options_);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+  }
+
+  RunGeneratorAndCrash("0", "10000", "insert", "0", 1);
+
+  uint64_t recovered_doc_count = 0;
+  {
+    auto result = Collection::Open(dir_path_, options_);
+    ASSERT_TRUE(result.has_value())
+        << "Failed to reopen collection after crash recovery";
+    auto collection = result.value();
+
+    recovered_doc_count = collection->Stats().value().doc_count;
+    ASSERT_GT(recovered_doc_count, 0)
+        << "No documents were recovered from the WAL";
+
+    auto status = collection->Optimize();
+    ASSERT_TRUE(status.ok()) << status.message();
+    ASSERT_EQ(collection->Stats().value().doc_count, recovered_doc_count);
+  }
+
+  auto result = Collection::Open(dir_path_, options_);
+  ASSERT_TRUE(result.has_value())
+      << "Failed to reopen collection after optimizing recovered data";
+  ASSERT_EQ(result.value()->Stats().value().doc_count, recovered_doc_count)
+      << "Optimize discarded documents restored from the WAL";
+}
+
+
 TEST_F(CrashRecoveryTest, CrashRecoveryDuringUpsert) {
   {
     auto schema = CreateTestSchema(collection_name_);
