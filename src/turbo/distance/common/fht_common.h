@@ -38,10 +38,9 @@ struct FhtPrimitives {
 ///   offset 24: uint8_t flip[]
 inline void fht_rotate_impl(const float *in, float *out, size_t dim, void *ctx,
                             const FhtPrimitives &p) {
-  // Seed the output buffer with the input, then rotate it in place. Keeping the
-  // copy here makes the kernel a self-contained out-of-place transform (read
-  // `in`, write `out`); callers no longer need to pre-copy `in` into `out`.
-  std::memcpy(out, in, sizeof(float) * dim);
+  if (out != in) {
+    std::memcpy(out, in, sizeof(float) * dim);
+  }
   float *data = out;
   auto *base = reinterpret_cast<const uint8_t *>(ctx);
   const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
@@ -86,10 +85,9 @@ inline void fht_rotate_impl(const float *in, float *out, size_t dim, void *ctx,
 
 inline void fht_unrotate_impl(const float *in, float *out, size_t dim,
                               void *ctx, const FhtPrimitives &p) {
-  // Seed the output buffer with the input, then unrotate it in place. Keeping
-  // the copy here makes the kernel a self-contained out-of-place transform
-  // (read `in`, write `out`); callers no longer need to pre-copy `in`.
-  std::memcpy(out, in, sizeof(float) * dim);
+  if (out != in) {
+    std::memcpy(out, in, sizeof(float) * dim);
+  }
   float *data = out;
   auto *base = reinterpret_cast<const uint8_t *>(ctx);
   const size_t flip_offset = *reinterpret_cast<const size_t *>(base);
