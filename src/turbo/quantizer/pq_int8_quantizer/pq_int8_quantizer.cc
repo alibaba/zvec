@@ -23,7 +23,6 @@
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
-#include <zvec/core/framework/index_logger.h>
 #include <zvec/core/framework/index_threads.h>
 
 namespace zvec {
@@ -50,12 +49,9 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   // Read num_chunk from params (required).
   uint32_t nsq = 0;
   if (!params.get("num_chunk", &nsq) || nsq == 0) {
-    LOG_ERROR("PqInt8Quantizer: num_chunk not set or zero");
     return kErrUnsupported;
   }
   if (d % nsq != 0) {
-    LOG_ERROR("PqInt8Quantizer: dim (%u) is not divisible by num_chunk (%u)", d,
-              nsq);
     return kErrUnsupported;
   }
 
@@ -102,10 +98,6 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   if (use_zero_mean_ && meta_.metric_name() != "SquaredEuclidean" &&
       meta_.metric_name() != "Cosine") {
-    LOG_WARN(
-        "PqInt8Quantizer: use_zero_mean is incompatible with metric '%s', "
-        "disabling centering",
-        meta_.metric_name().c_str());
     use_zero_mean_ = false;
   }
 
@@ -169,7 +161,6 @@ void PqInt8Quantizer::train_subquantizer(const float *data, size_t num,
     double old_cost = cost;
     bool result = algorithm.cluster_once(*local_threads, &cost);
     if (!result) {
-      LOG_ERROR("sub[%zu] cluster_once failed at iter %u", sub_idx, iter);
       break;
     }
     double new_epsilon = std::abs(cost - old_cost);
@@ -209,8 +200,6 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   // Subsample if the dataset exceeds the training limit (aligned with
   // faiss/vsag: 256 centroids * 256 max_points_per_centroid ≈ 65535).
   if (num > kMaxTrainVectors) {
-    LOG_INFO("PQ training: subsampling %zu -> %zu vectors", num,
-             kMaxTrainVectors);
     std::mt19937 rng(42);
     // Fisher-Yates partial shuffle: randomly place kMaxTrainVectors vectors
     // at the front of the buffer.
@@ -264,13 +253,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
         v[d] -= centroid_[d];
       }
     }
-    LOG_INFO("PQ centering: zero-mean centroid computed");
   }
-
-  LOG_INFO(
-      "PQ training: %zu vectors, dim=%u, nsq=%u, sub_dim=%u, "
-      "max_iters=%u, threads=%d",
-      num, original_dim_, num_chunk_, sub_dim_, kMaxKmeansIters, thread_count);
 
   // Create thread pool.
   auto threads = std::make_shared<SingleQueueIndexThreads>(
@@ -292,17 +275,12 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   }
   task_group->wait_finish();
 
-  LOG_INFO("  all %u sub-quantizers trained (%zu threads)", num_chunk_,
-           pool_count);
-
   // Pre-build centroid pointer cache (needed by compute_dist_table).
   build_centroid_ptrs_cache();
 
   // Pre-compute SDC dist_table.
-  LOG_INFO("Computing SDC dist_table ...");
   compute_dist_table();
 
-  LOG_INFO("PQ training complete.");
   return 0;
 }
 
