@@ -5,23 +5,40 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
     if (HOST_ARCH MATCHES "^(x86|x64)$")
         setup_compiler_march_for_x86(TURBO_MARCH_FLAG_SSE TURBO_MARCH_FLAG_AVX2 TURBO_MARCH_FLAG_AVX512 TURBO_MARCH_FLAG_AVX512FP16)
     elseif (HOST_ARCH MATCHES "^(arm|arm64)$")
-        # ARM64 architecture - no special march flags needed for now
-        # NEON implementations can be added here if needed
-        message(STATUS "turbo: ARM64 detected, skipping x86-specific optimizations")
+        # ARM64 architecture - NEON is enabled by default on aarch64,
+        # no special march flags needed.
+        message(STATUS "turbo: ARM64 detected, NEON enabled by default")
     endif()
 endif()
 
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 
-# Set per-file compile flags for AVX512-VNNI sources.
+# Set per-file compile flags for SIMD sources.
 # set_source_files_properties is directory-scoped, so it must be called in the
 # same directory that adds the sources to a target (i.e. here, not in a
 # subdirectory).
 if(NOT ANDROID AND AUTO_DETECT_ARCH)
     if (HOST_ARCH MATCHES "^(x86|x64)$")
-        file(GLOB_RECURSE AVX512_VNNI_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc)
+        # SSE
+        file(GLOB_RECURSE SSE_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sse/*.cc)
         set_source_files_properties(
-            ${AVX512_VNNI_SRCS}
+            ${SSE_SRCS}
+            PROPERTIES
+            COMPILE_FLAGS "${TURBO_MARCH_FLAG_SSE}"
+        )
+
+        # AVX2
+        file(GLOB_RECURSE AVX2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx2/*.cc)
+        set_source_files_properties(
+            ${AVX2_SRCS}
+            PROPERTIES
+            COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX2}"
+        )
+
+        # AVX512 (avx512_vnni and avx512/fht both use AVX512 march)
+        file(GLOB_RECURSE AVX512_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/*.cc)
+        set_source_files_properties(
+            ${AVX512_SRCS}
             PROPERTIES
             COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
         )
