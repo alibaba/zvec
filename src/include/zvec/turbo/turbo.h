@@ -13,10 +13,34 @@
 // limitations under the License.
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <zvec/ailego/math_batch/utils.h>
 
 namespace zvec::turbo {
+
+//! Error code literals mirroring core::IndexError::Code integer values.
+//!
+//! Turbo quantizer sources use these directly instead of the
+//! `IndexError_NotImplemented` / `IndexError_Unsupported` const objects
+//! because MSVC's WINDOWS_EXPORT_ALL_SYMBOLS does not export const data
+//! with constructors from zvec_shared.dll.  zvec_turbo is a static library
+//! linked with /WHOLEARCHIVE, so referencing those unexported symbols across
+//! the DLL boundary triggers LNK2019 on Windows.
+//!
+//! IndexError::Code stores -val in its constructor, so NotImplemented(11)
+//! yields -11 and Unsupported(12) yields -12.
+constexpr int kErrRuntime = -1;
+constexpr int kErrNotImplemented = -11;
+constexpr int kErrUnsupported = -12;
+constexpr int kErrInvalidArgument = -31;
+
+//! Magic number ('QTZR') stamped at the start of a serialized quantizer blob.
+constexpr uint32_t kQuantizerMagic = 0x52545A51u;
+
+//! Current quantizer serialization format version.
+constexpr uint16_t kQuantizerSerVersion = 1;
 
 using DistanceFunc =
     std::function<void(const void *m, const void *q, size_t dim, float *out)>;
@@ -32,6 +56,19 @@ using QueryPreprocessFunc =
 // to avoid indirect-call overhead on the per-record / per-query hot path.
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
+
+// Generic rotate / unrotate function pointer types.
+// ctx is an opaque context (e.g. FhtCtx*) managed by the caller.
+using RotateFunc = void (*)(const float *in, float *out, size_t in_dim,
+                            size_t out_dim, void *ctx);
+using UnrotateFunc = void (*)(const float *in, float *out, size_t in_dim,
+                              size_t out_dim, void *ctx);
+
+// ISA-dispatched rotate/unrotate kernels.
+struct RotatorKernels {
+  RotateFunc rotate = nullptr;
+  UnrotateFunc unrotate = nullptr;
+};
 
 enum class MetricType {
   kSquaredEuclidean,
@@ -57,6 +94,10 @@ enum class QuantizeType {
   kFp32,
   kPQ,
   kRabit
+};
+
+enum class RotateType : uint16_t {
+  kFht = 1,  //!< O(d log d) FHT-based Kac random rotation
 };
 
 enum class CpuArchType {
@@ -94,5 +135,9 @@ QueryPreprocessFunc get_query_preprocess_func(
 // (metric/data/quantize) dispatch above; data_type is retained so the
 // interface can grow to cover other output types (e.g. fp16) in the future.
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
+
+// Returns rotator kernels dispatched for the current CPU.
+RotatorKernels get_rotator_kernels(
+    RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 }  // namespace zvec::turbo

@@ -21,7 +21,6 @@ TEST(QueryParamsTest, QueryParamsBaseClass) {
   // Test constructor
   QueryParams params(IndexType::HNSW);
   EXPECT_EQ(params.type(), IndexType::HNSW);
-
 }
 
 TEST(QueryParamsTest, HnswQueryParams) {
