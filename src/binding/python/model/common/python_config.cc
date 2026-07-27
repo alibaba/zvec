@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "python_config.h"
+#include <ailego/io/io_backend.h>
 #include <pybind11/stl.h>
 #include <zvec/ailego/io/io_backend.h>
 
@@ -228,8 +229,7 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       },
       "Returns the current I/O backend type for DiskAnn async disk reads "
       "as an IOBackendType enum (zvec.typing.IOBackendType). "
-      "IOBackendType.LIBAIO if libaio is available, "
-      "IOBackendType.PREAD otherwise.");
+      "The Linux selection priority is IO_URING, LIBAIO, then PREAD.");
 
   // Returns a human-readable description of the I/O backend, including
   // installation guidance for libaio when only pread is available.

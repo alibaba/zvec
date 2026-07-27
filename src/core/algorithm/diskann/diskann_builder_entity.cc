@@ -14,6 +14,7 @@
 
 #include "diskann_builder_entity.h"
 #include <iostream>
+#include <numeric>
 #include "diskann_algorithm.h"
 #include "diskann_util.h"
 

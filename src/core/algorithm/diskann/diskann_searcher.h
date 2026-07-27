@@ -17,8 +17,6 @@
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 
-class LinuxAlignedFileReader;
-
 namespace zvec {
 namespace core {
 
@@ -41,7 +39,8 @@ class DiskAnnSearcher : public IndexSearcher {
   int cleanup(void) override;
 
   //! Load Index from storage
-  int load(IndexStorage::Pointer storage, IndexMetric::Pointer metric) override;
+  int load(IndexStorage::Pointer storage,
+           IndexMetric::Pointer /*metric*/) override;
 
   //! Unload index from storage
   int unload(void) override;
@@ -145,6 +144,7 @@ class DiskAnnSearcher : public IndexSearcher {
 
   IndexMetric::Pointer measure_{};
   IndexMeta meta_{};
+  IndexMeta search_meta_{};
   ailego::Params params_{};
 
   uint32_t list_size_{200};

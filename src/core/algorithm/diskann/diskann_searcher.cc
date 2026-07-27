@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "diskann_searcher.h"
+#include <ailego/io/io_backend.h>
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 #include "diskann_params.h"
@@ -43,7 +44,7 @@ int DiskAnnSearcher::cleanup() {
 }
 
 int DiskAnnSearcher::load(IndexStorage::Pointer storage,
-                          IndexMetric::Pointer measure) {
+                          IndexMetric::Pointer /*measure*/) {
   LOG_INFO("DiskAnnSearcher::load Begin");
 
   auto start_time = ailego::Monotime::MilliSeconds();
@@ -79,22 +80,31 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
     node_list.shrink_to_fit();
   }
 
-  if (measure) {
-    measure_ = measure;
-  } else {
-    measure_ = IndexFactory::CreateMetric(meta_.metric_name());
-    if (!measure_) {
-      LOG_ERROR("CreateMetric failed, name: %s", meta_.metric_name().c_str());
-      return IndexError_NoExist;
+  search_meta_ = meta_;
+  if (meta_.metric_name() == "InnerProduct") {
+    search_meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
+  } else if (meta_.metric_name() == "Cosine") {
+    search_meta_.set_metric("SquaredEuclidean", 0, ailego::Params());
+    if (meta_.data_type() == IndexMeta::DataType::DT_FP32) {
+      search_meta_.set_dimension(meta_.dimension() - 1);
+    } else {
+      search_meta_.set_dimension(meta_.dimension() - 2);
     }
-    ret = measure_->init(meta_, meta_.metric_params());
-    if (ret != 0) {
-      LOG_ERROR("IndexMetric init failed, ret=%d", ret);
-      return ret;
-    }
-    if (measure_->query_metric()) {
-      measure_ = measure_->query_metric();
-    }
+  }
+
+  measure_ = IndexFactory::CreateMetric(search_meta_.metric_name());
+  if (!measure_) {
+    LOG_ERROR("CreateMetric failed, name: %s",
+              search_meta_.metric_name().c_str());
+    return IndexError_NoExist;
+  }
+  ret = measure_->init(search_meta_, search_meta_.metric_params());
+  if (ret != 0) {
+    LOG_ERROR("IndexMetric init failed, ret=%d", ret);
+    return ret;
+  }
+  if (measure_->query_metric()) {
+    measure_ = measure_->query_metric();
   }
 
   stats_.set_loaded_costtime(ailego::Monotime::MilliSeconds() - start_time);
@@ -122,8 +132,8 @@ int DiskAnnSearcher::update_context(DiskAnnContext *ctx) const {
     return IndexError_Runtime;
   }
 
-  return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
-                             entity, magic_);
+  return ctx->update_context(DiskAnnContext::kSearcherContext, search_meta_,
+                             measure_, entity, magic_);
 }
 
 int DiskAnnSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -287,15 +297,16 @@ IndexSearcher::Context::Pointer DiskAnnSearcher::create_context() const {
     return Context::Pointer();
   }
 
-  DiskAnnContext *ctx =
-      new (std::nothrow) DiskAnnContext(meta_, measure_, search_ctx_entity);
+  DiskAnnContext *ctx = new (std::nothrow)
+      DiskAnnContext(search_meta_, measure_, search_ctx_entity);
   if (ctx == nullptr) {
     LOG_ERROR("Failed to allocate DiskAnn Context");
     return Context::Pointer();
   }
   if (ailego_unlikely(ctx->init(
           DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
-          search_ctx_entity->pq_chunk_num(), meta_.element_size())) != 0) {
+          search_ctx_entity->pq_chunk_num(), search_meta_.element_size(),
+          meta_.element_size())) != 0) {
     LOG_ERROR("Init DiskAnn Context failed");
     delete ctx;
 

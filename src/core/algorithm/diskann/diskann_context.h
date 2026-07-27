@@ -60,7 +60,7 @@ class DiskAnnContext : public IndexContext,
  public:
   //! Init
   int init(ContextType type, uint32_t graph_degree, uint32_t pq_chunk_num,
-           uint32_t element_size);
+           uint32_t element_size, uint32_t disk_element_size = 0);
 
   //! Update context, the context may be shared by different searcher/streamer
   int update_context(ContextType type, const IndexMeta &meta,
@@ -349,7 +349,7 @@ class DiskAnnContext : public IndexContext,
   uint32_t group_num_{0};
   std::map<std::string, TopkHeap> group_topk_heaps_{};
 
-  IOContext io_ctx_{0};
+  IOContext io_ctx_{};
   SearchStats query_stats_;
 
   float *pq_table_dist_buffer_{nullptr};

@@ -27,7 +27,8 @@ DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
     : dc_(entity.get(), measure, meta.dimension()), entity_{entity} {}
 
 int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
-                         uint32_t pq_chunk_num, uint32_t element_size) {
+                         uint32_t pq_chunk_num, uint32_t element_size,
+                         uint32_t disk_element_size) {
   type_ = type;
   element_size_ = element_size;
   pq_chunk_num_ = pq_chunk_num;
@@ -60,7 +61,9 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
       DiskAnnUtil::alloc_aligned((void **)&pq_coord_buffer_,
                                  graph_degree * pq_chunk_num_ * sizeof(uint8_t),
                                  256);
-      DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
+      DiskAnnUtil::alloc_aligned(
+          (void **)&coord_buffer_,
+          disk_element_size > 0 ? disk_element_size : element_size_, 256);
       DiskAnnUtil::alloc_aligned(
           (void **)&sector_buffer_,
           DiskAnnUtil::kMaxSectorReadNum * DiskAnnUtil::kSectorSize,
@@ -82,12 +85,12 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
 }
 
 DiskAnnContext::~DiskAnnContext() {
-  free(query_);
-  free(query_rotated_);
-  free(pq_table_dist_buffer_);
-  free(pq_coord_buffer_);
-  free(coord_buffer_);
-  free(sector_buffer_);
+  DiskAnnUtil::free_aligned(query_);
+  DiskAnnUtil::free_aligned(query_rotated_);
+  DiskAnnUtil::free_aligned(pq_table_dist_buffer_);
+  DiskAnnUtil::free_aligned(pq_coord_buffer_);
+  DiskAnnUtil::free_aligned(coord_buffer_);
+  DiskAnnUtil::free_aligned(sector_buffer_);
 
   if (type_ == kSearcherContext) {
     destroy_io_ctx(io_ctx_);
@@ -105,7 +108,7 @@ int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
                                    const IndexMetric::Pointer &measure,
                                    const DiskAnnEntity::Pointer &entity,
                                    uint32_t magic_num) {
-  if (ailego_unlikely(type != type_)) {
+  if (ailego_unlikely(type != static_cast<ContextType>(type_))) {
     LOG_ERROR(
         "DiskAnnContext does not support shared by different type, "
         "src=%u dst=%u",

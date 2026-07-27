@@ -17,8 +17,6 @@
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 
-class LinuxAlignedFileReader;
-
 namespace zvec {
 namespace core {
 
@@ -155,6 +153,7 @@ class DiskAnnStreamer : public IndexStreamer {
 
   IndexMetric::Pointer measure_{};
   IndexMeta meta_{};
+  IndexMeta search_meta_{};
   ailego::Params params_{};
 
   uint32_t list_size_{200};

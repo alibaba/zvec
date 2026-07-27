@@ -87,11 +87,11 @@ class DiskAnnIndexer {
   diskann_id_t medoid_;
   std::vector<diskann_id_t> entrypoints_;
 
-  std::shared_ptr<LinuxAlignedFileReader> reader_{nullptr};
+  std::shared_ptr<PlatformAlignedFileReader> reader_{nullptr};
 
   PQTable::Pointer pq_table_;
 
-  IOContext init_ctx_{0};
+  IOContext init_ctx_{};
 
   std::vector<diskann_id_t> neighbor_cache_buffer_;
   void *coord_cache_buf_{nullptr};

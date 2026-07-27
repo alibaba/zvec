@@ -25,7 +25,7 @@ struct DiskAnnIndexHolderMeta {
   uint32_t key_size_;
   uint32_t sector_size_;
   uint32_t doc_cnt_;
-  uint8_t reserve_[];
+  uint8_t reserve_[4080];  //!< pad to kMetaSectorSize (4096)
 };
 
 class DiskAnnIndexHolder : public IndexHolder {
@@ -182,7 +182,7 @@ class DiskAnnIndexHolder : public IndexHolder {
       return IndexError_OpenFile;
     }
 
-    DiskAnnIndexHolderMeta holder_meta;
+    DiskAnnIndexHolderMeta holder_meta{};
     holder_meta.element_size_ = element_size_;
     holder_meta.key_size_ = sizeof(diskann_key_t);
     holder_meta.sector_size_ = data_sector_size_;

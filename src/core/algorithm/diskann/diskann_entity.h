@@ -24,7 +24,7 @@ using diskann_key_t = uint64_t;
 using diskann_id_t = uint32_t;
 
 constexpr diskann_id_t kInvalidId = static_cast<diskann_id_t>(-1);
-constexpr diskann_key_t kInvalidKey = static_cast<key_t>(-1);
+constexpr diskann_key_t kInvalidKey = static_cast<diskann_key_t>(-1);
 
 struct VectorInfo {
   float dist_;

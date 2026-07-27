@@ -17,6 +17,10 @@
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_entity.h"
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <malloc.h>
+#endif
+
 namespace zvec {
 namespace core {
 
@@ -35,15 +39,22 @@ class DiskAnnUtil {
   }
 
   static inline void alloc_aligned(void **ptr, size_t size, size_t align) {
+#if defined(_WIN32) || defined(_WIN64)
+    *ptr = ::_aligned_malloc(size, align);
+#else
     *ptr = ::aligned_alloc(align, size);
+#endif
   }
 
   static inline void free_aligned(void *ptr) {
     if (ptr == nullptr) {
       return;
     }
-
+#if defined(_WIN32) || defined(_WIN64)
+    ::_aligned_free(ptr);
+#else
     free(ptr);
+#endif
   }
 
   template <typename T>

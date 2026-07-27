@@ -14,6 +14,7 @@
 
 #include <sys/stat.h>
 #include <signal.h>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -135,12 +136,8 @@ class Recall {
     // Prepare file handler
     vector<pair<fstream *, fstream *>> output_fs;
     if (!output_.empty()) {
-      string cmd = "mkdir -p " + output_;
-      int ret = system(cmd.c_str());
-      if (ret != 0) {
-        std::cerr << "execute cmd " << cmd << " failed" << std::endl;
-        return;
-      }
+      std::error_code ec;
+      std::filesystem::create_directories(output_, ec);
       struct stat sb;
       if (stat(output_.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode)) {
         cout << "logs output to : " << output_ << endl;
@@ -993,12 +990,8 @@ class SparseRecall {
     // Prepare file handler
     vector<pair<fstream *, fstream *>> output_fs;
     if (!output_.empty()) {
-      string cmd = "mkdir -p " + output_;
-      int ret = system(cmd.c_str());
-      if (ret != 0) {
-        std::cerr << "execute cmd " << cmd << " failed" << std::endl;
-        return;
-      }
+      std::error_code ec;
+      std::filesystem::create_directories(output_, ec);
       struct stat sb;
       if (stat(output_.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode)) {
         cout << "logs output to : " << output_ << endl;
