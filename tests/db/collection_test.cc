@@ -3093,6 +3093,54 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   }
 }
 
+TEST_F(CollectionTest, Feature_Optimize_Superseded_Index_File_Removed) {
+  namespace fs = std::filesystem;
+  int doc_count = 1000;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+  ASSERT_NE(collection, nullptr);
+  ASSERT_TRUE(collection->Flush().ok());
+
+  ASSERT_TRUE(collection->Optimize(OptimizeOptions{0}).ok());
+
+  auto stats = collection->Stats().value();
+  ASSERT_EQ(stats.doc_count, (uint64_t)doc_count);
+  ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
+
+  // Building the vector index supersedes the flat vector file written when
+  // the segment was dumped. Once the replaced segment instance is released
+  // (no readers left after Optimize returns), the superseded file must be
+  // removed, leaving exactly one index file for the column.
+  int dense_fp32_index_files = 0;
+  for (const auto &entry : fs::directory_iterator(col_path + "/0")) {
+    auto name = entry.path().filename().string();
+    if (name.rfind("dense_fp32.index.", 0) == 0) {
+      dense_fp32_index_files++;
+    }
+  }
+  ASSERT_EQ(dense_fp32_index_files, 1);
+
+  // the removed file must not be one the collection still needs: a fresh
+  // open must read every doc correctly through the new index
+  collection.reset();
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value());
+  collection = std::move(result.value());
+
+  for (int i : {0, doc_count / 2, doc_count - 1}) {
+    auto expect_doc = TestHelper::CreateDoc(i, *schema);
+    auto fetched = collection->Fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetched.has_value());
+    ASSERT_EQ(fetched.value().count(expect_doc.pk()), 1);
+    auto doc = fetched.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
+  }
+}
+
 TEST_F(CollectionTest, Feature_Optimize_Repeated) {
   auto run_repeated_optimize_test = [&](bool enable_mmap,
                                         IndexParams::Ptr index_params) {

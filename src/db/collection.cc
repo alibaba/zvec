@@ -896,6 +896,12 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     // removed from disk only when the last reference is dropped.
     std::vector<Segment::Ptr> segments_to_add;
     std::vector<SegmentID> segment_ids_to_destroy;
+    auto reopen_segment =
+        [&](const SegmentMeta::Ptr &meta) -> Result<Segment::Ptr> {
+      return Segment::Open(path_, *schema_, *meta, id_map_, delete_store_,
+                           version_manager_,
+                           SegmentOptions{true, options_.enable_mmap_});
+    };
     for (auto &task : tasks) {
       auto task_info = task->task_info();
 
@@ -903,10 +909,7 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
         auto compact_task = std::get<CompactTask>(task_info);
 
         if (compact_task.output_segment_meta_) {
-          auto new_segment =
-              Segment::Open(path_, *schema_, *compact_task.output_segment_meta_,
-                            id_map_, delete_store_, version_manager_,
-                            SegmentOptions{true, options_.enable_mmap_});
+          auto new_segment = reopen_segment(compact_task.output_segment_meta_);
           if (!new_segment.has_value()) {
             return new_segment.error();
           }
@@ -922,10 +925,8 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
         // reopen the segment with the new vector index and replace the old
         // instance by id, instead of reload_vector_index() which would
         // destroy indexers still referenced by concurrent readers
-        auto new_segment = Segment::Open(
-            path_, *schema_, *create_index_task.output_segment_meta_, id_map_,
-            delete_store_, version_manager_,
-            SegmentOptions{true, options_.enable_mmap_});
+        auto new_segment =
+            reopen_segment(create_index_task.output_segment_meta_);
         if (!new_segment.has_value()) {
           return new_segment.error();
         }
@@ -936,6 +937,32 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     s = segment_manager_->replace_segments(segments_to_add,
                                            segment_ids_to_destroy);
     CHECK_RETURN_STATUS(s);
+
+    // 5. schedule superseded index files for removal
+    //
+    // The reopened segments no longer reference the pre-index vector files
+    // of the replaced instances. Mark them so the files are removed once
+    // the last in-flight reader releases the old instance, instead of
+    // leaking on disk until the segment is compacted away.
+    for (auto &task : tasks) {
+      auto task_info = task->task_info();
+      if (!std::holds_alternative<CreateVectorIndexTask>(task_info)) {
+        continue;
+      }
+      auto create_index_task = std::get<CreateVectorIndexTask>(task_info);
+      std::vector<std::string> superseded_columns;
+      std::vector<std::string> superseded_quant_columns;
+      for (auto &[column, indexer] :
+           create_index_task.output_vector_indexers_) {
+        superseded_columns.push_back(column);
+      }
+      for (auto &[column, indexer] :
+           create_index_task.output_quant_vector_indexers_) {
+        superseded_quant_columns.push_back(column);
+      }
+      create_index_task.input_segment_->mark_vector_index_files_for_removal(
+          superseded_columns, superseded_quant_columns);
+    }
   }
 
   return Status::OK();
