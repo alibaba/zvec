@@ -14,8 +14,11 @@
 #pragma once
 
 #include <memory>
+#include <vector>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_meta.h>
+#include "quantizer/quantizer.h"
 #include "diskann_entity.h"
 
 namespace zvec {
@@ -109,6 +112,44 @@ class DistCalculator {
     return dist(vec);
   }
 
+  //! Bind the PQ state used by quantize_pq_query() / pq_dist().  Called by
+  //! the searcher before each search; the LUT buffer is owned by the context.
+  inline void bind_pq(const turbo::Quantizer *quantizer, const uint8_t *codes,
+                      uint32_t chunk_num, float *lut) {
+    pq_quantizer_ = quantizer;
+    pq_codes_ = codes;
+    pq_chunk_num_ = chunk_num;
+    pq_lut_ = lut;
+  }
+
+  //! Build the ADC LUT for the rotated query.  PqInt8Quantizer::quantize_query
+  //! expects an FP32 query; DiskAnn may store FP16 vectors, so convert the
+  //! rotated query into FP32 when needed.
+  void quantize_pq_query(const void *query_rotated, IndexMeta::DataType dtype) {
+    const void *pq_query = query_rotated;
+    if (dtype == IndexMeta::DataType::DT_FP16) {
+      uint32_t pq_dim = static_cast<uint32_t>(pq_quantizer_->dim());
+      pq_query_scratch_.resize(pq_dim);
+      const auto *s = static_cast<const ailego::Float16 *>(query_rotated);
+      for (uint32_t d = 0; d < pq_dim; ++d) {
+        pq_query_scratch_[d] = static_cast<float>(s[d]);
+      }
+      pq_query = pq_query_scratch_.data();
+    }
+    pq_quantizer_->quantize_query(pq_query, pq_lut_);
+  }
+
+  //! Batched PQ ADC distances between the quantized query LUT and the codes
+  //! of the given ids, via the ISA-dispatched batch kernel.
+  void pq_dist(const diskann_id_t *ids, uint32_t n, float *dists) {
+    pq_dp_list_.resize(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      pq_dp_list_[i] = pq_codes_ + static_cast<size_t>(ids[i]) * pq_chunk_num_;
+    }
+    pq_quantizer_->calc_distance_dp_query_batch(
+        pq_dp_list_.data(), static_cast<int>(n), pq_lut_, dists);
+  }
+
   inline void clear() {
     compare_cnt_ = 0;
     error_ = false;
@@ -144,6 +185,16 @@ class DistCalculator {
 
   uint32_t compare_cnt_;  // record distance compute times
   bool error_{false};
+
+  //! PQ state bound by the searcher (see bind_pq).
+  const turbo::Quantizer *pq_quantizer_{nullptr};
+  const uint8_t *pq_codes_{nullptr};
+  uint32_t pq_chunk_num_{0};
+  float *pq_lut_{nullptr};
+
+  //! Reused scratch buffers for pq_dist() / quantize_pq_query().
+  std::vector<const void *> pq_dp_list_;
+  std::vector<float> pq_query_scratch_;
 };
 
 }  // namespace core
