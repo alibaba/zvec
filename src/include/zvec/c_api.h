@@ -791,6 +791,8 @@ typedef uint32_t zvec_io_backend_type_t;
   1 /**< libaio loaded at runtime via dlopen() */
 #define ZVEC_IO_BACKEND_TYPE_IO_URING \
   2 /**< io_uring accessed through the Linux kernel ABI */
+#define ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED \
+  3 /**< Windows overlapped I/O with per-request events */
 
 /**
  * @brief Get the current I/O backend type for DiskAnn async disk reads.
@@ -798,8 +800,9 @@ typedef uint32_t zvec_io_backend_type_t;
  * Pure introspection \u2014 no side effects, no install hints.
  *
  * @return zvec_io_backend_type_t The loaded backend type
- *         (ZVEC_IO_BACKEND_TYPE_IO_URING, ZVEC_IO_BACKEND_TYPE_LIBAIO, or
- *         ZVEC_IO_BACKEND_TYPE_PREAD).
+ *         ZVEC_IO_BACKEND_TYPE_IO_URING, ZVEC_IO_BACKEND_TYPE_LIBAIO,
+ *         ZVEC_IO_BACKEND_TYPE_PREAD, or
+ *         ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED.
  */
 ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
 
@@ -808,15 +811,14 @@ ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
  *
  * @param type The backend type code.
  * @return Thread-local string valid until the next call on this thread;
- *         "io_uring", "libaio", "pread", or "unknown".
+ *         "io_uring", "libaio", "pread", "windows_overlapped", or
+ *         "unknown".
  */
 ZVEC_EXPORT const char *ZVEC_CALL
 zvec_get_io_backend_type_name(zvec_io_backend_type_t type);
 
 /**
  * @brief Get a human-readable description of the current I/O backend.
- *
- * When only pread is available, includes installation guidance for libaio.
  *
  * @return Thread-local string valid until the next call on this thread.
  */

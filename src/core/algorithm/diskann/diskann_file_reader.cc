@@ -20,6 +20,7 @@
 #include <iostream>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_logger.h>
 
 #define MAX_EVENTS 1024
@@ -563,8 +564,15 @@ void WindowsAlignedFileReader::deregister_all_threads() {
 }
 
 void WindowsAlignedFileReader::open(const std::string &fname) {
+  const std::wstring wide_fname = ailego::FileHelper::Utf8ToWide(fname);
+  if (wide_fname.empty()) {
+    LOG_ERROR("Failed to convert DiskAnn file path from UTF-8: %s",
+              fname.c_str());
+    return;
+  }
+
   file_handle_ =
-      CreateFileA(fname.c_str(), GENERIC_READ,
+      CreateFileW(wide_fname.c_str(), GENERIC_READ,
                   FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                   FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING |
                       FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,

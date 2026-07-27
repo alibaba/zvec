@@ -147,6 +147,7 @@ Enumeration of supported I/O backend types for DiskAnn async disk reads.
 - PREAD: Synchronous pread() \u2014 no async I/O.
 - LIBAIO: libaio loaded at runtime via dlopen().
 - IO_URING: io_uring accessed directly through the Linux kernel ABI.
+- WINDOWS_OVERLAPPED: Windows overlapped I/O with per-request events.
 
 Examples:
     >>> from zvec.typing import IOBackendType
@@ -155,7 +156,9 @@ Examples:
 )pbdoc")
       .value("PREAD", ailego::IOBackendType::kPread)
       .value("LIBAIO", ailego::IOBackendType::kLibAio)
-      .value("IO_URING", ailego::IOBackendType::kIoUring);
+      .value("IO_URING", ailego::IOBackendType::kIoUring)
+      .value("WINDOWS_OVERLAPPED",
+             ailego::IOBackendType::kWindowsOverlapped);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {

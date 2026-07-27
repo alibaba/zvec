@@ -30,17 +30,18 @@ namespace ailego {
 
 // Supported I/O backend types.
 enum class IOBackendType {
-  kPread = 0,    // Synchronous pread() — no async I/O
-  kLibAio = 1,   // libaio loaded at runtime via dlopen()
-  kIoUring = 2,  // io_uring accessed through the Linux kernel ABI
+  kPread = 0,              // Synchronous pread() — no async I/O
+  kLibAio = 1,             // libaio loaded at runtime via dlopen()
+  kIoUring = 2,            // io_uring accessed through the Linux kernel ABI
+  kWindowsOverlapped = 3,  // Windows overlapped I/O with per-request events
 };
 
 // Returns the currently active I/O backend type.
-// Triggers backend initialization on first call (io_uring > libaio > pread).
+// On Linux, triggers selection in priority order: io_uring > libaio > pread.
+// On Windows, returns kWindowsOverlapped.
 IOBackendType current_io_backend_type();
 
 // Returns a human-readable description of the currently active I/O backend.
-// When only pread is available, includes installation guidance for libaio.
 std::string current_io_backend_description();
 
 }  // namespace ailego

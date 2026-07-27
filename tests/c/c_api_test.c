@@ -152,6 +152,31 @@ void test_error_handling_functions(void) {
   TEST_END();
 }
 
+void test_io_backend_functions(void) {
+  TEST_START();
+
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_PREAD),
+                     "pread") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_LIBAIO),
+                     "libaio") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_IO_URING),
+                     "io_uring") == 0);
+  TEST_ASSERT(strcmp(zvec_get_io_backend_type_name(
+                         ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED),
+                     "windows_overlapped") == 0);
+
+#ifdef _WIN32
+  TEST_ASSERT(zvec_get_io_backend_type() ==
+              ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED);
+  TEST_ASSERT(strstr(zvec_get_io_backend_description(), "overlapped") != NULL);
+#endif
+
+  TEST_END();
+}
+
 void test_zvec_config() {
   TEST_START();
 
@@ -6376,6 +6401,7 @@ int main(void) {
 
   test_version_functions();
   test_error_handling_functions();
+  test_io_backend_functions();
   test_zvec_config();
   test_zvec_initialize();
   test_zvec_string_functions();

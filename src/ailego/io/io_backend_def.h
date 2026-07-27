@@ -50,12 +50,13 @@ inline const char *IOBackendTypeName(IOBackendType type) {
       return "libaio";
     case IOBackendType::kPread:
       return "pread";
+    case IOBackendType::kWindowsOverlapped:
+      return "windows_overlapped";
   }
   return "unknown";
 }
 
-// Returns a human-readable description for the given backend type.
-// When the backend is kPread, includes installation guidance for libaio.
+// Returns a platform-specific human-readable backend description.
 inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kIoUring:
@@ -63,10 +64,16 @@ inline const char *IOBackendDescription(IOBackendType type) {
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
     case IOBackendType::kPread:
+#if defined(__linux) || defined(__linux__)
       return "No async I/O backend available. Install libaio (e.g. "
              "'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) "
              "and retry. DiskAnn will fall back to synchronous pread() \u2014 "
              "performance will be degraded.";
+#else
+      return "Synchronous pread I/O backend.";
+#endif
+    case IOBackendType::kWindowsOverlapped:
+      return "Windows overlapped I/O backend with per-request events.";
   }
   return "Unknown I/O backend.";
 }
@@ -85,10 +92,15 @@ class IOBackend {
     return instance;
   }
 
-  // Try to load the best available backend (io_uring > libaio > pread).
+  // Select Windows overlapped I/O, or the best available Linux backend
+  // (io_uring > libaio > pread).
   // Returns the loaded backend type.
   // Idempotent — if already loaded, returns immediately.
   IOBackendType available() {
+#if defined(_WIN32) || defined(_WIN64)
+    type_ = IOBackendType::kWindowsOverlapped;
+    return type_;
+#else
     if (type_ != IOBackendType::kPread) {
       return type_;
     }
@@ -97,12 +109,18 @@ class IOBackend {
       type = available(IOBackendType::kLibAio);
     }
     return type;
+#endif
   }
 
-  // Try to load the requested backend.  Returns the loaded backend type
-  // (may differ from requested if the load failed — falls back to kPread).
+  // Try to load the requested backend. On Linux, failed requests fall back to
+  // kPread. Windows always reports its native overlapped-I/O backend.
   // Idempotent — if the same backend is already loaded, returns immediately.
   IOBackendType available(IOBackendType requested) {
+#if defined(_WIN32) || defined(_WIN64)
+    (void)requested;
+    type_ = IOBackendType::kWindowsOverlapped;
+    return type_;
+#else
     if (type_ == requested && type_ != IOBackendType::kPread) {
       return type_;
     }
@@ -127,6 +145,7 @@ class IOBackend {
 #endif
     type_ = IOBackendType::kPread;
     return type_;
+#endif
   }
 
   bool is_pread() {
@@ -139,6 +158,10 @@ class IOBackend {
 
   bool is_iouring() {
     return available() == IOBackendType::kIoUring;
+  }
+
+  bool is_windows_overlapped() {
+    return available() == IOBackendType::kWindowsOverlapped;
   }
 
   // Returns the loaded backend type.
@@ -159,7 +182,11 @@ class IOBackend {
  private:
   IOBackend() = default;
 
+#if defined(_WIN32) || defined(_WIN64)
+  IOBackendType type_{IOBackendType::kWindowsOverlapped};
+#else
   IOBackendType type_{IOBackendType::kPread};
+#endif
 };
 
 }  // namespace ailego
