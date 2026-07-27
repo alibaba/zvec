@@ -12,17 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cassert>
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
+#include "avx2/rotate/fht/fht.h"
+#include "avx512/rotate/fht/fht.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_int8/quantize.h"
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
+#include "neon/rotate/fht/fht.h"
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
+#include "scalar/rotate/fht/fht.h"
+#include "sse/rotate/fht/fht.h"
 
 namespace zvec::turbo {
+
+// Helper: check if the requested arch matches the target or is auto-detect.
+static bool IsArchMatch(CpuArchType actual, CpuArchType target) {
+  return actual == CpuArchType::kAuto || actual == target;
+}
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
                                QuantizeType quantize_type,
@@ -45,8 +56,7 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
-          (cpu_arch_type == CpuArchType::kAuto ||
-           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::squared_euclidean_int8_distance;
         }
@@ -57,8 +67,7 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
     }
     if (quantize_type == QuantizeType::kUniform) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
-          (cpu_arch_type == CpuArchType::kAuto ||
-           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::uniform_squared_euclidean_int8_distance;
         }
@@ -90,8 +99,7 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
-          (cpu_arch_type == CpuArchType::kAuto ||
-           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::squared_euclidean_int8_batch_distance;
         }
@@ -102,8 +110,7 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
     }
     if (quantize_type == QuantizeType::kUniform) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
-          (cpu_arch_type == CpuArchType::kAuto ||
-           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::uniform_squared_euclidean_int8_batch_distance;
         }
@@ -121,8 +128,7 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI &&
-          (cpu_arch_type == CpuArchType::kAuto ||
-           cpu_arch_type == CpuArchType::kAVX512VNNI)) {
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512VNNI)) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::squared_euclidean_int8_query_preprocess;
         }
@@ -145,6 +151,37 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
     }
   }
   return nullptr;
+}
+
+RotatorKernels get_rotator_kernels(RotateType rotate_type,
+                                   CpuArchType cpu_arch_type) {
+  switch (rotate_type) {
+    case RotateType::kFht: {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX512)) {
+        return {avx512::fht_rotate_avx512, avx512::fht_unrotate_avx512};
+      }
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kAVX2)) {
+        return {avx2::fht_rotate_avx2, avx2::fht_unrotate_avx2};
+      }
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE2 &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kSSE)) {
+        return {sse::fht_rotate_sse, sse::fht_unrotate_sse};
+      }
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.NEON &&
+          IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
+        return {neon::fht_rotate_neon, neon::fht_unrotate_neon};
+      }
+      return {scalar::fht_rotate, scalar::fht_unrotate};
+    }
+  }
+
+  // Unsupported RotateType: assert in debug for early detection, but always
+  // return the scalar kernels so release builds never hand back null function
+  // pointers (which would crash on the first call).
+  assert(false && "unsupported RotateType");
+  return {scalar::fht_rotate, scalar::fht_unrotate};
 }
 
 }  // namespace zvec::turbo
