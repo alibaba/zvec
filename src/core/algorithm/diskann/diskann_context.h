@@ -174,10 +174,6 @@ class DiskAnnContext : public IndexContext,
     return query_rotated_;
   }
 
-  inline float *pq_table_dist_buffer() {
-    return pq_table_dist_buffer_;
-  }
-
   inline void *coord_buffer() {
     return coord_buffer_;
   }
@@ -347,7 +343,6 @@ class DiskAnnContext : public IndexContext,
   IOContext io_ctx_{0};
   SearchStats query_stats_;
 
-  float *pq_table_dist_buffer_{nullptr};
   void *query_{nullptr};
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};
