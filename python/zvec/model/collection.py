@@ -423,6 +423,7 @@ class Collection:
             ...     output_fields=["title", "url"]
             ... )
         """
+        _require_positive_integer(topk, "topk")
         if vectors is not None:
             warnings.warn(
                 "The 'vectors' parameter is deprecated and will be removed in a future version. "
