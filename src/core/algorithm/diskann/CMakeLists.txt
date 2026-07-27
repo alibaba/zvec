@@ -28,7 +28,7 @@ cc_library(
     STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
     LIBS ${CORE_KNN_DISKANN_LIBS}
-    INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+    INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm ${PROJECT_ROOT_DIR}/src/turbo
     LDFLAGS "${CORE_KNN_DISKANN_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"
 )

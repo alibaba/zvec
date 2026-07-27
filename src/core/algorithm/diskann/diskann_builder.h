@@ -15,9 +15,10 @@
 
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_builder.h>
+#include <zvec/core/framework/index_factory.h>
+#include "quantizer/quantizer.h"
 #include "diskann_algorithm.h"
 #include "diskann_builder_entity.h"
-#include "diskann_pq_trainer.h"
 
 namespace zvec {
 namespace core {
@@ -28,28 +29,27 @@ class DiskAnnBuilder : public IndexBuilder {
   DiskAnnBuilder() = default;
 
   //! Initialize the builder
-  virtual int init(const IndexMeta &meta,
-                   const ailego::Params &params) override;
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup the builder
-  virtual int cleanup(void) override;
+  int cleanup(void) override;
 
   //! Train the data
-  virtual int train(IndexThreads::Pointer threads,
-                    IndexHolder::Pointer holder) override;
+  int train(IndexThreads::Pointer threads,
+            IndexHolder::Pointer holder) override;
 
   //! Train the data
-  virtual int train(const IndexTrainer::Pointer &trainer) override;
+  int train(const IndexTrainer::Pointer &trainer) override;
 
   //! Build the index
-  virtual int build(IndexThreads::Pointer threads,
-                    IndexHolder::Pointer holder) override;
+  int build(IndexThreads::Pointer threads,
+            IndexHolder::Pointer holder) override;
 
   //! Dump index into storage
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const override {
+  const Stats &stats(void) const override {
     return stats_;
   }
 
@@ -97,8 +97,8 @@ class DiskAnnBuilder : public IndexBuilder {
   uint32_t max_pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t build_thread_count_{0};
-  uint32_t max_train_sample_count_{PQTable::kMaxTrainSampleCount};
-  double train_sample_ratio_{PQTable::kTrainSampleRatio};
+  uint32_t max_train_sample_count_{200000};
+  double train_sample_ratio_{1.0};
   std::string universal_label_{""};
   std::string codebook_prefix_{""};
   std::string index_path_prefix_{"./diskann"};
@@ -122,7 +122,7 @@ class DiskAnnBuilder : public IndexBuilder {
   IndexHolder::Pointer holder_;
 
   DiskAnnAlgorithm::UPointer algo_;
-  DiskAnnPqTrainer::UPointer trainer_;
+  turbo::Quantizer::Pointer quantizer_;
 
   uint32_t check_interval_secs_{kDefaultLogIntervalSecs};
 };

@@ -14,10 +14,11 @@
 #pragma once
 
 #include <zvec/ailego/parallel/thread_pool.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
+#include "quantizer/quantizer.h"
 #include "diskann_entity.h"
 #include "diskann_file_reader.h"
-#include "diskann_pq_table.h"
 
 namespace zvec {
 namespace core {
@@ -32,7 +33,7 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   virtual ~DiskAnnSearcherEntity() = default;
 
  public:
-  virtual const DiskAnnEntity::Pointer clone() const override;
+  const DiskAnnEntity::Pointer clone() const override;
 
   int load(const IndexMeta &meta, IndexStorage::Pointer storage);
   int load_pq_segment();
@@ -42,8 +43,12 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   int load_key_mapping_segment();
   int load_entrypoint_segment();
 
-  PQTable::Pointer get_pq_table() {
-    return pq_table_;
+  turbo::Quantizer::Pointer get_pq_quantizer() {
+    return pq_quantizer_;
+  }
+
+  const uint8_t *pq_codes() const {
+    return pq_codes_.data();
   }
 
   IndexStorage::Pointer get_storage() {
@@ -74,8 +79,10 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
       const SegmentPointer &key_mapping_segment,
       const SegmentPointer &entrypoint_segment, uint32_t num_threads,
       uint32_t list_size, uint32_t cache_nodes_num, bool warm_up,
-      uint32_t beam_size, const IndexMeta meta, PQTable::Pointer pq_table,
-      const std::string &key_buffer, const std::string &key_mapping_buffer,
+      uint32_t beam_size, const IndexMeta meta,
+      turbo::Quantizer::Pointer pq_quantizer,
+      const std::vector<uint8_t> &pq_codes, const std::string &key_buffer,
+      const std::string &key_mapping_buffer,
       const std::vector<diskann_id_t> &entrypoints)
       : DiskAnnEntity(meta_header, pq_meta),
         meta_segment_(meta_segment),
@@ -91,7 +98,8 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
         warm_up_{warm_up},
         beam_size_{beam_size},
         meta_{meta},
-        pq_table_{pq_table},
+        pq_quantizer_{pq_quantizer},
+        pq_codes_{pq_codes},
         key_buffer_{key_buffer},
         key_mapping_buffer_{key_mapping_buffer},
         entrypoints_{entrypoints} {}
@@ -115,7 +123,8 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
 
   IndexMeta meta_;
 
-  PQTable::Pointer pq_table_;
+  turbo::Quantizer::Pointer pq_quantizer_;
+  std::vector<uint8_t> pq_codes_;
   std::string key_buffer_;
   std::string key_mapping_buffer_;
   std::vector<diskann_id_t> entrypoints_;

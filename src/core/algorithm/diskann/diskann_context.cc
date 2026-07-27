@@ -15,7 +15,6 @@
 #include "diskann_context.h"
 #include <chrono>
 #include "diskann_params.h"
-#include "diskann_pq_table.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -54,12 +53,8 @@ int DiskAnnContext::init(ContextType type, uint32_t graph_degree,
         return ret;
       }
 
-      DiskAnnUtil::alloc_aligned(
-          (void **)&pq_table_dist_buffer_,
-          PQTable::kPQCentroidNum * pq_chunk_num_ * sizeof(float), 256);
-      DiskAnnUtil::alloc_aligned((void **)&pq_coord_buffer_,
-                                 graph_degree * pq_chunk_num_ * sizeof(uint8_t),
-                                 256);
+      DiskAnnUtil::alloc_aligned((void **)&pq_table_dist_buffer_,
+                                 256U * pq_chunk_num_ * sizeof(float), 256);
       DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
       DiskAnnUtil::alloc_aligned(
           (void **)&sector_buffer_,
@@ -85,7 +80,6 @@ DiskAnnContext::~DiskAnnContext() {
   free(query_);
   free(query_rotated_);
   free(pq_table_dist_buffer_);
-  free(pq_coord_buffer_);
   free(coord_buffer_);
   free(sector_buffer_);
 

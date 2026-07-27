@@ -94,11 +94,9 @@ struct DiskAnnMetaHeader {
 
 struct DiskAnnPqMeta {
  public:
-  uint64_t full_pivot_data_size{0};
-  uint64_t centroid_data_size{0};
-  uint64_t chunk_offsets_size{0};
+  uint64_t quantizer_blob_size{0};
   uint64_t chunk_num{0};
-  uint8_t reserved[128];
+  uint8_t reserved[144];
 
   DiskAnnPqMeta() {
     clear();

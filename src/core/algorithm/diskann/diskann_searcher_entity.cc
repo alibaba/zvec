@@ -64,7 +64,7 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
       meta_header_, pq_meta_, meta_segment, pq_meta_segment, pq_data_segment,
       vector_segment, key_segment, key_mapping_segment, entrypoint_segment,
       num_threads_, list_size_, cache_nodes_num_, warm_up_, beam_size_, meta_,
-      pq_table_, key_buffer_, key_mapping_buffer_, entrypoints_);
+      pq_quantizer_, pq_codes_, key_buffer_, key_mapping_buffer_, entrypoints_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("DiskAnnSearcherEntity new failed");
   }
@@ -151,53 +151,34 @@ int DiskAnnSearcherEntity::load_pq_segment() {
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data, sizeof(DiskAnnPqMeta));
   offset += read_size;
 
-  // 2. read full pivot data
-  std::vector<uint8_t> full_pivot_data;
-  full_pivot_data.resize(pq_meta_.full_pivot_data_size);
+  // 2. read serialized quantizer blob
+  std::string blob;
+  blob.resize(pq_meta_.quantizer_blob_size);
 
   read_size =
-      pq_meta_segment_->read(offset, &data, pq_meta_.full_pivot_data_size);
-  if (read_size != pq_meta_.full_pivot_data_size) {
+      pq_meta_segment_->read(offset, &data, pq_meta_.quantizer_blob_size);
+  if (read_size != pq_meta_.quantizer_blob_size) {
     LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
               DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(pq_meta_.full_pivot_data_size), (size_t)read_size);
+              (size_t)(pq_meta_.quantizer_blob_size), (size_t)read_size);
     return IndexError_ReadData;
   }
-  memcpy(&(full_pivot_data[0]), data, read_size);
-  offset += read_size;
+  memcpy(&blob[0], data, read_size);
 
-  // 3. read centroid
-  std::vector<uint8_t> centroid;
-  centroid.resize(pq_meta_.centroid_data_size);
-
-  read_size =
-      pq_meta_segment_->read(offset, &data, pq_meta_.centroid_data_size);
-  if (read_size != pq_meta_.centroid_data_size) {
-    LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
-              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(pq_meta_.centroid_data_size), (size_t)read_size);
-    return IndexError_ReadData;
+  // 3. create quantizer and deserialize the codebook
+  pq_quantizer_ = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  if (!pq_quantizer_) {
+    LOG_ERROR("Create PqInt8Quantizer failed");
+    return IndexError_NoExist;
   }
-  memcpy(&(centroid[0]), data, read_size);
-  offset += read_size;
 
-  // 4. chunk offset
-  std::vector<uint32_t> chunk_offsets;
-  chunk_offsets.resize(pq_meta_.chunk_num + 1);
-
-  read_size = pq_meta_segment_->read(
-      offset, &data, (pq_meta_.chunk_num + 1) * sizeof(uint32_t));
-  if (read_size != (pq_meta_.chunk_num + 1) * sizeof(uint32_t)) {
-    LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
-              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)((pq_meta_.chunk_num + 1) * sizeof(uint32_t)),
-              (size_t)read_size);
-    return IndexError_ReadData;
+  int ret = pq_quantizer_->deserialize(blob);
+  if (ret != 0) {
+    LOG_ERROR("PqInt8Quantizer deserialize failed, ret=%d", ret);
+    return ret;
   }
-  memcpy(&(chunk_offsets[0]), data, read_size);
 
-  // load pq data
-  std::vector<uint8_t> pq_data;
+  // 4. load pq codes (uint8[chunk_num] per vector)
   pq_data_segment_ = storage_->get(DiskAnnEntity::kDiskAnnPqDataSegmentId);
   if (!pq_data_segment_) {
     LOG_ERROR("Miss or invalid segment %s",
@@ -205,24 +186,18 @@ int DiskAnnSearcherEntity::load_pq_segment() {
     return IndexError_InvalidFormat;
   }
 
-  pq_data.resize(meta_header_.doc_cnt * pq_meta_.chunk_num);
+  size_t code_bytes = meta_header_.doc_cnt * pq_meta_.chunk_num;
+  pq_codes_.resize(code_bytes);
 
-  void *pq_data_ptr = &pq_data[0];
-  read_size = pq_data_segment_->fetch(
-      0, pq_data_ptr, meta_header_.doc_cnt * pq_meta_.chunk_num);
+  read_size = pq_data_segment_->fetch(0, pq_codes_.data(), code_bytes);
 
-  if (read_size != meta_header_.doc_cnt * pq_meta_.chunk_num) {
+  if (read_size != code_bytes) {
     LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
-              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(meta_header_.doc_cnt * pq_meta_.chunk_num),
+              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(), code_bytes,
               (size_t)read_size);
 
     return IndexError_ReadData;
   }
-
-  pq_table_ = std::make_shared<PQTable>(meta_, pq_meta_.chunk_num);
-
-  pq_table_->init(full_pivot_data, centroid, chunk_offsets, pq_data);
 
   return 0;
 }

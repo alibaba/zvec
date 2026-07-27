@@ -185,46 +185,20 @@ int DiskAnnBuilderEntity::dump_pq_meta_segment(
 
   crc = ailego::Crc32c::Hash(&pq_meta_, sizeof(DiskAnnPqMeta), crc);
 
-  // write full pivot data
-  size_t size_full_pivot_data =
-      dumper->write(pq_full_pivot_data_.data(), pq_meta_.full_pivot_data_size);
-  if (size_full_pivot_data != pq_meta_.full_pivot_data_size) {
-    LOG_ERROR("Failed to dump full pivot data, expect: %zu, actual: %zu",
-              (size_t)pq_meta_.full_pivot_data_size, size_full_pivot_data);
+  // write serialized quantizer blob
+  size_t size_blob =
+      dumper->write(pq_quantizer_blob_.data(), pq_meta_.quantizer_blob_size);
+  if (size_blob != pq_meta_.quantizer_blob_size) {
+    LOG_ERROR("Failed to dump quantizer blob, expect: %zu, actual: %zu",
+              (size_t)pq_meta_.quantizer_blob_size, size_blob);
     return IndexError_WriteData;
   }
 
-  crc = ailego::Crc32c::Hash(pq_full_pivot_data_.data(),
-                             pq_meta_.full_pivot_data_size, crc);
-
-  // write centroid num
-  size_t size_centroid =
-      dumper->write(pq_centroid_.data(), pq_meta_.centroid_data_size);
-  if (size_centroid != pq_meta_.centroid_data_size) {
-    LOG_ERROR("Failed to dump centroid num, expect: %zu, actual: %zu",
-              (size_t)pq_meta_.centroid_data_size, size_centroid);
-    return IndexError_WriteData;
-  }
-
-  crc = ailego::Crc32c::Hash(pq_centroid_.data(), pq_meta_.centroid_data_size,
-                             crc);
-
-  // write chunk offset
-  size_t size_chunk_offset = dumper->write(
-      pq_chunk_offsets_.data(), (pq_meta_.chunk_num + 1) * sizeof(uint32_t));
-  if (size_chunk_offset != (pq_meta_.chunk_num + 1) * sizeof(uint32_t)) {
-    LOG_ERROR("Failed to dump centroid num, expect: %zu, actual: %zu",
-              (size_t)((pq_meta_.chunk_num + 1) * sizeof(uint32_t)),
-              size_chunk_offset);
-    return IndexError_WriteData;
-  }
-
-  crc = ailego::Crc32c::Hash(pq_chunk_offsets_.data(),
-                             (pq_meta_.chunk_num + 1) * sizeof(uint32_t), crc);
+  crc = ailego::Crc32c::Hash(pq_quantizer_blob_.data(),
+                             pq_meta_.quantizer_blob_size, crc);
 
   // write size
-  size_t size_total =
-      size_pq_meta + size_full_pivot_data + size_centroid + size_chunk_offset;
+  size_t size_total = size_pq_meta + size_blob;
 
   // write pad
   size_t padding_size = AlignSize(size_total) - size_total;

@@ -20,7 +20,9 @@
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
+#include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
 #include "diskann_context.h"
@@ -28,6 +30,40 @@
 
 namespace zvec {
 namespace core {
+
+namespace {
+// PqInt8Quantizer only accepts FP32 input.  When the index data type is FP16,
+// convert the holder into an FP32 copy so training/encoding share a single
+// code path.  For FP32 holders the original is returned unchanged.
+IndexHolder::Pointer convert_holder_to_fp32(const IndexHolder::Pointer &src,
+                                            uint32_t dim) {
+  if (!src || src->data_type() == IndexMeta::DataType::DT_FP32) {
+    return src;
+  }
+  auto dst =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
+  auto iter = src->create_iterator();
+  if (!iter) {
+    return nullptr;
+  }
+  for (; iter->is_valid(); iter->next()) {
+    ailego::NumericalVector<float> v(dim);
+    if (src->data_type() == IndexMeta::DataType::DT_FP16) {
+      const auto *s = static_cast<const ailego::Float16 *>(iter->data());
+      for (uint32_t d = 0; d < dim; ++d) {
+        v[d] = static_cast<float>(s[d]);
+      }
+    } else {
+      const auto *s = static_cast<const float *>(iter->data());
+      for (uint32_t d = 0; d < dim; ++d) {
+        v[d] = s[d];
+      }
+    }
+    dst->emplace(iter->key(), v);
+  }
+  return dst;
+}
+}  // namespace
 
 int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin DiskAnnBuilder::init");
@@ -117,9 +153,6 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
 
   algo_ =
       DiskAnnAlgorithm::UPointer(new DiskAnnAlgorithm(entity_, max_degree_));
-
-  trainer_ =
-      DiskAnnPqTrainer::UPointer(new DiskAnnPqTrainer(max_train_sample_count_));
 
   state_ = BUILD_STATE_INITED;
 
@@ -250,6 +283,17 @@ int DiskAnnBuilder::calculate_pq_chunk_num() {
     return IndexError_InvalidArgument;
   }
 
+  // PqInt8Quantizer requires uniform sub_dim, so chunk_num must evenly divide
+  // the dimension.  Decrement until it does (guard against zero).
+  while (pq_chunk_num_ > 0 && build_meta_.dimension() % pq_chunk_num_ != 0) {
+    --pq_chunk_num_;
+  }
+  if (pq_chunk_num_ == 0) {
+    LOG_ERROR("Could not resolve a chunk_num that divides dim %u",
+              build_meta_.dimension());
+    return IndexError_InvalidArgument;
+  }
+
   LOG_INFO("Quantizing %u dimension data into %u bytes.",
            build_meta_.dimension(), pq_chunk_num_);
 
@@ -330,41 +374,95 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
   return 0;
 }
 
-int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
+int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
   LOG_INFO("Starting Train: Chunk Num: %u", pq_chunk_num_);
 
   ailego::ElapsedTime timer;
-  int ret = trainer_->train_quantized_data(
-      threads, holder_, build_meta_, entity_.pq_full_pivot_data(),
-      entity_.pq_centroid(), entity_.pq_chunk_offsets(), pq_chunk_num_);
+
+  quantizer_ = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  if (!quantizer_) {
+    LOG_ERROR("Create PqInt8Quantizer failed");
+    return IndexError_NoExist;
+  }
+
+  ailego::Params qp;
+  qp.set("num_chunk", pq_chunk_num_);
+  qp.set("use_zero_mean", false);
+  int ret = quantizer_->init(build_meta_, qp);
   if (ret != 0) {
-    LOG_ERROR("Train Quantized Data Error, ret=%d", ret);
+    LOG_ERROR("PqInt8Quantizer init failed, ret=%d", ret);
+    return ret;
+  }
+
+  uint32_t dim = build_meta_.dimension();
+  auto fp32_holder = convert_holder_to_fp32(holder_, dim);
+  if (!fp32_holder) {
+    LOG_ERROR("Convert holder to fp32 failed");
+    return IndexError_Runtime;
+  }
+
+  ret = quantizer_->train(fp32_holder, static_cast<int>(build_thread_count_));
+  if (ret != 0) {
+    LOG_ERROR("PqInt8Quantizer train failed, ret=%d", ret);
+    return ret;
+  }
+
+  std::string &blob = entity_.pq_quantizer_blob();
+  ret = quantizer_->serialize(&blob);
+  if (ret != 0) {
+    LOG_ERROR("PqInt8Quantizer serialize failed, ret=%d", ret);
     return ret;
   }
 
   size_t pq_time = timer.milli_seconds();
   LOG_INFO("Train Quantized Data Done, time: %zu ms", pq_time);
 
-  (*entity_.mutable_pq_meta()).full_pivot_data_size =
-      entity_.pq_full_pivot_data().size();
-  (*entity_.mutable_pq_meta()).centroid_data_size =
-      entity_.pq_centroid().size();
+  (*entity_.mutable_pq_meta()).quantizer_blob_size = blob.size();
   (*entity_.mutable_pq_meta()).chunk_num = pq_chunk_num_;
 
   return 0;
 }
 
-int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
+int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer /*threads*/) {
   LOG_INFO("Starting PQ Generate: Query Memory Limit: %lf, Chunk Num: %u",
            memory_limit_, pq_chunk_num_);
 
   ailego::ElapsedTime timer;
-  int ret = trainer_->generate_quantized_data(
-      threads, holder_, build_meta_, entity_.pq_centroid(),
-      entity_.block_compressed_data(), pq_chunk_num_);
-  if (ret != 0) {
-    LOG_ERROR("Generate Quantized Data Error, ret=%d", ret);
-    return ret;
+
+  if (!quantizer_) {
+    LOG_ERROR("Quantizer not trained");
+    return IndexError_NoReady;
+  }
+
+  uint32_t dim = build_meta_.dimension();
+  bool is_fp16 = (build_meta_.data_type() == IndexMeta::DataType::DT_FP16);
+  size_t num_vecs = holder_->count();
+  auto &codes = entity_.block_compressed_data();
+  codes.resize(num_vecs * pq_chunk_num_);
+
+  std::vector<float> fp32_buf(dim);
+  auto iter = holder_->create_iterator();
+  if (!iter) {
+    LOG_ERROR("Create iterator for holder failed");
+    return IndexError_Runtime;
+  }
+
+  size_t id = 0;
+  for (; iter->is_valid() && id < num_vecs; iter->next(), ++id) {
+    const void *vec = iter->data();
+    if (is_fp16) {
+      const auto *s = static_cast<const ailego::Float16 *>(vec);
+      for (uint32_t d = 0; d < dim; ++d) {
+        fp32_buf[d] = static_cast<float>(s[d]);
+      }
+      vec = fp32_buf.data();
+    }
+    quantizer_->quantize_data(vec, codes.data() + id * pq_chunk_num_);
+  }
+
+  if (id != num_vecs) {
+    LOG_ERROR("PQ generate: iterated %zu vectors, expected %zu", id, num_vecs);
+    return IndexError_Runtime;
   }
 
   size_t pq_time = timer.milli_seconds();

@@ -15,9 +15,9 @@
 
 #include <cstdint>
 #include <zvec/core/framework/index_framework.h>
+#include "quantizer/quantizer.h"
 #include "diskann_context.h"
 #include "diskann_file_reader.h"
-#include "diskann_pq_table.h"
 #include "diskann_searcher_entity.h"
 #include "diskann_util.h"
 
@@ -89,7 +89,8 @@ class DiskAnnIndexer {
 
   std::shared_ptr<LinuxAlignedFileReader> reader_{nullptr};
 
-  PQTable::Pointer pq_table_;
+  turbo::Quantizer::Pointer pq_quantizer_;
+  const uint8_t *pq_codes_{nullptr};
 
   IOContext init_ctx_{0};
 

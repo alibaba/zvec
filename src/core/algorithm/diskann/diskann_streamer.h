@@ -130,11 +130,11 @@ class DiskAnnStreamer : public IndexStreamer {
     return meta_;
   }
 
-  virtual int flush(uint64_t /*check_point*/) override {
+  int flush(uint64_t /*check_point*/) override {
     return 0;
   }
 
-  virtual int close(void) override {
+  int close(void) override {
     return this->unload();
   }
 
