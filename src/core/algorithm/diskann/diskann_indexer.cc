@@ -953,6 +953,7 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
           stats.dist_num += neighbor_num;
           stats.cpu_us += cpu_timer.micro_seconds();
 
+          cpu_timer.reset();
           for (uint64_t m = 0; m < neighbor_num; ++m) {
             diskann_id_t id = node_neighbors[m];
             if (!visit_filter.visited(id)) {
