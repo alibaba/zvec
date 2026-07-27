@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.3.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Step 1: Build prebuilt libraries for all platforms
+  build-prebuilt:
+    name: Build Prebuilt Libraries
+    uses: ./.github/workflows/_build_prebuilt.yml
+
+  # Step 2: Create release and upload prebuilt libraries
+  release:
+    name: Create Release
+    needs: build-prebuilt
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          submodules: recursive
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAG="${{ inputs.tag }}"
+          else
+            RAW_TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${RAW_TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION (tag: $RAW_TAG)"
+
+      - name: Download all prebuilt artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: prebuilt-artifacts/
+          pattern: zvec-sdk-*
+          merge-multiple: false
+
+      - name: List prebuilt artifacts
+        shell: bash
+        run: |
+          echo "Release assets:"
+          find prebuilt-artifacts/ -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, 'alpha') || contains(steps.version.outputs.tag, 'beta') || contains(steps.version.outputs.tag, 'rc') }}
+          files: |
+            prebuilt-artifacts/**/*.tar.gz
+            prebuilt-artifacts/**/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
