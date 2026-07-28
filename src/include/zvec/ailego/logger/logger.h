@@ -18,6 +18,7 @@
 #include <memory>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/pattern/factory.h>
+#include <zvec/export.h>
 
 // Define printf format attribute for GCC/Clang, empty for MSVC
 #if defined(__GNUC__) || defined(__clang__)
@@ -79,7 +80,7 @@ namespace ailego {
 
 /*! Index Logger
  */
-struct Logger {
+struct ZVEC_AILEGO_API Logger {
   //! Index Logger Pointer
   typedef std::shared_ptr<Logger> Pointer;
 
@@ -123,7 +124,7 @@ struct Logger {
 
 /*! Index Logger Broker
  */
-class LoggerBroker {
+class ZVEC_AILEGO_API LoggerBroker {
  public:
   //! Register Logger
   static Logger::Pointer Register(Logger::Pointer logger) {

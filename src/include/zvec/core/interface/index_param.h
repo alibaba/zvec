@@ -24,6 +24,7 @@
 #include <zvec/core/framework/index_filter.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/interface/constants.h>
+#include <zvec/export.h>
 #include "zvec/core/framework/index_framework.h"
 
 namespace zvec::core_interface {
@@ -31,10 +32,10 @@ namespace zvec::core_interface {
 // #define MAX_EF_CONSTRUCTION 65536
 // #define MAX_EF_SEARCH 100
 
-class IndexFactory;
-class Index;
-class BaseIndexParam;
-class BaseIndexQueryParam;
+class ZVEC_CORE_API IndexFactory;
+class ZVEC_CORE_API Index;
+class ZVEC_CORE_API BaseIndexParam;
+class ZVEC_CORE_API BaseIndexQueryParam;
 
 struct StorageOptions {
   enum class StorageType { kNone, kMMAP, kMemory, kBufferPool };
@@ -96,7 +97,7 @@ enum class QuantizerType {
   kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
 };
 
-struct SerializableBase {
+struct ZVEC_CORE_API SerializableBase {
   std::string SerializeToJson(bool omit_empty_value = false) const {
     return zvec::ailego::JsonValue(SerializeToJsonObject(omit_empty_value))
         .as_json_string()
@@ -119,7 +120,7 @@ struct SerializableBase {
 };
 
 // TODO: maybe a base class for quantizer?
-struct QuantizerParam : public SerializableBase {
+struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
   QuantizerType type = QuantizerType::kNone;
   int num_subquantizers = 8;  // M
   int num_bits = 8;           // bits per subquantizer
@@ -175,11 +176,16 @@ struct GroupByParam {
 };
 
 // --- Query Parameters (can be passed to search methods) ---
-class BaseIndexQueryParam {
+class ZVEC_CORE_API BaseIndexQueryParam {
  public:
   using Pointer = std::shared_ptr<BaseIndexQueryParam>;
 
-  virtual ~BaseIndexQueryParam() = default;
+  BaseIndexQueryParam();
+  BaseIndexQueryParam(const BaseIndexQueryParam &);
+  BaseIndexQueryParam(BaseIndexQueryParam &&) noexcept;
+  BaseIndexQueryParam &operator=(const BaseIndexQueryParam &);
+  BaseIndexQueryParam &operator=(BaseIndexQueryParam &&) noexcept;
+  virtual ~BaseIndexQueryParam();
 
   uint32_t topk = 10;
   bool fetch_vector = false;
@@ -193,75 +199,97 @@ class BaseIndexQueryParam {
   virtual Pointer Clone() const = 0;
 };
 
-struct FlatQueryParam : public BaseIndexQueryParam {
+struct ZVEC_CORE_API FlatQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<FlatQueryParam>;
 
-  BaseIndexQueryParam::Pointer Clone() const override {
-    return std::make_shared<FlatQueryParam>(*this);
-  }
+  FlatQueryParam();
+  FlatQueryParam(const FlatQueryParam &);
+  FlatQueryParam(FlatQueryParam &&) noexcept;
+  FlatQueryParam &operator=(const FlatQueryParam &);
+  FlatQueryParam &operator=(FlatQueryParam &&) noexcept;
+  ~FlatQueryParam() override;
+
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
-struct HNSWQueryParam : public BaseIndexQueryParam {
+struct ZVEC_CORE_API HNSWQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<HNSWQueryParam>;
+
+  HNSWQueryParam();
+  HNSWQueryParam(const HNSWQueryParam &);
+  HNSWQueryParam(HNSWQueryParam &&) noexcept;
+  HNSWQueryParam &operator=(const HNSWQueryParam &);
+  HNSWQueryParam &operator=(HNSWQueryParam &&) noexcept;
+  ~HNSWQueryParam() override;
 
   uint32_t ef_search = kDefaultHnswEfSearch;
   uint32_t prefetch_offset = kDefaultPrefetchOffset;
   uint32_t prefetch_lines = kDefaultPrefetchLines;
 
-  BaseIndexQueryParam::Pointer Clone() const override {
-    return std::make_shared<HNSWQueryParam>(*this);
-  }
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
-struct HNSWRabitqQueryParam : public BaseIndexQueryParam {
+struct ZVEC_CORE_API HNSWRabitqQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<HNSWRabitqQueryParam>;
+
+  HNSWRabitqQueryParam();
+  HNSWRabitqQueryParam(const HNSWRabitqQueryParam &);
+  HNSWRabitqQueryParam(HNSWRabitqQueryParam &&) noexcept;
+  HNSWRabitqQueryParam &operator=(const HNSWRabitqQueryParam &);
+  HNSWRabitqQueryParam &operator=(HNSWRabitqQueryParam &&) noexcept;
+  ~HNSWRabitqQueryParam() override;
 
   uint32_t ef_search = kDefaultHnswEfSearch;
 
-  BaseIndexQueryParam::Pointer Clone() const override {
-    return std::make_shared<HNSWRabitqQueryParam>(*this);
-  }
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
-struct IVFQueryParam : public BaseIndexQueryParam {
+struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
+  IVFQueryParam();
+  IVFQueryParam(const IVFQueryParam &);
+  IVFQueryParam(IVFQueryParam &&) noexcept;
+  IVFQueryParam &operator=(const IVFQueryParam &);
+  IVFQueryParam &operator=(IVFQueryParam &&) noexcept;
+  ~IVFQueryParam() override;
+
   int nprobe = 10;
   std::shared_ptr<BaseIndexQueryParam> l1QueryParam = nullptr;
   std::shared_ptr<BaseIndexQueryParam> l2QueryParam = nullptr;
 
   using Pointer = std::shared_ptr<IVFQueryParam>;
 
-  BaseIndexQueryParam::Pointer Clone() const override {
-    auto cloned_this = std::make_shared<IVFQueryParam>(*this);
-    cloned_this->l1QueryParam = l1QueryParam ? l1QueryParam->Clone() : nullptr;
-    cloned_this->l2QueryParam = l2QueryParam ? l2QueryParam->Clone() : nullptr;
-    return cloned_this;
-  }
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
-struct DiskAnnQueryParam : public BaseIndexQueryParam {
+struct ZVEC_CORE_API DiskAnnQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<DiskAnnQueryParam>;
+
+  DiskAnnQueryParam();
+  DiskAnnQueryParam(const DiskAnnQueryParam &);
+  DiskAnnQueryParam(DiskAnnQueryParam &&) noexcept;
+  DiskAnnQueryParam &operator=(const DiskAnnQueryParam &);
+  DiskAnnQueryParam &operator=(DiskAnnQueryParam &&) noexcept;
+  ~DiskAnnQueryParam() override;
 
   // Beam-search candidate list size used at query time. Larger values improve
   // recall at the cost of latency.
   uint32_t list_size = kDefaultDiskAnnListSize;
 
-  BaseIndexQueryParam::Pointer Clone() const override {
-    return std::make_shared<DiskAnnQueryParam>(*this);
-  }
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
 // --- Construction Parameters ---
 // template<typename IndexQueryParamType>
-class BaseIndexParam : public SerializableBase {
+class ZVEC_CORE_API BaseIndexParam : public SerializableBase {
  public:
   using Pointer = std::shared_ptr<BaseIndexParam>;
 
   explicit BaseIndexParam(IndexType type = IndexType::kNone,
                           MetricType metric = MetricType::kL2sq, int dim = 0,
-                          int ver = 0)
-      : index_type(type), metric_type(metric), dimension(dim), version(ver) {}
-
-  virtual ~BaseIndexParam() = default;
+                          int ver = 0);
+  BaseIndexParam(const BaseIndexParam &);
+  BaseIndexParam &operator=(const BaseIndexParam &);
+  virtual ~BaseIndexParam();
 
   IndexType index_type = IndexType::kNone;
   MetricType metric_type = MetricType::kL2sq;
@@ -293,7 +321,7 @@ class BaseIndexParam : public SerializableBase {
       bool omit_empty_value = false) const override;
 };
 
-struct FlatIndexParam : public BaseIndexParam {
+struct ZVEC_CORE_API FlatIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<FlatIndexParam>;
   FlatIndexParam() : BaseIndexParam(IndexType::kFlat) {}
 
@@ -305,7 +333,7 @@ struct FlatIndexParam : public BaseIndexParam {
       bool omit_empty_value = false) const override;
 };
 
-struct IVFIndexParam : public BaseIndexParam {
+struct ZVEC_CORE_API IVFIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<IVFIndexParam>;
   int nlist = 1024;
   int niters = 10;
@@ -314,24 +342,17 @@ struct IVFIndexParam : public BaseIndexParam {
   bool use_soar = false;
 
   // Constructors with delegation
-  IVFIndexParam() : BaseIndexParam(IndexType::kIVF) {}
-
+  IVFIndexParam();
   IVFIndexParam(int nlist, int niters, std::shared_ptr<BaseIndexParam> l1Index,
-                std::shared_ptr<BaseIndexParam> l2Index)
-      : BaseIndexParam(IndexType::kIVF),
-        nlist(nlist),
-        niters(niters),
-        l1Index(std::move(l1Index)),
-        l2Index(std::move(l2Index)) {}
-
+                std::shared_ptr<BaseIndexParam> l2Index);
   IVFIndexParam(MetricType metric, int dim, int nlist, int niters,
                 std::shared_ptr<BaseIndexParam> l1Index,
-                std::shared_ptr<BaseIndexParam> l2Index)
-      : BaseIndexParam(IndexType::kIVF, metric, dim),
-        nlist(nlist),
-        niters(niters),
-        l1Index(std::move(l1Index)),
-        l2Index(std::move(l2Index)) {}
+                std::shared_ptr<BaseIndexParam> l2Index);
+  IVFIndexParam(const IVFIndexParam &);
+  IVFIndexParam(IVFIndexParam &&);
+  IVFIndexParam &operator=(const IVFIndexParam &);
+  IVFIndexParam &operator=(IVFIndexParam &&);
+  ~IVFIndexParam() override;
 
   // query param:
   // topk of l1Index's param ==== IVFIndexQueryParam.nprobe
@@ -341,7 +362,7 @@ struct IVFIndexParam : public BaseIndexParam {
   // IVFIndexParam.quantization === l2Index's quantization
 };
 
-struct HNSWIndexParam : public BaseIndexParam {
+struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<HNSWIndexParam>;
   int m = kDefaultHnswNeighborCnt;
   int ef_construction = kDefaultHnswEfConstruction;
@@ -366,7 +387,7 @@ struct HNSWIndexParam : public BaseIndexParam {
       bool omit_empty_value = false) const override;
 };
 
-struct VamanaIndexParam : public BaseIndexParam {
+struct ZVEC_CORE_API VamanaIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<VamanaIndexParam>;
   int max_degree = kDefaultVamanaMaxDegree;
   int search_list_size = kDefaultVamanaSearchListSize;
@@ -396,19 +417,17 @@ struct VamanaIndexParam : public BaseIndexParam {
       bool omit_empty_value = false) const override;
 };
 
-struct VamanaQueryParam : public BaseIndexQueryParam {
+struct ZVEC_CORE_API VamanaQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<VamanaQueryParam>;
 
   uint32_t ef_search = kDefaultVamanaEfSearch;
   uint32_t prefetch_offset = kDefaultPrefetchOffset;
   uint32_t prefetch_lines = kDefaultPrefetchLines;
 
-  BaseIndexQueryParam::Pointer Clone() const override {
-    return std::make_shared<VamanaQueryParam>(*this);
-  }
+  BaseIndexQueryParam::Pointer Clone() const override;
 };
 
-struct HNSWRabitqIndexParam : public BaseIndexParam {
+struct ZVEC_CORE_API HNSWRabitqIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<HNSWRabitqIndexParam>;
 
   // HNSW parameters
@@ -423,17 +442,14 @@ struct HNSWRabitqIndexParam : public BaseIndexParam {
   core::IndexReformer::Pointer reformer = nullptr;
 
   // Constructors with delegation
-  HNSWRabitqIndexParam() : BaseIndexParam(IndexType::kHNSWRabitq) {}
-
-  HNSWRabitqIndexParam(int m, int ef_construction)
-      : BaseIndexParam(IndexType::kHNSWRabitq),
-        m(m),
-        ef_construction(ef_construction) {}
-
-  HNSWRabitqIndexParam(MetricType metric, int dim, int m, int ef_construction)
-      : BaseIndexParam(IndexType::kHNSWRabitq, metric, dim),
-        m(m),
-        ef_construction(ef_construction) {}
+  HNSWRabitqIndexParam();
+  HNSWRabitqIndexParam(int m, int ef_construction);
+  HNSWRabitqIndexParam(MetricType metric, int dim, int m, int ef_construction);
+  HNSWRabitqIndexParam(const HNSWRabitqIndexParam &);
+  HNSWRabitqIndexParam(HNSWRabitqIndexParam &&);
+  HNSWRabitqIndexParam &operator=(const HNSWRabitqIndexParam &);
+  HNSWRabitqIndexParam &operator=(HNSWRabitqIndexParam &&);
+  ~HNSWRabitqIndexParam() override;
 
  protected:
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
@@ -441,7 +457,7 @@ struct HNSWRabitqIndexParam : public BaseIndexParam {
       bool omit_empty_value = false) const override;
 };
 
-struct DiskAnnIndexParam : public BaseIndexParam {
+struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<DiskAnnIndexParam>;
 
   int max_degree = kDefaultDiskAnnMaxDegree;

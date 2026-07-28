@@ -53,6 +53,37 @@ core::IndexContext::Pointer &Index::acquire_context() {
   return _context_list[context_index_];
 }
 
+int Index::Train() {
+  is_trained_ = true;
+  return 0;
+}
+
+BaseIndexParam::Pointer Index::GetParam() const {
+  return std::make_shared<BaseIndexParam>(param_);
+}
+
+bool Index::IsTrained() const {
+  return is_trained_;
+}
+
+uint32_t Index::GetDocCount() const {
+  if (streamer_ == nullptr) {
+    return -1;
+  }
+  if (is_sparse_) {
+    return streamer_->create_sparse_provider()->count();
+  }
+  return streamer_->create_provider()->count();
+}
+
+core::IndexStreamer::Pointer Index::index_searcher() {
+  return streamer_;
+}
+
+core::IndexProvider::Pointer Index::create_index_provider() const {
+  return streamer_->create_provider();
+}
+
 int Index::ParseMetricName(const BaseIndexParam &param) {
   std::string metric_name;
   if (is_sparse_) {

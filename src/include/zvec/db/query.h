@@ -23,12 +23,13 @@
 #include <zvec/db/doc.h>
 #include <zvec/db/query_params.h>
 #include <zvec/db/reranker.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
 struct VectorViewClause;
 
-struct VectorClause {
+struct ZVEC_API VectorClause {
   std::string query_vector_;
   std::string sparse_indices_;
   std::string sparse_values_;
@@ -55,7 +56,7 @@ struct FtsClause {
   std::string match_string_;
 };
 
-struct QueryTarget {
+struct ZVEC_API QueryTarget {
   std::string field_name_;
   std::variant<VectorClause, VectorViewClause, FtsClause> clause_;
   QueryParams::Ptr query_params_;
@@ -131,7 +132,7 @@ inline void QueryTarget::set_sparse_vector(std::string indices,
   vc.sparse_values_ = std::move(values);
 }
 
-struct SearchQuery {
+struct ZVEC_API SearchQuery {
   QueryTarget target_;
   int topk_{0};
   std::string filter_;
@@ -149,16 +150,18 @@ struct SearchQuery {
 };
 
 // Validate topk and output_fields bounds.
-Status validate_topk_and_output_fields(
+ZVEC_API Status validate_topk_and_output_fields(
     int topk, const std::optional<std::vector<std::string>> &output_fields);
 
 // Sort sparse indices in-place and check for duplicates.
 // Returns error if duplicates are found after sorting.
-Status sanitize_sparse_vector(VectorClause &vc, const FieldSchema *schema);
+ZVEC_API Status sanitize_sparse_vector(VectorClause &vc,
+                                       const FieldSchema *schema);
 
 // Materializes VectorViewClause into VectorClause if needed, then sorts
 // sparse indices in place.  Operates on the QueryTarget's clause_ variant.
-Status sanitize_sparse_vector(QueryTarget &target, const FieldSchema *schema);
+ZVEC_API Status sanitize_sparse_vector(QueryTarget &target,
+                                       const FieldSchema *schema);
 
 struct GroupByVectorQuery {
   QueryTarget target_;
