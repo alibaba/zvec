@@ -13,10 +13,10 @@
 // limitations under the License.
 #pragma once
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
-#include "quantizer/quantizer.h"
 #include "diskann_entity.h"
 #include "diskann_file_reader.h"
 

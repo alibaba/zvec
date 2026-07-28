@@ -14,8 +14,8 @@
 #pragma once
 
 #include <cstdint>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
-#include "quantizer/quantizer.h"
 #include "diskann_context.h"
 #include "diskann_file_reader.h"
 #include "diskann_searcher_entity.h"

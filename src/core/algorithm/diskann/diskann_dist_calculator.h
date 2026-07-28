@@ -15,10 +15,10 @@
 
 #include <memory>
 #include <vector>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_meta.h>
-#include "quantizer/quantizer.h"
 #include "diskann_entity.h"
 
 namespace zvec {
