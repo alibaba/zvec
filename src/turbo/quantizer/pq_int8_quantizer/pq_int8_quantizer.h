@@ -123,6 +123,23 @@ class PqInt8Quantizer : public Quantizer {
   void train_subquantizer(const T *data, size_t num, size_t stride,
                           size_t sub_idx);
 
+  //! L2-normalize a batch of vectors (train-time use).
+  template <typename T>
+  void normalize_batch(T *data, size_t num) const;
+
+  //! Compute the per-dimension mean (accumulated in float to avoid FP16
+  //! overflow) and subtract it from all training vectors in-place.
+  template <typename T>
+  void compute_and_subtract_center(T *data, size_t num);
+
+  //! L2-normalize a single vector; optionally writes the norm out.
+  template <typename T>
+  void normalize_single(T *vec, float *norm_out = nullptr) const;
+
+  //! Subtract the pre-computed centroid_ from a single vector.
+  template <typename T>
+  void subtract_center(T *vec) const;
+
   //! Compute the centroid-to-centroid distance table for SDC.
   void compute_dist_table();
 

@@ -91,9 +91,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   // with squared-Euclidean, so the search LUT reuses SquaredEuclidean.
   if (meta_.metric_name() == "Cosine") {
     batch_fn_ =
-        get_batch_distance_func(MetricType::kSquaredEuclidean,
-                                input_data_type_, QuantizeType::kDefault,
-                                CpuArchType::kAuto);
+        get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
+                                QuantizeType::kDefault, CpuArchType::kAuto);
     extra_meta_size_ = kExtraMetaSizeCosine;
     meta_.set_extra_meta_size(extra_meta_size_);
   } else {
@@ -129,8 +128,7 @@ void PqInt8Quantizer::train_subquantizer(const T *data, size_t num,
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   uint8_t *centroids_m =
-      centroids_.data() +
-      static_cast<size_t>(sub_idx) * k * d * sizeof(T);
+      centroids_.data() + static_cast<size_t>(sub_idx) * k * d * sizeof(T);
 
   // Non-spherical L2 KMeans: the PQ codebook must minimize L2 reconstruction
   // error, so centroids are the true (magnitude-preserving) means.
@@ -139,8 +137,8 @@ void PqInt8Quantizer::train_subquantizer(const T *data, size_t num,
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
     const T *sub_vec =
-        reinterpret_cast<const T *>(
-            reinterpret_cast<const uint8_t *>(data) + i * stride) +
+        reinterpret_cast<const T *>(reinterpret_cast<const uint8_t *>(data) +
+                                    i * stride) +
         sub_idx * d;
     algorithm.append(sub_vec, d);
   }
@@ -226,21 +224,14 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   // For Cosine: normalize training data so centroids are learned in
   // normalized space (L2 minimization == maximizing cosine similarity).
   if (meta_.metric_name() == "Cosine") {
-    if (input_data_type_ == DataType::kFp16) {
-      for (size_t i = 0; i < num; ++i) {
-        ailego::Float16 *v =
-            reinterpret_cast<ailego::Float16 *>(all_data.data()) +
-            i * original_dim_;
-        float norm = 0.0f;
-        ailego::Normalizer<ailego::Float16>::L2(v, original_dim_, &norm);
-      }
-    } else {
-      for (size_t i = 0; i < num; ++i) {
-        float *v = reinterpret_cast<float *>(all_data.data()) +
-                   i * original_dim_;
-        float norm = 0.0f;
-        ailego::Normalizer<float>::L2(v, original_dim_, &norm);
-      }
+    switch (input_data_type_) {
+      case DataType::kFp16:
+        normalize_batch(reinterpret_cast<ailego::Float16 *>(all_data.data()),
+                        num);
+        break;
+      case DataType::kFp32:
+        normalize_batch(reinterpret_cast<float *>(all_data.data()), num);
+        break;
     }
   }
 
@@ -249,47 +240,15 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   // runs AFTER normalization, so all paths keep the same order
   // (normalize -> center; dequantize: un-center -> rescale).
   if (use_zero_mean_) {
-    centroid_.assign(original_dim_, 0.0f);
-    if (input_data_type_ == DataType::kFp16) {
-      for (size_t i = 0; i < num; ++i) {
-        const ailego::Float16 *v =
-            reinterpret_cast<const ailego::Float16 *>(all_data.data()) +
-            i * original_dim_;
-        for (uint32_t d = 0; d < original_dim_; ++d) {
-          centroid_[d] += static_cast<float>(v[d]);
-        }
-      }
-      for (uint32_t d = 0; d < original_dim_; ++d) {
-        centroid_[d] /= static_cast<float>(num);
-      }
-      // Subtract centroid from all training vectors.
-      for (size_t i = 0; i < num; ++i) {
-        ailego::Float16 *v =
-            reinterpret_cast<ailego::Float16 *>(all_data.data()) +
-            i * original_dim_;
-        for (uint32_t d = 0; d < original_dim_; ++d) {
-          v[d] -= centroid_[d];
-        }
-      }
-    } else {
-      for (size_t i = 0; i < num; ++i) {
-        const float *v = reinterpret_cast<const float *>(all_data.data()) +
-                         i * original_dim_;
-        for (uint32_t d = 0; d < original_dim_; ++d) {
-          centroid_[d] += v[d];
-        }
-      }
-      for (uint32_t d = 0; d < original_dim_; ++d) {
-        centroid_[d] /= static_cast<float>(num);
-      }
-      // Subtract centroid from all training vectors.
-      for (size_t i = 0; i < num; ++i) {
-        float *v = reinterpret_cast<float *>(all_data.data()) +
-                   i * original_dim_;
-        for (uint32_t d = 0; d < original_dim_; ++d) {
-          v[d] -= centroid_[d];
-        }
-      }
+    switch (input_data_type_) {
+      case DataType::kFp16:
+        compute_and_subtract_center(
+            reinterpret_cast<ailego::Float16 *>(all_data.data()), num);
+        break;
+      case DataType::kFp32:
+        compute_and_subtract_center(reinterpret_cast<float *>(all_data.data()),
+                                    num);
+        break;
     }
   }
 
@@ -301,34 +260,31 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   // Distribute sub-quantizers across threads, dispatched by data type.
   std::atomic<size_t> finished{0};
   size_t pool_count = threads->count();
-  if (input_data_type_ == DataType::kFp16) {
-    const auto *typed_data =
-        reinterpret_cast<const ailego::Float16 *>(all_data.data());
+
+  auto submit_training = [&](const auto *typed_data) {
+    using T = std::remove_const_t<std::remove_pointer_t<decltype(typed_data)>>;
     for (size_t i = 0; i < pool_count; ++i) {
       task_group->submit(ailego::Closure::New(
           [this, typed_data, num, data_stride, i, pool_count, &finished]() {
             for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                  m += static_cast<uint32_t>(pool_count)) {
-              train_subquantizer<ailego::Float16>(typed_data, num, data_stride,
-                                                  m);
+              train_subquantizer<T>(typed_data, num, data_stride, m);
               finished++;
             }
           }));
     }
-  } else {
-    const auto *typed_data =
-        reinterpret_cast<const float *>(all_data.data());
-    for (size_t i = 0; i < pool_count; ++i) {
-      task_group->submit(ailego::Closure::New(
-          [this, typed_data, num, data_stride, i, pool_count, &finished]() {
-            for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
-                 m += static_cast<uint32_t>(pool_count)) {
-              train_subquantizer<float>(typed_data, num, data_stride, m);
-              finished++;
-            }
-          }));
-    }
+  };
+
+  switch (input_data_type_) {
+    case DataType::kFp16:
+      submit_training(
+          reinterpret_cast<const ailego::Float16 *>(all_data.data()));
+      break;
+    case DataType::kFp32:
+      submit_training(reinterpret_cast<const float *>(all_data.data()));
+      break;
   }
+
   task_group->wait_finish();
 
   // Pre-build centroid pointer cache (needed by compute_dist_table).
@@ -395,14 +351,16 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   if (meta_.metric_name() == "Cosine") {
     norm_vec_storage.resize(original_dim_ * elem_sz);
     std::memcpy(norm_vec_storage.data(), input, original_dim_ * elem_sz);
-    if (input_data_type_ == DataType::kFp16) {
-      ailego::Normalizer<ailego::Float16>::L2(
-          reinterpret_cast<ailego::Float16 *>(norm_vec_storage.data()),
-          original_dim_, &vec_norm);
-    } else {
-      ailego::Normalizer<float>::L2(
-          reinterpret_cast<float *>(norm_vec_storage.data()), original_dim_,
-          &vec_norm);
+    switch (input_data_type_) {
+      case DataType::kFp16:
+        normalize_single(
+            reinterpret_cast<ailego::Float16 *>(norm_vec_storage.data()),
+            &vec_norm);
+        break;
+      case DataType::kFp32:
+        normalize_single(reinterpret_cast<float *>(norm_vec_storage.data()),
+                         &vec_norm);
+        break;
     }
     vec = norm_vec_storage.data();
   }
@@ -412,17 +370,14 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   if (use_zero_mean_) {
     centered_vec_storage.resize(original_dim_ * elem_sz);
     std::memcpy(centered_vec_storage.data(), vec, original_dim_ * elem_sz);
-    if (input_data_type_ == DataType::kFp16) {
-      ailego::Float16 *cv =
-          reinterpret_cast<ailego::Float16 *>(centered_vec_storage.data());
-      for (uint32_t d = 0; d < original_dim_; ++d) {
-        cv[d] -= centroid_[d];
-      }
-    } else {
-      float *cv = reinterpret_cast<float *>(centered_vec_storage.data());
-      for (uint32_t d = 0; d < original_dim_; ++d) {
-        cv[d] -= centroid_[d];
-      }
+    switch (input_data_type_) {
+      case DataType::kFp16:
+        subtract_center(
+            reinterpret_cast<ailego::Float16 *>(centered_vec_storage.data()));
+        break;
+      case DataType::kFp32:
+        subtract_center(reinterpret_cast<float *>(centered_vec_storage.data()));
+        break;
     }
     vec = centered_vec_storage.data();
   }
@@ -433,7 +388,8 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
   const uint8_t *vec_bytes = reinterpret_cast<const uint8_t *>(vec);
 
   for (uint32_t m = 0; m < num_chunk_; ++m) {
-    const void *sub_vec = vec_bytes + static_cast<size_t>(m) * sub_dim_ * elem_sz;
+    const void *sub_vec =
+        vec_bytes + static_cast<size_t>(m) * sub_dim_ * elem_sz;
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
 
     // Compute L2 distances from this sub-vector to all 256 centroids.
@@ -471,16 +427,14 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   if (meta_.metric_name() == "Cosine") {
     norm_query_storage.resize(original_dim_ * elem_sz);
     std::memcpy(norm_query_storage.data(), input, original_dim_ * elem_sz);
-    if (input_data_type_ == DataType::kFp16) {
-      float norm = 0.0f;
-      ailego::Normalizer<ailego::Float16>::L2(
-          reinterpret_cast<ailego::Float16 *>(norm_query_storage.data()),
-          original_dim_, &norm);
-    } else {
-      float norm = 0.0f;
-      ailego::Normalizer<float>::L2(
-          reinterpret_cast<float *>(norm_query_storage.data()), original_dim_,
-          &norm);
+    switch (input_data_type_) {
+      case DataType::kFp16:
+        normalize_single(
+            reinterpret_cast<ailego::Float16 *>(norm_query_storage.data()));
+        break;
+      case DataType::kFp32:
+        normalize_single(reinterpret_cast<float *>(norm_query_storage.data()));
+        break;
     }
     query = norm_query_storage.data();
   }
@@ -490,17 +444,15 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   if (use_zero_mean_) {
     centered_query_storage.resize(original_dim_ * elem_sz);
     std::memcpy(centered_query_storage.data(), query, original_dim_ * elem_sz);
-    if (input_data_type_ == DataType::kFp16) {
-      ailego::Float16 *cq =
-          reinterpret_cast<ailego::Float16 *>(centered_query_storage.data());
-      for (uint32_t d = 0; d < original_dim_; ++d) {
-        cq[d] -= centroid_[d];
-      }
-    } else {
-      float *cq = reinterpret_cast<float *>(centered_query_storage.data());
-      for (uint32_t d = 0; d < original_dim_; ++d) {
-        cq[d] -= centroid_[d];
-      }
+    switch (input_data_type_) {
+      case DataType::kFp16:
+        subtract_center(
+            reinterpret_cast<ailego::Float16 *>(centered_query_storage.data()));
+        break;
+      case DataType::kFp32:
+        subtract_center(
+            reinterpret_cast<float *>(centered_query_storage.data()));
+        break;
     }
     query = centered_query_storage.data();
   }
@@ -585,9 +537,15 @@ float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
 int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
                               std::string *out, IndexQueryMeta *ometa) const {
   // Validate unit_size against the input data type.
-  size_t expected_unit =
-      (input_data_type_ == DataType::kFp16) ? sizeof(ailego::Float16)
-                                            : sizeof(float);
+  size_t expected_unit = 0;
+  switch (input_data_type_) {
+    case DataType::kFp16:
+      expected_unit = sizeof(ailego::Float16);
+      break;
+    case DataType::kFp32:
+      expected_unit = sizeof(float);
+      break;
+  }
   if (qmeta.unit_size() != expected_unit) {
     return kErrUnsupported;
   }
@@ -619,16 +577,21 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const uint8_t *centroids_m =
         centroids_.data() + static_cast<size_t>(m) * k * d * elem_sz;
-    const uint8_t *centroid = centroids_m + static_cast<size_t>(code[m]) * d * elem_sz;
+    const uint8_t *centroid =
+        centroids_m + static_cast<size_t>(code[m]) * d * elem_sz;
 
-    if (input_data_type_ == DataType::kFp16) {
-      const ailego::Float16 *src =
-          reinterpret_cast<const ailego::Float16 *>(centroid);
-      for (size_t j = 0; j < d; ++j) {
-        result[m * d + j] = static_cast<float>(src[j]);
+    switch (input_data_type_) {
+      case DataType::kFp16: {
+        const ailego::Float16 *src =
+            reinterpret_cast<const ailego::Float16 *>(centroid);
+        for (size_t j = 0; j < d; ++j) {
+          result[m * d + j] = static_cast<float>(src[j]);
+        }
+        break;
       }
-    } else {
-      std::memcpy(result + m * d, centroid, d * sizeof(float));
+      case DataType::kFp32:
+        std::memcpy(result + m * d, centroid, d * sizeof(float));
+        break;
     }
   }
 
@@ -800,9 +763,8 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   // so it uses SquaredEuclidean (same as encoding), not IP.
   if (meta_.metric_name() == "Cosine") {
     batch_fn_ =
-        get_batch_distance_func(MetricType::kSquaredEuclidean,
-                                input_data_type_, QuantizeType::kDefault,
-                                CpuArchType::kAuto);
+        get_batch_distance_func(MetricType::kSquaredEuclidean, input_data_type_,
+                                QuantizeType::kDefault, CpuArchType::kAuto);
     extra_meta_size_ = kExtraMetaSizeCosine;
   } else {
     batch_fn_ = get_batch_distance_func(
@@ -822,6 +784,54 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
 }
 
 INDEX_FACTORY_REGISTER_QUANTIZER(PqInt8Quantizer);
+
+// ---------------------------------------------------------------------------
+// Template helper implementations (type-dispatched at call sites)
+// ---------------------------------------------------------------------------
+
+template <typename T>
+void PqInt8Quantizer::normalize_batch(T *data, size_t num) const {
+  for (size_t i = 0; i < num; ++i) {
+    float norm = 0.0f;
+    ailego::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
+  }
+}
+
+template <typename T>
+void PqInt8Quantizer::compute_and_subtract_center(T *data, size_t num) {
+  centroid_.assign(original_dim_, 0.0f);
+  for (size_t i = 0; i < num; ++i) {
+    const T *v = data + i * original_dim_;
+    for (uint32_t d = 0; d < original_dim_; ++d) {
+      centroid_[d] += static_cast<float>(v[d]);
+    }
+  }
+  for (uint32_t d = 0; d < original_dim_; ++d) {
+    centroid_[d] /= static_cast<float>(num);
+  }
+  for (size_t i = 0; i < num; ++i) {
+    T *v = data + i * original_dim_;
+    for (uint32_t d = 0; d < original_dim_; ++d) {
+      v[d] -= centroid_[d];
+    }
+  }
+}
+
+template <typename T>
+void PqInt8Quantizer::normalize_single(T *vec, float *norm_out) const {
+  float norm = 0.0f;
+  ailego::Normalizer<T>::L2(vec, original_dim_, &norm);
+  if (norm_out) {
+    *norm_out = norm;
+  }
+}
+
+template <typename T>
+void PqInt8Quantizer::subtract_center(T *vec) const {
+  for (uint32_t d = 0; d < original_dim_; ++d) {
+    vec[d] -= centroid_[d];
+  }
+}
 
 }  // namespace turbo
 }  // namespace zvec
