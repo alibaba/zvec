@@ -158,6 +158,10 @@ class HNSWIndexParamBuilder
     param->use_contiguous_memory = use_contiguous_memory;
     return *this;
   }
+  HNSWIndexParamBuilder &WithProvider(core::IndexProvider::Pointer provider) {
+    param->provider = std::move(provider);
+    return *this;
+  }
 
   std::shared_ptr<HNSWIndexParam> Build() override {
     return param;

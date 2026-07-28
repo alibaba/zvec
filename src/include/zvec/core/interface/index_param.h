@@ -347,6 +347,12 @@ struct HNSWIndexParam : public BaseIndexParam {
   int ef_construction = kDefaultHnswEfConstruction;
   bool use_contiguous_memory = false;
 
+  // Optional provider of the original (raw) vectors. When set, the HNSW
+  // graph is built from the original vectors fetched from this provider
+  // instead of the vectors stored in the index. Runtime only, not
+  // serialized.
+  core::IndexProvider::Pointer provider = nullptr;
+
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}
 

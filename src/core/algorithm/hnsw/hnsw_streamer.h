@@ -15,6 +15,7 @@
 
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_framework.h>
+#include <zvec/core/framework/index_provider.h>
 #include "hnsw_algorithm.h"
 #include "hnsw_streamer_entity.h"
 
@@ -26,10 +27,17 @@ class HnswStreamer : public IndexStreamer {
   using ContextPointer = IndexStreamer::Context::Pointer;
 
   HnswStreamer(void);
+  explicit HnswStreamer(IndexProvider::Pointer provider);
   ~HnswStreamer(void) override;
 
   HnswStreamer(const HnswStreamer &streamer) = delete;
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
+
+  //! Bind a provider which supplies the original vectors, so the graph is
+  //! built from the original vectors instead of the ones stored in index
+  void set_provider(IndexProvider::Pointer provider) {
+    provider_ = std::move(provider);
+  }
 
  public:
   //! Retrieve the storage mode of the underlying entity. Returns
@@ -205,6 +213,9 @@ class HnswStreamer : public IndexStreamer {
 
   Stats stats_{};
   std::mutex mutex_{};
+
+  // provider_ provides the original vector, which is used to build graph
+  IndexProvider::Pointer provider_{};
 
   size_t max_index_size_{0UL};
   size_t chunk_size_{HnswEntity::kDefaultChunkSize};

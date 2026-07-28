@@ -27,6 +27,9 @@ namespace core {
 
 HnswStreamer::HnswStreamer() = default;
 
+HnswStreamer::HnswStreamer(IndexProvider::Pointer provider)
+    : provider_(std::move(provider)) {}
+
 HnswStreamer::~HnswStreamer() {
   if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
@@ -542,6 +545,8 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
   ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  //! build graph from the original vectors of provider when it is set
+  ctx->set_provider(provider_);
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -622,6 +627,8 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
   ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  //! build graph from the original vectors of provider when it is set
+  ctx->set_provider(provider_);
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -692,6 +699,8 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
   ctx->clear();
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  ctx->set_provider(nullptr);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   for (size_t q = 0; q < count; ++q) {
@@ -762,6 +771,8 @@ int HnswStreamer::search_bf_impl(
 
   ctx->clear();
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  ctx->set_provider(nullptr);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -856,6 +867,8 @@ int HnswStreamer::search_bf_by_p_keys_impl(
 
   ctx->clear();
   ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  //! search always uses the vectors stored in the entity
+  ctx->set_provider(nullptr);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {

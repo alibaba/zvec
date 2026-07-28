@@ -143,6 +143,13 @@ class HnswContext : public IndexContext {
     return vector_source_;
   }
 
+  //! Bind a provider that supplies the original vectors used to build the
+  //! graph. Forwarded to the dist calculator, which fetches vectors from
+  //! the provider (by primary key) instead of the entity when set.
+  inline void set_provider(IndexProvider::Pointer provider) {
+    dc_.set_provider(std::move(provider));
+  }
+
   inline void resize_results(size_t size) {
     if (group_by_search()) {
       group_results_.resize(size);
@@ -397,6 +404,7 @@ class HnswContext : public IndexContext {
     set_group_params(0, 0);
     reset_group_by();
     set_vector_source(nullptr);
+    set_provider(nullptr);
   }
 
   inline std::map<std::string, TopkHeap> &group_topk_heaps() {
