@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "diskann_file_reader.h"
+#include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <cstdio>
@@ -99,7 +100,14 @@ int destroy_io_ctx(IOContext &ctx) {
     ctx->ring.teardown();
   } else if (ctx->backend == IoBackend::LIBAIO &&
              LibAioLoader::Instance().is_available()) {
-    LibAioLoader::Instance().io_destroy(ctx->aio_ctx);
+    int ret;
+    do {
+      ret = LibAioLoader::Instance().io_destroy(ctx->aio_ctx);
+    } while (ret == -EINTR);
+    if (ret != 0) {
+      return ret;
+    }
+    ctx->aio_ctx = nullptr;
   }
   // IoUringRing destructor also calls teardown() — idempotent and safe.
 
@@ -140,13 +148,40 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
   return 0;
 }
 
-static int execute_io_libaio(io_context_t ctx, int fd,
-                             std::vector<AlignedRead> &read_reqs,
-                             uint64_t n_retries = 0) {
-#if (defined(__linux) || defined(__linux__))
-  if (ailego::IOBackend::Instance().is_pread()) {
-    return execute_io_pread(fd, read_reqs);
+// io_getevents() should only fail permanently for an invalid context or
+// invalid arguments. If that happens after submission, io_destroy() is the
+// only safe way to quiesce the context before synchronous I/O touches the same
+// destination buffers. Recreate the context so later reads can still use AIO.
+static bool reset_aio_context(IOContext &ctx) {
+  auto &loader = LibAioLoader::Instance();
+  int ret;
+  do {
+    ret = loader.io_destroy(ctx->aio_ctx);
+  } while (ret == -EINTR);
+
+  if (ret != 0) {
+    LOG_ERROR("io_destroy failed while draining AIO; returned: %d, %s", ret,
+              ::strerror(-ret));
+    return false;
   }
+
+  ctx->aio_ctx = nullptr;
+  io_context_t replacement = nullptr;
+  ret = loader.io_setup(MAX_EVENTS, &replacement);
+  if (ret != 0) {
+    LOG_ERROR(
+        "io_setup failed while recreating an AIO context; returned: %d, %s. "
+        "this context will use pread",
+        ret, ::strerror(-ret));
+    ctx->backend = IoBackend::NONE;
+    return true;
+  }
+  ctx->aio_ctx = replacement;
+  return true;
+}
+
+int execute_io_libaio(IOContext &ctx, int fd,
+                      std::vector<AlignedRead> &read_reqs, uint64_t n_retries) {
   uint64_t iters = DiskAnnUtil::div_round_up(read_reqs.size(), MAX_EVENTS);
 
   for (uint64_t iter = 0; iter < iters; iter++) {
@@ -167,66 +202,104 @@ static int execute_io_libaio(io_context_t ctx, int fd,
     }
 
     size_t n_tries = 0;
-    // Phase 1: io_submit with retry.
-    while (true) {
-      int ret =
-          LibAioLoader::Instance().io_submit(ctx, (int64_t)n_ops, cbs.data());
-      if (ret == (int)n_ops) {
-        break;
+    size_t submitted = 0;
+    bool submission_ok = true;
+
+    // Phase 1: accumulate partial submissions. A positive return value means
+    // that exactly that prefix is now in flight and must never be submitted
+    // again.
+    while (submitted < n_ops) {
+      size_t remaining = n_ops - submitted;
+      int ret = LibAioLoader::Instance().io_submit(
+          ctx->aio_ctx, (int64_t)remaining, cbs.data() + submitted);
+      if (ret > 0 && static_cast<size_t>(ret) <= remaining) {
+        submitted += static_cast<size_t>(ret);
+        n_tries = 0;
+        continue;
       }
       if ((ret == -EAGAIN || ret == -EINTR) && n_tries < n_retries) {
         n_tries++;
         continue;
       }
       LOG_WARN(
-          "io_submit failed; returned: %d, expected=%lu. falling back to "
-          "pread",
-          ret, n_ops);
-      return execute_io_pread(fd, read_reqs);
+          "io_submit stopped after %zu/%lu requests; returned: %d. "
+          "falling back to pread after draining submitted AIO",
+          submitted, (unsigned long)n_ops, ret);
+      submission_ok = false;
+      break;
     }
 
-    // Phase 2: io_getevents with retry (never re-submits).
-    n_tries = 0;
-    while (true) {
+    // Phase 2: accumulate completions for every request that was actually
+    // submitted. Partial completion is normal and must not trigger fallback:
+    // the remaining requests can still write into the caller's buffers.
+    size_t completed = 0;
+    while (completed < submitted) {
+      size_t remaining = submitted - completed;
       int ret = LibAioLoader::Instance().io_getevents(
-          ctx, (int64_t)n_ops, (int64_t)n_ops, evts.data(), nullptr);
-      if (ret == (int)n_ops) {
-        break;
-      }
-      if (ret == -EINTR && n_tries < n_retries) {
-        n_tries++;
+          ctx->aio_ctx, (int64_t)remaining, (int64_t)remaining,
+          evts.data() + completed, nullptr);
+      if (ret > 0 && static_cast<size_t>(ret) <= remaining) {
+        completed += static_cast<size_t>(ret);
         continue;
       }
-      LOG_WARN(
-          "io_getevents failed; returned: %d, expected=%lu, errno=%d, %s, "
-          "falling back to pread",
-          ret, n_ops, errno, ::strerror(-ret));
+      if (ret == -EINTR) {
+        // Once requests are in flight, EINTR cannot safely turn into pread
+        // regardless of the caller's submission retry budget.
+        continue;
+      }
+
+      LOG_ERROR(
+          "io_getevents failed after %zu/%zu completions; returned: %d, %s. "
+          "resetting the AIO context before falling back to pread",
+          completed, submitted, ret,
+          ret < 0 ? ::strerror(-ret) : "invalid completion count");
+      if (!reset_aio_context(ctx)) {
+        // Do not run pread unless io_destroy confirmed that no request can
+        // still write into these buffers.
+        return IndexError_Runtime;
+      }
       return execute_io_pread(fd, read_reqs);
     }
 
-    // Phase 3: verify each completed read (res must equal requested length).
+    // Phase 3: verify every harvested event. Completion order is unspecified,
+    // so use io_event::obj instead of assuming it matches request order.
     bool all_ok = true;
-    for (uint64_t i = 0; i < n_ops; i++) {
-      int64_t expected_len = read_reqs[i + iter * MAX_EVENTS].len;
-      if ((int64_t)evts[i].res != expected_len) {
-        LOG_WARN("aio request %zu failed: res=%ld, expected=%ld, offset=%zu",
-                 (size_t)i, (long)evts[i].res, (long)expected_len,
-                 (size_t)read_reqs[i + iter * MAX_EVENTS].offset);
+    std::vector<bool> seen(submitted, false);
+    for (size_t i = 0; i < completed; i++) {
+      auto cb_it = std::find(cbs.begin(), cbs.begin() + submitted, evts[i].obj);
+      if (cb_it == cbs.begin() + submitted) {
+        LOG_WARN("aio completion %zu referenced an unknown request", i);
+        all_ok = false;
+        continue;
+      }
+
+      size_t request_index = static_cast<size_t>(cb_it - cbs.begin());
+      const AlignedRead &req = read_reqs[request_index + iter * MAX_EVENTS];
+      int64_t result = static_cast<int64_t>(evts[i].res);
+      int64_t result2 = static_cast<int64_t>(evts[i].res2);
+      if (seen[request_index] || result != static_cast<int64_t>(req.len) ||
+          result2 != 0) {
+        LOG_WARN(
+            "aio request %zu failed: res=%ld, res2=%ld, expected=%lu, "
+            "offset=%lu",
+            request_index, (long)result, (long)result2, (unsigned long)req.len,
+            (unsigned long)req.offset);
         all_ok = false;
       }
+      seen[request_index] = true;
     }
-    if (!all_ok) {
+
+    if (!submission_ok || !all_ok) {
+      // All submitted requests have been harvested at this point. It is now
+      // safe for synchronous reads to reuse their destination buffers.
       return execute_io_pread(fd, read_reqs);
     }
   }
 
   return 0;
-#else
-  return execute_io_pread(fd, read_reqs);
-#endif
 }
 
-int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
+int execute_io(IOContext &ctx, int fd, std::vector<AlignedRead> &read_reqs,
                uint64_t n_retries = 0) {
 #if (defined(__linux) || defined(__linux__))
   // Guard against null or sentinel contexts.
@@ -246,7 +319,7 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
   }
 
   if (ctx->backend == IoBackend::LIBAIO) {
-    return execute_io_libaio(ctx->aio_ctx, fd, read_reqs, n_retries);
+    return execute_io_libaio(ctx, fd, read_reqs, n_retries);
   }
 
   // NONE backend — synchronous pread.
@@ -581,8 +654,8 @@ void WindowsAlignedFileReader::close() {
 }
 
 int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
-  if (ctx.file_handle != INVALID_HANDLE_VALUE &&
-      ctx.completion_port != NULL && ctx.file_path == file_path_) {
+  if (ctx.file_handle != INVALID_HANDLE_VALUE && ctx.completion_port != NULL &&
+      ctx.file_path == file_path_) {
     return 0;
   }
 
@@ -599,8 +672,7 @@ int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
     return IndexError_Runtime;
   }
 
-  ctx.completion_port =
-      CreateIoCompletionPort(ctx.file_handle, NULL, 0, 1);
+  ctx.completion_port = CreateIoCompletionPort(ctx.file_handle, NULL, 0, 1);
   if (ctx.completion_port == NULL) {
     DWORD error = GetLastError();
     LOG_ERROR("CreateIoCompletionPort failed (error=%lu)", error);
@@ -678,8 +750,7 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
         break;
       }
 
-      BOOL ret =
-          ReadFile(ctx.file_handle, read_buf, (DWORD)nbytes, NULL, &os);
+      BOOL ret = ReadFile(ctx.file_handle, read_buf, (DWORD)nbytes, NULL, &os);
       if (ret == FALSE) {
         DWORD error = GetLastError();
         if (error != ERROR_IO_PENDING) {
@@ -700,9 +771,8 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       ULONG removed = 0;
       const ULONG max_entries = static_cast<ULONG>(
           std::min<uint64_t>(issued_count - completed_count, MAX_IO_DEPTH));
-      BOOL dequeued =
-          GetQueuedCompletionStatusEx(ctx.completion_port, entries, max_entries,
-                                      &removed, INFINITE, FALSE);
+      BOOL dequeued = GetQueuedCompletionStatusEx(
+          ctx.completion_port, entries, max_entries, &removed, INFINITE, FALSE);
       if (dequeued == FALSE) {
         LOG_ERROR("GetQueuedCompletionStatusEx failed (error=%lu)",
                   GetLastError());
@@ -743,8 +813,8 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
 
         const uint64_t slot = static_cast<uint64_t>(os - begin);
         DWORD bytes_transferred = 0;
-        BOOL ok = GetOverlappedResult(ctx.file_handle, os, &bytes_transferred,
-                                      FALSE);
+        BOOL ok =
+            GetOverlappedResult(ctx.file_handle, os, &bytes_transferred, FALSE);
         if (ok == FALSE) {
           LOG_ERROR("Overlapped read %lu failed (error=%lu)",
                     (unsigned long)slot, GetLastError());

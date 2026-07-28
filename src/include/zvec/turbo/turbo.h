@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <zvec/ailego/math_batch/utils.h>
+#include <zvec/export.h>
 
 namespace zvec::turbo {
 
@@ -116,15 +117,15 @@ enum class CpuArchType {
   kSVE2
 };
 
-DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
-                               QuantizeType quantize_type,
-                               CpuArchType cpu_arch_type = CpuArchType::kAuto);
-
-BatchDistanceFunc get_batch_distance_func(
+ZVEC_TURBO_API DistanceFunc get_distance_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
-QueryPreprocessFunc get_query_preprocess_func(
+ZVEC_TURBO_API BatchDistanceFunc get_batch_distance_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
+ZVEC_TURBO_API QueryPreprocessFunc get_query_preprocess_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
@@ -134,7 +135,8 @@ QueryPreprocessFunc get_query_preprocess_func(
 // uniform-specific accessor intentionally kept outside of the generic
 // (metric/data/quantize) dispatch above; data_type is retained so the
 // interface can grow to cover other output types (e.g. fp16) in the future.
-UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
+ZVEC_TURBO_API UniformQuantizeFunc
+get_uniform_quantize_func(DataType data_type);
 
 // Returns rotator kernels dispatched for the current CPU.
 RotatorKernels get_rotator_kernels(
