@@ -42,6 +42,16 @@ int IVFRabitqIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
     return core::IndexError_Runtime;
   }
 
+  if (param_.nlist <= 0) {
+    LOG_ERROR("nlist must be greater than 0, got %d", param_.nlist);
+    return core::IndexError_InvalidArgument;
+  }
+  if (param_.sample_count < 0) {
+    LOG_ERROR("sample_count must be greater than or equal to 0, got %d",
+              param_.sample_count);
+    return core::IndexError_InvalidArgument;
+  }
+
   if (param.dimension < core::kMinRabitqDimSize ||
       param.dimension > core::kMaxRabitqDimSize) {
     LOG_ERROR("Unsupported dimension: %d, must be in [%d, %d]", param.dimension,
@@ -290,15 +300,10 @@ int IVFRabitqIndex::_dense_fetch(const uint32_t doc_id,
   LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
   return core::IndexError_Unsupported;
 #else
-  if (is_trained_) {
-    return Index::_dense_fetch(doc_id, vector_data_buffer);
-  } else {
-    DenseVectorBuffer dense_vector_buffer;
-    std::string &out_vector_buffer = dense_vector_buffer.data;
-    out_vector_buffer = doc_cache_[doc_id].second;
-    vector_data_buffer->vector_buffer = std::move(dense_vector_buffer);
-    return 0;
-  }
+  (void)doc_id;
+  (void)vector_data_buffer;
+  LOG_ERROR("Fetch is not supported for IVF RaBitQ index");
+  return core::IndexError_Unsupported;
 #endif  // RABITQ_SUPPORTED
 }
 
@@ -315,32 +320,31 @@ int IVFRabitqIndex::_prepare_for_search(
   const auto &ivf_rabitq_param =
       std::dynamic_pointer_cast<IVFRabitqQueryParam>(search_param);
 
+  if (!ivf_rabitq_param) {
+    LOG_ERROR("Invalid search param type, expected IVFRabitqQueryParam");
+    return core::IndexError_InvalidArgument;
+  }
+  if (ivf_rabitq_param->nprobe == 0) {
+    LOG_ERROR("nprobe must be greater than 0");
+    return core::IndexError_InvalidArgument;
+  }
+  if (search_param->fetch_vector) {
+    LOG_ERROR("fetch_vector is not supported for IVF RaBitQ index");
+    return core::IndexError_Unsupported;
+  }
+
   _set_group_by_on_context(search_param, context);
   context->set_topk(search_param->topk);
-  context->set_fetch_vector(search_param->fetch_vector);
+  context->set_fetch_vector(false);
   if (search_param->filter) {
     context->set_filter(std::move(*search_param->filter));
   }
   if (search_param->radius > 0.0f) {
     context->set_threshold(search_param->radius);
   }
-  if (ivf_rabitq_param && ivf_rabitq_param->nprobe > 0) {
-    ailego::Params params;
-    params.set(core::PARAM_IVF_RABITQ_NPROBE, ivf_rabitq_param->nprobe);
-    context->update(params);
-  }
-  return 0;
-#endif  // RABITQ_SUPPORTED
-}
-
-int IVFRabitqIndex::_get_coarse_search_topk(
-    const BaseIndexQueryParam::Pointer &search_param) {
-#if !RABITQ_SUPPORTED
-  (void)search_param;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
-  return -1;
-#else
-  return search_param->topk;
+  ailego::Params params;
+  params.set(core::PARAM_IVF_RABITQ_NPROBE, ivf_rabitq_param->nprobe);
+  return context->update(params);
 #endif  // RABITQ_SUPPORTED
 }
 

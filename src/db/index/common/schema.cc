@@ -200,6 +200,26 @@ Status FieldSchema::validate() const {
         }
       }
 
+      if (index_params_->type() == IndexType::IVF_RABITQ) {
+        auto ivf_rabitq_params =
+            std::dynamic_pointer_cast<IvfRabitqIndexParams>(index_params_);
+        if (!ivf_rabitq_params) {
+          return Status::InvalidArgument(
+              "schema validate failed: IVF_RABITQ index requires "
+              "IvfRabitqIndexParams");
+        }
+        if (ivf_rabitq_params->nlist() <= 0) {
+          return Status::InvalidArgument(
+              "schema validate failed: IVF_RABITQ nlist must be greater than "
+              "0");
+        }
+        if (ivf_rabitq_params->sample_count() < 0) {
+          return Status::InvalidArgument(
+              "schema validate failed: IVF_RABITQ sample_count must be "
+              "greater than or equal to 0");
+        }
+      }
+
       if (index_params_->type() == IndexType::DISKANN) {
         // DiskAnn requires Linux x86_64/i686/i386.  The CMake variable
         // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the

@@ -78,12 +78,26 @@ else()
     "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
   )
 
-  cc_library(
-      NAME core_knn_ivf_rabitq
-      STATIC SHARED STRICT ALWAYS_LINK
-      SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
-      LIBS core_framework
-      INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
-      VERSION "${PROXIMA_ZVEC_VERSION}"
-    )
+  if(MSVC)
+    # MSVC cannot create an import library for an empty DLL. Keep the
+    # cross-platform static target name expected by the Python binding.
+    cc_library(
+        NAME core_knn_ivf_rabitq
+        STATIC STRICT ALWAYS_LINK
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+        LIBS core_framework
+        INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+        VERSION "${PROXIMA_ZVEC_VERSION}"
+      )
+    add_library(core_knn_ivf_rabitq_static ALIAS core_knn_ivf_rabitq)
+  else()
+    cc_library(
+        NAME core_knn_ivf_rabitq
+        STATIC SHARED STRICT ALWAYS_LINK
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
+        LIBS core_framework
+        INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+        VERSION "${PROXIMA_ZVEC_VERSION}"
+      )
+  endif()
 endif()

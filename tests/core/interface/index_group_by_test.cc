@@ -44,6 +44,7 @@ struct GroupByCase {
   bool is_sparse = false;
   uint32_t dimension = kDimension;
   bool with_refiner = false;
+  int expected_error = 0;
 };
 
 std::shared_ptr<std::vector<uint64_t>> AllPks() {
@@ -194,11 +195,13 @@ BaseIndexParam::Pointer DenseIvfRabitqParam(uint32_t dimension) {
 }
 
 BaseIndexQueryParam::Pointer IvfRabitqQuery(bool is_linear = false,
-                                            bool with_bf_pks = false) {
+                                            bool with_bf_pks = false,
+                                            bool fetch_vector = false) {
   auto query = std::make_shared<IVFRabitqQueryParam>();
   query->topk = kSearchTopk;
   query->nprobe = 4;
   query->is_linear = is_linear;
+  query->fetch_vector = fetch_vector;
   if (with_bf_pks) {
     query->bf_pks = AllPks();
   }
@@ -287,7 +290,11 @@ class GroupByInterfaceTest : public ::testing::Test {
     SearchResult result;
     const int ret = index->Search(query.data, query_param, &result);
     if (expect_error) {
-      ASSERT_NE(0, ret) << test_case.name;
+      if (test_case.expected_error != 0) {
+        ASSERT_EQ(test_case.expected_error, ret) << test_case.name;
+      } else {
+        ASSERT_NE(0, ret) << test_case.name;
+      }
     } else {
       ASSERT_EQ(0, ret) << test_case.name;
       AssertGroupedResult(result, query_param, test_case);
@@ -489,6 +496,13 @@ TEST_F(GroupByInterfaceTest, Dense) {
       {"dense_ivf_rabitq_bf_pks", DenseIvfRabitqParam(64),
        IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/true),
        /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_large_nprobe", DenseIvfRabitqParam(64),
+       [] {
+         auto query = IvfRabitqQuery();
+         std::dynamic_pointer_cast<IVFRabitqQueryParam>(query)->nprobe = 1025;
+         return query;
+       }(),
+       /*is_sparse=*/false, /*dimension=*/64},
   // Note: fetch_vector is not supported for RabitQ because the entity
   // stores quantized binary data (not original float vectors), and
   // RabitqReformer does not implement revert().
@@ -552,6 +566,20 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
        /*is_sparse=*/false,
        /*dimension=*/kDimension,
        /*with_refiner=*/true},
+#if RABITQ_SUPPORTED
+      {"unsupported_ivf_rabitq_fetch_vector", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/false,
+                      /*fetch_vector=*/true),
+       /*is_sparse=*/false, /*dimension=*/64, /*with_refiner=*/false,
+       /*expected_error=*/zvec::core::IndexError_Unsupported},
+      {"unsupported_ivf_rabitq_zero_nprobe", DenseIvfRabitqParam(64),
+       [] {
+         auto query = IvfRabitqQuery();
+         std::dynamic_pointer_cast<IVFRabitqQueryParam>(query)->nprobe = 0;
+         return query;
+       }(),
+       /*is_sparse=*/false, /*dimension=*/64},
+#endif
 #if DISKANN_SUPPORTED
       {"unsupported_diskann_graph", DenseDiskAnnParam(), DiskAnnQuery()},
       {"unsupported_diskann_linear", DenseDiskAnnParam(),

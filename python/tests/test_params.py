@@ -435,16 +435,22 @@ class TestIvfRabitqQueryParam:
         assert param.is_using_refiner == False
         assert param.radius == 0
         assert param.is_linear == False
+        assert param.scale_factor == 10.0
         assert param.type == IndexType.IVF_RABITQ
 
     def test_custom(self):
         param = IvfRabitqQueryParam(
-            nprobe=20, is_using_refiner=True, radius=30, is_linear=True
+            nprobe=20,
+            is_using_refiner=True,
+            radius=30,
+            is_linear=True,
+            scale_factor=3.5,
         )
         assert param.nprobe == 20
         assert param.is_using_refiner == True
         assert param.radius == 30
         assert param.is_linear == True
+        assert param.scale_factor == 3.5
         assert param.type == IndexType.IVF_RABITQ
 
     def test_query_accepts_param(self):
@@ -452,6 +458,15 @@ class TestIvfRabitqQueryParam:
         query = Query(field_name="embedding", vector=[0.1, 0.2], param=param)
         assert query.param == param
         assert query.param.type == IndexType.IVF_RABITQ
+
+    def test_pickle_roundtrip(self):
+        import pickle
+
+        param = IvfRabitqQueryParam(nprobe=20, is_using_refiner=True, scale_factor=3.5)
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.nprobe == 20
+        assert restored.is_using_refiner == True
+        assert restored.scale_factor == 3.5
 
     def test_readonly_attributes(self):
         param = IvfRabitqQueryParam()

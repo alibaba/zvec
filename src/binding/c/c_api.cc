@@ -5286,6 +5286,27 @@ int zvec_query_params_ivf_rabitq_get_nprobe(
   return ptr->nprobe();
 }
 
+zvec_error_code_t zvec_query_params_ivf_rabitq_set_scale_factor(
+    zvec_ivf_rabitq_query_params_t *params, float scale_factor) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "IVF_RABITQ query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::IvfRabitqQueryParams *>(params);
+  ptr->set_scale_factor(scale_factor);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_ivf_rabitq_get_scale_factor(
+    const zvec_ivf_rabitq_query_params_t *params) {
+  if (!params) {
+    return 10.0f;
+  }
+  auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
+  return ptr->scale_factor();
+}
+
 zvec_error_code_t zvec_query_params_ivf_rabitq_set_radius(
     zvec_ivf_rabitq_query_params_t *params, float radius) {
   if (!params) {

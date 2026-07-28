@@ -1035,6 +1035,23 @@ TEST(FieldSchemaTest, IvfRabitqIndexValidationDimensionAndDataTypes) {
         << status.message();
   }
 }
+
+TEST(FieldSchemaTest, IvfRabitqIndexValidationParameters) {
+  auto validate = [](int nlist, int sample_count) {
+    auto index_params = std::make_shared<IvfRabitqIndexParams>(
+        MetricType::L2, nlist, 7, sample_count);
+    FieldSchema field("vector_field", DataType::VECTOR_FP32, 128, false,
+                      index_params);
+    return field.validate();
+  };
+
+  EXPECT_FALSE(validate(0, 0).ok());
+  EXPECT_FALSE(validate(-1, 0).ok());
+  EXPECT_FALSE(validate(32, -1).ok());
+  EXPECT_TRUE(validate(1, 0).ok());
+  EXPECT_TRUE(validate(1024, 1).ok());
+  EXPECT_TRUE(validate(1025, 0).ok());
+}
 #endif
 
 TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {

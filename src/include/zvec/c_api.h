@@ -1617,6 +1617,24 @@ ZVEC_EXPORT int ZVEC_CALL zvec_query_params_ivf_rabitq_get_nprobe(
     const zvec_ivf_rabitq_query_params_t *params);
 
 /**
+ * @brief Set candidate expansion factor used by the refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @param scale_factor Candidate expansion factor
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_ivf_rabitq_set_scale_factor(
+    zvec_ivf_rabitq_query_params_t *params, float scale_factor);
+
+/**
+ * @brief Get candidate expansion factor used by the refiner
+ * @param params IVF RaBitQ query parameters pointer
+ * @return float Candidate expansion factor
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_ivf_rabitq_get_scale_factor(
+    const zvec_ivf_rabitq_query_params_t *params);
+
+/**
  * @brief Set search radius
  * @param params IVF RaBitQ query parameters pointer
  * @param radius Search radius

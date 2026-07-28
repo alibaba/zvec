@@ -221,16 +221,6 @@ class IVFRabitqIndexParamBuilder
     param->sample_count = sample_count;
     return *this;
   }
-  IVFRabitqIndexParamBuilder &WithReformer(
-      core::IndexReformer::Pointer reformer) {
-    param->reformer = std::move(reformer);
-    return *this;
-  }
-  IVFRabitqIndexParamBuilder &WithProvider(
-      core::IndexProvider::Pointer provider) {
-    param->provider = std::move(provider);
-    return *this;
-  }
   std::shared_ptr<IVFRabitqIndexParam> Build() override {
     return param;
   }

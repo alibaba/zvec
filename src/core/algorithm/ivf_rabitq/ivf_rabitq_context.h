@@ -70,9 +70,13 @@ class IvfRabitqContext : public IndexContext {
       return IndexError_InvalidArgument;
     }
 
-    uint32_t val = 0;
+    int64_t val = 0;
     if (params.get(PARAM_IVF_RABITQ_NPROBE, &val)) {
-      nprobe_ = val;
+      if (val < 0) {
+        LOG_ERROR("Invalid nprobe, must be greater than or equal to 0");
+        return IndexError_InvalidArgument;
+      }
+      nprobe_ = static_cast<uint32_t>(val);
     }
 
     return 0;

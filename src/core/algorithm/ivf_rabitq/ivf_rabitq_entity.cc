@@ -23,6 +23,7 @@
 #include <rabitqlib/quantization/data_layout.hpp>
 #include <rabitqlib/utils/space.hpp>
 #include <zvec/ailego/logger/logger.h>
+#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #include "zvec/core/framework/index_error.h"
 #include "ivf_rabitq_params.h"
 
@@ -68,6 +69,11 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
     LOG_ERROR("Failed to get segment %s", IVF_RABITQ_HEADER_SEG_ID.c_str());
     return IndexError_InvalidFormat;
   }
+  if (header_seg->data_size() != sizeof(IvfRabitqHeader)) {
+    LOG_ERROR("Invalid IVF RaBitQ header segment size=%zu, expected=%zu",
+              header_seg->data_size(), sizeof(IvfRabitqHeader));
+    return IndexError_InvalidFormat;
+  }
   IndexStorage::MemoryBlock hdr_block;
   size_t read_size = header_seg->read(0, hdr_block, sizeof(IvfRabitqHeader));
   if (read_size != sizeof(IvfRabitqHeader)) {
@@ -75,6 +81,10 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   memcpy(&header_, hdr_block.data(), sizeof(IvfRabitqHeader));
+  int ret = validate_header();
+  if (ret != 0) {
+    return ret;
+  }
 
   // Read cluster metas
   auto cluster_meta_seg = storage->get(IVF_RABITQ_CLUSTER_META_SEG_ID);
@@ -83,7 +93,13 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
               IVF_RABITQ_CLUSTER_META_SEG_ID.c_str());
     return IndexError_InvalidFormat;
   }
-  size_t meta_size = header_.cluster_count * sizeof(IvfRabitqClusterMeta);
+  size_t meta_size =
+      static_cast<size_t>(header_.cluster_count) * sizeof(IvfRabitqClusterMeta);
+  if (cluster_meta_seg->data_size() != meta_size) {
+    LOG_ERROR("Invalid cluster meta segment size=%zu, expected=%zu",
+              cluster_meta_seg->data_size(), meta_size);
+    return IndexError_InvalidFormat;
+  }
   IndexStorage::MemoryBlock meta_block;
   read_size = cluster_meta_seg->read(0, meta_block, meta_size);
   if (read_size != meta_size) {
@@ -99,10 +115,17 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
     LOG_ERROR("Failed to get segment %s", IVF_RABITQ_BATCH_DATA_SEG_ID.c_str());
     return IndexError_InvalidFormat;
   }
-  read_size = batch_seg->read(0, batch_data_block_, header_.batch_data_size);
-  if (read_size != header_.batch_data_size) {
+  size_t batch_data_size = static_cast<size_t>(header_.batch_data_size);
+  if (static_cast<uint64_t>(batch_data_size) != header_.batch_data_size ||
+      batch_seg->data_size() != batch_data_size) {
+    LOG_ERROR("Invalid batch data segment size=%zu, expected=%zu",
+              batch_seg->data_size(), batch_data_size);
+    return IndexError_InvalidFormat;
+  }
+  read_size = batch_seg->read(0, batch_data_block_, batch_data_size);
+  if (read_size != batch_data_size) {
     LOG_ERROR("Failed to read batch data: got %zu, expected %zu", read_size,
-              (size_t)header_.batch_data_size);
+              batch_data_size);
     return IndexError_InvalidFormat;
   }
   batch_data_ = reinterpret_cast<const char *>(batch_data_block_.data());
@@ -115,8 +138,15 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
       LOG_ERROR("Failed to get segment %s", IVF_RABITQ_EX_DATA_SEG_ID.c_str());
       return IndexError_InvalidFormat;
     }
-    read_size = ex_seg->read(0, ex_data_block_, header_.ex_data_size);
-    if (read_size != header_.ex_data_size) {
+    size_t ex_data_size = static_cast<size_t>(header_.ex_data_size);
+    if (static_cast<uint64_t>(ex_data_size) != header_.ex_data_size ||
+        ex_seg->data_size() != ex_data_size) {
+      LOG_ERROR("Invalid extra-bit data segment size=%zu, expected=%zu",
+                ex_seg->data_size(), ex_data_size);
+      return IndexError_InvalidFormat;
+    }
+    read_size = ex_seg->read(0, ex_data_block_, ex_data_size);
+    if (read_size != ex_data_size) {
       LOG_ERROR("Failed to read ex data");
       return IndexError_InvalidFormat;
     }
@@ -129,7 +159,13 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
     LOG_ERROR("Failed to get segment %s", IVF_RABITQ_KEYS_SEG_ID.c_str());
     return IndexError_InvalidFormat;
   }
-  size_t keys_size = header_.total_vector_count * sizeof(uint64_t);
+  size_t keys_size =
+      static_cast<size_t>(header_.total_vector_count) * sizeof(uint64_t);
+  if (keys_seg->data_size() != keys_size) {
+    LOG_ERROR("Invalid keys segment size=%zu, expected=%zu",
+              keys_seg->data_size(), keys_size);
+    return IndexError_InvalidFormat;
+  }
   read_size = keys_seg->read(0, keys_block_, keys_size);
   if (read_size != keys_size) {
     LOG_ERROR("Failed to read keys");
@@ -137,11 +173,15 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
   }
   keys_ = reinterpret_cast<const uint64_t *>(keys_block_.data());
 
-  int ret = load_key_order_mapping(storage);
+  ret = load_key_order_mapping(storage);
   if (ret != 0) {
     return ret;
   }
   ret = init_quantized_vector_layout();
+  if (ret != 0) {
+    return ret;
+  }
+  ret = validate_cluster_metas();
   if (ret != 0) {
     return ret;
   }
@@ -155,6 +195,10 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
 
   // Resolve function pointer once at load time
   ip_func_ = rabitqlib::select_excode_ipfunc(header_.ex_bits);
+  if (header_.ex_bits > 0 && !ip_func_) {
+    LOG_ERROR("Unsupported IVF RaBitQ ex_bits=%zu", (size_t)header_.ex_bits);
+    return IndexError_InvalidFormat;
+  }
 
   return 0;
 }
@@ -272,6 +316,75 @@ uint32_t IvfRabitqEntity::get_cluster_id(uint32_t id) const {
     return std::numeric_limits<uint32_t>::max();
   }
   return static_cast<uint32_t>(meta - cluster_metas_.data());
+}
+
+int IvfRabitqEntity::validate_header() const {
+  if (header_.magic != kIvfRabitqIndexMagic) {
+    LOG_ERROR("Invalid IVF RaBitQ index magic: got=%zu, expected=%zu",
+              (size_t)header_.magic, (size_t)kIvfRabitqIndexMagic);
+    return IndexError_InvalidFormat;
+  }
+  if (header_.version != kIvfRabitqIndexVersion) {
+    LOG_ERROR("Unsupported IVF RaBitQ index version: got=%zu, expected=%zu",
+              (size_t)header_.version, (size_t)kIvfRabitqIndexVersion);
+    return IndexError_InvalidFormat;
+  }
+  if (header_.dimension < kMinRabitqDimSize ||
+      header_.dimension > kMaxRabitqDimSize) {
+    LOG_ERROR("Invalid IVF RaBitQ dimension=%zu", (size_t)header_.dimension);
+    return IndexError_InvalidFormat;
+  }
+  uint32_t expected_padded_dim = ((header_.dimension + 63U) / 64U) * 64U;
+  if (header_.padded_dim != expected_padded_dim) {
+    LOG_ERROR("Invalid IVF RaBitQ padded_dim=%zu, expected=%zu",
+              (size_t)header_.padded_dim, (size_t)expected_padded_dim);
+    return IndexError_InvalidFormat;
+  }
+  if (header_.total_vector_count == 0 || header_.cluster_count == 0 ||
+      header_.cluster_count > header_.total_vector_count) {
+    LOG_ERROR("Invalid IVF RaBitQ vector_count=%zu, cluster_count=%zu",
+              (size_t)header_.total_vector_count,
+              (size_t)header_.cluster_count);
+    return IndexError_InvalidFormat;
+  }
+  if (header_.ex_bits > 8) {
+    LOG_ERROR("Invalid IVF RaBitQ ex_bits=%zu", (size_t)header_.ex_bits);
+    return IndexError_InvalidFormat;
+  }
+  return 0;
+}
+
+int IvfRabitqEntity::validate_cluster_metas() const {
+  size_t expected_key_offset = 0;
+  for (size_t cluster_id = 0; cluster_id < cluster_metas_.size();
+       ++cluster_id) {
+    const auto &meta = cluster_metas_[cluster_id];
+    size_t expected_batch_count = (static_cast<size_t>(meta.vector_count) +
+                                   rabitqlib::fastscan::kBatchSize - 1) /
+                                  rabitqlib::fastscan::kBatchSize;
+    size_t cluster_batch_size =
+        static_cast<size_t>(meta.batch_count) * batch_data_size_;
+    size_t cluster_ex_size =
+        static_cast<size_t>(meta.vector_count) * ex_data_size_;
+    if (meta.batch_count != expected_batch_count ||
+        meta.key_offset != expected_key_offset ||
+        meta.key_offset > header_.total_vector_count ||
+        meta.vector_count > header_.total_vector_count - meta.key_offset ||
+        meta.batch_data_offset > header_.batch_data_size ||
+        cluster_batch_size > header_.batch_data_size - meta.batch_data_offset ||
+        meta.ex_data_offset > header_.ex_data_size ||
+        cluster_ex_size > header_.ex_data_size - meta.ex_data_offset) {
+      LOG_ERROR("Invalid IVF RaBitQ cluster range, cluster_id=%zu", cluster_id);
+      return IndexError_InvalidFormat;
+    }
+    expected_key_offset += meta.vector_count;
+  }
+  if (expected_key_offset != header_.total_vector_count) {
+    LOG_ERROR("Invalid IVF RaBitQ cluster key coverage=%zu, expected=%zu",
+              expected_key_offset, (size_t)header_.total_vector_count);
+    return IndexError_InvalidFormat;
+  }
+  return 0;
 }
 
 int IvfRabitqEntity::load_key_order_mapping(IndexStorage::Pointer storage) {

@@ -639,6 +639,7 @@ class IvfRabitqQueryParam(QueryParam):
         radius: typing.SupportsFloat = 0.0,
         is_linear: bool = False,
         is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 10.0,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -646,6 +647,12 @@ class IvfRabitqQueryParam(QueryParam):
     def nprobe(self) -> int:
         """
         int: Number of inverted lists to search during IVF RaBitQ query.
+        """
+
+    @property
+    def scale_factor(self) -> float:
+        """
+        float: Candidate expansion factor used by the refiner.
         """
 
 class IVFIndexParam(VectorIndexParam):

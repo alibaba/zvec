@@ -42,7 +42,13 @@ int IvfRabitqStreamer::init(const IndexMeta &meta,
   params_ = params;
 
   // Parse IVF RaBitQ specific params
-  params.get(PARAM_IVF_RABITQ_NPROBE, &nprobe_);
+  int64_t configured_nprobe = static_cast<int64_t>(kDefaultIvfRabitqNprobe);
+  if (params.get(PARAM_IVF_RABITQ_NPROBE, &configured_nprobe) &&
+      configured_nprobe < 0) {
+    LOG_ERROR("Invalid nprobe, must be greater than or equal to 0");
+    return IndexError_InvalidArgument;
+  }
+  nprobe_ = static_cast<uint32_t>(configured_nprobe);
 
   params.get(PARAM_IVF_RABITQ_SCAN_RATIO, &scan_ratio_);
   if (scan_ratio_ <= 0.0f || scan_ratio_ > 1.0f) {
@@ -112,9 +118,24 @@ int IvfRabitqStreamer::open(IndexStorage::Pointer storage) {
 int IvfRabitqStreamer::load_index(IndexStorage::Pointer storage) {
   ailego::ElapsedTime timer;
 
+  // Validate the main header and all entity segment ranges before loading the
+  // reformer, whose persisted dimensions control allocations and rotator setup.
+  entity_ = std::make_shared<IvfRabitqEntity>();
+  int ret = entity_->load(storage);
+  if (ret != 0) {
+    LOG_ERROR("Failed to load IvfRabitqEntity, ret=%d", ret);
+    return ret;
+  }
+  if (entity_->dimension() != rabitq_meta_.dimension()) {
+    LOG_ERROR("RaBitQ dimension mismatch: entity=%zu, meta=%zu",
+              (size_t)entity_->dimension(),
+              static_cast<size_t>(rabitq_meta_.dimension()));
+    return IndexError_InvalidFormat;
+  }
+
   // Load reformer
   reformer_ = std::make_shared<IvfRabitqReformer>();
-  int ret = reformer_->init(metric_name_);
+  ret = reformer_->init(metric_name_);
   if (ret != 0) {
     LOG_ERROR("Failed to init IvfRabitqReformer, ret=%d", ret);
     return ret;
@@ -124,19 +145,19 @@ int IvfRabitqStreamer::load_index(IndexStorage::Pointer storage) {
     LOG_ERROR("Failed to load IvfRabitqReformer, ret=%d", ret);
     return ret;
   }
-  if (reformer_->dimension() != rabitq_meta_.dimension()) {
-    LOG_ERROR("RaBitQ dimension mismatch: reformer=%zu, meta=%zu",
-              reformer_->dimension(),
-              static_cast<size_t>(rabitq_meta_.dimension()));
-    return IndexError_Mismatch;
-  }
-
-  // Load entity data
-  entity_ = std::make_shared<IvfRabitqEntity>();
-  ret = entity_->load(storage);
-  if (ret != 0) {
-    LOG_ERROR("Failed to load IvfRabitqEntity, ret=%d", ret);
-    return ret;
+  if (reformer_->dimension() != entity_->dimension() ||
+      reformer_->padded_dim() != entity_->padded_dim() ||
+      reformer_->ex_bits() != entity_->ex_bits() ||
+      reformer_->num_clusters() != entity_->cluster_count()) {
+    LOG_ERROR(
+        "IVF RaBitQ entity and reformer metadata mismatch: "
+        "dimension=%zu/%zu, padded_dim=%zu/%zu, ex_bits=%zu/%zu, "
+        "clusters=%zu/%zu",
+        (size_t)entity_->dimension(), reformer_->dimension(),
+        (size_t)entity_->padded_dim(), reformer_->padded_dim(),
+        (size_t)entity_->ex_bits(), reformer_->ex_bits(),
+        (size_t)entity_->cluster_count(), reformer_->num_clusters());
+    return IndexError_InvalidFormat;
   }
 
   stats_.set_loaded_count(entity_->total_vector_count());

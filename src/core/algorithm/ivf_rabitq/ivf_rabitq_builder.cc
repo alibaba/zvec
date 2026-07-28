@@ -237,10 +237,13 @@ int IvfRabitqBuilder::init(const IndexMeta &meta,
   meta_ = meta;
   params_ = params;
 
-  params.get(PARAM_IVF_RABITQ_NLIST, &nlist_);
-  if (nlist_ == 0) {
-    nlist_ = kDefaultIvfRabitqNlist;
+  int configured_nlist = static_cast<int>(kDefaultIvfRabitqNlist);
+  if (params.get(PARAM_IVF_RABITQ_NLIST, &configured_nlist) &&
+      configured_nlist <= 0) {
+    LOG_ERROR("Invalid nlist=%d, must be greater than 0", configured_nlist);
+    return IndexError_InvalidArgument;
   }
+  nlist_ = static_cast<uint32_t>(configured_nlist);
 
   params.get(PARAM_RABITQ_TOTAL_BITS, &total_bits_);
   if (total_bits_ == 0) {
@@ -251,7 +254,14 @@ int IvfRabitqBuilder::init(const IndexMeta &meta,
     return IndexError_InvalidArgument;
   }
 
-  params.get(PARAM_RABITQ_SAMPLE_COUNT, &sample_count_);
+  int configured_sample_count = 0;
+  if (params.get(PARAM_RABITQ_SAMPLE_COUNT, &configured_sample_count) &&
+      configured_sample_count < 0) {
+    LOG_ERROR("Invalid sample_count=%d, must be greater than or equal to 0",
+              configured_sample_count);
+    return IndexError_InvalidArgument;
+  }
+  sample_count_ = static_cast<uint32_t>(configured_sample_count);
 
   int ret = PrepareAndCheckIvfRabitqInternalMeta(meta_, params, &rabitq_meta_,
                                                  &metric_name_);

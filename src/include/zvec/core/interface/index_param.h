@@ -71,9 +71,9 @@ enum class IndexType {
   kIVF,  // it's actual a two-layer index
   kHNSW,
   kHNSWRabitq,
-  kIVFRabitq,
   kDiskAnn,
   kVamana,
+  kIVFRabitq,
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };
@@ -467,8 +467,6 @@ struct ZVEC_CORE_API IVFRabitqIndexParam : public BaseIndexParam {
   // Rabitq parameters
   int total_bits = kDefaultRabitqTotalBits;
   int sample_count = 0;
-  core::IndexProvider::Pointer provider = nullptr;
-  core::IndexReformer::Pointer reformer = nullptr;
 
   IVFRabitqIndexParam();
   explicit IVFRabitqIndexParam(int nlist);

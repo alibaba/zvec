@@ -1564,6 +1564,8 @@ Attributes:
     radius (float): Search radius for range queries. Default is 0.0.
     is_linear (bool): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float): Candidate expansion factor used by the refiner.
+        Default is 10.0.
 
 Examples:
     >>> params = IvfRabitqQueryParam(nprobe=20)
@@ -1571,10 +1573,10 @@ Examples:
     20
 )pbdoc");
   ivf_rabitq_query_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init<int, float, bool, bool, float>(),
            py::arg("nprobe") = core_interface::kDefaultIvfRabitqNprobe,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false,
+           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 10.0f,
            R"pbdoc(
 Constructs an IvfRabitqQueryParam instance.
 
@@ -1584,11 +1586,19 @@ Args:
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    scale_factor (float, optional): Candidate expansion factor used by the
+        refiner. Default is 10.0.
 )pbdoc")
       .def_property_readonly(
           "nprobe",
           [](const IvfRabitqQueryParams &self) -> int { return self.nprobe(); },
           "int: Number of inverted lists to search during IVF RaBitQ query.")
+      .def_property_readonly(
+          "scale_factor",
+          [](const IvfRabitqQueryParams &self) -> float {
+            return self.scale_factor();
+          },
+          "float: Candidate expansion factor used by the refiner.")
       .def("__repr__",
            [](const IvfRabitqQueryParams &self) -> std::string {
              return "{"
@@ -1598,15 +1608,18 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const IvfRabitqQueryParams &self) {
             return py::make_tuple(self.nprobe(), self.radius(),
-                                  self.is_linear(), self.is_using_refiner());
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 4) {
+            if (t.size() != 4 && t.size() != 5) {
               throw std::runtime_error(
                   "Invalid state for IvfRabitqQueryParams");
             }
@@ -1614,6 +1627,9 @@ Args:
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() == 5) {
+              obj->set_scale_factor(t[4].cast<float>());
+            }
             return obj;
           }));
 

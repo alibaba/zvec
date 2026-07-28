@@ -30,6 +30,7 @@
 #include "zvec/core/framework/index_streamer.h"
 #include "ivf_rabitq_builder.h"
 #include "ivf_rabitq_context.h"
+#include "ivf_rabitq_entity.h"
 #include "ivf_rabitq_params.h"
 #include "ivf_rabitq_reformer.h"
 #include "ivf_rabitq_util.h"
@@ -203,6 +204,90 @@ void IvfRabitqStreamerTest::TearDown(void) {
   ailego::FileHelper::RemovePath(dir_.c_str());
 }
 
+TEST_F(IvfRabitqStreamerTest, TestParamValidation) {
+  auto init_builder = [&](const ailego::Params &params) {
+    auto builder = std::make_shared<IvfRabitqBuilder>();
+    return builder->init(*index_meta_ptr_, params);
+  };
+
+  ailego::Params params;
+  params.set(PARAM_IVF_RABITQ_NLIST, 0);
+  EXPECT_EQ(IndexError_InvalidArgument, init_builder(params));
+
+  params.set(PARAM_IVF_RABITQ_NLIST, 1025);
+  EXPECT_EQ(0, init_builder(params));
+
+  params.set(PARAM_IVF_RABITQ_NLIST, 32);
+  params.set(PARAM_RABITQ_SAMPLE_COUNT, -1);
+  EXPECT_EQ(IndexError_InvalidArgument, init_builder(params));
+
+  IvfRabitqContext context;
+  ailego::Params search_params;
+  search_params.set(PARAM_IVF_RABITQ_NPROBE, 1025);
+  EXPECT_EQ(0, context.update(search_params));
+
+  auto init_streamer = [&](const ailego::Params &streamer_params) {
+    auto streamer = std::make_shared<IvfRabitqStreamer>();
+    return streamer->init(*index_meta_ptr_, streamer_params);
+  };
+  EXPECT_EQ(0, init_streamer(search_params));
+
+  search_params.set(PARAM_IVF_RABITQ_NPROBE, -1);
+  EXPECT_EQ(IndexError_InvalidArgument, context.update(search_params));
+  EXPECT_EQ(IndexError_InvalidArgument, init_streamer(search_params));
+
+  search_params.set(PARAM_IVF_RABITQ_NPROBE, 0);
+  EXPECT_EQ(0, init_streamer(search_params));
+}
+
+TEST_F(IvfRabitqStreamerTest, TestRejectInvalidFormatMagicAndVersion) {
+  auto holder = BuildHolder(kDim, 64);
+  ailego::Params params;
+  params.set(PARAM_IVF_RABITQ_NLIST, 16U);
+  params.set(PARAM_RABITQ_TOTAL_BITS, 4U);
+
+  auto builder = std::make_shared<IvfRabitqBuilder>();
+  ASSERT_EQ(0, builder->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, builder->train(nullptr, holder));
+  ASSERT_EQ(0, builder->build(nullptr, holder));
+
+  const std::string file_id{"ivf_rabitq_invalid_format"};
+  IndexMemory::Instance()->remove(file_id);
+  auto dumper = IndexFactory::CreateDumper("MemoryDumper");
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, dumper->init(ailego::Params()));
+  ASSERT_EQ(0, dumper->create(file_id));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+
+  auto storage = IndexFactory::CreateStorage("MemoryReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(file_id, false));
+
+  auto header_segment = storage->get(IVF_RABITQ_HEADER_SEG_ID);
+  ASSERT_NE(nullptr, header_segment);
+  const void *header_data = nullptr;
+  ASSERT_EQ(sizeof(IvfRabitqHeader),
+            header_segment->read(0, &header_data, sizeof(IvfRabitqHeader)));
+  auto *header = const_cast<IvfRabitqHeader *>(
+      static_cast<const IvfRabitqHeader *>(header_data));
+  ASSERT_EQ(kIvfRabitqIndexMagic, header->magic);
+  ASSERT_EQ(kIvfRabitqIndexVersion, header->version);
+
+  header->magic = 0;
+  IvfRabitqEntity invalid_magic_entity;
+  EXPECT_EQ(IndexError_InvalidFormat, invalid_magic_entity.load(storage));
+
+  header->magic = kIvfRabitqIndexMagic;
+  header->version = kIvfRabitqIndexVersion + 1;
+  IvfRabitqEntity invalid_version_entity;
+  EXPECT_EQ(IndexError_InvalidFormat, invalid_version_entity.load(storage));
+
+  ASSERT_EQ(0, storage->close());
+  IndexMemory::Instance()->remove(file_id);
+}
+
 TEST_F(IvfRabitqStreamerTest, TestBuildAndSearch) {
   auto holder =
       make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(kDim);
@@ -243,8 +328,8 @@ TEST_F(IvfRabitqStreamerTest, TestBuildAndSearch) {
   ASSERT_LE(result.size(), 10UL);
 
   // The nearest vector should be key=0 (same direction as query)
-  LOG_INFO("IVF RabitQ search returned %zu results, top key=%lu, score=%f",
-           result.size(), result[0].key(), result[0].score());
+  LOG_INFO("IVF RabitQ search returned %zu results, top key=%zu, score=%f",
+           result.size(), (size_t)result[0].key(), result[0].score());
 }
 
 TEST_F(IvfRabitqStreamerTest, TestCreateProvider) {
@@ -998,8 +1083,8 @@ TEST_F(IvfRabitqStreamerTest, TestSmallDataset) {
   ASSERT_EQ(0, streamer->search_impl(query_vec.data(), query_meta, 1, context));
   const auto &result = context->result(0);
   ASSERT_GT(result.size(), 0UL);
-  LOG_INFO("TestSmallDataset: %zu results, top key=%lu, score=%f",
-           result.size(), result[0].key(), result[0].score());
+  LOG_INFO("TestSmallDataset: %zu results, top key=%zu, score=%f",
+           result.size(), (size_t)result[0].key(), result[0].score());
 }
 
 }  // namespace core

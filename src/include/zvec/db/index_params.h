@@ -414,11 +414,8 @@ class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
   using OPtr = std::shared_ptr<IvfRabitqIndexParams>;
 
   Ptr clone() const override {
-    auto obj = std::make_shared<IvfRabitqIndexParams>(
-        metric_type_, nlist_, total_bits_, sample_count_);
-    obj->set_rabitq_reformer(rabitq_reformer_);
-    obj->set_raw_vector_provider(raw_vector_provider_);
-    return obj;
+    return std::make_shared<IvfRabitqIndexParams>(metric_type_, nlist_,
+                                                  total_bits_, sample_count_);
   }
 
   std::string to_string() const override {
@@ -461,27 +458,10 @@ class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
     return sample_count_;
   }
 
-  void set_raw_vector_provider(
-      core::IndexProvider::Pointer raw_vector_provider) {
-    raw_vector_provider_ = std::move(raw_vector_provider);
-  }
-  core::IndexProvider::Pointer raw_vector_provider() const {
-    return raw_vector_provider_;
-  }
-
-  void set_rabitq_reformer(core::IndexReformer::Pointer rabitq_reformer) {
-    rabitq_reformer_ = std::move(rabitq_reformer);
-  }
-  core::IndexReformer::Pointer rabitq_reformer() const {
-    return rabitq_reformer_;
-  }
-
  private:
   int nlist_;
   int total_bits_;
   int sample_count_;
-  core::IndexProvider::Pointer raw_vector_provider_;
-  core::IndexReformer::Pointer rabitq_reformer_;
 };
 
 class ZVEC_API FlatIndexParams : public VectorIndexParams {

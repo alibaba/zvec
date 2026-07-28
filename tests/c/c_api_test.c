@@ -3938,6 +3938,12 @@ void test_query_params_functions(void) {
   TEST_ASSERT(err == ZVEC_OK);
   TEST_ASSERT(zvec_query_params_ivf_rabitq_get_nprobe(ivf_rabitq_params) == 18);
 
+  // Test IVF RaBitQ scale factor setting
+  err = zvec_query_params_ivf_rabitq_set_scale_factor(ivf_rabitq_params, 3.5f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(
+      zvec_query_params_ivf_rabitq_get_scale_factor(ivf_rabitq_params) == 3.5f);
+
   // Test IVF RaBitQ common parameters (radius, is_linear, is_using_refiner)
   err = zvec_query_params_ivf_rabitq_set_radius(ivf_rabitq_params, 0.6f);
   TEST_ASSERT(err == ZVEC_OK);
@@ -4052,6 +4058,8 @@ void test_query_params_functions(void) {
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_ivf_rabitq_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  err = zvec_query_params_ivf_rabitq_set_scale_factor(NULL, 2.0f);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_flat_set_radius(NULL, 0.5f);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_vamana_set_ef_search(NULL, 100);
@@ -4065,6 +4073,7 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_hnsw_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_ivf_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_ivf_rabitq_get_radius(NULL) == 0.0f);
+  TEST_ASSERT(zvec_query_params_ivf_rabitq_get_scale_factor(NULL) == 10.0f);
   TEST_ASSERT(zvec_query_params_flat_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_diskann_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_hnsw_get_is_linear(NULL) == false);

@@ -82,6 +82,9 @@ class IvfRabitqEntity {
   uint32_t padded_dim() const {
     return header_.padded_dim;
   }
+  uint32_t dimension() const {
+    return header_.dimension;
+  }
   uint8_t ex_bits() const {
     return header_.ex_bits;
   }
@@ -166,6 +169,10 @@ class IvfRabitqEntity {
   int materialize_quantized_vector(size_t id, char *dst) const;
 
   int init_quantized_vector_layout();
+
+  int validate_header() const;
+
+  int validate_cluster_metas() const;
 
   int load_key_order_mapping(IndexStorage::Pointer storage);
 };

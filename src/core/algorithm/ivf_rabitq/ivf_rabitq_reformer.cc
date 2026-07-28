@@ -39,6 +39,66 @@
 namespace zvec {
 namespace core {
 
+namespace {
+
+struct ReformerLayout {
+  size_t rotated_centroids_size{0};
+  size_t centroids_size{0};
+  size_t rotator_size{0};
+};
+
+int ValidateReformerHeader(const RabitqConverterHeader &header,
+                           size_t segment_size, ReformerLayout *layout) {
+  if (!layout) {
+    return IndexError_InvalidArgument;
+  }
+  if (header.dim < kMinRabitqDimSize || header.dim > kMaxRabitqDimSize) {
+    LOG_ERROR("Invalid IVF RaBitQ reformer dimension=%zu", (size_t)header.dim);
+    return IndexError_InvalidFormat;
+  }
+  uint32_t expected_padded_dim = ((header.dim + 63U) / 64U) * 64U;
+  if (header.padded_dim != expected_padded_dim || header.num_clusters == 0 ||
+      header.ex_bits > 8 ||
+      header.rotator_type >
+          static_cast<uint8_t>(rabitqlib::RotatorType::FhtKacRotator)) {
+    LOG_ERROR(
+        "Invalid IVF RaBitQ reformer header: padded_dim=%zu, clusters=%zu, "
+        "ex_bits=%zu, rotator_type=%zu",
+        (size_t)header.padded_dim, (size_t)header.num_clusters,
+        (size_t)header.ex_bits, (size_t)header.rotator_type);
+    return IndexError_InvalidFormat;
+  }
+
+  layout->rotated_centroids_size = static_cast<size_t>(header.num_clusters) *
+                                   header.padded_dim * sizeof(float);
+  layout->centroids_size =
+      static_cast<size_t>(header.num_clusters) * header.dim * sizeof(float);
+  if (header.rotator_type ==
+      static_cast<uint8_t>(rabitqlib::RotatorType::MatrixRotator)) {
+    layout->rotator_size =
+        static_cast<size_t>(header.dim) * header.padded_dim * sizeof(float);
+  } else {
+    layout->rotator_size = header.padded_dim / 2U;
+  }
+  if (header.rotator_size != layout->rotator_size) {
+    LOG_ERROR("Invalid IVF RaBitQ rotator size=%zu, expected=%zu",
+              (size_t)header.rotator_size, layout->rotator_size);
+    return IndexError_InvalidFormat;
+  }
+
+  size_t expected_size = sizeof(RabitqConverterHeader) +
+                         layout->rotated_centroids_size +
+                         layout->centroids_size + layout->rotator_size;
+  if (expected_size != segment_size) {
+    LOG_ERROR("Invalid IVF RaBitQ reformer segment size=%zu, expected=%zu",
+              segment_size, expected_size);
+    return IndexError_InvalidFormat;
+  }
+  return 0;
+}
+
+}  // namespace
+
 // All rabitqlib types are confined to this translation unit via pimpl.
 struct IvfRabitqReformer::Impl {
   // RaBitQ parameters
@@ -139,6 +199,11 @@ int IvfRabitqReformer::load(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   memcpy(static_cast<void *>(&header), block.data(), sizeof(header));
+  ReformerLayout layout;
+  int ret = ValidateReformerHeader(header, segment->data_size(), &layout);
+  if (ret != 0) {
+    return ret;
+  }
   impl_->dimension = header.dim;
   impl_->padded_dim = header.padded_dim;
   impl_->ex_bits = header.ex_bits;
@@ -148,37 +213,38 @@ int IvfRabitqReformer::load(IndexStorage::Pointer storage) {
   offset += sizeof(header);
 
   // Read rotated centroids
-  size_t rotated_centroids_size =
-      sizeof(float) * header.num_clusters * header.padded_dim;
-  size = segment->read(offset, block, rotated_centroids_size);
-  if (size != rotated_centroids_size) {
+  size = segment->read(offset, block, layout.rotated_centroids_size);
+  if (size != layout.rotated_centroids_size) {
     LOG_ERROR("Failed to read rotated centroids");
     return IndexError_InvalidFormat;
   }
   impl_->rotated_centroids.resize(header.num_clusters * header.padded_dim);
-  memcpy(impl_->rotated_centroids.data(), block.data(), rotated_centroids_size);
+  memcpy(impl_->rotated_centroids.data(), block.data(),
+         layout.rotated_centroids_size);
   offset += size;
 
   // Read original centroids
-  size_t centroids_size = sizeof(float) * header.num_clusters * header.dim;
-  size = segment->read(offset, block, centroids_size);
-  if (size != centroids_size) {
+  size = segment->read(offset, block, layout.centroids_size);
+  if (size != layout.centroids_size) {
     LOG_ERROR("Failed to read centroids");
     return IndexError_InvalidFormat;
   }
   impl_->centroids.resize(header.num_clusters * header.dim);
-  memcpy(impl_->centroids.data(), block.data(), centroids_size);
+  memcpy(impl_->centroids.data(), block.data(), layout.centroids_size);
   offset += size;
 
   // Read rotator
-  size_t rotator_size = header.rotator_size;
-  size = segment->read(offset, block, rotator_size);
-  if (size != rotator_size) {
+  size = segment->read(offset, block, layout.rotator_size);
+  if (size != layout.rotator_size) {
     LOG_ERROR("Failed to read rotator");
     return IndexError_InvalidFormat;
   }
   impl_->rotator.reset(rabitqlib::choose_rotator<float>(
       impl_->dimension, impl_->rotator_type, impl_->padded_dim));
+  if (!impl_->rotator) {
+    LOG_ERROR("Failed to create IVF RaBitQ rotator");
+    return IndexError_InvalidFormat;
+  }
   impl_->rotator->load(reinterpret_cast<const char *>(block.data()));
   offset += size;
 
@@ -204,7 +270,7 @@ int IvfRabitqReformer::load(IndexStorage::Pointer storage) {
                                   impl_->centroids.size() * sizeof(float));
 
   impl_->centroid_seeker = std::make_shared<LinearSeeker>();
-  int ret = impl_->centroid_seeker->init(centroid_meta);
+  ret = impl_->centroid_seeker->init(centroid_meta);
   if (ret != 0) {
     LOG_ERROR("Failed to init centroid seeker, ret=%d", ret);
     return ret;

@@ -19,7 +19,12 @@
 namespace zvec {
 namespace core {
 
+inline constexpr uint32_t kIvfRabitqIndexMagic = 0x49565251U;  // "IVRQ"
+inline constexpr uint32_t kIvfRabitqIndexVersion = 1U;
+
 struct IvfRabitqHeader {
+  uint32_t magic;
+  uint32_t version;
   uint32_t total_vector_count;
   uint32_t cluster_count;
   uint32_t dimension;
@@ -30,10 +35,12 @@ struct IvfRabitqHeader {
   uint8_t padding1;
   uint64_t batch_data_size;
   uint64_t ex_data_size;
-  uint32_t reserve[6];
+  uint32_t reserve[4];
 
   IvfRabitqHeader() {
     memset(static_cast<void *>(this), 0, sizeof(IvfRabitqHeader));
+    magic = kIvfRabitqIndexMagic;
+    version = kIvfRabitqIndexVersion;
   }
 };
 static_assert(sizeof(IvfRabitqHeader) % 32 == 0,
