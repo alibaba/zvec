@@ -757,10 +757,9 @@ inline arrow::Result<std::shared_ptr<arrow::Array>> SelectArrayByIndices(
   return arrow::compute::Take(*arr, *indices_array);
 }
 
-inline arrow::Result<std::shared_ptr<arrow::Table>>
-ReadBlocksAsTable(const std::vector<BlockMeta> &scalar_blocks,
-                  const std::string &base_path, uint32_t collection_id,
-                  bool use_parquet) {
+inline arrow::Result<std::shared_ptr<arrow::Table>> ReadBlocksAsTable(
+    const std::vector<BlockMeta> &scalar_blocks, const std::string &base_path,
+    uint32_t collection_id, bool use_parquet) {
   auto fs = std::make_shared<arrow::fs::LocalFileSystem>();
   auto pool = arrow::default_memory_pool();
 
@@ -860,11 +859,9 @@ ReadBlocksAsTable(const std::vector<BlockMeta> &scalar_blocks,
   return final_table;
 }
 
-inline arrow::Result<std::shared_ptr<arrow::Table>>
-EvaluateExpressionOnTable(
+inline arrow::Result<std::shared_ptr<arrow::Table>> EvaluateExpressionOnTable(
     const std::shared_ptr<arrow::Table> &table,
-    const std::string &new_column_name,
-    const arrow::compute::Expression &expr,
+    const std::string &new_column_name, const arrow::compute::Expression &expr,
     const std::shared_ptr<arrow::DataType> &expected_type) {
   arrow::compute::CastOptions cast_options;
   cast_options.to_type = expected_type;
@@ -873,8 +870,7 @@ EvaluateExpressionOnTable(
   arrow::compute::Expression cast_expr =
       arrow::compute::call("cast", {expr}, cast_options);
 
-  ARROW_ASSIGN_OR_RAISE(auto bound_expr,
-                        cast_expr.Bind(*table->schema()));
+  ARROW_ASSIGN_OR_RAISE(auto bound_expr, cast_expr.Bind(*table->schema()));
 
   auto batches = arrow::TableBatchReader(*table);
   std::vector<std::shared_ptr<arrow::Array>> result_arrays;
@@ -885,16 +881,14 @@ EvaluateExpressionOnTable(
     if (!batch) break;
 
     arrow::compute::ExecBatch exec_batch(*batch);
-    ARROW_ASSIGN_OR_RAISE(
-        auto datum,
-        arrow::compute::ExecuteScalarExpression(bound_expr, exec_batch));
+    ARROW_ASSIGN_OR_RAISE(auto datum, arrow::compute::ExecuteScalarExpression(
+                                          bound_expr, exec_batch));
 
     if (datum.is_array()) {
       result_arrays.push_back(datum.make_array());
     } else if (datum.is_scalar()) {
-      ARROW_ASSIGN_OR_RAISE(
-          auto arr,
-          arrow::MakeArrayFromScalar(*datum.scalar(), batch->num_rows()));
+      ARROW_ASSIGN_OR_RAISE(auto arr, arrow::MakeArrayFromScalar(
+                                          *datum.scalar(), batch->num_rows()));
       result_arrays.push_back(arr);
     } else {
       return arrow::Status::Invalid(
@@ -906,8 +900,8 @@ EvaluateExpressionOnTable(
       std::make_shared<arrow::ChunkedArray>(result_arrays, expected_type);
   auto result_field = arrow::field(new_column_name, expected_type);
   auto result_schema = arrow::schema({result_field});
-  auto result_table = arrow::Table::Make(
-      result_schema, {result_chunked}, table->num_rows());
+  auto result_table =
+      arrow::Table::Make(result_schema, {result_chunked}, table->num_rows());
   return result_table;
 }
 
