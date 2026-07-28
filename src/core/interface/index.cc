@@ -53,10 +53,6 @@ core::IndexContext::Pointer &Index::acquire_context() {
   return _context_list[context_index_];
 }
 
-void Index::release_context() {
-  // context_list_[get_context_index()]->reset();
-}
-
 int Index::Train() {
   is_trained_ = true;
   return 0;
