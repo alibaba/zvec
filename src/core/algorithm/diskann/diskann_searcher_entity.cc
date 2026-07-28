@@ -64,7 +64,7 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
       meta_header_, pq_meta_, meta_segment, pq_meta_segment, pq_data_segment,
       vector_segment, key_segment, key_mapping_segment, entrypoint_segment,
       num_threads_, list_size_, cache_nodes_num_, warm_up_, beam_size_, meta_,
-      pq_quantizer_, pq_codes_, key_buffer_, key_mapping_buffer_, entrypoints_);
+      pq_codes_, key_buffer_, key_mapping_buffer_, entrypoints_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("DiskAnnSearcherEntity new failed");
   }
@@ -151,34 +151,11 @@ int DiskAnnSearcherEntity::load_pq_segment() {
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data, sizeof(DiskAnnPqMeta));
   offset += read_size;
 
-  // 2. read serialized quantizer blob
-  std::string blob;
-  blob.resize(pq_meta_.quantizer_blob_size);
+  // The serialized quantizer blob follows the PQ meta in this segment; it is
+  // NOT parsed here.  The searcher/streamer reads it on demand via
+  // read_pq_quantizer_blob() and constructs the quantizer itself.
 
-  read_size =
-      pq_meta_segment_->read(offset, &data, pq_meta_.quantizer_blob_size);
-  if (read_size != pq_meta_.quantizer_blob_size) {
-    LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
-              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
-              (size_t)(pq_meta_.quantizer_blob_size), (size_t)read_size);
-    return IndexError_ReadData;
-  }
-  memcpy(&blob[0], data, read_size);
-
-  // 3. create quantizer and deserialize the codebook
-  pq_quantizer_ = IndexFactory::CreateQuantizer("PqInt8Quantizer");
-  if (!pq_quantizer_) {
-    LOG_ERROR("Create PqInt8Quantizer failed");
-    return IndexError_NoExist;
-  }
-
-  int ret = pq_quantizer_->deserialize(blob);
-  if (ret != 0) {
-    LOG_ERROR("PqInt8Quantizer deserialize failed, ret=%d", ret);
-    return ret;
-  }
-
-  // 4. load pq codes (uint8[chunk_num] per vector)
+  // 2. load pq codes (uint8[chunk_num] per vector)
   pq_data_segment_ = storage_->get(DiskAnnEntity::kDiskAnnPqDataSegmentId);
   if (!pq_data_segment_) {
     LOG_ERROR("Miss or invalid segment %s",
@@ -199,6 +176,26 @@ int DiskAnnSearcherEntity::load_pq_segment() {
     return IndexError_ReadData;
   }
 
+  return 0;
+}
+
+int DiskAnnSearcherEntity::read_pq_quantizer_blob(std::string *blob) const {
+  if (!blob || !pq_meta_segment_) {
+    return IndexError_InvalidArgument;
+  }
+
+  // The blob is stored right after the DiskAnnPqMeta header in the segment.
+  const void *data = nullptr;
+  size_t read_size = pq_meta_segment_->read(sizeof(DiskAnnPqMeta), &data,
+                                            pq_meta_.quantizer_blob_size);
+  if (read_size != pq_meta_.quantizer_blob_size) {
+    LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
+              DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
+              (size_t)(pq_meta_.quantizer_blob_size), (size_t)read_size);
+    return IndexError_ReadData;
+  }
+
+  blob->assign(reinterpret_cast<const char *>(data), read_size);
   return 0;
 }
 

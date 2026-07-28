@@ -36,13 +36,18 @@ DiskAnnIndexer::~DiskAnnIndexer() {
   DiskAnnUtil::free_aligned(coord_cache_buf_);
 }
 
-int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
+int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
+                         turbo::Quantizer::Pointer quantizer) {
   entity_ = &entity;
 
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
 
-  pq_quantizer_ = entity.get_pq_quantizer();
+  if (!quantizer) {
+    LOG_ERROR("PQ quantizer is required by DiskAnnIndexer");
+    return IndexError_InvalidArgument;
+  }
+  pq_quantizer_ = std::move(quantizer);
   pq_codes_ = entity.pq_codes();
 
   index_segment_offset_ = vector_segment->data_offset();
