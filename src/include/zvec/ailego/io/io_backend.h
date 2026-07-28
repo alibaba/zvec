@@ -33,7 +33,7 @@ enum class IOBackendType {
   kPread = 0,              // Synchronous pread() — no async I/O
   kLibAio = 1,             // libaio loaded at runtime via dlopen()
   kIoUring = 2,            // io_uring accessed through the Linux kernel ABI
-  kWindowsOverlapped = 3,  // Windows overlapped I/O with per-request events
+  kWindowsOverlapped = 3,  // Windows overlapped I/O using completion ports
 };
 
 // Returns the currently active I/O backend type.

@@ -24,10 +24,15 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
 #include <Windows.h>
 #endif
 
 #include <atomic>
+#include <string>
+#include <utility>
 #include <vector>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
@@ -64,7 +69,51 @@ typedef IoBackend *IOContext;
 #elif defined(_WIN32) || defined(_WIN64)
 struct IOContext {
   std::vector<OVERLAPPED> reqs;
-  std::vector<HANDLE> events;
+  HANDLE file_handle{INVALID_HANDLE_VALUE};
+  HANDLE completion_port{NULL};
+  std::wstring file_path;
+
+  IOContext() = default;
+  IOContext(const IOContext &) = delete;
+  IOContext &operator=(const IOContext &) = delete;
+
+  IOContext(IOContext &&other) noexcept
+      : reqs(std::move(other.reqs)),
+        file_handle(other.file_handle),
+        completion_port(other.completion_port),
+        file_path(std::move(other.file_path)) {
+    other.file_handle = INVALID_HANDLE_VALUE;
+    other.completion_port = NULL;
+  }
+
+  IOContext &operator=(IOContext &&other) noexcept {
+    if (this != &other) {
+      close_handles();
+      reqs = std::move(other.reqs);
+      file_handle = other.file_handle;
+      completion_port = other.completion_port;
+      file_path = std::move(other.file_path);
+      other.file_handle = INVALID_HANDLE_VALUE;
+      other.completion_port = NULL;
+    }
+    return *this;
+  }
+
+  ~IOContext() {
+    close_handles();
+  }
+
+  void close_handles() {
+    if (file_handle != INVALID_HANDLE_VALUE) {
+      CloseHandle(file_handle);
+      file_handle = INVALID_HANDLE_VALUE;
+    }
+    if (completion_port != NULL) {
+      CloseHandle(completion_port);
+      completion_port = NULL;
+    }
+    file_path.clear();
+  }
 };
 #else
 typedef uint32_t IOContext;
@@ -140,7 +189,9 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 #elif defined(_WIN32) || defined(_WIN64)
 class WindowsAlignedFileReader : public AlignedFileReader {
  private:
-  HANDLE file_handle_ = INVALID_HANDLE_VALUE;
+  std::wstring file_path_;
+
+  int prepare_io_ctx(IOContext &ctx);
 
  public:
   WindowsAlignedFileReader();

@@ -73,7 +73,8 @@ inline const char *IOBackendDescription(IOBackendType type) {
       return "Synchronous pread I/O backend.";
 #endif
     case IOBackendType::kWindowsOverlapped:
-      return "Windows overlapped I/O backend with per-request events.";
+      return "Windows unbuffered overlapped I/O backend using I/O completion "
+             "ports.";
   }
   return "Unknown I/O backend.";
 }

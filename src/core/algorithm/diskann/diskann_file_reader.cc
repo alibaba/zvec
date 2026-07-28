@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/ailego/utility/file_helper.h>
@@ -108,29 +109,13 @@ int destroy_io_ctx(IOContext &ctx) {
 }
 #elif defined(_WIN32) || defined(_WIN64)
 int setup_io_ctx(IOContext &ctx) {
-  for (uint64_t i = 0; i < MAX_IO_DEPTH; i++) {
-    OVERLAPPED os;
-    memset(&os, 0, sizeof(OVERLAPPED));
-    HANDLE ev = CreateEventA(NULL, TRUE, FALSE, NULL);
-    if (ev == NULL) {
-      LOG_ERROR("CreateEventA failed (error=%lu)", GetLastError());
-      destroy_io_ctx(ctx);
-      return IndexError_Runtime;
-    }
-    os.hEvent = ev;
-    ctx.reqs.push_back(os);
-    ctx.events.push_back(ev);
-  }
+  ctx.reqs.resize(MAX_IO_DEPTH);
+  memset(ctx.reqs.data(), 0, ctx.reqs.size() * sizeof(OVERLAPPED));
   return 0;
 }
 
 int destroy_io_ctx(IOContext &ctx) {
-  for (auto &ev : ctx.events) {
-    if (ev != NULL) {
-      CloseHandle(ev);
-    }
-  }
-  ctx.events.clear();
+  ctx.close_handles();
   ctx.reqs.clear();
   return 0;
 }
@@ -505,8 +490,9 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
 #if defined(_WIN32) || defined(_WIN64)
 
 // ============================================================================
-// Windows implementation using overlapped I/O with per-request events.
-// Based on the DiskANN Windows aligned file reader.
+// Windows implementation using unbuffered overlapped I/O. Each IOContext owns
+// a separate file handle and completion port, so concurrent search contexts
+// cannot consume one another's completion packets.
 // ============================================================================
 
 WindowsAlignedFileReader::WindowsAlignedFileReader() {}
@@ -540,7 +526,7 @@ void WindowsAlignedFileReader::register_thread() {
   if (setup_io_ctx(ctx) != 0) {
     return;
   }
-  ctx_map[thread_id] = std::move(ctx);
+  ctx_map.emplace(thread_id, std::move(ctx));
 }
 
 void WindowsAlignedFileReader::deregister_thread() {
@@ -571,27 +557,59 @@ void WindowsAlignedFileReader::open(const std::string &fname) {
     return;
   }
 
-  file_handle_ =
+  close();
+
+  HANDLE probe_handle =
       CreateFileW(wide_fname.c_str(), GENERIC_READ,
                   FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                   FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING |
                       FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
                   NULL);
-
-  if (file_handle_ == INVALID_HANDLE_VALUE) {
+  if (probe_handle == INVALID_HANDLE_VALUE) {
     DWORD error = GetLastError();
     LOG_ERROR("Failed to open file: %s (error=%lu)", fname.c_str(), error);
     return;
   }
+  CloseHandle(probe_handle);
 
+  file_path_ = wide_fname;
   LOG_INFO("Opened file: %s", fname.c_str());
 }
 
 void WindowsAlignedFileReader::close() {
-  if (file_handle_ != INVALID_HANDLE_VALUE) {
-    CloseHandle(file_handle_);
-    file_handle_ = INVALID_HANDLE_VALUE;
+  file_path_.clear();
+}
+
+int WindowsAlignedFileReader::prepare_io_ctx(IOContext &ctx) {
+  if (ctx.file_handle != INVALID_HANDLE_VALUE &&
+      ctx.completion_port != NULL && ctx.file_path == file_path_) {
+    return 0;
   }
+
+  ctx.close_handles();
+  ctx.file_handle =
+      CreateFileW(file_path_.c_str(), GENERIC_READ,
+                  FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                  FILE_ATTRIBUTE_READONLY | FILE_FLAG_NO_BUFFERING |
+                      FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
+                  NULL);
+  if (ctx.file_handle == INVALID_HANDLE_VALUE) {
+    LOG_ERROR("Failed to open DiskAnn file for IOContext (error=%lu)",
+              GetLastError());
+    return IndexError_Runtime;
+  }
+
+  ctx.completion_port =
+      CreateIoCompletionPort(ctx.file_handle, NULL, 0, 1);
+  if (ctx.completion_port == NULL) {
+    DWORD error = GetLastError();
+    LOG_ERROR("CreateIoCompletionPort failed (error=%lu)", error);
+    ctx.close_handles();
+    return IndexError_Runtime;
+  }
+
+  ctx.file_path = file_path_;
+  return 0;
 }
 
 int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
@@ -600,25 +618,23 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     LOG_WARN("Async currently not supported");
   }
 
-  if (file_handle_ == INVALID_HANDLE_VALUE) {
+  if (file_path_.empty()) {
     LOG_ERROR("Attempt to read from invalid file handle");
     return IndexError_Runtime;
   }
 
-  // Ensure the context has enough OVERLAPPED slots.
+  if (prepare_io_ctx(ctx) != 0) {
+    return IndexError_Runtime;
+  }
+
+  // Ensure the context has enough stable OVERLAPPED slots. ReadFile stores the
+  // pointer until completion, so this vector must not reallocate mid-batch.
   if (ctx.reqs.size() < MAX_IO_DEPTH) {
-    for (size_t i = ctx.reqs.size(); i < MAX_IO_DEPTH; i++) {
-      OVERLAPPED os;
-      memset(&os, 0, sizeof(OVERLAPPED));
-      HANDLE ev = CreateEventA(NULL, TRUE, FALSE, NULL);
-      if (ev == NULL) {
-        LOG_ERROR("CreateEventA failed (error=%lu)", GetLastError());
-        return IndexError_Runtime;
-      }
-      os.hEvent = ev;
-      ctx.reqs.push_back(os);
-      ctx.events.push_back(ev);
-    }
+    ctx.reqs.resize(MAX_IO_DEPTH);
+  }
+
+  if (read_reqs.empty()) {
+    return 0;
   }
 
   static const DWORD kSectorLen = 4096;
@@ -626,18 +642,14 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   uint64_t n_batches = DiskAnnUtil::div_round_up(n_reqs, MAX_IO_DEPTH);
 
   for (uint64_t batch = 0; batch < n_batches; batch++) {
-    // Reset OVERLAPPED objects for this batch (preserve hEvent).
-    for (size_t i = 0; i < ctx.reqs.size(); i++) {
-      OVERLAPPED &os = ctx.reqs[i];
-      HANDLE ev = os.hEvent;
-      memset(&os, 0, sizeof(OVERLAPPED));
-      os.hEvent = ev;
-      ResetEvent(ev);
-    }
-
     uint64_t batch_start = MAX_IO_DEPTH * batch;
     uint64_t batch_size =
         std::min((uint64_t)(n_reqs - batch_start), (uint64_t)MAX_IO_DEPTH);
+
+    // Only reset slots used by this batch. The common search path submits a
+    // small beam, so clearing all MAX_IO_DEPTH slots adds avoidable hot-path
+    // work.
+    memset(ctx.reqs.data(), 0, batch_size * sizeof(OVERLAPPED));
 
     // Issue ReadFile calls for this batch.
     bool batch_error = false;
@@ -659,7 +671,15 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       os.Offset = (DWORD)(offset & 0xffffffff);
       os.OffsetHigh = (DWORD)(offset >> 32);
 
-      BOOL ret = ReadFile(file_handle_, read_buf, (DWORD)nbytes, NULL, &os);
+      if (nbytes > (std::numeric_limits<DWORD>::max)()) {
+        LOG_ERROR("Read request is too large: %llu bytes",
+                  (unsigned long long)nbytes);
+        batch_error = true;
+        break;
+      }
+
+      BOOL ret =
+          ReadFile(ctx.file_handle, read_buf, (DWORD)nbytes, NULL, &os);
       if (ret == FALSE) {
         DWORD error = GetLastError();
         if (error != ERROR_IO_PENDING) {
@@ -671,33 +691,72 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       issued_count++;
     }
 
-    // Wait for all issued reads to complete.
-    // Use GetOverlappedResult per-read instead of GetQueuedCompletionStatus
-    // on the shared IOCP. The shared IOCP causes completion-packet stealing
-    // when multiple threads call read() concurrently, leading to data
-    // corruption and segfaults.
-    //
-    // We must wait for ALL reads that were successfully issued, even if an
-    // error occurred mid-batch. Otherwise the caller may free the read
-    // buffers while the OS still has pending writes, causing a use-after-free.
-    for (uint64_t j = 0; j < issued_count; j++) {
-      OVERLAPPED &os = ctx.reqs[j];
-      DWORD bytes_transferred = 0;
-
-      BOOL ok =
-          GetOverlappedResult(file_handle_, &os, &bytes_transferred, TRUE);
-      if (ok == FALSE) {
-        DWORD error = GetLastError();
-        LOG_ERROR("GetOverlappedResult failed for read %lu, error=%lu",
-                  (unsigned long)j, error);
+    // Drain every successfully issued request, including after a submission
+    // error. The caller owns the buffers and may free them as soon as read()
+    // returns, so no operation may remain outstanding.
+    uint64_t completed_count = 0;
+    while (completed_count < issued_count) {
+      OVERLAPPED_ENTRY entries[MAX_IO_DEPTH];
+      ULONG removed = 0;
+      const ULONG max_entries = static_cast<ULONG>(
+          std::min<uint64_t>(issued_count - completed_count, MAX_IO_DEPTH));
+      BOOL dequeued =
+          GetQueuedCompletionStatusEx(ctx.completion_port, entries, max_entries,
+                                      &removed, INFINITE, FALSE);
+      if (dequeued == FALSE) {
+        LOG_ERROR("GetQueuedCompletionStatusEx failed (error=%lu)",
+                  GetLastError());
         batch_error = true;
-      } else {
-        const uint64_t expected =
-            read_reqs[batch_start + j].len;
+
+        // This should only happen if the completion port itself fails. Cancel
+        // and poll every request to completion so the caller's buffers remain
+        // safe. The handle is private to this IOContext.
+        CancelIoEx(ctx.file_handle, NULL);
+        for (uint64_t j = 0; j < issued_count; j++) {
+          while (true) {
+            DWORD ignored = 0;
+            if (GetOverlappedResult(ctx.file_handle, &ctx.reqs[j], &ignored,
+                                    FALSE)) {
+              break;
+            }
+            if (GetLastError() != ERROR_IO_INCOMPLETE) {
+              break;
+            }
+            SwitchToThread();
+          }
+        }
+        ctx.close_handles();
+        completed_count = issued_count;
+        break;
+      }
+
+      completed_count += removed;
+      for (ULONG i = 0; i < removed; i++) {
+        OVERLAPPED *os = entries[i].lpOverlapped;
+        OVERLAPPED *begin = ctx.reqs.data();
+        OVERLAPPED *end = begin + batch_size;
+        if (os < begin || os >= end) {
+          LOG_ERROR("Completion port returned an unknown OVERLAPPED request");
+          batch_error = true;
+          continue;
+        }
+
+        const uint64_t slot = static_cast<uint64_t>(os - begin);
+        DWORD bytes_transferred = 0;
+        BOOL ok = GetOverlappedResult(ctx.file_handle, os, &bytes_transferred,
+                                      FALSE);
+        if (ok == FALSE) {
+          LOG_ERROR("Overlapped read %lu failed (error=%lu)",
+                    (unsigned long)slot, GetLastError());
+          batch_error = true;
+          continue;
+        }
+
+        const uint64_t expected = read_reqs[batch_start + slot].len;
         if (static_cast<uint64_t>(bytes_transferred) != expected) {
           LOG_ERROR(
               "Overlapped read %lu completed with %lu bytes, expected %lu",
-              (unsigned long)j, (unsigned long)bytes_transferred,
+              (unsigned long)slot, (unsigned long)bytes_transferred,
               (unsigned long)expected);
           batch_error = true;
         }

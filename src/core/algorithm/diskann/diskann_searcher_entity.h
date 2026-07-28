@@ -58,6 +58,14 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
     return entrypoints_;
   }
 
+  uint32_t beam_size() const {
+    return beam_size_;
+  }
+
+  void set_beam_size(uint32_t beam_size) {
+    beam_size_ = beam_size;
+  }
+
   std::pair<uint32_t, const diskann_id_t *> get_neighbors(
       diskann_id_t id) const override;
 

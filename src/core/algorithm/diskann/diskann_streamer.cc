@@ -34,6 +34,7 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
 
   search_params.get(PARAM_DISKANN_SEARCHER_LIST_SIZE, &list_size_);
   search_params.get(PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM, &cache_nodes_num_);
+  search_params.get(PARAM_DISKANN_SEARCHER_BEAM_SIZE, &beam_size_);
   return 0;
 }
 
@@ -66,6 +67,7 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
 
   diskann_indexer_ = std::make_shared<DiskAnnIndexer>(meta_);
 
+  entity_.set_beam_size(beam_size_);
   int res = diskann_indexer_->init(entity_);
   if (res != 0) {
     return res;

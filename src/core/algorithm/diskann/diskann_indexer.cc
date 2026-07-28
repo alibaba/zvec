@@ -37,6 +37,7 @@ DiskAnnIndexer::~DiskAnnIndexer() {
 
 int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
   entity_ = &entity;
+  beam_width_ = entity.beam_size();
 
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
@@ -80,11 +81,16 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 
   sector_num_per_node_ =
       DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
-  if (beam_width_ > sector_num_per_node_ * DiskAnnUtil::kMaxSectorReadNum) {
-    LOG_ERROR("Beamwidth can not be higher than kMaxSectorReadNum");
+  if (beam_width_ == 0 || sector_num_per_node_ == 0 ||
+      beam_width_ > DiskAnnUtil::kMaxSectorReadNum / sector_num_per_node_) {
+    LOG_ERROR(
+        "Invalid beam size %u: beam_size * sectors_per_node must be in "
+        "[1, %lu]",
+        beam_width_, (unsigned long)DiskAnnUtil::kMaxSectorReadNum);
 
     return IndexError_InvalidArgument;
   }
+  LOG_INFO("DiskAnn search beam size: %u", beam_width_);
 
   DiskAnnUtil::alloc_aligned((void **)(&centroid_data_),
                              entrypoints_.size() * aligned_dim_ * sizeof(float),

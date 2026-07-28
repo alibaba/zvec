@@ -106,6 +106,7 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
   Params search_params;
   search_params.set("zvec.diskann.searcher.list_size", 500);
+  search_params.set(PARAM_DISKANN_SEARCHER_BEAM_SIZE, 4);
 
   ASSERT_EQ(0, searcher->init(search_params));
 
