@@ -38,8 +38,11 @@ jobs:
             ext: zip
 
     env:
-      INSTALL_DIR: ${{ github.workspace }}/install
-      DIST_DIR: ${{ github.workspace }}/dist
+      # Prefixed with ZVEC_ to avoid clashing with Makefile conventions:
+      # lz4's Makefile.inc defines `INSTALL_DIR ?= install -d -m 755` which
+      # would be overridden by an INSTALL_DIR environment variable.
+      ZVEC_INSTALL_DIR: ${{ github.workspace }}/install
+      ZVEC_DIST_DIR: ${{ github.workspace }}/dist
 
     steps:
       - name: Checkout code
@@ -84,7 +87,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+            -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
             -DBUILD_TOOLS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_C_BINDINGS=ON \
@@ -111,28 +114,28 @@ jobs:
       - name: Stage package contents
         shell: bash
         run: |
-          mkdir -p "$DIST_DIR"
-          cp -R "$INSTALL_DIR"/. "$DIST_DIR"/.
+          mkdir -p "$ZVEC_DIST_DIR"
+          cp -R "$ZVEC_INSTALL_DIR"/. "$ZVEC_DIST_DIR"/.
           # Ship shared libraries only: zvec static libs are not self-contained
           # (third-party deps like rocksdb/arrow/protobuf are not installed).
           # On Windows, keep DLL import libs (*_shared.lib, zvec_c_api.lib).
-          rm -f "$DIST_DIR"/lib/*.a
-          rm -f "$DIST_DIR"/lib/zvec.lib \
-            "$DIST_DIR"/lib/zvec_core.lib \
-            "$DIST_DIR"/lib/zvec_ailego.lib \
-            "$DIST_DIR"/lib/zvec_turbo.lib
+          rm -f "$ZVEC_DIST_DIR"/lib/*.a
+          rm -f "$ZVEC_DIST_DIR"/lib/zvec.lib \
+            "$ZVEC_DIST_DIR"/lib/zvec_core.lib \
+            "$ZVEC_DIST_DIR"/lib/zvec_ailego.lib \
+            "$ZVEC_DIST_DIR"/lib/zvec_turbo.lib
           # On Windows, DLLs are installed into bin/ (RUNTIME); move them to
           # lib/ so the package layout is include/ + lib/ on all platforms.
-          if [ -d "$DIST_DIR/bin" ]; then
-            find "$DIST_DIR/bin" -name '*.dll' -exec mv {} "$DIST_DIR/lib/" \;
-            rm -rf "${DIST_DIR:?}/bin"
+          if [ -d "$ZVEC_DIST_DIR/bin" ]; then
+            find "$ZVEC_DIST_DIR/bin" -name '*.dll' -exec mv {} "$ZVEC_DIST_DIR/lib/" \;
+            rm -rf "${ZVEC_DIST_DIR:?}/bin"
           fi
 
       - name: Package SDK (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          tar czf "zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}" -C "$DIST_DIR" .
+          tar czf "zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}" -C "$ZVEC_DIST_DIR" .
           ls -lh "zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}"
 
       - name: Package SDK (Windows)
@@ -140,7 +143,7 @@ jobs:
         shell: powershell
         run: |
           $Pkg = "zvec-sdk-${{ matrix.os_name }}-${{ matrix.arch }}.${{ matrix.ext }}"
-          Compress-Archive -Path "$env:DIST_DIR\*" -DestinationPath "$Pkg" -Force
+          Compress-Archive -Path "$env:ZVEC_DIST_DIR\*" -DestinationPath "$Pkg" -Force
           Get-ChildItem "$Pkg" | Select-Object Name, Length
 
       - name: Upload artifact
