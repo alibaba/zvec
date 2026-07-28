@@ -80,7 +80,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity) {
 
   sector_num_per_node_ =
       DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
-  if (beam_width_ > sector_num_per_node_ * DiskAnnUtil::kMaxSectorReadNum) {
+  if (beam_width_ * sector_num_per_node_ > DiskAnnUtil::kMaxSectorReadNum) {
     LOG_ERROR("Beamwidth can not be higher than kMaxSectorReadNum");
 
     return IndexError_InvalidArgument;
@@ -791,8 +791,14 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
 
   uint32_t num_ios = 0;
 
-  uint32_t effective_beam_width =
-      std::max(8u, std::min(ctx->list_size() / 5, 32u));
+  // Cap beam width so one batch of frontier reads never exceeds the sector
+  // buffer capacity (kMaxSectorReadNum sectors), as each node occupies
+  // sector_num_per_node sectors.
+  uint32_t max_beam_width =
+      std::max(1u, static_cast<uint32_t>(DiskAnnUtil::kMaxSectorReadNum /
+                                         sector_num_per_node));
+  uint32_t effective_beam_width = std::min(
+      std::max(8u, std::min(ctx->list_size() / 5, 32u)), max_beam_width);
 
   std::vector<diskann_id_t> frontier;
   frontier.reserve(2 * effective_beam_width);

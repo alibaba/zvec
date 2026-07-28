@@ -469,8 +469,68 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
     return 0;
   }
 
-  LOG_WARN("submit: io_submit returned %d (expected %u), falling back to pread",
-           ret, n_ops);
+  // Partial submission: a positive return value means exactly that prefix is
+  // now in flight and must never be submitted again. Keep submitting the
+  // remainder; -EAGAIN/-EINTR are transient and worth a bounded retry.
+  constexpr size_t kMaxSubmitRetries = 8;
+  uint32_t submitted = (ret > 0 && ret < (int)n_ops) ? (uint32_t)ret : 0;
+  size_t n_tries = 0;
+  bool submission_ok = (submitted > 0) || ret == -EAGAIN || ret == -EINTR;
+  while (submission_ok && submitted < n_ops) {
+    uint32_t remaining = n_ops - submitted;
+    ret = LibAioLoader::Instance().io_submit(ctx, (int64_t)remaining,
+                                             batch.cb_ptrs.data() + submitted);
+    if (ret > 0 && (uint32_t)ret <= remaining) {
+      submitted += (uint32_t)ret;
+      n_tries = 0;
+      continue;
+    }
+    if ((ret == -EAGAIN || ret == -EINTR) && n_tries < kMaxSubmitRetries) {
+      n_tries++;
+      continue;
+    }
+    submission_ok = false;
+  }
+
+  if (submission_ok) {
+    batch.n_submitted = n_ops;
+    return 0;
+  }
+
+  LOG_WARN(
+      "submit: io_submit stopped after %u/%u requests; returned: %d. "
+      "falling back to pread after draining submitted AIO",
+      submitted, n_ops, ret);
+
+  // Drain every request already in flight before any synchronous read can
+  // reuse its destination buffer, and before batch.cbs may be reused; the
+  // kernel keeps writing through those iocbs until their events are reaped.
+  std::vector<io_event_t> evts(submitted);
+  uint32_t drained = 0;
+  while (drained < submitted) {
+    uint32_t remaining = submitted - drained;
+    ret = LibAioLoader::Instance().io_getevents(ctx, (int64_t)remaining,
+                                                (int64_t)remaining,
+                                                evts.data() + drained, nullptr);
+    if (ret > 0 && (uint32_t)ret <= remaining) {
+      drained += (uint32_t)ret;
+      continue;
+    }
+    if (ret == -EINTR) {
+      continue;
+    }
+    LOG_ERROR(
+        "submit: io_getevents failed while draining %u in-flight requests; "
+        "returned: %d. resetting the AIO context before falling back to pread",
+        submitted, ret);
+    if (!reset_aio_context(ctx)) {
+      // Do not run pread unless io_destroy confirmed that no request can
+      // still write into these buffers.
+      return IndexError_Runtime;
+    }
+    break;
+  }
+
   int pread_ret = execute_io_pread(this->file_desc, read_reqs);
   if (pread_ret != 0) {
     return pread_ret;
@@ -478,6 +538,17 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
   batch.used_pread = true;
   batch.n_submitted = n_ops;
   return 0;
+}
+
+// Quiesce any requests of the batch still in flight before reporting an
+// error, so the kernel cannot keep writing into the caller's buffers or
+// leave stale completion events for the next batch on this context.
+static void quiesce_batch(PendingBatch &batch, IOContext &ctx) {
+  if (batch.n_reaped < batch.n_submitted && !batch.used_pread) {
+    if (reset_aio_context(ctx)) {
+      batch.n_reaped = batch.n_submitted;
+    }
+  }
 }
 
 int LinuxAlignedFileReader::get_completed(
@@ -502,18 +573,53 @@ int LinuxAlignedFileReader::get_completed(
   if (min_req < 1) min_req = 1;
 
   std::vector<io_event_t> evts(n_remaining);
-  int ret = LibAioLoader::Instance().io_getevents(
-      ctx, (int64_t)min_req, (int64_t)n_remaining, evts.data(), nullptr);
+  int ret;
+  do {
+    // Once requests are in flight, EINTR must be retried: returning here
+    // would leave them unquiesced, free to overwrite the caller's buffers
+    // or leak completion events into the next batch.
+    ret = LibAioLoader::Instance().io_getevents(
+        ctx, (int64_t)min_req, (int64_t)n_remaining, evts.data(), nullptr);
+  } while (ret == -EINTR);
   if (ret < 0) {
-    LOG_ERROR("get_completed: io_getevents failed, ret=%d", ret);
+    LOG_ERROR("get_completed: io_getevents failed, ret=%d, %s", ret,
+              ::strerror(-ret));
+    quiesce_batch(batch, ctx);
     return IndexError_Runtime;
   }
 
   for (int i = 0; i < ret; i++) {
     uint32_t idx = (uint32_t)(uintptr_t)evts[i].data;
-    if ((int64_t)evts[i].res != (int64_t)batch.cbs[idx].u.c.nbytes) {
-      LOG_WARN("get_completed: read %u failed: res=%ld, expected=%ld", idx,
-               (long)evts[i].res, (long)batch.cbs[idx].u.c.nbytes);
+    if (idx >= batch.n_submitted) {
+      LOG_ERROR("get_completed: completion referenced an unknown request %u",
+                idx);
+      batch.n_reaped += (uint32_t)ret;
+      quiesce_batch(batch, ctx);
+      return IndexError_Runtime;
+    }
+    int64_t res = (int64_t)evts[i].res;
+    int64_t res2 = (int64_t)evts[i].res2;
+    int64_t expected = (int64_t)batch.cbs[idx].u.c.nbytes;
+    if (res != expected || res2 != 0) {
+      // The async read failed, so the destination buffer content is
+      // undefined. Degrade to a synchronous pread for this request before
+      // handing the buffer to the caller.
+      LOG_WARN(
+          "get_completed: read %u failed: res=%ld, res2=%ld, expected=%ld; "
+          "retrying with pread",
+          idx, (long)res, (long)res2, (long)expected);
+      ssize_t bytes_read =
+          ::pread(this->file_desc, batch.cbs[idx].u.c.buf,
+                  batch.cbs[idx].u.c.nbytes, batch.cbs[idx].u.c.offset);
+      if (bytes_read != (ssize_t)expected) {
+        LOG_ERROR(
+            "get_completed: pread retry for read %u failed; got=%zd, "
+            "expected=%ld, errno=%d, %s",
+            idx, bytes_read, (long)expected, errno, ::strerror(errno));
+        batch.n_reaped += (uint32_t)ret;
+        quiesce_batch(batch, ctx);
+        return IndexError_Runtime;
+      }
     }
     completed_indices.push_back(idx);
   }
