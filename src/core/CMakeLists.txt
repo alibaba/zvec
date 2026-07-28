@@ -67,7 +67,6 @@ cc_directory(quantizer)
 cc_directory(utility)
 cc_directory(interface)
 cc_directory(mixed_reducer)
-cc_directory(plugin)
 
 git_version(GIT_SRCS_VER ${CMAKE_CURRENT_SOURCE_DIR})
 file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
@@ -80,25 +79,40 @@ if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/ivf_rabitq/.*")
 endif()
 
-# Always exclude algorithm/diskann implementation files from zvec_core.
-# The DiskAnn algorithm is provided by the separate core_knn_diskann library
-# (real on Linux x86_64, stub on other platforms). Including them here causes
-# duplicate symbols and missing -laio when test binaries link both zvec_core
-# (via zvec) and core_knn_diskann.
-
-list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/diskann/.*")
+# Exclude algorithm/diskann implementation files from zvec_core when not
+# supported. Keep interface/indexes/diskann_index.cc in the core library so
+# unsupported platforms still provide DiskAnnIndex's vtable and return
+# IndexError_Unsupported from its guarded stubs.
+#
+# When DISKANN_SUPPORTED, the diskann sources are packed into zvec_core
+# directly, so libzvec_core.so includes diskann symbols without needing a
+# separate whole-archive step.
+# The standalone core_knn_diskann library (built by algorithm/diskann) is still
+# whole-archived into _zvec.so; since _zvec.so links zvec_core *normally*
+# (not --whole-archive), the linker skips zvec_core's diskann objects there
+# (symbols already resolved by core_knn_diskann_static) — no duplicates.
 if(NOT DISKANN_SUPPORTED)
-  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/diskann_index\\.cc")
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/diskann/.*")
 endif()
 
 set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
-# The plugin loader uses dlopen/dlsym, so link libdl on Linux.
+# The DiskAnn runtime loader uses dlopen/dlsym, so link libdl on Linux.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
 endif()
 
+set(ZVEC_CORE_LIBRARY_OPTIONS)
+if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
+  list(APPEND ZVEC_CORE_LIBRARY_OPTIONS OBJECTS)
+  if(BUILD_ZVEC_CORE_SHARED)
+    list(APPEND ZVEC_CORE_LIBRARY_OPTIONS
+      EXPORT_DEF ZVEC_CORE_BUILD_SHARED
+    )
+  endif()
+endif()
+
 cc_library(
-    NAME zvec_core STATIC STRICT PACKED
+    NAME zvec_core STATIC STRICT PACKED ${ZVEC_CORE_LIBRARY_OPTIONS}
     SRCS ${ALL_CORE_SRCS}
     LIBS ${ZVEC_CORE_LIBS}
     INCS . ${PROJECT_ROOT_DIR}/src/core

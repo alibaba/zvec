@@ -3832,6 +3832,14 @@ void test_utility_functions(void) {
   index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_INVERT);
   TEST_ASSERT(index_type_str != NULL);
 
+  index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_HNSW_RABITQ);
+  TEST_ASSERT(index_type_str != NULL &&
+              strcmp(index_type_str, "HNSW_RABITQ") == 0);
+
+  index_type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_IVF_RABITQ);
+  TEST_ASSERT(index_type_str != NULL &&
+              strcmp(index_type_str, "IVF_RABITQ") == 0);
+
   TEST_END();
 }
 
@@ -6297,7 +6305,7 @@ void test_diskann_index_params_functions(void) {
 
   // to_string should report DiskANN
   const char *type_str = zvec_index_type_to_string(ZVEC_INDEX_TYPE_DISKANN);
-  TEST_ASSERT(type_str != NULL && strcmp(type_str, "DiskANN") == 0);
+  TEST_ASSERT(type_str != NULL && strcmp(type_str, "DISKANN") == 0);
 
   zvec_index_params_destroy(params);
   TEST_END();

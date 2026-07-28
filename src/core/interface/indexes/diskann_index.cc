@@ -16,61 +16,77 @@
 #include <mutex>
 #include <string>
 #include <zvec/core/interface/index.h>
-#include <zvec/plugin/diskann_plugin.h>
+#if DISKANN_SUPPORTED
 #include "algorithm/diskann/diskann_params.h"
 #include "holder_builder.h"
+#endif
 
 namespace zvec::core_interface {
 
-namespace {
-
-// Implicitly bring the DiskAnn runtime online on first use. This keeps the
-// DiskAnn index an ordinary public API (users just instantiate a
-// DiskAnnIndexParam) while still letting the rest of the library — HNSW,
-// IVF, Flat, Vamana — run on hosts that happen to lack libaio. On such
-// hosts only DiskAnn fails, with a clear, actionable error message, and
-// every other index type stays fully functional.
-int EnsureDiskAnnRuntimeReady() {
-  static std::once_flag once;
-  static int cached_result = 0;
-  std::call_once(once, []() {
-    const int status = ::zvec::LoadDiskAnnPlugin();
-    if (status == kDiskAnnPluginOk) {
-      cached_result = 0;
-      return;
-    }
-    switch (status) {
-      case kDiskAnnPluginLibAioMissing:
-        LOG_ERROR(
-            "DiskAnn requires libaio at runtime, but it was not found on this "
-            "host. Install it (e.g. 'apt-get install libaio1' on "
-            "Debian/Ubuntu, "
-            "or 'libaio1t64' on Ubuntu 24.04+) and retry.");
-        break;
-      case kDiskAnnPluginUnsupportedPlatform:
-        LOG_ERROR("DiskAnn is only supported on Linux x86_64.");
-        break;
-      case kDiskAnnPluginDlopenFailed:
-      default:
-        LOG_ERROR("Failed to initialize the DiskAnn runtime (status=%d).",
-                  status);
-        break;
-    }
-    cached_result = core::IndexError_Runtime;
-  });
-  return cached_result;
-}
-
-}  // namespace
+#if !DISKANN_SUPPORTED
 
 int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
-  // Fail fast and cleanly if the DiskAnn runtime cannot be brought up on
-  // this host (most commonly: libaio is missing). The rest of zvec keeps
-  // running; only DiskAnn is unusable.
-  if (int rc = EnsureDiskAnnRuntimeReady(); rc != 0) {
-    return rc;
-  }
+  (void)param;
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
 
+int DiskAnnIndex::Open(const std::string &file_path,
+                       StorageOptions storage_options) {
+  (void)file_path;
+  (void)storage_options;
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::GenerateHolder() {
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::Add(const VectorData &vector, uint32_t doc_id) {
+  (void)vector;
+  (void)doc_id;
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::Train() {
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
+                               VectorDataBuffer *vector_data_buffer) {
+  (void)doc_id;
+  (void)vector_data_buffer;
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::_prepare_for_search(
+    const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+    core::IndexContext::Pointer &context) {
+  (void)query;
+  (void)search_param;
+  (void)context;
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
+
+int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
+                        const IndexFilter &filter,
+                        const MergeOptions &options) {
+  (void)indexes;
+  (void)filter;
+  (void)options;
+  LOG_ERROR("DiskAnn is not supported on this platform (Linux x86_64 only)");
+  return core::IndexError_Unsupported;
+}
+
+#else
+
+int DiskAnnIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("Failed to create streamer. Sparse is not Supported.");
     return core::IndexError_Unsupported;
@@ -319,5 +335,7 @@ int DiskAnnIndex::Merge(const std::vector<Index::Pointer> &indexes,
   is_trained_ = true;
   return 0;
 }
+
+#endif  // DISKANN_SUPPORTED
 
 }  // namespace zvec::core_interface

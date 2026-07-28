@@ -229,7 +229,8 @@ IvfRabitqBuilder::~IvfRabitqBuilder() {
 int IvfRabitqBuilder::init(const IndexMeta &meta,
                            const ailego::Params &params) {
   if (state_ != INIT) {
-    LOG_ERROR("IvfRabitqBuilder state wrong. state=%d", state_);
+    LOG_ERROR("IvfRabitqBuilder state wrong. state=%d",
+              static_cast<int>(state_));
     return IndexError_Logic;
   }
 
@@ -246,7 +247,7 @@ int IvfRabitqBuilder::init(const IndexMeta &meta,
     total_bits_ = kDefaultRabitqTotalBits;
   }
   if (total_bits_ < 1 || total_bits_ > 9) {
-    LOG_ERROR("Invalid total_bits=%u, must be in [1, 9]", total_bits_);
+    LOG_ERROR("Invalid total_bits=%zu, must be in [1, 9]", (size_t)total_bits_);
     return IndexError_InvalidArgument;
   }
 
@@ -260,9 +261,10 @@ int IvfRabitqBuilder::init(const IndexMeta &meta,
 
   uint32_t dim = rabitq_meta_.dimension();
   LOG_INFO(
-      "IvfRabitqBuilder initialized: dim=%u, nlist=%u, total_bits=%u, "
-      "metric=%s, sample_count=%u",
-      dim, nlist_, total_bits_, metric_name_.c_str(), sample_count_);
+      "IvfRabitqBuilder initialized: dim=%zu, nlist=%zu, total_bits=%zu, "
+      "metric=%s, sample_count=%zu",
+      (size_t)dim, (size_t)nlist_, (size_t)total_bits_, metric_name_.c_str(),
+      (size_t)sample_count_);
 
   state_ = INITED;
   return 0;
@@ -291,7 +293,8 @@ int IvfRabitqBuilder::cleanup() {
 int IvfRabitqBuilder::train(IndexThreads::Pointer /*threads*/,
                             IndexHolder::Pointer holder) {
   if (state_ != INITED) {
-    LOG_ERROR("IvfRabitqBuilder train failed, wrong state=%d", state_);
+    LOG_ERROR("IvfRabitqBuilder train failed, wrong state=%d",
+              static_cast<int>(state_));
     return IndexError_Runtime;
   }
 
@@ -371,8 +374,8 @@ int IvfRabitqBuilder::train(IndexThreads::Pointer /*threads*/,
   stats_.set_trained_count(converter_->stats().trained_count());
   stats_.set_trained_costtime(timer.milli_seconds());
 
-  LOG_INFO("IvfRabitqBuilder training completed: %u clusters, cost %zu ms",
-           static_cast<uint32_t>(reformer_->num_clusters()),
+  LOG_INFO("IvfRabitqBuilder training completed: %zu clusters, cost %zu ms",
+           (size_t)reformer_->num_clusters(),
            static_cast<size_t>(timer.milli_seconds()));
 
   state_ = TRAINED;

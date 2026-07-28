@@ -493,6 +493,8 @@ TEST_F(GroupByInterfaceTest, Sparse) {
 }
 
 TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
+  EXPECT_TRUE(Index::is_group_by_unsupported_index(IndexType::kIVFRabitq));
+
   std::vector<GroupByCase> cases{
       {"unsupported_vamana",
        VamanaIndexParamBuilder()

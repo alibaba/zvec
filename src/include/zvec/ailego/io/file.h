@@ -16,13 +16,14 @@
 
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! File Utility
  */
-class File {
+class ZVEC_AILEGO_API File {
  public:
   //! Native Handle in OS
   typedef FileHelper::NativeHandle NativeHandle;

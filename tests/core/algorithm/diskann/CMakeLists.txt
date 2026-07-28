@@ -7,7 +7,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   cc_gtest(
       NAME ${CC_TARGET}
       STRICT
-      LIBS zvec_ailego core_framework core_utility core_metric core_quantizer core_knn_cluster core_plugin core_knn_diskann
+      LIBS zvec_ailego core_framework core_utility core_metric core_quantizer core_knn_cluster core_knn_diskann
       SRCS ${CC_SRCS}
       INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm/diskann
     )

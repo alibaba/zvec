@@ -12,12 +12,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT DEFINED HOST_BUILD_DIR)
     set(HOST_BUILD_DIR "build")
 endif()
-
 get_filename_component(ZVEC_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+
 set(ZVEC_INCLUDE_DIR ${ZVEC_ROOT_DIR}/src/include)
 set(ZVEC_LIB_DIR ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/lib)
 
-# Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR})
 set(ZVEC_LIB_SEARCH_DIRS ${ZVEC_LIB_DIR})
 

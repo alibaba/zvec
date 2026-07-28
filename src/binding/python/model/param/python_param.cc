@@ -780,9 +780,10 @@ Examples:
                                   self.total_bits(), self.sample_count());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4) {
               throw std::runtime_error(
                   "Invalid state for IvfRabitqIndexParams");
+            }
             return std::make_shared<IvfRabitqIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<int>());
@@ -1605,9 +1606,10 @@ Args:
                                   self.is_linear(), self.is_using_refiner());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4) {
               throw std::runtime_error(
                   "Invalid state for IvfRabitqQueryParams");
+            }
             auto obj = std::make_shared<IvfRabitqQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());

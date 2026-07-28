@@ -61,9 +61,10 @@ int IvfRabitqStreamer::init(const IndexMeta &meta,
   state_ = STATE_INITED;
 
   LOG_INFO(
-      "IvfRabitqStreamer initialized: dim=%u, nprobe=%u, metric=%s, "
-      "scan_ratio=%.3f, bf_threshold=%u",
-      dim, nprobe_, metric_name_.c_str(), scan_ratio_, brute_force_threshold_);
+      "IvfRabitqStreamer initialized: dim=%zu, nprobe=%zu, metric=%s, "
+      "scan_ratio=%.3f, bf_threshold=%zu",
+      (size_t)dim, (size_t)nprobe_, metric_name_.c_str(), scan_ratio_,
+      (size_t)brute_force_threshold_);
 
   return 0;
 }
@@ -139,8 +140,9 @@ int IvfRabitqStreamer::load_index(IndexStorage::Pointer storage) {
   stats_.set_loaded_count(entity_->total_vector_count());
   stats_.set_loaded_costtime(timer.milli_seconds());
 
-  LOG_INFO("IvfRabitqStreamer loaded: %u vectors, %u clusters, cost %zu ms",
-           entity_->total_vector_count(), entity_->cluster_count(),
+  LOG_INFO("IvfRabitqStreamer loaded: %zu vectors, %zu clusters, cost %zu ms",
+           (size_t)entity_->total_vector_count(),
+           (size_t)entity_->cluster_count(),
            static_cast<size_t>(timer.milli_seconds()));
 
   return 0;
@@ -339,7 +341,8 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
 
       ret = reformer_->prepare_for_cluster(cid, &query_state);
       if (ret != 0) {
-        LOG_ERROR("Failed to prepare for cluster %u, ret=%d", cid, ret);
+        LOG_ERROR("Failed to prepare for cluster %zu, ret=%d", (size_t)cid,
+                  ret);
         continue;
       }
 
@@ -352,7 +355,7 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
                                       filter, &heap);
       }
       if (ret != 0) {
-        LOG_ERROR("Failed to search cluster %u, ret=%d", cid, ret);
+        LOG_ERROR("Failed to search cluster %zu, ret=%d", (size_t)cid, ret);
         continue;
       }
 

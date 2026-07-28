@@ -239,7 +239,7 @@ int IvfRabitqReformer::load(IndexStorage::Pointer storage) {
       "IvfRabitqReformer loaded: dimension=%zu, padded_dim=%zu, "
       "ex_bits=%zu, num_clusters=%zu, rotator_type=%d",
       impl_->dimension, impl_->padded_dim, impl_->ex_bits, impl_->num_clusters,
-      (int)impl_->rotator_type);
+      static_cast<int>(impl_->rotator_type));
   return 0;
 }
 
@@ -379,7 +379,7 @@ int IvfRabitqReformer::prepare_for_cluster(uint32_t centroid_id,
     return IndexError_NoReady;
   }
   if (centroid_id >= impl_->num_clusters) {
-    LOG_ERROR("Invalid centroid_id=%u, num_clusters=%zu", centroid_id,
+    LOG_ERROR("Invalid centroid_id=%zu, num_clusters=%zu", (size_t)centroid_id,
               impl_->num_clusters);
     return IndexError_OutOfRange;
   }
@@ -425,7 +425,7 @@ int IvfRabitqReformer::quantize_batch(const float *rotated_data,
     return IndexError_NoReady;
   }
   if (centroid_id >= impl_->num_clusters) {
-    LOG_ERROR("Invalid centroid_id=%u, num_clusters=%zu", centroid_id,
+    LOG_ERROR("Invalid centroid_id=%zu, num_clusters=%zu", (size_t)centroid_id,
               impl_->num_clusters);
     return IndexError_OutOfRange;
   }

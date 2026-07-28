@@ -20,13 +20,14 @@
 #include <string>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/string_helper.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! File Helper Module
  */
-struct FileHelper {
+struct ZVEC_AILEGO_API FileHelper {
 #if defined(_WIN32) || defined(_WIN64)
   //! Native Handle in Windows
   typedef void *NativeHandle;

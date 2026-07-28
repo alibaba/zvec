@@ -66,7 +66,7 @@ int PrepareAndCheckIvfRabitqInternalMeta(const IndexMeta &meta,
 
   uint32_t dim = rabitq_meta->dimension();
   if (dim < kMinRabitqDimSize || dim > kMaxRabitqDimSize) {
-    LOG_ERROR("Invalid dimension=%u, must be in [%d, %d]", dim,
+    LOG_ERROR("Invalid dimension=%zu, must be in [%d, %d]", (size_t)dim,
               kMinRabitqDimSize, kMaxRabitqDimSize);
     return IndexError_InvalidArgument;
   }

@@ -23,6 +23,13 @@
 #include <cpuid.h>
 #endif
 
+#if defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_ASIMD
+#define HWCAP_ASIMD (1 << 1)
+#endif
+#endif
+
 namespace zvec {
 namespace ailego {
 namespace internal {
@@ -334,6 +341,17 @@ bool CpuFeatures::VMX(void) {
 // ！Running on a hypervisor
 bool CpuFeatures::HYPERVISOR(void) {
   return !!(flags_.L1_ECX & (1u << 31));
+}
+
+//! ARM NEON (ASIMD) support
+bool CpuFeatures::NEON(void) {
+#if defined(__aarch64__) && defined(__linux__)
+  return !!(getauxval(AT_HWCAP) & HWCAP_ASIMD);
+#elif defined(__ARM_NEON)
+  return true;
+#else
+  return false;
+#endif
 }
 
 const char *CpuFeatures::Intrinsics(void) {

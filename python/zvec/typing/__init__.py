@@ -16,6 +16,7 @@ from __future__ import annotations
 from zvec._zvec.typing import (
     DataType,
     IndexType,
+    IOBackendType,
     MetricType,
     QuantizeType,
     Status,
@@ -24,6 +25,7 @@ from zvec._zvec.typing import (
 
 __all__ = [
     "DataType",
+    "IOBackendType",
     "IndexType",
     "MetricType",
     "QuantizeType",

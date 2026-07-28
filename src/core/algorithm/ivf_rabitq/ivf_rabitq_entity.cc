@@ -147,11 +147,11 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
   }
 
   LOG_INFO(
-      "IvfRabitqEntity loaded: total_vectors=%u, clusters=%u, "
-      "padded_dim=%u, ex_bits=%u, batch_data_size=%zu, ex_data_size=%zu",
-      header_.total_vector_count, header_.cluster_count, header_.padded_dim,
-      header_.ex_bits, (size_t)header_.batch_data_size,
-      (size_t)header_.ex_data_size);
+      "IvfRabitqEntity loaded: total_vectors=%zu, clusters=%zu, "
+      "padded_dim=%zu, ex_bits=%zu, batch_data_size=%zu, ex_data_size=%zu",
+      (size_t)header_.total_vector_count, (size_t)header_.cluster_count,
+      (size_t)header_.padded_dim, (size_t)header_.ex_bits,
+      (size_t)header_.batch_data_size, (size_t)header_.ex_data_size);
 
   // Resolve function pointer once at load time
   ip_func_ = rabitqlib::select_excode_ipfunc(header_.ex_bits);
@@ -225,13 +225,13 @@ uint32_t IvfRabitqEntity::key_to_id(uint64_t key) const {
     uint32_t idx = start + (end - start) / 2U;
     if (mapping_->read(idx * sizeof(uint32_t), &data, sizeof(uint32_t)) !=
         sizeof(uint32_t)) {
-      LOG_ERROR("Failed to read mapping segment, idx=%u", idx);
+      LOG_ERROR("Failed to read mapping segment, idx=%zu", (size_t)idx);
       return std::numeric_limits<uint32_t>::max();
     }
     uint32_t local_id = *reinterpret_cast<const uint32_t *>(data);
     if (local_id >= header_.total_vector_count) {
-      LOG_ERROR("Invalid mapping local_id=%u, vector_count=%u", local_id,
-                header_.total_vector_count);
+      LOG_ERROR("Invalid mapping local_id=%zu, vector_count=%zu",
+                (size_t)local_id, (size_t)header_.total_vector_count);
       return std::numeric_limits<uint32_t>::max();
     }
     uint64_t local_key = keys_[local_id];
@@ -408,7 +408,7 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
                                          const IndexFilter *filter,
                                          IndexDocumentHeap *heap) const {
   if (cluster_id >= cluster_metas_.size()) {
-    LOG_ERROR("Invalid cluster_id=%u", cluster_id);
+    LOG_ERROR("Invalid cluster_id=%zu", (size_t)cluster_id);
     return IndexError_OutOfRange;
   }
 
