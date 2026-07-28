@@ -99,6 +99,15 @@ jobs:
           NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
           cmake --build build --target install --parallel "$NPROC"
 
+      - name: Dump third-party build logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          find build -type f \( -name '*-configure-*.log' -o -name '*-build-*.log' -o -name '*-install-*.log' \) | while read -r f; do
+            echo "===== $f ====="
+            tail -80 "$f"
+          done
+
       - name: Stage package contents
         shell: bash
         run: |
