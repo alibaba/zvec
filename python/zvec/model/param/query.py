@@ -115,8 +115,8 @@ class Query:
         return False
 
     def _validate(self) -> None:
-        if self.field_name is None:
-            raise ValueError("Field name cannot be empty")
+        if not isinstance(self.field_name, str) or not self.field_name.strip():
+            raise ValueError("Field name must be a non-empty string")
         if self.has_id() and self.has_vector():
             raise ValueError("Cannot provide both id and vector")
         if self.has_fts() and (self.has_vector() or self.has_id()):
