@@ -20,6 +20,7 @@
 #include <string>
 #include <zvec/ailego/pattern/singleton.h>
 #include <zvec/db/status.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
@@ -31,7 +32,7 @@ const std::string FILE_LOG_TYPE_NAME = "AppendLogger";
 const std::string DEFAULT_LOG_DIR = "./logs";
 const std::string DEFAULT_LOG_BASENAME = "zvec.log";
 
-class GlobalConfig : public ailego::Singleton<GlobalConfig> {
+class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
   friend class ailego::Singleton<GlobalConfig>;
 
  public:

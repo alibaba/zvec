@@ -16,14 +16,15 @@
 #include <string>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
-class Status;
+class ZVEC_API Status;
 template <typename T>
 using Result = tl::expected<T, Status>;
 
-std::ostream &operator<<(std::ostream &os, const Status &s);
+ZVEC_API std::ostream &operator<<(std::ostream &os, const Status &s);
 
 /**
  * @brief Enumeration of common error codes.
@@ -43,7 +44,7 @@ enum class StatusCode {
 };
 
 // Helper: get default message for code
-const char *GetDefaultMessage(StatusCode code);
+ZVEC_API const char *GetDefaultMessage(StatusCode code);
 
 /**
  * @class Status
@@ -56,7 +57,7 @@ const char *GetDefaultMessage(StatusCode code);
  * @note This class is thread-compatible: const methods can be called from
  * multiple threads.
  */
-class Status {
+class ZVEC_API Status {
  public:
   /// @brief Default constructor: OK status
   Status() noexcept : code_(StatusCode::OK) {}
