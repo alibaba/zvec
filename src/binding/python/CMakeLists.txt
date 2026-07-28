@@ -4,6 +4,30 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Disable LTO on musl: Alpine's fortify-headers use always_inline wrappers
+# around external symbols (e.g. __orig_vsnprintf), which conflicts with GCC's
+# LTO ("function body can be overwritten at link time"). glibc uses compiler
+# builtins (__builtin___vsnprintf_chk) and is unaffected. This must run before
+# find_package(pybind11), which checks CMAKE_INTERPROCEDURAL_OPTIMIZATION at
+# load time to decide whether to inject -flto.
+# Detection: musl's ldd outputs "musl libc" to stderr (not stdout), and
+# __musl__ macro is not defined on musl 1.2.x, so we rely on ldd output.
+execute_process(
+    COMMAND ldd --version
+    OUTPUT_VARIABLE _ldd_stdout
+    ERROR_VARIABLE _ldd_stderr
+)
+set(_ldd_output "${_ldd_stdout}${_ldd_stderr}")
+if(_ldd_output MATCHES "musl")
+    set(ZVEC_ON_MUSL TRUE)
+else()
+    set(ZVEC_ON_MUSL FALSE)
+endif()
+if(ZVEC_ON_MUSL AND NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+    message(STATUS "Disabled LTO on musl (conflicts with fortify-headers)")
+endif()
+
 find_package(pybind11 REQUIRED)
 
 set(SRC_LISTS

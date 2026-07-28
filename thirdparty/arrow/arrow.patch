@@ -24,3 +24,15 @@ index 0f5840676..cf68bfdcb 100644
  
    static Result<ExecNode*> Make(ExecPlan* plan, std::vector<ExecNode*> inputs,
                                  const ExecNodeOptions& options) {
+
+diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+--- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
++++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+@@ -2761,6 +2761,7 @@
+                     URL ${RE2_SOURCE_URL}
+                     URL_HASH "SHA256=${ARROW_RE2_BUILD_SHA256_CHECKSUM}"
+                     CMAKE_ARGS ${RE2_CMAKE_ARGS}
++                    PATCH_COMMAND sed -i "/#include \"re2\\/stringpiece.h\"/a #include <cstdint>" util/pcre.h
+                     BUILD_BYPRODUCTS "${RE2_STATIC_LIB}")
+ 
+   file(MAKE_DIRECTORY "${RE2_PREFIX}/include")

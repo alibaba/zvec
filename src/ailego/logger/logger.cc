@@ -63,11 +63,17 @@ struct ConsoleLogger : public Logger {
   }
 };
 
-//! Logger Level
-int LoggerBroker::logger_level_ = Logger::LEVEL_WARN;
+//! Logger Level — now a Meyers singleton in logger.h
+//! Logger — now a Meyers singleton in logger.h
 
-//! Logger
-Logger::Pointer LoggerBroker::logger_(new ConsoleLogger);
+//! Initialize default Console Logger (trivial destructor, no __cxa_atexit)
+namespace {
+struct DefaultLoggerInitializer {
+  DefaultLoggerInitializer() {
+    LoggerBroker::Register(Logger::Pointer(new ConsoleLogger));
+  }
+} default_logger_init_;
+}  // anonymous namespace
 
 //! Register Console Logger in Factory
 FACTORY_REGISTER_LOGGER(ConsoleLogger);
