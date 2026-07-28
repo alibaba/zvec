@@ -13,7 +13,8 @@
 ##  1.3. Build a C/C++ static or shared library
 ##    cc_library(
 ##        NAME <name>
-##        [STATIC] [SHARED] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED] [SRCS_NO_GLOB]
+##        [STATIC] [SHARED] [OBJECTS] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED]
+##        [SRCS_NO_GLOB]
 ##        SRCS <file1> [file2 ...]
 ##        [INCS dir1 ...]
 ##        [PUBINCS public_dir1 ...]
@@ -25,7 +26,10 @@
 ##        [DEPS target1 ...]
 ##        [PACKED_EXCLUDES pattern1 ...]
 ##        [VERSION <version>]
+##        [EXPORT_DEF <definition>]
 ##      )
+##    OBJECTS creates <name>_objects for a static library. EXPORT_DEF also
+##    creates <name>_export_objects from the same sources and build settings.
 ##
 ##  1.4. Build a C/C++ executable program
 ##    cc_binary(
@@ -634,6 +638,14 @@ macro(_add_library _NAME _OPTION)
   endif()
 endmacro()
 
+## Add a static library backed by an object library.
+macro(_add_static_library_with_objects _NAME _OPTION)
+  add_library(${_NAME}_objects OBJECT ${_OPTION} ${ARGN})
+  add_library(
+      ${_NAME} STATIC ${_OPTION} $<TARGET_OBJECTS:${_NAME}_objects>
+    )
+endmacro()
+
 ## Link dependencies
 function(_targets_link_dependencies _NAME)
   foreach(LIB ${ARGN})
@@ -877,7 +889,9 @@ function(_cc_target_properties)
   endif()
 
   if(CC_ARGS_LIBS)
-    if(NOT TARGET_LINKABLE)
+    if("${TARGET_TYPE}" STREQUAL "OBJECT_LIBRARY")
+      target_link_libraries(${CC_ARGS_NAME} PRIVATE ${CC_ARGS_LIBS})
+    elseif(NOT TARGET_LINKABLE)
       _targets_link_dependencies(${CC_ARGS_NAME} ${CC_ARGS_LIBS})
     else()
       if ("${TARGET_TYPE}" STREQUAL "EXECUTABLE")
@@ -918,9 +932,9 @@ endfunction()
 ## Build a C/C++ static or shared library
 function(cc_library)
   cmake_parse_arguments(
-      CC_ARGS
-      "STATIC;SHARED;EXCLUDE;PACKED;SRCS_NO_GLOB"
-      "NAME;VERSION"
+    CC_ARGS
+      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB"
+      "NAME;VERSION;EXPORT_DEF"
       "SRCS;INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;PACKED_EXCLUDES"
       ${ARGN}
   )
@@ -958,8 +972,16 @@ function(cc_library)
     set(EXCLUDE_OPTION EXCLUDE_FROM_ALL)
   endif()
 
+  if(CC_ARGS_OBJECTS AND (NOT CC_ARGS_STATIC OR CC_ARGS_SHARED))
+    message(FATAL_ERROR "OBJECTS requires a static-only cc_library target")
+  endif()
+
   if(CC_ARGS_SHARED AND CC_ARGS_STATIC)
     _add_library(${CC_ARGS_NAME} "${EXCLUDE_OPTION}" ${SOURCE_FILES})
+  elseif(CC_ARGS_OBJECTS)
+    _add_static_library_with_objects(
+      ${CC_ARGS_NAME} "${EXCLUDE_OPTION}" ${SOURCE_FILES}
+    )
   elseif(CC_ARGS_SHARED)
     add_library(${CC_ARGS_NAME} SHARED ${EXCLUDE_OPTION} ${SOURCE_FILES})
   elseif(CC_ARGS_STATIC)
@@ -973,6 +995,26 @@ function(cc_library)
         NAME "${CC_ARGS_NAME}_objects"
         INCS "${CC_ARGS_INCS};${CC_ARGS_PUBINCS}"
         DEFS "${CC_ARGS_DEFS}"
+        LIBS "${CC_ARGS_LIBS}"
+        CFLAGS "${CC_ARGS_CFLAGS}"
+        CXXFLAGS "${CC_ARGS_CXXFLAGS}"
+        LDFLAGS "${CC_ARGS_LDFLAGS}"
+        DEPS "${CC_ARGS_DEPS}"
+        "${CC_ARGS_UNPARSED_ARGUMENTS}"
+    )
+  endif()
+
+  if(CC_ARGS_EXPORT_DEF)
+    if(NOT CC_ARGS_OBJECTS)
+      message(FATAL_ERROR "EXPORT_DEF requires OBJECTS for ${CC_ARGS_NAME}")
+    endif()
+    add_library(
+      ${CC_ARGS_NAME}_export_objects OBJECT ${EXCLUDE_OPTION} ${SOURCE_FILES}
+    )
+    _cc_target_properties(
+        NAME "${CC_ARGS_NAME}_export_objects"
+        INCS "${CC_ARGS_INCS};${CC_ARGS_PUBINCS}"
+        DEFS "${CC_ARGS_DEFS};${CC_ARGS_EXPORT_DEF}"
         LIBS "${CC_ARGS_LIBS}"
         CFLAGS "${CC_ARGS_CFLAGS}"
         CXXFLAGS "${CC_ARGS_CXXFLAGS}"

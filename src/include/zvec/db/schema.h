@@ -19,6 +19,7 @@
 #include <zvec/db/index_params.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
@@ -28,7 +29,7 @@ const uint64_t MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD = 1000;
 /*
  * Field schema
  */
-class FieldSchema {
+class ZVEC_API FieldSchema {
  public:
   using Ptr = std::shared_ptr<FieldSchema>;
 
@@ -284,7 +285,7 @@ using FieldSchemaPtrMap = std::unordered_map<std::string, FieldSchema::Ptr>;
 /*
  * Collection schema
  */
-class CollectionSchema {
+class ZVEC_API CollectionSchema {
  public:
   using Ptr = std::shared_ptr<CollectionSchema>;
 

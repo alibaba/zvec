@@ -22,13 +22,14 @@
 #include <utility>
 #include <vector>
 #include <zvec/ailego/pattern/closure.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Thread Pool
  */
-class ThreadPool {
+class ZVEC_AILEGO_API ThreadPool {
  public:
   /*! Thread Pool Task Group
    */
