@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include "zvec/core/framework/index_streamer.h"
 #include "ivf_rabitq_params.h"
 
@@ -85,6 +86,11 @@ class IvfRabitqStreamer : public IndexStreamer {
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta, uint32_t count,
+                               Context::Pointer &context) const override;
+
   //! Fetch vector by key
   const void *get_vector(uint64_t key) const override;
 
@@ -108,6 +114,11 @@ class IvfRabitqStreamer : public IndexStreamer {
   int search_impl_internal(const void *query, const IndexQueryMeta &qmeta,
                            uint32_t count, Context::Pointer &context,
                            bool force_brute_force) const;
+
+  int search_group_by_impl_internal(const void *query,
+                                    const IndexQueryMeta &qmeta, uint32_t count,
+                                    Context::Pointer &context,
+                                    bool force_brute_force) const;
 
   //! Internal state
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };

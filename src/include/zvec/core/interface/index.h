@@ -159,9 +159,7 @@ class ZVEC_CORE_API Index {
   static std::string get_metric_name(MetricType metric_type, bool is_sparse);
 
   static bool is_group_by_unsupported_index(IndexType index_type) {
-    return index_type == IndexType::kIVF ||
-           index_type == IndexType::kIVFRabitq ||
-           index_type == IndexType::kDiskAnn ||
+    return index_type == IndexType::kIVF || index_type == IndexType::kDiskAnn ||
            index_type == IndexType::kVamana;
   }
 

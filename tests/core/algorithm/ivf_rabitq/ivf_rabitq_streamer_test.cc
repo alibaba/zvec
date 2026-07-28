@@ -376,18 +376,23 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   context.set_fetch_vector(true);
   context.set_filter([](uint64_t key) { return key == 7; });
   context.set_threshold(0.5f);
+  context.set_group_by([](uint64_t key) { return std::to_string(key % 3U); });
+  context.set_group_params(/*group_num=*/3, /*group_topk=*/2);
   context.query_state.rotated_query.push_back(1.0f);
   context.query_state.centroid_norms.push_back(2.0f);
   context.query_state.batch_query = std::make_shared<int>(1);
 
   ASSERT_TRUE(context.fetch_vector());
   ASSERT_TRUE(context.filter().is_valid());
+  ASSERT_TRUE(context.group_by_search());
   ASSERT_NE(std::numeric_limits<float>::max(), context.threshold());
 
   context.reset();
 
   EXPECT_FALSE(context.fetch_vector());
   EXPECT_FALSE(context.filter().is_valid());
+  EXPECT_FALSE(context.group_by_search());
+  EXPECT_FALSE(context.group_by().is_valid());
   EXPECT_EQ(std::numeric_limits<float>::max(), context.threshold());
   EXPECT_TRUE(context.query_state.rotated_query.empty());
   EXPECT_TRUE(context.query_state.centroid_norms.empty());
@@ -623,6 +628,95 @@ TEST_F(IvfRabitqStreamerTest, TestSearchWithFilter) {
                                    return doc.key() == filtered_key;
                                  });
   EXPECT_NE(reset_result.end(), reset_iter);
+}
+
+TEST_F(IvfRabitqStreamerTest, TestSearchByPrimaryKeys) {
+  constexpr size_t kDocCount = 256;
+  auto holder = BuildHolder(kDim, kDocCount);
+
+  ailego::Params params;
+  params.set(PARAM_IVF_RABITQ_NLIST, 16U);
+  params.set(PARAM_RABITQ_TOTAL_BITS, 1U);
+  IndexStreamer::Pointer streamer;
+  BuildAndOpenStreamer(*index_meta_ptr_, holder, params,
+                       dir_ + "/TestSearchByPrimaryKeys", &streamer);
+  ASSERT_NE(nullptr, streamer);
+
+  NumericalVector<float> query_vec0(kDim);
+  NumericalVector<float> query_vec1(kDim);
+  FillTestVector(37, &query_vec0);
+  FillTestVector(42, &query_vec1);
+  std::vector<float> query_vectors(kDim * 2);
+  memcpy(query_vectors.data(), query_vec0.data(), kDim * sizeof(float));
+  memcpy(query_vectors.data() + kDim, query_vec1.data(), kDim * sizeof(float));
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kDim);
+  auto context = streamer->create_context();
+  context->set_topk(3);
+
+  const std::vector<std::vector<uint64_t>> keys{{5, 37, 91, 9999},
+                                                {7, 42, 100, 9999}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query_vectors.data(), keys,
+                                                  query_meta, 2, context));
+  ASSERT_EQ(3UL, context->result(0).size());
+  EXPECT_EQ(37UL, context->result(0)[0].key());
+  for (const auto &doc : context->result(0)) {
+    EXPECT_NE(keys[0].end(),
+              std::find(keys[0].begin(), keys[0].end(), doc.key()));
+  }
+  ASSERT_EQ(3UL, context->result(1).size());
+  EXPECT_EQ(42UL, context->result(1)[0].key());
+  for (const auto &doc : context->result(1)) {
+    EXPECT_NE(keys[1].end(),
+              std::find(keys[1].begin(), keys[1].end(), doc.key()));
+  }
+
+  context->set_filter([](uint64_t key) { return key == 37 || key == 42; });
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query_vectors.data(), keys,
+                                                  query_meta, 2, context));
+  ASSERT_EQ(2UL, context->result(0).size());
+  ASSERT_EQ(2UL, context->result(1).size());
+  for (uint32_t q = 0; q < 2; ++q) {
+    for (const auto &doc : context->result(q)) {
+      EXPECT_NE(37UL, doc.key());
+      EXPECT_NE(42UL, doc.key());
+    }
+  }
+}
+
+TEST_F(IvfRabitqStreamerTest, TestGroupBySearchByPrimaryKeys) {
+  constexpr size_t kDocCount = 256;
+  auto holder = BuildHolder(kDim, kDocCount);
+
+  ailego::Params params;
+  params.set(PARAM_IVF_RABITQ_NLIST, 16U);
+  params.set(PARAM_RABITQ_TOTAL_BITS, 7U);
+  IndexStreamer::Pointer streamer;
+  BuildAndOpenStreamer(*index_meta_ptr_, holder, params,
+                       dir_ + "/TestGroupBySearchByPrimaryKeys", &streamer);
+  ASSERT_NE(nullptr, streamer);
+
+  NumericalVector<float> query_vec(kDim);
+  FillTestVector(37, &query_vec);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kDim);
+  auto context = streamer->create_context();
+  context->set_group_by([](uint64_t key) { return std::to_string(key % 3U); });
+  context->set_group_params(/*group_num=*/3, /*group_topk=*/2);
+  context->set_topk(10);
+
+  const std::vector<std::vector<uint64_t>> keys{
+      {3, 4, 5, 36, 37, 38, 90, 91, 92}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query_vec.data(), keys,
+                                                  query_meta, 1, context));
+
+  const auto &groups = context->group_result(0);
+  ASSERT_EQ(3UL, groups.size());
+  for (const auto &group : groups) {
+    ASSERT_EQ(2UL, group.docs().size());
+    const uint64_t expected_group = std::stoull(group.group_id());
+    for (const auto &doc : group.docs()) {
+      EXPECT_EQ(expected_group, doc.key() % 3U);
+    }
+  }
 }
 
 TEST_F(IvfRabitqStreamerTest, TestRecallQuality) {

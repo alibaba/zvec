@@ -271,6 +271,17 @@ TEST_F(GroupByIndexerTest, Dense) {
        std::make_shared<HnswQueryParams>(300),
        /*is_sparse=*/false, /*dimension=*/kGbDimension,
        /*optional=*/false, /*with_bf_pks=*/false, /*fetch_vector=*/true},
+#if RABITQ_SUPPORTED
+      {"dense_ivf_rabitq_graph",
+       std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 4, 7, 0),
+       std::make_shared<IvfRabitqQueryParams>(4),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_bf_pks",
+       std::make_shared<IvfRabitqIndexParams>(MetricType::IP, 4, 7, 0),
+       std::make_shared<IvfRabitqQueryParams>(4),
+       /*is_sparse=*/false, /*dimension=*/64,
+       /*optional=*/false, /*with_bf_pks=*/true},
+#endif
   };
 
   for (const auto &tc : cases) {

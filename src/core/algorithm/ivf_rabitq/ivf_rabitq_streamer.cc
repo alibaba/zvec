@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "ivf_rabitq_streamer.h"
+#include <limits>
+#include <map>
 #include <new>
 #include <utility>
 #include <vector>
@@ -210,6 +212,9 @@ int IvfRabitqStreamer::get_vector(const uint64_t key,
 int IvfRabitqStreamer::search_bf_impl(const void *query,
                                       const IndexQueryMeta &qmeta,
                                       Context::Pointer &context) const {
+  if (context && context->group_by().is_valid()) {
+    return search_group_by_impl_internal(query, qmeta, 1, context, true);
+  }
   return search_impl_internal(query, qmeta, 1, context, true);
 }
 
@@ -220,6 +225,9 @@ int IvfRabitqStreamer::search_bf_impl(const void *query,
                                       const IndexQueryMeta &qmeta,
                                       uint32_t count,
                                       Context::Pointer &context) const {
+  if (context && context->group_by().is_valid()) {
+    return search_group_by_impl_internal(query, qmeta, count, context, true);
+  }
   return search_impl_internal(query, qmeta, count, context, true);
 }
 
@@ -238,6 +246,9 @@ int IvfRabitqStreamer::search_impl(const void *query,
 int IvfRabitqStreamer::search_impl(const void *query,
                                    const IndexQueryMeta &qmeta, uint32_t count,
                                    Context::Pointer &context) const {
+  if (context && context->group_by().is_valid()) {
+    return search_group_by_impl_internal(query, qmeta, count, context, false);
+  }
   return search_impl_internal(query, qmeta, count, context, false);
 }
 
@@ -366,6 +377,212 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
     ctx->topk_to_result(q);
   }
 
+  return 0;
+}
+
+int IvfRabitqStreamer::search_group_by_impl_internal(
+    const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+    Context::Pointer &context, bool force_brute_force) const {
+  if (!query) {
+    LOG_ERROR("Null query");
+    return IndexError_InvalidArgument;
+  }
+  if (!reformer_ || !reformer_->loaded() || !entity_) {
+    return IndexError_NoReady;
+  }
+
+  auto *ctx = dynamic_cast<IvfRabitqContext *>(context.get());
+  if (!ctx) {
+    return IndexError_Cast;
+  }
+  if (!ctx->group_by_search() || !ctx->group_by().is_valid()) {
+    LOG_ERROR("Invalid group-by state");
+    return IndexError_InvalidArgument;
+  }
+
+  const bool brute_force = force_brute_force || entity_->total_vector_count() <=
+                                                    ctx->bruteforce_threshold();
+  uint32_t nprobe = 0;
+  uint32_t max_scan = 0;
+  if (brute_force) {
+    nprobe = entity_->cluster_count();
+    max_scan = entity_->total_vector_count();
+    ctx->set_search_limits(max_scan);
+  } else {
+    int ret = ctx->update_search_limits(entity_->total_vector_count(),
+                                        entity_->cluster_count(), &nprobe);
+    if (ret != 0) {
+      return ret;
+    }
+    max_scan = ctx->max_scan_count();
+  }
+
+  const size_t padded_dim = reformer_->padded_dim();
+  const size_t ex_bits = reformer_->ex_bits();
+  const size_t dimension = reformer_->dimension();
+  if (qmeta.dimension() != meta_.dimension() ||
+      qmeta.data_type() != meta_.data_type() ||
+      qmeta.element_size() != meta_.element_size() ||
+      qmeta.dimension() < dimension) {
+    return IndexError_Mismatch;
+  }
+
+  ctx->reset_group_results(count);
+  for (uint32_t q = 0; q < count; ++q) {
+    const float *query_vector = reinterpret_cast<const float *>(
+        static_cast<const char *>(query) +
+        (static_cast<size_t>(q) * qmeta.element_size()));
+    IvfRabitqQueryState query_state;
+    int ret = reformer_->create_query_state(query_vector, &query_state);
+    if (ret != 0) {
+      return ret;
+    }
+
+    std::vector<uint32_t> probe_centroids;
+    ret = reformer_->select_probe_centroids(query_vector, nprobe, &query_state,
+                                            &probe_centroids);
+    if (ret != 0) {
+      return ret;
+    }
+
+    auto &heaps = ctx->group_topk_heaps();
+    heaps.clear();
+    const auto &filter = ctx->filter();
+    uint32_t scanned = 0;
+    for (uint32_t cluster_id : probe_centroids) {
+      if (scanned >= max_scan) {
+        break;
+      }
+      ret = reformer_->prepare_for_cluster(cluster_id, &query_state);
+      if (ret != 0) {
+        LOG_ERROR("Failed to prepare for cluster %zu, ret=%d",
+                  (size_t)cluster_id, ret);
+        continue;
+      }
+
+      if (filter.is_valid()) {
+        ret = entity_->search_cluster_group_by(
+            cluster_id, query_state, padded_dim, ex_bits, filter,
+            ctx->group_by(), ctx->group_topk(), ctx->threshold(), &heaps);
+      } else {
+        ret = entity_->search_cluster_group_by(
+            cluster_id, query_state, padded_dim, ex_bits, ctx->group_by(),
+            ctx->group_topk(), ctx->threshold(), &heaps);
+      }
+      if (ret != 0) {
+        LOG_ERROR("Failed to search cluster %zu, ret=%d", (size_t)cluster_id,
+                  ret);
+        continue;
+      }
+      scanned += entity_->cluster_meta(cluster_id).vector_count;
+    }
+    ctx->topk_to_group_result(q);
+  }
+  return 0;
+}
+
+int IvfRabitqStreamer::search_bf_by_p_keys_impl(
+    const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+    const IndexQueryMeta &qmeta, uint32_t count,
+    Context::Pointer &context) const {
+  if (!query || p_keys.size() != count) {
+    return IndexError_InvalidArgument;
+  }
+  if (!reformer_ || !reformer_->loaded() || !entity_) {
+    return IndexError_NoReady;
+  }
+  if (qmeta.dimension() != meta_.dimension() ||
+      qmeta.data_type() != meta_.data_type() ||
+      qmeta.element_size() != meta_.element_size()) {
+    return IndexError_Mismatch;
+  }
+
+  auto *ctx = dynamic_cast<IvfRabitqContext *>(context.get());
+  if (!ctx) {
+    return IndexError_Cast;
+  }
+  const bool has_group_by = ctx->group_by_search();
+  if (has_group_by && !ctx->group_by().is_valid()) {
+    return IndexError_InvalidArgument;
+  }
+  if (has_group_by) {
+    ctx->reset_group_results(count);
+  } else {
+    ctx->reset_results(count);
+  }
+
+  const size_t padded_dim = reformer_->padded_dim();
+  const size_t ex_bits = reformer_->ex_bits();
+  const uint32_t topk = ctx->topk() == 0 ? 10 : ctx->topk();
+  const auto &filter = ctx->filter();
+  for (uint32_t q = 0; q < count; ++q) {
+    const float *query_vector = reinterpret_cast<const float *>(
+        static_cast<const char *>(query) +
+        (static_cast<size_t>(q) * qmeta.element_size()));
+    IvfRabitqQueryState query_state;
+    int ret = reformer_->create_query_state(query_vector, &query_state);
+    if (ret != 0) {
+      return ret;
+    }
+
+    std::map<uint32_t, std::vector<uint32_t>> cluster_ids;
+    for (uint64_t key : p_keys[q]) {
+      if (filter.is_valid() && filter(key)) {
+        continue;
+      }
+      const uint32_t id = entity_->key_to_id(key);
+      if (id == std::numeric_limits<uint32_t>::max()) {
+        continue;
+      }
+      const uint32_t cluster_id = entity_->get_cluster_id(id);
+      if (cluster_id == std::numeric_limits<uint32_t>::max()) {
+        continue;
+      }
+      cluster_ids[cluster_id].push_back(id);
+    }
+
+    auto &result_heap = ctx->mutable_result_heap();
+    if (!has_group_by) {
+      result_heap.clear();
+      result_heap.limit(topk);
+      result_heap.set_threshold(ctx->threshold());
+    } else {
+      ctx->group_topk_heaps().clear();
+    }
+
+    for (const auto &entry : cluster_ids) {
+      const uint32_t cluster_id = entry.first;
+      ret = reformer_->prepare_for_cluster(cluster_id, &query_state);
+      if (ret != 0) {
+        return ret;
+      }
+      IndexDocumentList documents;
+      ret = entity_->compute_distances(cluster_id, entry.second, query_state,
+                                       padded_dim, ex_bits, &documents);
+      if (ret != 0) {
+        return ret;
+      }
+      for (const auto &document : documents) {
+        if (!has_group_by) {
+          result_heap.emplace(document.key(), document.score());
+          continue;
+        }
+        const std::string group_id = ctx->group_by()(document.key());
+        auto &heap = ctx->group_topk_heaps()[group_id];
+        if (heap.empty()) {
+          heap.limit(ctx->group_topk());
+          heap.set_threshold(ctx->threshold());
+        }
+        heap.emplace(document.key(), document.score());
+      }
+    }
+
+    if (has_group_by) {
+      ctx->topk_to_group_result(q);
+    } else {
+      ctx->topk_to_result(q);
+    }
+  }
   return 0;
 }
 

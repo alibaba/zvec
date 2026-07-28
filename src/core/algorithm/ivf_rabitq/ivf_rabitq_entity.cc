@@ -176,6 +176,26 @@ int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
                                    &filter, heap);
 }
 
+int IvfRabitqEntity::search_cluster_group_by(
+    uint32_t cluster_id, const IvfRabitqQueryState &query_state,
+    size_t padded_dim, size_t ex_bits, const IndexGroupBy &group_by,
+    uint32_t group_topk, float threshold,
+    IvfRabitqContext::GroupTopkHeaps *heaps) const {
+  return search_cluster_group_by_impl<false>(
+      cluster_id, query_state, padded_dim, ex_bits, nullptr, group_by,
+      group_topk, threshold, heaps);
+}
+
+int IvfRabitqEntity::search_cluster_group_by(
+    uint32_t cluster_id, const IvfRabitqQueryState &query_state,
+    size_t padded_dim, size_t ex_bits, const IndexFilter &filter,
+    const IndexGroupBy &group_by, uint32_t group_topk, float threshold,
+    IvfRabitqContext::GroupTopkHeaps *heaps) const {
+  return search_cluster_group_by_impl<true>(cluster_id, query_state, padded_dim,
+                                            ex_bits, &filter, group_by,
+                                            group_topk, threshold, heaps);
+}
+
 uint64_t IvfRabitqEntity::get_key(size_t id) const {
   if (id >= header_.total_vector_count || !keys_) {
     return std::numeric_limits<uint64_t>::max();
@@ -244,6 +264,14 @@ uint32_t IvfRabitqEntity::key_to_id(uint64_t key) const {
     }
   }
   return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t IvfRabitqEntity::get_cluster_id(uint32_t id) const {
+  const auto *meta = find_cluster_meta(id);
+  if (!meta) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+  return static_cast<uint32_t>(meta - cluster_metas_.data());
 }
 
 int IvfRabitqEntity::load_key_order_mapping(IndexStorage::Pointer storage) {
@@ -400,6 +428,70 @@ int IvfRabitqEntity::materialize_quantized_vector(size_t id, char *dst) const {
   return 0;
 }
 
+int IvfRabitqEntity::compute_distances(uint32_t cluster_id,
+                                       const std::vector<uint32_t> &ids,
+                                       const IvfRabitqQueryState &query_state,
+                                       size_t padded_dim, size_t ex_bits,
+                                       IndexDocumentList *documents) const {
+  if (!documents) {
+    return IndexError_InvalidArgument;
+  }
+  if (cluster_id >= cluster_metas_.size()) {
+    return IndexError_OutOfRange;
+  }
+  const auto *batch_query =
+      static_cast<const rabitqlib::SplitBatchQuery<float> *>(
+          query_state.batch_query.get());
+  if (!batch_query) {
+    return IndexError_InvalidArgument;
+  }
+
+  const auto &meta = cluster_metas_[cluster_id];
+  std::vector<uint32_t> sorted_ids(ids);
+  std::sort(sorted_ids.begin(), sorted_ids.end());
+
+  const size_t batch_stride =
+      rabitqlib::BatchDataMap<float>::data_bytes(padded_dim);
+  const size_t ex_stride =
+      rabitqlib::ExDataMap<float>::data_bytes(padded_dim, ex_bits);
+  std::array<float, rabitqlib::fastscan::kBatchSize> est_dist;
+  std::array<float, rabitqlib::fastscan::kBatchSize> low_dist;
+  std::array<float, rabitqlib::fastscan::kBatchSize> ip_x0_qr;
+  uint32_t loaded_batch = std::numeric_limits<uint32_t>::max();
+
+  documents->clear();
+  documents->reserve(sorted_ids.size());
+  for (uint32_t id : sorted_ids) {
+    if (static_cast<size_t>(id) < meta.key_offset ||
+        static_cast<size_t>(id) >= meta.key_offset + meta.vector_count) {
+      return IndexError_InvalidArgument;
+    }
+    const uint32_t local_id = id - static_cast<uint32_t>(meta.key_offset);
+    const uint32_t batch_id =
+        local_id / static_cast<uint32_t>(rabitqlib::fastscan::kBatchSize);
+    const uint32_t lane =
+        local_id % static_cast<uint32_t>(rabitqlib::fastscan::kBatchSize);
+    if (batch_id != loaded_batch) {
+      const char *batch_data = batch_data_ + meta.batch_data_offset +
+                               (static_cast<size_t>(batch_id) * batch_stride);
+      rabitqlib::split_batch_estdist(batch_data, *batch_query, padded_dim,
+                                     est_dist.data(), low_dist.data(),
+                                     ip_x0_qr.data(), true /* use_hacc */);
+      loaded_batch = batch_id;
+    }
+
+    float distance = est_dist[lane];
+    if (ex_bits > 0) {
+      const char *ex_data = ex_data_ + meta.ex_data_offset +
+                            (static_cast<size_t>(local_id) * ex_stride);
+      distance = rabitqlib::split_distance_boosting(
+          ex_data, ip_func_, *batch_query, padded_dim, ex_bits, ip_x0_qr[lane]);
+    }
+    documents->emplace_back(keys_[id], distance);
+  }
+  return 0;
+}
+
 // Cluster scan with lower-bound pruning — mirrors rabitqlib IVF::scan_one_batch
 template <bool HasFilter>
 int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
@@ -501,6 +593,92 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
     remaining -= batch_size;
   }
 
+  return 0;
+}
+
+template <bool HasFilter>
+int IvfRabitqEntity::search_cluster_group_by_impl(
+    uint32_t cluster_id, const IvfRabitqQueryState &query_state,
+    size_t padded_dim, size_t ex_bits, const IndexFilter *filter,
+    const IndexGroupBy &group_by, uint32_t group_topk, float threshold,
+    IvfRabitqContext::GroupTopkHeaps *heaps) const {
+  if (cluster_id >= cluster_metas_.size()) {
+    return IndexError_OutOfRange;
+  }
+  if (!heaps || !group_by.is_valid() || group_topk == 0) {
+    return IndexError_InvalidArgument;
+  }
+
+  const auto &meta = cluster_metas_[cluster_id];
+  if (meta.vector_count == 0) {
+    return 0;
+  }
+
+  const auto *batch_query =
+      static_cast<const rabitqlib::SplitBatchQuery<float> *>(
+          query_state.batch_query.get());
+  if (!batch_query) {
+    return IndexError_InvalidArgument;
+  }
+
+  const size_t batch_stride =
+      rabitqlib::BatchDataMap<float>::data_bytes(padded_dim);
+  const size_t ex_stride =
+      rabitqlib::ExDataMap<float>::data_bytes(padded_dim, ex_bits);
+  const char *batch_data = batch_data_ + meta.batch_data_offset;
+  const char *ex_data = ex_bits > 0 ? ex_data_ + meta.ex_data_offset : nullptr;
+  const uint64_t *keys = keys_ + meta.key_offset;
+
+  uint32_t remaining = meta.vector_count;
+  uint32_t offset = 0;
+  while (remaining > 0) {
+    const uint32_t batch_size =
+        std::min(remaining, (uint32_t)rabitqlib::fastscan::kBatchSize);
+    std::array<float, rabitqlib::fastscan::kBatchSize> est_dist;
+    std::array<float, rabitqlib::fastscan::kBatchSize> low_dist;
+    std::array<float, rabitqlib::fastscan::kBatchSize> ip_x0_qr;
+    rabitqlib::split_batch_estdist(batch_data, *batch_query, padded_dim,
+                                   est_dist.data(), low_dist.data(),
+                                   ip_x0_qr.data(), true /* use_hacc */);
+
+    for (uint32_t i = 0; i < batch_size; ++i) {
+      const uint64_t key = keys[offset + i];
+      if constexpr (HasFilter) {
+        if ((*filter)(key)) {
+          continue;
+        }
+      }
+
+      const std::string group_id = group_by(key);
+      auto &heap = (*heaps)[group_id];
+      if (heap.empty()) {
+        heap.limit(group_topk);
+        heap.set_threshold(threshold);
+      }
+
+      if (ex_bits == 0) {
+        heap.emplace(key, est_dist[i]);
+        continue;
+      }
+
+      const float group_threshold =
+          heap.full() ? heap.begin()->score() : threshold;
+      if (low_dist[i] >= group_threshold) {
+        continue;
+      }
+      const float distance = rabitqlib::split_distance_boosting(
+          ex_data + (static_cast<size_t>(i) * ex_stride), ip_func_,
+          *batch_query, padded_dim, ex_bits, ip_x0_qr[i]);
+      heap.emplace(key, distance);
+    }
+
+    batch_data += batch_stride;
+    if (ex_bits > 0) {
+      ex_data += static_cast<size_t>(batch_size) * ex_stride;
+    }
+    offset += batch_size;
+    remaining -= batch_size;
+  }
   return 0;
 }
 

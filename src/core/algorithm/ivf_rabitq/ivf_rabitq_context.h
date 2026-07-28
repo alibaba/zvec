@@ -15,7 +15,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 #include "zvec/ailego/container/params.h"
 #include "zvec/core/framework/index_context.h"
@@ -43,10 +46,12 @@ struct IvfRabitqQueryState {
  *   - result_heap_: max-heap of size topk_ used during scan
  *   - mutable_result_heap(): accessor for entity::search_cluster
  *   - reset_results() / topk_to_result(): lifecycle helpers
+ *   - group_state_: lazily allocated only for group-by search
  */
 class IvfRabitqContext : public IndexContext {
  public:
   typedef std::shared_ptr<IvfRabitqContext> Pointer;
+  using GroupTopkHeaps = std::map<std::string, IndexDocumentHeap>;
 
   IvfRabitqContext() = default;
   ~IvfRabitqContext() override = default;
@@ -96,6 +101,7 @@ class IvfRabitqContext : public IndexContext {
     reset_filter();
     reset_threshold();
     reset_group_by();
+    group_state_.reset();
     set_fetch_vector(false);
     result_heap_.clear();
     result_heap_.set_threshold(this->threshold());
@@ -122,6 +128,32 @@ class IvfRabitqContext : public IndexContext {
     return &results_[idx];
   }
 
+  const IndexGroupDocumentList &group_result(void) const override {
+    return group_result(0);
+  }
+
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
+    static const IndexGroupDocumentList kEmpty;
+    if (!group_state_ || idx >= group_state_->results.size()) {
+      return kEmpty;
+    }
+    return group_state_->results[idx];
+  }
+
+  IndexGroupDocumentList *mutable_group_result(void) override {
+    return mutable_group_result(0);
+  }
+
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    if (!group_state_) {
+      return nullptr;
+    }
+    if (idx >= group_state_->results.size()) {
+      group_state_->results.resize(idx + 1);
+    }
+    return &group_state_->results[idx];
+  }
+
   // -----------------------------------------------------------------------
   // Heap helpers (same pattern as IVFSearcherContext)
   // -----------------------------------------------------------------------
@@ -142,6 +174,17 @@ class IvfRabitqContext : public IndexContext {
     result_heap_.set_threshold(this->threshold());
   }
 
+  void reset_group_results(size_t qnum) {
+    if (!group_state_) {
+      return;
+    }
+    group_state_->results.resize(qnum);
+    for (auto &result : group_state_->results) {
+      result.clear();
+    }
+    group_state_->heaps.clear();
+  }
+
   //! Drain heap → results_[idx], sorted by score ascending (same as IVF)
   void topk_to_result(uint32_t idx) {
     if (result_heap_.empty()) {
@@ -160,6 +203,83 @@ class IvfRabitqContext : public IndexContext {
       }
       results_[idx].emplace_back(result_heap_[i].key(), score);
     }
+  }
+
+  void topk_to_group_result(uint32_t idx) {
+    if (!group_state_ || idx >= group_state_->results.size()) {
+      return;
+    }
+
+    auto &result = group_state_->results[idx];
+    result.clear();
+
+    std::vector<std::pair<const std::string *, float>> ranked_groups;
+    ranked_groups.reserve(group_state_->heaps.size());
+    for (auto &entry : group_state_->heaps) {
+      auto &heap = entry.second;
+      heap.sort();
+      if (!heap.empty()) {
+        ranked_groups.emplace_back(&entry.first, heap[0].score());
+      }
+    }
+    std::sort(ranked_groups.begin(), ranked_groups.end(),
+              [](const auto &lhs, const auto &rhs) {
+                if (lhs.second != rhs.second) {
+                  return lhs.second < rhs.second;
+                }
+                return *lhs.first < *rhs.first;
+              });
+
+    const size_t group_count = std::min(
+        static_cast<size_t>(group_state_->group_num), ranked_groups.size());
+    result.reserve(group_count);
+    for (size_t i = 0; i < group_count; ++i) {
+      const std::string &group_id = *ranked_groups[i].first;
+      auto heap_it = group_state_->heaps.find(group_id);
+      if (heap_it == group_state_->heaps.end()) {
+        continue;
+      }
+      auto &heap = heap_it->second;
+      result.emplace_back();
+      auto &group = result.back();
+      group.set_group_id(group_id);
+      auto *docs = group.mutable_docs();
+      const size_t doc_count =
+          std::min(static_cast<size_t>(group_state_->group_topk), heap.size());
+      docs->reserve(doc_count);
+      for (size_t j = 0; j < doc_count; ++j) {
+        if (heap[j].score() > this->threshold()) {
+          break;
+        }
+        docs->emplace_back(heap[j].key(), heap[j].score());
+      }
+    }
+  }
+
+  bool group_by_search() const {
+    return group_state_ != nullptr;
+  }
+
+  void set_group_params(uint32_t group_num, uint32_t group_topk) override {
+    if (group_num == 0 || group_topk == 0) {
+      group_state_.reset();
+      return;
+    }
+    if (!group_state_) {
+      group_state_ = std::make_unique<GroupSearchState>();
+    }
+    group_state_->group_num = group_num;
+    group_state_->group_topk = group_topk;
+    group_state_->heaps.clear();
+    group_state_->results.clear();
+  }
+
+  uint32_t group_topk() const {
+    return group_state_ ? group_state_->group_topk : 0;
+  }
+
+  GroupTopkHeaps &group_topk_heaps() {
+    return group_state_->heaps;
   }
 
   // -----------------------------------------------------------------------
@@ -214,8 +334,16 @@ class IvfRabitqContext : public IndexContext {
   IvfRabitqQueryState query_state;
 
  private:
+  struct GroupSearchState {
+    uint32_t group_num{0};
+    uint32_t group_topk{0};
+    GroupTopkHeaps heaps;
+    std::vector<IndexGroupDocumentList> results;
+  };
+
   IndexDocumentHeap result_heap_;
   std::vector<IndexDocumentList> results_;
+  std::unique_ptr<GroupSearchState> group_state_;
 
   uint32_t topk_{10};
   uint32_t nprobe_{10};

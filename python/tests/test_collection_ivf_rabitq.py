@@ -26,6 +26,7 @@ from zvec import (
     Doc,
     FieldSchema,
     IndexType,
+    InvertIndexParam,
     IvfRabitqIndexParam,
     IvfRabitqQueryParam,
     MetricType,
@@ -56,7 +57,11 @@ def _make_docs(count: int) -> list[Doc]:
     return [
         Doc(
             id=str(doc_id),
-            fields={"id": doc_id, "name": f"test_doc_{doc_id}"},
+            fields={
+                "id": doc_id,
+                "name": f"test_doc_{doc_id}",
+                "group_id": doc_id % 4,
+            },
             vectors={"embedding": _vector_for(doc_id)},
         )
         for doc_id in range(count)
@@ -71,8 +76,10 @@ def _build_schema(name: str) -> CollectionSchema:
                 "id",
                 DataType.INT64,
                 nullable=False,
+                index_param=InvertIndexParam(enable_range_optimization=True),
             ),
             FieldSchema("name", DataType.STRING, nullable=False),
+            FieldSchema("group_id", DataType.INT64, nullable=False),
         ],
         vectors=[
             VectorSchema(
@@ -210,3 +217,45 @@ class TestIvfRabitqCollection:
                 reopened.destroy()
             elif coll is not None:
                 coll.destroy()
+
+    def test_group_by_after_optimize(self, tmp_path_factory):
+        coll = _create_collection(tmp_path_factory, "ivf_rabitq_group_by")
+        try:
+            docs = _make_docs(INDEXED_DOC_COUNT)
+            _insert_docs(coll, docs)
+            coll.optimize(OptimizeOption())
+
+            query = Query(
+                field_name="embedding",
+                vector=docs[42].vector("embedding"),
+                param=IvfRabitqQueryParam(nprobe=NPROBE),
+            )
+            results = coll.group_by_query(
+                query,
+                group_by_field_name="group_id",
+                group_count=4,
+                topk_per_group=2,
+            )
+            assert {int(group.group_by_value) for group in results} == set(range(4))
+            for group in results:
+                assert 1 <= len(group.docs) <= 2
+                assert all(
+                    doc.field("group_id") == int(group.group_by_value)
+                    for doc in group.docs
+                )
+
+            filtered = coll.group_by_query(
+                query,
+                group_by_field_name="group_id",
+                group_count=4,
+                topk_per_group=2,
+                filter="id < 8",
+                include_vector=True,
+            )
+            assert {int(group.group_by_value) for group in filtered} == set(range(4))
+            for group in filtered:
+                for doc in group.docs:
+                    assert doc.field("id") < 8
+                    assert len(doc.vector("embedding")) == DIMENSION
+        finally:
+            coll.destroy()

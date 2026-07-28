@@ -315,6 +315,7 @@ int IVFRabitqIndex::_prepare_for_search(
   const auto &ivf_rabitq_param =
       std::dynamic_pointer_cast<IVFRabitqQueryParam>(search_param);
 
+  _set_group_by_on_context(search_param, context);
   context->set_topk(search_param->topk);
   context->set_fetch_vector(search_param->fetch_vector);
   if (search_param->filter) {

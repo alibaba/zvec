@@ -53,6 +53,26 @@ class IvfRabitqEntity {
                      size_t ex_bits, const IndexFilter &filter,
                      IndexDocumentHeap *heap) const;
 
+  int search_cluster_group_by(uint32_t cluster_id,
+                              const IvfRabitqQueryState &query_state,
+                              size_t padded_dim, size_t ex_bits,
+                              const IndexGroupBy &group_by, uint32_t group_topk,
+                              float threshold,
+                              IvfRabitqContext::GroupTopkHeaps *heaps) const;
+
+  int search_cluster_group_by(uint32_t cluster_id,
+                              const IvfRabitqQueryState &query_state,
+                              size_t padded_dim, size_t ex_bits,
+                              const IndexFilter &filter,
+                              const IndexGroupBy &group_by, uint32_t group_topk,
+                              float threshold,
+                              IvfRabitqContext::GroupTopkHeaps *heaps) const;
+
+  int compute_distances(uint32_t cluster_id, const std::vector<uint32_t> &ids,
+                        const IvfRabitqQueryState &query_state,
+                        size_t padded_dim, size_t ex_bits,
+                        IndexDocumentList *documents) const;
+
   uint32_t cluster_count() const {
     return header_.cluster_count;
   }
@@ -90,6 +110,8 @@ class IvfRabitqEntity {
                                    IndexStorage::MemoryBlock &block) const;
 
   uint32_t key_to_id(uint64_t key) const;
+
+  uint32_t get_cluster_id(uint32_t id) const;
 
   const uint32_t *get_key_order_mapping() const {
     if (!mapping_) {
@@ -131,6 +153,13 @@ class IvfRabitqEntity {
                           size_t padded_dim, size_t ex_bits,
                           const IndexFilter *filter,
                           IndexDocumentHeap *heap) const;
+
+  template <bool HasFilter>
+  int search_cluster_group_by_impl(
+      uint32_t cluster_id, const IvfRabitqQueryState &query_state,
+      size_t padded_dim, size_t ex_bits, const IndexFilter *filter,
+      const IndexGroupBy &group_by, uint32_t group_topk, float threshold,
+      IvfRabitqContext::GroupTopkHeaps *heaps) const;
 
   const IvfRabitqClusterMeta *find_cluster_meta(size_t id) const;
 

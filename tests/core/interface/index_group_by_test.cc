@@ -181,6 +181,29 @@ BaseIndexQueryParam::Pointer HnswRabitqQuery(bool fetch_vector = false,
   }
   return builder.build();
 }
+
+BaseIndexParam::Pointer DenseIvfRabitqParam(uint32_t dimension) {
+  return IVFRabitqIndexParamBuilder()
+      .WithMetricType(MetricType::kInnerProduct)
+      .WithDataType(DataType::DT_FP32)
+      .WithDimension(dimension)
+      .WithIsSparse(false)
+      .WithNlist(4)
+      .WithTotalBits(7)
+      .Build();
+}
+
+BaseIndexQueryParam::Pointer IvfRabitqQuery(bool is_linear = false,
+                                            bool with_bf_pks = false) {
+  auto query = std::make_shared<IVFRabitqQueryParam>();
+  query->topk = kSearchTopk;
+  query->nprobe = 4;
+  query->is_linear = is_linear;
+  if (with_bf_pks) {
+    query->bf_pks = AllPks();
+  }
+  return query;
+}
 #endif
 
 #if DISKANN_SUPPORTED
@@ -458,6 +481,14 @@ TEST_F(GroupByInterfaceTest, Dense) {
        HnswRabitqQuery(/*fetch_vector=*/false, /*is_linear=*/false,
                        /*with_bf_pks=*/true),
        /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_graph", DenseIvfRabitqParam(64), IvfRabitqQuery(),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_linear", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
+      {"dense_ivf_rabitq_bf_pks", DenseIvfRabitqParam(64),
+       IvfRabitqQuery(/*is_linear=*/false, /*with_bf_pks=*/true),
+       /*is_sparse=*/false, /*dimension=*/64},
   // Note: fetch_vector is not supported for RabitQ because the entity
   // stores quantized binary data (not original float vectors), and
   // RabitqReformer does not implement revert().
@@ -493,8 +524,6 @@ TEST_F(GroupByInterfaceTest, Sparse) {
 }
 
 TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
-  EXPECT_TRUE(Index::is_group_by_unsupported_index(IndexType::kIVFRabitq));
-
   std::vector<GroupByCase> cases{
       {"unsupported_vamana",
        VamanaIndexParamBuilder()
