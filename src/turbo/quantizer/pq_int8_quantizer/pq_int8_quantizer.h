@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include "quantizer/quantizer.h"
@@ -48,7 +49,7 @@ class PqInt8Quantizer : public Quantizer {
   }
 
   DataType input_data_type() const override {
-    return DataType::kFp32;
+    return input_data_type_;
   }
 
   QuantizeType type() const override {
@@ -114,9 +115,12 @@ class PqInt8Quantizer : public Quantizer {
   int deserialize(const void *data, size_t len) override;
 
  private:
-  //! Train a single sub-quantizer (KMeans, k=256) on the sub-vectors
-  //! extracted from holder.  sub_idx selects which sub-quantizer to train.
-  void train_subquantizer(const float *data, size_t num, size_t stride,
+  //! Train a single sub-quantizer (KMeans, k=256) on the sub-vectors.
+  //! Templated on the data type T (float or ailego::Float16) so that
+  //! NumericalKmeans<T> operates natively in the input precision.
+  //! sub_idx selects which sub-quantizer to train.
+  template <typename T>
+  void train_subquantizer(const T *data, size_t num, size_t stride,
                           size_t sub_idx);
 
   //! Compute the centroid-to-centroid distance table for SDC.
@@ -126,10 +130,20 @@ class PqInt8Quantizer : public Quantizer {
   //! Called after train() and deserialize() when centroids are available.
   void build_centroid_ptrs_cache();
 
+  //! Byte size of one element in the original data type.
+  uint32_t element_size() const {
+    return (input_data_type_ == DataType::kFp16)
+               ? static_cast<uint32_t>(sizeof(ailego::Float16))
+               : static_cast<uint32_t>(sizeof(float));
+  }
+
   static constexpr uint32_t kNumCentroids = 256;
   static constexpr uint32_t kMaxKmeansIters = 25;
   static constexpr size_t kMaxTrainVectors = 65536;
   static constexpr uint32_t kExtraMetaSizeCosine = sizeof(float);
+
+  //! Actual input data type (kFp32 or kFp16).
+  DataType input_data_type_{DataType::kFp32};
 
   //! Thread count for KMeans training (0 = hardware_concurrency).
   //! Read from params in init(), aligned with multi_chunk_cluster.
@@ -151,8 +165,10 @@ class PqInt8Quantizer : public Quantizer {
   uint32_t num_chunk_{0};
   uint32_t sub_dim_{0};
 
-  //! Centroids: [num_chunk * kNumCentroids * sub_dim]
-  std::vector<float> centroids_;
+  //! Centroids stored as raw bytes in the original data type:
+  //! [num_chunk * kNumCentroids * sub_dim * sizeof(T)]
+  //! T = float for kFp32, ailego::Float16 for kFp16.
+  std::vector<uint8_t> centroids_;
 
   //! Global centroid (per-dimension mean) for zero-mean centering.
   //! Size: original_dim_ floats.  Only populated when use_zero_mean_ = true.
@@ -173,17 +189,15 @@ class PqInt8Quantizer : public Quantizer {
   PqSdcKernelFunc sdc_fn_{nullptr};
   PqBatchAdcFunc batch_adc_fn_{nullptr};
 
-  //! Metric-aware fp32 batch distance function for search-side LUT
-  //! computation and SDC dist_table.  Obtained from
-  //! get_batch_distance_func() with the configured metric.
-  BatchDistanceFunc fp32_batch_fn_{};
+  //! Metric-aware batch distance function for search-side LUT
+  //! computation and SDC dist_table.  Data type matches input_data_type_.
+  //! Obtained from get_batch_distance_func() with the configured metric.
+  BatchDistanceFunc batch_fn_{};
 
-  //! L2-only fp32 batch distance function for encoding (quantize_data)
-  //! and KMeans training (train_subquantizer).  PQ encoding must always
-  //! minimize L2 quantization error regardless of the search metric.
-  //! This separation ensures encoding and search LUT use the correct
-  //! distance semantics independently.
-  BatchDistanceFunc fp32_l2_batch_fn_{};
+  //! L2-only batch distance function for encoding (quantize_data).
+  //! Data type matches input_data_type_.  PQ encoding always minimizes L2
+  //! quantization error regardless of the search metric.
+  BatchDistanceFunc l2_batch_fn_{};
 };
 
 }  // namespace turbo

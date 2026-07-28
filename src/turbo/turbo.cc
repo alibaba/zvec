@@ -25,6 +25,9 @@
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
 #include "neon/rotate/fht/fht.h"
+#include "scalar/fp16/cosine.h"
+#include "scalar/fp16/inner_product.h"
+#include "scalar/fp16/squared_euclidean.h"
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
@@ -53,6 +56,21 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
       }
       if (metric_type == MetricType::kInnerProduct) {
         return scalar::inner_product_fp32_distance;
+      }
+    }
+    return nullptr;
+  }
+  if (data_type == DataType::kFp16) {
+    if (quantize_type == QuantizeType::kDefault ||
+        quantize_type == QuantizeType::kFp16) {
+      if (metric_type == MetricType::kSquaredEuclidean) {
+        return scalar::squared_euclidean_fp16_distance;
+      }
+      if (metric_type == MetricType::kInnerProduct) {
+        return scalar::inner_product_fp16_distance;
+      }
+      if (metric_type == MetricType::kCosine) {
+        return scalar::cosine_fp16_distance;
       }
     }
     return nullptr;
@@ -96,6 +114,21 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
       }
       if (metric_type == MetricType::kInnerProduct) {
         return scalar::inner_product_fp32_batch_distance;
+      }
+    }
+    return nullptr;
+  }
+  if (data_type == DataType::kFp16) {
+    if (quantize_type == QuantizeType::kDefault ||
+        quantize_type == QuantizeType::kFp16) {
+      if (metric_type == MetricType::kSquaredEuclidean) {
+        return scalar::squared_euclidean_fp16_batch_distance;
+      }
+      if (metric_type == MetricType::kInnerProduct) {
+        return scalar::inner_product_fp16_batch_distance;
+      }
+      if (metric_type == MetricType::kCosine) {
+        return scalar::cosine_fp16_batch_distance;
       }
     }
     return nullptr;
