@@ -585,8 +585,10 @@ float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
   size_t end1 = m_sparse_count / 8 * 8;
   size_t end2 = q_sparse_count / 8 * 8;
 
-  uint16_t fixed_buffer_1[MAX_SPARSE_BUFFER_LENGTH];
-  uint16_t fixed_buffer_2[MAX_SPARSE_BUFFER_LENGTH];
+  // static thread_local: keeps the 256KB working set off the stack, which
+  // overflows musl's small default thread stack (128KB vs glibc's 8MB).
+  static thread_local uint16_t fixed_buffer_1[MAX_SPARSE_BUFFER_LENGTH];
+  static thread_local uint16_t fixed_buffer_2[MAX_SPARSE_BUFFER_LENGTH];
 
   Float16 *val_start_1 = reinterpret_cast<Float16 *>(fixed_buffer_1);
   Float16 *val_start_2 = reinterpret_cast<Float16 *>(fixed_buffer_2);

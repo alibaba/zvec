@@ -184,8 +184,10 @@ float MipsInnerProductSparseInSegmentSSE(uint32_t m_sparse_count,
   // std::vector<float> mem1;
   // std::vector<float> mem2;
 
-  float fixed_buffer_1[MAX_SPARSE_BUFFER_LENGTH];
-  float fixed_buffer_2[MAX_SPARSE_BUFFER_LENGTH];
+  // static thread_local: keeps the 512KB working set off the stack, which
+  // overflows musl's small default thread stack (128KB vs glibc's 8MB).
+  static thread_local float fixed_buffer_1[MAX_SPARSE_BUFFER_LENGTH];
+  static thread_local float fixed_buffer_2[MAX_SPARSE_BUFFER_LENGTH];
 
   float *val_start_1 = fixed_buffer_1;
   float *val_start_2 = fixed_buffer_2;
