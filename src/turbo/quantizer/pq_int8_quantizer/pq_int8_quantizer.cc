@@ -22,6 +22,7 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 
@@ -37,7 +38,7 @@ struct PqInt8SerPayload {
   uint32_t sub_dim;
   uint32_t num_centroids;  // always 256 for int8
   uint8_t use_zero_mean;
-  uint8_t input_data_type;  // turbo DataType: kFp32=3, kFp16=2
+  uint8_t input_type_code;  // 0 = FP32 (default), 1 = FP16
   uint8_t reserved[2];
 };
 
@@ -55,6 +56,14 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 
   uint32_t d = meta.dimension();
   original_dim_ = d;
+
+  if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
+    input_data_type_ = DataType::kFp16;
+  } else if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
+    input_data_type_ = DataType::kFp32;
+  } else {
+    return kErrUnsupported;
+  }
 
   // Read num_chunk from params (required).
   uint32_t nsq = 0;
@@ -111,10 +120,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
     use_zero_mean_ = false;
   }
 
-  // Set output meta: the quantized representation is INT8 codes with
-  // num_chunk_ bytes (+ extra_meta_size_ for Cosine norm storage).
   meta_.set_meta(IndexMeta::DataType::DT_INT8, num_chunk_);
-  meta_.set_extra_meta_size(extra_meta_size_);
+
   return 0;
 }
 
@@ -176,6 +183,17 @@ void PqInt8Quantizer::train_subquantizer(const T *data, size_t num,
   }
 }
 
+const float *PqInt8Quantizer::as_fp32(const void *input,
+                                      std::vector<float> &scratch) const {
+  if (input_data_type_ != DataType::kFp16) {
+    return reinterpret_cast<const float *>(input);
+  }
+  scratch.resize(original_dim_);
+  ailego::FloatHelper::ToFP32(reinterpret_cast<const uint16_t *>(input),
+                              original_dim_, scratch.data());
+  return scratch.data();
+}
+
 int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
   return train(holder, static_cast<int>(thread_count_));
 }
@@ -188,13 +206,22 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   size_t num = holder->count();
   const uint32_t elem_sz = element_size();
 
-  // Collect all data into a contiguous byte buffer (original data type).
+  // Collect all data into a contiguous FP32 buffer, widening FP16 holders
+  // on the fly so the rest of the training pipeline stays FP32-only.
+  bool fp16_input = (holder->data_type() == IndexMeta::DataType::DT_FP16);
   auto iter = holder->create_iterator();
   std::vector<uint8_t> all_data(num * original_dim_ * elem_sz);
   size_t row = 0;
   for (; iter->is_valid(); iter->next(), ++row) {
-    std::memcpy(all_data.data() + row * original_dim_ * elem_sz, iter->data(),
-                original_dim_ * elem_sz);
+    if (fp16_input) {
+      ailego::FloatHelper::ToFP32(
+          reinterpret_cast<const uint16_t *>(iter->data()), original_dim_,
+          all_data.data() + row * original_dim_);
+    } else {
+      const float *src = reinterpret_cast<const float *>(iter->data());
+      std::memcpy(all_data.data() + row * original_dim_, src,
+                  original_dim_ * sizeof(float));
+    }
   }
 
   // Subsample if the dataset exceeds the training limit (aligned with
@@ -345,6 +372,9 @@ void PqInt8Quantizer::compute_dist_table() {
 }
 
 void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
+  // Widen FP16 input to FP32 before encoding (no-op for FP32 input).
+  std::vector<float> fp32_scratch;
+  const float *vec = as_fp32(input, fp32_scratch);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
   const uint32_t elem_sz = element_size();
 
@@ -426,6 +456,9 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
 }
 
 void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
+  // Widen FP16 input to FP32 before building the LUT (no-op for FP32 input).
+  std::vector<float> fp32_scratch;
+  const float *query = as_fp32(input, fp32_scratch);
   float *lut = reinterpret_cast<float *>(output);
   const uint32_t elem_sz = element_size();
 
@@ -550,19 +583,9 @@ float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
 
 int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
                               std::string *out, IndexQueryMeta *ometa) const {
-  // Validate unit_size against the input data type.
-  size_t expected_unit = 0;
-  switch (input_data_type_) {
-    case DataType::kFp16:
-      expected_unit = sizeof(ailego::Float16);
-      break;
-    case DataType::kFp32:
-      expected_unit = sizeof(float);
-      break;
-    default:
-      break;
-  }
-  if (qmeta.unit_size() != expected_unit) {
+  size_t unit_size =
+      (input_data_type_ == DataType::kFp16) ? sizeof(uint16_t) : sizeof(float);
+  if (qmeta.unit_size() != unit_size) {
     return kErrUnsupported;
   }
 
@@ -571,7 +594,8 @@ int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   quantize_query(query, &(*out)[0]);
 
   *ometa = qmeta;
-  ometa->set_meta(IndexMeta::DataType::DT_FP32, original_dim_,
+  // The quantized query is the ADC LUT: float[num_chunk * 256].
+  ometa->set_meta(IndexMeta::DataType::DT_FP32, num_chunk_ * kNumCentroids,
                   static_cast<uint32_t>(type_), 0);
   return 0;
 }
@@ -580,6 +604,8 @@ int PqInt8Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
                                 std::string *out) const {
   (void)qmeta;
   const uint8_t *code = reinterpret_cast<const uint8_t *>(in);
+  // Output is always FP32: the reconstruction concatenates FP32 codebook
+  // centroids, regardless of the accepted input data type.
   size_t byte_size = static_cast<size_t>(original_dim_) * sizeof(float);
   out->resize(byte_size);
   float *result = reinterpret_cast<float *>(&(*out)[0]);
@@ -691,7 +717,9 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   payload.sub_dim = sub_dim_;
   payload.num_centroids = kNumCentroids;
   payload.use_zero_mean = use_zero_mean_ ? 1 : 0;
-  payload.input_data_type = static_cast<uint8_t>(input_data_type_);
+  // Persist the accepted input data type so a deserialized quantizer keeps
+  // accepting raw FP16 queries (0 = FP32 default, backward compatible).
+  payload.input_type_code = (input_data_type_ == DataType::kFp16) ? 1 : 0;
 
   size_t centroids_bytes = centroids_.size();
   size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
@@ -738,15 +766,18 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   num_chunk_ = payload.num_chunk;
   sub_dim_ = payload.sub_dim;
 
-  // Restore input data type.  Old payloads have input_data_type == 0
-  // (was reserved), which maps to kInt4 -- treat as kFp32 for compat.
-  if (payload.input_data_type == 0 ||
-      payload.input_data_type == static_cast<uint8_t>(DataType::kInt4) ||
-      payload.input_data_type == static_cast<uint8_t>(DataType::kInt8)) {
-    input_data_type_ = DataType::kFp32;
-  } else {
-    input_data_type_ = static_cast<DataType>(payload.input_data_type);
-  }
+  // Restore the accepted input data type (old blobs carry 0 -> FP32).
+  input_data_type_ =
+      (payload.input_type_code == 1) ? DataType::kFp16 : DataType::kFp32;
+
+  // Restore the metric from the header: the Cosine branch below and the
+  // encode/query paths depend on meta_.metric_name(), which would otherwise
+  // keep the IndexMeta default ("SquaredEuclidean").
+  meta_.set_metric(metric_to_name(static_cast<MetricType>(hdr.metric)), 0,
+                   ailego::Params());
+
+  // meta_ describes the quantized PQ code layout (see init()).
+  meta_.set_meta(IndexMeta::DataType::DT_INT8, num_chunk_);
 
   // Restore centroids (raw bytes in original data type).
   size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *

@@ -63,15 +63,24 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
   if (data_type == DataType::kFp16) {
     if (quantize_type == QuantizeType::kDefault ||
         quantize_type == QuantizeType::kFp16) {
+<<<<<<< HEAD
+=======
+      if (metric_type == MetricType::kCosine) {
+        return scalar::cosine_fp16_distance;
+      }
+>>>>>>> 605bf7c9 (fix: add pq quantizer)
       if (metric_type == MetricType::kSquaredEuclidean) {
         return scalar::squared_euclidean_fp16_distance;
       }
       if (metric_type == MetricType::kInnerProduct) {
         return scalar::inner_product_fp16_distance;
       }
+<<<<<<< HEAD
       if (metric_type == MetricType::kCosine) {
         return scalar::cosine_fp16_distance;
       }
+=======
+>>>>>>> 605bf7c9 (fix: add pq quantizer)
     }
     return nullptr;
   }
@@ -121,15 +130,24 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
   if (data_type == DataType::kFp16) {
     if (quantize_type == QuantizeType::kDefault ||
         quantize_type == QuantizeType::kFp16) {
+<<<<<<< HEAD
+=======
+      if (metric_type == MetricType::kCosine) {
+        return scalar::cosine_fp16_batch_distance;
+      }
+>>>>>>> 605bf7c9 (fix: add pq quantizer)
       if (metric_type == MetricType::kSquaredEuclidean) {
         return scalar::squared_euclidean_fp16_batch_distance;
       }
       if (metric_type == MetricType::kInnerProduct) {
         return scalar::inner_product_fp16_batch_distance;
       }
+<<<<<<< HEAD
       if (metric_type == MetricType::kCosine) {
         return scalar::cosine_fp16_batch_distance;
       }
+=======
+>>>>>>> 605bf7c9 (fix: add pq quantizer)
     }
     return nullptr;
   }

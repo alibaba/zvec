@@ -19,6 +19,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/turbo/turbo.h>
 #include "distance/scalar/pq_quantizer_int8/pq_distance.h"
 #include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
@@ -96,6 +97,52 @@ TEST(PqInt8Quantizer, InitInvalidParams) {
   Params params;
   params.set("num_chunk", static_cast<uint32_t>(0));
   EXPECT_NE(0, q2->init(meta, params));
+}
+
+TEST(PqInt8Quantizer, MetaDescribesPqCodeLayout) {
+  const size_t DIM = 16;
+  const size_t NSQ = 4;
+
+  // L2: code = uint8[num_chunk], no extra meta.
+  auto q = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q);
+  EXPECT_EQ(IndexMeta::DataType::DT_INT8, q->meta().data_type());
+  EXPECT_EQ(NSQ, q->meta().dimension());
+  EXPECT_EQ(0u, q->meta().extra_meta_size());
+  EXPECT_EQ(q->quantized_datapoint_vector_length(), q->meta().element_size());
+  // The raw input side stays on dim() / input_data_type().
+  EXPECT_EQ(static_cast<int>(DIM), q->dim());
+
+  // Cosine: code = uint8[num_chunk] + fp32 norm as extra meta.
+  // (Built inline: make_pq_cosine_quantizer is defined further below.)
+  auto qc = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(qc);
+  IndexMeta cos_meta;
+  cos_meta.set_meta(IndexMeta::DataType::DT_FP32, DIM);
+  cos_meta.set_metric("Cosine", 0, Params());
+  Params cos_params;
+  cos_params.set("num_chunk", static_cast<uint32_t>(NSQ));
+  ASSERT_EQ(0, qc->init(cos_meta, cos_params));
+  EXPECT_EQ(IndexMeta::DataType::DT_INT8, qc->meta().data_type());
+  EXPECT_EQ(NSQ, qc->meta().dimension());
+  EXPECT_EQ(sizeof(float), qc->meta().extra_meta_size());
+  EXPECT_EQ(NSQ + sizeof(float), qc->meta().element_size());
+  EXPECT_EQ(qc->quantized_datapoint_vector_length(), qc->meta().element_size());
+
+  // Deserialize must restore the metric (Cosine) and the PQ layout meta.
+  auto holder = make_random_holder(500, DIM);
+  ASSERT_EQ(0, qc->train(holder));
+  std::string blob;
+  ASSERT_EQ(0, qc->serialize(&blob));
+  auto restored = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(restored);
+  ASSERT_EQ(0, restored->deserialize(blob));
+  EXPECT_EQ("Cosine", restored->meta().metric_name());
+  EXPECT_EQ(IndexMeta::DataType::DT_INT8, restored->meta().data_type());
+  EXPECT_EQ(NSQ, restored->meta().dimension());
+  EXPECT_EQ(NSQ + sizeof(float), restored->meta().element_size());
+  EXPECT_EQ(restored->quantized_datapoint_vector_length(),
+            restored->meta().element_size());
 }
 
 TEST(PqInt8Quantizer, TrainAndEncode) {
@@ -1078,20 +1125,18 @@ TEST(PqInt8Quantizer, ZeroMeanAccuracyComparable) {
 }
 
 // ---------------------------------------------------------------------------
-// FP16 Input Tests
+// FP16 input support
 // ---------------------------------------------------------------------------
 
-#include <zvec/ailego/utility/float_helper.h>
-
-// Helper to create a PqInt8Quantizer with FP16 input type.
+// Helper to create a PqInt8Quantizer accepting FP16 input.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_fp16_quantizer(
-    size_t dim, size_t num_chunk, const char *metric = "SquaredEuclidean") {
+    size_t dim, size_t num_chunk) {
   auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
   if (!q) return nullptr;
 
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP16, dim);
-  meta.set_metric(metric, 0, Params());
+  meta.set_metric("SquaredEuclidean", 0, Params());
 
   Params params;
   params.set("num_chunk", static_cast<uint32_t>(num_chunk));
@@ -1099,78 +1144,50 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pq_fp16_quantizer(
   return q;
 }
 
-// Helper: build a holder with random fp16 vectors (via Float16).
+// Helper: build an FP16 holder plus the fp16-rounded fp32 copies of the
+// same random vectors (so FP32/FP16 paths see bit-identical values).
 static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>
-make_random_fp16_holder(size_t count, size_t dim, uint32_t seed = 42) {
+make_random_fp16_holder(size_t count, size_t dim,
+                        std::vector<std::vector<float>> *rounded,
+                        uint32_t seed = 42) {
   auto holder =
       std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dim);
   std::mt19937 gen(seed);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  rounded->resize(count);
   for (size_t i = 0; i < count; ++i) {
-    NumericalVector<ailego::Float16> vec(dim);
-    for (size_t j = 0; j < dim; ++j) vec[j] = ailego::Float16(dist(gen));
+    NumericalVector<Float16> vec(dim);
+    (*rounded)[i].resize(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = dist(gen);
+      (*rounded)[i][j] = static_cast<float>(vec[j]);
+    }
     holder->emplace(i + 1, vec);
   }
   return holder;
 }
 
-// Convert a Float16 vector to fp32 for reference distance computation.
-static std::vector<float> fp16_to_fp32(const ailego::Float16 *v, size_t dim) {
-  std::vector<float> out(dim);
-  for (size_t i = 0; i < dim; ++i) out[i] = static_cast<float>(v[i]);
-  return out;
-}
-
-// Verify FP16 init succeeds and output meta is correct.
-TEST(PqInt8Fp16, InitAndOutputMeta) {
+TEST(PqInt8Quantizer, Fp16InputDataType) {
   auto q = make_pq_fp16_quantizer(16, 4);
   ASSERT_TRUE(q);
+  EXPECT_EQ(zvec::turbo::DataType::kFp16, q->input_data_type());
 
-  // input_data_type should be kFp16.
-  EXPECT_EQ(q->input_data_type(), DataType::kFp16);
+  auto q32 = make_pq_quantizer(16, 4);
+  ASSERT_TRUE(q32);
+  EXPECT_EQ(zvec::turbo::DataType::kFp32, q32->input_data_type());
 
-  // Output meta: data_type = DT_INT8, dimension = num_chunk.
-  const auto &meta = q->meta();
-  EXPECT_EQ(meta.data_type(), IndexMeta::DataType::DT_INT8);
-  EXPECT_EQ(meta.dimension(), 4u);
-  // L2 metric: no extra meta.
-  EXPECT_EQ(meta.extra_meta_size(), 0u);
-  EXPECT_EQ(meta.element_size(), 4u);
-
-  // Cosine FP16: extra meta for norm storage.
-  auto q_cos = make_pq_fp16_quantizer(32, 8, "Cosine");
-  ASSERT_TRUE(q_cos);
-  EXPECT_EQ(q_cos->meta().extra_meta_size(), sizeof(float));
-  EXPECT_EQ(q_cos->meta().element_size(), 8u + sizeof(float));
+  // Unsupported input data types must be rejected at init.
+  auto q_bad = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(q_bad);
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_INT8, 16);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  Params params;
+  params.set("num_chunk", static_cast<uint32_t>(4));
+  EXPECT_NE(0, q_bad->init(meta, params));
 }
 
-// Verify basic train + encode with FP16 input.
-TEST(PqInt8Fp16, TrainAndEncode) {
-  const size_t DIM = 16;
-  const size_t NSQ = 4;
-  const size_t COUNT = 1000;
-
-  auto quantizer = make_pq_fp16_quantizer(DIM, NSQ);
-  ASSERT_TRUE(quantizer);
-  EXPECT_TRUE(quantizer->require_train());
-
-  auto holder = make_random_fp16_holder(COUNT, DIM);
-  ASSERT_EQ(0, quantizer->train(holder));
-
-  auto iter = holder->create_iterator();
-  size_t checked = 0;
-  std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
-  for (; iter->is_valid() && checked < 10; iter->next(), ++checked) {
-    quantizer->quantize_data(iter->data(), code.data());
-    for (size_t m = 0; m < NSQ; ++m) {
-      EXPECT_LE(code[m], 255u);
-    }
-  }
-  EXPECT_EQ(10u, checked);
-}
-
-// Verify ADC distances with FP16 input are reasonable.
-TEST(PqInt8Fp16, AdcDistance) {
+TEST(PqInt8Quantizer, Fp16TrainAndAdcDistance) {
   const size_t DIM = 32;
   const size_t NSQ = 8;
   const size_t COUNT = 2000;
@@ -1178,48 +1195,101 @@ TEST(PqInt8Fp16, AdcDistance) {
   auto quantizer = make_pq_fp16_quantizer(DIM, NSQ);
   ASSERT_TRUE(quantizer);
 
-  auto holder = make_random_fp16_holder(COUNT, DIM);
+  std::vector<std::vector<float>> rounded;
+  auto holder = make_random_fp16_holder(COUNT, DIM, &rounded);
   ASSERT_EQ(0, quantizer->train(holder));
 
-  // Collect raw vectors (as fp32 for reference) and PQ codes.
-  std::vector<std::vector<float>> raw_vecs(COUNT);
-  std::vector<std::vector<uint8_t>> pq_codes(COUNT);
+  // Encode all vectors from raw FP16 input.
   size_t code_len = quantizer->quantized_datapoint_vector_length();
   size_t lut_len = quantizer->quantized_query_vector_length();
-
+  std::vector<std::vector<uint8_t>> pq_codes(COUNT);
   auto iter = holder->create_iterator();
   for (size_t i = 0; iter->is_valid(); iter->next(), ++i) {
-    const ailego::Float16 *v =
-        reinterpret_cast<const ailego::Float16 *>(iter->data());
-    raw_vecs[i] = fp16_to_fp32(v, DIM);
     pq_codes[i].resize(code_len);
     quantizer->quantize_data(iter->data(), pq_codes[i].data());
   }
 
-  // Build LUT for query = first vector (must use FP16 data from holder).
-  auto iter2 = holder->create_iterator();
-  iter2->is_valid();
+  // Build LUT from the raw FP16 query and check ADC approximates the true
+  // distance on the fp16-rounded values.
+  std::vector<uint16_t> fp16_query(DIM);
+  FloatHelper::ToFP16(rounded[0].data(), DIM, fp16_query.data());
   std::vector<float> lut(lut_len / sizeof(float));
-  quantizer->quantize_query(iter2->data(), lut.data());
+  quantizer->quantize_query(fp16_query.data(), lut.data());
 
   float max_rel_error = 0.0f;
   for (size_t i = 1; i < COUNT; ++i) {
     float adc_dist =
         quantizer->calc_distance_dp_query(pq_codes[i].data(), lut.data());
     float true_dist =
-        reference_sq_euclidean(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
+        reference_sq_euclidean(rounded[i].data(), rounded[0].data(), DIM);
     if (true_dist > 1e-6f) {
       float rel = std::fabs(adc_dist - true_dist) / true_dist;
       max_rel_error = std::max(max_rel_error, rel);
     }
     EXPECT_GE(adc_dist, 0.0f) << "i=" << i;
   }
-  // FP16 has lower precision than FP32, so allow slightly larger error.
-  EXPECT_LT(max_rel_error, 1.5f) << "max_rel_error=" << max_rel_error;
+  EXPECT_LT(max_rel_error, 1.0f) << "max_rel_error=" << max_rel_error;
 }
 
-// Verify dequantize from FP16 PQ produces reasonable fp32 reconstruction.
-TEST(PqInt8Fp16, Dequantize) {
+TEST(PqInt8Quantizer, Fp16InputMatchesFp32) {
+  const size_t DIM = 32;
+  const size_t NSQ = 8;
+  const size_t COUNT = 1500;
+
+  // Train an FP32 quantizer on fp16-rounded data so both paths share the
+  // exact same input values and (via blob patching below) the same codebook.
+  auto q_fp32 = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q_fp32);
+
+  std::vector<std::vector<float>> rounded;
+  auto fp16_holder = make_random_fp16_holder(COUNT, DIM, &rounded, 1234);
+  auto fp32_holder =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(DIM);
+  for (size_t i = 0; i < COUNT; ++i) {
+    NumericalVector<float> vec(DIM);
+    for (size_t j = 0; j < DIM; ++j) vec[j] = rounded[i][j];
+    fp32_holder->emplace(i + 1, vec);
+  }
+  ASSERT_EQ(0, q_fp32->train(fp32_holder));
+
+  // Serialize and flip the persisted input type to FP16: payload layout is
+  // original_dim/num_chunk/sub_dim/num_centroids (16 bytes), use_zero_mean
+  // (1 byte), then input_type_code (1 byte).
+  std::string blob;
+  ASSERT_EQ(0, q_fp32->serialize(&blob));
+  size_t input_type_off = sizeof(zvec::turbo::QuantizerSerHeader) + 17;
+  ASSERT_EQ(0, blob[input_type_off]);
+  blob[input_type_off] = 1;
+
+  auto q_fp16 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(q_fp16);
+  ASSERT_EQ(0, q_fp16->deserialize(blob));
+  EXPECT_EQ(zvec::turbo::DataType::kFp16, q_fp16->input_data_type());
+
+  // With an identical codebook, FP16 input must produce the exact same PQ
+  // codes and LUT as FP32 input of the same (fp16-rounded) values.
+  size_t code_len = q_fp32->quantized_datapoint_vector_length();
+  size_t lut_floats = q_fp32->quantized_query_vector_length() / sizeof(float);
+  std::vector<uint16_t> fp16_vec(DIM);
+  std::vector<uint8_t> code32(code_len), code16(code_len);
+  std::vector<float> lut32(lut_floats), lut16(lut_floats);
+  for (size_t i = 0; i < 50; ++i) {
+    FloatHelper::ToFP16(rounded[i].data(), DIM, fp16_vec.data());
+
+    q_fp32->quantize_data(rounded[i].data(), code32.data());
+    q_fp16->quantize_data(fp16_vec.data(), code16.data());
+    EXPECT_EQ(0, std::memcmp(code32.data(), code16.data(), code_len))
+        << "i=" << i;
+
+    q_fp32->quantize_query(rounded[i].data(), lut32.data());
+    q_fp16->quantize_query(fp16_vec.data(), lut16.data());
+    for (size_t j = 0; j < lut_floats; ++j) {
+      EXPECT_EQ(lut32[j], lut16[j]) << "i=" << i << " j=" << j;
+    }
+  }
+}
+
+TEST(PqInt8Quantizer, Fp16SerializeDeserialize) {
   const size_t DIM = 16;
   const size_t NSQ = 4;
   const size_t COUNT = 1000;
@@ -1227,223 +1297,39 @@ TEST(PqInt8Fp16, Dequantize) {
   auto quantizer = make_pq_fp16_quantizer(DIM, NSQ);
   ASSERT_TRUE(quantizer);
 
-  auto holder = make_random_fp16_holder(COUNT, DIM);
+  std::vector<std::vector<float>> rounded;
+  auto holder = make_random_fp16_holder(COUNT, DIM, &rounded);
   ASSERT_EQ(0, quantizer->train(holder));
 
-  auto iter = holder->create_iterator();
-  iter->is_valid();
-
-  const ailego::Float16 *orig_fp16 =
-      reinterpret_cast<const ailego::Float16 *>(iter->data());
-  std::vector<float> orig_fp32 = fp16_to_fp32(orig_fp16, DIM);
-
-  std::vector<uint8_t> code(quantizer->quantized_datapoint_vector_length());
-  quantizer->quantize_data(iter->data(), code.data());
-
-  // Dequantize always outputs fp32.
-  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, DIM);
-  std::string decoded;
-  ASSERT_EQ(0, quantizer->dequantize(code.data(), qmeta, &decoded));
-  ASSERT_EQ(decoded.size(), DIM * sizeof(float));
-
-  const float *recon = reinterpret_cast<const float *>(decoded.data());
-  float recon_err = reference_sq_euclidean(orig_fp32.data(), recon, DIM);
-  float orig_norm =
-      reference_sq_euclidean(orig_fp32.data(), orig_fp32.data(), DIM);
-  if (orig_norm > 1e-6f) {
-    EXPECT_LT(recon_err / orig_norm, 1.0f)
-        << "recon_err=" << recon_err << " orig_norm=" << orig_norm;
-  }
-}
-
-// Verify serialize/deserialize round-trip preserves FP16 PQ codes.
-TEST(PqInt8Fp16, SerializeDeserialize) {
-  const size_t DIM = 16;
-  const size_t NSQ = 4;
-  const size_t COUNT = 500;
-
-  auto quantizer = make_pq_fp16_quantizer(DIM, NSQ);
-  ASSERT_TRUE(quantizer);
-
-  auto holder = make_random_fp16_holder(COUNT, DIM);
-  ASSERT_EQ(0, quantizer->train(holder));
-
-  // Serialize.
   std::string blob;
   ASSERT_EQ(0, quantizer->serialize(&blob));
-  EXPECT_GT(blob.size(), sizeof(zvec::turbo::QuantizerSerHeader));
 
-  // Deserialize into a fresh quantizer.
-  auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
-  ASSERT_TRUE(q2);
-  ASSERT_EQ(0, q2->deserialize(blob));
+  auto restored = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_TRUE(restored);
+  ASSERT_EQ(0, restored->deserialize(blob));
 
-  // Verify deserialized quantizer reports FP16 input type.
-  EXPECT_EQ(q2->input_data_type(), DataType::kFp16);
+  // The accepted input data type must survive the round-trip.
+  EXPECT_EQ(zvec::turbo::DataType::kFp16, restored->input_data_type());
 
-  // Encode the same vector with both and compare codes.
-  auto iter = holder->create_iterator();
-  iter->is_valid();
-  std::vector<uint8_t> code1(quantizer->quantized_datapoint_vector_length());
-  std::vector<uint8_t> code2(q2->quantized_datapoint_vector_length());
-  quantizer->quantize_data(iter->data(), code1.data());
-  q2->quantize_data(iter->data(), code2.data());
-
-  for (size_t m = 0; m < NSQ; ++m) {
-    EXPECT_EQ(code1[m], code2[m]) << "m=" << m;
-  }
-
-  // ADC distances should also match (same codebook → same LUT → same ADC).
-  size_t lut_len = quantizer->quantized_query_vector_length();
-  std::vector<float> lut1(lut_len / sizeof(float));
-  std::vector<float> lut2(lut_len / sizeof(float));
-  quantizer->quantize_query(iter->data(), lut1.data());
-  q2->quantize_query(iter->data(), lut2.data());
-
-  float adc1 = quantizer->calc_distance_dp_query(code1.data(), lut1.data());
-  float adc2 = q2->calc_distance_dp_query(code2.data(), lut2.data());
-  EXPECT_NEAR(adc1, adc2, 1e-6f);
-}
-
-// Helper: build a holder with random fp16 vectors with varying norms (Cosine).
-static std::shared_ptr<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>
-make_cosine_fp16_holder(size_t count, size_t dim, uint32_t seed = 42) {
-  auto holder =
-      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dim);
-  std::mt19937 gen(seed);
-  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-  std::uniform_real_distribution<float> scale(0.5f, 5.0f);
-  for (size_t i = 0; i < count; ++i) {
-    NumericalVector<ailego::Float16> vec(dim);
-    float s = scale(gen);
-    for (size_t j = 0; j < dim; ++j) vec[j] = ailego::Float16(dist(gen) * s);
-    holder->emplace(i + 1, vec);
-  }
-  return holder;
-}
-
-// Verify FP16 with Cosine metric: train, encode, ADC distance range.
-TEST(PqInt8Fp16, CosineAdcDistance) {
-  const size_t DIM = 32;
-  const size_t NSQ = 8;
-  const size_t COUNT = 2000;
-
-  auto quantizer = make_pq_fp16_quantizer(DIM, NSQ, "Cosine");
-  ASSERT_TRUE(quantizer);
-
-  // Cosine FP16: extra meta = sizeof(float).
-  EXPECT_EQ(quantizer->quantized_datapoint_vector_length(),
-            NSQ + sizeof(float));
-
-  auto holder = make_cosine_fp16_holder(COUNT, DIM);
-  ASSERT_EQ(0, quantizer->train(holder));
-
-  // Collect raw vectors (as fp32) and PQ codes.
-  std::vector<std::vector<float>> raw_vecs(COUNT);
-  std::vector<std::vector<uint8_t>> pq_codes(COUNT);
+  // Codes and LUT produced from raw FP16 input must match.
   size_t code_len = quantizer->quantized_datapoint_vector_length();
-  size_t lut_len = quantizer->quantized_query_vector_length();
+  size_t lut_floats =
+      quantizer->quantized_query_vector_length() / sizeof(float);
+  std::vector<uint16_t> fp16_vec(DIM);
+  std::vector<uint8_t> code_a(code_len), code_b(code_len);
+  std::vector<float> lut_a(lut_floats), lut_b(lut_floats);
+  for (size_t i = 0; i < 20; ++i) {
+    FloatHelper::ToFP16(rounded[i].data(), DIM, fp16_vec.data());
 
-  auto iter = holder->create_iterator();
-  for (size_t i = 0; iter->is_valid(); iter->next(), ++i) {
-    const ailego::Float16 *v =
-        reinterpret_cast<const ailego::Float16 *>(iter->data());
-    raw_vecs[i] = fp16_to_fp32(v, DIM);
-    pq_codes[i].resize(code_len);
-    quantizer->quantize_data(iter->data(), pq_codes[i].data());
-  }
+    quantizer->quantize_data(fp16_vec.data(), code_a.data());
+    restored->quantize_data(fp16_vec.data(), code_b.data());
+    EXPECT_EQ(0, std::memcmp(code_a.data(), code_b.data(), code_len))
+        << "i=" << i;
 
-  // Build LUT for query = first vector (must use FP16 data from holder).
-  auto iter2 = holder->create_iterator();
-  iter2->is_valid();
-  std::vector<float> lut(lut_len / sizeof(float));
-  quantizer->quantize_query(iter2->data(), lut.data());
-
-  for (size_t i = 1; i < COUNT; ++i) {
-    float adc_dist =
-        quantizer->calc_distance_dp_query(pq_codes[i].data(), lut.data());
-    float true_dist =
-        reference_cosine_distance(raw_vecs[i].data(), raw_vecs[0].data(), DIM);
-
-    // Cosine ADC distance should be in [0, 2] (with some tolerance).
-    EXPECT_GE(adc_dist, -0.05f) << "i=" << i;
-    EXPECT_LE(adc_dist, 2.05f) << "i=" << i;
-
-    // PQ approximation: should be roughly correlated.
-    EXPECT_LT(std::fabs(adc_dist - true_dist), 0.5f)
-        << "i=" << i << " adc=" << adc_dist << " true=" << true_dist;
-  }
-}
-
-// Verify FP16 PQ produces ADC distance rankings consistent with FP32 PQ.
-// Both quantizers train independent codebooks, so raw codes differ, but the
-// relative distance ordering should be largely preserved on the same data.
-TEST(PqInt8Fp16, ConsistencyWithFp32) {
-  const size_t DIM = 32;
-  const size_t NSQ = 8;
-  const size_t COUNT = 2000;
-
-  // Train FP32 quantizer.
-  auto q_fp32 = make_pq_quantizer(DIM, NSQ);
-  ASSERT_TRUE(q_fp32);
-  auto holder_fp32 = make_random_holder(COUNT, DIM, 123);
-  ASSERT_EQ(0, q_fp32->train(holder_fp32));
-
-  // Build FP16 quantizer with same seed data.
-  auto q_fp16 = make_pq_fp16_quantizer(DIM, NSQ);
-  ASSERT_TRUE(q_fp16);
-  auto holder_fp16 = make_random_fp16_holder(COUNT, DIM, 123);
-  ASSERT_EQ(0, q_fp16->train(holder_fp16));
-
-  // Build LUTs for the first vector in each holder.
-  size_t lut_len = q_fp32->quantized_query_vector_length();
-  std::vector<float> lut_fp32(lut_len / sizeof(float));
-  std::vector<float> lut_fp16(lut_len / sizeof(float));
-
-  auto iter32 = holder_fp32->create_iterator();
-  auto iter16 = holder_fp16->create_iterator();
-  iter32->is_valid();
-  iter16->is_valid();
-  q_fp32->quantize_query(iter32->data(), lut_fp32.data());
-  q_fp16->quantize_query(iter16->data(), lut_fp16.data());
-
-  // Encode next 200 vectors and collect ADC distances.
-  size_t code_len = q_fp32->quantized_datapoint_vector_length();
-  std::vector<uint8_t> code32(code_len), code16(code_len);
-
-  std::vector<float> adc32_vec, adc16_vec;
-  iter32->next();
-  iter16->next();
-  for (size_t i = 1; i < 201 && iter32->is_valid() && iter16->is_valid();
-       iter32->next(), iter16->next(), ++i) {
-    q_fp32->quantize_data(iter32->data(), code32.data());
-    q_fp16->quantize_data(iter16->data(), code16.data());
-    adc32_vec.push_back(
-        q_fp32->calc_distance_dp_query(code32.data(), lut_fp32.data()));
-    adc16_vec.push_back(
-        q_fp16->calc_distance_dp_query(code16.data(), lut_fp16.data()));
-  }
-
-  // Compute Spearman rank correlation between FP32 and FP16 ADC distances.
-  size_t n = adc32_vec.size();
-  ASSERT_GT(n, 10u);
-
-  // Count concordant vs discordant pairs (Kendall tau).
-  size_t concordant = 0, discordant = 0;
-  for (size_t i = 0; i < n; ++i) {
-    for (size_t j = i + 1; j < n; ++j) {
-      bool same_order =
-          (adc32_vec[i] < adc32_vec[j]) == (adc16_vec[i] < adc16_vec[j]);
-      if (same_order)
-        ++concordant;
-      else
-        ++discordant;
+    quantizer->quantize_query(fp16_vec.data(), lut_a.data());
+    restored->quantize_query(fp16_vec.data(), lut_b.data());
+    for (size_t j = 0; j < lut_floats; ++j) {
+      EXPECT_EQ(lut_a[j], lut_b[j]) << "i=" << i << " j=" << j;
     }
   }
-  double tau = static_cast<double>(concordant - discordant) /
-               static_cast<double>(concordant + discordant);
-
-  // Kendall tau > 0.5 means strong rank correlation (generous threshold;
-  // FP16 precision loss and different codebooks cause some reordering).
-  EXPECT_GT(tau, 0.5) << "Kendall tau=" << tau;
 }

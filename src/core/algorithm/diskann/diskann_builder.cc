@@ -31,40 +31,6 @@
 namespace zvec {
 namespace core {
 
-namespace {
-// PqInt8Quantizer only accepts FP32 input.  When the index data type is FP16,
-// convert the holder into an FP32 copy so training/encoding share a single
-// code path.  For FP32 holders the original is returned unchanged.
-IndexHolder::Pointer convert_holder_to_fp32(const IndexHolder::Pointer &src,
-                                            uint32_t dim) {
-  if (!src || src->data_type() == IndexMeta::DataType::DT_FP32) {
-    return src;
-  }
-  auto dst =
-      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(dim);
-  auto iter = src->create_iterator();
-  if (!iter) {
-    return nullptr;
-  }
-  for (; iter->is_valid(); iter->next()) {
-    ailego::NumericalVector<float> v(dim);
-    if (src->data_type() == IndexMeta::DataType::DT_FP16) {
-      const auto *s = static_cast<const ailego::Float16 *>(iter->data());
-      for (uint32_t d = 0; d < dim; ++d) {
-        v[d] = static_cast<float>(s[d]);
-      }
-    } else {
-      const auto *s = static_cast<const float *>(iter->data());
-      for (uint32_t d = 0; d < dim; ++d) {
-        v[d] = s[d];
-      }
-    }
-    dst->emplace(iter->key(), v);
-  }
-  return dst;
-}
-}  // namespace
-
 int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin DiskAnnBuilder::init");
 
@@ -394,14 +360,8 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
     return ret;
   }
 
-  uint32_t dim = build_meta_.dimension();
-  auto fp32_holder = convert_holder_to_fp32(holder_, dim);
-  if (!fp32_holder) {
-    LOG_ERROR("Convert holder to fp32 failed");
-    return IndexError_Runtime;
-  }
-
-  ret = quantizer_->train(fp32_holder, static_cast<int>(build_thread_count_));
+  // PqInt8Quantizer accepts FP16 holders directly (widened internally).
+  ret = quantizer_->train(holder_, static_cast<int>(build_thread_count_));
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer train failed, ret=%d", ret);
     return ret;
@@ -434,13 +394,10 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer /*threads*/) {
     return IndexError_NoReady;
   }
 
-  uint32_t dim = build_meta_.dimension();
-  bool is_fp16 = (build_meta_.data_type() == IndexMeta::DataType::DT_FP16);
   size_t num_vecs = holder_->count();
   auto &codes = entity_.block_compressed_data();
   codes.resize(num_vecs * pq_chunk_num_);
 
-  std::vector<float> fp32_buf(dim);
   auto iter = holder_->create_iterator();
   if (!iter) {
     LOG_ERROR("Create iterator for holder failed");
@@ -449,15 +406,8 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer /*threads*/) {
 
   size_t id = 0;
   for (; iter->is_valid() && id < num_vecs; iter->next(), ++id) {
-    const void *vec = iter->data();
-    if (is_fp16) {
-      const auto *s = static_cast<const ailego::Float16 *>(vec);
-      for (uint32_t d = 0; d < dim; ++d) {
-        fp32_buf[d] = static_cast<float>(s[d]);
-      }
-      vec = fp32_buf.data();
-    }
-    quantizer_->quantize_data(vec, codes.data() + id * pq_chunk_num_);
+    // The quantizer widens FP16 input internally — pass raw data directly.
+    quantizer_->quantize_data(iter->data(), codes.data() + id * pq_chunk_num_);
   }
 
   if (id != num_vecs) {

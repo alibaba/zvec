@@ -18,6 +18,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_context.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_meta.h>
 #include "diskann_entity.h"
 
@@ -30,17 +31,18 @@ class DistCalculator {
 
  public:
   //! Constructor
-  DistCalculator(const DiskAnnEntity *entity,
-                 const IndexMetric::Pointer &measure, uint32_t dim)
+  DistCalculator(const DiskAnnEntity *entity, const IndexMeta &meta,
+                 const IndexMetric::Pointer &measure)
       : entity_(entity),
-        distance_(measure->distance()),
         query_(nullptr),
-        dim_(dim),
-        compare_cnt_(0) {}
+        dim_(meta.dimension()),
+        compare_cnt_(0) {
+    bind_distance(meta, measure);
+  }
 
-  void update(const IndexMetric::Pointer &measure, uint32_t dim) {
-    distance_ = measure->distance();
-    dim_ = dim;
+  void update(const IndexMeta &meta, const IndexMetric::Pointer &measure) {
+    bind_distance(meta, measure);
+    dim_ = meta.dimension();
   }
 
   inline void update_distance(const IndexMetric::MatrixDistance &distance) {
@@ -123,22 +125,12 @@ class DistCalculator {
 
   //! Build the ADC LUT for the rotated query and bind it into a DistanceImpl
   //! functor (owns the quantized query bytes and the dispatched ADC kernels).
-  //! PqInt8Quantizer::quantize_query expects an FP32 query; DiskAnn may store
-  //! FP16 vectors, so convert the rotated query into FP32 when needed.
-  void quantize_pq_query(const void *query_rotated, IndexMeta::DataType dtype) {
-    const void *pq_query = query_rotated;
-    if (dtype == IndexMeta::DataType::DT_FP16) {
-      uint32_t pq_dim = static_cast<uint32_t>(pq_quantizer_->dim());
-      pq_query_scratch_.resize(pq_dim);
-      const auto *s = static_cast<const ailego::Float16 *>(query_rotated);
-      for (uint32_t d = 0; d < pq_dim; ++d) {
-        pq_query_scratch_[d] = static_cast<float>(s[d]);
-      }
-      pq_query = pq_query_scratch_.data();
-    }
+  //! PqInt8Quantizer accepts the index's stored data type directly (FP16
+  //! input is widened internally), so the rotated query is passed as-is.
+  void quantize_pq_query(const void *query_rotated) {
     pq_lut_scratch_.resize(pq_quantizer_->quantized_query_vector_length() /
                            sizeof(float));
-    pq_quantizer_->quantize_query(pq_query, pq_lut_scratch_.data());
+    pq_quantizer_->quantize_query(query_rotated, pq_lut_scratch_.data());
     pq_dist_impl_ =
         pq_quantizer_->distance(pq_lut_scratch_.data(), IndexQueryMeta());
   }
@@ -179,8 +171,56 @@ class DistCalculator {
   DistCalculator(const DistCalculator &) = delete;
   DistCalculator &operator=(const DistCalculator &) = delete;
 
+  //! Resolve the distance kernel through a turbo quantizer.  DiskAnn raw
+  //! vectors carry no quantizer of their own, so pick the plain quantizer
+  //! matching the stored data type (Fp32Quantizer / Fp16Quantizer).  Fall
+  //! back to the measure's distance when the quantizer or its kernel is
+  //! unavailable (e.g. metrics not covered by turbo).
+  void bind_distance(const IndexMeta &meta,
+                     const IndexMetric::Pointer &measure) {
+    data_quantizer_.reset();
+
+    const char *name = nullptr;
+    if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
+      name = "Fp32Quantizer";
+    } else if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
+      name = "Fp16Quantizer";
+    }
+    if (name != nullptr) {
+      turbo::Quantizer::Pointer quantizer = IndexFactory::CreateQuantizer(name);
+      if (quantizer) {
+        //! DiskAnn pads the Cosine meta dimension with the trailing norm
+        //! bytes, while the quantizer expects the raw data dim and appends
+        //! the extra meta itself.
+        IndexMeta quant_meta = meta;
+        if (meta.metric_name() == "Cosine") {
+          quant_meta.set_dimension(meta.dimension() -
+                                   sizeof(float) / meta.unit_size());
+        }
+        if (quantizer->init(quant_meta, quant_meta.metric_params()) == 0) {
+          turbo::DistanceImpl impl = quantizer->distance("", IndexQueryMeta());
+          if (impl.valid()) {
+            data_quantizer_ = std::move(quantizer);
+            //! The kernel computes over the quantizer's raw data dim,
+            //! ignoring the (possibly padded) dim passed by the callers.
+            distance_ = [func = impl.func(), quant_dim = static_cast<size_t>(
+                                                 data_quantizer_->dim())](
+                            const void *m, const void *q, size_t /*dim*/,
+                            float *out) { func(m, q, quant_dim, out); };
+            return;
+          }
+        }
+      }
+    }
+    distance_ = measure->distance();
+  }
+
  private:
   const DiskAnnEntity *entity_;
+
+  //! Raw-vector quantizer that owns the bound distance kernel (see
+  //! bind_distance).
+  turbo::Quantizer::Pointer data_quantizer_{};
 
   IndexMetric::MatrixDistance distance_;
   const void *query_;
@@ -199,7 +239,6 @@ class DistCalculator {
 
   //! Reused scratch buffers for pq_dist() / quantize_pq_query().
   std::vector<const void *> pq_dp_list_;
-  std::vector<float> pq_query_scratch_;
   std::vector<float> pq_lut_scratch_;
 };
 

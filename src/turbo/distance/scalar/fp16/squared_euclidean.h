@@ -19,10 +19,11 @@
 namespace zvec::turbo::scalar {
 
 // Compute squared euclidean distance between a single FP16 vector pair.
+// Elements are converted to FP32 before accumulation.
 void squared_euclidean_fp16_distance(const void *a, const void *b, size_t dim,
                                      float *distance);
 
-// Batch version of squared euclidean FP16.
+// Batch version of squared_euclidean_fp16_distance.
 void squared_euclidean_fp16_batch_distance(const void *const *vectors,
                                            const void *query, size_t n,
                                            size_t dim, float *distances);

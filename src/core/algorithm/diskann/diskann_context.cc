@@ -23,7 +23,7 @@ namespace core {
 DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
                                const IndexMetric::Pointer &measure,
                                const DiskAnnEntity::Pointer &entity)
-    : dc_(entity.get(), measure, meta.dimension()), entity_{entity} {}
+    : dc_(entity.get(), meta, measure), entity_{entity} {}
 
 int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
                          uint32_t pq_chunk_num, uint32_t element_size) {
@@ -123,7 +123,7 @@ int DiskAnnContext::update_context(ContextType type, const IndexMeta &meta,
   }
 
   entity_ = entity;
-  dc_.update(measure, meta.dimension());
+  dc_.update(meta, measure);
   magic_ = magic_num;
 
   return 0;

@@ -34,6 +34,10 @@ using namespace zvec::core;
 //! via quantize_query().  Distance between a PQ code and a
 //! query uses ADC (LUT look-up); distance between two PQ codes uses
 //! SDC (centroid-to-centroid distance table).
+//!
+//! Accepts FP32 or FP16 input vectors (resolved from the index meta's data
+//! type at init).  The codebook always lives in FP32 space; FP16 inputs are
+//! widened to FP32 on entry (train / encode / query).
 class PqInt8Quantizer : public Quantizer {
  public:
   PqInt8Quantizer() {
@@ -44,6 +48,10 @@ class PqInt8Quantizer : public Quantizer {
 
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
+  //! Describes the quantized PQ code layout: DT_INT8 x num_chunk (one
+  //! sub-code byte per chunk), plus the trailing FP32 norm as extra meta
+  //! for Cosine.  element_size() == quantized_datapoint_vector_length().
+  //! The raw input side is described by input_data_type() and dim().
   const IndexMeta &meta() const override {
     return meta_;
   }
@@ -115,12 +123,13 @@ class PqInt8Quantizer : public Quantizer {
   int deserialize(const void *data, size_t len) override;
 
  private:
-  //! Train a single sub-quantizer (KMeans, k=256) on the sub-vectors.
-  //! Templated on the data type T (float or ailego::Float16) so that
-  //! NumericalKmeans<T> operates natively in the input precision.
-  //! sub_idx selects which sub-quantizer to train.
-  template <typename T>
-  void train_subquantizer(const T *data, size_t num, size_t stride,
+  //! Return the input vector as an FP32 array: FP32 inputs pass through,
+  //! FP16 inputs are widened into the caller-provided scratch buffer.
+  const float *as_fp32(const void *input, std::vector<float> &scratch) const;
+
+  //! Train a single sub-quantizer (KMeans, k=256) on the sub-vectors
+  //! extracted from holder.  sub_idx selects which sub-quantizer to train.
+  void train_subquantizer(const float *data, size_t num, size_t stride,
                           size_t sub_idx);
 
   //! L2-normalize a batch of vectors (train-time use).
@@ -182,10 +191,12 @@ class PqInt8Quantizer : public Quantizer {
   uint32_t num_chunk_{0};
   uint32_t sub_dim_{0};
 
-  //! Centroids stored as raw bytes in the original data type:
-  //! [num_chunk * kNumCentroids * sub_dim * sizeof(T)]
-  //! T = float for kFp32, ailego::Float16 for kFp16.
-  std::vector<uint8_t> centroids_;
+  //! Input data type accepted by quantize_data / quantize_query / train,
+  //! resolved from the index meta at init() and restored on deserialize().
+  DataType input_data_type_{DataType::kFp32};
+
+  //! Centroids: [num_chunk * kNumCentroids * sub_dim]
+  std::vector<float> centroids_;
 
   //! Global centroid (per-dimension mean) for zero-mean centering.
   //! Size: original_dim_ floats.  Only populated when use_zero_mean_ = true.

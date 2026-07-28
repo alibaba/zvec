@@ -177,6 +177,23 @@ class Quantizer {
     return MetricType::kUnknown;
   }
 
+  //! Map a MetricType back to its metric name (inverse of metric_from_name).
+  //! Returns an empty string for unknown types.
+  static const char *metric_to_name(MetricType type) {
+    switch (type) {
+      case MetricType::kSquaredEuclidean:
+        return "SquaredEuclidean";
+      case MetricType::kCosine:
+        return "Cosine";
+      case MetricType::kInnerProduct:
+        return "InnerProduct";
+      case MetricType::kMipsSquaredEuclidean:
+        return "MipsSquaredEuclidean";
+      default:
+        return "";
+    }
+  }
+
   QuantizeType type_{QuantizeType::kDefault};
   uint32_t extra_meta_size_{0};
 };

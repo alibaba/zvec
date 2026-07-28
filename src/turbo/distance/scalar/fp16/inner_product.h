@@ -19,6 +19,7 @@
 namespace zvec::turbo::scalar {
 
 // Compute negated inner product between a single FP16 vector pair.
+// Elements are converted to FP32 before accumulation.
 void inner_product_fp16_distance(const void *a, const void *b, size_t dim,
                                  float *distance);
 

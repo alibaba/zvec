@@ -1,0 +1,282 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <cmath>
+#include <random>
+#include <vector>
+#include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
+#include <zvec/ailego/container/params.h>
+#include <zvec/ailego/utility/float_helper.h>
+#include <zvec/turbo/turbo.h>
+#include "zvec/core/framework/index_factory.h"
+
+using namespace zvec;
+using namespace zvec::core;
+using namespace zvec::ailego;
+
+// FP16 round-trips lose precision; distances are compared against references
+// computed on the FP16-rounded values, so only the kernel arithmetic error
+// remains and a modest tolerance suffices.
+static constexpr float kFp16Tol = 1e-3f;
+
+// Helper: reference cosine distance between two raw fp32 vectors.
+static float reference_cosine(const float *a, const float *b, size_t dim) {
+  float dot = 0.0f, na = 0.0f, nb = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  float denom = std::sqrt(na) * std::sqrt(nb);
+  return (denom < 1e-12f) ? 1.0f : 1.0f - dot / denom;
+}
+
+// Helper: reference squared euclidean distance between two fp32 vectors.
+static float reference_l2(const float *a, const float *b, size_t dim) {
+  float sum = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    float diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return sum;
+}
+
+// Helper: convert a fp32 vector to fp16 and back, keeping both forms.
+static void make_fp16(const std::vector<float> &src,
+                      std::vector<uint16_t> *fp16,
+                      std::vector<float> *rounded) {
+  fp16->resize(src.size());
+  rounded->resize(src.size());
+  FloatHelper::ToFP16(src.data(), src.size(), fp16->data());
+  FloatHelper::ToFP32(fp16->data(), fp16->size(), rounded->data());
+}
+
+TEST(Fp16Quantizer, General) {
+  std::mt19937 gen(15583);
+  std::uniform_real_distribution<float> dist(0.0, 1.0);
+
+  const size_t COUNT = 1000;
+  const size_t DIMENSION = 12;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP16, DIMENSION);
+  meta.set_metric("Cosine", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_TRUE(quantizer);
+  zvec::ailego::Params params;
+  ASSERT_EQ(0u, quantizer->init(meta, params));
+  EXPECT_EQ(turbo::DataType::kFp16, quantizer->input_data_type());
+  EXPECT_EQ(turbo::QuantizeType::kFp16, quantizer->type());
+  EXPECT_FALSE(quantizer->require_train());
+  EXPECT_EQ(DIMENSION * sizeof(uint16_t) + sizeof(float),
+            quantizer->quantized_datapoint_vector_length());
+
+  std::string quant_buffer;
+  std::string dequant_buffer;
+  for (size_t n = 0; n < COUNT; ++n) {
+    std::vector<float> raw(DIMENSION);
+    for (size_t j = 0; j < DIMENSION; ++j) {
+      raw[j] = dist(gen);
+    }
+    std::vector<uint16_t> fp16;
+    std::vector<float> rounded;
+    make_fp16(raw, &fp16, &rounded);
+
+    IndexQueryMeta qmeta;
+    quant_buffer.clear();
+    EXPECT_EQ(0, quantizer->quantize(
+                     fp16.data(),
+                     IndexQueryMeta(IndexMeta::DataType::DT_FP16, DIMENSION),
+                     &quant_buffer, &qmeta));
+    EXPECT_EQ(IndexMeta::DataType::DT_FP16, qmeta.data_type());
+    EXPECT_EQ(DIMENSION, qmeta.dimension());
+
+    dequant_buffer.clear();
+    EXPECT_EQ(
+        0, quantizer->dequantize(quant_buffer.data(), qmeta, &dequant_buffer));
+
+    const uint16_t *dequantized =
+        reinterpret_cast<const uint16_t *>(dequant_buffer.data());
+    for (size_t i = 0; i < DIMENSION; ++i) {
+      EXPECT_NEAR(rounded[i], FloatHelper::ToFP32(dequantized[i]), 2e-3)
+          << "n=" << n << " i=" << i;
+    }
+  }
+}
+
+TEST(Fp16Quantizer, CosineScore) {
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(0.0, 1.0);
+
+  const size_t DIMENSION = 12;
+  const size_t COUNT = 100;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP16, DIMENSION);
+  meta.set_metric("Cosine", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_TRUE(quantizer);
+  zvec::ailego::Params params;
+  ASSERT_EQ(0u, quantizer->init(meta, params));
+
+  // Generate raw vectors and quantize their fp16 form.
+  std::vector<std::vector<float>> rounded_vecs(COUNT);
+  std::vector<std::vector<uint16_t>> fp16_vecs(COUNT);
+  std::vector<std::string> quant_vecs(COUNT);
+  for (size_t i = 0; i < COUNT; ++i) {
+    std::vector<float> raw(DIMENSION);
+    for (size_t j = 0; j < DIMENSION; ++j) {
+      raw[j] = dist(gen);
+    }
+    make_fp16(raw, &fp16_vecs[i], &rounded_vecs[i]);
+    IndexQueryMeta ometa;
+    EXPECT_EQ(0, quantizer->quantize(
+                     fp16_vecs[i].data(),
+                     IndexQueryMeta(IndexMeta::DataType::DT_FP16, DIMENSION),
+                     &quant_vecs[i], &ometa));
+  }
+
+  // --- calc_distance_dp_query (single) ---
+  for (size_t i = 1; i < COUNT; ++i) {
+    float d = quantizer->calc_distance_dp_query(quant_vecs[i].data(),
+                                                quant_vecs[0].data());
+    float expected = reference_cosine(rounded_vecs[i].data(),
+                                      rounded_vecs[0].data(), DIMENSION);
+    EXPECT_NEAR(d, expected, kFp16Tol) << "i=" << i;
+  }
+
+  // --- calc_distance_dp_query_batch ---
+  {
+    std::vector<const void *> dp_list(COUNT - 1);
+    for (size_t i = 1; i < COUNT; ++i) {
+      dp_list[i - 1] = quant_vecs[i].data();
+    }
+    std::vector<float> results(COUNT - 1);
+    quantizer->calc_distance_dp_query_batch(
+        dp_list.data(), static_cast<int>(dp_list.size()), quant_vecs[0].data(),
+        results.data());
+
+    for (size_t i = 0; i < dp_list.size(); ++i) {
+      float expected = reference_cosine(rounded_vecs[i + 1].data(),
+                                        rounded_vecs[0].data(), DIMENSION);
+      EXPECT_NEAR(results[i], expected, kFp16Tol) << "i=" << i;
+    }
+  }
+
+  // --- distance() + DistanceImpl (single + batch) ---
+  {
+    IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, DIMENSION);
+    auto dist_impl = quantizer->distance(quant_vecs[0].data(), qmeta);
+    ASSERT_TRUE(dist_impl.valid());
+
+    for (size_t i = 1; i < COUNT; ++i) {
+      float d = dist_impl(quant_vecs[i].data());
+      float expected = reference_cosine(rounded_vecs[0].data(),
+                                        rounded_vecs[i].data(), DIMENSION);
+      EXPECT_NEAR(d, expected, kFp16Tol) << "i=" << i;
+    }
+
+    // Batch via DistanceImpl.
+    ASSERT_TRUE(dist_impl.batch_valid());
+    std::vector<const void *> dp_list(COUNT - 1);
+    for (size_t i = 1; i < COUNT; ++i) {
+      dp_list[i - 1] = quant_vecs[i].data();
+    }
+    std::vector<float> batch_results(COUNT - 1);
+    dist_impl.batch(dp_list.data(), dp_list.size(), batch_results.data());
+    for (size_t i = 0; i < dp_list.size(); ++i) {
+      float expected = reference_cosine(rounded_vecs[0].data(),
+                                        rounded_vecs[i + 1].data(), DIMENSION);
+      EXPECT_NEAR(batch_results[i], expected, kFp16Tol) << "i=" << i;
+    }
+  }
+
+  // --- calc_distance_dp_dp (pairwise) ---
+  for (size_t i = 1; i < 10; ++i) {
+    float d = quantizer->calc_distance_dp_dp(quant_vecs[i].data(),
+                                             quant_vecs[0].data());
+    float expected = reference_cosine(rounded_vecs[i].data(),
+                                      rounded_vecs[0].data(), DIMENSION);
+    EXPECT_NEAR(d, expected, kFp16Tol) << "i=" << i;
+  }
+
+  // --- calc_distance_dp_query_unquantized ---
+  for (size_t i = 1; i < 10; ++i) {
+    float d = quantizer->calc_distance_dp_query_unquantized(
+        quant_vecs[i].data(), fp16_vecs[0].data());
+    float expected = reference_cosine(rounded_vecs[i].data(),
+                                      rounded_vecs[0].data(), DIMENSION);
+    EXPECT_NEAR(d, expected, kFp16Tol) << "i=" << i;
+  }
+}
+
+TEST(Fp16Quantizer, SquaredEuclideanScore) {
+  std::mt19937 gen(7);
+  std::uniform_real_distribution<float> dist(0.0, 1.0);
+
+  const size_t DIMENSION = 16;
+  const size_t COUNT = 100;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP16, DIMENSION);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+
+  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_TRUE(quantizer);
+  zvec::ailego::Params params;
+  ASSERT_EQ(0u, quantizer->init(meta, params));
+
+  // L2 has no extra meta: quantized layout equals the raw fp16 layout.
+  EXPECT_EQ(DIMENSION * sizeof(uint16_t),
+            quantizer->quantized_datapoint_vector_length());
+
+  std::vector<std::vector<float>> rounded_vecs(COUNT);
+  std::vector<std::vector<uint16_t>> fp16_vecs(COUNT);
+  for (size_t i = 0; i < COUNT; ++i) {
+    std::vector<float> raw(DIMENSION);
+    for (size_t j = 0; j < DIMENSION; ++j) {
+      raw[j] = dist(gen);
+    }
+    make_fp16(raw, &fp16_vecs[i], &rounded_vecs[i]);
+  }
+
+  for (size_t i = 1; i < COUNT; ++i) {
+    float d = quantizer->calc_distance_dp_query(fp16_vecs[i].data(),
+                                                fp16_vecs[0].data());
+    float expected =
+        reference_l2(rounded_vecs[i].data(), rounded_vecs[0].data(), DIMENSION);
+    EXPECT_NEAR(d, expected, kFp16Tol) << "i=" << i;
+  }
+
+  // InnerProduct via a second quantizer instance.
+  IndexMeta ip_meta;
+  ip_meta.set_meta(IndexMeta::DataType::DT_FP16, DIMENSION);
+  ip_meta.set_metric("InnerProduct", 0, Params());
+  auto ip_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  ASSERT_TRUE(ip_quantizer);
+  ASSERT_EQ(0u, ip_quantizer->init(ip_meta, params));
+
+  for (size_t i = 1; i < COUNT; ++i) {
+    float d = ip_quantizer->calc_distance_dp_query(fp16_vecs[i].data(),
+                                                   fp16_vecs[0].data());
+    float expected = 0.0f;
+    for (size_t j = 0; j < DIMENSION; ++j) {
+      expected -= rounded_vecs[i][j] * rounded_vecs[0][j];
+    }
+    EXPECT_NEAR(d, expected, kFp16Tol) << "i=" << i;
+  }
+}
