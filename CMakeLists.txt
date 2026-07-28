@@ -45,6 +45,26 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT IOS)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
 endif()
 
+# musl's default pthread stack is 128KB (glibc: 8MB). Raise the default
+# thread stack to 8MB via PT_GNU_STACK as defense in depth for C++
+# executables (tests, tools, examples). Note musl honors PT_GNU_STACK only
+# for binaries loaded at startup; dlopen'ed DSOs (e.g. the Python extension)
+# are ignored, so hot paths must not rely on large stack buffers anyway.
+# Detection: musl's ldd prints "musl libc" to stderr.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    execute_process(
+        COMMAND ldd --version
+        OUTPUT_VARIABLE _zvec_ldd_stdout
+        ERROR_VARIABLE _zvec_ldd_stderr
+    )
+    if("${_zvec_ldd_stdout}${_zvec_ldd_stderr}" MATCHES "musl")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
+        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
+        message(STATUS "musl detected: default thread stack raised to 8MB via PT_GNU_STACK")
+    endif()
+endif()
+
 if(NOT DEFINED PROJECT_ROOT_DIR OR NOT PROJECT_ROOT_DIR)
     set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Root directory of the project" FORCE)
 endif()
