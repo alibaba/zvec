@@ -216,8 +216,11 @@ class IoUringRing {
   // AlignedRead is defined in diskann_file_reader.h *after* this header is
   // included, so the method body cannot be inline here.
   //
-  // On success returns 0.  On failure returns -1; the caller should fall
-  // back to pread.
+  // On success returns 0.  On failure returns -1 with the ring quiesced
+  // (no request still references the caller's buffers), so the caller may
+  // fall back to pread.  Returns -2 if in-flight requests could not be
+  // drained; the caller must NOT reuse the destination buffers (no pread
+  // fallback) because the kernel may still write into them.
   int execute(int fd, std::vector<AlignedRead> &read_reqs);
 
  private:

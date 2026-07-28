@@ -300,9 +300,15 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
     if (ret == 0) {
       return 0;
     }
-    // io_uring failed — fall back to pread.
-    LOG_WARN("io_uring execute failed; falling back to pread");
-    return execute_io_pread(fd, read_reqs);
+    if (ret == -1) {
+      // The ring is quiesced — no request can still write into the
+      // destination buffers, so synchronous reads may reuse them.
+      LOG_WARN("io_uring execute failed; falling back to pread");
+      return execute_io_pread(fd, read_reqs);
+    }
+    // ret == -2: in-flight requests could not be drained; pread here would
+    // race with kernel writes into the same buffers.
+    return IndexError_Runtime;
   }
 
   if (ctx->backend == IoBackend::LIBAIO) {
@@ -363,50 +369,120 @@ int IoUringRing::execute(int fd, std::vector<AlignedRead> &read_reqs) {
     __atomic_store_n(sq_tail_, tail + static_cast<unsigned>(n_ops),
                      __ATOMIC_RELEASE);
 
-    // --- Phase 2: Submit and wait for completions ---
+    // --- Phase 2: Submit and reap completions ---
+    //
+    // io_uring_enter() returns the number of SQEs consumed, not the number
+    // of CQEs available.  A partial submission returns before the wait
+    // phase, and a signal can interrupt the wait while preserving a
+    // positive submission count, so IORING_ENTER_GETEVENTS guarantees
+    // min_complete completions only when the call finishes normally.
+    // Completions must therefore be counted against cq_tail instead of
+    // assuming n_ops CQEs are ready.
+    uint64_t submitted = 0;
+    uint64_t completed = 0;
+    bool all_ok = true;
 
-    int ret = static_cast<int>(
-        syscall(__NR_io_uring_enter, ring_fd_, static_cast<unsigned>(n_ops),
-                static_cast<unsigned>(n_ops), IORING_ENTER_GETEVENTS,
-                static_cast<void *>(nullptr), static_cast<size_t>(0)));
-    if (ret < 0) {
+    // Consume every CQE the kernel has published so far and verify it.
+    // Completion order is unspecified, so use cqe->user_data to find the
+    // request instead of assuming submission order.
+    auto reap_available = [&]() {
+      unsigned chead = *cq_head_;  // single consumer — plain load is enough
+      unsigned ctail = __atomic_load_n(cq_tail_, __ATOMIC_ACQUIRE);
+      unsigned cq_mask = *cq_ring_mask_;
+      if (chead == ctail) {
+        return;
+      }
+      while (chead != ctail) {
+        struct io_uring_cqe *cqe = &cqes_[chead & cq_mask];
+        uint64_t req_idx = cqe->user_data;
+
+        if (req_idx >= read_reqs.size()) {
+          LOG_WARN("io_uring completion referenced unknown request: %lu",
+                   (unsigned long)req_idx);
+          all_ok = false;
+        } else if (cqe->res < 0) {
+          LOG_WARN("io_uring read failed: req=%lu, res=%d, offset=%lu",
+                   (unsigned long)req_idx, cqe->res,
+                   (unsigned long)read_reqs[req_idx].offset);
+          all_ok = false;
+        } else if (static_cast<uint64_t>(cqe->res) != read_reqs[req_idx].len) {
+          LOG_WARN("io_uring short read: req=%lu, got=%d, expected=%lu",
+                   (unsigned long)req_idx, cqe->res,
+                   (unsigned long)read_reqs[req_idx].len);
+          all_ok = false;
+        }
+        chead++;
+        completed++;
+      }
+      // Release: CQE reads must complete before the kernel may reuse slots.
+      __atomic_store_n(cq_head_, chead, __ATOMIC_RELEASE);
+    };
+
+    while (completed < n_ops) {
+      reap_available();
+      if (completed >= n_ops) {
+        break;
+      }
+
+      unsigned to_submit = static_cast<unsigned>(n_ops - submitted);
+      int ret = static_cast<int>(syscall(
+          __NR_io_uring_enter, ring_fd_, to_submit, 1u, IORING_ENTER_GETEVENTS,
+          static_cast<void *>(nullptr), static_cast<size_t>(0)));
+      if (ret >= 0) {
+        submitted += static_cast<uint64_t>(ret);
+        continue;
+      }
+      if (errno == EINTR) {
+        // Interrupted during submit or wait; the SQEs already consumed are
+        // tracked in `submitted`, so simply retry.
+        continue;
+      }
+      if ((errno == EAGAIN || errno == EBUSY) && completed < submitted) {
+        // Kernel resources are exhausted, but in-flight requests will free
+        // them as they complete; keep reaping and retrying.
+        continue;
+      }
+
+      // Unrecoverable failure (or EAGAIN with nothing in flight).
       LOG_WARN(
-          "io_uring_enter failed; errno=%d, %s, n_ops=%lu. "
-          "falling back to pread",
-          errno, ::strerror(errno), (unsigned long)n_ops);
+          "io_uring_enter failed; errno=%d, %s, submitted=%lu/%lu, "
+          "completed=%lu. draining before falling back to pread",
+          errno, ::strerror(errno), (unsigned long)submitted,
+          (unsigned long)n_ops, (unsigned long)completed);
+
+      // Un-publish the SQEs the kernel never consumed so a later batch
+      // cannot submit them against stale buffers.
+      __atomic_store_n(sq_tail_, tail + static_cast<unsigned>(submitted),
+                       __ATOMIC_RELEASE);
+
+      // Drain every in-flight request before the caller may pread into the
+      // same destination buffers.
+      while (completed < submitted) {
+        reap_available();
+        if (completed >= submitted) {
+          break;
+        }
+        int wret = static_cast<int>(syscall(
+            __NR_io_uring_enter, ring_fd_, 0u, 1u, IORING_ENTER_GETEVENTS,
+            static_cast<void *>(nullptr), static_cast<size_t>(0)));
+        if (wret < 0 && errno != EINTR && errno != EAGAIN && errno != EBUSY) {
+          // The ring cannot be drained: the kernel may still write into the
+          // caller's buffers, so a pread fallback would race with it.  Tear
+          // the ring down so it is never reused.
+          LOG_ERROR(
+              "io_uring drain failed; errno=%d, %s. disabling io_uring for "
+              "this context; the read cannot fall back to pread safely",
+              errno, ::strerror(errno));
+          teardown();
+          return -2;
+        }
+      }
       return -1;
     }
 
-    // --- Phase 3: Process CQEs ---
-
-    unsigned head = __atomic_load_n(cq_head_, __ATOMIC_ACQUIRE);
-    unsigned cq_mask = *cq_ring_mask_;
-    bool all_ok = true;
-    uint64_t processed = 0;
-
-    for (unsigned i = head; processed < n_ops; i = (i + 1), processed++) {
-      struct io_uring_cqe *cqe = &cqes_[i & cq_mask];
-      uint64_t req_idx = cqe->user_data;
-
-      if (cqe->res < 0) {
-        LOG_WARN("io_uring read failed: req=%lu, res=%d, offset=%lu",
-                 (unsigned long)req_idx, cqe->res,
-                 (unsigned long)read_reqs[req_idx].offset);
-        all_ok = false;
-      } else if (static_cast<uint64_t>(cqe->res) != read_reqs[req_idx].len) {
-        LOG_WARN("io_uring short read: req=%lu, got=%d, expected=%lu",
-                 (unsigned long)req_idx, cqe->res,
-                 (unsigned long)read_reqs[req_idx].len);
-        all_ok = false;
-      }
-    }
-
-    // Advance the CQ head to consume the completions.
-    __sync_synchronize();
-    __atomic_store_n(cq_head_, head + static_cast<unsigned>(n_ops),
-                     __ATOMIC_RELEASE);
-
     if (!all_ok) {
+      // Every request completed (buffers are quiesced), but at least one
+      // read failed or was short — let the caller retry with pread.
       return -1;
     }
   }
