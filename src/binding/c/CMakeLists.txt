@@ -16,8 +16,25 @@ include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 include(GNUInstallDirs)
 
-# Retrieve version from git repository and generate version header
-git_version(ZVEC_VERSION ${CMAKE_CURRENT_SOURCE_DIR})
+# Allow packagers/CI to inject an explicit version when git tags are not
+# visible (shallow clones, tarball builds, fetch-depth:1 checkouts, ...).
+# Same convention as DuckDB's OVERRIDE_GIT_DESCRIBE.
+# Expected format: vX.Y.Z, optionally with a describe suffix (e.g. v0.5.1-3-gabc1234)
+set(OVERRIDE_GIT_DESCRIBE "" CACHE STRING
+    "Explicit version string (vX.Y.Z[-N-g<sha>]) used instead of 'git describe'")
+
+if(OVERRIDE_GIT_DESCRIBE)
+    if(NOT OVERRIDE_GIT_DESCRIBE MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+")
+        message(FATAL_ERROR
+            "Provided OVERRIDE_GIT_DESCRIBE '${OVERRIDE_GIT_DESCRIBE}' does not match "
+            "the expected format 'vX.Y.Z' or 'vX.Y.Z-N-g<sha>'")
+    endif()
+    set(ZVEC_VERSION "${OVERRIDE_GIT_DESCRIBE}")
+    message(STATUS "Using OVERRIDE_GIT_DESCRIBE as version: ${ZVEC_VERSION}")
+else()
+    # Retrieve version from git repository and generate version header
+    git_version(ZVEC_VERSION ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
 
 # Debug: print version variables
 message(STATUS "ZVEC_VERSION: ${ZVEC_VERSION}")
@@ -30,11 +47,22 @@ if(ZVEC_VERSION MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
     set(ZVEC_VERSION_PATCH "${CMAKE_MATCH_3}")
     set(ZVEC_VERSION_STRING "${ZVEC_VERSION}")
 else()
-    # Default version if parsing fails
+    # git describe failed to produce a 'vX.Y.Z' tag (likely a shallow clone
+    # without tags). Fall back to an obviously-dummy version instead of a
+    # plausible-looking one, so consumers never trust a lying ABI identity.
+    message(WARNING
+        "Could not derive a 'vX.Y.Z' version from git describe (got '${ZVEC_VERSION}'), "
+        "likely due to a shallow clone without tags. Continuing with dummy version v0.0.0. "
+        "Fetch tags (git fetch --tags) or pass -DOVERRIDE_GIT_DESCRIBE=vX.Y.Z for a correct version.")
     set(ZVEC_VERSION_MAJOR 0)
-    set(ZVEC_VERSION_MINOR 2)
-    set(ZVEC_VERSION_PATCH 1)
-    set(ZVEC_VERSION_STRING "${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH}")
+    set(ZVEC_VERSION_MINOR 0)
+    set(ZVEC_VERSION_PATCH 0)
+    if(ZVEC_VERSION)
+        # Keep the commit identifier (e.g. 'g<sha>') for traceability
+        set(ZVEC_VERSION_STRING "v0.0.0-${ZVEC_VERSION}")
+    else()
+        set(ZVEC_VERSION_STRING "v0.0.0")
+    endif()
 endif()
 
 message(STATUS "Parsed version: ${ZVEC_VERSION_MAJOR}.${ZVEC_VERSION_MINOR}.${ZVEC_VERSION_PATCH} (${ZVEC_VERSION_STRING})")
