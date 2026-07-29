@@ -60,28 +60,24 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
     return ret;
   }
 
-  // Construct the PQ quantizer from the persisted blob here; the entity only
+  // Construct the quantizer from the persisted blob here; the entity only
   // owns the bytes and the indexer receives the ready-to-use quantizer.
-  std::string pq_blob;
-  ret = entity_.read_pq_quantizer_blob(&pq_blob);
+  // The implementation is resolved from the blob header, so any supported
+  // quantize type (PQ today, others later) plugs in transparently.
+  std::string quantizer_blob;
+  ret = entity_.read_pq_quantizer_blob(&quantizer_blob);
   if (ret != 0) {
-    LOG_ERROR("Read PQ quantizer blob failed, ret=%d", ret);
+    LOG_ERROR("Read quantizer blob failed, ret=%d", ret);
     return ret;
   }
-  auto pq_quantizer = IndexFactory::CreateQuantizer("PqInt8Quantizer");
-  if (!pq_quantizer) {
-    LOG_ERROR("Create PqInt8Quantizer failed");
+  auto quantizer = DiskAnnUtil::create_quantizer_from_blob(quantizer_blob);
+  if (!quantizer) {
     return IndexError_NoExist;
-  }
-  ret = pq_quantizer->deserialize(pq_blob);
-  if (ret != 0) {
-    LOG_ERROR("PqInt8Quantizer deserialize failed, ret=%d", ret);
-    return ret;
   }
 
   diskann_indexer_ = std::make_shared<DiskAnnIndexer>(meta_);
 
-  int res = diskann_indexer_->init(entity_, std::move(pq_quantizer));
+  int res = diskann_indexer_->init(entity_, std::move(quantizer));
   if (res != 0) {
     return res;
   }

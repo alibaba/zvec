@@ -114,35 +114,38 @@ class DistCalculator {
     return dist(vec);
   }
 
-  //! Bind the PQ state used by quantize_pq_query() / pq_dist().  Called by
-  //! the searcher before each search.
-  inline void bind_pq(const turbo::Quantizer *quantizer, const uint8_t *codes,
-                      uint32_t chunk_num) {
-    pq_quantizer_ = quantizer;
-    pq_codes_ = codes;
-    pq_chunk_num_ = chunk_num;
+  //! Bind the quantizer state used by quantize_query() / quantized_dist().
+  //! Called by the searcher before each search.  Works with any
+  //! turbo::Quantizer (PQ, SQ, ...); `codes` is the contiguous quantized
+  //! code buffer and `code_size` is the byte stride of one datapoint code.
+  inline void bind_quantizer(const turbo::Quantizer *quantizer,
+                             const uint8_t *codes, uint32_t code_size) {
+    quantizer_ = quantizer;
+    quant_codes_ = codes;
+    quant_code_size_ = code_size;
   }
 
-  //! Build the ADC LUT for the rotated query and bind it into a DistanceImpl
-  //! functor (owns the quantized query bytes and the dispatched ADC kernels).
-  //! PqInt8Quantizer accepts the index's stored data type directly (FP16
-  //! input is widened internally), so the rotated query is passed as-is.
-  void quantize_pq_query(const void *query_rotated) {
-    pq_lut_scratch_.resize(pq_quantizer_->quantized_query_vector_length() /
-                           sizeof(float));
-    pq_quantizer_->quantize_query(query_rotated, pq_lut_scratch_.data());
-    pq_dist_impl_ =
-        pq_quantizer_->distance(pq_lut_scratch_.data(), IndexQueryMeta());
+  //! Quantize the rotated query (e.g. build the ADC LUT for PQ) and bind it
+  //! into a DistanceImpl functor (owns the quantized query bytes and the
+  //! dispatched kernels).  Quantizers accept the index's stored data type
+  //! directly (FP16 input is widened internally), so the rotated query is
+  //! passed as-is.
+  void quantize_query(const void *query_rotated) {
+    quant_query_scratch_.resize(quantizer_->quantized_query_vector_length());
+    quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
+    quant_dist_impl_ =
+        quantizer_->distance(quant_query_scratch_.data(), IndexQueryMeta());
   }
 
-  //! Batched PQ ADC distances between the quantized query and the codes of
-  //! the given ids, via the DistanceImpl functor bound in quantize_pq_query().
-  void pq_dist(const diskann_id_t *ids, uint32_t n, float *dists) {
-    pq_dp_list_.resize(n);
+  //! Batched approximate distances between the quantized query and the codes
+  //! of the given ids, via the DistanceImpl functor bound in quantize_query().
+  void quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) {
+    quant_dp_list_.resize(n);
     for (uint32_t i = 0; i < n; ++i) {
-      pq_dp_list_[i] = pq_codes_ + static_cast<size_t>(ids[i]) * pq_chunk_num_;
+      quant_dp_list_[i] =
+          quant_codes_ + static_cast<size_t>(ids[i]) * quant_code_size_;
     }
-    pq_dist_impl_.batch(pq_dp_list_.data(), n, dists);
+    quant_dist_impl_.batch(quant_dp_list_.data(), n, dists);
   }
 
   inline void clear() {
@@ -229,17 +232,17 @@ class DistCalculator {
   uint32_t compare_cnt_;  // record distance compute times
   bool error_{false};
 
-  //! PQ state bound by the searcher (see bind_pq).
-  const turbo::Quantizer *pq_quantizer_{nullptr};
-  const uint8_t *pq_codes_{nullptr};
-  uint32_t pq_chunk_num_{0};
+  //! Quantizer state bound by the searcher (see bind_quantizer).
+  const turbo::Quantizer *quantizer_{nullptr};
+  const uint8_t *quant_codes_{nullptr};
+  uint32_t quant_code_size_{0};
 
-  //! Per-query ADC distance functor (see quantize_pq_query).
-  turbo::DistanceImpl pq_dist_impl_{};
+  //! Per-query approximate distance functor (see quantize_query).
+  turbo::DistanceImpl quant_dist_impl_{};
 
-  //! Reused scratch buffers for pq_dist() / quantize_pq_query().
-  std::vector<const void *> pq_dp_list_;
-  std::vector<float> pq_lut_scratch_;
+  //! Reused scratch buffers for quantized_dist() / quantize_query().
+  std::vector<const void *> quant_dp_list_;
+  std::vector<uint8_t> quant_query_scratch_;
 };
 
 }  // namespace core

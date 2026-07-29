@@ -13,7 +13,10 @@
 // limitations under the License.
 #pragma once
 
+#include <cstring>
 #include <iostream>
+#include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_entity.h"
 
@@ -99,6 +102,51 @@ class DiskAnnUtil {
     return sector_buf + (node_per_sector == 0
                              ? 0
                              : (node_id % node_per_sector) * max_nodesize_);
+  }
+
+  //! Resolve the quantizer implementation name from a serialized quantizer
+  //! blob (see turbo::QuantizerSerHeader).  Extend the mapping here when
+  //! DiskAnn supports a new quantize type.
+  static const char *quantizer_name_from_blob(const std::string &blob) {
+    if (blob.size() < sizeof(turbo::QuantizerSerHeader)) {
+      return nullptr;
+    }
+    turbo::QuantizerSerHeader hdr;
+    std::memcpy(&hdr, blob.data(), sizeof(hdr));
+    if (hdr.magic != turbo::kQuantizerMagic) {
+      return nullptr;
+    }
+    switch (static_cast<turbo::QuantizeType>(hdr.quant_type)) {
+      case turbo::QuantizeType::kPQ:
+        return "PqInt8Quantizer";
+      case turbo::QuantizeType::kFp16:
+        return "Fp16Quantizer";
+      case turbo::QuantizeType::kFp32:
+        return "Fp32Quantizer";
+      default:
+        return nullptr;
+    }
+  }
+
+  //! Construct and deserialize the quantizer persisted in `blob`, picking
+  //! the implementation from the blob header instead of a hardcoded type.
+  static turbo::Quantizer::Pointer create_quantizer_from_blob(
+      std::string &blob) {
+    const char *name = quantizer_name_from_blob(blob);
+    if (name == nullptr) {
+      LOG_ERROR("Unsupported or corrupted quantizer blob");
+      return turbo::Quantizer::Pointer();
+    }
+    auto quantizer = IndexFactory::CreateQuantizer(name);
+    if (!quantizer) {
+      LOG_ERROR("Create quantizer %s failed", name);
+      return turbo::Quantizer::Pointer();
+    }
+    if (quantizer->deserialize(blob) != 0) {
+      LOG_ERROR("Quantizer %s deserialize failed", name);
+      return turbo::Quantizer::Pointer();
+    }
+    return quantizer;
   }
 };
 
