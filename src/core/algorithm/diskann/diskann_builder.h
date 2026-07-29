@@ -28,28 +28,27 @@ class DiskAnnBuilder : public IndexBuilder {
   DiskAnnBuilder() = default;
 
   //! Initialize the builder
-  virtual int init(const IndexMeta &meta,
-                   const ailego::Params &params) override;
+  int init(const IndexMeta &meta, const ailego::Params &params) override;
 
   //! Cleanup the builder
-  virtual int cleanup(void) override;
+  int cleanup(void) override;
 
   //! Train the data
-  virtual int train(IndexThreads::Pointer threads,
-                    IndexHolder::Pointer holder) override;
+  int train(IndexThreads::Pointer threads,
+            IndexHolder::Pointer holder) override;
 
-  //! Train the data
-  virtual int train(const IndexTrainer::Pointer &trainer) override;
+  //! Train the data with trainer
+  int train(const IndexTrainer::Pointer &trainer) override;
 
   //! Build the index
-  virtual int build(IndexThreads::Pointer threads,
-                    IndexHolder::Pointer holder) override;
+  int build(IndexThreads::Pointer threads,
+            IndexHolder::Pointer holder) override;
 
   //! Dump index into storage
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const override {
+  const Stats &stats(void) const override {
     return stats_;
   }
 
