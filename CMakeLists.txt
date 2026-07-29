@@ -89,27 +89,26 @@ message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 
-option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
-
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT ANDROID AND NOT IOS)
-  include(CheckCCompilerFlag)
+  include(CheckCXXCompilerFlag)
 
-  check_c_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
-  check_c_compiler_flag("-mavx512f -mavx512bw -mavx512vl" COMPILER_SUPPORTS_AVX512)
+  check_cxx_compiler_flag("-mavx2 -mfma" COMPILER_SUPPORTS_RABITQ_AVX2)
+  check_cxx_compiler_flag(
+      "-mavx512f -mavx512bw -mavx512dq -mfma"
+      COMPILER_SUPPORTS_RABITQ_AVX512)
+  check_cxx_compiler_flag(
+      "-mavx512f -mavx512bw -mavx512dq -mavx512vpopcntdq -mfma"
+      COMPILER_SUPPORTS_RABITQ_AVX512_POPCNT)
 
-  if(COMPILER_SUPPORTS_AVX2 OR COMPILER_SUPPORTS_AVX512)
+  if(COMPILER_SUPPORTS_RABITQ_AVX2 AND
+     COMPILER_SUPPORTS_RABITQ_AVX512 AND
+     COMPILER_SUPPORTS_RABITQ_AVX512_POPCNT)
     set(RABITQ_SUPPORTED ON)
     add_definitions(-DRABITQ_SUPPORTED=1)
-    if(RABITQ_ENABLE_AVX512 AND COMPILER_SUPPORTS_AVX512)
-      add_definitions(-DRABITQ_COMPILED_AVX512=1)
-      set(RABITQ_ARCH_FLAG "${MATH_MARCH_FLAG_AVX512}")
-    else()
-      set(RABITQ_ARCH_FLAG "${MATH_MARCH_FLAG_AVX2}")
-    endif()
   else()
     set(RABITQ_SUPPORTED OFF)
     add_definitions(-DRABITQ_SUPPORTED=0)
-    message(STATUS "RaBitQ support disabled - compiler does not support AVX2 or AVX-512")
+    message(STATUS "RaBitQ support disabled - compiler cannot build all runtime dispatch variants")
   endif()
 elseif(IOS)
   set(RABITQ_SUPPORTED OFF)
@@ -120,7 +119,7 @@ else()
   add_definitions(-DRABITQ_SUPPORTED=0)
   message(STATUS "RaBitQ support disabled - only supported on Linux x86_64")
 endif()
-message(STATUS "RABITQ_ARCH_FLAG: ${RABITQ_ARCH_FLAG}")
+message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 
 # DiskAnn support (Linux x86_64 only; libaio loaded at runtime via dlopen)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386" AND NOT ANDROID AND NOT IOS)
