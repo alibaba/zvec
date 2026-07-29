@@ -13,46 +13,32 @@
 // limitations under the License.
 
 #include "scalar/fp16/squared_euclidean.h"
-<<<<<<< HEAD
-=======
 #include <ailego/utility/math_helper.h>
-    >>>>>>> 605bf7c9(fix
-                     : add pq quantizer)
 #include <zvec/ailego/utility/float_helper.h>
 
-                namespace zvec::turbo::scalar {
+namespace zvec::turbo::scalar {
 
-  void squared_euclidean_fp16_distance(const void *a, const void *b, size_t dim,
-                                       float *distance) {
-<<<<<<< HEAD
-    const ailego::Float16 *m = reinterpret_cast<const ailego::Float16 *>(a);
-    const ailego::Float16 *q = reinterpret_cast<const ailego::Float16 *>(b);
+void squared_euclidean_fp16_distance(const void *a, const void *b, size_t dim,
+                                     float *distance) {
+  const uint16_t *m = reinterpret_cast<const uint16_t *>(a);
+  const uint16_t *q = reinterpret_cast<const uint16_t *>(b);
 
-    float sum = 0.0f;
-    for (size_t i = 0; i < dim; ++i) {
-      float diff = static_cast<float>(m[i]) - static_cast<float>(q[i]);
-      sum += diff * diff;
-=======
-    const uint16_t *m = reinterpret_cast<const uint16_t *>(a);
-    const uint16_t *q = reinterpret_cast<const uint16_t *>(b);
-
-    float sum = 0.0;
-    for (size_t i = 0; i < dim; ++i) {
-      sum += zvec::ailego::MathHelper::SquaredDifference(
-          zvec::ailego::FloatHelper::ToFP32(m[i]),
-          zvec::ailego::FloatHelper::ToFP32(q[i]));
->>>>>>> 605bf7c9 (fix: add pq quantizer)
-    }
-
-    *distance = sum;
+  float sum = 0.0;
+  for (size_t i = 0; i < dim; ++i) {
+    sum += zvec::ailego::MathHelper::SquaredDifference(
+        zvec::ailego::FloatHelper::ToFP32(m[i]),
+        zvec::ailego::FloatHelper::ToFP32(q[i]));
   }
 
-  void squared_euclidean_fp16_batch_distance(const void *const *vectors,
-                                             const void *query, size_t n,
-                                             size_t dim, float *distances) {
-    for (size_t i = 0; i < n; ++i) {
-      squared_euclidean_fp16_distance(vectors[i], query, dim, &distances[i]);
-    }
+  *distance = sum;
+}
+
+void squared_euclidean_fp16_batch_distance(const void *const *vectors,
+                                           const void *query, size_t n,
+                                           size_t dim, float *distances) {
+  for (size_t i = 0; i < n; ++i) {
+    squared_euclidean_fp16_distance(vectors[i], query, dim, &distances[i]);
   }
+}
 
 }  // namespace zvec::turbo::scalar

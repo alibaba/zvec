@@ -57,14 +57,6 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   uint32_t d = meta.dimension();
   original_dim_ = d;
 
-  if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
-    input_data_type_ = DataType::kFp16;
-  } else if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
-    input_data_type_ = DataType::kFp32;
-  } else {
-    return kErrUnsupported;
-  }
-
   // Read num_chunk from params (required).
   uint32_t nsq = 0;
   if (!params.get("num_chunk", &nsq) || nsq == 0) {
@@ -183,17 +175,6 @@ void PqInt8Quantizer::train_subquantizer(const T *data, size_t num,
   }
 }
 
-const float *PqInt8Quantizer::as_fp32(const void *input,
-                                      std::vector<float> &scratch) const {
-  if (input_data_type_ != DataType::kFp16) {
-    return reinterpret_cast<const float *>(input);
-  }
-  scratch.resize(original_dim_);
-  ailego::FloatHelper::ToFP32(reinterpret_cast<const uint16_t *>(input),
-                              original_dim_, scratch.data());
-  return scratch.data();
-}
-
 int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
   return train(holder, static_cast<int>(thread_count_));
 }
@@ -206,22 +187,14 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   size_t num = holder->count();
   const uint32_t elem_sz = element_size();
 
-  // Collect all data into a contiguous FP32 buffer, widening FP16 holders
-  // on the fly so the rest of the training pipeline stays FP32-only.
-  bool fp16_input = (holder->data_type() == IndexMeta::DataType::DT_FP16);
+  // Collect all data into a contiguous byte buffer, kept in the original
+  // input data type; training kernels are dispatched on that type.
   auto iter = holder->create_iterator();
   std::vector<uint8_t> all_data(num * original_dim_ * elem_sz);
+  const size_t vec_bytes = original_dim_ * elem_sz;
   size_t row = 0;
   for (; iter->is_valid(); iter->next(), ++row) {
-    if (fp16_input) {
-      ailego::FloatHelper::ToFP32(
-          reinterpret_cast<const uint16_t *>(iter->data()), original_dim_,
-          all_data.data() + row * original_dim_);
-    } else {
-      const float *src = reinterpret_cast<const float *>(iter->data());
-      std::memcpy(all_data.data() + row * original_dim_, src,
-                  original_dim_ * sizeof(float));
-    }
+    std::memcpy(all_data.data() + row * vec_bytes, iter->data(), vec_bytes);
   }
 
   // Subsample if the dataset exceeds the training limit (aligned with
@@ -235,7 +208,6 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
       size_t j = dist(rng);
       if (i != j) {
         // Swap full vectors (dim-sized chunks in bytes).
-        size_t vec_bytes = original_dim_ * elem_sz;
         for (size_t b = 0; b < vec_bytes; ++b) {
           std::swap(all_data[i * vec_bytes + b], all_data[j * vec_bytes + b]);
         }
@@ -372,9 +344,6 @@ void PqInt8Quantizer::compute_dist_table() {
 }
 
 void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
-  // Widen FP16 input to FP32 before encoding (no-op for FP32 input).
-  std::vector<float> fp32_scratch;
-  const float *vec = as_fp32(input, fp32_scratch);
   uint8_t *code = reinterpret_cast<uint8_t *>(output);
   const uint32_t elem_sz = element_size();
 
@@ -456,9 +425,6 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
 }
 
 void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
-  // Widen FP16 input to FP32 before building the LUT (no-op for FP32 input).
-  std::vector<float> fp32_scratch;
-  const float *query = as_fp32(input, fp32_scratch);
   float *lut = reinterpret_cast<float *>(output);
   const uint32_t elem_sz = element_size();
 

@@ -1236,11 +1236,10 @@ TEST(PqInt8Quantizer, Fp16InputMatchesFp32) {
   const size_t NSQ = 8;
   const size_t COUNT = 1500;
 
-  // Train an FP32 quantizer on fp16-rounded data so both paths share the
-  // exact same input values and (via blob patching below) the same codebook.
-  auto q_fp32 = make_pq_quantizer(DIM, NSQ);
-  ASSERT_TRUE(q_fp32);
-
+  // Train an FP32 and an FP16 quantizer on the same fp16-rounded values.
+  // The codebooks live in different data types (native-type storage), so
+  // exact code/LUT equality is not expected; instead the ADC distances must
+  // be strongly rank-correlated between the two paths.
   std::vector<std::vector<float>> rounded;
   auto fp16_holder = make_random_fp16_holder(COUNT, DIM, &rounded, 1234);
   auto fp32_holder =
@@ -1250,43 +1249,59 @@ TEST(PqInt8Quantizer, Fp16InputMatchesFp32) {
     for (size_t j = 0; j < DIM; ++j) vec[j] = rounded[i][j];
     fp32_holder->emplace(i + 1, vec);
   }
+
+  auto q_fp32 = make_pq_quantizer(DIM, NSQ);
+  ASSERT_TRUE(q_fp32);
   ASSERT_EQ(0, q_fp32->train(fp32_holder));
 
-  // Serialize and flip the persisted input type to FP16: payload layout is
-  // original_dim/num_chunk/sub_dim/num_centroids (16 bytes), use_zero_mean
-  // (1 byte), then input_type_code (1 byte).
-  std::string blob;
-  ASSERT_EQ(0, q_fp32->serialize(&blob));
-  size_t input_type_off = sizeof(zvec::turbo::QuantizerSerHeader) + 17;
-  ASSERT_EQ(0, blob[input_type_off]);
-  blob[input_type_off] = 1;
-
-  auto q_fp16 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  auto q_fp16 = make_pq_fp16_quantizer(DIM, NSQ);
   ASSERT_TRUE(q_fp16);
-  ASSERT_EQ(0, q_fp16->deserialize(blob));
+  ASSERT_EQ(0, q_fp16->train(fp16_holder));
   EXPECT_EQ(zvec::turbo::DataType::kFp16, q_fp16->input_data_type());
 
-  // With an identical codebook, FP16 input must produce the exact same PQ
-  // codes and LUT as FP32 input of the same (fp16-rounded) values.
+  // Build LUTs for the same (fp16-rounded) query on both paths.
   size_t code_len = q_fp32->quantized_datapoint_vector_length();
   size_t lut_floats = q_fp32->quantized_query_vector_length() / sizeof(float);
   std::vector<uint16_t> fp16_vec(DIM);
   std::vector<uint8_t> code32(code_len), code16(code_len);
   std::vector<float> lut32(lut_floats), lut16(lut_floats);
-  for (size_t i = 0; i < 50; ++i) {
-    FloatHelper::ToFP16(rounded[i].data(), DIM, fp16_vec.data());
 
+  FloatHelper::ToFP16(rounded[0].data(), DIM, fp16_vec.data());
+  q_fp32->quantize_query(rounded[0].data(), lut32.data());
+  q_fp16->quantize_query(fp16_vec.data(), lut16.data());
+
+  // Encode the next 200 vectors and collect ADC distances on both paths.
+  std::vector<float> adc32_vec, adc16_vec;
+  for (size_t i = 1; i < 201; ++i) {
+    FloatHelper::ToFP16(rounded[i].data(), DIM, fp16_vec.data());
     q_fp32->quantize_data(rounded[i].data(), code32.data());
     q_fp16->quantize_data(fp16_vec.data(), code16.data());
-    EXPECT_EQ(0, std::memcmp(code32.data(), code16.data(), code_len))
-        << "i=" << i;
+    adc32_vec.push_back(
+        q_fp32->calc_distance_dp_query(code32.data(), lut32.data()));
+    adc16_vec.push_back(
+        q_fp16->calc_distance_dp_query(code16.data(), lut16.data()));
+  }
 
-    q_fp32->quantize_query(rounded[i].data(), lut32.data());
-    q_fp16->quantize_query(fp16_vec.data(), lut16.data());
-    for (size_t j = 0; j < lut_floats; ++j) {
-      EXPECT_EQ(lut32[j], lut16[j]) << "i=" << i << " j=" << j;
+  // Count concordant vs discordant pairs (Kendall tau).
+  size_t n = adc32_vec.size();
+  ASSERT_GT(n, 10u);
+  size_t concordant = 0, discordant = 0;
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      bool same_order =
+          (adc32_vec[i] < adc32_vec[j]) == (adc16_vec[i] < adc16_vec[j]);
+      if (same_order)
+        ++concordant;
+      else
+        ++discordant;
     }
   }
+  double tau = static_cast<double>(concordant - discordant) /
+               static_cast<double>(concordant + discordant);
+
+  // Kendall tau > 0.5 means strong rank correlation (generous threshold;
+  // FP16 precision loss and different codebooks cause some reordering).
+  EXPECT_GT(tau, 0.5) << "Kendall tau=" << tau;
 }
 
 TEST(PqInt8Quantizer, Fp16SerializeDeserialize) {
