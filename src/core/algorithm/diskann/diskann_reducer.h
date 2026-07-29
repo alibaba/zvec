@@ -38,7 +38,7 @@ class DiskAnnReducer : public IndexReducer {
   int cleanup(void) override;
 
   //! Feed indexes from containers
-  // virtual int feed(IndexStorage::Pointer container) override;
+  // int feed(IndexStorage::Pointer container) override;
 
   //! Reduce operator (with filter)
   int reduce(const IndexFilter &filter) override;

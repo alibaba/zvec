@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+import inspect
 import pytest
 import tempfile
 import os
@@ -149,6 +150,16 @@ class TestDbConfigMemoryLimitValidation:
 
 
 class TestDbConfigThreadValidation:
+    def test_thread_binding_options_are_not_exposed(self):
+        parameters = inspect.signature(zvec.init).parameters
+        assert "query_thread_binding" not in parameters
+        assert "optimize_thread_binding" not in parameters
+
+        with pytest.raises(TypeError):
+            zvec.init(query_thread_binding=True)
+        with pytest.raises(TypeError):
+            zvec.init(optimize_thread_binding=True)
+
     @run_in_subprocess
     def test_query_threads(self):
         zvec.init(query_threads=1)

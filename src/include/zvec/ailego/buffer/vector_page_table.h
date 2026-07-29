@@ -33,6 +33,7 @@
 #include <string>
 #include <unordered_map>
 #include <zvec/ailego/internal/platform.h>
+#include <zvec/export.h>
 #include "block_eviction_queue.h"
 #include "concurrentqueue.h"
 
@@ -45,7 +46,7 @@ namespace ailego {
 
 extern const size_t kVectorPageSize;
 
-class VectorPageTable : public EvictableBlockOwner {
+class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   struct Entry {
     std::atomic<int> ref_count;
     std::atomic<bool> in_evict_queue;
@@ -196,7 +197,7 @@ class VectorPageTable : public EvictableBlockOwner {
 
 class VecBufferPoolHandle;
 
-class VecBufferPool {
+class ZVEC_AILEGO_API VecBufferPool {
  public:
   typedef std::shared_ptr<VecBufferPool> Pointer;
 
@@ -266,7 +267,7 @@ class VecBufferPool {
   std::unique_ptr<std::mutex[]> block_mutexes_{};
 };
 
-class VecBufferPoolHandle {
+class ZVEC_AILEGO_API VecBufferPoolHandle {
  public:
   VecBufferPoolHandle(VecBufferPool &pool) : pool_(pool) {}
   VecBufferPoolHandle(VecBufferPoolHandle &&other) : pool_(other.pool_) {}
