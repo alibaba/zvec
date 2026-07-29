@@ -118,7 +118,7 @@ class VecsIndexHolder : public IndexProvider {
     return iter;
   }
 
-  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator(void) override {
+  IndexHybridHolder::Iterator::Pointer create_hybrid_iterator(void) {
     // make sure iter has value whenn create_iterator finished
     IndexHybridHolder::Iterator::Pointer iter(
         new VecsIndexHolder::Iterator(*this, start_cursor_));
