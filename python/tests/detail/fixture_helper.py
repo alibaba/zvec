@@ -2,7 +2,10 @@ import pytest
 import logging
 import platform
 
-DISKANN_SUPPORTED = platform.system() in ("Linux", "Windows") and platform.machine() in (
+DISKANN_SUPPORTED = platform.system() in (
+    "Linux",
+    "Windows",
+) and platform.machine() in (
     "x86_64",
     "AMD64",
     "i686",
