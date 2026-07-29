@@ -78,6 +78,7 @@ add_library(zvec_c_api SHARED
 set_target_properties(zvec_c_api PROPERTIES
     OUTPUT_NAME "zvec_c_api"
     POSITION_INDEPENDENT_CODE ON
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
     # Hide all symbols by default, only export C API
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON

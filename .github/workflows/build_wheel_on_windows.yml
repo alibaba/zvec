@@ -81,7 +81,7 @@ jobs:
           git submodule foreach --recursive 'git reset --hard && git clean -ffdx'
 
       - name: Set up Python (for cibuildwheel controller)
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -174,7 +174,7 @@ jobs:
           path: wheelhouse/
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -197,7 +197,7 @@ jobs:
 
     steps:
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 

@@ -28,26 +28,6 @@ namespace turbo {
 
 using namespace zvec::core;
 
-//! Error code literals mirroring core::IndexError::Code integer values.
-//!
-//! Turbo quantizer sources use these directly instead of the
-//! `IndexError_NotImplemented` / `IndexError_Unsupported` const objects
-//! because MSVC's WINDOWS_EXPORT_ALL_SYMBOLS does not export const data
-//! with constructors from zvec_shared.dll.  zvec_turbo is a static library
-//! linked with /WHOLEARCHIVE, so referencing those unexported symbols across
-//! the DLL boundary triggers LNK2019 on Windows.
-//!
-//! IndexError::Code stores -val in its constructor, so NotImplemented(11)
-//! yields -11 and Unsupported(12) yields -12.
-constexpr int kErrNotImplemented = -11;
-constexpr int kErrUnsupported = -12;
-
-//! Magic number ('QTZR') stamped at the start of a serialized quantizer blob.
-constexpr uint32_t kQuantizerMagic = 0x52545A51u;
-
-//! Current quantizer serialization format version.
-constexpr uint16_t kQuantizerSerVersion = 1;
-
 //! Self-describing, fixed-size header that prefixes every serialized quantizer.
 //! The type-specific payload (scalar params, codebook, rotation matrix, ...)
 //! follows immediately after this header.

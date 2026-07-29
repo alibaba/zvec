@@ -15,22 +15,20 @@
 #pragma once
 
 #include <cstdint>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace core {
 
-class VectorSource {
+class ZVEC_CORE_API VectorSource {
  public:
-  virtual ~VectorSource() = default;
+  VectorSource();
+  virtual ~VectorSource();
 
   virtual const void *get_vector(uint32_t node_id) const = 0;
 
   virtual void get_vectors(const uint32_t *ids, uint32_t count,
-                           const void **out) const {
-    for (uint32_t i = 0; i < count; ++i) {
-      out[i] = get_vector(ids[i]);
-    }
-  }
+                           const void **out) const;
 };
 
 }  // namespace core
