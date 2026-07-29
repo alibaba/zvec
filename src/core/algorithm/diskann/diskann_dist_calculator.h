@@ -114,10 +114,6 @@ class DistCalculator {
     return dist(vec);
   }
 
-  //! Bind the quantizer state used by quantize_query() / quantized_dist().
-  //! Called by the searcher before each search.  Works with any
-  //! turbo::Quantizer (PQ, SQ, ...); `codes` is the contiguous quantized
-  //! code buffer and `code_size` is the byte stride of one datapoint code.
   inline void bind_quantizer(const turbo::Quantizer *quantizer,
                              const uint8_t *codes, uint32_t code_size) {
     quantizer_ = quantizer;
@@ -125,11 +121,6 @@ class DistCalculator {
     quant_code_size_ = code_size;
   }
 
-  //! Quantize the rotated query (e.g. build the ADC LUT for PQ) and bind it
-  //! into a DistanceImpl functor (owns the quantized query bytes and the
-  //! dispatched kernels).  Quantizers accept the index's stored data type
-  //! directly (FP16 input is widened internally), so the rotated query is
-  //! passed as-is.
   void quantize_query(const void *query_rotated) {
     quant_query_scratch_.resize(quantizer_->quantized_query_vector_length());
     quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
@@ -137,8 +128,6 @@ class DistCalculator {
         quantizer_->distance(quant_query_scratch_.data(), IndexQueryMeta());
   }
 
-  //! Batched approximate distances between the quantized query and the codes
-  //! of the given ids, via the DistanceImpl functor bound in quantize_query().
   void quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) {
     quant_dp_list_.resize(n);
     for (uint32_t i = 0; i < n; ++i) {
@@ -174,11 +163,6 @@ class DistCalculator {
   DistCalculator(const DistCalculator &) = delete;
   DistCalculator &operator=(const DistCalculator &) = delete;
 
-  //! Resolve the distance kernel through a turbo quantizer.  DiskAnn raw
-  //! vectors carry no quantizer of their own, so pick the plain quantizer
-  //! matching the stored data type (Fp32Quantizer / Fp16Quantizer).  Fall
-  //! back to the measure's distance when the quantizer or its kernel is
-  //! unavailable (e.g. metrics not covered by turbo).
   void bind_distance(const IndexMeta &meta,
                      const IndexMetric::Pointer &measure) {
     data_quantizer_.reset();
@@ -192,9 +176,6 @@ class DistCalculator {
     if (name != nullptr) {
       turbo::Quantizer::Pointer quantizer = IndexFactory::CreateQuantizer(name);
       if (quantizer) {
-        //! DiskAnn pads the Cosine meta dimension with the trailing norm
-        //! bytes, while the quantizer expects the raw data dim and appends
-        //! the extra meta itself.
         IndexMeta quant_meta = meta;
         if (meta.metric_name() == "Cosine") {
           quant_meta.set_dimension(meta.dimension() -
@@ -204,8 +185,6 @@ class DistCalculator {
           turbo::DistanceImpl impl = quantizer->distance("", IndexQueryMeta());
           if (impl.valid()) {
             data_quantizer_ = std::move(quantizer);
-            //! The kernel computes over the quantizer's raw data dim,
-            //! ignoring the (possibly padded) dim passed by the callers.
             distance_ = [func = impl.func(), quant_dim = static_cast<size_t>(
                                                  data_quantizer_->dim())](
                             const void *m, const void *q, size_t /*dim*/,
@@ -221,26 +200,21 @@ class DistCalculator {
  private:
   const DiskAnnEntity *entity_;
 
-  //! Raw-vector quantizer that owns the bound distance kernel (see
-  //! bind_distance).
   turbo::Quantizer::Pointer data_quantizer_{};
 
   IndexMetric::MatrixDistance distance_;
   const void *query_;
   uint32_t dim_;
 
-  uint32_t compare_cnt_;  // record distance compute times
+  uint32_t compare_cnt_;
   bool error_{false};
 
-  //! Quantizer state bound by the searcher (see bind_quantizer).
   const turbo::Quantizer *quantizer_{nullptr};
   const uint8_t *quant_codes_{nullptr};
   uint32_t quant_code_size_{0};
 
-  //! Per-query approximate distance functor (see quantize_query).
   turbo::DistanceImpl quant_dist_impl_{};
 
-  //! Reused scratch buffers for quantized_dist() / quantize_query().
   std::vector<const void *> quant_dp_list_;
   std::vector<uint8_t> quant_query_scratch_;
 };

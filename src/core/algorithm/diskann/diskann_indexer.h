@@ -92,8 +92,6 @@ class DiskAnnIndexer {
 
   std::shared_ptr<LinuxAlignedFileReader> reader_{nullptr};
 
-  //! In-memory quantizer state used for the approximate search distances
-  //! (see DistCalculator::bind_quantizer).
   turbo::Quantizer::Pointer quantizer_;
   const uint8_t *quant_codes_{nullptr};
 
