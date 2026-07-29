@@ -16,13 +16,14 @@
 
 #include <string>
 #include <zvec/ailego/internal/platform.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Monotime
  */
-struct Monotime {
+struct ZVEC_AILEGO_API Monotime {
   //! Retrieve monotonic time in nanoseconds
   static uint64_t NanoSeconds(void);
 
@@ -38,7 +39,7 @@ struct Monotime {
 
 /*! Realtime
  */
-struct Realtime {
+struct ZVEC_AILEGO_API Realtime {
   //! Retrieve system time in nanoseconds
   static uint64_t NanoSeconds(void);
 
@@ -116,7 +117,7 @@ struct Realtime {
 
 /*! Thread-specific CPU time
  */
-struct CPUtime {
+struct ZVEC_AILEGO_API CPUtime {
   //! Retrieve CPU time in nanoseconds
   static uint64_t NanoSeconds(void);
 
@@ -132,7 +133,7 @@ struct CPUtime {
 
 /*! Elapsed Time
  */
-class ElapsedTime {
+class ZVEC_AILEGO_API ElapsedTime {
  public:
   //! Constructor
   ElapsedTime(void) : stamp_(Monotime::NanoSeconds()) {}
@@ -168,7 +169,7 @@ class ElapsedTime {
 
 /*! Elapsed CPU Time
  */
-class ElapsedCPUTime {
+class ZVEC_AILEGO_API ElapsedCPUTime {
  public:
   //! Constructor
   ElapsedCPUTime(void) : stamp_(CPUtime::NanoSeconds()) {}

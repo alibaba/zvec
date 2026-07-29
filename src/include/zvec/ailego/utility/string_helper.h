@@ -19,13 +19,14 @@
 #include <vector>
 #include <zvec/ailego/string/string_concat_helper.h>
 #include <zvec/ailego/utility/string_helper_impl.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! String Helper
  */
-struct StringHelper {
+struct ZVEC_AILEGO_API StringHelper {
   //! Return true if the `ref` starts with the given prefix
   static bool StartsWith(const std::string &ref, const std::string &prefix);
 

@@ -5199,6 +5199,42 @@ TEST_F(CollectionTest, Feature_AddColumn_WithUnflushedData) {
   ASSERT_EQ(stats.doc_count, doc_count + 1000);
 }
 
+TEST_F(CollectionTest, Feature_AddColumn_WithDeleteOnlyWritingSegment) {
+  auto schema = TestHelper::CreateNormalSchema();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, 10, false);
+
+  auto setup_field =
+      std::make_shared<FieldSchema>("setup_col", DataType::INT32, true);
+  auto s = collection->AddColumn(setup_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << s.message();
+
+  auto deleted_pk = TestHelper::MakePK(0);
+  auto delete_result = collection->Delete({deleted_pk});
+  ASSERT_TRUE(delete_result.has_value()) << delete_result.error().message();
+  ASSERT_TRUE(delete_result.value()[0].ok());
+  auto fetch_result = collection->Fetch({deleted_pk});
+  ASSERT_TRUE(fetch_result.has_value()) << fetch_result.error().message();
+  ASSERT_EQ(fetch_result.value()[deleted_pk], nullptr);
+  ASSERT_EQ(collection->Stats().value().doc_count, 9u);
+
+  auto trigger_field =
+      std::make_shared<FieldSchema>("trigger_col", DataType::INT64, true);
+  s = collection->AddColumn(trigger_field, "", AddColumnOptions());
+  ASSERT_TRUE(s.ok()) << s.message();
+
+  collection.reset();
+  auto open_result = Collection::Open(col_path, options);
+  ASSERT_TRUE(open_result.has_value()) << open_result.error().message();
+  collection = open_result.value();
+
+  fetch_result = collection->Fetch({deleted_pk});
+  ASSERT_TRUE(fetch_result.has_value()) << fetch_result.error().message();
+  ASSERT_EQ(fetch_result.value()[deleted_pk], nullptr);
+  ASSERT_EQ(collection->Stats().value().doc_count, 9u);
+}
+
 TEST_F(CollectionTest, Feature_ColumnDDL_ChainedOps_MultiSegment) {
   int docs_per_segment = 1000;
   int num_segments = 3;
