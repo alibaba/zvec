@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <thread>
 #include <utility>
 #include <zvec/ailego/parallel/thread_pool.h>
