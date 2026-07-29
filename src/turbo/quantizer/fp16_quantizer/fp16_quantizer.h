@@ -122,6 +122,10 @@ class Fp16Quantizer : public Quantizer {
   IndexMeta meta_{};
   uint32_t original_dim_{0};
 
+  //! Data type of the input passed to init(); quantize_one() widens FP32
+  //! input to FP32 before normalizing, instead of assuming FP16 input.
+  DataType input_data_type_{DataType::kFp16};
+
   //! Cached distance dispatch (bound in init()).
   DistanceFunc dp_query_func_{};
   BatchDistanceFunc dp_query_batch_func_{};

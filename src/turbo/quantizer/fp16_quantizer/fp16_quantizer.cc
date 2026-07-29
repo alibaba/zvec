@@ -26,6 +26,10 @@ namespace turbo {
 
 int Fp16Quantizer::init(const IndexMeta &meta,
                         const ailego::Params & /*params*/) {
+  input_data_type_ = (meta.data_type() == IndexMeta::DataType::DT_FP32)
+                         ? DataType::kFp32
+                         : DataType::kFp16;
+
   meta_ = meta;
 
   meta_.set_meta(IndexMeta::DataType::DT_FP16, meta.dimension());
@@ -137,8 +141,12 @@ void Fp16Quantizer::quantize_one(const void *input, void *output) const {
   if (meta_.metric_name() == "Cosine") {
     // L2-normalize in FP32 space and store the norm at the end.
     std::vector<float> fp32_buf(original_dim_);
-    ailego::FloatHelper::ToFP32(reinterpret_cast<const uint16_t *>(input),
-                                original_dim_, fp32_buf.data());
+    if (input_data_type_ == DataType::kFp32) {
+      std::memcpy(fp32_buf.data(), input, original_dim_ * sizeof(float));
+    } else {
+      ailego::FloatHelper::ToFP32(reinterpret_cast<const uint16_t *>(input),
+                                  original_dim_, fp32_buf.data());
+    }
     float norm = 0.0f;
     ailego::Normalizer<float>::L2(fp32_buf.data(), original_dim_, &norm);
     ailego::FloatHelper::ToFP16(fp32_buf.data(), original_dim_,
@@ -146,7 +154,13 @@ void Fp16Quantizer::quantize_one(const void *input, void *output) const {
     std::memcpy(reinterpret_cast<uint8_t *>(output) + byte_size, &norm,
                 extra_meta_size_);
   } else {
-    std::memcpy(output, input, byte_size);
+    if (input_data_type_ == DataType::kFp32) {
+      ailego::FloatHelper::ToFP16(reinterpret_cast<const float *>(input),
+                                  original_dim_,
+                                  reinterpret_cast<uint16_t *>(output));
+    } else {
+      std::memcpy(output, input, byte_size);
+    }
   }
 }
 
