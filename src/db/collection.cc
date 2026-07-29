@@ -498,7 +498,7 @@ Status CollectionImpl::CreateIndex(const std::string &column_name,
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -671,7 +671,7 @@ Status CollectionImpl::DropIndex(const std::string &column_name) {
   // forbidden writing until index is ready
   std::lock_guard write_lock(write_mtx_);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -791,8 +791,8 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     // forbidden writing for a while
     std::lock_guard write_lock(write_mtx_);
 
-    if (writing_segment_->doc_count() != 0) {
-      // flush and create new segment
+    if (writing_segment_->has_record()) {
+      // Flush pending records and switch only when the segment contains docs.
       auto s = switch_to_new_segment_for_writing();
       if (!s.ok()) {
         return s;
@@ -1151,7 +1151,7 @@ Status CollectionImpl::AddColumn(const FieldSchema::Ptr &column_schema,
   s = new_schema->add_field(column_schema);
   CHECK_RETURN_STATUS(s);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -1223,7 +1223,7 @@ Status CollectionImpl::DropColumn(const std::string &column_name) {
   s = new_schema->drop_field(column_name);
   CHECK_RETURN_STATUS(s);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -1307,7 +1307,7 @@ Status CollectionImpl::AlterColumn(const std::string &column_name,
   s = new_schema->alter_field(column_name, new_field_schema);
   CHECK_RETURN_STATUS(s);
 
-  if (writing_segment_->doc_count() > 0) {
+  if (writing_segment_->has_record()) {
     s = switch_to_new_segment_for_writing();
     CHECK_RETURN_STATUS(s);
   }
@@ -1516,6 +1516,10 @@ Status CollectionImpl::commit_schema_change_with_new_writing_segment(
 
 Status CollectionImpl::switch_to_new_segment_for_writing(
     const CollectionSchema::Ptr &schema) {
+  if (writing_segment_->doc_count() == 0) {
+    return writing_segment_->flush();
+  }
+
   auto s = writing_segment_->dump();
   CHECK_RETURN_STATUS(s);
 
