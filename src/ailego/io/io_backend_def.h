@@ -60,7 +60,8 @@ inline const char *IOBackendTypeName(IOBackendType type) {
 inline const char *IOBackendDescription(IOBackendType type) {
   switch (type) {
     case IOBackendType::kIoUring:
-      return "io_uring async I/O backend accessed through the Linux kernel ABI.";
+      return "io_uring async I/O backend accessed through the Linux kernel "
+             "ABI.";
     case IOBackendType::kLibAio:
       return "libaio async I/O backend loaded at runtime via dlopen().";
     case IOBackendType::kPread:

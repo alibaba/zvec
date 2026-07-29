@@ -157,8 +157,7 @@ Examples:
       .value("PREAD", ailego::IOBackendType::kPread)
       .value("LIBAIO", ailego::IOBackendType::kLibAio)
       .value("IO_URING", ailego::IOBackendType::kIoUring)
-      .value("WINDOWS_OVERLAPPED",
-             ailego::IOBackendType::kWindowsOverlapped);
+      .value("WINDOWS_OVERLAPPED", ailego::IOBackendType::kWindowsOverlapped);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {
