@@ -19,27 +19,20 @@
 
 namespace zvec {
 
-class CollectionImpl;
-
 class DocIterator {
-  // Pimpl: implementation holds Arrow types (RecordBatchReader, RecordBatch).
-  // Forward-declared here (private) so the public constructor can name it.
+ public:
+  // Pimpl: the implementation holds Arrow types (RecordBatchReader,
+  // RecordBatch). Only a forward declaration is exposed here; the definition
+  // lives in an internal header (src/db/doc_iterator_internal.h), so external
+  // code cannot construct or inspect it.
   struct Impl;
 
- public:
   using Ptr = std::shared_ptr<DocIterator>;
 
-  // Passkey idiom: Passkey's constructor is private and CollectionImpl is its
-  // friend, so only CollectionImpl can construct a DocIterator. This lets
-  // CollectionImpl use std::make_shared while keeping construction controlled.
-  struct Passkey {
-   private:
-    Passkey() {}
-    friend class CollectionImpl;
-  };
-
-  // Called by CollectionImpl::CreateIterator
-  DocIterator(Passkey, std::unique_ptr<Impl> impl);
+  // Constructed only by the collection implementation (which can build an
+  // Impl via the internal header). Public so std::make_shared can be used;
+  // external code cannot call it because Impl is incomplete here.
+  explicit DocIterator(std::unique_ptr<Impl> impl);
 
   // !has_value() → error
   // has_value() && value() == nullptr → EOF
@@ -51,9 +44,6 @@ class DocIterator {
   ~DocIterator();
 
  private:
-  // CollectionImpl builds the iterator (constructs Impl and fills its fields).
-  friend class CollectionImpl;
-
   std::unique_ptr<Impl> impl_;
 };
 

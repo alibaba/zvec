@@ -16,7 +16,6 @@
 // Shared by collection.cc and doc_iterator.cc
 #pragma once
 
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -32,25 +31,26 @@ namespace zvec {
 struct DocIterator::Impl {
   // Declaration order controls destruction order (reverse of declaration).
   // segments must be declared FIRST → destroyed LAST.
-  // reader must be declared LAST → destroyed FIRST.
+  // readers must be declared LAST → destroyed FIRST.
   // This ensures Arrow file handles are released before Segment::cleanup()
   // deletes files from disk (important on Windows).
   std::vector<Segment::Ptr> segments;  // keep Segment alive
   DeleteStore::Ptr delete_store;       // keep delete bitmap alive
   CollectionSchema::Ptr schema;
+  // Index of the segment currently being read (segments/readers are parallel:
+  // readers[i] was built from segments[i]).
+  size_t current_segment_index{0};
   int64_t current_row{0};
   bool closed{false};
   bool include_vector{false};  // whether to fetch vector fields
   std::shared_ptr<arrow::RecordBatch> current_batch;
-  // Pre-fetched vector data for current batch.
-  // Key: field_name, Value: one optional<VectorDataBuffer> per row in
-  // current_batch; nullopt marks a row whose vector fetch failed (field is
-  // skipped, matching Segment::Fetch, instead of fabricating an empty vector).
-  std::unordered_map<
-      std::string,
-      std::vector<std::optional<vector_column_params::VectorDataBuffer>>>
+  // Pre-fetched vector data for the current batch.
+  // Key: field_name, Value: one VectorDataBuffer per row in current_batch.
+  std::unordered_map<std::string,
+                     std::vector<vector_column_params::VectorDataBuffer>>
       vector_cache_;
-  RecordBatchReaderPtr reader;  // destroyed before segments
+  // One reader per segment (parallel to `segments`); destroyed before segments
+  std::vector<RecordBatchReaderPtr> readers;
 };
 
 }  // namespace zvec
