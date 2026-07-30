@@ -54,6 +54,10 @@ Status MemForwardStore::Open() {
   physic_schema_ = arrow::schema(fields);
   // Initialize file writer
   writer_ = ChunkedFileWriter::Open(path_, physic_schema_, format_);
+  if (!writer_) {
+    return Status::InternalError("failed to open forward store writer at [",
+                                 path_, "]");
+  }
   return Status::OK();
 }
 
@@ -214,6 +218,11 @@ Status MemForwardStore::flush() {
 
   if (cache_.empty() && batches_.empty()) {
     return Status::OK();
+  }
+
+  if (!writer_) {
+    return Status::InternalError(
+        "forward store writer not open, cannot flush [", path_, "]");
   }
 
   auto result = convertToRecordBatch();

@@ -18,7 +18,7 @@
 #include <fcntl.h>
 
 #if (defined(__linux) || defined(__linux__))
-#include <libaio.h>
+#include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
 #endif
 
 #include <unistd.h>
@@ -38,6 +38,10 @@ typedef uint32_t IOContext;
 
 int setup_io_ctx(IOContext &ctx);
 int destroy_io_ctx(IOContext &ctx);
+
+// Log the current DiskAnn I/O backend status (async vs. synchronous pread).
+// Probes the backend on first call.  No-op on non-Linux platforms.
+void log_diskann_io_backend();
 
 struct AlignedRead {
   uint64_t offset;

@@ -775,6 +775,51 @@ ZVEC_EXPORT void ZVEC_CALL zvec_set_default_jieba_dict_dir(const char *dir);
 ZVEC_EXPORT const char *ZVEC_CALL zvec_get_default_jieba_dict_dir(void);
 
 // =============================================================================
+// I/O Backend Introspection
+// =============================================================================
+
+/**
+ * @brief I/O backend type codes for DiskAnn async disk reads.
+ *
+ * Defined as uint32_t constants for consistent binary representation
+ * across C and C++ boundaries.
+ */
+typedef uint32_t zvec_io_backend_type_t;
+#define ZVEC_IO_BACKEND_TYPE_PREAD \
+  0 /**< Synchronous pread() \u2014 no async I/O */
+#define ZVEC_IO_BACKEND_TYPE_LIBAIO \
+  1 /**< libaio loaded at runtime via dlopen() */
+
+/**
+ * @brief Get the current I/O backend type for DiskAnn async disk reads.
+ *
+ * Pure introspection \u2014 no side effects, no install hints.
+ *
+ * @return zvec_io_backend_type_t The loaded backend type
+ *         (ZVEC_IO_BACKEND_TYPE_LIBAIO or ZVEC_IO_BACKEND_TYPE_PREAD).
+ */
+ZVEC_EXPORT zvec_io_backend_type_t ZVEC_CALL zvec_get_io_backend_type(void);
+
+/**
+ * @brief Get a human-readable name for the given I/O backend type.
+ *
+ * @param type The backend type code.
+ * @return Thread-local string valid until the next call on this thread;
+ *         "libaio", "pread", or "unknown".
+ */
+ZVEC_EXPORT const char *ZVEC_CALL
+zvec_get_io_backend_type_name(zvec_io_backend_type_t type);
+
+/**
+ * @brief Get a human-readable description of the current I/O backend.
+ *
+ * When only pread is available, includes installation guidance for libaio.
+ *
+ * @return Thread-local string valid until the next call on this thread.
+ */
+ZVEC_EXPORT const char *ZVEC_CALL zvec_get_io_backend_description(void);
+
+// =============================================================================
 // Data Type Enumerations
 // =============================================================================
 
@@ -826,6 +871,7 @@ typedef uint32_t zvec_index_type_t;
 #define ZVEC_INDEX_TYPE_HNSW 1
 #define ZVEC_INDEX_TYPE_IVF 2
 #define ZVEC_INDEX_TYPE_FLAT 3
+#define ZVEC_INDEX_TYPE_HNSW_RABITQ 4
 #define ZVEC_INDEX_TYPE_DISKANN 5
 #define ZVEC_INDEX_TYPE_VAMANA 6
 #define ZVEC_INDEX_TYPE_INVERT 10

@@ -32,6 +32,8 @@ namespace core {
 int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin DiskAnnBuilder::init");
 
+  log_diskann_io_backend();
+
   params.get(PARAM_DISKANN_BUILDER_MAX_DEGREE, &max_degree_);
   params.get(PARAM_DISKANN_BUILDER_LIST_SIZE, &list_size_);
   params.get(PARAM_DISKANN_BUILDER_THREAD_COUNT, &build_thread_count_);

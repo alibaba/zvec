@@ -408,9 +408,10 @@ class TestQuery:
         with pytest.raises(ValueError):
             Query(field_name="embedding", id="doc123", vector=[0.1])._validate()
 
-    def test_init_without_field_name_raises_error(self):
-        with pytest.raises(ValueError):
-            Query(field_name=None)._validate()
+    @pytest.mark.parametrize("field_name", [None, "", "   ", 123])
+    def test_init_without_valid_field_name_raises_error(self, field_name):
+        with pytest.raises(ValueError, match="Field name must be a non-empty string"):
+            Query(field_name=field_name)._validate()
 
     def test_has_id_returns_true_when_id_set(self):
         vq = Query(field_name="embedding", id="doc123")

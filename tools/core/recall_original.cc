@@ -76,12 +76,13 @@ class Recall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
-      pool_ = make_shared<ThreadPool>(threads_, true);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -127,7 +128,8 @@ class Recall {
 
     if (batch_queries_.size() < threads_) {
       threads_ = batch_queries_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
@@ -903,12 +905,13 @@ class SparseRecall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
-      pool_ = make_shared<ThreadPool>(threads_, true);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -985,7 +988,8 @@ class SparseRecall {
 
     if (batch_sparse_counts_.size() < threads_) {
       threads_ = batch_sparse_counts_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
@@ -1882,7 +1886,7 @@ int main(int argc, char *argv[]) {
                          : "debug";
   transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
   if (LOG_LEVEL.find(log_level) != LOG_LEVEL.end()) {
-    IndexLoggerBroker::SetLevel(LOG_LEVEL[log_level]);
+    zvec::ailego::LoggerBroker::SetLevel(LOG_LEVEL[log_level]);
   }
 
   // Calculate Recall

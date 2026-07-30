@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 import zvec
 from zvec import (
@@ -906,6 +908,17 @@ class TestCollectionQuery:
         assert doc.id == single_doc.id
         assert len(doc.field_names()) == 2
         assert set(doc.field_names()) == {"id", "name"}
+
+    @pytest.mark.parametrize("topk", [0, -1, None, True])
+    def test_collection_query_rejects_invalid_topk(self, topk):
+        collection = Collection.__new__(Collection)
+        collection._querier = MagicMock()
+        collection._obj = MagicMock()
+
+        with pytest.raises(ValueError, match="topk must be a positive integer"):
+            collection.query(Query(field_name="dense", vector=[0.1]), topk=topk)
+
+        collection._querier.execute.assert_not_called()
 
     def test_collection_query_with_topk(
         self, collection_with_multiple_docs: Collection

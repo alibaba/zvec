@@ -1156,3 +1156,17 @@ TEST_F(MemStoreTest, General) {
 }
 
 #endif
+
+// Regression: MemForwardStore::Open() used to ignore a failed
+// ChunkedFileWriter::Open (null writer_) and return OK, which then crashed on
+// flush(). Open() must report the failure instead.
+TEST(MemStoreOpenTest, OpenReportsErrorWhenWriterCreationFails) {
+  auto schema = GetCollectionSchema();
+  // Parent directory does not exist -> arrow FileOutputStream::Open fails ->
+  // ChunkedFileWriter::Open returns nullptr.
+  auto store = std::make_shared<MemForwardStore>(
+      schema, "/nonexistent_zvec_dir_xyz/scalar.block.0", FileFormat::IPC);
+  auto status = store->Open();
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(store->writer_, nullptr);
+}

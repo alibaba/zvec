@@ -29,6 +29,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <ailego/io/io_backend_def.h>
+#include <zvec/ailego/io/io_backend.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
@@ -757,6 +759,25 @@ const char *zvec_get_default_jieba_dict_dir(void) {
   thread_local std::string cached;
   cached = zvec::GlobalConfig::Instance().jieba_dict_dir();
   return cached.c_str();
+}
+
+// =============================================================================
+// I/O Backend Introspection
+// =============================================================================
+
+zvec_io_backend_type_t zvec_get_io_backend_type(void) {
+  auto type = zvec::ailego::current_io_backend_type();
+  return static_cast<zvec_io_backend_type_t>(static_cast<uint32_t>(type));
+}
+
+const char *zvec_get_io_backend_type_name(zvec_io_backend_type_t type) {
+  auto cpp_type = static_cast<zvec::ailego::IOBackendType>(type);
+  return zvec::ailego::IOBackendTypeName(cpp_type);
+}
+
+const char *zvec_get_io_backend_description(void) {
+  auto type = zvec::ailego::current_io_backend_type();
+  return zvec::ailego::IOBackendDescription(type);
 }
 
 // =============================================================================
@@ -2800,12 +2821,16 @@ const char *zvec_index_type_to_string(zvec_index_type_t index_type) {
       return "IVF";
     case ZVEC_INDEX_TYPE_FLAT:
       return "FLAT";
+    case ZVEC_INDEX_TYPE_HNSW_RABITQ:
+      return "HNSW_RABITQ";
+    case ZVEC_INDEX_TYPE_DISKANN:
+      return "DISKANN";
+    case ZVEC_INDEX_TYPE_VAMANA:
+      return "VAMANA";
     case ZVEC_INDEX_TYPE_INVERT:
       return "INVERT";
     case ZVEC_INDEX_TYPE_FTS:
       return "FTS";
-    case ZVEC_INDEX_TYPE_DISKANN:
-      return "DiskANN";
     default:
       return "UNKNOWN_INDEX_TYPE";
   }

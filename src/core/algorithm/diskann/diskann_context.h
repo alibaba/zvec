@@ -68,41 +68,40 @@ class DiskAnnContext : public IndexContext,
                      const DiskAnnEntity::Pointer &entity, uint32_t magic_num);
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(void) const override {
+  const IndexDocumentList &result(void) const override {
     return results_[0];
   }
 
   //! Retrieve search result
-  virtual const IndexDocumentList &result(size_t idx) const override {
+  const IndexDocumentList &result(size_t idx) const override {
     return results_[idx];
   }
 
   //! Retrieve result object for output
-  virtual IndexDocumentList *mutable_result(size_t idx) override {
+  IndexDocumentList *mutable_result(size_t idx) override {
     ailego_assert_with(idx < results_.size(), "invalid idx");
     return &results_[idx];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(void) const override {
+  const IndexGroupDocumentList &group_result(void) const override {
     return group_results_[0];
   }
 
   //! Retrieve search group result with index
-  virtual const IndexGroupDocumentList &group_result(
-      size_t idx) const override {
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
     return group_results_[idx];
   }
 
-  virtual IndexGroupDocumentList *mutable_group_result(void) override {
+  IndexGroupDocumentList *mutable_group_result(void) override {
     return &group_results_[0];
   }
 
-  virtual IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
     return &group_results_[idx];
   }
 
-  virtual uint32_t magic(void) const override {
+  uint32_t magic(void) const override {
     return magic_;
   }
 
@@ -111,17 +110,17 @@ class DiskAnnContext : public IndexContext,
   }
 
   //! Set mode of debug
-  virtual void set_debug_mode(bool enable) override {
+  void set_debug_mode(bool enable) override {
     debug_mode_ = enable;
   }
 
   //! Retrieve mode of debug
-  virtual bool debug_mode(void) const override {
+  bool debug_mode(void) const override {
     return debug_mode_;
   }
 
   //! Retrieve string of debug
-  virtual std::string debug_string(void) const override {
+  std::string debug_string(void) const override {
     return std::string("");
   }
 

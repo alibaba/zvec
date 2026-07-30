@@ -35,14 +35,14 @@
 **Zvec** 是一款开源的嵌入式(进程内)向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置提供生产级、低延迟、可扩展的向量检索能力。
 
 > [!IMPORTANT]
-> 🚀  **v0.5.0（2026 年 6 月 12 日）**
+> 🚀  **v0.6.0（2026 年 7 月 20 日）**
 >
-> - **全文检索（FTS）**：原生全文检索能力——可为任意字符串字段挂载 FTS 索引，使用自然语言或结构化表达式检索，无需外接搜索引擎。
-> - **混合检索**：在单次查询调用中融合全文、稠密向量和稀疏向量检索，并支持标量过滤与重排。
-> - **DiskANN 索引**：全新磁盘索引，将索引主体存于磁盘，大幅降低大规模数据集的内存占用。
-> - **生态与平台**：全新官方 [Go](https://github.com/zvec-ai/zvec-go) / [Rust](https://github.com/zvec-ai/zvec-rust) SDK、可视化工具 [Zvec Studio](https://github.com/zvec-ai/zvec-studio)，以及 RISC-V 架构支持。
+> - **分组检索（Group-By）**：支持按分组去重检索，返回每个分组的 Top-K 结果而非全局 Top-K，覆盖 Flat、HNSW、HNSW-RaBitQ 与稀疏索引。
+> - **随机旋转量化**：为 INT8/INT4 量化新增可选的随机旋转能力，将方差均匀分布到各维度，显著提升召回率。
+> - **全文检索增强**：升级 FTS 文本分析管线，新增基于 Unicode UAX #29 的标准分词器、UTF-8 / ASCII 折叠，以及基于 Snowball、支持 34+ 种语言的词干提取过滤器。
+> - **更快更稳健**：Block-max 跳跃优化使 FTS 合取查询提速 22–38%，同时新增 DiskANN C API，以及大量稳定性修复。
 >
-> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.5.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.6.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
 
 ## 💫 核心特性
 
@@ -62,7 +62,7 @@ Zvec 提供多语言官方 SDK：
 - **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 64 位 Python 3.10–3.14）
 - **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
 - **[Go](https://github.com/zvec-ai/zvec-go)**：高性能的 Go 绑定。
-- **[Rust](https://github.com/zvec-ai/zvec-rust)**：高性能的 Rust 绑定。
+- **[Rust](https://crates.io/crates/zvec-rust)**：`cargo add zvec-rust`
 - **[Dart/Flutter](https://pub.dev/packages/zvec)**：`flutter pub add zvec`
 
 想要图形界面？试试 **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**，零代码浏览数据与调试查询。
@@ -121,7 +121,7 @@ Zvec 提供极致的速度和效率，能够轻松应对高要求的生产环境
 
 | 💬 钉钉群 | 📱 微信群 | 🎮 Discord | X (Twitter) |
 | :---: | :---: | :---: | :---: |
-| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
+| <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/dingding.png" width="150" alt="钉钉二维码"/> | <img src="https://zvec.oss-cn-hongkong.aliyuncs.com/qrcode/wechat.png?v1" width="150" alt="微信二维码"/> | [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/rKddFBBu9z) | [![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/ZvecAI)](<https://x.com/ZvecAI>) |
 | 扫码加入 | 扫码加入 | 点击加入 | 点击关注 |
 
 </div>

@@ -30,6 +30,12 @@
 #include <zvec/core/framework/index_trainer.h>
 
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
+}  // namespace zvec
+
+namespace zvec {
 namespace core {
 
 /*! Index Factory
@@ -167,6 +173,16 @@ struct IndexFactory {
 
   //! Retrieve all refiner classes
   static std::vector<std::string> AllRefiners(void);
+
+  //! Create a quantizer by name
+  static std::shared_ptr<zvec::turbo::Quantizer> CreateQuantizer(
+      const std::string &name);
+
+  //! Test if the quantizer exists
+  static bool HasQuantizer(const std::string &name);
+
+  //! Retrieve all quantizer classes
+  static std::vector<std::string> AllQuantizers(void);
 };
 
 //! Register Index Metric
@@ -282,6 +298,14 @@ struct IndexFactory {
 //! Register Index Refiner
 #define INDEX_FACTORY_REGISTER_REFINER(__IMPL__, ...) \
   INDEX_FACTORY_REGISTER_REFINER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+//! Register Quantizer
+#define INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(__NAME__, __IMPL__, ...) \
+  AILEGO_FACTORY_REGISTER(__NAME__, turbo::Quantizer, __IMPL__, ##__VA_ARGS__)
+
+//! Register Quantizer
+#define INDEX_FACTORY_REGISTER_QUANTIZER(__IMPL__, ...) \
+  INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 }  // namespace core
 }  // namespace zvec
