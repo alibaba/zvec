@@ -216,8 +216,8 @@ class DiskAnnEntity {
   constexpr static uint32_t kRevision = 0U;
 
  protected:
-  DiskAnnMetaHeader meta_header_;
-  DiskAnnPqMeta pq_meta_;
+  DiskAnnMetaHeader meta_header_{};
+  DiskAnnPqMeta pq_meta_{};
 };
 
 }  // namespace core

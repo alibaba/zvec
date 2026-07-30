@@ -104,19 +104,43 @@ int destroy_io_ctx(IOContext &ctx) {
 #endif
 }
 
-static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
-  for (auto &req : read_reqs) {
-    ssize_t bytes_read = ::pread(fd, req.buf, req.len, req.offset);
-    if (bytes_read < 0) {
-      LOG_ERROR("pread failed; errno=%d, %s, offset=%lu, len=%lu", errno,
-                ::strerror(errno), (unsigned long)req.offset,
-                (unsigned long)req.len);
+static int execute_one_pread(int fd, const AlignedRead &req) {
+  auto *buf = static_cast<uint8_t *>(req.buf);
+  uint64_t offset = req.offset;
+  uint64_t remaining = req.len;
+
+  while (remaining > 0) {
+    ssize_t bytes_read =
+        ::pread(fd, buf, static_cast<size_t>(remaining), offset);
+    if (bytes_read > 0) {
+      buf += bytes_read;
+      offset += static_cast<uint64_t>(bytes_read);
+      remaining -= static_cast<uint64_t>(bytes_read);
+      continue;
+    }
+    if (bytes_read == 0) {
+      LOG_ERROR("pread returned EOF; offset=%llu, remaining=%llu",
+                (unsigned long long)offset, (unsigned long long)remaining);
       return IndexError_Runtime;
     }
-    if ((size_t)bytes_read != req.len) {
-      LOG_ERROR("pread short read; got=%zd, expected=%lu", bytes_read,
-                (unsigned long)req.len);
-      return IndexError_Runtime;
+    if (errno == EINTR) {
+      continue;
+    }
+
+    LOG_ERROR("pread failed; errno=%d, %s, offset=%llu, len=%llu", errno,
+              ::strerror(errno), (unsigned long long)offset,
+              (unsigned long long)remaining);
+    return IndexError_Runtime;
+  }
+
+  return 0;
+}
+
+static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
+  for (const auto &req : read_reqs) {
+    int ret = execute_one_pread(fd, req);
+    if (ret != 0) {
+      return ret;
     }
   }
   return 0;
@@ -578,17 +602,17 @@ void LinuxAlignedFileReader::open(const std::string &fname) {
   // and virtual-address usage scale with the size of the index.
   if (this->file_desc != -1) {
     if (::fcntl(this->file_desc, F_NOCACHE, 1) == -1) {
-      LOG_WARN("fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
-               "the page cache",
-               fname.c_str(), errno, ::strerror(errno));
+      LOG_WARN(
+          "fcntl(F_NOCACHE) failed for %s (errno=%d: %s); reads will use "
+          "the page cache",
+          fname.c_str(), errno, ::strerror(errno));
     } else {
-      LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s",
-               fname.c_str());
+      LOG_INFO("DiskAnn macOS: F_NOCACHE enabled for %s", fname.c_str());
     }
 
     if (::fcntl(this->file_desc, F_RDAHEAD, 0) == -1) {
-      LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)", fname.c_str(),
-               errno, ::strerror(errno));
+      LOG_WARN("fcntl(F_RDAHEAD, 0) failed for %s (errno=%d: %s)",
+               fname.c_str(), errno, ::strerror(errno));
     }
   }
 #endif

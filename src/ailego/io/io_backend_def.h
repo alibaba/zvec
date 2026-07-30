@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <ailego/io/libaio_loader.h>
 #include <zvec/ailego/io/io_backend.h>
 
@@ -78,16 +79,46 @@ class IOBackend {
   // Returns the loaded backend type.
   // Idempotent — if already loaded, returns immediately.
   IOBackendType available() {
-    if (type_ != IOBackendType::kPread) {
-      return type_;
-    }
-    return available(IOBackendType::kLibAio);
+    std::lock_guard<std::mutex> lock(mutex_);
+    return available_locked(IOBackendType::kLibAio);
   }
 
   // Try to load the requested backend.  Returns the loaded backend type
   // (may differ from requested if the load failed — falls back to kPread).
   // Idempotent — if the same backend is already loaded, returns immediately.
   IOBackendType available(IOBackendType requested) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return available_locked(requested);
+  }
+
+  bool is_pread() {
+    return available() == IOBackendType::kPread;
+  }
+
+  bool is_libaio() {
+    return available() == IOBackendType::kLibAio;
+  }
+
+  // Returns the loaded backend type.
+  IOBackendType type() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return type_;
+  }
+
+  // Human-readable name for the selected backend.
+  const char *name() const {
+    return IOBackendTypeName(type());
+  }
+
+  // Human-readable description for the selected backend.
+  const char *description() const {
+    return IOBackendDescription(type());
+  }
+
+ private:
+  IOBackend() = default;
+
+  IOBackendType available_locked(IOBackendType requested) {
     if (type_ == requested && type_ != IOBackendType::kPread) {
       return type_;
     }
@@ -104,32 +135,7 @@ class IOBackend {
     return type_;
   }
 
-  bool is_pread() {
-    return available() == IOBackendType::kPread;
-  }
-
-  bool is_libaio() {
-    return available() == IOBackendType::kLibAio;
-  }
-
-  // Returns the loaded backend type.
-  IOBackendType type() const {
-    return type_;
-  }
-
-  // Human-readable name for the selected backend.
-  const char *name() const {
-    return IOBackendTypeName(type_);
-  }
-
-  // Human-readable description for the selected backend.
-  const char *description() const {
-    return IOBackendDescription(type_);
-  }
-
- private:
-  IOBackend() = default;
-
+  mutable std::mutex mutex_;
   IOBackendType type_{IOBackendType::kPread};
 };
 

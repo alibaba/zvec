@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <mutex>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_context.h"
 #include "diskann_indexer.h"
@@ -149,6 +150,8 @@ class DiskAnnStreamer : public IndexStreamer {
   //! To share ctx across streamer/searcher, we need to update the context for
   //! current streamer/searcher
   int update_context(DiskAnnContext *ctx) const;
+  int ensure_compatible_context(ContextPointer &context,
+                                DiskAnnContext *&ctx) const;
 
  private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
@@ -166,7 +169,9 @@ class DiskAnnStreamer : public IndexStreamer {
   DiskAnnIndexer::Pointer diskann_indexer_{nullptr};
   DiskAnnSearcherEntity entity_{};
 
-  // Mutable members for get_vector_by_id (caches context and buffer)
+  // Fetches share the expensive I/O context, while returned MemoryBlocks own
+  // independent copies so their lifetime does not depend on this buffer.
+  mutable std::mutex fetch_mutex_;
   mutable ContextPointer fetch_ctx_{};
   mutable std::string fetch_vector_buffer_;
 

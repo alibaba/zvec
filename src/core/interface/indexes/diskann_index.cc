@@ -291,6 +291,17 @@ int DiskAnnIndex::_prepare_for_search(
   }
 
   context->set_topk(diskann_search_param->topk);
+  context->set_fetch_vector(diskann_search_param->fetch_vector);
+  if (diskann_search_param->filter) {
+    context->set_filter(*diskann_search_param->filter);
+  } else {
+    context->reset_filter();
+  }
+  if (diskann_search_param->radius > 0.0f) {
+    context->set_threshold(diskann_search_param->radius);
+  } else {
+    context->reset_threshold();
+  }
 
   // Propagate the query-time beam-search list size into the context. Must be
   // at least topk to keep enough candidates for a correct result.
