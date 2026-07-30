@@ -111,6 +111,45 @@ size_t Realtime::Gmtime(const char *format, char *buf, size_t len) {
   time_t now = time(0);
   return strftime(buf, len, format, gmtime(&now));
 }
+
+namespace {
+
+uint64_t FileTimeToTicks(FILETIME file_time) {
+  ULARGE_INTEGER value;
+  value.LowPart = file_time.dwLowDateTime;
+  value.HighPart = file_time.dwHighDateTime;
+  return value.QuadPart;
+}
+
+uint64_t CurrentThreadCpuTime100NanoSeconds(void) {
+  FILETIME creation_time;
+  FILETIME exit_time;
+  FILETIME kernel_time;
+  FILETIME user_time;
+  if (!GetThreadTimes(GetCurrentThread(), &creation_time, &exit_time,
+                      &kernel_time, &user_time)) {
+    return 0;
+  }
+  return FileTimeToTicks(kernel_time) + FileTimeToTicks(user_time);
+}
+
+}  // namespace
+
+uint64_t CPUtime::NanoSeconds(void) {
+  return CurrentThreadCpuTime100NanoSeconds() * 100u;
+}
+
+uint64_t CPUtime::MicroSeconds(void) {
+  return CurrentThreadCpuTime100NanoSeconds() / 10u;
+}
+
+uint64_t CPUtime::MilliSeconds(void) {
+  return CurrentThreadCpuTime100NanoSeconds() / 10000u;
+}
+
+uint64_t CPUtime::Seconds(void) {
+  return CurrentThreadCpuTime100NanoSeconds() / 10000000u;
+}
 #else
 uint64_t Monotime::NanoSeconds(void) {
   struct timespec tspec;

@@ -182,6 +182,9 @@ class CpuFeatures {
   // ！Running on a hypervisor
   static bool HYPERVISOR(void);
 
+  //! ARM NEON (ASIMD) support
+  static bool NEON(void);
+
   //! Intrinsics of compiling
   static const char *Intrinsics(void);
 
@@ -361,6 +364,9 @@ class CpuFeatures {
 
     // ！Running on a hypervisor
     bool HYPERVISOR = CpuFeatures::HYPERVISOR();
+
+    //! ARM NEON (ASIMD) support
+    bool NEON = CpuFeatures::NEON();
   };
   static StaticFlags static_flags_;
 };

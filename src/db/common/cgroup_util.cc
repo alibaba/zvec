@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include "db/common/cgroup_util.h"
+#include <charconv>
+#include <sstream>
+#include <system_error>
 
 namespace zvec {
 
@@ -114,19 +117,15 @@ bool CgroupUtil::readCpuCgroup() {
   // cgroup v2
   std::ifstream file("/sys/fs/cgroup/cpu.max");
   if (file.is_open()) {
-    uint64_t quota, period;
-    char slash;
-    file >> quota >> slash >> period;
-    file.close();
+    std::string cpu_max;
+    std::getline(file, cpu_max);
 
-    if (quota != std::numeric_limits<uint64_t>::max() && quota != 0 &&
-        period > 0) {
-      cpu_cores_ =
-          static_cast<int>(std::ceil(static_cast<double>(quota) / period));
+    int cpu_cores = 0;
+    if (parseCpuMax(cpu_max, &cpu_cores)) {
+      cpu_cores_ = cpu_cores;
       return true;
-    } else {
-      return false;
     }
+    return false;
   }
 
   // cgroup v1
@@ -148,6 +147,43 @@ bool CgroupUtil::readCpuCgroup() {
   }
 #endif
   return false;
+}
+
+bool CgroupUtil::parseCpuMax(const std::string &cpu_max, int *cpu_cores) {
+  if (cpu_cores == nullptr) {
+    return false;
+  }
+
+  std::istringstream stream(cpu_max);
+  std::string quota_token;
+  uint64_t period = 0;
+  if (!(stream >> quota_token >> period) || period == 0) {
+    return false;
+  }
+
+  std::string trailing_token;
+  if (stream >> trailing_token) {
+    return false;
+  }
+  if (quota_token == "max") {
+    return false;
+  }
+
+  uint64_t quota = 0;
+  const auto result = std::from_chars(
+      quota_token.data(), quota_token.data() + quota_token.size(), quota);
+  if (result.ec != std::errc{} ||
+      result.ptr != quota_token.data() + quota_token.size() || quota == 0) {
+    return false;
+  }
+
+  const uint64_t cores = quota / period + (quota % period != 0 ? 1 : 0);
+  if (cores > static_cast<uint64_t>((std::numeric_limits<int>::max)())) {
+    return false;
+  }
+
+  *cpu_cores = static_cast<int>(cores);
+  return true;
 }
 
 void CgroupUtil::updateMemoryLimit() {
