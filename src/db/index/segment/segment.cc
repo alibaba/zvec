@@ -50,6 +50,7 @@
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_params.h"
+#include "db/index/common/doc_field_converter.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/meta.h"
 #include "db/index/segment/segment_helper.h"
@@ -294,9 +295,6 @@ class SegmentImpl : public Segment,
   template <typename ValueType>
   Status InsertVector(VectorColumnIndexer::Ptr &indexer, const Doc &doc,
                       const FieldSchema::Ptr &field);
-  Status ConvertVectorDataBufferToDocField(
-      const FieldSchema::Ptr &field,
-      const vector_column_params::VectorDataBuffer &buf, Doc *doc);
 
   Status insert_scalar_indexer(Doc &doc);
   Status insert_fts_indexer(Doc &doc);
@@ -994,110 +992,6 @@ Status SegmentImpl::Delete(uint64_t g_doc_id) {
   return internal_delete(mutable_doc);
 }
 
-template <typename T>
-Status DenseVectorDataConverter(
-    const FieldSchema::Ptr &field,
-    const vector_column_params::DenseVectorBuffer &buffer, Doc *doc) {
-  const T *data_ptr = reinterpret_cast<const T *>(buffer.data.data());
-  size_t data_size = buffer.data.size() / sizeof(T);
-  std::vector<T> vector_data(data_ptr, data_ptr + data_size);
-  doc->set(field->name(), vector_data);
-  return Status::OK();
-}
-
-template <typename IndexType, typename ValueType>
-Status SparseVectorDataConverter(
-    const FieldSchema::Ptr &field,
-    const vector_column_params::SparseVectorBuffer &buffer, Doc *doc) {
-  const IndexType *indices_ptr =
-      reinterpret_cast<const IndexType *>(buffer.indices.data());
-  size_t indices_size = buffer.indices.size() / sizeof(IndexType);
-  std::vector<IndexType> indices_vector(indices_ptr,
-                                        indices_ptr + indices_size);
-
-  const ValueType *values_ptr =
-      reinterpret_cast<const ValueType *>(buffer.values.data());
-  size_t values_size = buffer.values.size() / sizeof(ValueType);
-  std::vector<ValueType> values_vector(values_ptr, values_ptr + values_size);
-
-  std::pair<std::vector<IndexType>, std::vector<ValueType>> sparse_vector_pair(
-      std::move(indices_vector), std::move(values_vector));
-  doc->set(field->name(), sparse_vector_pair);
-  return Status::OK();
-}
-
-
-Status SegmentImpl::ConvertVectorDataBufferToDocField(
-    const FieldSchema::Ptr &field,
-    const vector_column_params::VectorDataBuffer &buf, Doc *doc) {
-  Status status;
-  if (std::holds_alternative<vector_column_params::DenseVectorBuffer>(
-          buf.vector_buffer)) {
-    const auto &dense_buffer =
-        std::get<vector_column_params::DenseVectorBuffer>(buf.vector_buffer);
-    switch (field->data_type()) {
-      case DataType::VECTOR_BINARY32: {
-        status = DenseVectorDataConverter<uint32_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_BINARY64: {
-        status = DenseVectorDataConverter<uint64_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_FP16: {
-        status = DenseVectorDataConverter<float16_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_FP32: {
-        status = DenseVectorDataConverter<float>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_FP64: {
-        status = DenseVectorDataConverter<double>(field, dense_buffer, doc);
-        break;
-      }
-      // case DataType::VECTOR_INT4: {
-      //   status = DenseVectorDataConverter<int8_t>(field, dense_buffer, doc);
-      //   break;
-      // }
-      case DataType::VECTOR_INT8: {
-        status = DenseVectorDataConverter<int8_t>(field, dense_buffer, doc);
-        break;
-      }
-      case DataType::VECTOR_INT16: {
-        status = DenseVectorDataConverter<int16_t>(field, dense_buffer, doc);
-        break;
-      }
-      default:
-        return Status::InvalidArgument(
-            "Unsupported dense vector element type: ", field->data_type());
-    }
-  } else if (std::holds_alternative<vector_column_params::SparseVectorBuffer>(
-                 buf.vector_buffer)) {
-    const auto &sparse_buffer =
-        std::get<vector_column_params::SparseVectorBuffer>(buf.vector_buffer);
-    switch (field->data_type()) {
-      case DataType::SPARSE_VECTOR_FP16: {
-        status = SparseVectorDataConverter<uint32_t, float16_t>(
-            field, sparse_buffer, doc);
-        break;
-      }
-      case DataType::SPARSE_VECTOR_FP32: {
-        status = SparseVectorDataConverter<uint32_t, float>(field,
-                                                            sparse_buffer, doc);
-        break;
-      }
-      default:
-        return Status::InvalidArgument(
-            "Unsupported sparse vector element type: ", field->data_type());
-    }
-  } else {
-    return Status::InvalidArgument("Unsupported vector buffer type");
-  }
-
-  return status;
-}
-
 
 Doc::Ptr SegmentImpl::Fetch(
     uint64_t g_doc_id,
@@ -1144,7 +1038,7 @@ Doc::Ptr SegmentImpl::Fetch(
     }
   }
 
-  // Build result schema
+  // Validate that every forward column has a convertible Arrow field
   std::vector<std::shared_ptr<arrow::Field>> fields;
   for (size_t i = 0; i < forward_columns.size(); ++i) {
     const auto &col = forward_columns[i];
@@ -1164,7 +1058,6 @@ Doc::Ptr SegmentImpl::Fetch(
       fields.push_back(std::move(arrow_field));
     }
   }
-  auto result_schema = std::make_shared<arrow::Schema>(fields);
 
   // fetch forward columns
   auto exec_batch = fetch(forward_columns, segment_doc_id);
@@ -1207,227 +1100,30 @@ Doc::Ptr SegmentImpl::Fetch(
   // other forward columns
   for (int col_idx = 2; col_idx < exec_batch->num_values(); ++col_idx) {
     auto column_name = forward_columns[col_idx];
-    auto column = result_schema->GetFieldByName(column_name);
     auto &column_scalar = (*exec_batch)[col_idx].scalar();
     if (column_scalar == nullptr || column_scalar->is_valid == false) {
       continue;
     }
-    switch (column->type()->id()) {
-      case arrow::Type::STRING: {
-        auto str_scalar =
-            std::dynamic_pointer_cast<arrow::StringScalar>(column_scalar);
-        doc->set(column_name, std::string(str_scalar->view()));
-        break;
-      }
-      case arrow::Type::INT32: {
-        auto int32_scalar =
-            std::dynamic_pointer_cast<arrow::Int32Scalar>(column_scalar);
-        doc->set(column_name, int32_scalar->value);
-        break;
-      }
-      case arrow::Type::INT64: {
-        auto int64_scalar =
-            std::dynamic_pointer_cast<arrow::Int64Scalar>(column_scalar);
-        doc->set(column_name, int64_scalar->value);
-        break;
-      }
-      case arrow::Type::UINT32: {
-        auto uint32_scalar =
-            std::dynamic_pointer_cast<arrow::UInt32Scalar>(column_scalar);
-        doc->set(column_name, uint32_scalar->value);
-        break;
-      }
-      case arrow::Type::UINT64: {
-        auto uint64_scalar =
-            std::dynamic_pointer_cast<arrow::UInt64Scalar>(column_scalar);
-        doc->set(column_name, uint64_scalar->value);
-        break;
-      }
-      case arrow::Type::DOUBLE: {
-        auto double_scalar =
-            std::dynamic_pointer_cast<arrow::DoubleScalar>(column_scalar);
-        doc->set(column_name, double_scalar->value);
-        break;
-      }
-      case arrow::Type::FLOAT: {
-        auto float_scalar =
-            std::dynamic_pointer_cast<arrow::FloatScalar>(column_scalar);
-        doc->set(column_name, float_scalar->value);
-        break;
-      }
-      case arrow::Type::BOOL: {
-        auto bool_scalar =
-            std::dynamic_pointer_cast<arrow::BooleanScalar>(column_scalar);
-        doc->set(column_name, bool_scalar->value);
-        break;
-      }
-      case arrow::Type::BINARY: {
-        auto binary_scalar =
-            std::dynamic_pointer_cast<arrow::BinaryScalar>(column_scalar);
-        doc->set(column_name, std::string(binary_scalar->view()));
-        break;
-      }
-      case arrow::Type::LIST: {
-        auto list_scalar =
-            std::dynamic_pointer_cast<arrow::ListScalar>(column_scalar);
-        if (list_scalar && list_scalar->value) {
-          auto list_type =
-              std::dynamic_pointer_cast<arrow::ListType>(column->type());
-          if (list_type) {
-            auto value_type = list_type->value_type();
-            switch (value_type->id()) {
-              case arrow::Type::BOOL: {
-                std::vector<bool> values;
-                auto array = std::dynamic_pointer_cast<arrow::BooleanArray>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->Value(i));
-                    } else {
-                      LOG_ERROR(
-                          "Invalid arrow::boolean array value at index %zu",
-                          (size_t)i);
-                      continue;
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::INT32: {
-                std::vector<int32_t> values;
-                auto array = std::dynamic_pointer_cast<arrow::Int32Array>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->Value(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::INT64: {
-                std::vector<int64_t> values;
-                auto array = std::dynamic_pointer_cast<arrow::Int64Array>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->Value(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::UINT32: {
-                std::vector<uint32_t> values;
-                auto array = std::dynamic_pointer_cast<arrow::UInt32Array>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->Value(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::UINT64: {
-                std::vector<uint64_t> values;
-                auto array = std::dynamic_pointer_cast<arrow::UInt64Array>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->Value(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::FLOAT: {
-                std::vector<float> values;
-                auto array = std::dynamic_pointer_cast<arrow::FloatArray>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->Value(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::DOUBLE: {
-                std::vector<double> values;
-                auto array = std::dynamic_pointer_cast<arrow::DoubleArray>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->Value(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::STRING: {
-                std::vector<std::string> values;
-                auto array = std::dynamic_pointer_cast<arrow::StringArray>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->GetString(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              case arrow::Type::BINARY: {
-                std::vector<std::string> values;
-                auto array = std::dynamic_pointer_cast<arrow::BinaryArray>(
-                    list_scalar->value);
-                if (array) {
-                  values.reserve(array->length());
-                  for (int64_t i = 0; i < array->length(); ++i) {
-                    if (array->IsValid(i)) {
-                      values.push_back(array->GetString(i));
-                    }
-                  }
-                  doc->set(column_name, values);
-                }
-                break;
-              }
-              default:
-                LOG_WARN("Unsupported list element type: %s",
-                         value_type->ToString().c_str());
-                break;
-            }
-          }
-        }
-        break;
-      }
-      default:
-        LOG_ERROR("Unsupported type: %s", column_name.c_str());
-        break;
+    auto *field = collection_schema_->get_field(column_name);
+    if (field == nullptr) {
+      LOG_ERROR("Field not found in schema: %s", column_name.c_str());
+      continue;
+    }
+    // Box the single-value scalar as a one-row array and reuse the shared
+    // row-level converter, so the type coverage lives in one place
+    // (doc_field_converter) together with DocIterator and the SQL engine.
+    auto array_result = arrow::MakeArrayFromScalar(*column_scalar, 1);
+    if (!array_result.ok()) {
+      LOG_ERROR("Box scalar failed for column %s: %s", column_name.c_str(),
+                array_result.status().ToString().c_str());
+      continue;
+    }
+    auto s = ConvertArrowRowToDocField(array_result.ValueOrDie(), 0, *field,
+                                       doc.get());
+    if (!s.ok()) {
+      // Keep Fetch's lenient contract: log and continue with other fields.
+      LOG_ERROR("Convert field %s failed: %s", column_name.c_str(),
+                s.message().c_str());
     }
   }
 
