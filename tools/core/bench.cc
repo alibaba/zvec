@@ -35,12 +35,13 @@ class Bench {
         retrieval_mode_{retrieval_mode},
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(false);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
       pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
@@ -339,12 +340,13 @@ class SparseBench {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(false);
+      pool_ = make_shared<ThreadPool>();
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
     } else {
       pool_ = make_shared<ThreadPool>(threads_, false);
+      threads_ = pool_->count();
       cout << "Using thread pool count[" << threads_ << "]" << endl;
     }
     if (batch_count_ < 1) {
