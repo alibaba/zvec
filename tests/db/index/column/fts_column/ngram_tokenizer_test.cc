@@ -39,7 +39,8 @@ TokenizerPipelinePtr make_pipeline(const std::string &extra_params = "") {
   params.tokenizer_name = "ngram";
   params.filters.clear();
   params.extra_params = extra_params;
-  return TokenizerFactory::create(params);
+  auto pipeline = TokenizerFactory::create(params);
+  return pipeline.has_value() ? pipeline.value() : nullptr;
 }
 
 class NGramTokenizerTest : public ::testing::Test {
@@ -179,9 +180,47 @@ TEST(NGramTokenizerConfigTest, InvalidConfigFailsPipelineCreation) {
   EXPECT_EQ(make_pipeline(R"({"ngram_min":0})"), nullptr);
   EXPECT_EQ(make_pipeline(R"({"ngram_max":0})"), nullptr);
   EXPECT_EQ(make_pipeline(R"({"ngram_min":3,"ngram_max":2})"), nullptr);
+  EXPECT_EQ(make_pipeline(R"({"ngram_min":1,"ngram_max":3})"), nullptr);
   EXPECT_EQ(make_pipeline(R"({"token_chars":"letter"})"), nullptr);
   EXPECT_EQ(make_pipeline(R"({"token_chars":[1]})"), nullptr);
   EXPECT_EQ(make_pipeline(R"({"token_chars":["custom"]})"), nullptr);
+}
+
+TEST(NGramTokenizerConfigTest, FactoryPreservesValidationError) {
+  FtsIndexParams params;
+  params.tokenizer_name = "ngram";
+  params.extra_params = R"({"ngram_min":1,"ngram_max":3})";
+  auto pipeline = TokenizerFactory::create(params);
+
+  EXPECT_FALSE(pipeline.has_value());
+  EXPECT_NE(
+      pipeline.error().message().find("ngram_max - ngram_min must be <= 1"),
+      std::string::npos);
+}
+
+TEST_F(NGramTokenizerTest, GeneratedTokenCountIsBounded) {
+  constexpr size_t kExpectedMaxGeneratedTokenCount = 262144;
+  std::string text(kExpectedMaxGeneratedTokenCount + 2, 'a');
+
+  auto tokens = tokenize(text);
+
+  EXPECT_EQ(tokens.size(), kExpectedMaxGeneratedTokenCount);
+}
+
+TEST(NGramTokenizerBudgetTest, GeneratedTokenBytesAreBounded) {
+  constexpr size_t kNGramLength = 128;
+  constexpr size_t kExpectedMaxGeneratedTokenBytes = 16 * 1024 * 1024;
+  constexpr size_t kExpectedTokenCount =
+      kExpectedMaxGeneratedTokenBytes / kNGramLength;
+  auto pipeline = make_pipeline(
+      R"({"ngram_min":128,"ngram_max":128,"token_chars":["letter"]})");
+  ASSERT_NE(pipeline, nullptr);
+  std::string text(kExpectedTokenCount + kNGramLength, 'a');
+
+  auto tokens = pipeline->process(text);
+
+  ASSERT_EQ(tokens.size(), kExpectedTokenCount);
+  EXPECT_EQ(tokens.back().text.size(), kNGramLength);
 }
 
 }  // namespace

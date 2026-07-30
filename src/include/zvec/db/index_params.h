@@ -728,6 +728,7 @@ class VamanaIndexParams : public VectorIndexParams {
  *     ngram:
  *       - "ngram_min" (positive integer, default 2).
  *       - "ngram_max" (positive integer, default 2).
+ *         ngram_max - ngram_min must not exceed 1.
  *       - "token_chars" (array of "letter", "digit", "whitespace",
  *         "punctuation", "symbol"; default [] keeps all valid UTF-8
  *         characters). custom_token_chars is not supported.
