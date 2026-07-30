@@ -348,12 +348,15 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   }
 
   //! Create a dedicated build metric when the provider meta differs from
-  //! the index meta, so build distances run in the original vector space
+  //! the index meta in layout or metric, so build distances run in the
+  //! original vector space
   if (provider_) {
-    if (provider_meta_.data_type() != meta_.data_type() ||
+    const bool layout_differs =
+        provider_meta_.data_type() != meta_.data_type() ||
         provider_meta_.dimension() != meta_.dimension() ||
-        provider_meta_.element_size() != meta_.element_size()) {
-      const bool use_index_metric = provider_meta_.metric_name().empty();
+        provider_meta_.element_size() != meta_.element_size();
+    const bool use_index_metric = provider_meta_.metric_name().empty();
+    if (layout_differs || !use_index_metric) {
       const std::string &metric_name =
           use_index_metric ? meta_.metric_name() : provider_meta_.metric_name();
       const ailego::Params &metric_params =
