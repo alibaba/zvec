@@ -53,7 +53,10 @@ int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
 
   uint32_t neighbor_cnt = 0;
-  std::vector<diskann_id_t> neighbor{max_build_degree_, 0};
+  // NOTE: use parentheses, not braces. Brace-init would invoke the
+  // initializer_list constructor and create a 2-element vector
+  // {max_build_degree_, 0}, causing a heap over-read below.
+  std::vector<diskann_id_t> neighbor(max_build_degree_, 0);
 
   neighbors_buffer_.append(reinterpret_cast<const char *>(&neighbor_cnt),
                            sizeof(uint32_t));
