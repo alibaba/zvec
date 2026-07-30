@@ -290,7 +290,11 @@ int Index::Init(const BaseIndexParam &param) {
     return core::IndexError_Runtime;
   }
 
-  if (CreateAndInitConverterReformer(param.quantizer_param, param) != 0) {
+  // an absent quantizer param behaves the same as a kNone one
+  const auto quantizer_param = param.quantizer_param
+                                   ? param.quantizer_param
+                                   : std::make_shared<QuantizerParam>();
+  if (CreateAndInitConverterReformer(*quantizer_param, param) != 0) {
     LOG_ERROR("Failed to create and init converter");
     return core::IndexError_Runtime;
   }
