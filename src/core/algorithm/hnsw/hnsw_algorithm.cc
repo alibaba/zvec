@@ -468,7 +468,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
     if (topk_heap.empty()) {
       topk_heap.limit(ctx->group_topk());
     }
-    topk_heap.emplace_back(id, score);
+    topk_heap.emplace(id, score);
   }
 
   // stage 2, expand to reach group num as possible
@@ -492,7 +492,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
       float score = topk[i].second;
 
       visit.set_visited(id);
-      candidates.emplace_back(id, score);
+      candidates.emplace(id, score);
     }
 
     // do expand
@@ -551,7 +551,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
           if (topk_heap.empty()) {
             topk_heap.limit(ctx->group_topk());
           }
-          topk_heap.emplace_back(node, cur_dist);
+          topk_heap.emplace(node, cur_dist);
 
           if (group_topk_heaps.size() >= ctx->group_num()) {
             break;
