@@ -27,9 +27,6 @@ namespace core {
 
 HnswStreamer::HnswStreamer() = default;
 
-HnswStreamer::HnswStreamer(IndexProvider::Pointer provider)
-    : provider_(std::move(provider)) {}
-
 HnswStreamer::~HnswStreamer() {
   if (state_ == STATE_INITED || state_ == STATE_OPENED) {
     this->cleanup();
@@ -350,6 +347,46 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     search_batch_distance_ = metric_->query_metric()->batch_distance();
   }
 
+  //! When a provider is bound, the graph is built from the original vectors
+  //! it supplies, described by the provider meta passed in along with it. A
+  //! dedicated metric is created for the build path when the provider meta
+  //! differs from the index meta. Search still runs in the index vector
+  //! space.
+  if (provider_) {
+    if (provider_meta_.dimension() != meta_.dimension()) {
+      LOG_ERROR("Provider dimension %u mismatch with index dimension %u",
+                provider_meta_.dimension(), meta_.dimension());
+      return IndexError_Mismatch;
+    }
+    if (provider_meta_.data_type() != meta_.data_type() ||
+        provider_meta_.element_size() != meta_.element_size()) {
+      //! Fall back to the index metric when the provider meta carries none
+      const bool use_index_metric = provider_meta_.metric_name().empty();
+      const std::string &metric_name =
+          use_index_metric ? meta_.metric_name() : provider_meta_.metric_name();
+      const ailego::Params &metric_params =
+          use_index_metric ? meta_.metric_params()
+                           : provider_meta_.metric_params();
+      provider_metric_ = IndexFactory::CreateMetric(metric_name);
+      if (!provider_metric_) {
+        LOG_ERROR("Failed to create provider metric %s", metric_name.c_str());
+        return IndexError_NoExist;
+      }
+      ret = provider_metric_->init(provider_meta_, metric_params);
+      if (ret != 0) {
+        LOG_ERROR("Failed to init provider metric, ret=%d", ret);
+        return ret;
+      }
+      if (!provider_metric_->distance() ||
+          !provider_metric_->batch_distance()) {
+        LOG_ERROR("Invalid provider metric distance");
+        return IndexError_InvalidArgument;
+      }
+      add_distance_ = provider_metric_->distance();
+      add_batch_distance_ = provider_metric_->batch_distance();
+    }
+  }
+
   // Create algorithm based on entity storage mode
   switch (entity_->storage_mode()) {
     case HnswStorageMode::kBufferPool:
@@ -566,6 +603,21 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
     return ret;
   }
 
+  //! Build distances are computed in the original vector space, so the
+  //! query must be the original vector fetched from the provider
+  IndexStorage::MemoryBlock original_query_block;
+  if (ailego_unlikely(provider_ != nullptr)) {
+    key_t key = entity_->get_key(id);
+    if (ailego_unlikely(key == kInvalidKey ||
+                        provider_->get_vector(key, original_query_block) !=
+                            0)) {
+      LOG_ERROR("Failed to get original vector from provider, id=%u", id);
+      (*stats_.mutable_discarded_count())++;
+      return IndexError_NoExist;
+    }
+    ctx->reset_query(original_query_block.data());
+  }
+
   ret = alg_->add_node(id, level, ctx);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("Hnsw steamer add node failed");
@@ -629,6 +681,20 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   //! build graph from the original vectors of provider when it is set
   ctx->set_provider(provider_);
+
+  //! Build distances are computed in the original vector space, so the
+  //! query must be the original vector fetched from the provider
+  IndexStorage::MemoryBlock original_query_block;
+  if (ailego_unlikely(provider_ != nullptr)) {
+    ret = provider_->get_vector(pkey, original_query_block);
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Failed to get original vector from provider, key=%llu",
+                static_cast<unsigned long long>(pkey));
+      (*stats_.mutable_discarded_count())++;
+      return ret;
+    }
+    ctx->reset_query(original_query_block.data());
+  }
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);

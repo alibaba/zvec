@@ -380,7 +380,11 @@ TEST_F(HnswStreamerTest, TestBuildFromOriginalVectorProvider) {
     ASSERT_TRUE(provider->emplace(i, vec));
   }
 
-  IndexStreamer::Pointer streamer = std::make_shared<HnswStreamer>(provider);
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_TRUE(streamer != nullptr);
+  std::dynamic_pointer_cast<HnswStreamer>(streamer)->set_provider(
+      provider, *index_meta_ptr_);
 
   ailego::Params params;
   params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 10);
@@ -421,6 +425,103 @@ TEST_F(HnswStreamerTest, TestBuildFromOriginalVectorProvider) {
     }
     ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, knnCtx));
     ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linearCtx));
+
+    auto &knnResult = knnCtx->result();
+    ASSERT_EQ(topk, knnResult.size());
+    topk1Hits += i == knnResult[0].key();
+    queryCnt++;
+
+    auto &linearResult = linearCtx->result();
+    ASSERT_EQ(topk, linearResult.size());
+    ASSERT_EQ(i, linearResult[0].key());
+
+    for (size_t k = 0; k < topk; ++k) {
+      totalCnts++;
+      for (size_t j = 0; j < topk; ++j) {
+        if (linearResult[j].key() == knnResult[k].key()) {
+          totalHits++;
+          break;
+        }
+      }
+    }
+  }
+  float recall = totalHits * 1.0f / totalCnts;
+  float topk1Recall = topk1Hits * 1.0f / queryCnt;
+  EXPECT_GT(recall, 0.90f);
+  EXPECT_GT(topk1Recall, 0.95f);
+}
+
+TEST_F(HnswStreamerTest, TestBuildFromProviderWithMismatchedMeta) {
+  // Original vectors are FP32 while the index stores FP16, the streamer
+  // should derive the original meta from the provider and compute build
+  // distances in the FP32 space
+  auto provider =
+      make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dim);
+  size_t cnt = 2000UL;
+  // Keep values small enough that FP16 squared-euclidean distances do not
+  // overflow the half-precision range during search
+  const float scale = 1.0f / 64;
+  for (size_t i = 0; i < cnt; i++) {
+    NumericalVector<float> vec(dim);
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = i * scale;
+    }
+    ASSERT_TRUE(provider->emplace(i, vec));
+  }
+
+  IndexStreamer::Pointer streamer =
+      IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_TRUE(streamer != nullptr);
+  // The provider meta is passed in explicitly, without a metric so the
+  // build path falls back to the index metric in the original space
+  IndexMeta provider_meta(IndexMeta::DataType::DT_FP32, dim);
+  std::dynamic_pointer_cast<HnswStreamer>(streamer)->set_provider(
+      provider, provider_meta);
+
+  IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, dim);
+  fp16_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+
+  ailego::Params params;
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 10);
+  params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 16);
+  params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 10);
+  params.set(PARAM_HNSW_STREAMER_EF, 5);
+  params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 1000U);
+  ailego::Params stg_params;
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "TestBuildFromProviderFp16.index", true));
+  ASSERT_EQ(0, streamer->init(fp16_meta, params));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  auto ctx = streamer->create_context();
+  ASSERT_TRUE(!!ctx);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP16, dim);
+  NumericalVector<uint16_t> fp16_vec(dim);
+  for (auto it = provider->create_iterator(); it->is_valid(); it->next()) {
+    const float *data = static_cast<const float *>(it->data());
+    for (size_t j = 0; j < dim; ++j) {
+      fp16_vec[j] = ailego::FloatHelper::ToFP16(data[j]);
+    }
+    ASSERT_EQ(0, streamer->add_impl(it->key(), fp16_vec.data(), qmeta, ctx));
+  }
+  streamer->flush(0UL);
+
+  auto linearCtx = streamer->create_context();
+  auto knnCtx = streamer->create_context();
+  size_t topk = 100;
+  linearCtx->set_topk(topk);
+  knnCtx->set_topk(topk);
+  int totalHits = 0;
+  int totalCnts = 0;
+  int topk1Hits = 0;
+  int queryCnt = 0;
+  for (size_t i = 0; i < cnt; i += 10) {
+    for (size_t j = 0; j < dim; ++j) {
+      fp16_vec[j] = ailego::FloatHelper::ToFP16(i * scale);
+    }
+    ASSERT_EQ(0, streamer->search_impl(fp16_vec.data(), qmeta, knnCtx));
+    ASSERT_EQ(0, streamer->search_bf_impl(fp16_vec.data(), qmeta, linearCtx));
 
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());

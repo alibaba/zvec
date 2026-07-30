@@ -352,6 +352,9 @@ struct HNSWIndexParam : public BaseIndexParam {
   // instead of the vectors stored in the index. Runtime only, not
   // serialized.
   core::IndexProvider::Pointer provider = nullptr;
+  // Meta of the original vectors supplied by the provider. Required when
+  // provider is set.
+  core::IndexMeta provider_meta{};
 
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}

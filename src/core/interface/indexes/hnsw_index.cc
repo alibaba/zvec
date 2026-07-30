@@ -114,10 +114,17 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                               param_.use_contiguous_memory);
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
                               param_.use_external_vector);
+    streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
     // build graph from the original vectors of provider when it is set
-    auto streamer = std::make_shared<core::HnswStreamer>();
-    streamer->set_provider(param_.provider);
-    streamer_ = streamer;
+    if (param_.provider) {
+      auto hnsw_streamer =
+          std::dynamic_pointer_cast<core::HnswStreamer>(streamer_);
+      if (ailego_unlikely(!hnsw_streamer)) {
+        LOG_ERROR("Failed to cast streamer to HnswStreamer");
+        return core::IndexError_Cast;
+      }
+      hnsw_streamer->set_provider(param_.provider, param_.provider_meta);
+    }
   }
 
   if (ailego_unlikely(!streamer_)) {
