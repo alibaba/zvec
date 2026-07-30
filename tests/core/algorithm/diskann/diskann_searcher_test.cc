@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <set>
 #include <ailego/math/distance.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
@@ -593,15 +594,20 @@ TEST_F(DiskAnnSearcherTest, TestGroup) {
   total_time += t2 - t1;
 
   auto &group_result = ctx->group_result();
+  ASSERT_EQ(group_num, group_result.size());
 
+  std::set<std::string> seen_group_ids;
   for (uint32_t i = 0; i < group_result.size(); ++i) {
     const std::string &group_id = group_result[i].group_id();
     auto &result = group_result[i].docs();
 
+    ASSERT_TRUE(seen_group_ids.insert(group_id).second);
     ASSERT_GT(result.size(), 0);
+    ASSERT_LE(result.size(), group_topk);
     std::cout << "Group ID: " << group_id << std::endl;
 
     for (uint32_t j = 0; j < result.size(); ++j) {
+      EXPECT_EQ(group_id, groupbyFunc(result[j].key()));
       std::cout << "\tKey: " << result[j].key() << std::fixed
                 << std::setprecision(3) << ", Score: " << result[j].score()
                 << std::endl;
@@ -753,6 +759,12 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
     float vector_value = *((float *)(knnResult[0].vector_string().data()));
     ASSERT_EQ(vector_value, i);
   }
+
+  ASSERT_EQ(0, ::truncate(path.c_str(), 0));
+  std::string vector_after_truncate;
+  EXPECT_EQ(IndexError_Runtime, searcher->get_vector(doc_cnt - 1, linearCtx,
+                                                     vector_after_truncate));
+  EXPECT_TRUE(vector_after_truncate.empty());
 }
 
 TEST_F(DiskAnnSearcherTest, TestRnnSearch) {

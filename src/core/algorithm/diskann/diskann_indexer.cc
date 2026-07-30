@@ -709,8 +709,13 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
 
     io_timer.reset();
 
-    reader_->read(frontier_read_reqs, io_ctx);
+    int read_ret = reader_->read(frontier_read_reqs, io_ctx);
     stats.io_us += io_timer.micro_seconds();
+    if (read_ret != 0) {
+      LOG_ERROR("get_vector: reader_->read failed, ret=%d", read_ret);
+      ctx->set_error(true);
+      return IndexError_Runtime;
+    }
 
     uint8_t *node_disk_buf = DiskAnnUtil::offset_to_node(
         node_per_sector_, max_node_size_, frontier_neighbor.second, id);
@@ -982,7 +987,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
       group_topk_heap.limit(ctx->group_topk());
     }
 
-    topk_heap.emplace(id, info);
+    group_topk_heap.emplace(id, info);
   }
 
   // stage 2, expand to reach group num as possible
@@ -1086,8 +1091,14 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         io_timer.reset();
 
-        reader_->read(frontier_read_reqs, io_ctx);  // synchronous IO linux
+        int read_ret = reader_->read(frontier_read_reqs, io_ctx);
         stats.io_us += io_timer.micro_seconds();
+        if (read_ret != 0) {
+          LOG_ERROR("cached_beam_search_by_group: reader_->read failed, ret=%d",
+                    read_ret);
+          ctx->set_error(true);
+          return IndexError_Runtime;
+        }
       }
 
       for (auto &cached_neighbor : cached_neighbors) {
