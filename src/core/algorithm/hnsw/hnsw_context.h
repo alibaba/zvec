@@ -143,11 +143,20 @@ class HnswContext : public IndexContext {
     return vector_source_;
   }
 
-  //! Bind a provider that supplies the original vectors used to build the
-  //! graph. Forwarded to the dist calculator, which fetches vectors from
-  //! the provider (by primary key) instead of the entity when set.
+  //! Bind a provider of the original vectors used to build the graph
   inline void set_provider(IndexProvider::Pointer provider) {
     dc_.set_provider(std::move(provider));
+  }
+
+  inline void update_dist_caculator_dim(uint32_t dim) {
+    dc_.set_dim(dim);
+  }
+
+  //! Reset the query without applying the index metric query preprocess,
+  //! used for original vectors from a provider
+  inline void reset_query_raw(const void *query) {
+    dc_.reset_query(query);
+    dc_.clear_compare_cnt();
   }
 
   inline void resize_results(size_t size) {

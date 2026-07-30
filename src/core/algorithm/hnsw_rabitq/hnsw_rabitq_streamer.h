@@ -42,6 +42,13 @@ class HnswRabitqStreamer : public IndexStreamer {
     provider_ = std::move(provider);
   }
 
+  //! Provider binding through the base streamer interface, meta is ignored
+  int set_provider(IndexProvider::Pointer provider,
+                   const IndexMeta & /*provider_meta*/) override {
+    provider_ = std::move(provider);
+    return 0;
+  }
+
   void set_reformer(IndexReformer::Pointer reformer) {
     reformer_ = std::dynamic_pointer_cast<RabitqReformer>(reformer);
   }

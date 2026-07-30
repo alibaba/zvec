@@ -169,6 +169,33 @@ int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
 #endif
 }
 
+//! Handle the general [BuildFromOriginal] option: bind a provider of the
+//! original vectors so the graph is built from them
+int setup_build_from_original(const string &builder_class,
+                              const IndexStreamer::Pointer &streamer,
+                              const IndexHolder::Pointer &build_holder,
+                              const IndexMeta &input_meta) {
+  //! rabitq provider is already bound in setup_hnsw_rabitq_streamer
+  if (builder_class == "HnswRabitqStreamer") {
+    cout << "HnswRabitqStreamer always builds graph from original vectors"
+         << endl;
+    return 0;
+  }
+  IndexProvider::Pointer provider =
+      std::dynamic_pointer_cast<IndexProvider>(build_holder);
+  if (!provider) {
+    cerr << "Failed to cast build holder to provider" << endl;
+    return -1;
+  }
+  if (!streamer || streamer->set_provider(provider, input_meta) != 0) {
+    cerr << "[BuildFromOriginal] is not supported by builder class "
+         << builder_class << endl;
+    return -1;
+  }
+  cout << "Build " << builder_class << " graph from original vectors" << endl;
+  return 0;
+}
+
 bool check_config(YAML::Node &config_root) {
   auto common = config_root["BuilderCommon"];
   if (!common) {
@@ -1103,6 +1130,14 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   if (builder_class == "HnswRabitqStreamer") {
     if (setup_hnsw_rabitq_streamer(streamer, input_meta, config_root,
                                    converter_name, &cv_build_holder) != 0) {
+      return -1;
+    }
+  }
+
+  if (config_common["BuildFromOriginal"] &&
+      config_common["BuildFromOriginal"].as<bool>()) {
+    if (setup_build_from_original(builder_class, streamer, build_holder,
+                                  input_meta) != 0) {
       return -1;
     }
   }

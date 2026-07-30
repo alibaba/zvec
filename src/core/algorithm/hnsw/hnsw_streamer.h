@@ -33,12 +33,12 @@ class HnswStreamer : public IndexStreamer {
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
 
   //! Bind a provider which supplies the original vectors, so the graph is
-  //! built from the original vectors instead of the ones stored in index.
-  //! The meta of the original vectors must be passed in explicitly
-  void set_provider(IndexProvider::Pointer provider,
-                    const IndexMeta &provider_meta) {
+  //! built from them instead of the vectors stored in index
+  int set_provider(IndexProvider::Pointer provider,
+                   const IndexMeta &provider_meta) override {
     provider_ = std::move(provider);
     provider_meta_ = provider_meta;
+    return 0;
   }
 
  public:
@@ -216,12 +216,9 @@ class HnswStreamer : public IndexStreamer {
   Stats stats_{};
   std::mutex mutex_{};
 
-  // provider_ provides the original vector, which is used to build graph
+  // provider of the original vectors used to build graph
   IndexProvider::Pointer provider_{};
-  // meta of the original vectors supplied by provider_
   IndexMeta provider_meta_{};
-  // metric in the original vector space, created when the provider meta
-  // differs from the index meta
   IndexMetric::Pointer provider_metric_{};
 
   size_t max_index_size_{0UL};

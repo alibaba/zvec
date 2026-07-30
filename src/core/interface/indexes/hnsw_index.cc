@@ -116,14 +116,12 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                               param_.use_external_vector);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
     // build graph from the original vectors of provider when it is set
-    if (param_.provider) {
-      auto hnsw_streamer =
-          std::dynamic_pointer_cast<core::HnswStreamer>(streamer_);
-      if (ailego_unlikely(!hnsw_streamer)) {
-        LOG_ERROR("Failed to cast streamer to HnswStreamer");
-        return core::IndexError_Cast;
+    if (param_.provider && streamer_) {
+      int ret = streamer_->set_provider(param_.provider, param_.provider_meta);
+      if (ailego_unlikely(ret != 0)) {
+        LOG_ERROR("Failed to set provider to streamer, ret=%d", ret);
+        return ret;
       }
-      hnsw_streamer->set_provider(param_.provider, param_.provider_meta);
     }
   }
 

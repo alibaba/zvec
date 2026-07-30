@@ -103,8 +103,6 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
                                                    HnswContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
-  //! When a provider is bound (add path building from original vectors),
-  //! vectors are fetched from the provider through the dist calculator.
   const bool use_provider = dc.has_provider();
   while (true) {
     const auto neighbors = entity.get_neighbors_typed(level, *entry_point);
@@ -292,8 +290,6 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
 
-  //! When a provider is bound (add path building from original vectors),
-  //! vectors are fetched from the provider through the dist calculator.
   const bool use_provider = dc.has_provider();
   if (ailego_unlikely(use_provider)) {
     provider_vec_blocks.reserve(buf_capacity);

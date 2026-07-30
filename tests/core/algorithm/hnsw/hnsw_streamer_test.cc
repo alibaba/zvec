@@ -368,7 +368,6 @@ TEST_F(HnswStreamerTest, TestKnnSearch) {
 }
 
 TEST_F(HnswStreamerTest, TestBuildFromOriginalVectorProvider) {
-  // The provider supplies the original vectors used for graph construction
   auto provider =
       make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dim);
   size_t cnt = 5000UL;
@@ -407,8 +406,6 @@ TEST_F(HnswStreamerTest, TestBuildFromOriginalVectorProvider) {
   }
   streamer->flush(0UL);
 
-  // The graph built from the provider's original vectors should behave the
-  // same as the normal build since both spaces are identical here
   auto linearCtx = streamer->create_context();
   auto knnCtx = streamer->create_context();
   size_t topk = 200;
@@ -452,14 +449,12 @@ TEST_F(HnswStreamerTest, TestBuildFromOriginalVectorProvider) {
 }
 
 TEST_F(HnswStreamerTest, TestBuildFromProviderWithMismatchedMeta) {
-  // Original vectors are FP32 while the index stores FP16, the streamer
-  // should derive the original meta from the provider and compute build
-  // distances in the FP32 space
+  // Original vectors are FP32 while the index stores FP16, build
+  // distances should be computed in the FP32 space
   auto provider =
       make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dim);
   size_t cnt = 2000UL;
-  // Keep values small enough that FP16 squared-euclidean distances do not
-  // overflow the half-precision range during search
+  // Keep values small to avoid FP16 distance overflow during search
   const float scale = 1.0f / 64;
   for (size_t i = 0; i < cnt; i++) {
     NumericalVector<float> vec(dim);
@@ -472,8 +467,8 @@ TEST_F(HnswStreamerTest, TestBuildFromProviderWithMismatchedMeta) {
   IndexStreamer::Pointer streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(streamer != nullptr);
-  // The provider meta is passed in explicitly, without a metric so the
-  // build path falls back to the index metric in the original space
+  // provider meta carries no metric, the build path falls back to the
+  // index metric
   IndexMeta provider_meta(IndexMeta::DataType::DT_FP32, dim);
   std::dynamic_pointer_cast<HnswStreamer>(streamer)->set_provider(
       provider, provider_meta);

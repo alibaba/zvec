@@ -85,6 +85,11 @@ class HnswDistCalculator {
     batch_distance_ = batch_distance;
   }
 
+  //! Update the dimension used by distance computation
+  inline void set_dim(uint32_t dim) {
+    dim_ = dim;
+  }
+
   //! Reset query vector data
   inline void reset_query(const void *query) {
     error_ = false;
@@ -226,9 +231,8 @@ class HnswDistCalculator {
     return dim_;
   }
 
-  //! Bind a provider which supplies the original vectors. When set, all
-  //! vector fetches by node id go through the provider (by primary key)
-  //! instead of the entity, so the graph is built from original vectors.
+  //! Bind a provider which supplies the original vectors, so vector
+  //! fetches by node id go through it instead of the entity
   void set_provider(IndexProvider::Pointer provider) {
     provider_ = std::move(provider);
   }
@@ -237,8 +241,7 @@ class HnswDistCalculator {
     return provider_ != nullptr;
   }
 
-  //! Get a vector by node id, from the provider when set, otherwise from
-  //! the entity
+  //! Get a vector by node id, from the provider when set
   int get_vector(node_id_t id, IndexStorage::MemoryBlock &block) const {
     if (provider_) {
       key_t key = entity_->get_key(id);
