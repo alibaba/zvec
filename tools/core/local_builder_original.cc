@@ -175,12 +175,6 @@ int setup_build_from_original(const string &builder_class,
                               const IndexStreamer::Pointer &streamer,
                               const IndexHolder::Pointer &build_holder,
                               const IndexMeta &input_meta) {
-  //! rabitq provider is already bound in setup_hnsw_rabitq_streamer
-  if (builder_class == "HnswRabitqStreamer") {
-    cout << "HnswRabitqStreamer always builds graph from original vectors"
-         << endl;
-    return 0;
-  }
   IndexProvider::Pointer provider =
       std::dynamic_pointer_cast<IndexProvider>(build_holder);
   if (!provider) {
