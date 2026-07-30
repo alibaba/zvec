@@ -1,7 +1,10 @@
 {
   global:
     extern "C++" {
-      "zvec::*";
+      /* Unquoted = glob pattern matching all demangled zvec:: symbols.
+         Do NOT add a quoted "zvec::*" entry: quotes mean literal match,
+         and lld (Android NDK) fails with --no-undefined-version when a
+         literal entry matches no symbol. */
       zvec::*;
     };
     zvec_*;
