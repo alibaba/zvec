@@ -146,7 +146,7 @@ VamanaIndexParams::OPtr ProtoConverter::FromPb(
       params_pb.saturate_graph(), params_pb.use_contiguous_memory(),
       params_pb.use_id_map(),
       QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
-      QuantizerParam(enable_rotate));
+      QuantizerParam(enable_rotate), params_pb.two_pass_build());
 }
 
 proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
@@ -163,6 +163,7 @@ proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
   params_pb.set_saturate_graph(params->saturate_graph());
   params_pb.set_use_contiguous_memory(params->use_contiguous_memory());
   params_pb.set_use_id_map(params->use_id_map());
+  params_pb.set_two_pass_build(params->two_pass_build());
   return params_pb;
 }
 

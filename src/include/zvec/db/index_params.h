@@ -678,7 +678,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      QuantizerParam quantizer_param = {})
+      QuantizerParam quantizer_param = {}, bool two_pass_build = false)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type,
                           quantizer_param),
         max_degree_(max_degree),
@@ -686,7 +686,19 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
         alpha_(alpha),
         saturate_graph_(saturate_graph),
         use_contiguous_memory_(use_contiguous_memory),
-        use_id_map_(use_id_map) {}
+        use_id_map_(use_id_map),
+        two_pass_build_(two_pass_build) {}
+
+  // Convenience overload matching the public feature ordering while keeping
+  // the pre-existing positional constructor source-compatible.
+  VamanaIndexParams(MetricType metric_type, int max_degree,
+                    int search_list_size, float alpha, bool saturate_graph,
+                    bool use_contiguous_memory, bool use_id_map,
+                    bool two_pass_build, QuantizeType quantize_type,
+                    QuantizerParam quantizer_param = {})
+      : VamanaIndexParams(metric_type, max_degree, search_list_size, alpha,
+                          saturate_graph, use_contiguous_memory, use_id_map,
+                          quantize_type, quantizer_param, two_pass_build) {}
 
   using OPtr = std::shared_ptr<VamanaIndexParams>;
 
@@ -694,7 +706,8 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<VamanaIndexParams>(
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
-        use_contiguous_memory_, use_id_map_, quantize_type_, quantizer_param_);
+        use_contiguous_memory_, use_id_map_, quantize_type_, quantizer_param_,
+        two_pass_build_);
   }
 
   std::string to_string() const override {
@@ -707,6 +720,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
         << ",use_contiguous_memory:"
         << (use_contiguous_memory_ ? "true" : "false")
         << ",use_id_map:" << (use_id_map_ ? "true" : "false")
+        << ",two_pass_build:" << (two_pass_build_ ? "true" : "false")
         << ",enable_rotate:"
         << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
@@ -724,6 +738,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
            saturate_graph_ == rhs.saturate_graph_ &&
            use_contiguous_memory_ == rhs.use_contiguous_memory_ &&
            use_id_map_ == rhs.use_id_map_ &&
+           two_pass_build_ == rhs.two_pass_build_ &&
            quantizer_param_ == rhs.quantizer_param_;
   }
 
@@ -770,6 +785,13 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
     use_id_map_ = use_id_map;
   }
 
+  bool two_pass_build() const {
+    return two_pass_build_;
+  }
+  void set_two_pass_build(bool two_pass_build) {
+    two_pass_build_ = two_pass_build;
+  }
+
  private:
   int max_degree_;
   int search_list_size_;
@@ -780,6 +802,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
   // the cost of peak memory usage.
   bool use_contiguous_memory_;
   bool use_id_map_;
+  bool two_pass_build_;
 };
 
 /*

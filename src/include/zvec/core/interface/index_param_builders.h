@@ -293,6 +293,10 @@ class VamanaIndexParamBuilder
     param->use_contiguous_memory = use_contiguous_memory;
     return *this;
   }
+  VamanaIndexParamBuilder &WithTwoPassBuild(bool two_pass_build) {
+    param->two_pass_build = two_pass_build;
+    return *this;
+  }
 
   std::shared_ptr<VamanaIndexParam> Build() override {
     return param;

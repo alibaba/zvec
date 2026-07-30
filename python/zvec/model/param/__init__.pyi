@@ -792,6 +792,8 @@ class VamanaIndexParam(VectorIndexParam):
         use_contiguous_memory (bool): Allocate contiguous memory arena. Default is False.
         use_id_map (bool): Reserved flag for id remapping. Default is False.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
+        quantizer_param (QuantizerParam): Optional quantizer configuration.
+        two_pass_build (bool): Run a full-graph second Vamana construction pass. Default is False.
 
     Examples:
         >>> params = VamanaIndexParam(metric_type=MetricType.COSINE, max_degree=64)
@@ -808,6 +810,8 @@ class VamanaIndexParam(VectorIndexParam):
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
+        quantizer_param: QuantizerParam = ...,
+        two_pass_build: bool = False,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -835,6 +839,10 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def use_id_map(self) -> bool:
         """bool: Reserved flag for engine-level id remapping."""
+
+    @property
+    def two_pass_build(self) -> bool:
+        """bool: Whether full-graph two-pass Vamana construction is enabled."""
 
 class VamanaQueryParam(QueryParam):
     """
