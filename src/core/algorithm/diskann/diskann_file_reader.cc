@@ -16,9 +16,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <thread>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_logger.h>
@@ -31,6 +33,10 @@ namespace core {
 #if (defined(__linux) || defined(__linux__))
 typedef struct io_event io_event_t;
 typedef struct iocb iocb_t;
+
+// Retry budget for draining in-flight io_uring requests when the kernel
+// keeps returning EAGAIN/EBUSY (100 us sleep per retry, ~1 s total).
+static constexpr size_t kIoUringDrainRetries = 10000;
 
 // Ensures the I/O backend selection is logged exactly once per process,
 // regardless of which entry point (setup_io_ctx or register_thread)
@@ -300,15 +306,11 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
     if (ret == 0) {
       return 0;
     }
-    if (ret == -1) {
-      // The ring is quiesced — no request can still write into the
-      // destination buffers, so synchronous reads may reuse them.
-      LOG_WARN("io_uring execute failed; falling back to pread");
-      return execute_io_pread(fd, read_reqs);
-    }
-    // ret == -2: in-flight requests could not be drained; pread here would
-    // race with kernel writes into the same buffers.
-    return IndexError_Runtime;
+    // The kernel only ever writes into the ring-owned staging pool, never
+    // into the caller's buffers, so a pread fallback can never race with
+    // requests that are still in flight.
+    LOG_WARN("io_uring execute failed; falling back to pread");
+    return execute_io_pread(fd, read_reqs);
   }
 
   if (ctx->backend == IoBackend::LIBAIO) {
@@ -347,6 +349,28 @@ int IoUringRing::execute(int fd, std::vector<AlignedRead> &read_reqs) {
                  static_cast<uint64_t>(batch_size));
 
     // --- Phase 1: Fill SQEs ---
+    //
+    // Reads land in the ring-owned staging pool, never in the caller's
+    // buffers.  io_uring teardown is asynchronous — closing the ring fd
+    // only initiates cancellation — so the kernel may still write into
+    // request buffers after execute() has returned an error.  Staging
+    // memory can simply be leaked in that case (abandon_staging()), while
+    // the caller's buffers stay safe to reuse or free.  The copy-out below
+    // costs one sector-scale memcpy per read, negligible next to the I/O.
+    std::vector<size_t> slot_off(n_ops);
+    size_t staging_bytes = 0;
+    for (uint64_t j = 0; j < n_ops; j++) {
+      slot_off[j] = staging_bytes;
+      size_t len = read_reqs[j + iter * batch_size].len;
+      // Round every slot up so each staging pointer stays O_DIRECT-legal.
+      staging_bytes +=
+          (len + kIoUringStagingAlign - 1) & ~(kIoUringStagingAlign - 1);
+    }
+    // Safe: the previous batch is fully drained before we get here, so no
+    // in-flight request can reference the old pool being freed on growth.
+    if (!ensure_staging(staging_bytes)) {
+      return -1;  // nothing submitted; pread fallback is safe
+    }
 
     unsigned tail = __atomic_load_n(sq_tail_, __ATOMIC_ACQUIRE);
     unsigned mask = *sq_ring_mask_;
@@ -357,7 +381,7 @@ int IoUringRing::execute(int fd, std::vector<AlignedRead> &read_reqs) {
       struct io_uring_sqe *sqe = &sqes_[sqe_idx];
 
       uint64_t req_idx = j + iter * batch_size;
-      io_uring_prep_read(sqe, fd, read_reqs[req_idx].buf,
+      io_uring_prep_read(sqe, fd, staging_ + slot_off[j],
                          static_cast<uint32_t>(read_reqs[req_idx].len),
                          read_reqs[req_idx].offset);
       // Store the request index so we can verify the completion.
@@ -396,7 +420,8 @@ int IoUringRing::execute(int fd, std::vector<AlignedRead> &read_reqs) {
         struct io_uring_cqe *cqe = &cqes_[chead & cq_mask];
         uint64_t req_idx = cqe->user_data;
 
-        if (req_idx >= read_reqs.size()) {
+        if (req_idx < iter * batch_size ||
+            req_idx >= iter * batch_size + n_ops) {
           LOG_WARN("io_uring completion referenced unknown request: %lu",
                    (unsigned long)req_idx);
           all_ok = false;
@@ -410,6 +435,12 @@ int IoUringRing::execute(int fd, std::vector<AlignedRead> &read_reqs) {
                    (unsigned long)req_idx, cqe->res,
                    (unsigned long)read_reqs[req_idx].len);
           all_ok = false;
+        } else {
+          // Verified completion — copy from staging into the caller's
+          // buffer.  This is the only place caller memory is written.
+          std::memcpy(read_reqs[req_idx].buf,
+                      staging_ + slot_off[req_idx - iter * batch_size],
+                      read_reqs[req_idx].len);
         }
         chead++;
         completed++;
@@ -455,8 +486,11 @@ int IoUringRing::execute(int fd, std::vector<AlignedRead> &read_reqs) {
       __atomic_store_n(sq_tail_, tail + static_cast<unsigned>(submitted),
                        __ATOMIC_RELEASE);
 
-      // Drain every in-flight request before the caller may pread into the
-      // same destination buffers.
+      // Drain every in-flight request before the staging pool may be
+      // freed or reused by a later batch.  CQEs are posted to the shared
+      // ring by the kernel on its own, so completions can still be reaped
+      // here even when io_uring_enter() keeps failing.
+      size_t drain_retries = 0;
       while (completed < submitted) {
         reap_available();
         if (completed >= submitted) {
@@ -465,24 +499,35 @@ int IoUringRing::execute(int fd, std::vector<AlignedRead> &read_reqs) {
         int wret = static_cast<int>(syscall(
             __NR_io_uring_enter, ring_fd_, 0u, 1u, IORING_ENTER_GETEVENTS,
             static_cast<void *>(nullptr), static_cast<size_t>(0)));
-        if (wret < 0 && errno != EINTR && errno != EAGAIN && errno != EBUSY) {
-          // The ring cannot be drained: the kernel may still write into the
-          // caller's buffers, so a pread fallback would race with it.  Tear
-          // the ring down so it is never reused.
-          LOG_ERROR(
-              "io_uring drain failed; errno=%d, %s. disabling io_uring for "
-              "this context; the read cannot fall back to pread safely",
-              errno, ::strerror(errno));
-          teardown();
-          return -2;
+        if (wret >= 0 || errno == EINTR) {
+          continue;
         }
+        if ((errno == EAGAIN || errno == EBUSY) &&
+            drain_retries++ < kIoUringDrainRetries) {
+          // Give in-flight requests time to complete; entering the kernel
+          // via the sleep also lets pending completion task-work run.
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
+          continue;
+        }
+        // The ring cannot be drained.  Leak the staging pool — the kernel
+        // may keep writing into it through the asynchronous teardown — and
+        // disable io_uring for this context.  The caller's buffers were
+        // never exposed to the kernel, so the pread fallback stays safe.
+        LOG_ERROR(
+            "io_uring drain failed; errno=%d, %s. leaking the staging pool "
+            "and disabling io_uring for this context",
+            errno, ::strerror(errno));
+        abandon_staging();
+        teardown();
+        return -1;
       }
       return -1;
     }
 
     if (!all_ok) {
-      // Every request completed (buffers are quiesced), but at least one
-      // read failed or was short — let the caller retry with pread.
+      // Every request completed and the staging pool is quiesced, but at
+      // least one read failed or was short — let the caller retry with
+      // pread.
       return -1;
     }
   }

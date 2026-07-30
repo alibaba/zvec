@@ -35,6 +35,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <ailego/io/iouring_def.h>
@@ -50,6 +51,9 @@ struct AlignedRead;
 
 // Maximum number of SQEs we submit in a single io_uring_enter() call.
 static constexpr uint32_t kIoUringMaxBatch = 128;
+
+// Alignment of every staging slot — keeps O_DIRECT reads legal.
+static constexpr size_t kIoUringStagingAlign = 4096;
 
 class IoUringRing {
  public:
@@ -168,6 +172,11 @@ class IoUringRing {
   }
 
   // Tear down the ring: munmap all regions and close the ring fd.
+  //
+  // Closing the ring fd only *initiates* asynchronous cancellation of any
+  // in-flight request (the kernel's release path defers the real cleanup),
+  // so this must only be called when the ring is quiesced — or after
+  // abandon_staging() has leaked the staging pool the kernel writes into.
   void teardown() {
     if (sq_ring_ptr_ && sq_ring_ptr_ != MAP_FAILED) {
       // We don't track the exact mmap size; munmap with a large enough size
@@ -202,8 +211,43 @@ class IoUringRing {
       ring_fd_ = -1;
     }
 
+    ::free(staging_);
+    staging_ = nullptr;
+    staging_size_ = 0;
+
     sq_entries_ = 0;
     cq_entries_ = 0;
+  }
+
+  // Grow the staging pool so a whole batch of reads can land in ring-owned
+  // memory.  Only safe to call while the ring is quiesced, because the
+  // previous pool is freed here and must no longer be referenced by the
+  // kernel.
+  bool ensure_staging(size_t bytes) {
+    if (staging_size_ >= bytes) {
+      return true;
+    }
+    void *ptr = nullptr;
+    int err = ::posix_memalign(&ptr, kIoUringStagingAlign, bytes);
+    if (err != 0) {
+      LOG_WARN("io_uring staging allocation failed; size=%zu, %s", bytes,
+               ::strerror(err));
+      return false;
+    }
+    ::free(staging_);
+    staging_ = static_cast<char *>(ptr);
+    staging_size_ = bytes;
+    return true;
+  }
+
+  // Deliberately leak the staging pool.  Called when in-flight requests
+  // could not be drained: the kernel may keep writing into the pool even
+  // after the ring fd is closed (io_uring teardown is asynchronous), so
+  // the memory must outlive this object.  The caller's destination buffers
+  // are never handed to the kernel, so they remain safe to reuse or free.
+  void abandon_staging() {
+    staging_ = nullptr;
+    staging_size_ = 0;
   }
 
   bool is_valid() const {
@@ -216,11 +260,11 @@ class IoUringRing {
   // AlignedRead is defined in diskann_file_reader.h *after* this header is
   // included, so the method body cannot be inline here.
   //
-  // On success returns 0.  On failure returns -1 with the ring quiesced
-  // (no request still references the caller's buffers), so the caller may
-  // fall back to pread.  Returns -2 if in-flight requests could not be
-  // drained; the caller must NOT reuse the destination buffers (no pread
-  // fallback) because the kernel may still write into them.
+  // On success returns 0.  On failure returns -1; the caller may always
+  // fall back to pread, because the kernel only ever writes into the
+  // ring-owned staging pool — completed reads are copied into the caller's
+  // buffers, which are never exposed to in-flight requests.  If the ring
+  // cannot be drained, the staging pool is leaked and the ring torn down.
   int execute(int fd, std::vector<AlignedRead> &read_reqs);
 
  private:
@@ -250,6 +294,13 @@ class IoUringRing {
 
   // SQE array pointer.
   struct io_uring_sqe *sqes_{nullptr};
+
+  // Ring-owned staging pool.  The kernel reads into this pool instead of
+  // the caller's buffers; execute() copies verified completions out.  This
+  // decouples the caller's buffer lifetime from asynchronous io_uring
+  // teardown (see abandon_staging()).
+  char *staging_{nullptr};
+  size_t staging_size_{0};
 
   // Ring capacities.
   unsigned sq_entries_{0};
