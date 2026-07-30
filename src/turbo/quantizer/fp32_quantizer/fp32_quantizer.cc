@@ -39,12 +39,11 @@ int Fp32Quantizer::init(const IndexMeta &meta,
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
-  dp_query_func_ =
-      get_distance_func(metric_from_name(metric_name), DataType::kFp32,
-                        QuantizeType::kDefault, CpuArchType::kAuto);
-  dp_query_batch_func_ =
-      get_batch_distance_func(metric_from_name(metric_name), DataType::kFp32,
-                              QuantizeType::kDefault, CpuArchType::kAuto);
+  auto kernels =
+      get_distance_kernels(metric_from_name(metric_name), DataType::kFp32,
+                           QuantizeType::kFp32, CpuArchType::kAuto);
+  dp_query_func_ = std::move(kernels.dist);
+  dp_query_batch_func_ = std::move(kernels.batch);
 
   return 0;
 }
@@ -112,19 +111,15 @@ int Fp32Quantizer::dequantize(const void *in, const IndexQueryMeta &qmeta,
 
 DistanceImpl Fp32Quantizer::distance(const void *query,
                                      const IndexQueryMeta &qmeta) const {
-  auto metric = metric_from_name(meta_.metric_name());
-  auto func = get_distance_func(metric, DataType::kFp32, QuantizeType::kDefault,
-                                CpuArchType::kAuto);
-  if (!func) {
+  // Reuse the dispatch cached at init().
+  if (!dp_query_func_) {
     return DistanceImpl{};
   }
-  auto batch_func = get_batch_distance_func(
-      metric, DataType::kFp32, QuantizeType::kDefault, CpuArchType::kAuto);
 
   // The query is assumed to be already quantized — copy it directly.
   std::string quantized_query(static_cast<const char *>(query),
                               qmeta.element_size());
-  return DistanceImpl(std::move(func), std::move(batch_func),
+  return DistanceImpl(dp_query_func_, dp_query_batch_func_,
                       std::move(quantized_query), original_dim_);
 }
 

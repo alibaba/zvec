@@ -18,13 +18,15 @@
 
 namespace zvec::turbo::scalar {
 
-// Compute cosine distance (negative inner product after normalization)
-// between a single quantized FP16 vector pair.
-void cosine_fp16_distance(const void *a, const void *b, size_t dim,
-                          float *distance);
+// Compute inner product distance (negated dequantized inner product) between
+// a single record-quantized INT8 vector pair. `dim` is the full encoded size
+// (original_dim + 20).
+void inner_product_int8_distance(const void *a, const void *b, size_t dim,
+                                 float *distance);
 
-// Batch version of cosine_fp16_distance.
-void cosine_fp16_batch_distance(const void *const *vectors, const void *query,
-                                size_t n, size_t dim, float *distances);
+// Batch version of inner_product_int8_distance.
+void inner_product_int8_batch_distance(const void *const *vectors,
+                                       const void *query, size_t n, size_t dim,
+                                       float *distances);
 
 }  // namespace zvec::turbo::scalar

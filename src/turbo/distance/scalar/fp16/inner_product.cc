@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "scalar/fp16/inner_product.h"
+#include <cstdint>
 #include <zvec/ailego/utility/float_helper.h>
 
 namespace zvec::turbo::scalar {
@@ -24,7 +25,7 @@ void inner_product_fp16_distance(const void *a, const void *b, size_t dim,
   const uint16_t *m = reinterpret_cast<const uint16_t *>(a);
   const uint16_t *q = reinterpret_cast<const uint16_t *>(b);
 
-  float sum = 0.0;
+  float sum = 0.0f;
   for (size_t i = 0; i < dim; ++i) {
     sum += zvec::ailego::FloatHelper::ToFP32(m[i]) *
            zvec::ailego::FloatHelper::ToFP32(q[i]);

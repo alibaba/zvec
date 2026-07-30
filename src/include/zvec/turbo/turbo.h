@@ -118,7 +118,10 @@ enum class DataType {
 };
 
 enum class QuantizeType {
-  kDefault,
+  //! Deprecated: no dispatch row serves kDefault anymore; request the
+  //! explicit quantize type (kFp32, kFp16, kRecord, ...) instead. The
+  //! enumerator is kept (value 0) for serialized-header compatibility.
+  kDefault [[deprecated("request an explicit QuantizeType instead")]],
   kUniform,
   kRecord,
   kFp16,
@@ -156,6 +159,21 @@ ZVEC_TURBO_API BatchDistanceFunc get_batch_distance_func(
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 ZVEC_TURBO_API QueryPreprocessFunc get_query_preprocess_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
+// All kernels of a single dispatched kernel family. `preprocess` is non-null
+// when the batch kernel requires the query to be preprocessed first (e.g.
+// the AVX512-VNNI int8 kernels expect a +128 uint8-shifted query).
+struct DistanceKernels {
+  DistanceFunc dist{};
+  BatchDistanceFunc batch{};
+  QueryPreprocessFunc preprocess = nullptr;
+};
+
+// Aggregate lookup: resolves dist/batch/preprocess in one pass so callers
+// cannot pair functions from different kernel families.
+DistanceKernels get_distance_kernels(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 

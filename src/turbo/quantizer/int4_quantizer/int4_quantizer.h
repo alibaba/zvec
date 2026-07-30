@@ -25,11 +25,22 @@ namespace turbo {
 
 using namespace zvec::core;
 
-class Fp32Quantizer : public Quantizer {
+/*! Record-quantized INT4 quantizer.
+ *
+ * Each vector is quantized independently with a per-record affine transform
+ * (see core::RecordQuantizer::quantize_record). Layout:
+ *
+ *   [ dim / 2 bytes packed int4 codes ]
+ *   [ 16-byte tail (a, b, s, s2 | int8_sum) ]
+ *   [ 4-byte fp32 norm ]  (Cosine only)
+ *
+ * The dimension must be even.
+ */
+class Int4Quantizer : public Quantizer {
  public:
-  Fp32Quantizer() : Quantizer(QuantizeType::kFp32) {}
+  Int4Quantizer() : Quantizer(QuantizeType::kRecord) {}
 
-  virtual ~Fp32Quantizer() {}
+  virtual ~Int4Quantizer() {}
 
  public:
   int init(const core::IndexMeta &meta, const ailego::Params &params) override;
@@ -100,26 +111,33 @@ class Fp32Quantizer : public Quantizer {
                         const core::IndexQueryMeta &qmeta) const override;
 
  private:
-  //! Byte length of a quantized vector (raw fp32 data + extra meta).
+  //! Byte length of a quantized vector (packed int4 codes + extra meta).
   size_t quantized_length() const {
-    return static_cast<size_t>(original_dim_) * sizeof(float) +
-           extra_meta_size_;
+    return static_cast<size_t>(original_dim_) / 2 + extra_meta_size_;
   }
 
   //! Quantize a single fp32 vector into a caller-provided buffer of
   //! quantized_length() bytes.
   void quantize_one(const void *input, void *output) const;
 
+  //! Record tail: 4 floats (a, b, s, s2 | int8_sum).
+  static constexpr uint32_t RECORD_TAIL_SIZE = 4 * sizeof(float);
+  //! Extra fp32 norm appended for the Cosine metric.
   static constexpr uint32_t EXTRA_META_SIZE_COSINE = 4;
 
   IndexMeta meta_{};
   uint32_t original_dim_{0};
+  bool is_cosine_{false};
+  bool is_euclidean_{false};
+  //! Full encoded size in int4 units handed to the distance kernels.
+  size_t dist_dim_{0};
+  //! Offset added to raw kernel outputs (1.0 for Cosine: -cos -> 1 - cos).
+  float distance_offset_{0.0f};
 
   //! Cached distance dispatch (bound in init()).
   DistanceFunc dp_query_func_{};
   BatchDistanceFunc dp_query_batch_func_{};
 };
-
 
 }  // namespace turbo
 }  // namespace zvec

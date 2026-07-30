@@ -18,13 +18,15 @@
 
 namespace zvec::turbo::scalar {
 
-// Compute cosine distance (negative inner product after normalization)
-// between a single quantized FP16 vector pair.
-void cosine_fp16_distance(const void *a, const void *b, size_t dim,
-                          float *distance);
+// Compute squared euclidean distance between a single record-quantized INT4
+// vector pair. `dim` is the full encoded size in int4 units
+// (original_dim + 32).
+void squared_euclidean_int4_distance(const void *a, const void *b, size_t dim,
+                                     float *distance);
 
-// Batch version of cosine_fp16_distance.
-void cosine_fp16_batch_distance(const void *const *vectors, const void *query,
-                                size_t n, size_t dim, float *distances);
+// Batch version of squared_euclidean_int4_distance.
+void squared_euclidean_int4_batch_distance(const void *const *vectors,
+                                           const void *query, size_t n,
+                                           size_t dim, float *distances);
 
 }  // namespace zvec::turbo::scalar

@@ -18,8 +18,9 @@
 
 namespace zvec::turbo::scalar {
 
-// Compute negated inner product between a single FP16 vector pair.
-// Elements are converted to FP32 before accumulation.
+// Compute inner product distance between a single quantized FP16
+// vector pair. Returns -dot(a, b) so that callers can derive cosine
+// distance as 1 + ip.
 void inner_product_fp16_distance(const void *a, const void *b, size_t dim,
                                  float *distance);
 
