@@ -118,23 +118,49 @@ struct SerializableBase {
       const ailego::JsonObject &json_obj) = 0;
 };
 
-// TODO: maybe a base class for quantizer?
+//! Common quantizer params shared by all quantizer types
 struct QuantizerParam : public SerializableBase {
+  using Pointer = std::shared_ptr<QuantizerParam>;
+
   QuantizerType type = QuantizerType::kNone;
-  int num_chunk = 8;  // M
-  int num_bits = 8;   // bits per subquantizer
   bool enable_rotate =
       false;  // rotate vectors before quantization to reduce error
 
   // Constructors
-  // QuantizerParam() = default;
-  QuantizerParam(QuantizerType t = QuantizerType::kNone, int subquantizers = 8,
-                 int bits = 8, bool rotate = false)
-      : type(t),
-        num_chunk(subquantizers),
-        num_bits(bits),
-        enable_rotate(rotate) {}
+  QuantizerParam(QuantizerType t = QuantizerType::kNone, bool rotate = false)
+      : type(t), enable_rotate(rotate) {}
+  virtual ~QuantizerParam() = default;
 
+  //! Duplicate the param object, keeping the concrete type
+  virtual Pointer Clone() const {
+    return std::make_shared<QuantizerParam>(*this);
+  }
+
+  //! Create the param object matching the quantizer type
+  static Pointer Create(QuantizerType t);
+
+ protected:
+  friend class BaseIndexParam;
+  ailego::JsonObject SerializeToJsonObject(
+      bool omit_empty_value = false) const override;
+
+  bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;
+};
+
+//! Product-Quantization specific params
+struct PqQuantizerParam : public QuantizerParam {
+  int num_chunk = 8;  // M: number of sub-quantizers
+  int num_bits = 8;   // bits per sub-quantizer
+
+  // Constructors
+  PqQuantizerParam(int chunks = 8, int bits = 8, bool rotate = false)
+      : QuantizerParam(QuantizerType::kPQ, rotate),
+        num_chunk(chunks),
+        num_bits(bits) {}
+
+  QuantizerParam::Pointer Clone() const override {
+    return std::make_shared<PqQuantizerParam>(*this);
+  }
 
  protected:
   friend class BaseIndexParam;
@@ -278,7 +304,16 @@ class BaseIndexParam : public SerializableBase {
 
   // pipeline
   PreprocessorParam preprocess_param;
-  QuantizerParam quantizer_param;
+  //! nullptr means no quantizer is configured (equivalent to kNone)
+  QuantizerParam::Pointer quantizer_param{nullptr};
+
+  QuantizerType quantizer_type() const {
+    return quantizer_param ? quantizer_param->type : QuantizerType::kNone;
+  }
+
+  bool enable_rotate() const {
+    return quantizer_param && quantizer_param->enable_rotate;
+  }
 
   BaseIndexQueryParam::Pointer default_query_param = nullptr;
   // virtual std::shared_ptr<BaseIndexQueryParam> GetDefaultQueryParam() const

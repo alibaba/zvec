@@ -59,7 +59,13 @@ class BaseIndexParamBuilder {  //  : public
   }
   ActualIndexParamBuilderType &WithQuantizerParam(
       const QuantizerParam &quantizer_param) {
-    param->quantizer_param = quantizer_param;
+    param->quantizer_param = quantizer_param.Clone();
+    return static_cast<ActualIndexParamBuilderType &>(*this);
+  }
+  ActualIndexParamBuilderType &WithQuantizerParam(
+      const QuantizerParam::Pointer &quantizer_param) {
+    param->quantizer_param =
+        quantizer_param ? quantizer_param->Clone() : nullptr;
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
   // ActualIndexParamBuilderType &WithRefinerParam(
@@ -88,7 +94,12 @@ class BaseIndexParamBuilder {  //  : public
   }
 
   ActualIndexParamBuilderType &WithEnableRotate(bool enable_rotate) {
-    param->quantizer_param.enable_rotate = enable_rotate;
+    // copy-on-write: never mutate a param object shared with others
+    auto quantizer_param = param->quantizer_param
+                               ? param->quantizer_param->Clone()
+                               : std::make_shared<QuantizerParam>();
+    quantizer_param->enable_rotate = enable_rotate;
+    param->quantizer_param = std::move(quantizer_param);
     return static_cast<ActualIndexParamBuilderType &>(*this);
   }
 

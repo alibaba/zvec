@@ -357,7 +357,7 @@ class ProximaEngineHelper {
             convert_to_engine_quantize_type(db_index_params->quantize_type());
         quantize_type.has_value()) {
       index_param_builder->WithQuantizerParam(
-          core_interface::QuantizerParam(quantize_type.value()));
+          core_interface::QuantizerParam::Create(quantize_type.value()));
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported quantize type"));
