@@ -14,15 +14,16 @@
 
 //! Minimal protobuf wire-format reader/writer.
 //!
-//! zvec persists its manifest in protobuf wire format (see
-//! src/db/proto/zvec.proto, kept as the authoritative format documentation).
-//! This header implements just enough of the encoding to read and write that
-//! format so that the project does not need to depend on libprotobuf/protoc.
+//! zvec persists its manifest in protobuf wire format. This header implements
+//! just enough of the encoding to read and write that format so that the
+//! project does not need to depend on libprotobuf/protoc. The concrete
+//! message layout lives in manifest_codec.{h,cc} (field numbers) and
+//! manifest_enum.h (enum values), which together define the format.
 //!
 //! Wire format reference:
 //! https://protobuf.dev/programming-guides/encoding/
 //!
-//! Only the wire types actually used by zvec.proto are supported for reading
+//! Only the wire types actually used by the manifest are supported for reading
 //! values (varint, 64-bit, length-delimited, 32-bit); deprecated groups
 //! (wire types 3 and 4) are rejected as corrupt input.
 

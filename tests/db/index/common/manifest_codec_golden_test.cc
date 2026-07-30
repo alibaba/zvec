@@ -302,7 +302,7 @@ TEST(ManifestCodecGolden, CorruptInputIsRejected) {
 }
 
 TEST(ManifestCodecGolden, WireReaderRejectsGroups) {
-  // Wire types 3 and 4 (deprecated groups) are never produced by zvec.proto
+  // Wire types 3 and 4 (deprecated groups) are never produced by the manifest
   // and must be treated as corrupt input rather than silently skipped.
   for (uint8_t type : {3, 4}) {
     std::string buf;

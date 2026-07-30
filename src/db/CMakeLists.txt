@@ -1,9 +1,9 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
-# NOTE: proto/zvec.proto is no longer compiled. It is kept as the
-# authoritative documentation of the manifest on-disk format, which is now
-# read and written by src/db/index/common/manifest_codec.{h,cc}.
+# NOTE: the manifest on-disk format is read and written by
+# src/db/index/common/manifest_codec.{h,cc}; there is no protobuf/protoc
+# dependency any more.
 
 cc_directory(common)
 cc_directory(index)

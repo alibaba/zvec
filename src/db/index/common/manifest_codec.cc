@@ -24,7 +24,7 @@ namespace {
 using pbwire::Reader;
 using pbwire::Writer;
 
-// Field numbers, mirroring src/db/proto/zvec.proto. Changing any of these
+// Field numbers of the manifest wire format. Changing any of these
 // breaks compatibility with existing manifest files.
 namespace f_quantizer {
 constexpr uint32_t kEnableRotate = 1;

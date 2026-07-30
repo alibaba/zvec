@@ -14,9 +14,8 @@
 
 //! On-disk enum values of the manifest format.
 //!
-//! These mirror the enums declared in src/db/proto/zvec.proto one-to-one.
-//! The numeric values are part of the persisted manifest format and must
-//! never change; only append new entries.
+//! These enum values are part of the persisted manifest format. The numeric
+//! values must never change; only append new entries.
 
 #pragma once
 
