@@ -39,6 +39,9 @@ int Fp16Quantizer::init(const IndexMeta &meta,
   if (metric_name == "Cosine") {
     extra_meta_size_ = EXTRA_META_SIZE_COSINE;
     meta_.set_extra_meta_size(extra_meta_size_);
+    if (input_data_type_ == DataType::kFp32) {
+      meta_.set_reformer("Fp16Quantizer", 0, ailego::Params());
+    }
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
@@ -54,13 +57,11 @@ int Fp16Quantizer::init(const IndexMeta &meta,
 
 int Fp16Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
                             std::string *out, IndexQueryMeta *ometa) const {
-  if (qmeta.unit_size() != sizeof(uint16_t)) {
+  bool is_fp32 = (qmeta.unit_size() == sizeof(float));
+  if (!is_fp32 && qmeta.unit_size() != sizeof(uint16_t)) {
     return kErrUnsupported;
   }
 
-  // qmeta.dimension() may be the inflated (data + extras) dimension when the
-  // caller uses meta_.dimension() directly (e.g. HnswDistCalculator). Use the
-  // raw original dim we recorded at init() to avoid over-reading the query.
   size_t raw_dim = (original_dim_ != 0 && qmeta.dimension() >= original_dim_)
                        ? original_dim_
                        : qmeta.dimension();
@@ -68,11 +69,13 @@ int Fp16Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   out->resize(byte_size);
 
   if (meta_.metric_name() == "Cosine") {
-    // L2-normalize in FP32 space and store the norm at the end so the
-    // original vector can be reconstructed during dequantize.
     std::vector<float> fp32_buf(raw_dim);
-    ailego::FloatHelper::ToFP32(reinterpret_cast<const uint16_t *>(query),
-                                raw_dim, fp32_buf.data());
+    if (is_fp32) {
+      std::memcpy(fp32_buf.data(), query, raw_dim * sizeof(float));
+    } else {
+      ailego::FloatHelper::ToFP32(reinterpret_cast<const uint16_t *>(query),
+                                  raw_dim, fp32_buf.data());
+    }
     float norm = 0.0f;
     ailego::Normalizer<float>::L2(fp32_buf.data(), raw_dim, &norm);
     ailego::FloatHelper::ToFP16(fp32_buf.data(), raw_dim,
@@ -81,12 +84,18 @@ int Fp16Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
         reinterpret_cast<uint8_t *>(&(*out)[0]) + raw_dim * sizeof(uint16_t),
         &norm, extra_meta_size_);
   } else {
-    std::memcpy(&(*out)[0], query, byte_size);
+    if (is_fp32) {
+      ailego::FloatHelper::ToFP16(reinterpret_cast<const float *>(query),
+                                  raw_dim,
+                                  reinterpret_cast<uint16_t *>(&(*out)[0]));
+    } else {
+      std::memcpy(&(*out)[0], query, byte_size);
+    }
   }
 
   *ometa = qmeta;
-  ometa->set_meta(IndexMeta::DataType::DT_FP16, raw_dim,
-                  static_cast<uint32_t>(type_), extra_meta_size_);
+  uint32_t extra_dim = extra_meta_size_ / sizeof(uint16_t);
+  ometa->set_meta(IndexMeta::DataType::DT_FP16, raw_dim + extra_dim);
 
   return 0;
 }

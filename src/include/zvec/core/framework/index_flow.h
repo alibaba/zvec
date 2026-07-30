@@ -17,6 +17,9 @@
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_searcher.h>
 namespace zvec {
+namespace turbo {
+class Quantizer;
+}  // namespace turbo
 namespace core {
 
 /*! Index Flow
@@ -118,6 +121,7 @@ class IndexFlow {
   IndexFlow(IndexFlow &&rhs)
       : storage_(std::move(rhs.storage_)),
         reformer_(std::move(rhs.reformer_)),
+        query_quantizer_(std::move(rhs.query_quantizer_)),
         searcher_(std::move(rhs.searcher_)),
         metric_(std::move(rhs.metric_)),
         user_reformer_(std::move(rhs.user_reformer_)),
@@ -129,6 +133,7 @@ class IndexFlow {
   IndexFlow &operator=(IndexFlow &&rhs) {
     storage_ = std::move(rhs.storage_);
     reformer_ = std::move(rhs.reformer_);
+    query_quantizer_ = std::move(rhs.query_quantizer_);
     searcher_ = std::move(rhs.searcher_);
     metric_ = std::move(rhs.metric_);
     user_reformer_ = std::move(rhs.user_reformer_);
@@ -386,6 +391,7 @@ class IndexFlow {
   IndexMeta meta_{};
   IndexStorage::Pointer storage_{};
   IndexReformer::Pointer reformer_{};
+  std::shared_ptr<zvec::turbo::Quantizer> query_quantizer_{};
   IndexSearcher::Pointer searcher_{};
   IndexMetric::Pointer metric_{};
   IndexReformer::Pointer user_reformer_{};
