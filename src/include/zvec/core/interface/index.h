@@ -32,11 +32,12 @@
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
 #include <zvec/core/interface/vector_source.h>
+#include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
 
 namespace zvec::core_interface {
 
-class IndexFactory;
+class ZVEC_CORE_API IndexFactory;
 
 struct DenseVector {
   const void *data;
@@ -104,7 +105,7 @@ struct SearchResult {
   std::vector<std::vector<std::string>> group_reverted_sparse_values_list_{};
 };
 
-class Index {
+class ZVEC_CORE_API Index {
  public:
   typedef std::shared_ptr<Index> Pointer;
   virtual ~Index() = default;
@@ -119,10 +120,7 @@ class Index {
 
   // // TODO: use holder
   // virtual int Build() = 0;
-  virtual int Train() {
-    is_trained_ = true;
-    return 0;
-  }
+  virtual int Train();
 
   // virtual int Dump(const std::string &file_path) = 0;
   virtual int Merge(const std::vector<Index::Pointer> &indexes,
@@ -145,34 +143,17 @@ class Index {
                                const core::VectorSource &src,
                                SearchResult *result);
 
-  virtual BaseIndexParam::Pointer GetParam() const {
-    return std::make_shared<BaseIndexParam>(param_);
-  }
+  virtual BaseIndexParam::Pointer GetParam() const;
 
-  virtual bool IsTrained() const {
-    return is_trained_;
-  }
+  virtual bool IsTrained() const;
 
   bool IsDirty() const;
 
-  uint32_t GetDocCount() const {
-    if (streamer_ == nullptr) {
-      return -1;
-    }
-    if (is_sparse_) {
-      return streamer_->create_sparse_provider()->count();
-    } else {
-      return streamer_->create_provider()->count();
-    }
-  }
+  uint32_t GetDocCount() const;
 
-  core::IndexStreamer::Pointer index_searcher() {
-    return streamer_;
-  }
+  core::IndexStreamer::Pointer index_searcher();
 
-  core::IndexProvider::Pointer create_index_provider() const {
-    return streamer_->create_provider();
-  }
+  core::IndexProvider::Pointer create_index_provider() const;
 
   static std::string get_metric_name(MetricType metric_type, bool is_sparse);
 
@@ -227,9 +208,6 @@ class Index {
  protected:
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
-  void release_context() {
-    // context_list_[get_context_index()]->reset();
-  }
 
  protected:
   bool is_trained_{false};
@@ -256,7 +234,7 @@ class Index {
 };
 
 
-class FlatIndex : public Index {
+class ZVEC_CORE_API FlatIndex : public Index {
  public:
   FlatIndex() = default;
   // FlatIndex(const FlatIndexParam &param) : param_(param) {}
@@ -274,7 +252,7 @@ class FlatIndex : public Index {
   FlatIndexParam param_{};
 };
 
-class IVFIndex : public Index {
+class ZVEC_CORE_API IVFIndex : public Index {
  public:
   IVFIndex() = default;
 
@@ -307,7 +285,7 @@ class IVFIndex : public Index {
 };
 
 
-class HNSWIndex : public Index {
+class ZVEC_CORE_API HNSWIndex : public Index {
  public:
   HNSWIndex() = default;
 
@@ -338,7 +316,7 @@ class HNSWIndex : public Index {
   HNSWIndexParam param_{};
 };
 
-class VamanaIndex : public Index {
+class ZVEC_CORE_API VamanaIndex : public Index {
  public:
   VamanaIndex() = default;
 
@@ -355,7 +333,7 @@ class VamanaIndex : public Index {
   VamanaIndexParam param_{};
 };
 
-class HNSWRabitqIndex : public Index {
+class ZVEC_CORE_API HNSWRabitqIndex : public Index {
  public:
   HNSWRabitqIndex() = default;
 
@@ -372,16 +350,16 @@ class HNSWRabitqIndex : public Index {
   HNSWRabitqIndexParam param_{};
 };
 
-class DiskAnnIndex : public Index {
+class ZVEC_CORE_API DiskAnnIndex : public Index {
  public:
   DiskAnnIndex() = default;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
 
   int Add(const VectorData &vector, uint32_t doc_id) override;
 

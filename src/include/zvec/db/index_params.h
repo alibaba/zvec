@@ -20,6 +20,7 @@
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_reformer.h"
 
@@ -33,7 +34,7 @@ struct FtsPipelineHelper;
 /*
  * Column index params
  */
-class IndexParams {
+class ZVEC_API IndexParams {
  public:
   using Ptr = std::shared_ptr<IndexParams>;
 
@@ -68,7 +69,7 @@ class IndexParams {
 /*
  * Scalar: Invert index params
  */
-class InvertIndexParams : public IndexParams {
+class ZVEC_API InvertIndexParams : public IndexParams {
  public:
   InvertIndexParams(bool enable_range_optimization = true,
                     bool enable_extended_wildcard = false)
@@ -153,7 +154,7 @@ class QuantizerParam {
 /*
  * Column index params
  */
-class VectorIndexParams : public IndexParams {
+class ZVEC_API VectorIndexParams : public IndexParams {
  public:
   VectorIndexParams(IndexType type, MetricType metric_type,
                     QuantizeType quantize_type = QuantizeType::UNDEFINED,
@@ -207,7 +208,7 @@ class VectorIndexParams : public IndexParams {
 /*
  * Vector: Hnsw index params
  */
-class HnswIndexParams : public VectorIndexParams {
+class ZVEC_API HnswIndexParams : public VectorIndexParams {
  public:
   HnswIndexParams(
       MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
@@ -285,7 +286,7 @@ class HnswIndexParams : public VectorIndexParams {
   bool use_contiguous_memory_{false};
 };
 
-class HnswRabitqIndexParams : public VectorIndexParams {
+class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
  public:
   HnswRabitqIndexParams(
       MetricType metric_type,
@@ -397,7 +398,7 @@ class HnswRabitqIndexParams : public VectorIndexParams {
   core::IndexReformer::Pointer rabitq_reformer_;
 };
 
-class FlatIndexParams : public VectorIndexParams {
+class ZVEC_API FlatIndexParams : public VectorIndexParams {
  public:
   FlatIndexParams(MetricType metric_type,
                   QuantizeType quantize_type = QuantizeType::UNDEFINED,
@@ -446,7 +447,7 @@ inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
   return FlatIndexParams(metric_type, quantize_type, quantizer_param);
 }
 
-class IVFIndexParams : public VectorIndexParams {
+class ZVEC_API IVFIndexParams : public VectorIndexParams {
  public:
   IVFIndexParams(MetricType metric_type, int n_list = 1024, int n_iters = 10,
                  bool use_soar = false,
@@ -520,7 +521,7 @@ class IVFIndexParams : public VectorIndexParams {
   bool use_soar_;
 };
 
-class DiskAnnIndexParams : public VectorIndexParams {
+class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
  public:
   DiskAnnIndexParams(MetricType metric_type, int max_degree = 100,
                      int list_size = 50, int pq_chunk_num = 0,
@@ -601,7 +602,7 @@ class DiskAnnIndexParams : public VectorIndexParams {
 /*
  * Vector: Vamana index params
  */
-class VamanaIndexParams : public VectorIndexParams {
+class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  public:
   VamanaIndexParams(
       MetricType metric_type,
@@ -743,7 +744,7 @@ class VamanaIndexParams : public VectorIndexParams {
  *
  * Not copyable.  Use shared_ptr<FtsIndexParams> for shared ownership.
  */
-class FtsIndexParams : public IndexParams {
+class ZVEC_API FtsIndexParams : public IndexParams {
  public:
   FtsIndexParams(std::string tokenizer_name = "standard",
                  std::vector<std::string> filters = {"lowercase"},
