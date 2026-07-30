@@ -35,6 +35,7 @@ int Fp16Quantizer::init(const IndexMeta &meta,
   if (metric_name == "Cosine") {
     extra_meta_size_ = EXTRA_META_SIZE_COSINE;
     meta_.set_extra_meta_size(extra_meta_size_);
+    meta_.set_reformer("Fp16Quantizer", 0, ailego::Params());
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
@@ -81,8 +82,10 @@ int Fp16Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   }
 
   *ometa = qmeta;
-  ometa->set_meta(IndexMeta::DataType::DT_FP16, raw_dim,
-                  static_cast<uint32_t>(type_), extra_meta_size_);
+  uint32_t out_dim =
+      static_cast<uint32_t>(raw_dim + extra_meta_size_ / sizeof(uint16_t));
+  ometa->set_meta(IndexMeta::DataType::DT_FP16, out_dim,
+                  static_cast<uint32_t>(type_), 0);
 
   return 0;
 }

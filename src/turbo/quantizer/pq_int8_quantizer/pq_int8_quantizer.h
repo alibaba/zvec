@@ -40,9 +40,7 @@ using namespace zvec::core;
 //! data type; all distance kernels are dispatched on that type.
 class PqInt8Quantizer : public Quantizer {
  public:
-  PqInt8Quantizer() {
-    type_ = QuantizeType::kPQ;
-  }
+  PqInt8Quantizer() : Quantizer(QuantizeType::kPQ) {}
 
   ~PqInt8Quantizer() override = default;
 

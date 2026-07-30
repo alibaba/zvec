@@ -31,6 +31,7 @@
 #include "scalar/fp32/cosine.h"
 #include "scalar/fp32/inner_product.h"
 #include "scalar/fp32/squared_euclidean.h"
+#include "scalar/pq_quantizer_int8/pq_distance.h"
 #include "scalar/record_quantized_int4/cosine.h"
 #include "scalar/record_quantized_int4/inner_product.h"
 #include "scalar/record_quantized_int4/squared_euclidean.h"
