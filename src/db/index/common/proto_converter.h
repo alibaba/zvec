@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <proto/zvec.pb.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/schema.h>
 #include "db/index/common/meta.h"
