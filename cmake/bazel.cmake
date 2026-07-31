@@ -633,7 +633,10 @@ macro(_add_library _NAME _OPTION)
       )
   endif()
   add_dependencies(${_NAME} ${_NAME}_static)
-  if(NOT MSVC)
+  # On iOS the main target is also STATIC; renaming ${_NAME}_static to
+  # lib${_NAME}.a would collide with the main target's output (Ninja fails
+  # with "multiple rules generate" — Make silently tolerated it).
+  if(NOT MSVC AND NOT IOS)
     set_property(TARGET ${_NAME}_static PROPERTY OUTPUT_NAME ${_NAME})
   endif()
 endmacro()
