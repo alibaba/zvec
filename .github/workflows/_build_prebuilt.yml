@@ -170,9 +170,9 @@ jobs:
     env:
       ZVEC_INSTALL_DIR: ${{ github.workspace }}/install
       ZVEC_DIST_DIR: ${{ github.workspace }}/dist
-      # minSdkVersion of the prebuilt .so files. Raise only if the build
-      # turns out to require newer platform APIs.
-      ZVEC_ANDROID_API_LEVEL: '24'
+      # minSdkVersion of the prebuilt .so files. bionic provides
+      # aligned_alloc (used by ailego MemoryHelper) only since API 28.
+      ZVEC_ANDROID_API_LEVEL: '28'
       ZVEC_ANDROID_ABI: arm64-v8a
 
     steps:
