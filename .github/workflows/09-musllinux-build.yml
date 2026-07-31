@@ -23,6 +23,9 @@ jobs:
       # shadow the tools bundled in the image, which include an unsupported
       # CMake 4.x. This mirrors what actions/setup-python does for glibc jobs.
       PY_PREFIX: /opt/python/cp310-cp310
+      # In container jobs the runner overrides HOME to /github/home, so pin the
+      # ccache location explicitly to keep it in sync with the actions/cache path.
+      CCACHE_DIR: /root/.cache/ccache
 
     steps:
       - name: Checkout code
