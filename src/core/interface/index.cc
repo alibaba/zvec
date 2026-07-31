@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
@@ -1013,19 +1014,24 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
   }
   // must declare here to ensure its lifespan can cover reducer->reduce()
   std::unique_ptr<ailego::ThreadPool> local_thread_pool = nullptr;
+  uint32_t effective_write_concurrency = options.write_concurrency;
   if (options.pool != nullptr) {
     reducer->set_thread_pool(options.pool);
+    effective_write_concurrency =
+        std::min<uint32_t>(effective_write_concurrency, options.pool->count());
   } else {
     local_thread_pool =
-        std::make_unique<ailego::ThreadPool>(options.write_concurrency);
+        std::make_unique<ailego::ThreadPool>(options.write_concurrency, false);
     reducer->set_thread_pool(local_thread_pool.get());
+    effective_write_concurrency =
+        static_cast<uint32_t>(local_thread_pool->count());
   }
 
   ailego::Params reducer_params;
   reducer_params.set(core::PARAM_MIXED_STREAMER_REDUCER_ENABLE_PK_REWRITE,
                      true);
   reducer_params.set(core::PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS,
-                     options.write_concurrency);
+                     effective_write_concurrency);
   if (reducer->init(reducer_params) != 0) {
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
