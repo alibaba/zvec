@@ -3740,8 +3740,38 @@ void SegmentImpl::fresh_persist_chunked_array() {
                                first_chunked_array->chunk(chunk_idx)->length());
     }
 
-    if (persist_chunk_arrays_.size() > 0 && chunk_offsets_.size() > 0) {
+    bool has_compatible_chunk_layout = !persist_chunk_arrays_.empty();
+    if (has_compatible_chunk_layout) {
+      const auto &reference = persist_chunk_arrays_.front();
+      has_compatible_chunk_layout =
+          reference != nullptr && reference->num_chunks() > 0;
+      for (size_t i = 1;
+           has_compatible_chunk_layout && i < persist_chunk_arrays_.size();
+           ++i) {
+        const auto &current = persist_chunk_arrays_[i];
+        if (current == nullptr ||
+            current->num_chunks() != reference->num_chunks() ||
+            current->length() != reference->length()) {
+          has_compatible_chunk_layout = false;
+          break;
+        }
+        for (int chunk_idx = 0; chunk_idx < reference->num_chunks();
+             ++chunk_idx) {
+          if (current->chunk(chunk_idx)->length() !=
+              reference->chunk(chunk_idx)->length()) {
+            has_compatible_chunk_layout = false;
+            break;
+          }
+        }
+      }
+    }
+
+    if (has_compatible_chunk_layout && !chunk_offsets_.empty()) {
       use_fetch_perf_ = true;
+    } else {
+      LOG_DEBUG(
+          "Disable fetch_perf because persisted scalar columns have "
+          "incompatible chunk layouts");
     }
 
     LOG_INFO(
