@@ -227,7 +227,9 @@ class CollectionImpl : public Collection {
 
   bool destroyed_{false};
 
-  bool closed_{false};
+  // Atomic because Path() is the one accessor that reads it without holding
+  // schema_handle_mtx_, while Close() writes it under the exclusive lock.
+  std::atomic<bool> closed_{false};
 
   CollectionSchema::Ptr schema_;
 
