@@ -185,8 +185,12 @@ archs = ["auto"]
 environment = { CMAKE_GENERATOR = "Unix Makefiles", CMAKE_BUILD_PARALLEL_LEVEL = "16" }
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
-# Skip 32-bit builds and musllinux
-skip = ["*-manylinux_i686", "*-musllinux*"]
+# Pinned to the exact images validated by 09-musllinux-build.yml, so that what
+# CI tests is what CD ships. Keep both places in sync when bumping.
+musllinux-x86_64-image = "quay.io/pypa/musllinux_1_2_x86_64:2026.03.01-1"
+musllinux-aarch64-image = "quay.io/pypa/musllinux_1_2_aarch64:2026.03.01-1"
+# Skip 32-bit builds
+skip = ["*-manylinux_i686"]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
