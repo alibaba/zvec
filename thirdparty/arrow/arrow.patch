@@ -28,11 +28,23 @@ index 0f5840676..cf68bfdcb 100644
 diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
 --- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
 +++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
-@@ -2761,6 +2761,7 @@
-                     URL ${RE2_SOURCE_URL}
-                     URL_HASH "SHA256=${ARROW_RE2_BUILD_SHA256_CHECKSUM}"
-                     CMAKE_ARGS ${RE2_CMAKE_ARGS}
-+                    PATCH_COMMAND sed -i.bak "/#include \"re2\\/stringpiece.h\"/a #include <cstdint>" util/pcre.h
-                     BUILD_BYPRODUCTS "${RE2_STATIC_LIB}")
+@@ -2755,12 +2755,19 @@
+ 
+   set(RE2_CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS} "-DCMAKE_INSTALL_PREFIX=${RE2_PREFIX}")
+ 
++  # Add <cstdint> to re2's util/pcre.h (needed by GCC 13+); Linux-only because macOS BSD sed lacks this syntax and other platforms don't need it.
++  set(ZVEC_RE2_PATCH_COMMAND)
++  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
++    set(ZVEC_RE2_PATCH_COMMAND PATCH_COMMAND sed -i "/#include \"re2\\/stringpiece.h\"/a #include <cstdint>" util/pcre.h)
++  endif()
++
+   externalproject_add(re2_ep
+                       ${EP_COMMON_OPTIONS}
+                       INSTALL_DIR ${RE2_PREFIX}
+                       URL ${RE2_SOURCE_URL}
+                       URL_HASH "SHA256=${ARROW_RE2_BUILD_SHA256_CHECKSUM}"
+                       CMAKE_ARGS ${RE2_CMAKE_ARGS}
++                      ${ZVEC_RE2_PATCH_COMMAND}
+                       BUILD_BYPRODUCTS "${RE2_STATIC_LIB}")
  
    file(MAKE_DIRECTORY "${RE2_PREFIX}/include")
