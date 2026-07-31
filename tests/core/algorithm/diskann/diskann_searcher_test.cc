@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <cstring>
+#include <unordered_set>
 #include <ailego/math/distance.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
@@ -439,7 +440,9 @@ TEST_F(DiskAnnSearcherTest, TestFilter) {
 
     auto &knnResult = knnCtx->result();
     ASSERT_EQ(topk, knnResult.size());
+    std::unordered_set<uint64_t> knn_keys;
     for (const auto &result : knnResult) {
+      ASSERT_TRUE(knn_keys.emplace(result.key()).second);
       EXPECT_NE(50UL, result.key());
       EXPECT_NE(51UL, result.key());
       EXPECT_NE(49UL, result.key());
@@ -453,6 +456,13 @@ TEST_F(DiskAnnSearcherTest, TestFilter) {
     ASSERT_EQ(52UL, linearResult[0].key());
     ASSERT_EQ(48UL, linearResult[1].key());
     ASSERT_EQ(53UL, linearResult[2].key());
+
+    size_t hit_count = 0;
+    for (const auto &result : linearResult) {
+      hit_count += knn_keys.count(result.key());
+    }
+    const float recall = static_cast<float>(hit_count) / topk;
+    EXPECT_GT(recall, 0.90f);
   }
 }
 
