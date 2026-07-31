@@ -1,6 +1,9 @@
 name: musllinux Build
 
 on:
+  # Called by 01-ci-pipeline.yml alongside the other platform builds, and also
+  # dispatchable on its own for debugging musl-specific problems.
+  workflow_call:
   workflow_dispatch:
 
 permissions:
