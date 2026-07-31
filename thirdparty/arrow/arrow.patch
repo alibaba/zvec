@@ -32,7 +32,7 @@ diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/Thi
                      URL ${RE2_SOURCE_URL}
                      URL_HASH "SHA256=${ARROW_RE2_BUILD_SHA256_CHECKSUM}"
                      CMAKE_ARGS ${RE2_CMAKE_ARGS}
-+                    PATCH_COMMAND sed -i "/#include \"re2\\/stringpiece.h\"/a #include <cstdint>" util/pcre.h
++                    PATCH_COMMAND sed -i.bak "/#include \"re2\\/stringpiece.h\"/a #include <cstdint>" util/pcre.h
                      BUILD_BYPRODUCTS "${RE2_STATIC_LIB}")
  
    file(MAKE_DIRECTORY "${RE2_PREFIX}/include")
