@@ -286,20 +286,17 @@ class TestQueryExecutor:
         reranker.rerank.assert_called_once_with(docs_list, ctx.topk)
 
     def test_execute_python_pipeline(self):
-        # Each query is executed serially and converted into a result list.
-        schema = MockCollectionSchema()
-        executor = QueryExecutor(schema)
+        # Each query is executed serially and batch-materialized into results.
+        executor = QueryExecutor(MagicMock())
         collection = MagicMock()
-        collection.Query.side_effect = [["raw1"], ["raw2"]]
+        collection.QueryMaterialized.side_effect = [["raw1"], ["raw2"]]
         vectors = [MagicMock(), MagicMock()]
 
-        with patch(
-            "zvec.executor.query_executor.convert_to_py_doc",
-            side_effect=lambda doc, schema: doc,
-        ):
+        with patch("zvec.executor.query_executor.Doc") as mock_doc:
+            mock_doc._from_tuple.side_effect = lambda t: t
             results = executor._execute_python_pipeline(vectors, collection)
         assert results == [["raw1"], ["raw2"]]
-        assert collection.Query.call_count == 2
+        assert collection.QueryMaterialized.call_count == 2
 
     def test_build_search_query_by_missing_id_raises_value_error(self):
         vector_schema = VectorSchema(name="test", data_type=DataType.VECTOR_FP32)
