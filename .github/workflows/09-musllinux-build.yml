@@ -177,3 +177,138 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           python -m pytest python/tests/test_hnsw_contiguous_memory.py -v
         shell: sh
+
+  # arm64 mirrors the linux-arm64 instance of 03-macos-linux-build.yml: the
+  # subproject-integration check and the whole libaio/DiskAnn round are
+  # linux-x64-only there, so they are intentionally absent here.
+  #
+  # The runner cannot execute JavaScript actions inside Alpine containers on
+  # arm64 ("JavaScript Actions in Alpine containers are only supported on x64
+  # Linux runners"), so instead of `container:` this job keeps actions on the
+  # host and runs build/test commands in the container via docker exec.
+  build-and-test-arm64:
+    name: Build & Test (musllinux-arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+
+    env:
+      MUSL_IMAGE: quay.io/pypa/musllinux_1_2_aarch64:2026.03.01-1
+      MUSL_CONTAINER: zvec-musl-arm64
+      # Same interpreter-selection-by-PATH trick as the x64 job above.
+      MUSL_PATH: /opt/python/cp310-cp310/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: musllinux-arm64-gcc-${{ github.sha }}
+          restore-keys: |
+            musllinux-arm64-gcc-
+
+      - name: Start musllinux container
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.ccache"
+          docker run -d --name "$MUSL_CONTAINER" \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            -e PATH="$MUSL_PATH" \
+            -e CCACHE_DIR=/work/.ccache \
+            -e CCACHE_MAXSIZE=150M \
+            "$MUSL_IMAGE" sleep infinity
+        shell: bash
+
+      - name: Print CPU info
+        run: docker exec "$MUSL_CONTAINER" lscpu
+        shell: bash
+
+      - name: Set up environment variables
+        run: |
+          echo "NPROC=$(nproc 2>/dev/null || echo 2)" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          docker exec "$MUSL_CONTAINER" apk add --no-cache ccache
+          docker exec "$MUSL_CONTAINER" python -m pip install --upgrade pip
+          docker exec "$MUSL_CONTAINER" python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
+            pytest \
+            pytest-xdist \
+            scikit-build-core \
+            setuptools_scm
+        shell: bash
+
+      - name: Build from source
+        run: |
+          docker exec \
+            -e CMAKE_GENERATOR=Ninja \
+            -e CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+            "$MUSL_CONTAINER" python -m pip install -v . \
+            --no-build-isolation \
+            --config-settings='cmake.define.BUILD_TOOLS=ON' \
+            --config-settings='cmake.define.ENABLE_WERROR=ON' \
+            --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
+            --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
+        shell: bash
+
+      - name: Run C++ Tests
+        run: |
+          docker exec -w /work/build "$MUSL_CONTAINER" \
+            cmake --build . --target unittest --parallel "$NPROC"
+        shell: bash
+
+      - name: Run Python Tests
+        run: |
+          docker exec "$MUSL_CONTAINER" python -m pytest python/tests/
+        shell: bash
+
+      - name: Run C++ Examples
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c "
+            cd /work/examples/c++
+            mkdir build && cd build
+            cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            cmake --build . --parallel $NPROC
+            ./db-example
+            ./core-example
+            ./ailego-example
+          "
+        shell: bash
+
+      - name: Run C Examples
+        run: |
+          docker exec "$MUSL_CONTAINER" sh -c "
+            cd /work/examples/c
+            mkdir build && cd build
+            cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            cmake --build . --parallel $NPROC
+            ./c_api_basic_example
+            ./c_api_collection_schema_example
+            ./c_api_doc_example
+            ./c_api_field_schema_example
+            ./c_api_index_example
+            ./c_api_optimized_example
+          "
+        shell: bash
+
+      # The container writes as root; hand the ccache dir back to the runner
+      # user so actions/cache can archive it, then drop the container.
+      - name: Tear down musllinux container
+        if: always()
+        run: |
+          docker exec "$MUSL_CONTAINER" \
+            chown -R "$(id -u):$(id -g)" /work/.ccache || true
+          docker rm -f "$MUSL_CONTAINER" || true
+        shell: bash
