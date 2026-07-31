@@ -3,6 +3,11 @@ name: Build Prebuilt Libraries
 on:
   workflow_dispatch:
   workflow_call:
+  # TODO: remove before merging — temporary trigger to validate this
+  # workflow on the feature branch (dispatch requires the file on main).
+  push:
+    branches:
+      - feat/release-prebuilt
 
 permissions:
   contents: read
