@@ -198,29 +198,4 @@ TEST(NGramTokenizerConfigTest, FactoryPreservesValidationError) {
       std::string::npos);
 }
 
-TEST_F(NGramTokenizerTest, GeneratedTokenCountIsBounded) {
-  constexpr size_t kExpectedMaxGeneratedTokenCount = 262144;
-  std::string text(kExpectedMaxGeneratedTokenCount + 2, 'a');
-
-  auto tokens = tokenize(text);
-
-  EXPECT_EQ(tokens.size(), kExpectedMaxGeneratedTokenCount);
-}
-
-TEST(NGramTokenizerBudgetTest, GeneratedTokenBytesAreBounded) {
-  constexpr size_t kNGramLength = 128;
-  constexpr size_t kExpectedMaxGeneratedTokenBytes = 16 * 1024 * 1024;
-  constexpr size_t kExpectedTokenCount =
-      kExpectedMaxGeneratedTokenBytes / kNGramLength;
-  auto pipeline = make_pipeline(
-      R"({"ngram_min":128,"ngram_max":128,"token_chars":["letter"]})");
-  ASSERT_NE(pipeline, nullptr);
-  std::string text(kExpectedTokenCount + kNGramLength, 'a');
-
-  auto tokens = pipeline->process(text);
-
-  ASSERT_EQ(tokens.size(), kExpectedTokenCount);
-  EXPECT_EQ(tokens.back().text.size(), kNGramLength);
-}
-
 }  // namespace

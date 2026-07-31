@@ -16,7 +16,6 @@
 #include <utf8proc.h>
 #include <algorithm>
 #include <limits>
-#include <zvec/ailego/logger/logger.h>
 #include "unicode_utils.h"
 
 namespace zvec::fts {
@@ -26,8 +25,6 @@ namespace {
 constexpr uint32_t kDefaultNGramLength = 2;
 constexpr uint32_t kMaxNGramDiff = 1;
 constexpr size_t kMaxInitialTokenCapacity = 4096;
-constexpr size_t kMaxGeneratedTokenCount = 262144;
-constexpr size_t kMaxGeneratedTokenBytes = 16 * 1024 * 1024;
 constexpr uint32_t kNGramTokenCharLetter = 1u << 0;
 constexpr uint32_t kNGramTokenCharDigit = 1u << 1;
 constexpr uint32_t kNGramTokenCharWhitespace = 1u << 2;
@@ -190,13 +187,12 @@ std::vector<std::vector<CodepointSpan>> collect_ngram_segments(
   return spans;
 }
 
-bool emit_ngram_tokens(const std::string &text,
+void emit_ngram_tokens(const std::string &text,
                        const std::vector<CodepointSpan> &span,
                        uint32_t ngram_min, uint32_t ngram_max,
-                       size_t *generated_bytes, uint32_t *position,
-                       std::vector<Token> *tokens) {
+                       uint32_t *position, std::vector<Token> *tokens) {
   if (span.size() < ngram_min) {
-    return true;
+    return;
   }
 
   for (size_t start = 0; start < span.size(); ++start) {
@@ -206,19 +202,13 @@ bool emit_ngram_tokens(const std::string &text,
       const CodepointSpan &first = span[start];
       const CodepointSpan &last = span[start + length - 1];
       size_t token_bytes = last.end - first.start;
-      if (tokens->size() >= kMaxGeneratedTokenCount ||
-          token_bytes > kMaxGeneratedTokenBytes - *generated_bytes) {
-        return false;
-      }
       Token token;
       token.text = text.substr(first.start, token_bytes);
       token.offset = first.start;
       token.position = (*position)++;
-      *generated_bytes += token_bytes;
       tokens->push_back(std::move(token));
     }
   }
-  return true;
 }
 
 }  // namespace
@@ -252,18 +242,10 @@ Status NGramTokenizer::init(const ailego::JsonObject &config) {
 std::vector<Token> NGramTokenizer::tokenize(const std::string &text) const {
   std::vector<Token> tokens;
   tokens.reserve(estimate_token_capacity(text.size()));
-  size_t generated_bytes = 0;
   uint32_t position = 0;
   auto spans = collect_ngram_segments(text, token_char_mask_);
   for (const auto &span : spans) {
-    if (!emit_ngram_tokens(text, span, ngram_min_, ngram_max_, &generated_bytes,
-                           &position, &tokens)) {
-      LOG_WARN(
-          "NGramTokenizer: generated token budget reached, output truncated "
-          "at token_count[%zu] token_bytes[%zu]",
-          tokens.size(), generated_bytes);
-      break;
-    }
+    emit_ngram_tokens(text, span, ngram_min_, ngram_max_, &position, &tokens);
   }
   return tokens;
 }
