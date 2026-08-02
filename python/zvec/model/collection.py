@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from typing import Optional, Union, overload
 
 from zvec._zvec import _Collection
@@ -46,6 +47,24 @@ __all__ = ["Collection"]
 def _require_positive_integer(value, name: str) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+
+
+DocIds = Union[str, list[str], tuple[str, ...]]
+
+
+def _normalize_doc_ids(ids: DocIds) -> tuple[list[str], bool]:
+    if isinstance(ids, str):
+        if not ids:
+            raise ValueError("ids must contain non-empty strings")
+        return [ids], True
+
+    if not isinstance(ids, Sequence) or isinstance(ids, (bytes, bytearray)):
+        raise ValueError("ids must be a string or a sequence of strings")
+
+    id_list = ids if isinstance(ids, list) else list(ids)
+    if any(not isinstance(doc_id, str) or not doc_id for doc_id in id_list):
+        raise ValueError("ids must contain non-empty strings")
+    return id_list, False
 
 
 class Collection:
@@ -324,21 +343,20 @@ class Collection:
         pass
 
     @overload
-    def delete(self, ids: list[str]) -> list[Status]:
+    def delete(self, ids: Union[list[str], tuple[str, ...]]) -> list[Status]:
         pass
 
-    def delete(self, ids: Union[str, list[str]]) -> Union[Status, list[Status]]:
+    def delete(self, ids: DocIds) -> Union[Status, list[Status]]:
         """Delete documents by ID.
 
         Args:
-            ids (Union[str, list[str]]): One or more document IDs to delete.
+            ids (Union[str, list[str], tuple[str, ...]]): One or more document IDs to delete.
 
         Returns:
             Union[Status, list[Status]]: If a single id was given, returns its Status;
             if a list was given, returns a list of Status objects.
         """
-        is_single = isinstance(ids, str)
-        id_list = [ids] if isinstance(ids, str) else ids
+        id_list, is_single = _normalize_doc_ids(ids)
         results = self._obj.Delete(id_list)
         return results[0] if is_single else results
 
@@ -353,7 +371,7 @@ class Collection:
     # ========== Collection DQL-fetch Methods ==========
     def fetch(
         self,
-        ids: Union[str, list[str]],
+        ids: DocIds,
         *,
         output_fields: Optional[list[str]] = None,
         include_vector: bool = True,
@@ -361,7 +379,7 @@ class Collection:
         """Retrieve documents by ID.
 
         Args:
-            ids (Union[str, list[str]]): Document IDs to fetch.
+            ids (Union[str, list[str], tuple[str, ...]]): Document IDs to fetch.
             output_fields (Optional[list[str]], optional): Scalar fields to
                 include. If None, all fields are returned. Defaults to None.
             include_vector (bool, optional): Whether to include vector data in
@@ -370,8 +388,8 @@ class Collection:
         Returns:
             dict[str, Doc]: Mapping from ID to document. Missing IDs are omitted.
         """
-        ids = [ids] if isinstance(ids, str) else ids
-        docs = self._obj.Fetch(ids, output_fields, include_vector)
+        id_list, _ = _normalize_doc_ids(ids)
+        docs = self._obj.Fetch(id_list, output_fields, include_vector)
         return {
             doc_id: py_doc
             for doc_id, core_doc in docs.items()

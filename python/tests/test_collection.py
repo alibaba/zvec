@@ -426,6 +426,26 @@ class TestCollectionOptimize:
 # ----------------------------
 @pytest.mark.usefixtures("test_collection")
 class TestCollectionFetch:
+    @pytest.mark.parametrize("ids", [None, 1, b"doc_1", "", ["doc_1", None], [""]])
+    def test_collection_fetch_rejects_invalid_ids(self, ids):
+        collection = Collection.__new__(Collection)
+        collection._obj = MagicMock()
+
+        with pytest.raises(ValueError, match="ids must"):
+            collection.fetch(ids)
+
+        collection._obj.Fetch.assert_not_called()
+
+    def test_collection_fetch_accepts_tuple_ids(self):
+        collection = Collection.__new__(Collection)
+        collection._obj = MagicMock()
+        collection._obj.Fetch.return_value = {}
+
+        result = collection.fetch(("doc_1", "doc_2"))
+
+        assert result == {}
+        collection._obj.Fetch.assert_called_once_with(["doc_1", "doc_2"], None, True)
+
     def test_collection_fetch(
         self, collection_with_single_doc: Collection, single_doc: Doc
     ):
@@ -807,6 +827,26 @@ class TestCollectionUpsert:
 # ----------------------------
 @pytest.mark.usefixtures("test_collection")
 class TestCollectionDelete:
+    @pytest.mark.parametrize("ids", [None, 1, b"doc_1", "", ["doc_1", None], [""]])
+    def test_collection_delete_rejects_invalid_ids(self, ids):
+        collection = Collection.__new__(Collection)
+        collection._obj = MagicMock()
+
+        with pytest.raises(ValueError, match="ids must"):
+            collection.delete(ids)
+
+        collection._obj.Delete.assert_not_called()
+
+    def test_collection_delete_accepts_tuple_ids(self):
+        collection = Collection.__new__(Collection)
+        collection._obj = MagicMock()
+        collection._obj.Delete.return_value = ["ok_1", "ok_2"]
+
+        result = collection.delete(("doc_1", "doc_2"))
+
+        assert result == ["ok_1", "ok_2"]
+        collection._obj.Delete.assert_called_once_with(["doc_1", "doc_2"])
+
     def test_empty_collection_delete(self, test_collection: Collection, single_doc):
         result = test_collection.delete(single_doc.id)
         assert bool(result)
