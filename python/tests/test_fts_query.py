@@ -50,6 +50,23 @@ class TestFtsQueryValidation:
         with pytest.raises(ValueError, match="mutually exclusive"):
             q._validate()
 
+    @pytest.mark.parametrize(
+        "fts",
+        [
+            Fts(),
+            Fts(query_string=""),
+            Fts(match_string=""),
+            Fts(query_string="   "),
+            Fts(match_string="   "),
+        ],
+    )
+    def test_empty_fts_query_raises_error(self, fts):
+        """FTS queries must provide a non-empty search expression."""
+        q = Query(field_name="content", fts=fts)
+        with pytest.raises(ValueError, match="Fts requires a non-empty"):
+            q._validate()
+        assert q.has_fts() is False
+
     def test_no_fts(self):
         """Query without FTS fields should have has_fts() == False."""
         q = Query(field_name="embedding", vector=[0.1, 0.2, 0.3])

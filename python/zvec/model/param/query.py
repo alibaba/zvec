@@ -111,8 +111,18 @@ class Query:
             bool: True if `fts` is set with a query_string or match_string.
         """
         if self.fts is not None:
-            return bool(self.fts.query_string) or bool(self.fts.match_string)
+            return bool(self._fts_query_string()) or bool(self._fts_match_string())
         return False
+
+    def _fts_query_string(self) -> str:
+        return (
+            self.fts.query_string.strip() if self.fts and self.fts.query_string else ""
+        )
+
+    def _fts_match_string(self) -> str:
+        return (
+            self.fts.match_string.strip() if self.fts and self.fts.match_string else ""
+        )
 
     def _validate(self) -> None:
         if not isinstance(self.field_name, str) or not self.field_name.strip():
@@ -123,7 +133,9 @@ class Query:
             raise ValueError(
                 "Cannot combine fts with vector search fields (id/vector) in a single Query"
             )
-        if self.fts is not None and self.fts.query_string and self.fts.match_string:
+        if self.fts is not None and not self.has_fts():
+            raise ValueError("Fts requires a non-empty query_string or match_string")
+        if self._fts_query_string() and self._fts_match_string():
             raise ValueError(
                 "Cannot provide both query_string and match_string in Fts; "
                 "they are mutually exclusive"
