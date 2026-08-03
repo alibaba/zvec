@@ -1148,7 +1148,7 @@ def get_zvec_backend() -> tuple[str, str]:
         zvec = importlib.import_module("zvec")
 
         return str(zvec.io_backend_type()), str(zvec.io_backend_description())
-    except Exception as exc:  # noqa: BLE001  # pragma: no cover
+    except Exception as exc:  # pragma: no cover - environment dependent
         return "unavailable", f"{type(exc).__name__}: {exc}"
 
 
@@ -1494,6 +1494,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         write_console("\nInterrupted.", error=True)
         raise SystemExit(130) from None
-    except Exception as exc:  # noqa: BLE001 - CLI error boundary
+    except Exception as exc:
         write_console(f"\nERROR: {exc}", error=True)
         raise SystemExit(1) from None
