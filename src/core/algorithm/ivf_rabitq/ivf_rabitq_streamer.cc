@@ -359,7 +359,7 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       return ret;
     }
 
-    // Use context heap for online distk-gated pruning
+    // Use context heap for online dist-k gated pruning
     IndexDocumentHeap &heap = ctx->mutable_result_heap();
     heap.clear();
     heap.limit(topk);
