@@ -765,8 +765,7 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
                   (unsigned long)j, error);
         batch_error = true;
       } else {
-        const uint64_t expected =
-            read_reqs[batch_start + j].len;
+        const uint64_t expected = read_reqs[batch_start + j].len;
         if (static_cast<uint64_t>(bytes_transferred) != expected) {
           LOG_ERROR(
               "Overlapped read %lu completed with %lu bytes, expected %lu",
