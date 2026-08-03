@@ -154,6 +154,10 @@ TEST_P(AddColumnBatchBoundariesTest,
   segment = std::move(open_result).value();
   ASSERT_TRUE(segment != nullptr);
 
+  auto fetched_before_add = segment->fetch({"id"}, {0, doc_count - 1});
+  ASSERT_TRUE(fetched_before_add != nullptr);
+  ASSERT_EQ(fetched_before_add->num_rows(), 2);
+
   const std::string added_column = "added_nullable";
   auto added_field =
       std::make_shared<FieldSchema>(added_column, DataType::INT32, true);
@@ -205,6 +209,18 @@ TEST_P(AddColumnBatchBoundariesTest,
   auto fetched_added_column = fetched->GetColumnByName(added_column);
   ASSERT_TRUE(fetched_added_column != nullptr);
   EXPECT_EQ(fetched_added_column->null_count(), row_ids.size());
+
+  // Each layout remains independently eligible for the mmap fetch fast path.
+  auto fetched_base_only = segment->fetch({"id"}, row_ids);
+  ASSERT_TRUE(fetched_base_only != nullptr);
+  ASSERT_EQ(fetched_base_only->num_rows(), row_ids.size());
+  auto fetched_added_only = segment->fetch({added_column}, row_ids);
+  ASSERT_TRUE(fetched_added_only != nullptr);
+  ASSERT_EQ(fetched_added_only->num_rows(), row_ids.size());
+  auto fetched_added_only_column =
+      fetched_added_only->GetColumnByName(added_column);
+  ASSERT_TRUE(fetched_added_only_column != nullptr);
+  EXPECT_EQ(fetched_added_only_column->null_count(), row_ids.size());
 }
 
 INSTANTIATE_TEST_SUITE_P(MMap, AddColumnBatchBoundariesTest,
