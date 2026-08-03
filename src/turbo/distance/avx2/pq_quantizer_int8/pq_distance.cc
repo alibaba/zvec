@@ -113,9 +113,9 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
   __m256 acc = _mm256_setzero_ps();
 
   // Base offsets for SDC: m * 65536 (float indices into dist_table)
-  const __m256i base_offsets = _mm256_setr_epi32(
-      0, chunk, 2 * chunk, 3 * chunk, 4 * chunk,
-      5 * chunk, 6 * chunk, 7 * chunk);
+  const __m256i base_offsets =
+      _mm256_setr_epi32(0, chunk, 2 * chunk, 3 * chunk, 4 * chunk, 5 * chunk,
+                        6 * chunk, 7 * chunk);
 
   // Multiplier for a[m] * 256
   const __m256i a_multiplier = _mm256_set1_epi32(kNumCentroids);
@@ -141,8 +141,7 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
     // in-lane k * chunk component (k = 0..7), so gathering from a
     // fixed dist_table base would read the wrong subquantizer tables once
     // num_chunk > 8 (m >= 8).
-    __m256 gathered =
-        _mm256_i32gather_ps(dist_table + m * chunk, indices, 4);
+    __m256 gathered = _mm256_i32gather_ps(dist_table + m * chunk, indices, 4);
 
     acc = _mm256_add_ps(acc, gathered);
   }

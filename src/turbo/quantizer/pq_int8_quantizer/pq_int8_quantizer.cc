@@ -455,7 +455,8 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   std::vector<uint8_t> centered_query_storage;
   if (use_zero_mean_) {
     centered_query_storage.resize(original_dim_ * elem_size);
-    std::memcpy(centered_query_storage.data(), query, original_dim_ * elem_size);
+    std::memcpy(centered_query_storage.data(), query,
+                original_dim_ * elem_size);
     switch (input_data_type_) {
       case DataType::kFp16:
         subtract_center(

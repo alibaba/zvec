@@ -107,11 +107,9 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
 
   // Base offsets for SDC: m * 65536
   const __m512i base_offsets = _mm512_setr_epi32(
-      0 * chunk, 1 * chunk, 2 * chunk, 3 * chunk,
-      4 * chunk, 5 * chunk, 6 * chunk, 7 * chunk,
-      8 * chunk, 9 * chunk, 10 * chunk, 11 * chunk,
-      12 * chunk, 13 * chunk, 14 * chunk,
-      15 * chunk);
+      0 * chunk, 1 * chunk, 2 * chunk, 3 * chunk, 4 * chunk, 5 * chunk,
+      6 * chunk, 7 * chunk, 8 * chunk, 9 * chunk, 10 * chunk, 11 * chunk,
+      12 * chunk, 13 * chunk, 14 * chunk, 15 * chunk);
 
   // Multiplier for a[m] * 256
   const __m512i a_multiplier = _mm512_set1_epi32(kNumCentroids);
@@ -137,8 +135,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
     // in-lane k * chunk component (k = 0..15), so gathering from a
     // fixed dist_table base would read the wrong subquantizer tables once
     // num_chunk > 16 (m >= 16).
-    __m512 gathered =
-        _mm512_i32gather_ps(indices, dist_table + m * chunk, 4);
+    __m512 gathered = _mm512_i32gather_ps(indices, dist_table + m * chunk, 4);
 
     acc = _mm512_add_ps(acc, gathered);
   }
