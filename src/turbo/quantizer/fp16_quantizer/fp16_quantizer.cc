@@ -82,10 +82,8 @@ int Fp16Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   }
 
   *ometa = qmeta;
-  uint32_t out_dim =
-      static_cast<uint32_t>(raw_dim + extra_meta_size_ / sizeof(uint16_t));
-  ometa->set_meta(IndexMeta::DataType::DT_FP16, out_dim,
-                  static_cast<uint32_t>(type_), 0);
+  ometa->set_meta(IndexMeta::DataType::DT_FP16, static_cast<uint32_t>(raw_dim),
+                  static_cast<uint32_t>(type_), extra_meta_size_);
 
   return 0;
 }
