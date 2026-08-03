@@ -12,24 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma once
-
-#include <cstdint>
-#include <zvec/export.h>
+#include <zvec/core/interface/vector_source.h>
 
 namespace zvec {
 namespace core {
 
-class ZVEC_CORE_API VectorSource {
- public:
-  VectorSource();
-  virtual ~VectorSource();
+VectorSource::VectorSource() = default;
 
-  virtual const void *get_vector(uint32_t node_id) const = 0;
+VectorSource::~VectorSource() = default;
 
-  virtual void get_vectors(const uint32_t *ids, uint32_t count,
-                           const void **out) const;
-};
+void VectorSource::get_vectors(const uint32_t *ids, uint32_t count,
+                               const void **out) const {
+  for (uint32_t i = 0; i < count; ++i) {
+    out[i] = get_vector(ids[i]);
+  }
+}
 
 }  // namespace core
 }  // namespace zvec

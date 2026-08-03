@@ -21,10 +21,11 @@
 #include <zvec/db/query.h>
 #include <zvec/db/stats.h>
 #include <zvec/db/status.h>
+#include <zvec/export.h>
 
 namespace zvec {
 
-class Collection {
+class ZVEC_API Collection {
  public:
   using Ptr = std::shared_ptr<Collection>;
 

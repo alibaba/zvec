@@ -16,13 +16,14 @@
 
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/export.h>
 
 namespace zvec {
 namespace ailego {
 
 /*! Memory Mapping File
  */
-class MMapFile {
+class ZVEC_AILEGO_API MMapFile {
  public:
   //! Constructor
   MMapFile(void)

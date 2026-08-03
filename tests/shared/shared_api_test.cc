@@ -12,24 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma once
-
+#include <cmath>
 #include <cstdint>
-#include <zvec/export.h>
+#include <memory>
+#include <zvec/db/doc.h>
+#include <zvec/db/schema.h>
 
-namespace zvec {
-namespace core {
+int main() {
+  zvec::float16_t half_value(1.5F);
+  if (std::fabs(static_cast<float>(half_value) - 1.5F) > 0.001F) {
+    return 1;
+  }
 
-class ZVEC_CORE_API VectorSource {
- public:
-  VectorSource();
-  virtual ~VectorSource();
+  zvec::CollectionSchema schema("shared-api-test");
+  auto field = std::make_shared<zvec::FieldSchema>("id", zvec::DataType::INT64);
+  if (!schema.add_field(std::move(field)).ok() || !schema.has_field("id")) {
+    return 2;
+  }
 
-  virtual const void *get_vector(uint32_t node_id) const = 0;
+  zvec::Doc doc;
+  doc.set_pk("1");
+  if (!doc.set<int64_t>("id", 1)) {
+    return 3;
+  }
 
-  virtual void get_vectors(const uint32_t *ids, uint32_t count,
-                           const void **out) const;
-};
-
-}  // namespace core
-}  // namespace zvec
+  return 0;
+}
