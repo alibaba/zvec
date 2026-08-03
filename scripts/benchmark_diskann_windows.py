@@ -35,6 +35,7 @@ import csv
 import ctypes
 import ctypes.wintypes
 import datetime as dt
+import importlib
 import json
 import os
 import platform
@@ -45,16 +46,31 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
-
+from typing import Any, ClassVar
 
 MIB = 1024 * 1024
 GIB = 1024 * 1024 * 1024
 IS_WINDOWS = sys.platform == "win32"
 UINT64_MAX = (1 << 64) - 1
 VECS_HEADER = struct.Struct("<QHHI11Q")
+
+
+def write_console(
+    message: str = "",
+    *,
+    end: str = "\n",
+    flush: bool = False,
+    error: bool = False,
+) -> None:
+    """Write benchmark progress without routing it through Python logging."""
+
+    stream = sys.stderr if error else sys.stdout
+    stream.write(f"{message}{end}")
+    if flush:
+        stream.flush()
 
 
 @dataclass
@@ -113,7 +129,7 @@ class VecsLayout:
 
 
 class IO_COUNTERS(ctypes.Structure):
-    _fields_ = [
+    _fields_: ClassVar[list[tuple[str, Any]]] = [
         ("ReadOperationCount", ctypes.c_ulonglong),
         ("WriteOperationCount", ctypes.c_ulonglong),
         ("OtherOperationCount", ctypes.c_ulonglong),
@@ -124,7 +140,7 @@ class IO_COUNTERS(ctypes.Structure):
 
 
 class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
-    _fields_ = [
+    _fields_: ClassVar[list[tuple[str, Any]]] = [
         ("cb", ctypes.wintypes.DWORD),
         ("PageFaultCount", ctypes.wintypes.DWORD),
         ("PeakWorkingSetSize", ctypes.c_size_t),
@@ -221,12 +237,8 @@ def parse_args() -> argparse.Namespace:
         choices=("fp32", "fp16"),
         default=("fp32", "fp16"),
     )
-    parser.add_argument(
-        "--list-sizes", nargs="+", type=int, default=(100, 300, 500)
-    )
-    parser.add_argument(
-        "--thread-counts", nargs="+", type=int, default=(1, 2, 4)
-    )
+    parser.add_argument("--list-sizes", nargs="+", type=int, default=(100, 300, 500))
+    parser.add_argument("--thread-counts", nargs="+", type=int, default=(1, 2, 4))
     parser.add_argument("--build-threads", type=int, default=8)
     parser.add_argument("--recall-threads", type=int, default=16)
     parser.add_argument("--bench-seconds", type=int, default=30)
@@ -342,7 +354,7 @@ def run_simple(
     env: dict[str, str],
     dry_run: bool,
 ) -> None:
-    print(f"\n> {command_text(command)}")
+    write_console(f"\n> {command_text(command)}")
     if dry_run:
         return
     subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
@@ -356,6 +368,7 @@ def check_x64_msvc(env: dict[str, str]) -> None:
             capture_output=True,
             text=True,
             errors="replace",
+            check=False,
         )
     except OSError as exc:
         raise RuntimeError(
@@ -429,9 +442,7 @@ def ensure_tools(
             "-DBUILD_ZVEC_AILEGO_SHARED=OFF",
         ]
     )
-    run_simple(
-        configure_command, cwd=repo_root, env=env, dry_run=dry_run
-    )
+    run_simple(configure_command, cwd=repo_root, env=env, dry_run=dry_run)
     run_simple(
         [
             cmake,
@@ -449,9 +460,7 @@ def ensure_tools(
         dry_run=dry_run,
     )
     if dry_run:
-        return {
-            name: (build_dir / "bin" / f"{name}.exe").resolve() for name in names
-        }
+        return {name: (build_dir / "bin" / f"{name}.exe").resolve() for name in names}
     tools = {name: find_tool(build_dir, name) for name in names}
     missing = [name for name, path in tools.items() if path is None]
     if missing:
@@ -477,9 +486,7 @@ def read_vecs_layout(train_file: Path, dimension: int) -> VecsLayout:
     with train_file.open("rb") as stream:
         raw_header = stream.read(VECS_HEADER.size)
     if len(raw_header) != VECS_HEADER.size:
-        raise ValueError(
-            f"Training file is too small for a VecsHeader: {train_file}"
-        )
+        raise ValueError(f"Training file is too small for a VecsHeader: {train_file}")
 
     (
         num_vecs,
@@ -514,9 +521,7 @@ def read_vecs_layout(train_file: Path, dimension: int) -> VecsLayout:
 
     dense_row_bytes, remainder = divmod(dense_size, num_vecs)
     if remainder or dense_row_bytes % 4:
-        raise ValueError(
-            "Dense vector section is not a contiguous FP32 matrix."
-        )
+        raise ValueError("Dense vector section is not a contiguous FP32 matrix.")
     stored_dimension = dense_row_bytes // 4
     if stored_dimension != dimension:
         raise ValueError(
@@ -535,9 +540,7 @@ def read_vecs_layout(train_file: Path, dimension: int) -> VecsLayout:
     dense_end = data_offset + dense_offset + dense_size
     key_end = data_offset + key_offset + expected_key_size
     if max(dense_end, key_end) > file_size:
-        raise ValueError(
-            "Training file header points beyond the end of the file."
-        )
+        raise ValueError("Training file header points beyond the end of the file.")
 
     return VecsLayout(
         num_vecs=num_vecs,
@@ -563,15 +566,13 @@ def load_query_matrix(
             fields = line.split(";")
             if len(fields) < 2:
                 raise ValueError(
-                    f"{query_file}:{line_number}: expected "
-                    "'query_id;dense vector'."
+                    f"{query_file}:{line_number}: expected 'query_id;dense vector'."
                 )
             try:
                 query_id = int(fields[0])
             except ValueError as exc:
                 raise ValueError(
-                    f"{query_file}:{line_number}: invalid query id "
-                    f"{fields[0]!r}."
+                    f"{query_file}:{line_number}: invalid query id {fields[0]!r}."
                 ) from exc
             vector = np.fromstring(fields[1], dtype=np.float32, sep=" ")
             if vector.size != dimension:
@@ -597,7 +598,7 @@ def display_duration(seconds: float) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
-def generate_external_ground_truth(
+def generate_external_ground_truth(  # noqa: PLR0915
     *,
     train_file: Path,
     query_file: Path,
@@ -610,10 +611,10 @@ def generate_external_ground_truth(
     """Generate exact cosine neighbors with bounded-memory matrix blocks."""
 
     if output_file.is_file():
-        print(f"\nReusing ground truth: {output_file}")
+        write_console(f"\nReusing ground truth: {output_file}")
         return
     if dry_run:
-        print(
+        write_console(
             "\nWould generate exact ground truth with NumPy: "
             f"{output_file} (dimension={dimension}, k={neighbor_count}, "
             f"block_size={block_size})"
@@ -621,7 +622,7 @@ def generate_external_ground_truth(
         return
 
     try:
-        import numpy as np
+        np = importlib.import_module("numpy")
     except ImportError as exc:
         raise RuntimeError(
             "NumPy is required for automatic ground-truth generation. "
@@ -637,9 +638,7 @@ def generate_external_ground_truth(
         )
 
     query_ids, queries = load_query_matrix(query_file, dimension, np)
-    query_norms = np.sqrt(
-        np.einsum("ij,ij->i", queries, queries, optimize=True)
-    )
+    query_norms = np.sqrt(np.einsum("ij,ij->i", queries, queries, optimize=True))
     if np.any(~np.isfinite(query_norms)) or np.any(query_norms == 0):
         raise ValueError("Query file contains a zero or non-finite vector.")
     queries /= query_norms[:, np.newaxis]
@@ -662,14 +661,10 @@ def generate_external_ground_truth(
         shape=(layout.num_vecs,),
     )
 
-    best_scores = np.full(
-        (neighbor_count, query_count), -np.inf, dtype=np.float32
-    )
-    best_rows = np.full(
-        (neighbor_count, query_count), -1, dtype=np.int64
-    )
+    best_scores = np.full((neighbor_count, query_count), -np.inf, dtype=np.float32)
+    best_rows = np.full((neighbor_count, query_count), -1, dtype=np.int64)
     started = time.perf_counter()
-    print(
+    write_console(
         f"\nGenerating exact cosine ground truth: "
         f"{layout.num_vecs:,} vectors x {query_count:,} queries, "
         f"k={neighbor_count}"
@@ -677,12 +672,8 @@ def generate_external_ground_truth(
 
     for start in range(0, layout.num_vecs, block_size):
         stop = min(start + block_size, layout.num_vecs)
-        block = np.array(
-            vectors[start:stop], dtype=np.float32, order="C", copy=True
-        )
-        block_norms = np.sqrt(
-            np.einsum("ij,ij->i", block, block, optimize=True)
-        )
+        block = np.array(vectors[start:stop], dtype=np.float32, order="C", copy=True)
+        block_norms = np.sqrt(np.einsum("ij,ij->i", block, block, optimize=True))
         invalid = ~np.isfinite(block_norms)
         if np.any(invalid):
             first_bad = start + int(np.flatnonzero(invalid)[0])
@@ -694,15 +685,13 @@ def generate_external_ground_truth(
 
         scores = block @ query_transpose
         block_k = min(neighbor_count, stop - start)
-        local_rows = np.argpartition(
-            scores, scores.shape[0] - block_k, axis=0
-        )[-block_k:, :]
+        local_rows = np.argpartition(scores, scores.shape[0] - block_k, axis=0)[
+            -block_k:, :
+        ]
         block_scores = scores[local_rows, query_columns]
         block_rows = local_rows.astype(np.int64, copy=False) + start
 
-        candidate_scores = np.concatenate(
-            (best_scores, block_scores), axis=0
-        )
+        candidate_scores = np.concatenate((best_scores, block_scores), axis=0)
         candidate_rows = np.concatenate((best_rows, block_rows), axis=0)
         keep = np.argpartition(
             candidate_scores,
@@ -715,7 +704,7 @@ def generate_external_ground_truth(
         elapsed = time.perf_counter() - started
         completed = stop / layout.num_vecs
         eta = elapsed * (1.0 - completed) / completed
-        print(
+        write_console(
             f"\rGround truth: {completed:6.2%} "
             f"({stop:,}/{layout.num_vecs:,})  "
             f"elapsed {display_duration(elapsed)}, "
@@ -731,15 +720,14 @@ def generate_external_ground_truth(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     temporary_file = output_file.with_suffix(output_file.suffix + ".tmp")
     with temporary_file.open("w", encoding="utf-8", newline="\n") as stream:
-        for query_id, neighbor_row in zip(query_ids, neighbor_keys):
+        for query_id, neighbor_row in zip(query_ids, neighbor_keys, strict=True):
             neighbors = " ".join(str(int(key)) for key in neighbor_row)
             stream.write(f"{query_id};{neighbors}\n")
-    os.replace(temporary_file, output_file)
+    temporary_file.replace(output_file)
 
     elapsed = time.perf_counter() - started
-    print(
-        f"\nGround truth complete in {display_duration(elapsed)}: "
-        f"{output_file}"
+    write_console(
+        f"\nGround truth complete in {display_duration(elapsed)}: {output_file}"
     )
 
 
@@ -843,7 +831,7 @@ def process_sample(process: subprocess.Popen[str]) -> tuple[int, int, int] | Non
         return None
 
 
-def run_logged(
+def run_logged(  # noqa: PLR0915
     command: Sequence[str | Path],
     *,
     log_path: Path,
@@ -852,8 +840,8 @@ def run_logged(
     dry_run: bool,
     monitor_query: bool = False,
 ) -> ProcessMetrics:
-    print(f"\n> {command_text(command)}")
-    print(f"  log: {log_path}")
+    write_console(f"\n> {command_text(command)}")
+    write_console(f"  log: {log_path}")
     if dry_run:
         return ProcessMetrics()
 
@@ -876,7 +864,7 @@ def run_logged(
         def copy_output() -> None:
             assert process.stdout is not None
             for line in process.stdout:
-                print(line, end="")
+                write_console(line, end="")
                 log_file.write(line)
                 log_file.flush()
                 if "Load index done!" in line:
@@ -977,9 +965,7 @@ def parse_recall(log_path: Path) -> dict[int, float]:
     text = read_log(log_path)
     return {
         int(k): float(value)
-        for k, value in re.findall(
-            r"Recall@(\d+):\s*([\d.]+)", text, re.IGNORECASE
-        )
+        for k, value in re.findall(r"Recall@(\d+):\s*([\d.]+)", text, re.IGNORECASE)
     }
 
 
@@ -1106,11 +1092,15 @@ def write_outputs(
             "",
             "## Search",
             "",
-            "| Precision | List | Threads | R@1 % | R@10 % | R@50 % | "
-            "QPS | Avg ms | P50 ms | P95 ms | P99 ms | Peak MiB | "
-            "Read IOPS | Read MiB/s | Reads/query |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-            "---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            (
+                "| Precision | List | Threads | R@1 % | R@10 % | R@50 % | "
+                "QPS | Avg ms | P50 ms | P95 ms | P99 ms | Peak MiB | "
+                "Read IOPS | Read MiB/s | Reads/query |"
+            ),
+            (
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | "
+                "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+            ),
         ]
     )
     for row in searches:
@@ -1140,10 +1130,13 @@ def write_outputs(
     lines.extend(
         [
             "",
-            "> Read IOPS / MiB/s come from the benchmark process's Windows "
-            "I/O counters after `Load index done!`. With the DiskANN reader's "
-            "`FILE_FLAG_NO_BUFFERING`, they describe the query read workload, "
-            "but they are not device-wide hardware counters.",
+            (
+                "> Read IOPS / MiB/s come from the benchmark process's "
+                "Windows I/O counters after `Load index done!`. With the "
+                "DiskANN reader's `FILE_FLAG_NO_BUFFERING`, they describe the "
+                "query read workload, but they are not device-wide hardware "
+                "counters."
+            ),
             "",
         ]
     )
@@ -1152,10 +1145,10 @@ def write_outputs(
 
 def get_zvec_backend() -> tuple[str, str]:
     try:
-        import zvec  # type: ignore[import-not-found]
+        zvec = importlib.import_module("zvec")
 
         return str(zvec.io_backend_type()), str(zvec.io_backend_description())
-    except Exception as exc:  # pragma: no cover - environment dependent
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover
         return "unavailable", f"{type(exc).__name__}: {exc}"
 
 
@@ -1184,7 +1177,7 @@ def get_disk_metadata() -> Any:
         return []
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0915
     args = parse_args()
     repo_root = resolved(args.repo_root)
     train_file = resolved(args.train_file)
@@ -1246,7 +1239,7 @@ def main() -> int:
         )
 
     sha = git_sha(repo_root)
-    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = dt.datetime.now(tz=dt.timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
     output_dir = (
         resolved(args.output_dir, repo_root)
         if args.output_dir
@@ -1275,8 +1268,7 @@ def main() -> int:
         and args.ground_truth_mode == "auto"
     ):
         ground_truth_file = (
-            output_dir
-            / f"ground_truth_d{args.dimension}_k{args.ground_truth_k}.txt"
+            output_dir / f"ground_truth_d{args.dimension}_k{args.ground_truth_k}.txt"
         ).resolve()
         generate_external_ground_truth(
             train_file=train_file,
@@ -1307,9 +1299,7 @@ def main() -> int:
             train_file.stat().st_size / GIB if train_file.is_file() else None
         ),
         "query_file": str(query_file),
-        "ground_truth_file": (
-            str(ground_truth_file) if ground_truth_file else None
-        ),
+        "ground_truth_file": (str(ground_truth_file) if ground_truth_file else None),
         "parameters": {
             "precision": list(args.precision),
             "list_sizes": list(args.list_sizes),
@@ -1341,8 +1331,8 @@ def main() -> int:
         parallel_builds=args.parallel_builds,
         dry_run=args.dry_run,
     )
-    print(f"\nResults: {output_dir}")
-    print(f"I/O backend: {io_backend}")
+    write_console(f"\nResults: {output_dir}")
+    write_console(f"I/O backend: {io_backend}")
 
     converters = {
         "fp32": "CosineFp32Converter",
@@ -1388,7 +1378,7 @@ def main() -> int:
             )
             wall_seconds = metrics.wall_seconds
         elif index_path.exists():
-            print(f"\nReusing existing {precision.upper()} index: {index_path}")
+            write_console(f"\nReusing existing {precision.upper()} index: {index_path}")
         elif not args.dry_run:
             raise FileNotFoundError(
                 f"{precision.upper()} index is missing: {index_path}"
@@ -1405,9 +1395,7 @@ def main() -> int:
             for list_size in args.list_sizes:
                 recall_log = log_dir / f"recall_{precision}_l{list_size}.log"
                 recall_logs[(precision, list_size)] = recall_log
-                config_path = (
-                    config_dir / f"recall_{precision}_l{list_size}.yaml"
-                )
+                config_path = config_dir / f"recall_{precision}_l{list_size}.yaml"
                 write_text(
                     config_path,
                     search_yaml(
@@ -1415,8 +1403,7 @@ def main() -> int:
                         query_file=query_file,
                         ground_truth_file=ground_truth_file,
                         recall_log_dir=(
-                            recall_detail_dir
-                            / f"{precision}_l{list_size}"
+                            recall_detail_dir / f"{precision}_l{list_size}"
                         ),
                         top_k=args.top_k,
                         recall_threads=args.recall_threads,
@@ -1435,17 +1422,13 @@ def main() -> int:
                     env=env,
                     dry_run=args.dry_run,
                 )
-                recall_results[(precision, list_size)] = parse_recall(
-                    recall_log
-                )
+                recall_results[(precision, list_size)] = parse_recall(recall_log)
     else:
         for precision in args.precision:
             for list_size in args.list_sizes:
                 recall_log = log_dir / f"recall_{precision}_l{list_size}.log"
                 recall_logs[(precision, list_size)] = recall_log
-                recall_results[(precision, list_size)] = parse_recall(
-                    recall_log
-                )
+                recall_results[(precision, list_size)] = parse_recall(recall_log)
 
     search_results: list[SearchResult] = []
     if not args.skip_bench:
@@ -1453,12 +1436,10 @@ def main() -> int:
             for list_size in args.list_sizes:
                 for threads in args.thread_counts:
                     bench_log = (
-                        log_dir
-                        / f"bench_{precision}_l{list_size}_t{threads}.log"
+                        log_dir / f"bench_{precision}_l{list_size}_t{threads}.log"
                     )
                     config_path = (
-                        config_dir
-                        / f"bench_{precision}_l{list_size}_t{threads}.yaml"
+                        config_dir / f"bench_{precision}_l{list_size}_t{threads}.yaml"
                     )
                     write_text(
                         config_path,
@@ -1467,8 +1448,7 @@ def main() -> int:
                             query_file=query_file,
                             ground_truth_file=ground_truth_file,
                             recall_log_dir=(
-                                recall_detail_dir
-                                / f"{precision}_l{list_size}"
+                                recall_detail_dir / f"{precision}_l{list_size}"
                             ),
                             top_k=args.top_k,
                             recall_threads=args.recall_threads,
@@ -1493,24 +1473,18 @@ def main() -> int:
                             precision=precision,
                             list_size=list_size,
                             threads=threads,
-                            recall=recall_results.get(
-                                (precision, list_size), {}
-                            ),
-                            recall_log_path=recall_logs[
-                                (precision, list_size)
-                            ],
+                            recall=recall_results.get((precision, list_size), {}),
+                            recall_log_path=recall_logs[(precision, list_size)],
                             bench_log_path=bench_log,
                             metrics=metrics,
                         )
                     )
-                    write_outputs(
-                        output_dir, metadata, build_results, search_results
-                    )
+                    write_outputs(output_dir, metadata, build_results, search_results)
 
     write_outputs(output_dir, metadata, build_results, search_results)
-    print("\nBenchmark complete.")
-    print(f"Markdown summary: {output_dir / 'summary.md'}")
-    print(f"CSV results:      {output_dir / 'results.csv'}")
+    write_console("\nBenchmark complete.")
+    write_console(f"Markdown summary: {output_dir / 'summary.md'}")
+    write_console(f"CSV results:      {output_dir / 'results.csv'}")
     return 0
 
 
@@ -1518,8 +1492,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        print("\nInterrupted.", file=sys.stderr)
-        raise SystemExit(130)
-    except Exception as exc:
-        print(f"\nERROR: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        write_console("\nInterrupted.", error=True)
+        raise SystemExit(130) from None
+    except Exception as exc:  # noqa: BLE001 - CLI error boundary
+        write_console(f"\nERROR: {exc}", error=True)
+        raise SystemExit(1) from None
