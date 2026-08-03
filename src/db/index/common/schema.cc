@@ -199,7 +199,8 @@ Status FieldSchema::validate() const {
 
       if (index_params_->type() == IndexType::DISKANN) {
         // DiskAnn is supported wherever DISKANN_SUPPORTED is enabled (Linux
-        // x86_64 with libaio/io_uring, Windows x86_64 with IOCP). On Linux the
+        // x86_64 with libaio/io_uring, Windows x86_64 with overlapped I/O).
+        // On Linux the
         // libaio runtime is loaded eagerly via dlopen inside
         // DiskAnnBuilder::init() and DiskAnnStreamer::init(); if libaio is
         // missing, DiskAnn falls back to synchronous pread() with degraded

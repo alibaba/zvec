@@ -131,7 +131,7 @@ class IOBackendType:
     - PREAD: Synchronous pread() — no async I/O.
     - LIBAIO: libaio loaded at runtime via dlopen().
     - IO_URING: io_uring accessed directly through the Linux kernel ABI.
-    - WINDOWS_OVERLAPPED: Windows overlapped I/O using I/O completion ports.
+    - WINDOWS_OVERLAPPED: Windows overlapped I/O with per-request events.
 
     Examples:
         >>> from zvec.typing import IOBackendType

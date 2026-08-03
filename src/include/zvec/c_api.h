@@ -792,7 +792,7 @@ typedef uint32_t zvec_io_backend_type_t;
 #define ZVEC_IO_BACKEND_TYPE_IO_URING \
   2 /**< io_uring accessed through the Linux kernel ABI */
 #define ZVEC_IO_BACKEND_TYPE_WINDOWS_OVERLAPPED \
-  3 /**< Windows overlapped I/O using I/O completion ports */
+  3 /**< Windows overlapped I/O with per-request events */
 
 /**
  * @brief Get the current I/O backend type for DiskAnn async disk reads.
