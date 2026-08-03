@@ -14,6 +14,7 @@
 
 #include <pybind11/pybind11.h>
 #include <zvec/db/doc.h>
+#include <zvec/db/schema.h>
 
 namespace py = pybind11;
 
@@ -25,6 +26,11 @@ class ZVecPyDoc {
 
  public:
   static void Initialize(py::module_ &m);
+
+  // Materialize a single doc into (id, score, fields, vectors) following the
+  // collection schema. Shared by the per-doc `get_all` binding and the batch
+  // materialization path in the collection DQL bindings. Requires the GIL.
+  static py::tuple doc_to_tuple(Doc &self, const CollectionSchema &schema);
 
  private:
   static void bind_doc_operator(py::module_ &m);
