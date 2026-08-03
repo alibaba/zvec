@@ -1661,7 +1661,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
     merge_options.write_concurrency =
-        GlobalConfig::Instance().optimize_thread_count();
+        static_cast<uint32_t>(merge_options.pool->count());
   } else {
     merge_options.write_concurrency = concurrency;
   }

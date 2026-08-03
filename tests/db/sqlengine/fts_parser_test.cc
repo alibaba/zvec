@@ -33,7 +33,7 @@ class FtsParserTest : public ::testing::Test {
     FtsIndexParams params;
     params.tokenizer_name = "standard";
     params.filters = {"lowercase"};
-    pipeline_ = TokenizerFactory::create(params);
+    pipeline_ = TokenizerFactory::create(params).value();
     ASSERT_NE(pipeline_, nullptr);
   }
 
@@ -814,7 +814,7 @@ class FtsParserUnescapeTest : public ::testing::Test {
     FtsIndexParams params;
     params.tokenizer_name = "whitespace";
     params.filters = {};
-    pipeline_ = TokenizerFactory::create(params);
+    pipeline_ = TokenizerFactory::create(params).value();
     ASSERT_NE(pipeline_, nullptr);
   }
 

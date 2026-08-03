@@ -17,7 +17,6 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -44,6 +43,10 @@ class CgroupUtil {
   // Static methods to get CPU and memory limits
   static int getCpuLimit();
   static uint64_t getMemoryLimit();
+
+  // Parse a cgroup v2 cpu.max value. Returns false for an unlimited or
+  // malformed value so callers can fall back to the host CPU count.
+  static bool parseCpuMax(const std::string &cpu_max, int *cpu_cores);
 
   // Static methods to get other resources
   static double getCpuUsage();

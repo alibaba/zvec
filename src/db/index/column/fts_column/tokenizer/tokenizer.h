@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <zvec/ailego/encoding/json/mod_json_plus.h>
+#include <zvec/db/status.h>
 
 namespace zvec::fts {
 
@@ -43,9 +44,9 @@ class Tokenizer {
   /*! Initialise the tokenizer from a JSON configuration object.
    *  Must be called once before tokenize().
    *  \param config  JSON object containing tokenizer-specific parameters.
-   *  \return        true on success, false on failure.
+   *  \return        OK on success, or an error describing invalid config.
    */
-  virtual bool init(const ailego::JsonObject &config) = 0;
+  virtual Status init(const ailego::JsonObject &config) = 0;
 
   /*! Tokenize input text
    *  \param text  UTF-8 encoded input text
