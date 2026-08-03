@@ -276,47 +276,25 @@ void ZVecPyCollection::bind_dml_methods(
 
 void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
-  col.def("Query",
-          [](const Collection &self, const SearchQuery &query) {
-            Result<DocPtrList> result;
-            {
-              py::gil_scoped_release release;
-              result = self.Query(query);
-            }
-            // return DocPtrList
-            return unwrap_expected(result);
-          })
+  // Query with the GIL released, then materialize all hits into
+  // (id, score, fields, vectors) tuples in one crossing (see docs_to_tuples).
+  col.def(
+         "Query",
+         [](const Collection &self, const SearchQuery &query,
+            const CollectionSchema &schema) {
+           Result<DocPtrList> result;
+           {
+             py::gil_scoped_release release;
+             result = self.Query(query);
+           }
+           return docs_to_tuples(unwrap_expected(result), schema);
+         },
+         py::arg("query"), py::arg("schema"),
+         "Execute a query and return results as a list of "
+         "(id, score, fields, vectors) tuples materialized in one batch.")
       // MultiQuery: multi query with reranker
       .def(
           "Query",
-          [](const Collection &self, const MultiQuery &query) {
-            Result<DocPtrList> result;
-            {
-              py::gil_scoped_release release;
-              result = self.Query(query);
-            }
-            // return DocPtrList
-            return unwrap_expected(result);
-          },
-          py::arg("query"), "Execute a multi query with re-ranking.")
-      // Batch-materialized variants: search with the GIL released, then
-      // materialize all hits into tuples in one crossing (see docs_to_tuples).
-      .def(
-          "QueryMaterialized",
-          [](const Collection &self, const SearchQuery &query,
-             const CollectionSchema &schema) {
-            Result<DocPtrList> result;
-            {
-              py::gil_scoped_release release;
-              result = self.Query(query);
-            }
-            return docs_to_tuples(unwrap_expected(result), schema);
-          },
-          py::arg("query"), py::arg("schema"),
-          "Execute a query and return results as a list of "
-          "(id, score, fields, vectors) tuples materialized in one batch.")
-      .def(
-          "QueryMaterialized",
           [](const Collection &self, const MultiQuery &query,
              const CollectionSchema &schema) {
             Result<DocPtrList> result;

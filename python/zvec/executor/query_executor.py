@@ -139,7 +139,7 @@ class QueryExecutor:
         Results are batch-materialized into tuples in a single C++ call,
         avoiding per-doc Python/C++ crossings on the hot path.
         """
-        tuples = collection.QueryMaterialized(query, self._schema._get_object())
+        tuples = collection.Query(query, self._schema._get_object())
         return [Doc._from_tuple(t) if t is not None else None for t in tuples]
 
     def _execute_multi_query(
@@ -163,7 +163,7 @@ class QueryExecutor:
             return self._merge_and_rerank(ctx, docs_list)
 
         multi_query = self._build_multi_query(ctx, queries)
-        tuples = collection.QueryMaterialized(multi_query, self._schema._get_object())
+        tuples = collection.Query(multi_query, self._schema._get_object())
         return [Doc._from_tuple(t) if t is not None else None for t in tuples]
 
     def _build_multi_query(

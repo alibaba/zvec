@@ -289,14 +289,14 @@ class TestQueryExecutor:
         # Each query is executed serially and batch-materialized into results.
         executor = QueryExecutor(MagicMock())
         collection = MagicMock()
-        collection.QueryMaterialized.side_effect = [["raw1"], ["raw2"]]
+        collection.Query.side_effect = [["raw1"], ["raw2"]]
         vectors = [MagicMock(), MagicMock()]
 
         with patch("zvec.executor.query_executor.Doc") as mock_doc:
             mock_doc._from_tuple.side_effect = lambda t: t
             results = executor._execute_python_pipeline(vectors, collection)
         assert results == [["raw1"], ["raw2"]]
-        assert collection.QueryMaterialized.call_count == 2
+        assert collection.Query.call_count == 2
 
     def test_build_search_query_by_missing_id_raises_value_error(self):
         vector_schema = VectorSchema(name="test", data_type=DataType.VECTOR_FP32)

@@ -142,8 +142,4 @@ get_uniform_quantize_func(DataType data_type);
 RotatorKernels get_rotator_kernels(
     RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
-// Returns rotator kernels dispatched for the current CPU.
-RotatorKernels get_rotator_kernels(
-    RotateType rotate_type, CpuArchType cpu_arch_type = CpuArchType::kAuto);
-
 }  // namespace zvec::turbo
