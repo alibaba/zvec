@@ -1343,8 +1343,11 @@ TEST(PqInt8Quantizer, Fp16SerializeDeserialize) {
 
     quantizer->quantize_query(fp16_vec.data(), lut_a.data());
     restored->quantize_query(fp16_vec.data(), lut_b.data());
-    for (size_t j = 0; j < lut_floats; ++j) {
-      EXPECT_EQ(lut_a[j], lut_b[j]) << "i=" << i << " j=" << j;
-    }
+    // Bitwise compare instead of float ==: empty kmeans clusters yield NaN
+    // centroids by design (see NumericalKmeansContext::Cluster::centroid),
+    // and NaN != NaN would fail even though both LUTs are identical.
+    EXPECT_EQ(
+        0, std::memcmp(lut_a.data(), lut_b.data(), lut_floats * sizeof(float)))
+        << "i=" << i;
   }
 }

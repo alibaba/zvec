@@ -412,10 +412,12 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
                  kNumCentroids, sub_dim_, dists);
 
-    // Argmin: find nearest centroid.
-    float best_dist = dists[0];
+    // Argmin: find nearest centroid.  Start from +inf so NaN entries (dead
+    // centroids from empty kmeans clusters) are never selected: any
+    // comparison against NaN is false, while every finite distance beats inf.
+    float best_dist = std::numeric_limits<float>::infinity();
     uint32_t best_idx = 0;
-    for (uint32_t j = 1; j < kNumCentroids; ++j) {
+    for (uint32_t j = 0; j < kNumCentroids; ++j) {
       if (dists[j] < best_dist) {
         best_dist = dists[j];
         best_idx = j;
