@@ -122,6 +122,8 @@ class SegmentImpl : public Segment,
 
   uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) override;
 
+  bool has_record() override;
+
   Status Insert(Doc &doc) override;
 
   Status Update(Doc &doc) override;
@@ -597,6 +599,10 @@ uint64_t SegmentImpl::doc_count(const IndexFilter::Ptr filter) {
   }
 
   return doc_count;
+}
+
+bool SegmentImpl::has_record() {
+  return doc_count() > 0 || (wal_file_ != nullptr && wal_file_->has_record());
 }
 
 template <typename T>
@@ -1655,7 +1661,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
     merge_options.write_concurrency =
-        GlobalConfig::Instance().optimize_thread_count();
+        static_cast<uint32_t>(merge_options.pool->count());
   } else {
     merge_options.write_concurrency = concurrency;
   }
