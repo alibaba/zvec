@@ -32,22 +32,22 @@ class DiskAnnReducer : public IndexReducer {
 
  protected:
   //! Initialize Reducer
-  virtual int init(const ailego::Params &params) override;
+  int init(const ailego::Params &params) override;
 
   //! Cleanup Reducer
-  virtual int cleanup(void) override;
+  int cleanup(void) override;
 
   //! Feed indexes from containers
-  // virtual int feed(IndexStorage::Pointer container) override;
+  // int feed(IndexStorage::Pointer container) override;
 
   //! Reduce operator (with filter)
-  virtual int reduce(const IndexFilter &filter) override;
+  int reduce(const IndexFilter &filter) override;
 
   //! Dump index by dumper
-  virtual int dump(const IndexDumper::Pointer &dumper) override;
+  int dump(const IndexDumper::Pointer &dumper) override;
 
   //! Retrieve statistics
-  virtual const Stats &stats(void) const override {
+  const Stats &stats(void) const override {
     return stats_;
   }
 

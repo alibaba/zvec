@@ -360,11 +360,11 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
   ailego::IOBackendType io_backend_type() const;
 
  protected:
-  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+  int CreateAndInitStreamer(const BaseIndexParam &param) override;
 
-  virtual int _prepare_for_search(
-      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-      core::IndexContext::Pointer &context) override;
+  int _prepare_for_search(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          core::IndexContext::Pointer &context) override;
 
   int Add(const VectorData &vector, uint32_t doc_id) override;
 
