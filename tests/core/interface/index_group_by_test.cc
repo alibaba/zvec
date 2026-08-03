@@ -44,7 +44,6 @@ struct GroupByCase {
   bool is_sparse = false;
   uint32_t dimension = kDimension;
   bool with_refiner = false;
-  bool optional = false;  // skip when plugin unavailable (e.g. DiskAnn)
 };
 
 std::shared_ptr<std::vector<uint64_t>> AllPks() {
@@ -247,16 +246,7 @@ class GroupByInterfaceTest : public ::testing::Test {
     ASSERT_EQ(0, source->Train()) << test_case.name;
 
     auto index = IndexFactory::CreateAndInitIndex(*test_case.index_param);
-    if (index == nullptr) {
-      if (test_case.optional) {
-        // Optional plugin (e.g. DiskAnn shared module) unavailable at runtime
-        source->Close();
-        zvec::test_util::RemoveTestFiles(index_name + "*");
-        zvec::test_util::RemoveTestFiles(source_index_name + "*");
-        return;
-      }
-      ASSERT_NE(nullptr, index) << test_case.name;
-    }
+    ASSERT_NE(nullptr, index) << test_case.name;
     ASSERT_EQ(
         0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}))
         << test_case.name;
@@ -534,20 +524,20 @@ TEST_F(GroupByInterfaceTest, UnsupportedIndexTypes) {
 #if DISKANN_SUPPORTED
       {"unsupported_diskann_graph", DenseDiskAnnParam(), DiskAnnQuery(),
        /*is_sparse=*/false, /*dimension=*/kDimension,
-       /*with_refiner=*/false, /*optional=*/true},
+       /*with_refiner=*/false},
       {"unsupported_diskann_linear", DenseDiskAnnParam(),
        DiskAnnQuery(/*fetch_vector=*/false, /*is_linear=*/true),
        /*is_sparse=*/false, /*dimension=*/kDimension,
-       /*with_refiner=*/false, /*optional=*/true},
+       /*with_refiner=*/false},
       {"unsupported_diskann_bf_pks", DenseDiskAnnParam(),
        DiskAnnQuery(/*fetch_vector=*/false, /*is_linear=*/false,
                     /*with_bf_pks=*/true),
        /*is_sparse=*/false, /*dimension=*/kDimension,
-       /*with_refiner=*/false, /*optional=*/true},
+       /*with_refiner=*/false},
       {"unsupported_diskann_fetch_vector", DenseDiskAnnParam(),
        DiskAnnQuery(/*fetch_vector=*/true),
        /*is_sparse=*/false, /*dimension=*/kDimension,
-       /*with_refiner=*/false, /*optional=*/true},
+       /*with_refiner=*/false},
 #endif
   };
 
