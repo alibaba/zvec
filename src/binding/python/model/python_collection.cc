@@ -26,12 +26,12 @@ namespace {
 // per-doc Python->C++ crossings on the hot query path.
 py::list docs_to_tuples(const DocPtrList &docs,
                         const CollectionSchema &schema) {
-  py::list out;
-  for (const auto &doc : docs) {
-    if (doc) {
-      out.append(ZVecPyDoc::doc_to_tuple(*doc, schema));
+  py::list out(docs.size());
+  for (size_t i = 0; i < docs.size(); ++i) {
+    if (docs[i]) {
+      out[i] = ZVecPyDoc::doc_to_tuple(*docs[i], schema);
     } else {
-      out.append(py::none());
+      out[i] = py::none();
     }
   }
   return out;
@@ -278,33 +278,39 @@ void ZVecPyCollection::bind_dql_methods(
     py::class_<Collection, Collection::Ptr> &col) {
   // Query with the GIL released, then materialize all hits into
   // (id, score, fields, vectors) tuples in one crossing (see docs_to_tuples).
+  // The schema is taken from the collection itself, keeping the signature
+  // unchanged from the legacy per-doc binding.
   col.def(
          "Query",
-         [](const Collection &self, const SearchQuery &query,
-            const CollectionSchema &schema) {
+         [](const Collection &self, const SearchQuery &query) {
            Result<DocPtrList> result;
+           Result<CollectionSchema> schema_result;
            {
              py::gil_scoped_release release;
              result = self.Query(query);
+             schema_result = self.Schema();
            }
-           return docs_to_tuples(unwrap_expected(result), schema);
+           return docs_to_tuples(unwrap_expected(result),
+                                 unwrap_expected(schema_result));
          },
-         py::arg("query"), py::arg("schema"),
+         py::arg("query"),
          "Execute a query and return results as a list of "
          "(id, score, fields, vectors) tuples materialized in one batch.")
       // MultiQuery: multi query with reranker
       .def(
           "Query",
-          [](const Collection &self, const MultiQuery &query,
-             const CollectionSchema &schema) {
+          [](const Collection &self, const MultiQuery &query) {
             Result<DocPtrList> result;
+            Result<CollectionSchema> schema_result;
             {
               py::gil_scoped_release release;
               result = self.Query(query);
+              schema_result = self.Schema();
             }
-            return docs_to_tuples(unwrap_expected(result), schema);
+            return docs_to_tuples(unwrap_expected(result),
+                                  unwrap_expected(schema_result));
           },
-          py::arg("query"), py::arg("schema"),
+          py::arg("query"),
           "Execute a multi query with re-ranking and return results as a "
           "list of (id, score, fields, vectors) tuples materialized in one "
           "batch.")
