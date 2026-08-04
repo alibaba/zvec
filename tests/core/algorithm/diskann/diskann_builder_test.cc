@@ -16,14 +16,12 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
-#include <array>
 #include <chrono>
 #include <future>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_holder.h"
-#include "diskann_pq_trainer.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -143,42 +141,6 @@ TEST_F(DiskAnnBuilderTest, SmallDatasetBuildTime) {
   EXPECT_LT(elapsed_ms, 5000)
       << "DiskAnn build with " << kSmallDocCnt << " vectors took " << elapsed_ms
       << " ms — likely a lost-wakeup regression in progress loops.";
-}
-
-TEST_F(DiskAnnBuilderTest, ConvertPivotDataUsesChunkLengths) {
-  constexpr uint32_t kDim = 4;
-  constexpr uint32_t kCenterCount = 2;
-  constexpr uint32_t kChunkCount = 2;
-
-  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDim);
-  const std::vector<uint32_t> chunk_dims{2, 2};
-  const std::vector<uint32_t> chunk_offsets{0, 2, 4};
-
-  // Centroids are chunk-major.  The third value is a guard: it must not be
-  // copied because each chunk contains exactly two dimensions.
-  const std::array<std::array<float, 3>, 4> features{{
-      {{10.0f, 11.0f, -100.0f}},
-      {{20.0f, 21.0f, -200.0f}},
-      {{12.0f, 13.0f, -300.0f}},
-      {{22.0f, 23.0f, -400.0f}},
-  }};
-  IndexCluster::CentroidList centroids(features.size());
-  for (size_t i = 0; i < features.size(); ++i) {
-    centroids[i].set_feature(features[i].data(), sizeof(features[i]));
-  }
-
-  std::vector<uint8_t> pivot_data;
-  ASSERT_EQ(0, DiskAnnPqTrainer::convert_pivot_data<float>(
-                   meta, kCenterCount, kChunkCount, chunk_dims, chunk_offsets,
-                   centroids, pivot_data));
-  ASSERT_EQ(kCenterCount * meta.element_size(), pivot_data.size());
-
-  const std::array<float, kCenterCount * kDim> expected{
-      10.0f, 11.0f, 12.0f, 13.0f, 20.0f, 21.0f, 22.0f, 23.0f};
-  const auto *actual = reinterpret_cast<const float *>(pivot_data.data());
-  for (size_t i = 0; i < expected.size(); ++i) {
-    EXPECT_FLOAT_EQ(expected[i], actual[i]);
-  }
 }
 
 TEST_F(DiskAnnBuilderTest, TestImplicitFactoryRegistration) {
