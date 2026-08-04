@@ -427,11 +427,19 @@ int IvfRabitqReformer::create_query_state(const float *query,
   state->rotated_query.resize(impl_->padded_dim);
   impl_->rotator->rotate(query, state->rotated_query.data());
 
-  // Create SplitBatchQuery object for FastScan
-  auto batch_query = std::make_shared<rabitqlib::SplitBatchQuery<float>>(
-      state->rotated_query.data(), impl_->padded_dim, impl_->ex_bits,
-      impl_->metric_type, true /* use_hacc */);
-  state->batch_query = batch_query;
+  // Create SplitBatchQuery on first use, then reuse its LUT buffers.
+  auto batch_query =
+      std::static_pointer_cast<rabitqlib::SplitBatchQuery<float>>(
+          state->batch_query);
+  if (!batch_query) {
+    batch_query = std::make_shared<rabitqlib::SplitBatchQuery<float>>(
+        state->rotated_query.data(), impl_->padded_dim, impl_->ex_bits,
+        impl_->metric_type, true /* use_hacc */);
+    state->batch_query = batch_query;
+  } else {
+    batch_query->reset(state->rotated_query.data(), impl_->padded_dim,
+                       impl_->ex_bits, impl_->metric_type, true /* use_hacc */);
+  }
 
   state->centroid_norms.assign(impl_->num_clusters,
                                std::numeric_limits<float>::quiet_NaN());

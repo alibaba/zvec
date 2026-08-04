@@ -171,6 +171,14 @@ void RunBuildSearchAndReopen(const IndexMeta &meta,
     ASSERT_EQ(0, context->update(search_params));
     ASSERT_EQ(0, streamer->search_impl(query, query_meta, 1, context));
     EXPECT_GT(context->result(0).size(), 0UL);
+    const auto first_result = context->result(0);
+    ASSERT_EQ(0, streamer->search_impl(query, query_meta, 1, context));
+    const auto &repeated_result = context->result(0);
+    ASSERT_EQ(first_result.size(), repeated_result.size());
+    for (size_t i = 0; i < first_result.size(); ++i) {
+      EXPECT_EQ(first_result[i].key(), repeated_result[i].key());
+      EXPECT_FLOAT_EQ(first_result[i].score(), repeated_result[i].score());
+    }
 
     ASSERT_EQ(0, streamer->flush(0UL));
     ASSERT_EQ(0, streamer->close());
