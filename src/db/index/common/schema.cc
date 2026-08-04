@@ -220,6 +220,13 @@ Status FieldSchema::validate() const {
         }
       }
 
+      if (index_params_->type() == IndexType::IVF &&
+          vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+        return Status::InvalidArgument(
+            "schema validate failed: IVF index does not support RABITQ "
+            "quantization; use the dedicated IVF_RABITQ index instead");
+      }
+
       if (index_params_->type() == IndexType::DISKANN) {
         // DiskAnn requires Linux x86_64/i686/i386.  The CMake variable
         // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the

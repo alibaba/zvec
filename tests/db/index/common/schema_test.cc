@@ -981,6 +981,20 @@ TEST(FieldSchemaTest, IvfRabitqIndexValidationMetricTypes) {
   }
 }
 
+TEST(FieldSchemaTest, IvfIndexRejectsRabitqQuantization) {
+  auto index_params = std::make_shared<IVFIndexParams>(
+      MetricType::L2, 1024, 10, false, QuantizeType::RABITQ);
+  FieldSchema field("vector_field", DataType::VECTOR_FP32, 128, false,
+                    index_params);
+
+  auto status = field.validate();
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("use the dedicated IVF_RABITQ index"),
+            std::string::npos)
+      << "Error message should direct users to IVF_RABITQ, got: "
+      << status.message();
+}
+
 TEST(FieldSchemaTest, IvfRabitqIndexValidationDimensionAndDataTypes) {
   {
     auto index_params =
