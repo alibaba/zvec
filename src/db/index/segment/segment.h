@@ -68,6 +68,8 @@ class Segment {
   // Count documents visible to an optional global-doc-ID filter.
   virtual uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) = 0;
 
+  virtual bool has_record() = 0;
+
   // ---- Schema and index mutation -----------------------------------------
   virtual Status add_column(FieldSchema::Ptr column_schema,
                             const std::string &expression,

@@ -16,6 +16,7 @@
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <unordered_map>
@@ -748,7 +749,11 @@ TEST(IndexInterface, Merge) {
     {  // test reduce
       auto index3 = create_index_func(param_target, index_name + "3");
       ASSERT_NE(nullptr, index3);
-      ASSERT_TRUE(0 == index3->Merge({index1, index2}, IndexFilter()));
+      MergeOptions merge_options;
+      merge_options.write_concurrency =
+          (std::numeric_limits<uint32_t>::max)();
+      ASSERT_TRUE(0 == index3->Merge({index1, index2}, IndexFilter(),
+                                     merge_options));
       ASSERT_TRUE(3 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;
@@ -777,7 +782,13 @@ TEST(IndexInterface, Merge) {
       ASSERT_NE(nullptr, index3);
       auto filter = IndexFilter();
       filter.set([](uint64_t key) { return key == 0; });  // TODO: uint32?
-      ASSERT_TRUE(0 == index3->Merge({index1, index2}, filter));
+      zvec::ailego::ThreadPool pool(1, false);
+      MergeOptions merge_options;
+      merge_options.write_concurrency =
+          (std::numeric_limits<uint32_t>::max)();
+      merge_options.pool = &pool;
+      ASSERT_TRUE(0 ==
+                  index3->Merge({index1, index2}, filter, merge_options));
       ASSERT_TRUE(2 == index3->GetDocCount());
       {
         VectorDataBuffer fetched_vector_data;

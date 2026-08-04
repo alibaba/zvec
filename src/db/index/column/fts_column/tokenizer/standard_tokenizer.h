@@ -33,9 +33,9 @@ class StandardTokenizer : public Tokenizer {
    *      tokens are split into smaller segments. Combining marks and other
    *      ignored word-break characters may stay attached to the previous
    *      segment to avoid creating mark-only tokens.
-   *  Returns false when the configuration is invalid.
+   *  Returns an error status when the configuration is invalid.
    */
-  bool init(const ailego::JsonObject &config) override;
+  Status init(const ailego::JsonObject &config) override;
 
   std::vector<Token> tokenize(const std::string &text) const override;
 

@@ -57,6 +57,20 @@ class FtsQueryTest : public ::testing::Test {
     return schema;
   }
 
+  static CollectionSchema::Ptr CreateNGramFtsSchema() {
+    auto schema = std::make_shared<CollectionSchema>("ngram_fts_demo");
+    schema->add_field(std::make_shared<FieldSchema>("title", DataType::STRING));
+    auto fts_params = std::make_shared<FtsIndexParams>(
+        "ngram", std::vector<std::string>{},
+        R"({"ngram_min":2,"ngram_max":2,"token_chars":["letter"]})");
+    schema->add_field(std::make_shared<FieldSchema>(
+        "content", DataType::STRING, false, std::move(fts_params)));
+    schema->add_field(std::make_shared<FieldSchema>(
+        "vec", DataType::VECTOR_FP32, 4, false,
+        std::make_shared<FlatIndexParams>(MetricType::IP)));
+    return schema;
+  }
+
   static Doc MakeDoc(uint64_t id, const std::string &title,
                      const std::string &content) {
     Doc doc;
@@ -103,6 +117,51 @@ TEST_F(FtsQueryTest, BasicFtsQuery) {
   // Documents 0, 1, 3 contain "hello"; document 2 does not.
   ASSERT_GE(results.size(), 2u);
   ASSERT_LE(results.size(), 3u);
+}
+
+TEST_F(FtsQueryTest, NGramTokenizerEndToEnd) {
+  auto schema = CreateNGramFtsSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+
+  auto result = Collection::CreateAndOpen(kTestPath, *schema, options);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  auto col = result.value();
+
+  std::vector<Doc> docs;
+  docs.push_back(MakeDoc(0, "chinese",
+                         "\xE4\xB8\xAD\xE6\x96\x87\xE5\x88\x86\xE8\xAF\x8D"));
+  docs.push_back(MakeDoc(1, "english", "english tokenizer"));
+  auto insert_result = col->Insert(docs);
+  ASSERT_TRUE(insert_result.has_value()) << insert_result.error().message();
+
+  SearchQuery query;
+  query.target_.field_name_ = "content";
+  query.topk_ = 10;
+  FtsClause fts;
+  fts.query_string_ = "\xE4\xB8\xAD\xE6\x96\x87";
+  query.target_.clause_ = fts;
+
+  auto query_result = col->Query(query);
+  ASSERT_TRUE(query_result.has_value()) << query_result.error().message();
+  ASSERT_EQ(query_result.value().size(), 1u);
+}
+
+TEST_F(FtsQueryTest, NGramConfigErrorIsReturnedByCreateCollection) {
+  auto schema = CreateNGramFtsSchema();
+  auto field = schema->get_field("content");
+  auto params =
+      std::dynamic_pointer_cast<FtsIndexParams>(field->index_params());
+  ASSERT_NE(params, nullptr);
+  params->set_extra_params(R"({"ngram_min":1,"ngram_max":3})");
+
+  CollectionOptions options;
+  options.read_only_ = false;
+  auto result = Collection::CreateAndOpen(kTestPath, *schema, options);
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().message().find("ngram_max - ngram_min must be <= 1"),
+            std::string::npos);
 }
 
 TEST_F(FtsQueryTest, FtsQueryEmptyField) {
