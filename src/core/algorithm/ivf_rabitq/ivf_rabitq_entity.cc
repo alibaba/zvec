@@ -780,6 +780,9 @@ int IvfRabitqEntity::search_cluster_group_by_impl(
       }
 
       if (ex_bits == 0) {
+        if (heap.full() && est_dist[i] >= heap.begin()->score()) {
+          continue;
+        }
         heap.emplace(key, est_dist[i]);
         continue;
       }

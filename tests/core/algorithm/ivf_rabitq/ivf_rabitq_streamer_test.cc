@@ -840,7 +840,7 @@ TEST_F(IvfRabitqStreamerTest, TestGroupBySearchByPrimaryKeys) {
 
   ailego::Params params;
   params.set(PARAM_IVF_RABITQ_NLIST, 16U);
-  params.set(PARAM_RABITQ_TOTAL_BITS, 7U);
+  params.set(PARAM_RABITQ_TOTAL_BITS, 1U);
   IndexStreamer::Pointer streamer;
   BuildAndOpenStreamer(*index_meta_ptr_, holder, params,
                        dir_ + "/TestGroupBySearchByPrimaryKeys", &streamer);
@@ -851,8 +851,42 @@ TEST_F(IvfRabitqStreamerTest, TestGroupBySearchByPrimaryKeys) {
   IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kDim);
   auto context = streamer->create_context();
   context->set_group_by([](uint64_t key) { return std::to_string(key % 3U); });
-  context->set_group_params(/*group_num=*/3, /*group_topk=*/2);
   context->set_topk(10);
+
+  auto expect_top2_matches = [](const IndexGroupDocumentList &expected,
+                                const IndexGroupDocumentList &actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (size_t i = 0; i < actual.size(); ++i) {
+      EXPECT_EQ(expected[i].group_id(), actual[i].group_id());
+      ASSERT_EQ(2UL, actual[i].docs().size());
+      ASSERT_GE(expected[i].docs().size(), actual[i].docs().size());
+      for (size_t j = 0; j < actual[i].docs().size(); ++j) {
+        EXPECT_EQ(expected[i].docs()[j].key(), actual[i].docs()[j].key());
+        EXPECT_FLOAT_EQ(expected[i].docs()[j].score(),
+                        actual[i].docs()[j].score());
+      }
+    }
+  };
+
+  context->set_group_params(/*group_num=*/3, /*group_topk=*/kDocCount);
+  ASSERT_EQ(0, streamer->search_impl(query_vec.data(), query_meta, 1, context));
+  const auto baseline_groups = context->group_result(0);
+
+  context->set_group_params(/*group_num=*/3, /*group_topk=*/2);
+  ASSERT_EQ(0, streamer->search_impl(query_vec.data(), query_meta, 1, context));
+  expect_top2_matches(baseline_groups, context->group_result(0));
+
+  const uint64_t filtered_key = baseline_groups[0].docs()[0].key();
+  context->set_filter(
+      [filtered_key](uint64_t key) { return key == filtered_key; });
+  context->set_group_params(/*group_num=*/3, /*group_topk=*/kDocCount);
+  ASSERT_EQ(0, streamer->search_impl(query_vec.data(), query_meta, 1, context));
+  const auto filtered_baseline_groups = context->group_result(0);
+
+  context->set_group_params(/*group_num=*/3, /*group_topk=*/2);
+  ASSERT_EQ(0, streamer->search_impl(query_vec.data(), query_meta, 1, context));
+  expect_top2_matches(filtered_baseline_groups, context->group_result(0));
+  context->reset_filter();
 
   const std::vector<std::vector<uint64_t>> keys{
       {3, 4, 5, 36, 37, 38, 90, 91, 92}};
