@@ -25,6 +25,8 @@ static const std::string PARAM_IVF_RABITQ_SCAN_RATIO(
     "proxima.ivf_rabitq.scan_ratio");
 static const std::string PARAM_IVF_RABITQ_BRUTE_FORCE_THRESHOLD(
     "proxima.ivf_rabitq.brute_force_threshold");
+static const std::string PARAM_IVF_RABITQ_BUILDER_THREAD_COUNT(
+    "proxima.ivf_rabitq.builder.thread_count");
 
 // Segment IDs
 static const std::string IVF_RABITQ_HEADER_SEG_ID{"ivf_rabitq.header"};

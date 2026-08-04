@@ -118,6 +118,11 @@ int RabitqConverter::cleanup() {
 }
 
 int RabitqConverter::train(IndexHolder::Pointer holder) {
+  return this->train(std::move(holder), nullptr);
+}
+
+int RabitqConverter::train(IndexHolder::Pointer holder,
+                           IndexThreads::Pointer threads) {
   if (!holder) {
     LOG_ERROR("Null holder for training");
     return IndexError_InvalidArgument;
@@ -185,8 +190,9 @@ int RabitqConverter::train(IndexHolder::Pointer holder) {
 
   // Perform clustering
   IndexCluster::CentroidList cents;
-  // TODO: support specify threads with argument
-  auto threads = std::make_shared<SingleQueueIndexThreads>(0, false);
+  if (!threads) {
+    threads = std::make_shared<SingleQueueIndexThreads>(0, false);
+  }
   ret = cluster->cluster(threads, cents);
   if (ret != 0) {
     LOG_ERROR("Failed to perform clustering: %d", ret);

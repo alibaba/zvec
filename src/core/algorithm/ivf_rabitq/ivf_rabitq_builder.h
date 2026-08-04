@@ -72,6 +72,7 @@ class IvfRabitqBuilder : public IndexBuilder {
   uint32_t nlist_{1024};
   uint32_t total_bits_{7};
   uint32_t sample_count_{0};
+  uint32_t thread_count_{0};
   std::string metric_name_;
 
   // Training results

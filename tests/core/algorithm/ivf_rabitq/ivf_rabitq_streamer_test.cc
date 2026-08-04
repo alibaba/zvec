@@ -14,6 +14,7 @@
 
 #include "ivf_rabitq_streamer.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -79,6 +80,40 @@ IndexHolder::Pointer BuildHolder(size_t dim, size_t doc_cnt) {
   }
   return holder;
 }
+
+class TrackingIndexThreads : public IndexThreads {
+ public:
+  TrackingIndexThreads() : threads_(2, false) {}
+
+  size_t count(void) const override {
+    return threads_.count();
+  }
+
+  void stop(void) override {
+    threads_.stop();
+  }
+
+  void submit(ailego::ClosureHandler &&task) override {
+    threads_.submit(std::move(task));
+  }
+
+  TaskGroup::Pointer make_group(void) override {
+    make_group_count_.fetch_add(1, std::memory_order_relaxed);
+    return threads_.make_group();
+  }
+
+  int indexof_this(void) const override {
+    return threads_.indexof_this();
+  }
+
+  size_t make_group_count(void) const {
+    return make_group_count_.load(std::memory_order_relaxed);
+  }
+
+ private:
+  SingleQueueIndexThreads threads_;
+  std::atomic<size_t> make_group_count_{0};
+};
 
 void BuildIndexFile(const IndexMeta &meta, const IndexHolder::Pointer &holder,
                     const ailego::Params &params, const std::string &path) {
@@ -238,6 +273,37 @@ TEST_F(IvfRabitqStreamerTest, TestParamValidation) {
 
   search_params.set(PARAM_IVF_RABITQ_NPROBE, 0);
   EXPECT_EQ(0, init_streamer(search_params));
+}
+
+TEST_F(IvfRabitqStreamerTest, TestBuilderUsesProvidedThreads) {
+  auto holder = BuildHolder(kDim, 256);
+  auto threads = std::make_shared<TrackingIndexThreads>();
+  auto builder = std::make_shared<IvfRabitqBuilder>();
+
+  ailego::Params params;
+  params.set(PARAM_IVF_RABITQ_NLIST, 8U);
+  params.set(PARAM_RABITQ_TOTAL_BITS, 1U);
+  ASSERT_EQ(0, builder->init(*index_meta_ptr_, params));
+
+  ASSERT_EQ(0, builder->train(threads, holder));
+  size_t train_group_count = threads->make_group_count();
+  EXPECT_GT(train_group_count, 0U);
+
+  ASSERT_EQ(0, builder->build(threads, holder));
+  EXPECT_GT(threads->make_group_count(), train_group_count);
+}
+
+TEST_F(IvfRabitqStreamerTest, TestBuilderBuildsWithConfiguredInternalThreads) {
+  auto holder = BuildHolder(kDim, 256);
+  auto builder = std::make_shared<IvfRabitqBuilder>();
+
+  ailego::Params params;
+  params.set(PARAM_IVF_RABITQ_NLIST, 8U);
+  params.set(PARAM_RABITQ_TOTAL_BITS, 1U);
+  params.set(PARAM_IVF_RABITQ_BUILDER_THREAD_COUNT, 2U);
+  ASSERT_EQ(0, builder->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, builder->train(nullptr, holder));
+  ASSERT_EQ(0, builder->build(nullptr, holder));
 }
 
 TEST_F(IvfRabitqStreamerTest, TestRejectInvalidFormatMagicAndVersion) {

@@ -207,7 +207,11 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   stats_.set_reduced_costtime(timer.seconds());
   state_ = STATE_REDUCE;
   if (target_builder_ != nullptr) {
-    IndexBuild();
+    int ret = IndexBuild();
+    if (ret != 0) {
+      LOG_ERROR("Failed to build target index, ret=%d", ret);
+      return ret;
+    }
   }
 
   LOG_INFO("End brute force reduce. cost time: [%zu]s",
@@ -578,8 +582,16 @@ int MixedStreamerReducer::IndexBuild() {
                                             target_holder);
     target_holder = target_builder_converter_->result();
   }
-  target_builder_->train(target_holder);
-  target_builder_->build(target_holder);
+  int ret = target_builder_->train(target_holder);
+  if (ret != 0) {
+    LOG_ERROR("Failed to train target builder, ret=%d", ret);
+    return ret;
+  }
+  ret = target_builder_->build(target_holder);
+  if (ret != 0) {
+    LOG_ERROR("Failed to build target index, ret=%d", ret);
+    return ret;
+  }
   return 0;
 }
 
