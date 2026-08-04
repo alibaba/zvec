@@ -2963,6 +2963,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   uint64_t next_doc_id = initial_doc_count;
   std::thread writer([&] {
     while (!optimize_done.load() && inserted < 100000) {
+      bool started_during_optimize = !optimize_done.load();
       std::vector<Doc> docs;
       for (int i = 0; i < batch_size; i++) {
         docs.push_back(TestHelper::CreateDoc(next_doc_id + i, *schema));
@@ -2984,7 +2985,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       } else {
         break;
       }
-      if (!optimize_done.load()) {
+      if (started_during_optimize) {
         writer_result.ops_during_optimize++;
       }
     }
@@ -2996,6 +2997,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   std::thread fetcher([&] {
     auto expect_doc = TestHelper::CreateDoc(0, *schema);
     while (!optimize_done.load() && fetch_result.ops_during_optimize < 100000) {
+      bool started_during_optimize = !optimize_done.load();
       auto fetched = collection->Fetch({expect_doc.pk()});
       if (!fetched.has_value()) {
         record_error(&fetch_result, fetched.error().message());
@@ -3005,7 +3007,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       if (iter == fetched.value().end() || iter->second == nullptr ||
           *iter->second != expect_doc) {
         record_error(&fetch_result, "fetched doc mismatch");
-      } else if (!optimize_done.load()) {
+      } else if (started_during_optimize) {
         fetch_result.ops_during_optimize++;
       }
       std::this_thread::yield();
@@ -3023,6 +3025,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       return;
     }
     while (!optimize_done.load() && query_result.ops_during_optimize < 100000) {
+      bool started_during_optimize = !optimize_done.load();
       SearchQuery query;
       query.topk_ = 10;
       query.target_.field_name_ = "dense_fp32";
@@ -3044,7 +3047,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       }
       if (result.value().empty()) {
         record_error(&query_result, "query returned no results");
-      } else if (!optimize_done.load()) {
+      } else if (started_during_optimize) {
         query_result.ops_during_optimize++;
       }
       std::this_thread::yield();
@@ -3120,15 +3123,22 @@ TEST_F(CollectionTest, Feature_Optimize_Superseded_Index_File_Removed) {
 
   ASSERT_TRUE(collection->Optimize(OptimizeOptions{0}).ok());
 
-  auto stats = collection->Stats().value();
+  auto stats_result = collection->Stats();
+  ASSERT_TRUE(stats_result.has_value());
+  auto stats = stats_result.value();
   ASSERT_EQ(stats.doc_count, (uint64_t)doc_count);
   ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
   // Vector index build supersedes the flat vector file from the segment
   // dump. The commit phase eagerly removes the superseded file under the
   // exclusive schema lock, leaving exactly one index file per column.
+  // Walk all segment directories (segment ids are an implementation
+  // detail) instead of assuming the persisted segment lives in "/0".
   int dense_fp32_index_files = 0;
-  for (const auto &entry : fs::directory_iterator(col_path + "/0")) {
+  for (const auto &entry : fs::recursive_directory_iterator(col_path)) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
     auto name = entry.path().filename().string();
     if (name.rfind("dense_fp32.index.", 0) == 0) {
       dense_fp32_index_files++;

@@ -860,6 +860,9 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
                       id_map_, delete_store_, version_manager_,
                       SegmentOptions{true, options_.enable_mmap_});
     if (!new_segment.has_value()) {
+      // best-effort cleanup: the moved directory is not referenced by any
+      // manifest yet, so remove it rather than leaking it on disk
+      FileHelper::RemoveDirectory(new_segment_path);
       return new_segment.error();
     }
     opened_segments.push_back(new_segment.value());
