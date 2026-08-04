@@ -662,8 +662,15 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
                                    true /* use_hacc */);
 
     if (ex_bits == 0) {
-      // 1-bit only: insert all directly
+      // 1-bit only: scalar fast-reject before the heavy heap emplace so that
+      // rejected candidates cost a single float compare instead of building a
+      // full IndexDocument (matches rabitqlib SearchBuffer semantics).
+      float distk = heap->full() ? heap->begin()->score()
+                                 : std::numeric_limits<float>::max();
       for (uint32_t i = 0; i < batch_size; ++i) {
+        if (est_dist[i] >= distk) {
+          continue;
+        }
         uint64_t key = cur_keys[offset + i];
         if constexpr (HasFilter) {
           if ((*filter)(key)) {
@@ -671,6 +678,9 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
           }
         }
         heap->emplace(key, est_dist[i]);
+        if (heap->full()) {
+          distk = heap->begin()->score();
+        }
       }
     } else {
       // Step 2: lower-bound pruning + extra-bit boosting (same as rabitqlib)
