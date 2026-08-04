@@ -250,7 +250,12 @@ class GroupByInterfaceTest : public ::testing::Test {
     ASSERT_EQ(
         0, index->Open(index_name, {StorageOptions::StorageType::kMMAP, true}))
         << test_case.name;
-    ASSERT_EQ(0, index->Merge({source}, IndexFilter())) << test_case.name;
+    // Unsupported combinations are rejected by Index::Search before training
+    // or backend-specific search setup.  Do not turn this API validation into
+    // an integration build of every rejected backend (notably DiskAnn).
+    if (!expect_error) {
+      ASSERT_EQ(0, index->Merge({source}, IndexFilter())) << test_case.name;
+    }
 
     auto query_param = test_case.query_param->Clone();
     AttachGroupBy(query_param);
@@ -264,7 +269,7 @@ class GroupByInterfaceTest : public ::testing::Test {
     SearchResult result;
     const int ret = index->Search(query.data, query_param, &result);
     if (expect_error) {
-      ASSERT_NE(0, ret) << test_case.name;
+      ASSERT_EQ(zvec::core::IndexError_Unsupported, ret) << test_case.name;
     } else {
       ASSERT_EQ(0, ret) << test_case.name;
       AssertGroupedResult(result, query_param, test_case);
