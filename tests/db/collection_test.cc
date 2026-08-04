@@ -2940,11 +2940,10 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
     optimize_done.store(true);
   });
 
-  // give the optimizer time to take its locks and start compacting
+  // let the optimizer reach the compact phase
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-  // Worker results are collected here and asserted on the main thread;
-  // gtest fatal assertions are not reliable on non-main threads.
+  // worker failures are collected here and asserted after joins
   struct WorkerResult {
     int ops_during_optimize{0};
     int errors{0};
@@ -2978,7 +2977,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
           record_error(&writer_result, st.message());
         }
       }
-      // only advance on full success, keeping doc ids aligned with stats
+      // advance only on full batch success
       if (writer_result.errors == 0) {
         next_doc_id += batch_size;
         inserted += batch_size;
@@ -2996,7 +2995,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   WorkerResult fetch_result;
   std::thread fetcher([&] {
     auto expect_doc = TestHelper::CreateDoc(0, *schema);
-    while (!optimize_done.load()) {
+    while (!optimize_done.load() && fetch_result.ops_during_optimize < 100000) {
       auto fetched = collection->Fetch({expect_doc.pk()});
       if (!fetched.has_value()) {
         record_error(&fetch_result, fetched.error().message());
@@ -3023,7 +3022,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       record_error(&query_result, "query vector missing");
       return;
     }
-    while (!optimize_done.load()) {
+    while (!optimize_done.load() && query_result.ops_during_optimize < 100000) {
       SearchQuery query;
       query.topk_ = 10;
       query.target_.field_name_ = "dense_fp32";
@@ -3068,7 +3067,9 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   ASSERT_GE(fetch_result.ops_during_optimize, 2);
   ASSERT_GE(query_result.ops_during_optimize, 2);
 
-  auto stats = collection->Stats().value();
+  auto stats_result = collection->Stats();
+  ASSERT_TRUE(stats_result.has_value());
+  auto stats = stats_result.value();
   ASSERT_EQ(stats.doc_count, (uint64_t)(initial_doc_count + inserted));
 
   // once quiescent, a vector search must return the full topk

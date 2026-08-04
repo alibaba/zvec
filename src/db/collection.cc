@@ -238,8 +238,8 @@ class CollectionImpl : public Collection {
 
   mutable std::shared_mutex schema_handle_mtx_;
   mutable std::shared_mutex write_mtx_;
-  // Serializes maintenance operations (Optimize, schema DDL, Flush, Close
-  // and Destroy) without holding schema_handle_mtx_, so a maintenance
+  // Serializes maintenance operations (Optimize, schema DDL, Close and
+  // Destroy) without holding schema_handle_mtx_, so a maintenance
   // operation waiting for a running Optimize never becomes a pending
   // exclusive acquirer of the schema lock (which would block new readers).
   // Lock order: maintenance -> schema -> write -> SegmentManager; never
@@ -389,7 +389,9 @@ Status CollectionImpl::Destroy() {
 Status CollectionImpl::Flush() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  std::lock_guard maintenance_lock(maintenance_mtx_);
+  // Only flushes the writing segment's WAL (no schema/segment-structure
+  // change), so it needs neither maintenance_mtx_ nor exclusion from a
+  // running Optimize.
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
 
@@ -791,11 +793,7 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_drop_scalar_index_task(
 Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  // Serializes against other maintenance operations (DDL, Flush, Close,
-  // Destroy and concurrent Optimize) for the whole optimize, without
-  // touching the schema lock: waiters queue here instead of becoming
-  // pending exclusive acquirers of schema_handle_mtx_, which would block
-  // new readers on typical shared_mutex implementations.
+  // Serialize against other maintenance operations for the whole optimize.
   std::lock_guard maintenance_lock(maintenance_mtx_);
 
   std::vector<Segment::Ptr> persist_segments;
@@ -901,11 +899,9 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
       }
     }
 
-    // update version
     s = version_manager_->apply(new_version);
     CHECK_RETURN_STATUS(s);
 
-    // persist version
     s = version_manager_->flush();
     CHECK_RETURN_STATUS(s);
 
@@ -919,6 +915,9 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
         auto compact_task = std::get<CompactTask>(task_info);
 
         if (compact_task.output_segment_meta_) {
+          if (opened_index >= opened_segments.size()) {
+            return Status::InternalError("opened_segments index out of bounds");
+          }
           s = segment_manager_->add_segment(opened_segments[opened_index++]);
           CHECK_RETURN_STATUS(s);
         }
