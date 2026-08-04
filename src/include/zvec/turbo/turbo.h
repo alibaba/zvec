@@ -94,7 +94,7 @@ struct RotatorKernels {
 };
 
 // data_type selects the code packing layout:
-//   kInt8: one uint8 per sub-quantizer (256 centroids, stride=256)
+//   kInt8: one uint8 per chunk (256 centroids, stride=256)
 struct PqKernels {
   PqAdcDistanceFunc adc_distance = nullptr;
   PqSdcKernelFunc sdc_distance = nullptr;

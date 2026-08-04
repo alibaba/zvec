@@ -115,13 +115,12 @@ class PqInt8Quantizer : public Quantizer {
   int deserialize(const void *data, size_t len) override;
 
  private:
-  //! Train a single sub-quantizer (KMeans, k=256) on the sub-vectors.
+  //! Train a single chunk (KMeans, k=256) on the sub-vectors.
   //! Templated on the data type T (float or ailego::Float16) so that
   //! NumericalKmeans<T> operates natively in the input precision.
-  //! sub_idx selects which sub-quantizer to train.
+  //! sub_idx selects which chunk to train.
   template <typename T>
-  void train_subquantizer(const T *data, size_t num, size_t stride,
-                          size_t sub_idx);
+  void train_chunk(const T *data, size_t num, size_t stride, size_t sub_idx);
 
   //! L2-normalize a batch of vectors (train-time use).
   template <typename T>
@@ -195,7 +194,7 @@ class PqInt8Quantizer : public Quantizer {
   //! [num_chunk * kNumCentroids * kNumCentroids]
   std::vector<float> dist_table_;
 
-  //! Pre-built centroid pointer arrays for each sub-quantizer.
+  //! Pre-built centroid pointer arrays for each chunk.
   //! Layout: centroid_ptrs_cache_[sub_idx][centroid_idx] = pointer to centroid.
   //! Built once during init/deserialize, reused by compute_dist_table
   //! and quantize_query to avoid repeated allocations.

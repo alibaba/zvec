@@ -65,7 +65,7 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 
   size_t m = 0;
 
-  // Main loop: process 8 subquantizers per iteration
+  // Main loop: process 8 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load 8 uint8 codes and zero-extend to int32
     // pq_code[m..m+7] -> 8 int32 indices
@@ -85,7 +85,7 @@ void pq_adc_int8_distance_avx2(const void *pq_code_v, const void *lut_v,
 
   float sum = horizontal_sum_avx2(acc);
 
-  // Scalar leftover: process remaining subquantizers
+  // Scalar leftover: process remaining chunks
   for (; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
@@ -122,7 +122,7 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
 
   size_t m = 0;
 
-  // Main loop: process 8 subquantizers per iteration
+  // Main loop: process 8 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load a[m..m+7] and b[m..m+7], zero-extend to int32
     __m128i a_8x8 = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(a + m));
@@ -139,7 +139,7 @@ void pq_sdc_int8_distance_avx2(const void *a_v, const void *b_v,
     // Gather 8 floats from dist_table. The gather base must include the
     // per-iteration m * chunk offset; base_offsets only carries the
     // in-lane k * chunk component (k = 0..7), so gathering from a
-    // fixed dist_table base would read the wrong subquantizer tables once
+    // fixed dist_table base would read the wrong chunk tables once
     // num_chunk > 8 (m >= 8).
     __m256 gathered = _mm256_i32gather_ps(dist_table + m * chunk, indices, 4);
 
@@ -225,7 +225,7 @@ void pq_adc_int8_batch_distance_avx2(const void **candidates_v,
     float s2 = horizontal_sum_avx2(acc2);
     float s3 = horizontal_sum_avx2(acc3);
 
-    // Scalar leftover for remaining subquantizers.
+    // Scalar leftover for remaining chunks.
     for (; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       s0 += tab[c0[m]];

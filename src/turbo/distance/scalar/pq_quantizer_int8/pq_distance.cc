@@ -55,7 +55,7 @@ void pq_adc_int8_batch_distance(const void **candidates_v, const void *lut_v,
 
   size_t i = 0;
   // Main loop: process 4 candidates per iteration.
-  // Shared LUT base pointer (tab) is computed once per subquantizer,
+  // Shared LUT base pointer (tab) is computed once per chunk,
   // reducing redundant pointer arithmetic across the 4 candidates.
   for (; i + 4 <= num; i += 4) {
     const uint8_t *c0 = candidates[i];

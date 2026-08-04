@@ -123,8 +123,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
 // ---------------------------------------------------------------------------
 
 template <typename T>
-void PqInt8Quantizer::train_subquantizer(const T *data, size_t num,
-                                         size_t stride, size_t sub_idx) {
+void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
+                                  size_t sub_idx) {
   const size_t k = kNumCentroids;
   const size_t d = sub_dim_;
   uint8_t *centroids_m =
@@ -272,7 +272,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
           [this, typed_data, num, data_stride, i, pool_count, &finished]() {
             for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                  m += static_cast<uint32_t>(pool_count)) {
-              train_subquantizer<T>(typed_data, num, data_stride, m);
+              train_chunk<T>(typed_data, num, data_stride, m);
               finished++;
             }
           }));
@@ -406,10 +406,14 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), sub_vec,
                  kNumCentroids, sub_dim_, dists);
 
-    // Argmin: find nearest centroid.
-    float best_dist = dists[0];
+    // Argmin: find nearest centroid.  Seed with +infinity instead of
+    // dists[0]: k-means may leave dead centroids that yield NaN distances,
+    // and (x < NaN) is false for every x, so a NaN seed would pin the
+    // result to index 0 even when valid distances exist.  NaN entries are
+    // skipped naturally by the infinity seed.
+    float best_dist = std::numeric_limits<float>::infinity();
     uint32_t best_idx = 0;
-    for (uint32_t j = 1; j < kNumCentroids; ++j) {
+    for (uint32_t j = 0; j < kNumCentroids; ++j) {
       if (dists[j] < best_dist) {
         best_dist = dists[j];
         best_idx = j;

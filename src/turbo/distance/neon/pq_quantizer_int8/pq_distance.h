@@ -26,7 +26,7 @@ void pq_adc_int8_distance_neon(const void *pq_code, const void *lut,
                                size_t num_chunk, float *out);
 
 // SDC (Symmetric Distance Computation) via scalar lookup.
-// The dist_table is too large (65536 floats per subquantizer) for NEON
+// The dist_table is too large (65536 floats per chunk) for NEON
 // table-lookup instructions, so the implementation is scalar.
 void pq_sdc_int8_distance_neon(const void *a, const void *b,
                                const void *dist_table, size_t num_chunk,

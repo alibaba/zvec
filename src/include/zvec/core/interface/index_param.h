@@ -150,8 +150,8 @@ struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
 
 //! Product-Quantization specific params
 struct PqQuantizerParam : public QuantizerParam {
-  int num_chunk = 8;  // M: number of sub-quantizers
-  int num_bits = 8;   // bits per sub-quantizer
+  int num_chunk = 8;  // M: number of chunks
+  int num_bits = 8;   // bits per chunk
 
   // Constructors
   PqQuantizerParam(int chunks = 8, int bits = 8, bool rotate = false)

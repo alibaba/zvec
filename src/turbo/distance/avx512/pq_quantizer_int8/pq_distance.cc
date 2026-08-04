@@ -59,7 +59,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
 
   size_t m = 0;
 
-  // Main loop: process 16 subquantizers per iteration
+  // Main loop: process 16 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load 16 uint8 codes and zero-extend to int32
     // Use unaligned load of 16 bytes
@@ -78,7 +78,7 @@ void pq_adc_int8_distance_avx512(const void *pq_code_v, const void *lut_v,
 
   float sum = horizontal_sum_avx512(acc);
 
-  // Scalar leftover: process remaining subquantizers
+  // Scalar leftover: process remaining chunks
   for (; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
@@ -116,7 +116,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
 
   size_t m = 0;
 
-  // Main loop: process 16 subquantizers per iteration
+  // Main loop: process 16 chunks per iteration
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     // Load a[m..m+15] and b[m..m+15], zero-extend to int32
     __m128i a_16x8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + m));
@@ -133,7 +133,7 @@ void pq_sdc_int8_distance_avx512(const void *a_v, const void *b_v,
     // Gather 16 floats from dist_table. The gather base must include the
     // per-iteration m * chunk offset; base_offsets only carries the
     // in-lane k * chunk component (k = 0..15), so gathering from a
-    // fixed dist_table base would read the wrong subquantizer tables once
+    // fixed dist_table base would read the wrong chunk tables once
     // num_chunk > 16 (m >= 16).
     __m512 gathered = _mm512_i32gather_ps(indices, dist_table + m * chunk, 4);
 
@@ -223,7 +223,7 @@ void pq_adc_int8_batch_distance_avx512(const void **candidates_v,
     float s2 = _mm512_reduce_add_ps(acc2);
     float s3 = _mm512_reduce_add_ps(acc3);
 
-    // Scalar leftover for remaining subquantizers.
+    // Scalar leftover for remaining chunks.
     for (; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       s0 += tab[c0[m]];

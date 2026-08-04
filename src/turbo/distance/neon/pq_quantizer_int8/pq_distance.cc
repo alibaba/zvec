@@ -53,7 +53,7 @@ void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
 
   size_t m = 0;
 
-  // Main loop: process 4 subquantizers per iteration.
+  // Main loop: process 4 chunks per iteration.
   // Scalar LUT lookups (NEON has no gather), then NEON pairwise accumulation.
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     float d0 = lut[(m + 0) * kNumCentroids + pq_code[m + 0]];
@@ -66,7 +66,7 @@ void pq_adc_int8_distance_neon(const void *pq_code_v, const void *lut_v,
 
   float sum = horizontal_sum_neon(acc);
 
-  // Scalar leftover: process remaining subquantizers
+  // Scalar leftover: process remaining chunks
   for (; m < num_chunk; ++m) {
     sum += lut[m * kNumCentroids + pq_code[m]];
   }
@@ -95,7 +95,7 @@ void pq_sdc_int8_distance_neon(const void *a_v, const void *b_v,
 
   size_t m = 0;
 
-  // Main loop: process 4 subquantizers per iteration.
+  // Main loop: process 4 chunks per iteration.
   for (; m + kChunkSize <= num_chunk; m += kChunkSize) {
     float d0 = dist_table[(m + 0) * chunk +
                           static_cast<size_t>(a[m + 0]) * kNumCentroids +
@@ -178,7 +178,7 @@ void pq_adc_int8_batch_distance_neon(const void **candidates_v,
     float s2 = horizontal_sum_neon(acc2);
     float s3 = horizontal_sum_neon(acc3);
 
-    // Scalar leftover for remaining subquantizers.
+    // Scalar leftover for remaining chunks.
     for (; m < num_chunk; ++m) {
       const float *tab = lut + m * kNumCentroids;
       s0 += tab[c0[m]];
