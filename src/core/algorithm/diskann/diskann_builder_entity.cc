@@ -54,7 +54,11 @@ int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
 
   uint32_t neighbor_cnt = 0;
-  std::vector<diskann_id_t> neighbor{max_build_degree_, 0};
+  // Parentheses are intentional: brace initialization would select the
+  // initializer-list constructor and create only two elements
+  // {max_build_degree_, 0}.  The append below reads max_build_degree_
+  // elements, so that form causes an out-of-bounds read.
+  std::vector<diskann_id_t> neighbor(max_build_degree_, 0);
 
   neighbors_buffer_.append(reinterpret_cast<const char *>(&neighbor_cnt),
                            sizeof(uint32_t));
