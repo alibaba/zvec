@@ -47,6 +47,8 @@ class RabitqConverter : public IndexConverter {
   //! Train the data - perform KMeans clustering
   int train(IndexHolder::Pointer holder) override;
 
+  using IndexConverter::train;
+
   //! Train the data with the specified thread resources
   int train(IndexHolder::Pointer holder, IndexThreads::Pointer threads);
 
