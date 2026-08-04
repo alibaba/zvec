@@ -78,7 +78,7 @@ using PqAdcDistanceFunc = void (*)(const void *pq_code, const void *lut,
 //   a, b:              [num_chunk] uint8_t
 //   dist_table:        [num_chunk * 256 * 256] float
 // Uses void* for consistency with DistanceFunc / PqAdcDistanceFunc.
-using PqSdcKernelFunc = void (*)(const void *a, const void *b,
+using PqSdcDistanceFunc = void (*)(const void *a, const void *b,
                                  const void *dist_table, size_t num_chunk,
                                  float *out);
 
@@ -97,7 +97,7 @@ struct RotatorKernels {
 //   kInt8: one uint8 per chunk (256 centroids, stride=256)
 struct PqKernels {
   PqAdcDistanceFunc adc_distance = nullptr;
-  PqSdcKernelFunc sdc_distance = nullptr;
+  PqSdcDistanceFunc sdc_distance = nullptr;
   PqBatchAdcFunc batch_adc_distance = nullptr;
 };
 

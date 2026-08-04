@@ -179,10 +179,6 @@ void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
 }
 
 int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
-  return train(holder, static_cast<int>(thread_count_));
-}
-
-int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   if (!holder) {
     return kErrUnsupported;
   }
@@ -228,11 +224,10 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   if (meta_.metric_name() == "Cosine") {
     switch (input_data_type_) {
       case DataType::kFp16:
-        normalize_batch(reinterpret_cast<ailego::Float16 *>(all_data.data()),
-                        num);
+        normalize(reinterpret_cast<ailego::Float16 *>(all_data.data()), num);
         break;
       case DataType::kFp32:
-        normalize_batch(reinterpret_cast<float *>(all_data.data()), num);
+        normalize(reinterpret_cast<float *>(all_data.data()), num);
         break;
       default:
         break;
@@ -259,8 +254,8 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder, int thread_count) {
   }
 
   // Create thread pool.
-  auto threads = std::make_shared<SingleQueueIndexThreads>(
-      static_cast<uint32_t>(thread_count), false);
+  auto threads =
+      std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
   auto task_group = threads->make_group();
 
   // Distribute chunks across threads, dispatched by data type.
@@ -361,13 +356,12 @@ void PqInt8Quantizer::quantize_data(const void *input, void *output) const {
     std::memcpy(norm_vec_storage.data(), input, original_dim_ * elem_size);
     switch (input_data_type_) {
       case DataType::kFp16:
-        normalize_single(
-            reinterpret_cast<ailego::Float16 *>(norm_vec_storage.data()),
-            &vec_norm);
+        normalize(reinterpret_cast<ailego::Float16 *>(norm_vec_storage.data()),
+                  &vec_norm);
         break;
       case DataType::kFp32:
-        normalize_single(reinterpret_cast<float *>(norm_vec_storage.data()),
-                         &vec_norm);
+        normalize(reinterpret_cast<float *>(norm_vec_storage.data()),
+                  &vec_norm);
         break;
       default:
         break;
@@ -445,11 +439,11 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
     std::memcpy(norm_query_storage.data(), input, original_dim_ * elem_size);
     switch (input_data_type_) {
       case DataType::kFp16:
-        normalize_single(
+        normalize(
             reinterpret_cast<ailego::Float16 *>(norm_query_storage.data()));
         break;
       case DataType::kFp32:
-        normalize_single(reinterpret_cast<float *>(norm_query_storage.data()));
+        normalize(reinterpret_cast<float *>(norm_query_storage.data()));
         break;
       default:
         break;
@@ -823,7 +817,7 @@ INDEX_FACTORY_REGISTER_QUANTIZER(PqInt8Quantizer);
 // ---------------------------------------------------------------------------
 
 template <typename T>
-void PqInt8Quantizer::normalize_batch(T *data, size_t num) const {
+void PqInt8Quantizer::normalize(T *data, size_t num) const {
   for (size_t i = 0; i < num; ++i) {
     float norm = 0.0f;
     ailego::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
@@ -851,7 +845,7 @@ void PqInt8Quantizer::compute_and_subtract_center(T *data, size_t num) {
 }
 
 template <typename T>
-void PqInt8Quantizer::normalize_single(T *vec, float *norm_out) const {
+void PqInt8Quantizer::normalize(T *vec, float *norm_out) const {
   float norm = 0.0f;
   ailego::Normalizer<T>::L2(vec, original_dim_, &norm);
   if (norm_out) {
