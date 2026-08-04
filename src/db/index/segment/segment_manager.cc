@@ -108,10 +108,11 @@ Status SegmentManager::add_column(const FieldSchema::Ptr &column_schema,
     size_t end = std::min(i + concurrency, segments.size());
     for (size_t j = i; j < end; ++j) {
       auto &segment = segments[j].second;
-      futures.emplace_back(std::async(std::launch::async, [&]() -> Status {
-        return segment->add_column(column_schema, expression,
-                                   AddColumnOptions{concurrency});
-      }));
+      futures.emplace_back(
+          std::async(std::launch::async, [&, segment]() -> Status {
+            return segment->add_column(column_schema, expression,
+                                       AddColumnOptions{concurrency});
+          }));
     }
 
     for (auto it = futures.begin(); it != futures.end(); ++it) {
@@ -144,10 +145,11 @@ Status SegmentManager::alter_column(const std::string &column_name,
     size_t end = std::min(i + concurrency, segments.size());
     for (size_t j = i; j < end; ++j) {
       auto &segment = segments[j].second;
-      futures.emplace_back(std::async(std::launch::async, [&]() -> Status {
-        return segment->alter_column(column_name, new_column_schema,
-                                     AlterColumnOptions{concurrency});
-      }));
+      futures.emplace_back(
+          std::async(std::launch::async, [&, segment]() -> Status {
+            return segment->alter_column(column_name, new_column_schema,
+                                         AlterColumnOptions{concurrency});
+          }));
     }
 
     for (auto it = futures.begin(); it != futures.end(); ++it) {

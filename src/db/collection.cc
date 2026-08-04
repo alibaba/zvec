@@ -835,6 +835,12 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
   // final paths and open them before the manifest is persisted, so a
   // failure aborts cleanly without a version/disk mismatch.
   std::vector<Segment::Ptr> opened_segments;
+  std::vector<std::string> moved_dirs;
+  auto cleanup_moved_dirs = [&]() {
+    for (auto &dir : moved_dirs) {
+      FileHelper::RemoveDirectory(dir);
+    }
+  };
   for (auto &task : tasks) {
     auto task_info = task->task_info();
     if (!std::holds_alternative<CompactTask>(task_info)) {
@@ -851,8 +857,10 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
     auto new_segment_path = FileHelper::MakeSegmentPath(path_, new_segment_id);
 
     if (!FileHelper::MoveDirectory(tmp_segment_path, new_segment_path)) {
+      cleanup_moved_dirs();
       return Status::InternalError("move segment directory failed");
     }
+    moved_dirs.push_back(new_segment_path);
     compact_task.output_segment_meta_->set_id(new_segment_id);
 
     auto new_segment =
@@ -860,9 +868,9 @@ Status CollectionImpl::Optimize(const OptimizeOptions &options) {
                       id_map_, delete_store_, version_manager_,
                       SegmentOptions{true, options_.enable_mmap_});
     if (!new_segment.has_value()) {
-      // best-effort cleanup: the moved directory is not referenced by any
-      // manifest yet, so remove it rather than leaking it on disk
-      FileHelper::RemoveDirectory(new_segment_path);
+      // best-effort cleanup: these directories are not referenced by any
+      // manifest yet, so remove them rather than leaking them on disk
+      cleanup_moved_dirs();
       return new_segment.error();
     }
     opened_segments.push_back(new_segment.value());
