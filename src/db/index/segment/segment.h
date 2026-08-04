@@ -108,20 +108,6 @@ class Segment {
       const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           &quant_vector_indexers = {}) = 0;
 
-  //! Mark vector indexers of this segment so that their index files are
-  //! removed once the last reference to them is released. Used after this
-  //! segment instance has been superseded by a reopened one (e.g. by
-  //! Optimize building a new vector index): in-flight readers of this
-  //! instance keep the files alive until they finish.
-  //!
-  //! columns: columns whose base vector index was replaced by a new file.
-  //! quant_columns: columns whose quantized index was replaced. A column
-  //! may appear only here when the new index reuses the old base file
-  //! (see create_vector_index), in which case the base must NOT be marked.
-  virtual void mark_vector_index_files_for_removal(
-      const std::vector<std::string> & /*columns*/,
-      const std::vector<std::string> & /*quant_columns*/) {}
-
   virtual bool vector_index_ready(
       const std::string &column,
       const IndexParams::Ptr &index_params) const = 0;

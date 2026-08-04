@@ -196,10 +196,6 @@ class SegmentImpl : public Segment,
       const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           &quant_vector_indexers) override;
 
-  void mark_vector_index_files_for_removal(
-      const std::vector<std::string> &columns,
-      const std::vector<std::string> &quant_columns) override;
-
   bool vector_index_ready(const std::string &column,
                           const IndexParams::Ptr &index_params) const override;
 
@@ -1947,35 +1943,6 @@ Status SegmentImpl::reload_vector_index(
   }
 
   return Status::OK();
-}
-
-void SegmentImpl::mark_vector_index_files_for_removal(
-    const std::vector<std::string> &columns,
-    const std::vector<std::string> &quant_columns) {
-  // Only reads the indexer maps and flips an atomic flag on the indexer
-  // objects; no structural mutation, so this is safe while concurrent
-  // readers of this (already superseded) instance are still running.
-  //
-  // The base and quantized indexers are marked independently: when a
-  // quantized index is built on top of a reused base file (see
-  // create_vector_index), only the old quantized file is superseded and
-  // the base file is still referenced by the new segment meta.
-  for (const auto &column : columns) {
-    auto iter = vector_indexers_.find(column);
-    if (iter != vector_indexers_.end()) {
-      for (auto &indexer : iter->second) {
-        indexer->MarkDestroyOnRelease();
-      }
-    }
-  }
-  for (const auto &column : quant_columns) {
-    auto q_iter = quant_vector_indexers_.find(column);
-    if (q_iter != quant_vector_indexers_.end()) {
-      for (auto &q_indexer : q_iter->second) {
-        q_indexer->MarkDestroyOnRelease();
-      }
-    }
-  }
 }
 
 bool SegmentImpl::vector_index_ready(

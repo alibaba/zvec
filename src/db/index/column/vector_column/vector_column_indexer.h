@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
-#include <atomic>
 #include <string>
 #include <utility>
 #include <variant>
@@ -51,7 +50,7 @@ class VectorColumnIndexer {
     is_sparse_ = field_schema.is_sparse_vector();
   }
 
-  virtual ~VectorColumnIndexer();
+  virtual ~VectorColumnIndexer() = default;
 
  public:
   Status Open(const vector_column_params::ReadOptions &read_options);
@@ -63,14 +62,6 @@ class VectorColumnIndexer {
 
   // Destroy will call Close() and remove index file
   Status Destroy();
-
-  //! Mark this indexer as superseded: its index file is removed when the
-  //! last shared_ptr reference is released (in the destructor), instead of
-  //! eagerly. Safe to call while concurrent readers still hold references;
-  //! they keep the index and its file alive until they finish.
-  void MarkDestroyOnRelease() {
-    destroy_on_release_.store(true, std::memory_order_relaxed);
-  }
 
 
   // If HNSWIndexer.merge([FlatIndexer1, FlatIndexer2])
@@ -147,7 +138,6 @@ class VectorColumnIndexer {
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
-  std::atomic<bool> destroy_on_release_{false};
 };
 
 

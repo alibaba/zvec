@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "vector_column_indexer.h"
-#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/db/status.h>
@@ -20,25 +19,6 @@
 
 
 namespace zvec {
-
-VectorColumnIndexer::~VectorColumnIndexer() {
-  if (!destroy_on_release_.load(std::memory_order_relaxed)) {
-    return;
-  }
-  // Deferred removal of a superseded index file: this runs only after the
-  // last reference is released, so no reader can still be using the index.
-  if (index != nullptr) {
-    if (0 != index->Close()) {
-      LOG_WARN("Failed to close superseded index: %s",
-               index_file_path_.c_str());
-    }
-    index.reset();
-  }
-  if (!ailego::File::RemovePath(index_file_path_)) {
-    LOG_WARN("Failed to remove superseded index file: %s",
-             index_file_path_.c_str());
-  }
-}
 
 Status VectorColumnIndexer::Open(
     const vector_column_params::ReadOptions &read_options) {

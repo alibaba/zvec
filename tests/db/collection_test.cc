@@ -2921,10 +2921,9 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
-  // Regression test: Optimize() used to hold the exclusive schema lock for
-  // its whole duration, blocking writes and reads until the compact
-  // finished. Insert, Fetch and Query must all make progress concurrently
-  // while a background Optimize is running.
+  // Regression: Optimize() no longer blocks writes/reads for its whole
+  // duration. Insert, Fetch and Query must all make progress during the
+  // long compact phase; only the seal/commit phases are exclusive.
   int initial_doc_count = 20000;
 
   auto schema = TestHelper::CreateSchemaWithVectorIndex();
@@ -2979,8 +2978,13 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
           record_error(&writer_result, st.message());
         }
       }
-      next_doc_id += batch_size;
-      inserted += batch_size;
+      // only advance on full success, keeping doc ids aligned with stats
+      if (writer_result.errors == 0) {
+        next_doc_id += batch_size;
+        inserted += batch_size;
+      } else {
+        break;
+      }
       if (!optimize_done.load()) {
         writer_result.ops_during_optimize++;
       }
@@ -2988,8 +2992,7 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   });
 
   // fetcher: point reads must return correct data throughout, including
-  // while Optimize commits its result (exercises SegmentManager under
-  // concurrent segment replacement)
+  // while Optimize commits its result
   WorkerResult fetch_result;
   std::thread fetcher([&] {
     auto expect_doc = TestHelper::CreateDoc(0, *schema);
@@ -3010,9 +3013,8 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   });
 
   // querier: vector searches must keep succeeding while segments are being
-  // compacted and swapped
+  // compacted
   WorkerResult query_result;
-  std::atomic<int> transient_query_errors{0};
   std::thread querier([&] {
     auto query_doc = TestHelper::CreateDoc(1, *schema);
     auto vector = query_doc.get<std::vector<float>>("dense_fp32");
@@ -3030,11 +3032,9 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
       auto result = collection->Query(query);
       if (!result.has_value()) {
         // Tolerated: a doc admitted by the writing segment's streaming
-        // vector index may not be visible in its forward store yet, which
-        // transiently fails the query. This is a pre-existing Insert/Query
-        // visibility race, reproducible without Optimize; it is unrelated
-        // to Optimize concurrency, which is what this test asserts on.
-        transient_query_errors.fetch_add(1);
+        // vector index may not yet be visible in its forward store,
+        // transiently failing the query. Pre-existing Insert/Query race,
+        // unrelated to Optimize.
         continue;
       }
       if (result.value().empty()) {
@@ -3055,8 +3055,8 @@ TEST_F(CollectionTest, Feature_Optimize_Concurrent_ReadWrite_NonBlocking) {
   ASSERT_EQ(fetch_result.errors, 0) << fetch_result.first_error;
   ASSERT_EQ(query_result.errors, 0) << query_result.first_error;
 
-  // if any of them had been blocked for the whole Optimize duration, no
-  // operation could have completed while Optimize was still running
+  // if any had been blocked for the whole Optimize, no ops could have
+  // completed while Optimize was still running
   ASSERT_GE(writer_result.ops_during_optimize, 2);
   ASSERT_GE(fetch_result.ops_during_optimize, 2);
   ASSERT_GE(query_result.ops_during_optimize, 2);
@@ -3110,10 +3110,9 @@ TEST_F(CollectionTest, Feature_Optimize_Superseded_Index_File_Removed) {
   ASSERT_EQ(stats.doc_count, (uint64_t)doc_count);
   ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-  // Building the vector index supersedes the flat vector file written when
-  // the segment was dumped. Once the replaced segment instance is released
-  // (no readers left after Optimize returns), the superseded file must be
-  // removed, leaving exactly one index file for the column.
+  // Vector index build supersedes the flat vector file from the segment
+  // dump. The commit phase eagerly removes the superseded file under the
+  // exclusive schema lock, leaving exactly one index file per column.
   int dense_fp32_index_files = 0;
   for (const auto &entry : fs::directory_iterator(col_path + "/0")) {
     auto name = entry.path().filename().string();
