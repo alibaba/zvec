@@ -78,7 +78,9 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   sdc_fn_ = pq_k.sdc_distance;
   batch_adc_fn_ = pq_k.batch_adc_distance;
 
-  // Resolve the configured metric type (local only -- not stored).
+  // Resolve the configured metric type.  The metric is owned by the caller's
+  // IndexMeta; serialize() stamps it into the header only as a sanity check
+  // (deserialize() never restores it).
   auto mt = metric_from_name(meta_.metric_name());
 
   // L2-only batch distance for encoding: the PQ codebook is trained in L2
@@ -723,6 +725,10 @@ int PqInt8Quantizer::deserialize(std::string &in) {
   return deserialize(in.data(), in.size());
 }
 
+//! Contract: init(meta) must run before deserialize().  The metric policy
+//! (batch_fn_, extra_meta_size_) is taken from meta_ and is intentionally NOT
+//! restored from hdr.metric: load paths (e.g. IVFResidualCodec) own the
+//! metric via the persisted IndexMeta and may even rewrite it before init().
 int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   if (len < sizeof(QuantizerSerHeader) + sizeof(PqInt8SerPayload)) {
     return kErrUnsupported;
@@ -734,6 +740,10 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   ptr += sizeof(hdr);
 
   if (hdr.magic != kQuantizerMagic) return kErrUnsupported;
+  if (hdr.version != kQuantizerSerVersion) return kErrUnsupported;
+  if (hdr.quant_type != static_cast<uint16_t>(QuantizeType::kPQ)) {
+    return kErrUnsupported;
+  }
 
   PqInt8SerPayload payload;
   std::memcpy(&payload, ptr, sizeof(payload));
